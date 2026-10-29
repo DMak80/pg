@@ -15,7 +15,7 @@ using Xunit;
 
 namespace PgWorker.IntegrationTests.Backups;
 
-// Интеграции RetentionProcess (t06 spec Ф3): реальный etcd (статусы/журнал/ключ
+// Интеграции RetentionProcess (spec Ф3): реальный etcd (статусы/журнал/ключ
 // storage) + FakeBackupS3. Часы по умолчанию заморожены (детерминированные
 // now/started_unix); MutableClock — для семантики put ключа storage «при
 // изменении» (наблюдаемые поля сравниваются БЕЗ updated_unix — идущие часы
@@ -67,14 +67,18 @@ public class RetentionProcessTests(EtcdFixture fixture)
 
     private RetentionProcess BuildProcess(
         BackupsRuntimeOptions options, FakeBackupS3 s3, TimeProvider? clock = null) => new(
-        fixture.Gateway, [fixture.Endpoint], FakePoolFactory.Single(s3),
+        fixture.Gateway, [fixture.Endpoint],
+        // breakerWindow=0 — тест доводки СЛЕДУЮЩИМ тиком: транспортный отказ
+        // первого delete не должен исключать единственную цель на 45 c
+        // (семантику breaker-окна покрывают юниты PoolBackupS3Tests).
+        FakePoolFactory.Single(s3, breakerWindow: TimeSpan.Zero),
         FakePoolFactory.Store(),
         _claims, new WorkJournal("/pgworker", fixture.Gateway, [fixture.Endpoint]),
         options, clock ?? new FrozenClock(),
         NullLogger<RetentionProcess>.Instance);
 
     // Тест-опции: ретенция каждым тиком; дефолт-политика — параметризуется
-    // (t18: дефолт 1/1/1 — новый прод-дефолт целевой схемы).
+    // (: дефолт 1/1/1 — новый прод-дефолт целевой схемы).
     private static BackupsRuntimeOptions Options(
         int intervalSec = 0, int keepFailed = 20,
         int policyDays = 1, int policyWeeks = 1, int policyMonths = 1,
@@ -99,7 +103,7 @@ public class RetentionProcessTests(EtcdFixture fixture)
         => new(id, state, "shard1a", BackupSourceRole.Replica,
             Unix(started), Unix(started) + 60, walStart, 1024, null, verify);
 
-    // Сид полного в etcd каноническим JSON (читается парсером t01).
+    // Сид полного в etcd каноническим JSON (читается парсером).
     private async Task SeedFullAsync(string cluster, FullBackupState full)
     {
         await fixture.Gateway.PutAsync(fixture.Endpoint,
@@ -245,7 +249,7 @@ public class RetentionProcessTests(EtcdFixture fixture)
     [Fact]
     public async Task WalCleanupBelowCutoff()
     {
-        // Arrange — COMPLETED с verify OK (t18: cutoff только от verify-OK) и
+        // Arrange — COMPLETED с verify OK (: cutoff только от verify-OK) и
         // wal_start=..05; wal/ содержит 3,4,5,6 + history
         var ct = TestContext.Current.CancellationToken;
         const string cluster = "rt5";
@@ -280,7 +284,7 @@ public class RetentionProcessTests(EtcdFixture fixture)
         ]);
     }
 
-    // AC4-хвост: после чистки контроль t03 поднимает chain_start до cutoff —
+    // AC4-хвост: после чистки контроль поднимает chain_start до cutoff —
     // цепочка от оставшихся непрерывна (ACTIVE, без error).
     [Fact]
     public async Task WalCleanupRaisesVerifyChainStartT03()
@@ -297,6 +301,11 @@ public class RetentionProcessTests(EtcdFixture fixture)
             }), null, ct);
         await fixture.Gateway.PutAsync(fixture.Endpoint, $"/clusters/{cluster}/backup_password",
             "pw", null, ct);
+        // приёмник «жив» (статус-ключ agent/<N>) — контроль не деградирует
+        // not-running; предмет теста — подъём chain_start до cutoff после среза.
+        await fixture.Gateway.PutAsync(fixture.Endpoint,
+            $"/pgworker/backups/{cluster}/shard1/agent/shard1a",
+            """{"node":"shard1a","state":"streaming","pool_exhausted":false}""", null, ct);
         var full = Full("20260908000000Z", Now.AddDays(-1), walStart: "000000010000000000000005",
             verify: new BackupVerify(BackupVerifyStatus.Ok, Unix(Now)));
         await SeedFullAsync(cluster, full);
@@ -317,7 +326,7 @@ public class RetentionProcessTests(EtcdFixture fixture)
             () => (BackupsRuntimeOptions?)Options(), new InstallSecrets("su", "sb", "adm", "mv"),
             new FrozenClock());
 
-        // Act — тик ретенции (сегменты 3,4 удалены), затем тик контроля t03
+        // Act — тик ретенции (сегменты 3,4 удалены), затем тик контроля 
         (await retention.TickAsync(BuildSnap(cluster), backups(cluster, full), ct))
             .IsSuccess.Should().BeTrue();
         s3.DeletedKeys.Should().HaveCount(2, "precondition: the cleanup cut 3 and 4");
@@ -354,7 +363,7 @@ public class RetentionProcessTests(EtcdFixture fixture)
         s3.DeletedKeys.Should().BeEmpty();
     }
 
-    // AC5: при >KeepFailed FAILED старейшие удалены; бэкофф t02 не изменился.
+    // AC5: при >KeepFailed FAILED старейшие удалены; бэкофф не изменился.
     [Fact]
     public async Task FailedHygiene()
     {
@@ -552,7 +561,7 @@ public class RetentionProcessTests(EtcdFixture fixture)
             .And.NotContain("used_percent");
     }
 
-    // t36 (arch/19 §5): недоступный пул — used_bytes был бы занижен, частичный
+    //  (arch/19 §5): недоступный пул — used_bytes был бы занижен, частичный
     // вердикт НЕ публикуется (ключа нет → квота-алерт не молчит зря, прежнее
     // полное значение остаётся); тик успешен — неполнота transient, полный
     // проход повторит.
@@ -602,7 +611,7 @@ public class RetentionProcessTests(EtcdFixture fixture)
         (await GetKvAsync(BackupNames.FullKey(cluster, "shard1", full.Id))).Should().NotBeNull();
     }
 
-    // ---- t18: cutoff по последнему verify-OK (AC2/AC3) ----
+    // ---: cutoff по последнему verify-OK (AC2/AC3) ----
 
     // AC3: последний полный PENDING — прунинг WAL ниже его wal_start запрещён:
     // cutoff держится на предыдущем OK (удаляется только строго ниже OK-точки).

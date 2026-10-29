@@ -4,7 +4,7 @@ using Xunit;
 
 namespace AdminPanel.UnitTests;
 
-// Тест хендлера запроса текущей сессии (spec t02 §9.3).
+// Тест хендлера запроса текущей сессии (spec §9.3).
 public class MeQueryHandlerTests
 {
     [Fact]

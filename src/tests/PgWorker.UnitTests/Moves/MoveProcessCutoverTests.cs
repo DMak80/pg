@@ -5,7 +5,7 @@ using Xunit;
 
 namespace PgWorker.UnitTests.Moves;
 
-// MoveProcess M4–M6 (t01 задача 14, spec §6.1/§6.2): cutover-блок с классификацией
+// MoveProcess M4–M6 (spec §6.1/§6.2): cutover-блок с классификацией
 // отказов (transient — заявка жива, ретраи тиками; permanent verify-failed — del
 // заявки + статус SYNCING/verify-failed жив + подсказка «abort + повторный move»;
 // flip-conflict — permanent, заморозка ОСТАВЛЕНА), срез прямой подписки ДО

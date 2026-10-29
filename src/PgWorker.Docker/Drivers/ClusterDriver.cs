@@ -8,8 +8,9 @@ namespace PgWorker.Docker.Drivers;
 // Хост plain-режима: имя + endpoint Engine API (tcp://… | unix://…).
 public sealed record HostEndpoint(string Name, string Endpoint);
 
-/// <summary>Наличие данных PG у ноды (Д3, arch/14 R11): Present/Absent — доказано
-/// exec-пробой PG_VERSION; Unknown — транспорт недоступен (НЕ доказательство утраты).</summary>
+/// <summary>Наличие данных PG у ноды (Д3, arch/14 R11): Present/Absent — факт
+/// PG_VERSION пробой приёмника ноды (arch/25 №22); Unknown — транспорт
+/// недоступен (НЕ доказательство утраты).</summary>
 public enum DataPresence { Present, Absent, Unknown }
 
 // Унифицированное управление нодой кластера в обоих режимах (spec §5.2/§5.3).
@@ -33,8 +34,8 @@ public interface IClusterDriver
     // §2.1: пересчёт на каждый EnsureNode-путь, без фиксации в etcd); несётся в
     // SPILO_CONFIGURATION (merge(PGTune ∪ канон)) и doorman-бюджет; null →
     // прежний хардкод-набор (изолированные пути). syncStrict — per-cluster
-    // опция synchronous_mode_strict из config кластера (t06, arch/14 §3).
-    // restPassword — эффективная per-cluster REST-пара (t22, arch/14 §2.1/§5 I:
+    // опция synchronous_mode_strict из config кластера (arch/14 §3).
+    // restPassword — эффективная per-cluster REST-пара (arch/14 §2.1/§5 I:
     // pending окна ротации ?? ключ кластера; резолвор RestRotation.EffectivePassword
     // у вызывающих процессов).
     Task<Result> EnsureNodeAsync(ShardTopology topology, string nodeName, NodeAddress addr,
@@ -49,15 +50,8 @@ public interface IClusterDriver
     // шарда — данные на месте, нода не удаляется). 404/304 = успех.
     Task<Result> StopNodeAsync(string cluster, string shard, string nodeName, CancellationToken ct);
 
-    // Данные ноды (Д3, spec §3.7): docker-exec test -f PG_VERSION; контейнера
-    // нет/exec-сбой/нечитаемый stdout → Unknown (утрата не доказана).
-    Task<Result<DataPresence>> NodeDataPresenceAsync(string cluster, string shard, string node, CancellationToken ct);
-
-    // Выполнить команду в контейнере ноды (t01: pg_dump внутри мастер-контейнера
-    // источника), вернуть stdout. Идемпотентности не требует (read-only утилита).
-    Task<Result<string>> ExecNodeAsync(
-        string cluster, string shard, string node, IReadOnlyList<string> cmd, CancellationToken ct);
-
+    // Данные ноды (Д3, spec §3.7) — пробой приёмника ноды (arch/25 №22),
+    // шов INodeDataProbe: docker-exec в продукте не применяется.
     // Docker-инспекция нод усыновления (spec §3.1, arch/14 §5 J AD1; live-Ф7
     // 2026-09-01): по именам нод вернуть DiscoveredNode (host/object/порты).
     // Контейнеры ЧУЖИХ pgw-кластеров исключаются ДО матчинга — имена нод
@@ -69,65 +63,34 @@ public interface IClusterDriver
         string cluster,
         IReadOnlyCollection<string> nodeNames, CancellationToken ct);
 
-    // Exec в контейнер по имени (docker-exec fallback для pg_dump усыновлённых
-    // нод, spec §3.3): 404/не найден — Failed.
-    Task<Result<string>> ExecContainerAsync(string containerName, IReadOnlyList<string> cmd, CancellationToken ct);
-
     // Имена объектов нод кластера (pgw-<C>-*): сверка декларации + сироты (D1).
     Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, CancellationToken ct);
 
-    // Инспекция env живого контейнера ноды (t22, arch/14 §5 C — шаг пересоздания:
+    // Инспекция env живого контейнера ноды (arch/14 §5 C — шаг пересоздания:
     // критерий кандидата — факт env: SSL_RESTAPI_CERTIFICATE / PGW_REST_PASSWORD_HASH).
     // Нет контейнера — пустой словарь; Swarm — заглушка (шаг пересоздания — no-op,
     // симметрия заглушки InspectNodesAsync).
     Task<Result<IReadOnlyDictionary<string, string>>> InspectNodeEnvAsync(
         string cluster, string shard, string nodeName, CancellationToken ct);
 
-    // ── WAL-агенты бэкапов (arch/19 §3, t03) ──
+    // ── WAL-агенты бэкапов (arch/19 §3) ──
 
-    // Идемпотентно подратить контейнер агента pgw-backup-wal-<C>-<X>-<N> на docker-хосте
-    // host (t27: per-node имена — агент на каждой ноде-источнике): resolve движка с
-    // advertised-fallback (как EnsureNodeAsync — single-host advertised-стенды), сеть
-    // нод pgw-net-<C> (адрес мастера по alias :5432), create + start. spec (ContainerSpec)
-    // — от WalStreamProcess (механика агента — код воркера).
-    Task<Result> EnsureBackupAgentAsync(
-        string cluster, string shard, string node, ContainerSpec spec, string host, CancellationToken ct);
-
-    // Остановить и удалить контейнеры агентов кластера (shard=null → все) + staging
-    // volume (404 = успех). Стоп-семантика: Enabled=false/QUARANTINED/remove-shard/D1.
+    // Санитарный снос legacy wal-контейнеров pgw-backup-wal-<C>-* (+ их
+    // -staging-тома): приёмник живёт в контейнере ноды, отдельных
+    // контейнеров больше нет; вызов идемпотентен, 404 = успех.
     Task<Result> RemoveBackupAgentsAsync(string cluster, string? shard, CancellationToken ct);
-
-    // Живые контейнеры агентов кластера (состояние running/exited — супервиз).
-    Task<Result<IReadOnlyList<DockerContainer>>> ListBackupAgentsAsync(string cluster, CancellationToken ct);
-
-    // t36 (arch/19 §3): хвост лога wal-агента (поиск маркера pool_exhausted
-    // контролем DEGRADED). Контейнер ищется по имени на всех хостах —
-    // первый Success выигрывает (агент живёт на одном docker-хосте).
-    Task<Result<string>> BackupAgentLogsAsync(
-        string cluster, string containerName, int tailLines, CancellationToken ct);
 
     // Честная running-инспекция нод (arch/14 §5 C): InspectNodesAsync отражает
     // ФАКТ running-процесса, пустой результат = ноды нет. Plain — да; Swarm —
     // нет (инспект — заглушка): ветки надзора, трактующие «нет в инспекте» как
-    // смерть процесса (ускорение failover, t09), для таких драйверов выключены.
+    // смерть процесса (ускорение failover), для таких драйверов выключены.
     bool SupportsRunningInspection { get; }
 
     // Docker-движок хоста по имени (plain-таблица/advertised; swarm — manager):
-    // джобы бэкапов создаются/супервизируются на docker-хосте источника (t02).
+    // джобы бэкапов создаются/супервизируются на docker-хосте источника.
     // null — хост не известен (вызывающий трактует как transient).
     IDockerEngine? EngineFor(string host);
 
-    // Чистка джоб-контейнеров pgw-backup-full-<C>-* (и их staging volumes) +
-    // restore-джобов pgw-backup-restore-<C>-* (t05; БЕЗ volume — он является
-    // data-volume ноды, его снесёт RemoveNodeAsync) (Deprovisioning D1/D2,
-    // remove-shard): идемпотентно, 404 = успех; объекты S3 НЕ трогаем
-    // (arch/19 §4 — orphan t07).
-    Task<Result> RemoveBackupJobsAsync(string cluster, CancellationToken ct);
-
-    // Точечная чистка restore-джобов шарда pgw-backup-restore-<C>-<X>-* (t05
-    // §3.4, remove-shard): remove force, volume НЕ трогаем (data-volume ноды —
-    // его снесёт RemoveNodeAsync). Идемпотентно, 404 = успех.
-    Task<Result> RemoveRestoreJobsAsync(string cluster, string shard, CancellationToken ct);
 }
 
 // Plain-режим: контейнеры на перечисленных хостах, per-host Engine API.
@@ -137,10 +100,10 @@ public interface IClusterDriver
 // нод), несёт advertised-имя — единый namespace адресов с записями portalloc;
 // внутренние имена остаются ключами движков. Внешние находки усыновления
 // (object) advertised не получают — их адресация операторская (R9-симметрия).
-// scrapeNetwork (t15, arch/14 §2.1, arch/18 §5.4): имя сети контура мониторинга
+// scrapeNetwork (arch/14 §2.1, arch/18 §5.4): имя сети контура мониторинга
 // поставки — задано → Ensure-attach канонических нод к ней поверх pgw-net-<C>
 // (скрейп Prometheus по alias:8008); пусто → поведение идентично базе.
-// restCertificates (t22, arch/14 §2.1): кеш серверных сертов REST-эндпоинтов
+// restCertificates (arch/14 §2.1): кеш серверных сертов REST-эндпоинтов
 // нод (DI-синглтон из per-install CA); null — только изолированные юнит-пути
 // драйвера без BuildSpec (HTTP-режима не существует — BuildSpec fail-fast).
 public sealed class PlainClusterDriver(
@@ -152,9 +115,10 @@ public sealed class PlainClusterDriver(
     IReadOnlySet<string>? pgtuneExclude = null,
     string? scrapeNetwork = null,
     string? contourNetwork = null,
-    RestCertificateCache? restCertificates = null) : IClusterDriver
+    RestCertificateCache? restCertificates = null,
+    NodeBackupEnv? nodeBackupEnv = null) : IClusterDriver
 {
-    // Label-ключ контейнеров/сервисов pg-домена (t07: ключ — параметр спеки
+    // Label-ключ контейнеров/сервисов pg-домена (: ключ — параметр спеки
     // движка LabelKey; читателей label в коде нет, docker-inspect-косметика).
     internal const string LabelKey = "pgworker";
 
@@ -165,10 +129,10 @@ public sealed class PlainClusterDriver(
     // user-defined сети hostname-резолва нет. Единая сеть делала DNS-зону
     // общей для всех кластеров docker-хоста — перекрёстная видимость чужих
     // алиасов, сетевой изоляции контуров не было; per-cluster сеть даёт её
-    // по построению (уникальное имя кластера ⇒ уникальная DNS-зона, t24).
+    // по построению (уникальное имя кластера ⇒ уникальная DNS-зона).
     public const string NodesNetworkPrefix = "pgw-net-";
 
-    // Сеть контура поставки (t41, arch/14 §2.1): задана → ноды/агенты живут в
+    // Сеть контура поставки (arch/14 §2.1): задана → ноды/агенты живут в
     // ней (pgw-net-<C> не создаётся и не удаляется движком; сеть — владелец
     // поставка).
     private readonly string? contourNetwork = contourNetwork;
@@ -206,9 +170,10 @@ public sealed class PlainClusterDriver(
                 var containers = await engine.ListContainersAsync("pgw-", all: true, ct);
                 if (!containers.IsSuccess)
                     throw containers.Error!; // один хост недоступен — не тихим список
-                // t03: pgw-backup-wal-* (агенты бэкапов) попадают в счётчик СОЗНАТЕЛЬНО —
-                // они потребляют ресурсы хоста (лимиты Backups:Agent); фильтруются только
-                // из ListNodeObjectsAsync (там семантика «объекты НОД кластера»).
+                // legacy pgw-backup-wal-* (если остались) попадают в счётчик
+                // хоста СОЗНАТЕЛЬНО — потребляют ресурсы до санитарного сноса
+                // (RemoveBackupAgentsAsync в тике WalStreamProcess); из
+                // ListNodeObjectsAsync фильтруются (там семантика «объекты НОД»).
                 // Плановое имя хоста — advertised: кандидаты аллокатора живут в одном
                 // namespace с записями portalloc и busy-кортежами (advertised-правило).
                 result.Add(new HostInfo(Advertised(name, advertisedHost), containers.Value.Count));
@@ -279,7 +244,7 @@ public sealed class PlainClusterDriver(
                     throw inspect.Error!;
                 if (PortsMatchPlan(inspect.Value.Ports, addr))
                 {
-                    // Ensure-инвариант кластерной сети (arch/14 §2.1, t24): нода
+                    // Ensure-инвариант кластерной сети (arch/14 §2.1): нода
                     // обязана жить в сети кластера (в контур-режиме — сеть
                     // контура, подключение идемпотентно) — контейнер из старой
                     // единой сети (наследие миграции) подключается к ней;
@@ -292,7 +257,7 @@ public sealed class PlainClusterDriver(
                             throw connected.Error!;
                     }
 
-                    // Ensure-attach к scrape-сети контура мониторинга (t15,
+                    // Ensure-attach к scrape-сети контура мониторинга (
                     // arch/14 §2.1/§2.4): идемпотентно по inspect; сети нет на
                     // хосте — fail-fast с diagnose (владелец сети — поставка).
                     if (scrapeNetwork is { Length: > 0 } && (inspect.Value.Networks ?? []).All(n => n != scrapeNetwork))
@@ -305,7 +270,7 @@ public sealed class PlainClusterDriver(
                     return; // контейнер на месте с планом — идемпотентность
                 }
 
-                var stopped = await engine.StopContainerAsync(name, timeoutSec: 10, ct);
+                var stopped = await engine.KillContainerAsync(name, ct);
                 if (!stopped.IsSuccess)
                     throw stopped.Error!;
                 var removed = await engine.RemoveContainerAsync(name, force: true, ct);
@@ -321,7 +286,7 @@ public sealed class PlainClusterDriver(
             if (!started.IsSuccess)
                 throw started.Error!;
 
-            // Attach новой ноды к scrape-сети контура (t15, arch/14 §2.1):
+            // Attach новой ноды к scrape-сети контура (arch/14 §2.1):
             // повторный connect docker принимает как no-op (идемпотентность);
             // сети нет (404) — Result.Failed с diagnose, провижининг несёт
             // ошибку в journal/last_error (fail-fast, а не молчаливый пропуск).
@@ -352,7 +317,7 @@ public sealed class PlainClusterDriver(
             foreach (var engine in _engines.Values)
             {
                 // 404 на каждом шаге — успех (движок); volume pgw-…-data удаляем следом.
-                var stopped = await engine.StopContainerAsync(name, timeoutSec: 10, ct);
+                var stopped = await engine.KillContainerAsync(name, ct);
                 if (!stopped.IsSuccess)
                     throw stopped.Error!;
                 var removed = await engine.RemoveContainerAsync(name, force: true, ct);
@@ -364,21 +329,20 @@ public sealed class PlainClusterDriver(
             }
 
             // Демонтаж сети кластера (arch/14 §2.1, kfw-паттерн): когда объектов
-            // кластера (ноды + wal-агенты) не осталось, per-cluster сеть
-            // удаляется — пул subnet'ов хоста конечен, сирот не копим.
+            // кластера (ноды) не осталось, per-cluster сеть удаляется — пул
+            // subnet'ов хоста конечен, сирот не копим. WAL-агентов в сети больше
+            // нет по построению (: приёмник — внутри контейнера ноды); legacy
+            // pgw-backup-wal-* сносит санитарный вызов тика WalStreamProcess.
             // «Active endpoints» транзиентен (docker API держит endpoint после
             // force-remove) — ретраи; итоговая неудача НЕ роняет демонтаж (сеть
             // могла быть снесена параллельно) — громкий след в stderr воркера,
             // подберут следующий демонтаж/чистка хоста.
-            // Контур-режим (t41): сеть контура принадлежит поставке — движок
+            // Контур-режим : сеть контура принадлежит поставке — движок
             // её не удаляет (pgw-net-<C> на стенде не существует вовсе).
             if (contourNetwork is not null)
                 return;
             var objects = await ListNodeObjectsAsync(cluster, ct);
             if (!objects.IsSuccess || objects.Value.Count > 0)
-                return;
-            var agents = await ListBackupAgentsAsync(cluster, ct);
-            if (!agents.IsSuccess || agents.Value.Count > 0)
                 return;
             foreach (var engine in _engines.Values)
             {
@@ -409,97 +373,40 @@ public sealed class PlainClusterDriver(
             var name = NodeName(cluster, shard, nodeName);
             foreach (var engine in _engines.Values)
             {
-                var stopped = await engine.StopContainerAsync(name, timeoutSec: 10, ct);
+                var stopped = await engine.KillContainerAsync(name, ct);
                 if (!stopped.IsSuccess)
-                    throw stopped.Error!; // карантин E3: только stop, volume/данные на месте
+                    throw stopped.Error!; // карантин E3: только kill (spilo, arch/14 §5 D E3), volume/данные на месте
             }
         });
     }
 
-    // ── WAL-агенты бэкапов (t03, arch/19 §3): те же engine-инстансы, сеть нод ──
+    // ── WAL-агенты бэкапов (arch/19 §3): те же engine-инстансы, сеть нод ──
 
-    public async Task<Result> EnsureBackupAgentAsync(
-        string cluster, string shard, string node, ContainerSpec spec, string host, CancellationToken ct)
-    {
-        if (!_engines.TryGetValue(host, out var engine))
-        {
-            // advertised-режим (ревью Ф4-2 №3, образец EnsureNodeAsync): адрес мастера
-            // из portalloc несёт advertised-имя, а не ключ движка; валидация старта
-            // гарантирует единственный хост — fallback на него.
-            if (advertisedHost is not { Length: > 0 } || host != advertisedHost || _engines.Count != 1)
-                return Result.Failed(new ApplicationException(
-                    $"host {host} not in the Docker:Hosts table (agent {cluster}/{shard}/{node})"));
-            engine = _engines.Values.Single();
-        }
-
-        return await Result.FromAsync(async () =>
-        {
-            // Сеть нод кластера (как EnsureNode): агент видит мастера по alias :5432;
-            // в контур-режиме — сеть контура (единая сеть с нодами кластера).
-            var network = await EnsureNetAsync(engine, NodesNet(cluster), ct);
-            if (!network.IsSuccess)
-                throw network.Error!;
-
-            // Драйвер владеет сетью нод (ревью Ф7 №1, arch/19 §3): агент резолвит
-            // мастера по alias ноды :5432 — в default bridge DNS user-defined сети
-            // недоступен, pg_receivewal не подключился бы (рестарт-луп). Проставляем
-            // при create независимо от спеки (WalStreamProcess передаёт Network: null;
-            // alias не нужны — hostname контейнера = имя агента).
-            var agentSpec = spec with { Network = NodesNet(cluster) };
-
-            var name = BackupAgentNames.Container(cluster, shard, node);
-            var existing = await engine.ListContainersAsync(name, all: true, ct);
-            if (!existing.IsSuccess)
-                throw existing.Error!;
-            if (existing.Value.FirstOrDefault(c => c.Names.Contains(name)) is { } agent)
-            {
-                // Ensure-инвариант кластерной сети (arch/14 §2.1, t24): агент
-                // обязан жить в сети кластера вместе с нодой (в контур-режиме —
-                // сеть контура) — агент из старой единой сети мастера не видит
-                // (pg_receivewal-рестарт-луп).
-                // Лечение по канону идемпотентности: пересоздание (stateless),
-                // staging-volume вместе с ним (семантика RemoveBackupAgents).
-                var inspect = await engine.InspectContainerAsync(agent.Id, ct);
-                if (!inspect.IsSuccess)
-                    throw inspect.Error!;
-                var clusterNet = NodesNet(cluster);
-                if ((inspect.Value.Networks ?? []).All(n => n != clusterNet))
-                {
-                    var stopped = await engine.StopContainerAsync(name, timeoutSec: 10, ct);
-                    if (!stopped.IsSuccess)
-                        throw stopped.Error!;
-                    var removed = await engine.RemoveContainerAsync(name, force: true, ct);
-                    if (!removed.IsSuccess)
-                        throw removed.Error!;
-                    var staging = await engine.RemoveVolumeAsync($"{name}-staging", ct);
-                    if (!staging.IsSuccess)
-                        throw staging.Error!;
-                }
-                else
-                {
-                    var started = await engine.StartContainerAsync(name, ct); // 304 = успех
-                    if (!started.IsSuccess)
-                        throw started.Error!;
-                    return; // контейнер есть — идемпотентность (супервиз процесса решает про пересоздание)
-                }
-            }
-
-            var created = await engine.CreateContainerAsync(agentSpec, name, ct);
-            if (!created.IsSuccess)
-                throw created.Error!;
-            var up = await engine.StartContainerAsync(name, ct);
-            if (!up.IsSuccess)
-                throw up.Error!;
-        });
-    }
-
+    // Санитарный снос legacy wal-контейнеров pgw-backup-wal-<C>-* (+ их
+    // -staging-тома): приёмник живёт в контейнере ноды, отдельных
+    // контейнеров больше нет; вызов идемпотентен, 404 = успех.
+    // Per-engine tolerate (multi-host): отказ list одного docker-хоста НЕ
+    // прерывает снос на остальных — недоступный хост снести нельзя всё равно;
+    // итог Failed (снос неполный) — вызывающий решает (WalStream — журнал,
+    // teardown — ретрай тиком).
     public async Task<Result> RemoveBackupAgentsAsync(string cluster, string? shard, CancellationToken ct)
     {
         return await Result.FromAsync(async () =>
         {
+            Exception? hostFailure = null;
             foreach (var engine in _engines.Values)
             {
-                var agents = await ListAgentsOfEngineAsync(engine, cluster, ct);
+                IReadOnlyList<string> agents;
+                try
+                {
+                    agents = await ListAgentsOfEngineAsync(engine, cluster, ct);
+                }
+                catch (Exception e)
+                {
+                    hostFailure ??= e; // недоступный хост — остальные обрабатываем
+                    continue;
+                }
+
                 foreach (var agent in agents)
                 {
                     var agentShard = AgentShardOf(cluster, agent);
@@ -516,113 +423,38 @@ public sealed class PlainClusterDriver(
                         throw volume.Error!;
                 }
             }
+
+            if (hostFailure is { } failure)
+                throw new ApplicationException(
+                    $"legacy agent sweep {cluster}: engine host failed (others processed): {failure.Message}", failure);
         });
     }
 
-    public async Task<Result<IReadOnlyList<DockerContainer>>> ListBackupAgentsAsync(
-        string cluster, CancellationToken ct)
-    {
-        var result = new List<DockerContainer>();
-        foreach (var engine in _engines.Values)
-        foreach (var agent in await ListAgentsOfEngineAsync(engine, cluster, ct))
-        {
-            var listed = await engine.ListContainersAsync(agent, all: true, ct);
-            if (!listed.IsSuccess)
-                return Result<IReadOnlyList<DockerContainer>>.Failed(listed.Error!);
-            var match = listed.Value.FirstOrDefault(c => c.Names.Contains(agent));
-            if (match is not null)
-                result.Add(match);
-        }
+    // Имена legacy контейнеров-агентов кластера (Names — с ведущим "/"); префикс
+    // pgw-backup-wal-<C>- — приватная константа сноса (: отдельных агентов
+    // больше нет — только санитарный снос).
+    private static string AgentPrefix(string cluster) => $"pgw-backup-wal-{cluster}-";
 
-        return Result<IReadOnlyList<DockerContainer>>.Success(result);
-    }
-
-    // Имена контейнеров-агентов кластера (Names — с ведущим "/").
     private static async Task<IReadOnlyList<string>> ListAgentsOfEngineAsync(
         IDockerEngine engine, string cluster, CancellationToken ct)
     {
-        var listed = await engine.ListContainersAsync(BackupAgentNames.Prefix(cluster), all: true, ct);
+        var listed = await engine.ListContainersAsync(AgentPrefix(cluster), all: true, ct);
         if (!listed.IsSuccess)
             throw listed.Error!;
         return listed.Value
             .SelectMany(c => c.Names)
-            .Where(n => n.TrimStart('/').StartsWith(BackupAgentNames.Prefix(cluster), StringComparison.Ordinal))
+            .Where(n => n.TrimStart('/').StartsWith(AgentPrefix(cluster), StringComparison.Ordinal))
             .Select(n => n.TrimStart('/'))
             .Distinct()
             .ToList();
     }
 
-    // t36: хвост лога агента — перебор хостов (404 не на этом хосте — дальше);
-    // первый Success — агент найден и прочитан.
-    public async Task<Result<string>> BackupAgentLogsAsync(
-        string cluster, string containerName, int tailLines, CancellationToken ct)
-    {
-        Result<string> last = default;
-        foreach (var engine in _engines.Values)
-        {
-            var logs = await engine.GetContainerLogsAsync(containerName, tailLines, ct);
-            if (logs.IsSuccess)
-                return logs;
-            last = logs;
-        }
-
-        return last;
-    }
-
     // pgw-backup-wal-<C>-<ХВОСТ> → <X>: хвост == <X> (старый одноагентный формат,
-    // миграция t27 §3.6) ИЛИ начинается с <X>- (per-node имя t27).
+    // миграция §3.6) ИЛИ начинается с <X>- (per-node имя).
     private static string AgentShardOf(string cluster, string containerName)
     {
-        var tail = containerName[BackupAgentNames.Prefix(cluster).Length..];
+        var tail = containerName[AgentPrefix(cluster).Length..];
         return tail.StartsWith("-", StringComparison.Ordinal) ? "" : tail.Split('-')[0];
-    }
-
-    // Данные ноды (Д3): docker-exec test -f PG_VERSION; контейнера нет/exec-сбой/
-    // нечитаемый stdout → Unknown (утрата не доказана — arch/14 R11).
-    public async Task<Result<DataPresence>> NodeDataPresenceAsync(string cluster, string shard, string node, CancellationToken ct)
-    {
-        // PGDATA Spilo (arch/14 §2.1): volume-корень /home/postgres/pgdata,
-        // данные — pgroot/data/PG_VERSION.
-        const string marker = "/home/postgres/pgdata/pgroot/data/PG_VERSION";
-        var exec = await ExecNodeAsync(cluster, shard, node,
-            ["sh", "-c", $"test -f {marker} && echo present || echo absent"], ct);
-        if (!exec.IsSuccess)
-            return Result<DataPresence>.Success(DataPresence.Unknown);
-        return Result<DataPresence>.Success(exec.Value.Trim() switch
-        {
-            "present" => DataPresence.Present,
-            "absent" => DataPresence.Absent,
-            _ => DataPresence.Unknown,
-        });
-    }
-
-    // Контейнер ноды по имени pgw-<C>-<X>-<n>: перебор хостов (аналог StopNode),
-    // на первом, где найден running-контейнер — exec (t01: pg_dump-транспорт).
-    public async Task<Result<string>> ExecNodeAsync(
-        string cluster, string shard, string node, IReadOnlyList<string> cmd, CancellationToken ct)
-    {
-        return await Result<string>.FromAsync(async () =>
-        {
-            var name = NodeName(cluster, shard, node);
-            foreach (var engine in _engines.Values)
-            {
-                var containers = await engine.ListContainersAsync(name, all: false, ct);
-                if (!containers.IsSuccess)
-                    throw containers.Error!;
-
-                var running = containers.Value.FirstOrDefault(c =>
-                    c.Names.Contains(name) && c.State == "running");
-                if (running is null)
-                    continue; // контейнера нет на этом хосте — следующий
-
-                var exec = await engine.ExecAsync(running.Id, cmd, ct);
-                if (!exec.IsSuccess)
-                    throw exec.Error!;
-                return exec.Value;
-            }
-
-            throw new ApplicationException($"node container {name} not found (no running container on any host)");
-        });
     }
 
     // Docker-инспекция нод усыновления (spec §3.1): по каждому хосту собираем
@@ -684,30 +516,6 @@ public sealed class PlainClusterDriver(
         => c.Names.Any(n => n.StartsWith("pgw-", StringComparison.Ordinal))
             && c.Names.All(n => !n.StartsWith(ownPrefix, StringComparison.Ordinal));
 
-    // Exec в контейнер по имени (docker-exec fallback pg_dump усыновлённых нод,
-    // spec §3.3): перебор хостов, первый running-контейнер с точным именем.
-    public async Task<Result<string>> ExecContainerAsync(string containerName, IReadOnlyList<string> cmd, CancellationToken ct)
-    {
-        return await Result<string>.FromAsync(async () =>
-        {
-            foreach (var engine in _engines.Values)
-            {
-                var list = await engine.ListContainersAsync(containerName, all: false, ct);
-                if (!list.IsSuccess)
-                    throw list.Error!;
-                if (list.Value.FirstOrDefault(c => c.Names.Contains(containerName)) is not { } hit)
-                    continue;
-
-                var exec = await engine.ExecAsync(hit.Id, cmd, ct);
-                if (!exec.IsSuccess)
-                    throw exec.Error!;
-                return exec.Value;
-            }
-
-            throw new ApplicationException($"container '{containerName}' not found on driver hosts");
-        });
-    }
-
     public async Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, CancellationToken ct)
     {
         return await Result<IReadOnlyList<string>>.FromAsync(async () =>
@@ -737,19 +545,14 @@ public sealed class PlainClusterDriver(
             : null;
     }
 
-    public Task<Result> RemoveBackupJobsAsync(string cluster, CancellationToken ct)
-        => BackupJobsCleaner.RemoveAsync(_engines.Values, cluster, ct);
-
-    public Task<Result> RemoveRestoreJobsAsync(string cluster, string shard, CancellationToken ct)
-        => BackupJobsCleaner.RemoveRestoreAsync(_engines.Values, cluster, shard, ct);
 
     // Сборка ContainerSpec: env Spilo + PGW_NODE_HOST + конфиги doorman/haproxy (Д4).
     // tuning — рассчитанный per-shard PGTune-вывод: env — merge(PGTune ∪ канон,
     // минус pgtuneExclude), doorman-бюджет — от рассчитанного max_connections
     // (P15); tuning == null → прежний хардкод-набор и бюджет 55. syncStrict —
-    // per-cluster опция synchronous_mode_strict из config кластера (t06).
+    // per-cluster опция synchronous_mode_strict из config кластера.
     // restPassword — эффективная REST-пара; серт ноды выпускается из кеша
-    // (t22): restCertificates == null — fail-fast (HTTP-режима не существует).
+    // restCertificates == null — fail-fast (HTTP-режима не существует).
     internal ContainerSpec BuildSpec(ShardTopology topology, string nodeName, NodeAddress addr,
         InstallSecrets secrets, EtcdEndpoints etcd, NodeResources? resources, PgTuneResult? tuning,
         bool syncStrict, string restPassword)
@@ -768,6 +571,25 @@ public sealed class PlainClusterDriver(
             ["PGW_NODE_HOST"] = addr.Host,
             ["PGW_NODE_NAME"] = nodeName,
         };
+
+        // Бэкап-цели приёмника WAL (arch/19 §7): per-install константы
+        // (bucket/CA https S3), ставятся ДОКЕР-ДРАЙВЕРОМ из Backups-опций
+        // воркера (NodeBackupEnv). Bucket пуст — env не ставится: приёмник
+        // стоит в waiting_policy с диагностикой до появления env (рестарт
+        // ноды/EnsureNode) — старт-отказа живого процесса нет (инстанс
+        // чинит валидация старта воркера Enabled=true ⇒ Bucket непустой).
+        if (nodeBackupEnv is { } backupEnv)
+        {
+            if (!string.IsNullOrWhiteSpace(backupEnv.Bucket))
+                env["PGW_BACKUP_S3_BUCKET"] = backupEnv.Bucket;
+            if (!string.IsNullOrWhiteSpace(backupEnv.CaPem))
+                env["PGW_BACKUP_S3_CA_PEM"] = backupEnv.CaPem;
+            // Staging полного (arch/19 §2/§9): каталог в data-volume
+            // ноды; null/пусто → env не ставится — приёмник возьмёт дефолт.
+            if (!string.IsNullOrWhiteSpace(backupEnv.StagingDir))
+                env["PGW_BACKUP_STAGING_DIR"] = backupEnv.StagingDir;
+        }
+
         if (enableDoorman)
         {
             // P15 (решение 2026-09-12): бюджет вычисляемый —
@@ -830,99 +652,6 @@ public sealed class PlainClusterDriver(
         => $"{NodeName(cluster, shard, nodeName)}-data";
 }
 
-// Общая чистка джобов бэкапов (t02/t05, Plain и Swarm): контейнеры по префиксам
-// (full: pgw-backup-full-<C>-*, restore: pgw-backup-restore-<C>-*) + volume,
-// выводимый из имени full-контейнера (pgw-backup-full-<C>-<X>-<id> →
-// pgw-backup-<C>-<X>-<id>; tmpfs-джобы без volume — 404=ок). Restore-джобы
-// СВОЕГО volume не имеют: их точка монтирования — data-volume ноды (не удалять).
-// Имена — локальные константы канона BackupNames (PgWorker.Backups) — дубль без
-// ссылки (цикл зависимостей; прецедент — MoverRole в ShardEndpoints).
-internal static class BackupJobsCleaner
-{
-    public const string JobContainerPrefix = "pgw-backup-full-";
-    public const string RestoreJobContainerPrefix = "pgw-backup-restore-";
-    public const string JobVolumePrefix = "pgw-backup-";
-
-    // t04: verify-джобы — второй класс чистки D1 (имя-канон BackupNames — дубль без ссылки).
-    public const string VerifyContainerPrefix = "pgw-backup-verify-";
-
-    // reliability t02: drill-джобы (контейнер и volume одно имя — чистка тем же
-    // проходом D1 по префиксу).
-    public const string DrillContainerPrefix = "pgw-backup-drill-";
-
-    public static async Task<Result> RemoveAsync(
-        IEnumerable<IDockerEngine> engines, string cluster, CancellationToken ct)
-    {
-        // t04: verify-джобы — контейнер и volume НОСЯТ ОДНО ИМЯ (в отличие от full:
-        // pgw-backup-full-<C>-<X>-<id> → volume pgw-backup-<C>-<X>-<id>).
-        // volumePrefix ОБЯЗАН содержать кластер (pgw-backup-<C>-) — имя контейнера
-        // без префикса даёт только <X>-<id>.
-        foreach (var (prefix, sameVolumeName) in new[]
-                 { (JobContainerPrefix, false), (VerifyContainerPrefix, true), (DrillContainerPrefix, true) })
-        {
-            var containerPrefix = $"{prefix}{cluster}-";
-            var volumePrefix = $"{JobVolumePrefix}{cluster}-"; // pgw-backup-<C>-
-            foreach (var engine in engines)
-            {
-                var list = await engine.ListContainersAsync(containerPrefix, all: true, ct);
-                if (!list.IsSuccess)
-                    return list;
-                foreach (var container in list.Value.Where(c => c.Names.Any(n => n.StartsWith(containerPrefix, StringComparison.Ordinal))))
-                {
-                    var name = container.Names.First(n => n.StartsWith(containerPrefix, StringComparison.Ordinal));
-                    var removed = await engine.RemoveContainerAsync(name, force: true, ct);
-                    if (!removed.IsSuccess)
-                        return removed;
-                    var volume = sameVolumeName ? name : volumePrefix + name[containerPrefix.Length..];
-                    var volumeRemoved = await engine.RemoveVolumeAsync(volume, ct);
-                    if (!volumeRemoved.IsSuccess)
-                        return volumeRemoved;
-                }
-            }
-        }
-
-        // restore-джобы (t05): контейнер только — volume общий с нодой.
-        var restorePrefix = $"{RestoreJobContainerPrefix}{cluster}-";
-        foreach (var engine in engines)
-        {
-            var restores = await engine.ListContainersAsync(restorePrefix, all: true, ct);
-            if (!restores.IsSuccess)
-                return restores;
-            foreach (var container in restores.Value.Where(c => c.Names.Any(n => n.StartsWith(restorePrefix, StringComparison.Ordinal))))
-            {
-                var name = container.Names.First(n => n.StartsWith(restorePrefix, StringComparison.Ordinal));
-                var removed = await engine.RemoveContainerAsync(name, force: true, ct);
-                if (!removed.IsSuccess)
-                    return removed;
-            }
-        }
-
-        return Result.Success();
-    }
-
-    // Точечно: restore-джобы ОДНОГО шарда (remove-shard, t05 §3.4).
-    public static async Task<Result> RemoveRestoreAsync(
-        IEnumerable<IDockerEngine> engines, string cluster, string shard, CancellationToken ct)
-    {
-        var prefix = $"{RestoreJobContainerPrefix}{cluster}-{shard}-";
-        foreach (var engine in engines)
-        {
-            var list = await engine.ListContainersAsync(prefix, all: true, ct);
-            if (!list.IsSuccess)
-                return list;
-            foreach (var container in list.Value.Where(c => c.Names.Any(n => n.StartsWith(prefix, StringComparison.Ordinal))))
-            {
-                var name = container.Names.First(n => n.StartsWith(prefix, StringComparison.Ordinal));
-                var removed = await engine.RemoveContainerAsync(name, force: true, ct);
-                if (!removed.IsSuccess)
-                    return removed;
-            }
-        }
-
-        return Result.Success();
-    }
-}
-
 // Swarm-режим: сервисы через manager endpoint, replicas=1, constraint node.id==<id>.
 public sealed class SwarmClusterDriver(
     string managerEndpoint,
@@ -930,7 +659,8 @@ public sealed class SwarmClusterDriver(
     bool enableDoorman,
     string nodeImage = "pgworker-node:dev",
     IReadOnlySet<string>? pgtuneExclude = null,
-    RestCertificateCache? restCertificates = null) : IClusterDriver
+    RestCertificateCache? restCertificates = null,
+    NodeBackupEnv? nodeBackupEnv = null) : IClusterDriver
 {
     private readonly IDockerEngine _engine = factory.Create(managerEndpoint, hostAlias: null);
 
@@ -978,11 +708,12 @@ public sealed class SwarmClusterDriver(
             if (target is null)
                 throw new ApplicationException($"swarm node with Hostname={addr.Host} not found");
 
-            // Внутренний plain для BuildSpec — со СВОИМ кешем сертов (t22: без
+            // Внутренний plain для BuildSpec — со СВОИМ кешем сертов (: без
             // кеша внутренний BuildSpec упал бы fail-fast'ом REST-TLS).
             var plain = new PlainClusterDriver(
                 [], new DockerEngineFactory(), enableDoorman, nodeImage,
-                pgtuneExclude: pgtuneExclude, restCertificates: restCertificates);
+                pgtuneExclude: pgtuneExclude, restCertificates: restCertificates,
+                nodeBackupEnv: nodeBackupEnv);
             var template = plain.BuildSpec(topology, nodeName, addr, secrets, etcd, resources, tuning, syncStrict, restPassword);
             var spec = new ServiceSpec(
                 PlainClusterDriver.NodeName(topology.Cluster, topology.Shard, nodeName),
@@ -1012,23 +743,22 @@ public sealed class SwarmClusterDriver(
         return stopped;
     }
 
-    // t03/t27: агенты бэкапов — plain-контейнеры; swarm-режим подсистема не поднимает
-    // (деплой/стенд/E2E — plain): явный Failed, процесс переведёт шард в journal-заметку.
-    public Task<Result> EnsureBackupAgentAsync(
-        string cluster, string shard, string node, ContainerSpec spec, string host, CancellationToken ct)
-        => Task.FromResult(Result.Failed(new ApplicationException(
-            "backup WAL agents are not supported in Mode=Swarm (arch/19 — plain deploy)")));
-
+    // агентов больше нет (приёмник — в контейнере ноды) — Remove остаётся
+    // санитарным сносом legacy pgw-backup-wal-* (swarm-сервисы старого формата).
     public async Task<Result> RemoveBackupAgentsAsync(string cluster, string? shard, CancellationToken ct)
     {
         return await Result.FromAsync(async () =>
         {
-            var services = await _engine.ListServicesAsync(BackupAgentNames.Prefix(cluster), ct);
+            // Префикс pgw-backup-wal-<C>- — строкой (: агентов-контейнеров
+            // больше нет — только санитарный снос legacy).
+            const string prefixBase = "pgw-backup-wal-";
+            var prefix = $"{prefixBase}{cluster}-";
+            var services = await _engine.ListServicesAsync(prefix, ct);
             if (!services.IsSuccess)
                 throw services.Error!;
             foreach (var service in services.Value)
             {
-                if (shard is not null && AgentShardOfSwarm(cluster, service) != shard)
+                if (shard is not null && AgentShardOfSwarm(prefix, service) != shard)
                     continue;
                 var removed = await _engine.RemoveServiceAsync(service, ct);
                 if (!removed.IsSuccess)
@@ -1037,23 +767,12 @@ public sealed class SwarmClusterDriver(
         });
     }
 
-    // Хвост == <X> (старый формат) ИЛИ начинается с <X>- (per-node, t27) — как Plain.
-    private static string AgentShardOfSwarm(string cluster, string service)
+    // Хвост == <X> (старый формат) ИЛИ начинается с <X>- (per-node) — как Plain.
+    private static string AgentShardOfSwarm(string prefix, string service)
     {
-        var tail = service[BackupAgentNames.Prefix(cluster).Length..];
+        var tail = service[prefix.Length..];
         return tail.StartsWith("-", StringComparison.Ordinal) ? "" : tail.Split('-')[0];
     }
-
-    public Task<Result<IReadOnlyList<DockerContainer>>> ListBackupAgentsAsync(
-        string cluster, CancellationToken ct)
-        => Task.FromResult(Result<IReadOnlyList<DockerContainer>>.Success(
-            (IReadOnlyList<DockerContainer>)[]));
-
-    // t36: агенты в swarm не поднимаются — лог нечитаем (симметрия заглушки).
-    public Task<Result<string>> BackupAgentLogsAsync(
-        string cluster, string containerName, int tailLines, CancellationToken ct)
-        => Task.FromResult(Result<string>.Failed(new ApplicationException(
-            "backup WAL agents are not supported in Mode=Swarm (arch/19 — plain deploy)")));
 
     // Swarm: шаг пересоздания нод надзора — no-op (заглушка, симметрия
     // InspectNodesAsync): сервисы не инспектируются по env.
@@ -1062,75 +781,12 @@ public sealed class SwarmClusterDriver(
         => Task.FromResult(Result<IReadOnlyDictionary<string, string>>.Success(
             (IReadOnlyDictionary<string, string>)new Dictionary<string, string>()));
 
-    // Данные ноды (Д3): через exec running-таска сервиса (свой ExecNodeAsync);
-    // утрата не доказана → Unknown (arch/14 R11).
-    public async Task<Result<DataPresence>> NodeDataPresenceAsync(string cluster, string shard, string node, CancellationToken ct)
-    {
-        const string marker = "/home/postgres/pgdata/pgroot/data/PG_VERSION";
-        var exec = await ExecNodeAsync(cluster, shard, node,
-            ["sh", "-c", $"test -f {marker} && echo present || echo absent"], ct);
-        if (!exec.IsSuccess)
-            return Result<DataPresence>.Success(DataPresence.Unknown);
-        return Result<DataPresence>.Success(exec.Value.Trim() switch
-        {
-            "present" => DataPresence.Present,
-            "absent" => DataPresence.Absent,
-            _ => DataPresence.Unknown,
-        });
-    }
-
-    // Контейнер ноды — running-таск сервиса (ContainerID уже в ответе /tasks).
-    public async Task<Result<string>> ExecNodeAsync(
-        string cluster, string shard, string node, IReadOnlyList<string> cmd, CancellationToken ct)
-    {
-        return await Result<string>.FromAsync(async () =>
-        {
-            var tasks = await _engine.ListTasksAsync(PlainClusterDriver.NodeName(cluster, shard, node), ct);
-            if (!tasks.IsSuccess)
-                throw tasks.Error!;
-
-            var running = tasks.Value.FirstOrDefault(t =>
-                t.State == "running" && t.ContainerId is { Length: > 0 });
-            if (running is null)
-                throw new ApplicationException(
-                    $"node container {cluster}/{shard}/{node} not found (no running task)");
-
-            var exec = await _engine.ExecAsync(running.ContainerId!, cmd, ct);
-            if (!exec.IsSuccess)
-                throw exec.Error!;
-            return exec.Value;
-        });
-    }
-
     // Усыновление swarm-кластеров: за пределами текущей задачи (стенд plain,
     // spec §3.1); при необходимости — инспект тасков сервисов.
     public Task<Result<IReadOnlyDictionary<string, DiscoveredNode>>> InspectNodesAsync(
         string cluster, IReadOnlyCollection<string> nodeNames, CancellationToken ct)
         => Task.FromResult(Result<IReadOnlyDictionary<string, DiscoveredNode>>.Success(
             (IReadOnlyDictionary<string, DiscoveredNode>)new Dictionary<string, DiscoveredNode>()));
-
-    // Exec в контейнент по имени сервиса (образец ExecNodeAsync): running-таск
-    // сервиса → ContainerId → engine.ExecAsync.
-    public async Task<Result<string>> ExecContainerAsync(string containerName, IReadOnlyList<string> cmd, CancellationToken ct)
-    {
-        return await Result<string>.FromAsync(async () =>
-        {
-            var tasks = await _engine.ListTasksAsync(containerName, ct);
-            if (!tasks.IsSuccess)
-                throw tasks.Error!;
-
-            var running = tasks.Value.FirstOrDefault(t =>
-                t.State == "running" && t.ContainerId is { Length: > 0 });
-            if (running is null)
-                throw new ApplicationException(
-                    $"container '{containerName}' not found (no running task)");
-
-            var exec = await _engine.ExecAsync(running.ContainerId!, cmd, ct);
-            if (!exec.IsSuccess)
-                throw exec.Error!;
-            return exec.Value;
-        });
-    }
 
     // Объекты нод кластера в swarm — СЕРВИСЫ (rework №4): GET /services с
     // префиксом pgw-<C>-. Ранее возвращался пустой список → drift-сверка
@@ -1144,9 +800,5 @@ public sealed class SwarmClusterDriver(
     // используется для ephemeral-джобов — источниковые хосты известны).
     public IDockerEngine? EngineFor(string host) => _engine;
 
-    public Task<Result> RemoveBackupJobsAsync(string cluster, CancellationToken ct)
-        => BackupJobsCleaner.RemoveAsync([_engine], cluster, ct);
 
-    public Task<Result> RemoveRestoreJobsAsync(string cluster, string shard, CancellationToken ct)
-        => BackupJobsCleaner.RemoveRestoreAsync([_engine], cluster, shard, ct);
 }

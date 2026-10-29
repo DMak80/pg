@@ -12,7 +12,7 @@ namespace KafkaWorker.IntegrationTests.Kafka;
 // 1-брокерного кластера → ключи факта → дискавери-подключение ТОЛЬКО по ключам
 // etcd (endpoints + app_*) → заявка ротации + TO_REMOVE → полный демонтаж с
 // очисткой координации (вкл. rotations). Готовность брокера ≤ 120 с.
-// Per-class коллекция (t24/AGENTS.base §13; spec §6.3.2): свой инстанс
+// Per-class коллекция (/AGENTS.base §13; spec §6.3.2): свой инстанс
 // KafkaClusterFixture — свой etcd-контур, свои кластеры/сети (RunTag),
 // своё окно портов и AdminFactory; классы параллельны (потолок —
 // xunit.runner.json), факты класса последовательны.
@@ -75,7 +75,7 @@ public class ProvisioningTests(KafkaClusterFixture fixture)
         clientPorts.Should().OnlyContain(p => p >= fixture.PortFrom && p <= fixture.PortTo);
         var password = await fixture.GetAsync($"/kafka/clusters/{cluster}/app_password");
         password.Should().HaveLength(32).And.MatchRegex("^[A-Za-z0-9]{32}$");
-        // t03: admin-креды + per-cluster PKI (arch/15 §2).
+        // admin-креды + per-cluster PKI (arch/15 §2).
         (await fixture.GetAsync($"/kafka/clusters/{cluster}/admin_user")).Should().Be("admin");
         (await fixture.GetAsync($"/kafka/clusters/{cluster}/admin_password"))
             .Should().HaveLength(32).And.MatchRegex("^[A-Za-z0-9]{32}$");
@@ -88,7 +88,7 @@ public class ProvisioningTests(KafkaClusterFixture fixture)
         var objects = await fixture.Driver.ListNodeObjectsAsync(cluster, ct);
         objects.Value.Should().Contain($"kfw-{cluster}-broker1");
 
-        // Assert 2 (дискавери, spec §9.2 + t03 §8.3): AdminClient с bootstrap из
+        // Assert 2 (дискавери, spec §9.2 + §8.3): AdminClient с bootstrap из
         // endpoints-ключа, SASL_SSL и ролью admin И app успешно DescribeCluster.
         var adminBuilder = await fixture.DiscoveryAdminBuilderAsync(cluster, "admin");
         using (var admin = adminBuilder.Build())

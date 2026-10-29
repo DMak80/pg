@@ -16,7 +16,7 @@ public sealed record HaScope(
     IReadOnlyList<HaMember> Members,
     string? RawConfig);
 
-// Член HA-кластера: что есть в etcd + поля Patroni-пробы (t06 — null).
+// Член HA-кластера: что есть в etcd + поля Patroni-пробы (— null).
 // NodeState — raw-строка из /clusters/<C>/shards/<X>/nodes/<n>/state (или null
 // для unmatched-скопов); нужно для блокировки «Пересоздать» (REBUILDING/TO_RECREATE).
 public sealed record HaMember(

@@ -7,7 +7,7 @@ namespace ValkeyWorker.App.Api.Operations;
 // Ответ 202 POST /api/valkey/clusters/{c}/ca/rotate (арх-канон; дубль осознан).
 public sealed record ValkeyCaRotatedDto(string Cluster, long RequestedUnix, string RequestedBy);
 
-// Заявка ротации per-cluster CA/сертов через API воркера (t07, arch/21 §5 K):
+// Заявка ротации per-cluster CA/сертов через API воркера (arch/21 §5 K):
 // клэйм-txn /valkeyworker/ca_rotations/<C> NotExists; исполнение — CaRotator
 // (фазы P/D/R/C). state-гейт: НЕ-Active (NOT_INITIALIZED/TO_REMOVE) → 409 —
 // ротация не поднятого кластера бессмысленна (образец kafka, ОТЛИЧИЕ от

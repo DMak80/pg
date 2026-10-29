@@ -3,7 +3,7 @@ using Shared.Core.DI;
 
 namespace AdminPanel.Core.Alerting.Rules;
 
-// backup-verify-failed (critical, t04): в статусе любого COMPLETED-полного
+// backup-verify-failed (critical): в статусе любого COMPLETED-полного
 // шарда verify.state=FAILED — полный невалиден (checksums/цепочка); текст —
 // verify.error; воркер переснимает автоматически (свежесть не считает).
 [InjectAsSingleton(typeof(IAlertRule))]
@@ -30,6 +30,6 @@ public sealed class BackupVerifyFailedRule : IAlertRule
                 null,
                 "full backup verification failed (pg_verifybackup/WAL chain): recoverability at risk",
                 AlertRemedy.OperatorRunbook,
-                "worker re-takes the full backup automatically (verify FAILED is not counted as freshness); for analysis see runbook t05; deletion of the broken backup is t06");
+                "worker re-takes the full backup automatically (verify FAILED is not counted as freshness); for analysis see the arch/19 runbook");
     }
 }

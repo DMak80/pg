@@ -9,12 +9,12 @@ using Xunit;
 
 namespace KafkaWorker.IntegrationTests.Kafka;
 
-// Lifecycle-заявки против реального Kafka (t01, spec §4.2/§9.2/9.3/9.5):
+// Lifecycle-заявки против реального Kafka (spec §4.2/§9.2/9.3/9.5):
 // create → топик с заявленными параметрами, заявка снята, факт-ключ следующим
 // тиком; delete → топик и оба ключа исчезли; сходимость обеих веток после
 // «отказа между мутацией и del» (топик появился/исчез внешне при живой заявке).
 // Фикстура — общая с волной A (etcd + 1-брокерный кластер, как TopicSyncTests).
-// Per-class коллекция (t24/AGENTS.base §13; spec §6.3.2): свой инстанс
+// Per-class коллекция (/AGENTS.base §13; spec §6.3.2): свой инстанс
 // KafkaClusterFixture — свой etcd-контур, свои кластеры/сети (RunTag),
 // своё окно портов и AdminFactory; классы параллельны (потолок —
 // xunit.runner.json), факты класса последовательны.
@@ -89,6 +89,28 @@ public class TopicLifecycleTests(KafkaClusterFixture fixture)
         using var admin = builder.Build();
         var metadata = admin.GetMetadata(TimeSpan.FromSeconds(15));
         return metadata.Topics.Any(t => t.Topic == topic);
+    }
+
+    // Kafka выполняет DeleteTopics асинхронно: успешный вызов может опережать
+    // сходимость metadata. Delete-тест ждёт исчезновения топика, а не доверяет
+    // мгновенному срезу под параллельной нагрузкой.
+    private static async Task WaitForTopicRemovalAsync(
+        KafkaClusterFixture fixture, string cluster, string topic, CancellationToken ct)
+    {
+        var builder = await fixture.DiscoveryAdminBuilderAsync(cluster, "admin");
+        using var admin = builder.Build();
+        for (var attempt = 0; attempt < 30; attempt++)
+        {
+            var metadata = admin.GetMetadata(TimeSpan.FromSeconds(5));
+            if (!metadata.Topics.Any(t => t.Topic == topic))
+                return;
+
+            await Task.Delay(500, ct);
+        }
+
+        var final = admin.GetMetadata(TimeSpan.FromSeconds(5));
+        final.Topics.Any(t => t.Topic == topic).Should().BeFalse(
+            "Kafka metadata must converge after DeleteTopics; a stale metadata snapshot is not a delete failure");
     }
 
     private static async Task<(int Partitions, string? Retention)> DescribeTopicAsync(
@@ -182,7 +204,7 @@ public class TopicLifecycleTests(KafkaClusterFixture fixture)
 
             // Assert: топика нет в Kafka (метаданные), оба ключа etcd удалены.
             result.IsSuccess.Should().BeTrue();
-            (await TopicExistsAsync(fixture, cluster, topic, ct)).Should().BeFalse();
+            await WaitForTopicRemovalAsync(fixture, cluster, topic, ct);
             (await fixture.GetAsync($"/kafka/clusters/{cluster}/topics/{topic}"))
                 .Should().BeNull("the fact key removed by a single txn with the ticket");
             (await fixture.GetAsync($"/kafka/clusters/{cluster}/topics/{topic}/desired.delete"))

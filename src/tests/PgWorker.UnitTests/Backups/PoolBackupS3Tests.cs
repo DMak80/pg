@@ -3,7 +3,7 @@ using Shared.Core;
 
 namespace PgWorker.UnitTests.Backups;
 
-// PoolBackupS3 (t36, arch/19 §5): перебор write/read-целей на фейках
+// PoolBackupS3 (arch/19 §5): перебор write/read-целей на фейках
 // FakeTargetS3 с управляемым отказом (инъекция targetFactory).
 public class PoolBackupS3Tests
 {
@@ -13,7 +13,8 @@ public class PoolBackupS3Tests
         Func<string, Task<Result>>? put = null,
         Func<IReadOnlyList<string>, Task<Result>>? delete = null,
         Func<string, Task<Result<string>>>? get = null,
-        Func<string, Task<Result<IReadOnlyList<WalObject>>>>? list = null) : IBackupS3
+        Func<string, Task<Result<IReadOnlyList<WalObject>>>>? list = null,
+        Func<string, Task<Result<IReadOnlyList<S3ObjectInfo>>>>? listPrefix = null) : IBackupS3
     {
         public int Calls;
 
@@ -26,7 +27,7 @@ public class PoolBackupS3Tests
 
         public Task<Result<IReadOnlyList<S3ObjectInfo>>> ListPrefixAsync(
             string prefix, int? maxKeysPerTest = null, CancellationToken ct = default)
-            => Task.FromResult(Result<IReadOnlyList<S3ObjectInfo>>.Success([]));
+            => listPrefix?.Invoke(prefix) ?? Task.FromResult(Result<IReadOnlyList<S3ObjectInfo>>.Success([]));
 
         public Task<Result> DeleteKeysAsync(IReadOnlyList<string> keys, CancellationToken ct = default)
             => (delete ?? (_ => Task.FromResult(Result.Success())))(keys);
@@ -53,6 +54,13 @@ public class PoolBackupS3Tests
             string cluster, string shard, int? maxKeysPerTest = null, CancellationToken ct = default)
             => Task.FromResult(Result<IReadOnlyList<string>>.Success(["id1"]));
 
+// файловые методы интерфейса в этом тесте не используются —
+        // заглушка (фейк нужен только перечисленным выше операциям).
+        public Task<Result> PutFileAsync(string key, string filePath, CancellationToken ct = default)
+            => Task.FromResult(Result.Failed(new ApplicationException("put-file: not supported by this fake")));
+
+        public Task<Result> GetObjectToFileAsync(string cluster, string shard, string key, string destFilePath, CancellationToken ct = default)
+            => Task.FromResult(Result.Failed(new ApplicationException("get-to-file: not supported by this fake")));
         public Task<Result<string>> DownloadTextAsync(
             string cluster, string shard, string objectKey, CancellationToken ct = default)
             => get?.Invoke(objectKey) ?? Task.FromResult(Result<string>.Success("text"));
@@ -334,5 +342,116 @@ public class PoolBackupS3Tests
         second.IsSuccess.Should().BeFalse();
         second.Error!.Message.Should().Contain(S3PoolMarkers.Exhausted);
         second.Error!.Message.Should().Contain("conn refused");
+    }
+
+    // AAA (arch/19 §5 «где данные есть»): union-листинг ПРОИЗВОЛЬНОГО
+    // префикса объединяет ответы ВСЕХ read-целей с дедупом по имени и живёт,
+    // пока отвечает хотя бы одна (первая живая может не иметь сегмента,
+    // залитого на вторую — прецедент AC4: полный заливается на первую живую
+    // ноду, а лист набора verify с FirstAlive видел пусто).
+    [Fact]
+    public async Task ListUnion_MergesAllTargets_DedupByName()
+    {
+        // Arrange — n1: сегмент 02; n2: 02 (дубль) и 03; n3 — мёртвая.
+        WalObject W(string s) => new(s, DateTimeOffset.UnixEpoch);
+        var t1 = new FakeTargetS3(list: _ => Task.FromResult(
+            Result<IReadOnlyList<WalObject>>.Success([W("000000010000000000000002")])));
+        var t2 = new FakeTargetS3(list: _ => Task.FromResult(
+            Result<IReadOnlyList<WalObject>>.Success(
+            [W("000000010000000000000002"), W("000000010000000000000003")])));
+        var t3 = new FakeTargetS3(list: _ => Task.FromResult(
+            Result<IReadOnlyList<WalObject>>.Failed(new ApplicationException("n3 down"))));
+        var map = new Dictionary<string, IBackupS3>
+        {
+            ["http://n1:9000"] = t1, ["http://n2:9000"] = t2, ["http://n3:9000"] = t3,
+        };
+        var pool = new PoolBackupS3(
+            ["http://n1:9000"], ["http://n1:9000", "http://n2:9000", "http://n3:9000"],
+            "ak", "sk", "b", null,
+            targetFactory: uri => map[uri]);
+
+        // Act — union префикса набора полного (как verify-валидация).
+        var result = await pool.ListUnionAsync("c", "s", "full/id1/pg_wal/", ct: CancellationToken.None);
+
+        // Assert — успех при мёртвой n3; дедуп 02; 03 из n2 присутствует.
+        result.IsSuccess.Should().BeTrue();
+        var names = result.Value.Select(o => o.Name).OrderBy(n => n).ToList();
+        names.Should().BeEquivalentTo(
+            ["000000010000000000000002", "000000010000000000000003"]);
+    }
+
+    // AAA: ВСЕ цели мертвы → Failed с маркером исчерпания (не пустой успех).
+    [Fact]
+    public async Task ListUnion_AllTargetsFail_ExhaustedMarker()
+    {
+        // Arrange
+        var t1 = new FakeTargetS3(list: _ => Task.FromResult(
+            Result<IReadOnlyList<WalObject>>.Failed(new ApplicationException("S3 list: down"))));
+        var t2 = new FakeTargetS3(list: _ => Task.FromResult(
+            Result<IReadOnlyList<WalObject>>.Failed(new ApplicationException("S3 list: down"))));
+        var pool = Pool(t1, t2);
+
+        // Act
+        var result = await pool.ListUnionAsync("c", "s", "wal/", ct: CancellationToken.None);
+
+        // Assert
+        result.IsSuccess.Should().BeFalse();
+        result.Error!.Message.Should().Contain(S3PoolMarkers.Exhausted);
+    }
+
+    // AAA: union list-prefix по всем нодам пула (скачивание набора в
+    // verify/restore): пересечение ответов дедупится по ПОЛНОМУ ключу —
+    // полный заливается на одну ноду момента заливки, лаг mesh даёт копии.
+    [Fact]
+    public async Task ListPrefixUnion_MergesAllTargets_DedupByKey()
+    {
+        // Arrange — n1: объект A; n2: A (копия/лаг) и B.
+        S3ObjectInfo O(string key) => new(key, 16, DateTimeOffset.UnixEpoch);
+        var t1 = new FakeTargetS3(listPrefix: _ => Task.FromResult(
+            Result<IReadOnlyList<S3ObjectInfo>>.Success([O("c/s/full/id1/backup_label")])));
+        var t2 = new FakeTargetS3(listPrefix: _ => Task.FromResult(
+            Result<IReadOnlyList<S3ObjectInfo>>.Success(
+            [O("c/s/full/id1/backup_label"), O("c/s/full/id1/backup_manifest")])));
+        var pool = Pool(t1, t2);
+
+        // Act — union префикса набора (как скачивание verify/restore).
+        var result = await pool.ListPrefixUnionAsync("c/s/full/id1/", ct: CancellationToken.None);
+
+        // Assert — дедуп по ключу: A один раз, B присутствует.
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Select(o => o.Key).OrderBy(k => k).Should().BeEquivalentTo(
+            ["c/s/full/id1/backup_label", "c/s/full/id1/backup_manifest"]);
+    }
+
+    // AAA: частичный отказ пула — успех при живой хотя бы одной ноде
+    // (симметрия ListUnionAsync: соло-лист живой ноды достоверен);
+    // ВСЕ мертвы → Failed с маркером исчерпания.
+    [Fact]
+    public async Task ListPrefixUnion_PartialFailure_SucceedsAllFail_Exhausted()
+    {
+        // Arrange 1 — n1 мертва, n2 отвечает: union успешен.
+        var dead = new FakeTargetS3(listPrefix: _ => Task.FromResult(
+            Result<IReadOnlyList<S3ObjectInfo>>.Failed(new ApplicationException("S3 list: down"))));
+        var alive = new FakeTargetS3(listPrefix: _ => Task.FromResult(
+            Result<IReadOnlyList<S3ObjectInfo>>.Success(
+                [new S3ObjectInfo("c/s/full/id1/backup_label", 16, DateTimeOffset.UnixEpoch)])));
+        var pool = Pool(dead, alive);
+
+        // Act 1 / Assert 1
+        var result = await pool.ListPrefixUnionAsync("c/s/full/id1/", ct: CancellationToken.None);
+        result.IsSuccess.Should().BeTrue("one live node's listing is sufficient");
+        result.Value.Should().ContainSingle().Which.Key.Should().Be("c/s/full/id1/backup_label");
+
+        // Arrange 2 — обе мертвы.
+        var pool2 = Pool(
+            new FakeTargetS3(listPrefix: _ => Task.FromResult(
+                Result<IReadOnlyList<S3ObjectInfo>>.Failed(new ApplicationException("S3 list: down")))),
+            new FakeTargetS3(listPrefix: _ => Task.FromResult(
+                Result<IReadOnlyList<S3ObjectInfo>>.Failed(new ApplicationException("S3 list: down")))));
+
+        // Act 2 / Assert 2 — маркер исчерпания (не пустой успех).
+        var result2 = await pool2.ListPrefixUnionAsync("c/s/full/id1/", ct: CancellationToken.None);
+        result2.IsSuccess.Should().BeFalse();
+        result2.Error!.Message.Should().Contain(S3PoolMarkers.Exhausted);
     }
 }

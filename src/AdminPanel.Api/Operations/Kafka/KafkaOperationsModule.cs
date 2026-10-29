@@ -75,7 +75,7 @@ public static class KafkaOperationsModule
         });
 
         // PUT /api/kafka/clusters/{cluster}/brokers/{broker}/resources — мутация
-        // №15 (t06, 02 §10.2-15): прокси в API воркера; применяет NodeRegenerator.
+        // №15 (02 §10.2-15): прокси в API воркера; применяет NodeRegenerator.
         endpoints.MapPut("/api/kafka/clusters/{cluster}/brokers/{broker}/resources", async (
             string cluster, string broker, KafkaBrokerResourcesRequestDto request,
             IHandler handler, CancellationToken ct) =>
@@ -102,7 +102,7 @@ public static class KafkaOperationsModule
         });
 
         // POST /api/kafka/clusters/{cluster}/rebalance — заявка ребалансировки
-        // партиций (t02, 02 §10.2-13): клэйм по живой заявке — в воркере.
+        // партиций (02 §10.2-13): клэйм по живой заявке — в воркере.
         endpoints.MapPost("/api/kafka/clusters/{cluster}/rebalance", async (
             string cluster, ClaimsPrincipal user, IHandler handler, CancellationToken ct) =>
         {
@@ -115,7 +115,7 @@ public static class KafkaOperationsModule
         });
 
         // DELETE /api/kafka/clusters/{cluster}/rebalance — отмена ребалансировки
-        // (t02, 02 §10.2-14): новые батчи не подаются, поданные Kafka доиграет.
+        // (02 §10.2-14): новые батчи не подаются, поданные Kafka доиграет.
         endpoints.MapDelete("/api/kafka/clusters/{cluster}/rebalance", async (
             string cluster, IHandler handler, CancellationToken ct) =>
         {
@@ -128,7 +128,7 @@ public static class KafkaOperationsModule
         });
 
         // POST /api/kafka/clusters/{cluster}/ca/rotate — заявка ротации CA/сертов
-        // (t07, 02 §10.2-17); исполнение — CaRotator воркера (окно двойного
+        // (02 §10.2-17); исполнение — CaRotator воркера (окно двойного
         // доверия P/D/R/C, 16 §5 K). Оператор сессии — X-Requested-By (spec §3.7).
         endpoints.MapPost("/api/kafka/clusters/{cluster}/ca/rotate", async (
             string cluster, ClaimsPrincipal user, IHandler handler, CancellationToken ct) =>

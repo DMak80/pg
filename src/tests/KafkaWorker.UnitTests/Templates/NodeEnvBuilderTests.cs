@@ -169,7 +169,7 @@ public class NodeEnvBuilderTests
         // Act: генерация env.
         var env = NodeEnvBuilder.Build(Spec());
 
-        // Assert: канон t03 (16 §2.2) — SASL_SSL на INTERNAL/CLIENT.
+        // Assert: канон (16 §2.2) — SASL_SSL на INTERNAL/CLIENT.
         env["KAFKA_LISTENER_SECURITY_PROTOCOL_MAP"]
             .Should().Be("CONTROLLER:PLAINTEXT,INTERNAL:SASL_SSL,CLIENT:SASL_SSL");
     }

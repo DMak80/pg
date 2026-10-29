@@ -32,7 +32,7 @@ public static class MovePhases
 
 /// <summary>
 /// MoveProcess — тиковая машина состояний планового переезда бакета M0–M6 по заявкам
-/// /pgworker/moves/&lt;C&gt;/bucket_&lt;i&gt; (t01 задача 11, spec §6.1, arch/14 §5 F): тик
+/// /pgworker/moves/&lt;C&gt;/bucket_&lt;i&gt; (spec §6.1, arch/14 §5 F): тик
 /// идемпотентен (каждый шаг перепроверяет факт), мутации — только под живым клэймом
 /// кластера; одновременно обрабатывается старейшая заявка (Д2). Отказы M0:
 /// permanent (del заявки + журнал rejected) — дефект заявки/факт-несоответствие;
@@ -133,7 +133,7 @@ public sealed class MoveProcess(
 
         var srcShard = snap.Shards.FirstOrDefault(s => s.Name == owner);
         var dstShard = snap.Shards.FirstOrDefault(s => s.Name == to);
-        // t06 §5.5: помеченный к удалению шард — не цель переезда (его демонтаж
+        //  §5.5: помеченный к удалению шард — не цель переезда (его демонтаж
         // блокировал бы G3 до разбора заявки; переезды ИЗ него разрешены).
         if (dstShard?.ToRemove == true)
             return await RejectAsync(cluster, bucket,
@@ -337,7 +337,7 @@ public sealed class MoveProcess(
             reachedCutover, request, ct);
     }
 
-    // ── M1–M3 (t01 задача 13, spec §6.1): DDL → pub/sub → copy-wait ──
+    // ── M1–M3 (spec §6.1): DDL → pub/sub → copy-wait ──
 
     private async Task<Result<ProcessOutcome>> RunMovePhasesAsync(
         ClusterSnapshot snap, string bucket, string owner, string to,
@@ -345,21 +345,27 @@ public sealed class MoveProcess(
         bool subOnDst, bool schemaOnDst, bool reachedCutover, MoveRequest request,
         CancellationToken ct)
     {
+        var cluster = snap.Config.Cluster;
+
+        // Живая сверка клэйма перед мутациями фаз M1+ (arch/17 S5).
+        if (!await ClaimAliveAsync(cluster, $"move/{bucket}", ct))
+            return Result<ProcessOutcome>.Failed(new ApplicationException(
+                $"moves {cluster}: claim lost before phases of {bucket}"));
+
         // M4–M6: initial copy завершён (cutover-wait) или прошлый cutover сорвался —
         // единый непрерывный блок этого тика (задача 14, spec §6.1 M4/§6.2).
         if (reachedCutover)
             return await RunCutoverAsync(
                 snap, bucket, owner, to, srcShard, dstShard, srcDsn, dstDsn, startedUnix, request, ct);
 
-        var cluster = snap.Config.Cluster;
-
         // M1: DDL-перенос — только когда схемы на приёмнике нет (resume пропускает).
         if (!subOnDst && !schemaOnDst)
         {
-            // Имя ноды мастера для docker exec (pg_dump): формат master-ключа —
+            // Имя ноды мастера для адреса приёмника pg_dump-операции (канал
+            // arch/25 №22): формат master-ключа —
             // <host>:<doormanPort> (писатели — Patroni-callback/reconciler),
             // поэтому резолвим адрес через ShardEndpoints и ищем ноду шарда по
-            // её PG-порту (уникален) — Split(':')[0] давал бы host, не имя (e2e t01).
+            // её PG-порту (уникален) — Split(':')[0] давал бы host, не имя (e2e).
             var addresses = await shards.ReadPortAllocAsync(cluster, ct);
             if (!addresses.IsSuccess)
                 return await FailTransientAsync(cluster, addresses.Error!, ct);
@@ -374,11 +380,13 @@ public sealed class MoveProcess(
             if (masterEntry.Key is not { Length: > 0 } entry)
                 return await FailTransientAsync(cluster, new ApplicationException(
                     $"master '{owner}' (pg:{master.Ports.Pg}) not found among shard nodes in portalloc"), ct);
-            var dump = await ddl.DumpAsync(cluster, owner, entry.Split('/')[1], snap.Config.DbName, bucket, ct,
-                containerOverride: master.Object); // усыновлённая нода: exec в object-контейнер (spec §3.3)
+            // pg_dump — операция приёмника ноды-источника (канал arch/25 №22);
+            // приёмник снимает дамп локально в контейнере ноды.
+            var dump = await ddl.DumpAsync(cluster, owner, entry.Split('/')[1], snap.Config.DbName, bucket, ct);
             if (!dump.IsSuccess)
-                return await FailTransientAsync(cluster, dump.Error!, ct);
-            var applied = await ddl.ApplyAsync(dstDsn, dump.Value, ct);
+                return await FailTransientAsync(cluster, new ApplicationException(
+                    $"pgdump receiver {entry}: {dump.Error ?? $"status {(int)dump.StatusCode}"}"), ct);
+            var applied = await ddl.ApplyAsync(dstDsn, dump.Body!.Ddl, ct);
             if (!applied.IsSuccess)
                 return await FailTransientAsync(cluster, applied.Error!, ct);
         }
@@ -458,7 +466,7 @@ public sealed class MoveProcess(
         return Result<ProcessOutcome>.Success(ProcessOutcome.InProgress);
     }
 
-    // ── M4–M6 (t01 задача 14, spec §6.1/§6.2): cutover → post-flip → done ──
+    // ── M4–M6 (spec §6.1/§6.2): cutover → post-flip → done ──
 
     private async Task<Result<ProcessOutcome>> RunCutoverAsync(
         ClusterSnapshot snap, string bucket, string owner, string to,
@@ -466,6 +474,12 @@ public sealed class MoveProcess(
         long startedUnix, MoveRequest request, CancellationToken ct)
     {
         var cluster = snap.Config.Cluster;
+
+        // Живая сверка клэйма перед cutover — переключением routing (самая
+        // критическая мутация переезда, arch/17 S5).
+        if (!await ClaimAliveAsync(cluster, $"cutover/{bucket}", ct))
+            return Result<ProcessOutcome>.Failed(new ApplicationException(
+                $"moves {cluster}: claim lost before cutover of {bucket}"));
 
         // M4: cutover — единый непрерывный блок (слот подтверждения sub_<b> живёт на
         // источнике). Снапшот flip — best-effort: неудача пишется в журнал, flip не
@@ -585,13 +599,18 @@ public sealed class MoveProcess(
                && total >= 0;
     }
 
-    // ── Rollback (t01 задача 15, spec §6.3): зеркальный cutover из ACTIVE ──
+    // ── Rollback (spec §6.3): зеркальный cutover из ACTIVE ──
 
     private async Task<Result<ProcessOutcome>> RunRollbackAsync(
         ClusterSnapshot snap, string bucket, MoveRequest request, CancellationToken ct)
     {
         const string op = "rollback";
         var cluster = snap.Config.Cluster;
+
+        // Живая сверка клэйма перед мутациями rollback (arch/17 S5).
+        if (!await ClaimAliveAsync(cluster, $"rollback/{bucket}", ct))
+            return Result<ProcessOutcome>.Failed(new ApplicationException(
+                $"moves {cluster}: claim lost before rollback of {bucket}"));
 
         if (snap.Config.State != ClusterState.Active)
             return await RejectAsync(cluster, bucket,
@@ -748,13 +767,18 @@ public sealed class MoveProcess(
         return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
     }
 
-    // ── Finalize (t01 задача 15, spec §6.4): уборка старого шарда после flip ──
+    // ── Finalize (spec §6.4): уборка старого шарда после flip ──
 
     private async Task<Result<ProcessOutcome>> RunFinalizeAsync(
         ClusterSnapshot snap, string bucket, MoveRequest request, CancellationToken ct)
     {
         const string op = "finalize";
         var cluster = snap.Config.Cluster;
+
+        // Живая сверка клэйма перед мутациями finalize (arch/17 S5).
+        if (!await ClaimAliveAsync(cluster, $"finalize/{bucket}", ct))
+            return Result<ProcessOutcome>.Failed(new ApplicationException(
+                $"moves {cluster}: claim lost before finalize of {bucket}"));
 
         if (snap.Config.State != ClusterState.Active)
             return await RejectAsync(cluster, bucket,
@@ -785,7 +809,7 @@ public sealed class MoveProcess(
         var ownerShard = snap.Shards.FirstOrDefault(s => s.Name == owner);
         if (oldShard?.Dsn is null)
         {
-            // t06 §5.5: старый шард демонтирован (артефакты исчезли вместе с
+            //  §5.5: старый шард демонтирован (артефакты исчезли вместе с
             // volume) — убирать нечего; отказ перманентный с подсказкой.
             return await RejectAsync(cluster, bucket,
                 $"shard '{old}' was removed — nothing to clean up (artifacts vanished with the volume)", ct, op);
@@ -938,13 +962,32 @@ public sealed class MoveProcess(
         return await sql.ExecuteAsync(dsn, MoveSql.DropSlot(slot), ct);
     }
 
-    // op=abort — делегирует AbortSequence (t01 задача 16, spec §6.5): журнал
+    // op=abort — делегирует AbortSequence (spec §6.5): журнал
     // ABORTING ДО манипуляций, идемпотентная уборка, AbortMinAgeSec/force.
-    private Task<Result<ProcessOutcome>> RunAbortAsync(
+    private async Task<Result<ProcessOutcome>> RunAbortAsync(
         ClusterSnapshot snap, string bucket, MoveRequest request, CancellationToken ct)
     {
+        // Живая сверка клэйма перед мутациями abort (arch/17 S5).
+        if (!await ClaimAliveAsync(snap.Config.Cluster, $"abort/{bucket}", ct))
+            return Result<ProcessOutcome>.Failed(new ApplicationException(
+                $"moves {snap.Config.Cluster}: claim lost before abort of {bucket}"));
+
         var abort = new AbortSequence(sql, status, requests, journal, shards, secrets, progress);
-        return abort.RunAsync(snap, bucket, request, claims, clock, options, ct, snapshot);
+        return await abort.RunAsync(snap, bucket, request, claims, clock, options, ct, snapshot);
+    }
+
+    // Живая сверка клэйма перед мутациями фаз переезда (arch/17 S5): IsMine на
+    // входе тика не защищает длинную фазу от takeover. false — ключа нет/чужой/
+    // etcd недоступен: мутации не начинаются (P9), журнал несёт claim-lost/<фазу>.
+    private async Task<bool> ClaimAliveAsync(string cluster, string phase, CancellationToken ct)
+    {
+        var alive = await claims.EnsureClaimAliveAsync(cluster, ct);
+        if (alive is { IsSuccess: true, Value: true })
+            return true;
+
+        await journal.WritePhaseAsync(cluster, "moves", $"claim-lost/{phase}", claims.InstanceId,
+            alive.IsSuccess ? "claim key is gone or foreign" : alive.Error!.Message, ct);
+        return false;
     }
 
     // ── Исходы M0/оп-веток ──
@@ -1009,7 +1052,7 @@ public sealed class MoveProcess(
     }
 
     // Mover-DSN префлайта (spec §3.3, усыновлённые кластеры): multi-host
-    // Per-cluster mover-пароль (t02, arch/14 §4): ключ etcd; env — fallback до
+    // Per-cluster mover-пароль (arch/14 §4): ключ etcd; env — fallback до
     // первого ensure (переезд на кластере до t02-ensure). Свежий снапшот на тик —
     // ротация mover не ломает следующий тик переезда.
     private string MoverPassword(ClusterSnapshot snap)
@@ -1036,7 +1079,7 @@ public sealed class MoveProcess(
                 $"master '{srcShard.Name}' is not resolved — mover probe impossible"));
 
         // Single-host DSN: Npgsql допускает Target Session Attributes только
-        // с multi-host (e2e-факт стенда); адрес и так мастер — атрибут не нужен.
+        // с multi-host (факт стенда стенда); адрес и так мастер — атрибут не нужен.
         return Result<string>.Success(
             $"Host={m.Host};Port={m.Ports.Pg};Database={snap.Config.DbName};Username={ShardEndpoints.MoverRole};" +
             $"Password={MoverPassword(snap)};SSL Mode=Require;Trust Server Certificate=true");

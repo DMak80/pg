@@ -96,7 +96,7 @@ public sealed partial class DatabaseProvisioner : ISqlExecutor
     public static string BuildAlterAppPasswordSql(AppCredentials app)
         => BuildAlterRolePasswordSql(app.User, app.Password);
 
-    // Обобщённый ALTER (t02 §5 I): ротатор меняет пароли app/bucket_admin/bucket_mover.
+    // Обобщённый ALTER (§5 I): ротатор меняет пароли app/bucket_admin/bucket_mover.
     public static string BuildAlterRolePasswordSql(string role, string password)
     {
         ValidateIdentifier(role);
@@ -104,10 +104,10 @@ public sealed partial class DatabaseProvisioner : ISqlExecutor
     }
 
     /// <summary>Роль полного бэкапа (arch/19 §7): LOGIN + REPLICATION,
-    /// per-cluster пароль /clusters/&lt;C&gt;/backup_password (ensure t02).</summary>
+    /// per-cluster пароль /clusters/&lt;C&gt;/backup_password (ensure).</summary>
     public const string BackupExecRole = "backup_exec";
 
-    // gexec-guard роли backup_exec (t02 G2): SELECT возвращает CREATE ROLE,
+    // gexec-guard роли backup_exec (G2): SELECT возвращает CREATE ROLE,
     /// если её нет; пароль выравнивается при создании/ротации.
     public static string BuildBackupExecRoleGuardSql(string password)
         => Role(BackupExecRole, password, replication: true);

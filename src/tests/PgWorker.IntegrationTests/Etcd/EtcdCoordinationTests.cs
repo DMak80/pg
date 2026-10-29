@@ -13,17 +13,27 @@ public class EtcdCoordinationTests(EtcdFixture fixture)
 
     private ClaimStore NewClaimStore() => new("/pgworker", [Endpoint], Gateway, TimeProvider.System);
 
+    // Per-class guid-тег (канон docs/e2e-isolation.md §1, инвариант
+    // NonE2eCollection): имена кластеров в клэймах и /clusters/ несут
+    // уникальный суффикс — литеральная коллизия с соседними классами
+    // коллекции (флейк TryClaim из-за lease-TTL 15с) механически невозможна.
+    private static readonly string Tag = Guid.NewGuid().ToString("N")[..8];
+
     [Fact]
     public async Task TwoClaimStores_MutualExclusion()
     {
-        // Arrange — два «инстанса» PgWorker
+        // Arrange — два «инстанса» PgWorker; имя кластера с guid-тегом класса
+        var cluster = $"cc1{Tag}";
         var first = NewClaimStore();
         var second = NewClaimStore();
         var ct = TestContext.Current.CancellationToken;
+        // Own-only предочистка клэйма (паттерн ShardScaleContractTests): тест
+        // не зависит от таймингов TTL соседей по коллекции.
+        await Gateway.DeleteAsync(Endpoint, $"/pgworker/claims/{cluster}", prefix: false, ct);
 
         // Act
-        var firstClaim = await first.TryClaimClusterAsync("shop", ct);
-        var secondClaim = await second.TryClaimClusterAsync("shop", ct);
+        var firstClaim = await first.TryClaimClusterAsync(cluster, ct);
+        var secondClaim = await second.TryClaimClusterAsync(cluster, ct);
 
         // Assert: exclusivity обработки кластера одним инстансом (Д2)
         firstClaim.IsSuccess.Should().BeTrue();
@@ -38,36 +48,41 @@ public class EtcdCoordinationTests(EtcdFixture fixture)
     [Fact]
     public async Task ClaimExpiry_AfterLeaseTtl_SecondInstanceTakesOver()
     {
-        // Arrange — «умерший» держатель: leased-ключ TTL 2с, который никто не продлевает
+        // Arrange — «умерший» держатель: leased-ключ TTL 2с, который никто не продлевает;
+        // имя кластера с guid-тегом класса
+        var cluster = $"cc2{Tag}";
         var ct = TestContext.Current.CancellationToken;
+        await Gateway.DeleteAsync(Endpoint, $"/pgworker/claims/{cluster}", prefix: false, ct);
         var grant = await Gateway.LeaseGrantAsync(Endpoint, 2, ct);
         grant.IsSuccess.Should().BeTrue();
         var claimTxn = await Gateway.TxnAsync(
             Endpoint,
             TxnRequest.Of(
-                [TxnCompare.NotExists("/pgworker/claims/shop")],
-                [new TxnOp.Put("/pgworker/claims/shop", """{"instance":"dead"}""", grant.Value)]),
+                [TxnCompare.NotExists($"/pgworker/claims/{cluster}")],
+                [new TxnOp.Put($"/pgworker/claims/{cluster}", """{"instance":"dead"}""", grant.Value)]),
             ct);
         claimTxn.Value.Succeeded.Should().BeTrue();
 
         // Act — lease истекает, etcd сам удаляет ключ; второй инстанс захватывает
         await Task.Delay(3000, ct);
         var second = NewClaimStore();
-        var reclaimed = await second.TryClaimClusterAsync("shop", ct);
+        var reclaimed = await second.TryClaimClusterAsync(cluster, ct);
 
         // Assert
         reclaimed.IsSuccess.Should().BeTrue();
         reclaimed.Value.Should().BeTrue();
-        second.IsMine("shop").Should().BeTrue();
+        second.IsMine(cluster).Should().BeTrue();
         await second.DisposeAsync();
     }
 
     [Fact]
     public async Task TxnCompareValue_ConcurrentFlipRejected()
     {
-        // Arrange — routing бакета принадлежит shard2 (чужой конкурент пишет shard1)
+        // Arrange — routing бакета принадлежит shard2 (чужой конкурент пишет shard1);
+        // имя кластера с guid-тегом класса — свои ключи не пересекаются с соседями
+        var cluster = $"cc3{Tag}";
         var ct = TestContext.Current.CancellationToken;
-        const string key = "/clusters/shop/buckets/routing/bucket_1";
+        var key = $"/clusters/{cluster}/buckets/routing/bucket_1";
         var put = await Gateway.PutAsync(Endpoint, key, "shard2", lease: null, ct);
         put.IsSuccess.Should().BeTrue();
 
@@ -86,6 +101,11 @@ public class EtcdCoordinationTests(EtcdFixture fixture)
         actual.Value.Succeeded.Should().BeTrue();
         var after = await Gateway.GetAsync(Endpoint, key, ct);
         after.Value!.Value.Should().Be("shard1");
+
+        // Cleanup + assert чистоты: ключи теста не переживают тест
+        await Gateway.DeleteAsync(Endpoint, $"/clusters/{cluster}/", prefix: true, ct);
+        var leftover = await Gateway.RangeAsync(Endpoint, $"/clusters/{cluster}/", ct);
+        leftover.Value.Should().BeEmpty();
     }
 
     [Fact]

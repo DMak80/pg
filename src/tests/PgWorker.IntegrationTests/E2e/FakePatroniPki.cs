@@ -2,7 +2,7 @@ using System.Security.Cryptography.X509Certificates;
 
 namespace PgWorker.IntegrationTests.E2e;
 
-// PKI FakePatroni (t22): статическая тестовая CA + серверный серт
+// PKI FakePatroni : статическая тестовая CA + серверный серт
 // (PFX round-trip — эфемерный ключ CreateFromPem macOS-сервером не читается).
 public static class FakePatroniPki
 {

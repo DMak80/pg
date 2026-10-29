@@ -9,11 +9,11 @@ using Xunit;
 
 namespace PgWorker.IntegrationTests.E2e;
 
-// E2E WAL-потока, отказ мастера (t24/ревизия 8 — разбиение E2eBackupScenarios):
+// E2E WAL-потока, отказ мастера (/ревизия 8 — разбиение E2eBackupScenarios):
 // монолитный одиночный факт (~11 мин, §7) — отдельный класс.
-// E2E полных бэкапов (t02, spec §7.1–7.4): изолированное окружение E2eEnvironment
+// E2E полных бэкапов (spec §7.1–7.4): изолированное окружение E2eEnvironment
 // (своя docker-сеть, свой etcd, СВОЯ ownS3-нода — withS3Node:true; порт динамический)
-// + образ pgworker-backup:e2e + живой кластер воркером с Backups:Enabled=true.
+// + операции бэкапов в приёмниках WalReceiver нод (arch/19 §5) + живой кластер воркером с Backups:Enabled=true.
 // COMPLETED с полными полями и объектами в S3; FAILED по недоступному S3 с
 // переснятием новым id; deprovisioning чистит джобы и префикс; ротация
 // backup_password включает backup_exec. Каждый Fact — своё окружение: методы
@@ -25,7 +25,7 @@ public class E2eWalStreamMasterDownScenarios
 {
     private const string Bucket = "pgworker-backups";
 
-    // t36: пул E2E (однонодовый — ownS3-ноды окружения; etcd у каждого Fact'а свой).
+    // пул E2E (однонодовый — ownS3-ноды окружения; etcd у каждого Fact'а свой).
     private const string Pool = "bkpool";
 
     // Окружение Fact'а (своя сеть/etcd/ownS3); создаётся в начале каждого сценария.
@@ -35,7 +35,7 @@ public class E2eWalStreamMasterDownScenarios
 
     private EtcdGateway G => Fx.Gateway;
 
-    // после promote воркер пересоздаёт агентов на новых ролях; ключ не BROKEN.
+    // после promote воркер пересоздаёт агентов на новых ролях; ключ не WAL_CHAIN_ERROR.
     [Fact]
     public async Task WalStream_MasterDown_ReplicaAgentContinues()
     {
@@ -48,16 +48,13 @@ public class E2eWalStreamMasterDownScenarios
         var hostEndpoint = Fx.S3Endpoint;
         await using var backupS3 = new PgWorker.Backups.BackupS3(new PgWorker.Backups.S3ClientOptions(hostEndpoint, Bucket, E2eEnvironment.S3RootUser, E2eEnvironment.S3RootPassword));
         var writer = new PgWorker.Backups.WalStatusWriter(G, [Endpoint]);
-        var bothAgents = await E2ePhase.WaitAsync(Fx, "wal-ac4-agents-up", async () =>
+        var bothStreaming = await E2ePhase.WaitAsync(Fx, "wal-ac4-receivers-up", async () =>
         {
-            var ps = await Fx.RunDockerAsync(
-            [
-                "ps", "--filter", $"name=pgw-backup-wal-{cluster}-shard1-",
-                "--format", "{{.Names}} {{.State}}",
-            ], ct);
-            return ps.Split('\n', StringSplitOptions.RemoveEmptyEntries).Count(l => l.EndsWith("running")) >= 2;
+            // факты приёмников — статус-ключи agent/<N> (state=streaming)
+            var facts = await Fx.ReadWalAgentFactsAsync(cluster, "shard1", ct);
+            return facts.Count(f => f.State == "streaming") >= 2;
         }, TimeSpan.FromSeconds(300), ct);
-        bothAgents.Should().BeTrue("both agents before the master dies");
+        bothStreaming.Should().BeTrue("both receivers streaming before the master dies");
         using var load = new CancellationTokenSource();
         var loader = BackgroundWalLoadAsync(adminDsn, load.Token);
         var beforeList = await backupS3.ListWalAsync(cluster, "shard1", ct: ct);
@@ -83,7 +80,7 @@ public class E2eWalStreamMasterDownScenarios
             // Окно живёт ВНУТРИ condition — проверка факта раз в 30 с, как раньше;
             // статус/номер окна — в замыкании, прогресс форматирует их БЕЗ новых
             // чтений; тик E2ePhase печатается по завершении condition — фактическая
-            // частота ≈ строка на окно (t29 §3.9). Ассерта на результат цикла нет —
+            // частота ≈ строка на окно (§3.9). Ассерта на результат цикла нет —
             // итог только в строке телеметрии (новый ассерт не добавляем).
             TestContext.Current.TestOutputHelper?.WriteLine(
                 "[PHASE] wal-ac4: waiting for the unreachable to be lifted (the repair contour of supervision)");
@@ -107,13 +104,13 @@ public class E2eWalStreamMasterDownScenarios
                 $"[PHASE] wal-ac4: repair phase finished/lifted (repaired={repaired}) — key measurements");
 
             // Assert — доставка продолжается (новые сегменты после смерти мастера),
-            // цепочка непрерывна (CheckWithRestart), ключ не BROKEN
+            // цепочка непрерывна (CheckWithRestart), ключ не WAL_CHAIN_ERROR
             var grew = await E2ePhase.WaitAsync(Fx, "wal-ac4-delivery-grew", async () =>
             {
                 var list = await backupS3.ListWalAsync(cluster, "shard1", ct: ct);
                 return list.IsSuccess && list.Value.Count > beforeList.Value.Count;
             }, TimeSpan.FromSeconds(300), ct,
-                // Динамика листинга wal/-префикса по тикам (t29 §3.9): растёт ли
+                // Динамика листинга wal/-префикса по тикам (§3.9): растёт ли
                 // число сегментов; S3-листинг не чаще интервала тиков (5 с).
                 progress: async () =>
                 {
@@ -137,25 +134,22 @@ public class E2eWalStreamMasterDownScenarios
             }, TimeSpan.FromSeconds(30), ct);
             keySeen.Should().BeTrue("the wal key must exist after the failover");
             keyState!.State.Should().NotBe(
-                PgWorker.Etcd.Parsing.WalStreamStatus.Broken, "the key is not BROKEN (AC4)");
+                PgWorker.Etcd.Parsing.WalStreamStatus.WalChainError, "the key is not WAL_CHAIN_ERROR (AC4)");
             var list = await backupS3.ListWalAsync(cluster, "shard1", ct: ct);
             var chain = PgWorker.Backups.WalChain.CheckWithRestart(
                 PgWorker.Backups.WalFileName.TryParse(keyState!.ChainStartSegment)!.Value,
                 list.Value!.Select(o => o.Name));
             chain.IsContinuous.Should().BeTrue(chain.GapError ?? "the chain is stitched through the TLI");
 
-            // После promote воркер пересоздаёт агентов на новых ролях: running-агент
-            // новой мастер-ноды ≤ 300 c (смена источника — пересоздание).
-            // Живость агентов — в failed/slow-phase-сбор, docker ps в тиках
-            // запрещён (t29 §4.1).
-            var newAgent = await E2ePhase.WaitAsync(Fx, "wal-ac4-new-agent", async () =>
+            // После promote приёмник новой мастер-ноды берёт роль мастера сам
+            // (REST-проба): streaming-ключ новой мастер-ноды ≤ 300 c
+            // (смена роли — собственный цикл приёмника, воркер не пересоздаёт).
+            var newReceiver = await E2ePhase.WaitAsync(Fx, "wal-ac4-new-receiver", async () =>
             {
-                var ps = await Fx.RunDockerAsync(
-                    ["ps", "--format", "{{.Names}} {{.State}}",
-                     "--filter", $"name=pgw-backup-wal-{cluster}-shard1-{newMasterNode}"], ct);
-                return ps.Contains("running");
+                var facts = await Fx.ReadWalAgentFactsAsync(cluster, "shard1", ct);
+                return facts.Any(f => f.Node == newMasterNode && f.State == "streaming");
             }, TimeSpan.FromSeconds(300), ct);
-            newAgent.Should().BeTrue($"the agent of the new master node {newMasterNode} running");
+            newReceiver.Should().BeTrue($"the receiver of the new master node {newMasterNode} streams");
         }
         catch (Exception ex)
         {
@@ -272,9 +266,11 @@ public class E2eWalStreamMasterDownScenarios
     {
         try
         {
-            var agentsPs = await Fx.RunDockerAsync(
-                ["ps", "-a", "--format", "{{.Names}} {{.State}}",
-                 "--filter", $"name=pgw-backup-wal-{cluster}-"], TestContext.Current.CancellationToken);
+            // факты приёмников — из статус-ключей etcd (wal-контейнеров нет)
+            var agentFacts = await Fx.ReadWalAgentFactsAsync(cluster, "shard1",
+                TestContext.Current.CancellationToken);
+            var receiversDump = string.Join("; ", agentFacts.Select(f =>
+                $"{f.Node}: {f.State}{(f.Error is null ? "" : $" err={f.Error}")}"));
             var walKv = await GetOrNullAsync($"/pgworker/backups/{cluster}/shard1/wal");
             var workKv = await GetOrNullAsync($"/pgworker/work/{cluster}");
             var claimKv = await GetOrNullAsync($"/pgworker/claims/{cluster}");
@@ -323,20 +319,11 @@ public class E2eWalStreamMasterDownScenarios
                     hostLog += $"\n== {host.Name}: host.log unavailable: {e.Message}";
                 }
 
-            var agentLogs = "";
-            foreach (var line in agentsPs.Split('\n', StringSplitOptions.RemoveEmptyEntries))
-            {
-                var name = line.Split(' ')[0];
-                var logs = await Fx.RunDockerAsync(["logs", "--tail", "60", name],
-                    TestContext.Current.CancellationToken);
-                agentLogs += $"\n== {name}:\n{logs}";
-            }
-
             var dump =
-                $"reason={reason}\nagents=[{agentsPs.Replace('\n', ';')}]\n" +
+                $"reason={reason}\nreceivers=[{receiversDump}]\n" +
                 $"wal=[{walKv?.Value ?? "-"}]\nwork=[{workKv?.Value ?? "-"}]\n" +
-                $"claim=[{claimKv?.Value ?? "-"}]\npatroni={patroni}\nAGENT.LOGS:{agentLogs}\nHOST.LOG:{hostLog}\n";
-            // Дамп — в каталог телеметрии прогона (t29 §3.9): рядом с
+                $"claim=[{claimKv?.Value ?? "-"}]\npatroni={patroni}\nHOST.LOG:{hostLog}\n";
+            // Дамп — в каталог телеметрии прогона (§3.9): рядом с
             // phases.log/docker-логами, а не в /tmp мимо артефактов.
             var dumpPath = Path.Combine(Fx.ArtifactsDir, $"wal-diag-{cluster}.txt");
             await File.WriteAllTextAsync(dumpPath, dump);
@@ -380,7 +367,7 @@ public class E2eWalStreamMasterDownScenarios
     }
 
     /// <summary>Подъём полного WAL-контура сценария: окружение с ownS3-нодой, кластер,
-    /// воркер (Backups:Enabled + Wal:AgentImage), ожидание provisioning, DSN мастера.
+    /// воркер (Backups:Enabled), ожидание provisioning, DSN мастера.
     /// </summary>
     // Владение окружением и воркером — у Fact (DisposeAsync при любом исходе);
 
@@ -408,9 +395,9 @@ public class E2eWalStreamMasterDownScenarios
     }
 
     // AAA (AC2 — ядро задачи): под WAL-нагрузкой docker rm -f агента мастера —
-    // супервиз пересоздаёт агента, цепочка S3 непрерывна, BROKEN не возникает,
+    // супервиз пересоздаёт агента, цепочка S3 непрерывна, WAL_CHAIN_ERROR не возникает,
 
-    // Воркер с ВКЛЮЧЁННОЙ подсистемой бэкапов: t02-комплект джобов + t03 Wal-поток.
+    // Воркер с ВКЛЮЧЁННОЙ подсистемой бэкапов: комплект джобов + Wal-поток.
     // S3 для воркера — published порт (localhost), для агентов/джобов — advertised
     // (host.docker.internal); пороги WAL-контроля — короткие.
     private Task<HostInstance> StartWalHostAsync(string name, CancellationToken ct)
@@ -418,10 +405,8 @@ public class E2eWalStreamMasterDownScenarios
         {
             ["PgWorker__Backups__Enabled"] = "true",
             ["PgWorker__Backups__S3__Bucket"] = Bucket,
-            // t36: креды пула — env-профиль (arch/19 §7); пул — policy.s3, адреса
+            // креды пула — env-профиль (arch/19 §7); пул — policy.s3, адреса
             // резолвит воркер из /s3/ (advertised host.docker.internal, extra_hosts).
-            ["PgWorker__Backups__Job__Image"] = E2eEnvironment.JobImage,
-            ["PgWorker__Backups__Wal__AgentImage"] = E2eEnvironment.WalImage,
             ["PgWorker__Backups__Retry__BaseSec"] = "2",
             ["PgWorker__Backups__Retry__MaxSec"] = "4",
             ["PgWorker__Backups__Wal__VerifyIntervalSec"] = "2",
@@ -473,7 +458,7 @@ public class E2eWalStreamMasterDownScenarios
                 """{"state":"NOT_INITIALIZED"}""", null, ct);
         }
 
-        // t36: пул + policy с секцией s3 (идемпотентно при пересоздании кластера) —
+        // пул + policy с секцией s3 (идемпотентно при пересоздании кластера) —
         // без неё подсистема бэкапов кластера молчит.
         await Fx.SeedS3PoolAsync(Pool, ct);
         await G.PutAsync(Endpoint, $"/pgworker/backups/{cluster}/policy",
@@ -481,10 +466,10 @@ public class E2eWalStreamMasterDownScenarios
     }
 
     // Published pg-порт мастера шарда из portalloc (host-клиент: localhost).
-    // Резолв фактического primary — по пробам Patroni /primary (t02-подход
+    // Резолв фактического primary — по пробам Patroni /primary (подход
     // WaitForMasterAsync: master-ключ host:0 при EnableDoorman=false
     // недискриминантен); primary появляется после dsn/RUNNING — ждём.
-    // t22: Patroni REST нод — https (цепочка к per-contour CA, без hostname)
+    // Patroni REST нод — https (цепочка к per-contour CA, без hostname)
     private HttpClient PatroniHttp => Fx.NewPatroniHttpClient();
 
     private async Task<(string Host, int Port, string Node)> MasterPgAsync(string cluster, string shard, CancellationToken ct)

@@ -2,7 +2,7 @@ using Shared.Core.DI;
 
 namespace AdminPanel.Core.Alerting.Rules;
 
-// backup-pool-missing (critical, t36, каталог 03 §4): Active-кластер с
+// backup-pool-missing (critical, каталог 03 §4): Active-кластер с
 // включённой подсистемой бэкапов, policy без секции s3 — пул не выбран,
 // бэкапы кластера не пишутся (arch/19 §4, «только явный выбор»).
 [InjectAsSingleton(typeof(IAlertRule))]
@@ -35,7 +35,7 @@ public sealed class BackupPoolMissingRule : IAlertRule
                 $"cluster {cluster.Cluster}: S3 pool not selected (policy without s3 section) — cluster backups are neither written nor read",
                 new Dictionary<string, string>(),
                 null,
-                "select a pool on the Backup Storage page — without selecting a pool, cluster backups are not written (t36, arch/19 §4)",
+                "select a pool on the Backup Storage page — without selecting a pool, cluster backups are not written (arch/19 §4)",
                 AlertRemedy.OperatorApi,
                 "open Backup Storage → Backup Pool, select the pool and the master/replica lists");
         }

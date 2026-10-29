@@ -2,7 +2,7 @@
 using PgWorker.Core.Writing;
 namespace PgWorker.UnitTests.Writing;
 
-// План ключей add-shard и валидатор запроса (arch/02 §9.5, t06).
+// План ключей add-shard и валидатор запроса (arch/02 §9.5).
 // Перенос из AdminPanel.UnitTests (task etcd-via-worker-api): фиксстуры значений 1:1.
 public class ShardScalePlanTests
 {

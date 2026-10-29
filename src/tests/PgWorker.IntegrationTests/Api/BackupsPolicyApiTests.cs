@@ -7,8 +7,8 @@ using Xunit;
 
 namespace PgWorker.IntegrationTests.Api;
 
-// POST /api/clusters/{c}/backups/policy (t06, spec Ф4): валидация + put
-// policy-ключа формата канона; парсер t01 читает его без parseErrors.
+// POST /api/clusters/{c}/backups/policy (spec Ф4): валидация + put
+// policy-ключа формата канона; парсер читает его без parseErrors.
 [Collection(NonE2eCollection.Name)]
 public class BackupsPolicyApiTests(PgApiFixture fixture)
 {
@@ -16,7 +16,7 @@ public class BackupsPolicyApiTests(PgApiFixture fixture)
 
     private EtcdFixture Etcd => fixture.Etcd;
 
-    // AAA: валидное тело → 200, ключ в etcd равен телу канона, парсер t01
+    // AAA: валидное тело → 200, ключ в etcd равен телу канона, парсер 
     // читает policy без parseErrors (AC7).
     [Fact]
     public async Task ValidBody200AndKeyInEtcd()
@@ -43,7 +43,7 @@ public class BackupsPolicyApiTests(PgApiFixture fixture)
             .And.Contain("\"full_max_age_sec\":7200")
             .And.Contain("\"on_create\":false");
 
-        // Assert — парсер t01 читает без parseErrors, гранулы 3/2/1
+        // Assert — парсер читает без parseErrors, гранулы 3/2/1
         var range = await Etcd.Gateway.RangeAsync(Etcd.Endpoint, "/pgworker/backups/bp/", ct);
         var parsed = BackupsParser.Parse(range.Value, out var errors);
         errors.Should().BeEmpty();
@@ -68,7 +68,7 @@ public class BackupsPolicyApiTests(PgApiFixture fixture)
         var resp = await Client.PostAsync("/api/clusters/bpd/backups/policy",
             new StringContent("{}", System.Text.Encoding.UTF8, "application/json"), ct);
 
-        // Assert — 200, ключ с дефолтами 1/1/1/86400/true (t18: целевая схема,
+        // Assert — 200, ключ с дефолтами 1/1/1/86400/true (: целевая схема,
         // хендлер зеркалит дефолт канона arch/19 §9)
         resp.StatusCode.Should().Be(HttpStatusCode.OK);
         var stored = await Etcd.Gateway.GetAsync(Etcd.Endpoint, "/pgworker/backups/bpd/policy", ct);
@@ -140,7 +140,7 @@ public class BackupsPolicyApiTests(PgApiFixture fixture)
         stored.Value.Should().BeNull();
     }
 
-    // ---- reliability t02: drill.interval_days ----
+    // ---- reliability : drill.interval_days ----
 
     // AAA: тело с drill.interval_days=3 → 200, policy-ключ содержит
     // "drill":{"interval_days":3} рядом с прежними секциями.
@@ -261,7 +261,7 @@ public class BackupsPolicyApiTests(PgApiFixture fixture)
         stored.Value.Should().BeNull();
     }
 
-// ---- t36: секция s3 policy (arch/14 §1.1) ----
+// ---: секция s3 policy (arch/14 §1.1) ----
 
 // Сид пула /s3/clusters/backups/: config + заявка двух нод (placement/state)
 // + portalloc ТОЛЬКО на node1 (кейс «заявлена, не провижинена — валидна»).
@@ -281,7 +281,7 @@ private async Task SeedS3PoolAsync(string ctTag = "")
         """{"node1":{"host":"h1","s3":18001}}""", null, ct);
 }
 
-// AAA: политика с валидной секцией s3 → 200; ключ каноничен (парсер t01
+// AAA: политика с валидной секцией s3 → 200; ключ каноничен (парсер 
 // читает pool/списки); инстанс с placement БЕЗ portalloc — ВАЛИДЕН (201/200,
 // без 400: адрес появится при provisioning).
 [Fact]

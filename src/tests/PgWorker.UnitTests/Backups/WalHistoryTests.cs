@@ -4,7 +4,7 @@ using Xunit;
 
 namespace PgWorker.UnitTests.Backups;
 
-// Парсер .history (arch/19 §3, t04): строки "parentTLI switchWALLSN [reason]";
+// Парсер.history (arch/19 §3): строки "parentTLI switchWALLSN [reason]";
 // последняя запись — сам TLI файла (ответвление от parentTLI в switchWALLSN).
 public class WalHistoryTests
 {

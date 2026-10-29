@@ -8,6 +8,9 @@
         <ProjectReference Include="..\PgWorker.Etcd\PgWorker.Etcd.csproj"/>
         <ProjectReference Include="..\PgWorker.Docker\PgWorker.Docker.csproj"/>
         <ProjectReference Include="..\PgWorker.Provisioning\PgWorker.Provisioning.csproj"/>
+        <!-- Клиент приёмника (IWalReceiverApiClient) — pg_dump-операция M1
+             (арх/14 §Move M1, канал arch/25 №22). -->
+        <ProjectReference Include="..\PgWorker.Backups\PgWorker.Backups.csproj"/>
     </ItemGroup>
 
     <ItemGroup>

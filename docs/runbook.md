@@ -17,7 +17,7 @@
 - **Тесты**: `dotnet test src/PgWorker.slnx`; docker-E2E — `PGW_TEST_DOCKER=1`
   (обязателен в мерж-гейте задач воркеров — см. AGENTS.md).
 
-## Вторые инстансы воркеров (t07)
+## Вторые инстансы воркеров
 
 Деплой и dev-стенд поднимают по **два** инстанса каждого воркера
 (PgWorker/KafkaWorker/ValkeyWorker) всегда — SPOF надзора устранён дефолтом,
@@ -58,8 +58,8 @@ sync-standby):
   (drop + create immediate+reserved) автоматически, журнальная фаза
   `slot-recreate/<X>` (op `backup-wal` в `/pgworker/work/<C>`); потерянный агент
   возвращается сам от хвоста S3 (вечный ретрай приёмника), живой продолжает
-  доставку — BROKEN не ставится, цепочка не рвётся;
-- lost/исчезновение слотов ВСЕХ источников при живой цепочке — wal-ключ BROKEN,
+  доставку — WAL_CHAIN_ERROR не ставится, цепочка не рвётся;
+- lost/исчезновение слотов ВСЕХ источников при живой цепочке — wal-ключ WAL_CHAIN_ERROR,
   агенты останавливаются, воркер переснимает полный бэкап; архивация
   восстанавливается от `wal_start` нового полного.
 
@@ -136,7 +136,7 @@ sweeper'а, retry-сон выгрузки) пульсируют чанками �
   заново при каждом создании контейнера от актуальных `request_*`. Смена заявок
   или опций подхватывается только новыми нодами; живые ноды продолжают работать
   на прежнем конфиге (осознанный дрейф; автоматическое выравнивание —
-  `t11-pgtune-params-convergence`, roadmap). Консистентность при смене заявок
+  конвергенцией DCS воркера, arch/14 §5). Консистентность при смене заявок
   живого шарда — на операторе (пересоздать все ноды шарда или не менять заявки).
 - **io_method/io_workers** по умолчанию исключены из применения
   (`ExcludeParams`): `io_uring` требует сборки PG с liburing (Spilo-18 не
@@ -179,11 +179,38 @@ CA-сертификат registry должен быть доверен Docker и 
 
 ### ⚠️ Локально собираемые образы в registry НЕ класть — никогда
 
-`pgworker:dev`, `kafkaworker:dev`, `pgworker-backup:dev`, `adminpanel:dev`,
-`pgworker-node:dev|e2e`, `pgworker-backup:e2e`, сайдкары/opsbox стенда —
+`pgworker:dev`, `kafkaworker:dev`, `adminpanel:dev`,
+`pgworker-node:dev|e2e`, сайдкары/opsbox стенда —
 артефакты конкретной машины/ветки. В общий registry они **категорически
 запрещены**: реестр — зеркало воспроизводимых внешних зависимостей, а не хранилище
 сборок. `mirror-image.sh` для таких имён не запускать, в `images.txt` не вносить.
+
+### Образ PG-ноды с приёмником WAL (двухшаговая сборка)
+
+Приёмник WAL бэкапов исполняется процессом ВНУТРИ контейнера PG-ноды
+(supervisord-программа `walreceiver`, `/opt/pgw-wal`). Отдельного образа
+`pgworker-wal` и контейнеров `pgw-backup-wal-*` больше нет; сборка ноды —
+двухшаговая (publish на хосте, в контейнер — только артефакты):
+
+    dotnet publish src/PgWorker.WalReceiver -c Release -r <rid> \
+      --self-contained -o artifacts/node-wal        # rid: linux-arm64 | linux-x64
+    dotnet publish src/PgWorker.NodeTools -c Release -r <rid> \
+      --self-contained -o artifacts/node-tools
+    docker build -f docker/node/Dockerfile \
+      --build-arg WAL_PUBLISH_DIR=artifacts/node-wal \
+      --build-arg NODE_TOOLS_PUBLISH_DIR=artifacts/node-tools -t pgworker-node:dev .
+
+Полный стенд собирает образ скриптом `dev-stand/adminpanel/checks/00-up.sh`
+(RID определяется по `uname -m` автоматически).
+
+Обновление живых кластеров на новый образ ноды: надзор НЕ пересоздаёт живые
+ноды — приёмники появятся после пересоздания нод штатным механизмом (recreate
+через панель/API либо `docker rm -f pgw-…` на docker-хосте — надзор поднимет
+контейнер с новым образом; данные в volume сохраняются). До пересоздания
+контроль воркера показывает DEGRADED «источник без живого приёмника» с именем
+ноды. Остатки старых wal-контейнеров `pgw-backup-wal-*` сносятся воркером
+автоматически (санитарный вызов в тике WalStreamProcess), руками чистить не
+нужно.
 
 ### Добавить новый внешний образ / обновить версию
 
@@ -213,12 +240,12 @@ Go-1.24-клиентами с ошибкой `x509: certificate is not standards
 | `grafana/grafana:13.0.8` | dev-стенд (метрики) |
 | `mcr.microsoft.com/dotnet/sdk:10.0` | build-стадии Dockerfile'ов PgWorker/KafkaWorker/AdminPanel |
 | `mcr.microsoft.com/dotnet/aspnet:10.0` | runtime-стадии тех же Dockerfile'ов |
-| `minio/mc:RELEASE.2025-08-13T08-35-41Z` | WAL-агенты и бакетные проверки E2E, `00-up.sh` (запинен — supply-chain) |
+| `minio/mc:RELEASE.2025-08-13T08-35-41Z` | бакетные проверки E2E, `00-up.sh` (запинен — supply-chain; операции бэкапов — .NET S3-клиент приёмника, mc не потребляют) |
 | `minio/minio:RELEASE.2025-09-07T16-13-09Z` | dev-стенд — переходный read-only-архив `as-minio` (снос — ../OwnS3/docs/owns3-migration.md §6) |
 | `nginx:alpine` | TlsEngineProxyTests |
 | `node:22-alpine` | AdminPanel.Dockerfile (сборка SPA) |
 | `postgres:18-alpine` | интеграционные тесты бэкапов (OwnPostgres, WalSqlTests) |
-| `postgres:18` | dev-стенд (шарды), тесты AdminPanel, база `pgworker-backup` и opsbox |
+| `postgres:18` | dev-стенд (шарды), тесты AdminPanel, opsbox |
 | `prom/alertmanager:v0.28.1` | dev-стенд (метрики) |
 | `prom/prometheus:v3.14.0` | dev-стенд (метрики) |
 | `python:3.12-alpine` | сайдкар эмулятора Patroni (dev-stand) |
@@ -228,7 +255,7 @@ Go-1.24-клиентами с ошибкой `x509: certificate is not standards
 перемазеркалировать (старую версию из registry можно удалить — см. «Удаление
 образа» в инструкции registry).
 
-## HA-etcd контур контроль-плейна (t09; имена/сеть — arch/25)
+## HA-etcd контур контроль-плейна (имена/сеть — arch/25)
 
 Канон — `arch/04-deploy-etcd.md` §8 (адресация по именам узлов в общей сети,
 бутстрап seed-узлом, состав доводит EtcdWorker — arch/25; параметры,
@@ -292,9 +319,9 @@ etcd/S3, kafka-брокеры) управляемым сертом не затр
 Автоматическая проверка на живом стенде — `dev-stand/adminpanel/checks/70-worker-cert.sh`
 (generate → pending restart → restart → applied → откат на env).
 
-## TLS-подключения к Valkey-кластерам (t06)
+## TLS-подключения к Valkey-кластерам
 
-Клиентский порт Valkey-кластеров — TLS с t06 (`--tls-port 6379 --port 0`):
+Клиентский порт Valkey-кластеров — TLS (`--tls-port 6379 --port 0`):
 plain-подключения отклоняются, адреса/portalloc не менялись (адрес тот же,
 транспорт TLS). Подключение требует per-cluster CA из etcd —
 `/valkey/clusters/<C>/ca_pem` (PEM одной строкой с `\n`):
@@ -307,7 +334,7 @@ plain-подключения отклоняются, адреса/portalloc не
 - клиенты библиотеки HA.Valkey: `GetClientConfig()` отдаёт `ssl=true` и CA
   автоматически (`ssl=true ⟺ ca_pem` прочитан).
 
-Plain-порт закрыт с t06 — это заявленный breaking change релиза: клиенты без
+Plain-порт закрыт — это заявленный breaking change релиза: клиенты без
 TLS после обновления получают отказ на хендшейке. Сертификаты нод доставляются
 env контейнера (`VALKEY_TLS_{CERT,KEY,CA}`); перевыпуск — пересозданием
 контейнера (надзор/ротация), вмешательство не требуется. Остаточный вектор —
@@ -323,7 +350,7 @@ Per-cluster TLS-тома в текущей модели нет (сертифик
 `docker volume rm vwk-<C>-tls` (сначала `docker volume ls -q | grep vwk-` —
 не заденьте том живого кластера в ожидании легаси-чистки).
 
-## Ротация CA valkey (t07)
+## Ротация CA valkey
 
 Ротация per-cluster CA и серверного серта выполняется воркером (процесс
 CaRotator, arch/21 §5 K) по заявке `/valkeyworker/ca_rotations/<C>` — окно
@@ -364,7 +391,7 @@ CaRotator, arch/21 §5 K) по заявке `/valkeyworker/ca_rotations/<C>` —
 Между D и C `ca_pem` — bundle OLD+NEW: клиенты, читающие `ca_pem` из etcd и
 доверяющие ВСЕМ блокам сертификата (многосертовое чтение), работают
 непрерывно. Клиенты с одноблочным парсером слепы к NEW-серту: обновить их ДО
-первой ротации (правка Puzzle-клиента — ветка `t07-valkey-ca-bundle`).
+первой ротации (правка Puzzle-клиента).
 После коммита `ca_pem` = NEW — клиенты с закешированным OLD перечитывают
 `ca_pem` из etcd.
 

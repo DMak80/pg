@@ -18,9 +18,14 @@ using Xunit;
 
 namespace PgWorker.IntegrationTests.Backups;
 
-// Интеграции RestoreProcess (t05 spec Ф2): реальный etcd (статусы/журнал) +
+// Интеграции RestoreProcess (spec Ф2): реальный etcd (статусы/журнал) +
 // фейки docker/S3. Снапшот кластера и бэкапы строятся руками. PLANNED-фаза:
 // валидация (усыновление/полный/manifest/цепочка) и гвард дублей.
+// RUNNING: фазы ЯВНЫЕ в Phase заявки — null/"" демонтаж (Phase="demolished"),
+// "demolished" EnsureNode первой ноды + POST /api/ops/restore на её приёмник
+// (alias:8080, Phase="launching"), "launching"/"downloading"/"recovering" —
+// только GET-супервиз.
+// REJOINING: Patroni-пробы/SQL-гейт.
 // Целевая архитектура E2E (docs/e2e-isolation.md §1): единица изоляции —
 // класс; окружение — СВОЙ etcd в СВОЙ docker-сети (OwnedEtcdFixture) —
 // чужие записи в общий etcd коллекции на класс не влияют.
@@ -29,6 +34,19 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
 {
     private readonly ClaimStore _claims = new("/pgworker", [fixture.Endpoint], fixture.Gateway, TimeProvider.System);
 
+    // REST-пароль генерируется в рантайме: секрет не зашивается в исходник;
+    // одно поле фикстуры переиспользуется всеми обращениями (сид снапшотов
+    // и сравнение ensured-значений).
+    private static readonly string RestPassword = GenerateTestPassword();
+
+    private static string GenerateTestPassword()
+    {
+        // Криптостойкий генератор: 24 символа букв/цифр (безопасно для DSN/env).
+        const string alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+        var bytes = System.Security.Cryptography.RandomNumberGenerator.GetBytes(24);
+        return new string(bytes.Select(b => alphabet[b % alphabet.Length]).ToArray());
+    }
+
     // ── Хелперы Arrange ──
 
     // Активный кластер c1/shard1 с канонической нодой shard1a.
@@ -36,12 +54,11 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
         new ClusterConfig(cluster, 2, cluster, null, ClusterState.Active),
         [new ShardSpec(shard, 1, $"host=shard1a dbname={cluster}", "shard1a:17001",
             [new NodeSpec(shard, "shard1a", NodeState.Running)])],
-        [], RestPassword: "Key0Pass00000000000000000000000A");
+        [], RestPassword: RestPassword);
 
     private static BackupsRuntimeOptions Options() => new(
         Enabled: true,
         S3Bucket: "bkt",
-        JobImage: "pgworker-backup:test",
         RestoreRecoveryTimeoutSec: 1800);
 
     // Сид portalloc под конкретный тест-кластер + чистка чужих следов
@@ -56,7 +73,7 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
         // Изоляция (канон docs/e2e-isolation.md §1): etcd один на коллекцию,
         // соседние тесты класса оставляют /clusters/<C>/... (состояния нод
         // REBUILDING/RUNNING) — без чистки ассерты BeNull флакуют от порядка
-        // (прецедент t07: литеральные имена кластеров в общей коллекции).
+        // (прецедент : литеральные имена кластеров в общей коллекции).
         await fixture.Gateway.DeleteAsync(fixture.Endpoint, $"/clusters/{cluster}/", prefix: true, ct);
         await fixture.Gateway.PutAsync(fixture.Endpoint, $"/pgworker/portalloc/{cluster}",
             Portalloc.Serialize(alloc ?? new Dictionary<string, NodeAddress>
@@ -65,11 +82,16 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
             }), null, ct);
     }
 
+    // Фейк клиента API приёмника: программируемые ответы, журнал команд
+    // (URL — адрес приёмника первой ноды alias:8080).
+    private readonly FakeReceiverClient _receiver = new();
+
     private RestoreProcess BuildProcess(FakeBackupS3 s3, IClusterDriver driver,
         TimeProvider? clock = null, HttpMessageHandler? patroni = null,
         BackupsRuntimeOptions? options = null, ISqlExecutor? db = null,
         Action<string, string, string>? restoreObserver = null)
-        => new(fixture.Gateway, [fixture.Endpoint], driver, FakePoolFactory.Single(s3), _claims,
+        => new(fixture.Gateway, [fixture.Endpoint], driver, FakePoolFactory.Single(s3), _receiver,
+            _claims,
             new WorkJournal("/pgworker", fixture.Gateway, [fixture.Endpoint]), options ?? Options(),
             new InstallSecrets("su-pw", "sb-pw", "adm-pw", "mov-pw"),
             new EtcdEndpoints([fixture.Endpoint]), new StubAppSecret(),
@@ -79,10 +101,54 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
             clock ?? TimeProvider.System,
             restoreObserver: restoreObserver);
 
-    // SQL-фейк гейта мастера (t10): Scalar — ответ pg_is_in_recovery()
+    /// <summary>Мини-фейк API приёмника (restore-сценарии): StartRestore — 202
+    /// (URL/тело в журнал), GetRestore — программируемый ответ.</summary>
+    private sealed class FakeReceiverClient : IWalReceiverApiClient
+    {
+        public ReceiverReply StartReply { get; set; } =
+            new(202, new ReceiverStatus("running", "downloading"), null);
+        public ReceiverReply GetReply { get; set; } =
+            new(200, new ReceiverStatus("running", "downloading"), null);
+        public readonly List<string> StartUrls = [];
+        public readonly List<StartRestoreRequest> StartBodies = [];
+        public int StartCalls;
+
+        public Task<ReceiverReply> StartRestoreAsync(string baseUrl, StartRestoreRequest body, CancellationToken ct)
+        {
+            StartCalls++;
+            StartUrls.Add(baseUrl);
+            StartBodies.Add(body);
+            return Task.FromResult(StartReply);
+        }
+
+        public Task<ReceiverReply> GetRestoreAsync(string baseUrl, CancellationToken ct)
+            => Task.FromResult(GetReply);
+
+        public Task<ReceiverReply> StartFullAsync(string baseUrl, string id, CancellationToken ct)
+            => throw new NotSupportedException();
+        public Task<ReceiverReply> GetFullAsync(string baseUrl, CancellationToken ct)
+            => throw new NotSupportedException();
+        public Task<ReceiverReply> CancelFullAsync(string baseUrl, CancellationToken ct)
+            => throw new NotSupportedException();
+        public Task<ReceiverReply> StartVerifyAsync(string baseUrl, StartVerifyRequest body, CancellationToken ct)
+            => throw new NotSupportedException();
+        public Task<ReceiverReply> GetVerifyAsync(string baseUrl, CancellationToken ct)
+            => throw new NotSupportedException();
+        public Task<ReceiverReply> CancelOpsAsync(string baseUrl, CancellationToken ct)
+            => throw new NotSupportedException();
+
+        public Task<NodeReply<HbaEnsureResponse>> EnsureHbaAsync(string baseUrl, CancellationToken ct)
+            => Task.FromResult(new NodeReply<HbaEnsureResponse>(200, new HbaEnsureResponse(true, false), null));
+        public Task<NodeReply<PgDumpResponse>> PgDumpAsync(string baseUrl, StartPgDumpRequest body, CancellationToken ct)
+            => throw new NotSupportedException();
+        public Task<NodeReply<PgDataResponse>> GetPgDataAsync(string baseUrl, CancellationToken ct)
+            => throw new NotSupportedException();
+    }
+
+    // SQL-фейк гейта мастера : Scalar — ответ pg_is_in_recovery()
     // (boxed-bool от Npgsql: false — готова, дефолт: старые кейсы ведут себя
     // как раньше; true — висит в recovery), FailScalar — транспорт рвётся.
-    // Оба transient-вида гейта идут одним путём ожидания (spec t10 §8).
+    // Оба transient-вида гейта идут одним путём ожидания (spec §8).
     private sealed class FakeDb : ISqlExecutor
     {
         public object? Scalar { get; set; } = false;
@@ -144,13 +210,17 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
     private async Task<RestoreOperationState> SeedRestoreAsync(
         string cluster, string shard, string id, string backupId = "", string source = "",
         string target = "latest", RestoreStatus state = RestoreStatus.Planned,
-        long? startedUnix = null)
+        long? startedUnix = null, string? phase = null, long? phaseUnix = null)
     {
         var ct = TestContext.Current.CancellationToken;
         var op = new RestoreOperationState(id, state, backupId,
             source.Length == 0 ? $"{cluster}/{shard}" : source, target, "shard1a",
             TimeProvider.System.GetUtcNow().ToUnixTimeSeconds(), "operator",
-            StartedUnix: startedUnix);
+            StartedUnix: startedUnix)
+        {
+            Phase = phase,
+            PhaseUnix = phaseUnix,
+        };
         await fixture.Gateway.PutAsync(fixture.Endpoint,
             BackupNames.RestoreKey(cluster, shard, id), RestoreStatusJson.Serialize(op), null, ct);
         return op;
@@ -258,7 +328,7 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
     public async Task ValidationFullWithoutBackupManifestPermanentFailed()
     {
         // Arrange — префикс полного есть (etcd-статус + backup_label), манифеста
-        // НЕТ: имитация упавшего на середине upload t02
+        // НЕТ: имитация упавшего на середине upload 
         const string fullId = "20260910120000Z";
         await SeedAsync("c1");
         await SeedFullAsync("c1", "shard1", fullId);
@@ -388,7 +458,7 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
         var result = await process.TickAsync(BuildSnap(),
             await BackupsFromEtcdAsync("c1"), TestContext.Current.CancellationToken);
 
-        // Assert — тик Ok (InProgress), заявка осталась PLANNED, журнал-факт
+        // Assert — тик Ok (InProgress), заявка осталась PLANNED, запись журнала
         result.IsSuccess.Should().BeTrue(result.Error?.ToString());
         result.Value.Should().Be(ProcessOutcome.InProgress);
         (await ReadRestoresAsync("c1", "shard1")).Single(r => r.Id == op.Id)
@@ -397,36 +467,29 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
             TestContext.Current.CancellationToken)).Value!.Value.Should().Contain("s3-unavailable");
     }
 
-    // ── RUNNING: демонтаж + джоб + супервиз ──
+    // ── RUNNING: демонтаж + restore-операция приёмника первой ноды + супервиз ──
 
-    // Драйвер: нод-мутации считает StubScaleDriver, движок джоба — fake.
+    // Драйвер: нод-мутации считает StubScaleDriver, docker-движок хоста — fake;
+    // EnsureFails — транспортный отказ EnsureNode (transient-ветка шага запуска).
     private sealed class TestDriver(IClusterDriver inner, IDockerEngine engine) : IClusterDriver
     {
         public StubScaleDriver Inner => (StubScaleDriver)inner;
+        public bool EnsureFails { get; set; }
         public IDockerEngine? EngineFor(string host) => engine;
         public bool SupportsRunningInspection => inner.SupportsRunningInspection;
         public Task<Result<IReadOnlyList<HostInfo>>> GetHostsAsync(CancellationToken ct) => inner.GetHostsAsync(ct);
         public Task<Result<IReadOnlySet<(string Host, int Port)>>> GetBusyPortsAsync(CancellationToken ct) => inner.GetBusyPortsAsync(ct);
-        public Task<Result> EnsureNodeAsync(ShardTopology t, string n, NodeAddress a, InstallSecrets s, EtcdEndpoints e, NodeResources? r, PgTuneResult? tuning, bool syncStrict, string restPassword, CancellationToken ct) => inner.EnsureNodeAsync(t, n, a, s, e, r, tuning, syncStrict, restPassword, ct);
+        public Task<Result> EnsureNodeAsync(ShardTopology t, string n, NodeAddress a, InstallSecrets s, EtcdEndpoints e, NodeResources? r, PgTuneResult? tuning, bool syncStrict, string restPassword, CancellationToken ct)
+            => EnsureFails
+                ? Task.FromResult(Result.Failed(new ApplicationException("docker: ensure failed (fake)")))
+                : inner.EnsureNodeAsync(t, n, a, s, e, r, tuning, syncStrict, restPassword, ct);
         public Task<Result> RemoveNodeAsync(string c, string sh, string node, CancellationToken ct) => inner.RemoveNodeAsync(c, sh, node, ct);
         public Task<Result> StopNodeAsync(string c, string sh, string node, CancellationToken ct) => inner.StopNodeAsync(c, sh, node, ct);
-        public Task<Result<DataPresence>> NodeDataPresenceAsync(string c, string sh, string node, CancellationToken ct) => inner.NodeDataPresenceAsync(c, sh, node, ct);
-        public Task<Result<string>> ExecNodeAsync(string c, string sh, string node, IReadOnlyList<string> cmd, CancellationToken ct) => inner.ExecNodeAsync(c, sh, node, cmd, ct);
-        public Task<Result<string>> ExecContainerAsync(string container, IReadOnlyList<string> cmd, CancellationToken ct) => inner.ExecContainerAsync(container, cmd, ct);
         public Task<Result<IReadOnlyDictionary<string, DiscoveredNode>>> InspectNodesAsync(string c, IReadOnlyCollection<string> names, CancellationToken ct) => inner.InspectNodesAsync(c, names, ct);
-            public Task<Result<IReadOnlyDictionary<string, string>>> InspectNodeEnvAsync(
-        string cluster, string shard, string nodeName, CancellationToken ct) => inner.InspectNodeEnvAsync(cluster, shard, nodeName, ct);
-
-public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string c, CancellationToken ct) => inner.ListNodeObjectsAsync(c, ct);
-        public Task<Result> EnsureBackupAgentAsync(string c, string sh, string n, ContainerSpec spec, string host, CancellationToken ct) => inner.EnsureBackupAgentAsync(c, sh, n, spec, host, ct);
+        public Task<Result<IReadOnlyDictionary<string, string>>> InspectNodeEnvAsync(
+            string cluster, string shard, string nodeName, CancellationToken ct) => inner.InspectNodeEnvAsync(cluster, shard, nodeName, ct);
+        public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string c, CancellationToken ct) => inner.ListNodeObjectsAsync(c, ct);
         public Task<Result> RemoveBackupAgentsAsync(string c, string? sh, CancellationToken ct) => inner.RemoveBackupAgentsAsync(c, sh, ct);
-    // t36: заглушка хвоста лога агента (интерфейсный член; сценарию не нужен).
-    public Task<Result<string>> BackupAgentLogsAsync(string cluster, string containerName, int tailLines, CancellationToken ct)
-        => Task.FromResult(Result<string>.Success(""));
-
-        public Task<Result<IReadOnlyList<DockerContainer>>> ListBackupAgentsAsync(string c, CancellationToken ct) => inner.ListBackupAgentsAsync(c, ct);
-        public Task<Result> RemoveBackupJobsAsync(string c, CancellationToken ct) => inner.RemoveBackupJobsAsync(c, ct);
-        public Task<Result> RemoveRestoreJobsAsync(string c, string sh, CancellationToken ct) => inner.RemoveRestoreJobsAsync(c, sh, ct);
     }
 
     // Снапшот шарда с двумя нодами (демонтаж по всем).
@@ -435,7 +498,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string c, Cancel
         [new ShardSpec(shard, 2, $"host=shard1a dbname={cluster}", "shard1a:17001",
             [new NodeSpec(shard, "shard1a", NodeState.Running),
              new NodeSpec(shard, "shard1b", NodeState.Running)])],
-        [], RestPassword: "Key0Pass00000000000000000000000A");
+        [], RestPassword: RestPassword);
 
     private async Task SeedTwoNodeAllocAsync()
     {
@@ -451,7 +514,8 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string c, Cancel
     [Fact]
     public async Task DemolitionRemovesNodeAgentCleansHaScopeSetsRebuilding()
     {
-        // Arrange — RUNNING-заявка; живой агент, HA-scope и request_cpu в etcd
+        // Arrange — RUNNING-заявка (Phase пуст — шаг ДЕМОНТАЖА); живой агент,
+        // HA-scope и request_cpu в etcd
         var ct = TestContext.Current.CancellationToken;
         await SeedAsync("c1");
         await SeedTwoNodeAllocAsync();
@@ -467,8 +531,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string c, Cancel
         await fixture.Gateway.PutAsync(fixture.Endpoint, "/service/c1-shard1/request_cpu", "2", null, ct);
         var inner = new StubScaleDriver();
         inner.BackupAgentObjects.Add(new DockerContainer("id-agent", ["/pgw-backup-wal-c1-shard1"], "running", "img"));
-        var engine = new FakeBackupEngine();
-        var driver = new TestDriver(inner, engine);
+        var driver = new TestDriver(inner, new FakeBackupEngine());
         var process = BuildProcess(new FakeBackupS3(), driver);
         var op = await SeedRestoreAsync("c1", "shard1", "20260911121000Z",
             backupId: "20260910120000Z", state: RestoreStatus.Running, startedUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 60);
@@ -478,7 +541,8 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string c, Cancel
         (await process.TickAsync(BuildTwoNodeSnap(), await BackupsFromEtcdAsync("c1"), ct)).IsSuccess.Should().BeTrue();
 
         // Assert — агент снесён, ноды удалены и в REBUILDING, scope чист,
-        // request_cpu жив (заявка ресурсов — не HA-состояние)
+        // request_cpu жив (заявка ресурсов — не HA-состояние); запуск —
+        // СЛЕДУЮЩИМ тиком (Phase="demolished"), этот тик ноду не поднимает
         inner.RemovedBackupAgents.Should().Contain("pgw-backup-wal-c1-shard1");
         inner.RemovedNodes.Should().BeEquivalentTo(["shard1/shard1a", "shard1/shard1b"]);
         (await fixture.Gateway.GetAsync(fixture.Endpoint, "/clusters/c1/shards/shard1/nodes/shard1a/state", ct))
@@ -490,98 +554,646 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string c, Cancel
         (await fixture.Gateway.GetAsync(fixture.Endpoint, "/service/c1-shard1/members/shard1a", ct)).Value.Should().BeNull();
         (await fixture.Gateway.GetAsync(fixture.Endpoint, "/service/c1-shard1/status", ct)).Value.Should().BeNull("the optime rudiment locks elections of the restored node");
         // Щит re-bootstrap: initialize ставится заново заполнителем — пустая нода
-        // в окне демонтаж→джоба→rejoin initdb'нуться в чужой кластер не может
+        // в окне демонтаж→restore→rejoin initdb'нуться в чужой кластер не может
         (await fixture.Gateway.GetAsync(fixture.Endpoint, "/service/c1-shard1/initialize", ct))
             .Value!.Value.Should().Be("restore-in-progress");
         (await fixture.Gateway.GetAsync(fixture.Endpoint, "/service/c1-shard1/request_cpu", ct))
             .Value!.Value.Should().Be("2");
         (await fixture.Gateway.GetAsync(fixture.Endpoint, "/pgworker/work/c1", ct)).Value!.Value
             .Should().Contain("demolished/shard1/");
+        var demolished = (await ReadRestoresAsync("c1", "shard1")).Single(r => r.Id == op.Id);
+        demolished.State.Should().Be(RestoreStatus.Running);
+        demolished.Phase.Should().Be("demolished", "the launch step continues on the next tick");
+        inner.EnsuredNodes.Should().BeEmpty("the demolish step does not launch anything");
+        _receiver.StartCalls.Should().Be(0);
     }
 
+    // AAA (тик запуска, Phase="demolished"): первая нода EnsureNode, POST
+    // /api/ops/restore уходит на URL приёмника первой ноды (alias:8080) с
+    // Id=null (restore — не drill); команда принята → Phase="launching"
+    // (следующий тик — только GET-поллинг).
     [Fact]
-    public async Task JobExit0OkMovesToRejoiningWithLsn()
+    public async Task LaunchTickEnsuresFirstNodePostsRestoreWithNullIdToNodeReceiverUrl()
     {
-        // Arrange — RUNNING + контейнер exited 0 с result-JSON ok
+        // Arrange — RUNNING-заявка с backup_id на шаге запуска (demolished)
         var ct = TestContext.Current.CancellationToken;
         await SeedAsync("c1");
-        var engine = new FakeBackupEngine();
-        var driver = new TestDriver(new StubScaleDriver(), engine);
+        var inner = new StubScaleDriver();
+        var driver = new TestDriver(inner, new FakeBackupEngine());
         var process = BuildProcess(new FakeBackupS3(), driver);
-        var name = BackupNames.RestoreContainerName("c1", "shard1", "20260911121001Z");
-        engine.Containers[name] = new FakeBackupEngine.ContainerRec(
-            "cnt-restore", "exited", 0, "{\"ok\":true,\"restored_to_lsn\":\"0/42\"}\n");
         var op = await SeedRestoreAsync("c1", "shard1", "20260911121001Z",
-            backupId: "20260910120000Z", state: RestoreStatus.Running, startedUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 60);
+            backupId: "20260910120000Z", state: RestoreStatus.Running, startedUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 60,
+            phase: "demolished");
         (await _claims.TryClaimClusterAsync("c1", ct)).Value.Should().BeTrue();
 
         // Act
-        (await process.TickAsync(BuildSnap(), await BackupsFromEtcdAsync("c1"), ct)).IsSuccess.Should().BeTrue();
+        (await process.TickAsync(BuildSnap(), await BackupsFromEtcdAsync("c1"), ct))
+            .IsSuccess.Should().BeTrue();
 
-        // Assert — REJOINING + lsn; контейнер прибран; volume не тронут
-        var restored = (await ReadRestoresAsync("c1", "shard1")).Single(r => r.Id == op.Id);
-        restored.State.Should().Be(RestoreStatus.Rejoining);
-        restored.RestoredToLsn.Should().Be("0/42");
-        engine.Removed.Should().Contain(name);
-        engine.RemovedVolumes.Should().BeEmpty();
+        // Assert — демонтажа на этом шаге нет, EnsureNode первой ноды,
+        // POST на http://pgw-c1-shard1-shard1a:8080: backup_id — резолвнутый
+        // полный (не id заявки), Id=null, latest — TargetTime null
+        inner.RemovedNodes.Should().BeEmpty("the launch step does not demolish — phase is past it");
+        inner.EnsuredNodes.Should().BeEquivalentTo(["shard1/shard1a"]);
+        _receiver.StartCalls.Should().Be(1);
+        _receiver.StartUrls.Should().ContainSingle().Which.Should().Be("http://pgw-c1-shard1-shard1a:8080");
+        var body = _receiver.StartBodies.Single();
+        body.BackupId.Should().Be("20260910120000Z").And.NotBe(op.Id);
+        body.Id.Should().BeNull("restore is not a drill");
+        body.TargetTime.Should().BeNull();
+        body.RecoveryTimeoutSec.Should().Be(1800);
+        body.S3.Prefix.Should().Be("c1/shard1");
+        var running = (await ReadRestoresAsync("c1", "shard1")).Single(r => r.Id == op.Id);
+        running.State.Should().Be(RestoreStatus.Running);
+        running.Phase.Should().Be("launching", "the next tick polls GET only");
     }
 
     [Fact]
-    public async Task JobExit1WritesFailedWithErrorAndRemovesContainer()
+    public async Task RunningNodeMissingInPortallocPermanentFailed()
     {
-        // Arrange — exited 1 с error-JSON
+        // Arrange — RUNNING, первой ноды нет в portalloc (рассинхрон с декларацией)
         var ct = TestContext.Current.CancellationToken;
-        await SeedAsync("c1");
-        var engine = new FakeBackupEngine();
-        var driver = new TestDriver(new StubScaleDriver(), engine);
-        var process = BuildProcess(new FakeBackupS3(), driver);
-        var name = BackupNames.RestoreContainerName("c1", "shard1", "20260911121002Z");
-        engine.Containers[name] = new FakeBackupEngine.ContainerRec(
-            "cnt-restore", "exited", 1, "{\"ok\":false,\"error\":\"boom\"}\n");
+        await SeedAsync("c1", alloc: []);
+        var process = BuildProcess(new FakeBackupS3(), new TestDriver(new StubScaleDriver(), new FakeBackupEngine()));
         var op = await SeedRestoreAsync("c1", "shard1", "20260911121002Z",
             backupId: "20260910120000Z", state: RestoreStatus.Running, startedUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 60);
         (await _claims.TryClaimClusterAsync("c1", ct)).Value.Should().BeTrue();
 
         // Act
-        (await process.TickAsync(BuildSnap(), await BackupsFromEtcdAsync("c1"), ct)).IsSuccess.Should().BeTrue();
+        (await process.TickAsync(BuildSnap(), await BackupsFromEtcdAsync("c1"), ct))
+            .IsSuccess.Should().BeTrue();
 
-        // Assert — FAILED с причиной, контейнер и volume первой ноды чисты
+        // Assert — permanent: заявка не исполнима без адреса приёмника
         var failed = (await ReadRestoresAsync("c1", "shard1")).Single(r => r.Id == op.Id);
         failed.State.Should().Be(RestoreStatus.Failed);
-        failed.Error.Should().Be("boom");
-        engine.Removed.Should().Contain(name);
-        engine.RemovedVolumes.Should().Contain("pgw-c1-shard1-shard1a-data");
+        failed.Error.Should().Contain("not found in portalloc");
     }
 
+    // AAA: POST-команда не принята приёмником (транспортный отказ) — transient:
+    // статус не меняем, фаза остаётся "demolished" (команда повторится).
     [Fact]
-    public async Task JobExit1FailedBeforeRejoinRemovesInitializeShield()
+    public async Task LaunchPostFailureTransientStatusUnchanged()
     {
-        // Arrange — демонтаж уже прошёл (щит «restore-in-progress» стоит);
-        // джоба фейлится: permanent-FAILED обязан снять заполнитель, иначе он
-        // навсегда запрёт bootstrap пустых нод при пересоздании шарда
+        // Arrange — RUNNING на шаге запуска; приёмник не отвечает (StatusCode 0)
+        var ct = TestContext.Current.CancellationToken;
+        await SeedAsync("c1");
+        var inner = new StubScaleDriver();
+        var driver = new TestDriver(inner, new FakeBackupEngine());
+        var process = BuildProcess(new FakeBackupS3(), driver);
+        _receiver.StartReply = new ReceiverReply(0, null, "connection refused (fake)");
+        var op = await SeedRestoreAsync("c1", "shard1", "20260911121003Z",
+            backupId: "20260910120000Z", state: RestoreStatus.Running, startedUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 60,
+            phase: "demolished");
+        (await _claims.TryClaimClusterAsync("c1", ct)).Value.Should().BeTrue();
+
+        // Act
+        var result = await process.TickAsync(BuildSnap(), await BackupsFromEtcdAsync("c1"), ct);
+
+        // Assert — InProgress, статус RUNNING, фаза "demolished" (повтор POST)
+        result.IsSuccess.Should().BeTrue(result.Error?.ToString());
+        result.Value.Should().Be(ProcessOutcome.InProgress);
+        var alive = (await ReadRestoresAsync("c1", "shard1")).Single(r => r.Id == op.Id);
+        alive.State.Should().Be(RestoreStatus.Running);
+        alive.Phase.Should().Be("demolished", "the command is repeated on the next tick");
+        (await fixture.Gateway.GetAsync(fixture.Endpoint, "/pgworker/work/c1", ct)).Value!.Value
+            .Should().Contain("receiver-unavailable");
+    }
+
+    // AAA (arch/19 §3.5): 409 при запуске — в общем ops-реестре приёмника
+    // ЧУЖАЯ ops-операция (verify свежего полного); снимок 409 не различает
+    // свою/чужую, и принять 409 за «свою живую» нельзя — воркер уходил бы в
+    // REJOINING от чужого succeeded без system_id. 409 — transient: фаза
+    // остаётся "demolished", повтор следующим тиком до освобождения реестра.
+    [Fact]
+    public async Task LaunchPostConflictTransientPhaseStaysDemolished()
+    {
+        // Arrange — RUNNING на шаге запуска; приёмник отвечает 409 (реестр занят)
+        var ct = TestContext.Current.CancellationToken;
+        await SeedAsync("c1");
+        var inner = new StubScaleDriver();
+        var driver = new TestDriver(inner, new FakeBackupEngine());
+        var process = BuildProcess(new FakeBackupS3(), driver);
+        _receiver.StartReply = new ReceiverReply(409, null, null);
+        var op = await SeedRestoreAsync("c1", "shard1", "20260911121004Z",
+            backupId: "20260910120000Z", state: RestoreStatus.Running, startedUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 60,
+            phase: "demolished");
+        (await _claims.TryClaimClusterAsync("c1", ct)).Value.Should().BeTrue();
+
+        // Act
+        var result = await process.TickAsync(BuildSnap(), await BackupsFromEtcdAsync("c1"), ct);
+
+        // Assert — InProgress, статус RUNNING, фаза "demolished" (не launching!):
+        // чужая операция не выдаётся за свою, запуск отложен до свободы реестра
+        result.IsSuccess.Should().BeTrue(result.Error?.ToString());
+        result.Value.Should().Be(ProcessOutcome.InProgress);
+        var alive = (await ReadRestoresAsync("c1", "shard1")).Single(r => r.Id == op.Id);
+        alive.State.Should().Be(RestoreStatus.Running);
+        alive.Phase.Should().Be("demolished", "a foreign ops op must not be adopted as ours");
+        (await fixture.Gateway.GetAsync(fixture.Endpoint, "/pgworker/work/c1", ct)).Value!.Value
+            .Should().Contain("receiver-busy");
+    }
+
+    // AAA: succeeded → REJOINING с чистой фазой (рестарта ноды нет: операция
+    // ноды) + RestoredToLsn/SystemId из статуса API; volume первой ноды с
+    // восстановленным PGDATA не трогается (docker-сносов нет — итог ТОЛЬКО по API).
+    [Fact]
+    public async Task SucceededSuperviseMovesToRejoiningWithRestartingMarker()
+    {
+        // Arrange — RUNNING с записанной фазой; GET succeeded с lsn/system_id
+        var ct = TestContext.Current.CancellationToken;
+        await SeedAsync("c1");
+        var inner = new StubScaleDriver();
+        var driver = new TestDriver(inner, new FakeBackupEngine());
+        var process = BuildProcess(new FakeBackupS3(), driver);
+        _receiver.GetReply = new ReceiverReply(200,
+            new ReceiverStatus("succeeded", "recovering",
+                RestoredToLsn: "0/42", SystemId: "7684914368175407176"), null);
+        var op = await SeedRestoreAsync("c1", "shard1", "20260911121004Z",
+            backupId: "20260910120000Z", state: RestoreStatus.Running, startedUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 60,
+            phase: "recovering", phaseUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 50);
+        (await _claims.TryClaimClusterAsync("c1", ct)).Value.Should().BeTrue();
+
+        // Act
+        (await process.TickAsync(BuildSnap(), await BackupsFromEtcdAsync("c1"), ct))
+            .IsSuccess.Should().BeTrue();
+
+        // Assert — REJOINING + lsn/system_id; нода и volume живы
+        var restored = (await ReadRestoresAsync("c1", "shard1")).Single(r => r.Id == op.Id);
+        restored.State.Should().Be(RestoreStatus.Rejoining);
+        restored.Phase.Should().BeNull("no restart marker — the operation returned Patroni itself");
+        restored.RestoredToLsn.Should().Be("0/42");
+        restored.SystemId.Should().Be("7684914368175407176");
+        inner.RemovedNodes.Should().BeEmpty("the restored node keeps its data volume");
+        (await fixture.Gateway.GetAsync(fixture.Endpoint, "/pgworker/work/c1", ct)).Value!.Value
+            .Should().Contain($"restored/shard1/{op.Id}");
+    }
+
+    // AAA: failed (recovering) — permanent: первая нода сносится вместе с
+    // data-volume (мог остаться битым), заполнитель initialize снимается
+    // (иначе он навсегда запрёт bootstrap пустых нод), причина — из статуса API.
+    [Fact]
+    public async Task FailedRecoveringRemovesNodeAndShieldPermanentFailed()
+    {
+        // Arrange — RUNNING (фаза recovering), щит демонтажа стоит; GET failed
         var ct = TestContext.Current.CancellationToken;
         await SeedAsync("c1");
         await fixture.Gateway.PutAsync(fixture.Endpoint,
             "/service/c1-shard1/initialize", "restore-in-progress", null, ct);
-        var engine = new FakeBackupEngine();
-        var driver = new TestDriver(new StubScaleDriver(), engine);
+        var inner = new StubScaleDriver();
+        var driver = new TestDriver(inner, new FakeBackupEngine());
         var process = BuildProcess(new FakeBackupS3(), driver);
-        var name = BackupNames.RestoreContainerName("c1", "shard1", "20260911121005Z");
-        engine.Containers[name] = new FakeBackupEngine.ContainerRec(
-            "cnt-restore", "exited", 1, "{\"ok\":false,\"error\":\"boom\"}\n");
+        _receiver.GetReply = new ReceiverReply(200,
+            new ReceiverStatus("failed", "recovering", Error: "boom"), null);
         var op = await SeedRestoreAsync("c1", "shard1", "20260911121005Z",
-            backupId: "20260910120000Z", state: RestoreStatus.Running, startedUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 60);
+            backupId: "20260910120000Z", state: RestoreStatus.Running, startedUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 60,
+            phase: "recovering", phaseUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 50);
+        (await _claims.TryClaimClusterAsync("c1", ct)).Value.Should().BeTrue();
+
+        // Act
+        (await process.TickAsync(BuildSnap(), await BackupsFromEtcdAsync("c1"), ct))
+            .IsSuccess.Should().BeTrue();
+
+        // Assert — FAILED с причиной; нода снесена (volume уходит с нодой);
+        // заполнителя initialize больше нет
+        var failed = (await ReadRestoresAsync("c1", "shard1")).Single(r => r.Id == op.Id);
+        failed.State.Should().Be(RestoreStatus.Failed);
+        failed.Error.Should().Be("boom");
+        inner.RemovedNodes.Should().BeEquivalentTo(["shard1/shard1a"]);
+        (await fixture.Gateway.GetAsync(fixture.Endpoint, "/service/c1-shard1/initialize", ct))
+            .Value.Should().BeNull("the shield without system_id does not survive permanent-FAILED");
+    }
+
+    // AAA: стенка наката — операция в recovering, переход (phase_unix) глубже
+    // бюджета (1800+60): воркерская стенка — backstop зависшего приёмника;
+    // нода сносится, заявка FAILED «recovery budget exhausted».
+    [Fact]
+    public async Task RecoveringWallExceededRemovesNodePermanentFailed()
+    {
+        // Arrange — running/recovering; phase_unix = now-2000 (> 1800+60)
+        var ct = TestContext.Current.CancellationToken;
+        await SeedAsync("c1");
+        var inner = new StubScaleDriver();
+        var driver = new TestDriver(inner, new FakeBackupEngine());
+        var process = BuildProcess(new FakeBackupS3(), driver);
+        _receiver.GetReply = new ReceiverReply(200,
+            new ReceiverStatus("running", "recovering"), null);
+        var op = await SeedRestoreAsync("c1", "shard1", "20260911121006Z",
+            backupId: "20260910120000Z", state: RestoreStatus.Running,
+            startedUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 2100,
+            phase: "recovering",
+            phaseUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 2000);
+        (await _claims.TryClaimClusterAsync("c1", ct)).Value.Should().BeTrue();
+
+        // Act
+        (await process.TickAsync(BuildSnap(), await BackupsFromEtcdAsync("c1"), ct))
+            .IsSuccess.Should().BeTrue();
+
+        // Assert — нода снесена; FAILED «бюджет»
+        inner.RemovedNodes.Should().Contain("shard1/shard1a");
+        var failed = (await ReadRestoresAsync("c1", "shard1")).Single(r => r.Id == op.Id);
+        failed.State.Should().Be(RestoreStatus.Failed);
+        failed.Error.Should().Contain("budget exhausted");
+    }
+
+    // AAA: долгий download НЕ съедает recovery-бюджет: операция в фазе
+    // downloading (переход глубже, чем весь recovery-бюджет) — стенка наката
+    // не применяется (она от перехода в recovering), статус RUNNING не
+    // фейлится, нода жива (bounded статусным Job:RestoreTimeoutSec).
+    [Fact]
+    public async Task LongDownloadDoesNotEatRecoveryBudget()
+    {
+        // Arrange — running/downloading; phase_unix = now-2000
+        // (> 1800+60: при стенке от started_unix убило бы)
+        var ct = TestContext.Current.CancellationToken;
+        await SeedAsync("c1");
+        var inner = new StubScaleDriver();
+        var driver = new TestDriver(inner, new FakeBackupEngine());
+        var process = BuildProcess(new FakeBackupS3(), driver);
+        _receiver.GetReply = new ReceiverReply(200,
+            new ReceiverStatus("running", "downloading"), null);
+        var op = await SeedRestoreAsync("c1", "shard1", "20260911121007Z",
+            backupId: "20260910120000Z", state: RestoreStatus.Running,
+            startedUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 2100,
+            phase: "downloading",
+            phaseUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 2000);
+        (await _claims.TryClaimClusterAsync("c1", ct)).Value.Should().BeTrue();
+
+        // Act
+        (await process.TickAsync(BuildSnap(), await BackupsFromEtcdAsync("c1"), ct))
+            .IsSuccess.Should().BeTrue();
+
+        // Assert — статус жив (RUNNING), нода не снесена, FAILED нет
+        inner.RemovedNodes.Should().BeEmpty("a long download is not a recovery-budget failure");
+        var alive = (await ReadRestoresAsync("c1", "shard1")).Single(r => r.Id == op.Id);
+        alive.State.Should().Be(RestoreStatus.Running);
+        alive.Error.Should().BeNull("a long download is not a recovery-budget failure");
+    }
+
+    // AAA: переход downloading → recovering записывает phase_unix:
+    // статус в etcd несёт факт перехода (стенка наката считается от него).
+    [Fact]
+    public async Task PhaseTransitionWritesPhaseUnix()
+    {
+        // Arrange — заявка RUNNING с записанной фазой downloading;
+        // приёмник отвечает running/recovering
+        var ct = TestContext.Current.CancellationToken;
+        await SeedAsync("c1");
+        var driver = new TestDriver(new StubScaleDriver(), new FakeBackupEngine());
+        var process = BuildProcess(new FakeBackupS3(), driver);
+        _receiver.GetReply = new ReceiverReply(200,
+            new ReceiverStatus("running", "recovering"), null);
+        var op = await SeedRestoreAsync("c1", "shard1", "20260911121008Z",
+            backupId: "20260910120000Z", state: RestoreStatus.Running,
+            startedUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 60,
+            phase: "downloading",
+            phaseUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 50);
+        (await _claims.TryClaimClusterAsync("c1", ct)).Value.Should().BeTrue();
+
+        // Act
+        (await process.TickAsync(BuildSnap(), await BackupsFromEtcdAsync("c1"), ct))
+            .IsSuccess.Should().BeTrue();
+
+        // Assert — phase=recovering + phase_unix ≈ now записаны в etcd
+        var supervised = (await ReadRestoresAsync("c1", "shard1")).Single(r => r.Id == op.Id);
+        supervised.State.Should().Be(RestoreStatus.Running);
+        supervised.Phase.Should().Be("recovering");
+        supervised.PhaseUnix.Should().BeGreaterOrEqualTo(
+            TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 60);
+    }
+
+    // AAA: GET 404 при живой ноде (рестарт приёмника) — transient: docker-сносов
+    // НЕТ, статус не фейлится (RUNNING остаётся), фаза обратно в "demolished"
+    // (БЕЗ повторного демонтажа — ensure no-op); следующий тик повторяет POST
+    // (резюмов нет — скачивание перезапустится новой командой).
+    [Fact]
+    public async Task ReceiverVanish404ResetsPhaseNextTickRelaunches()
+    {
+        // Arrange — RUNNING-заявка (фаза downloading записана); GET 404
+        var ct = TestContext.Current.CancellationToken;
+        await SeedAsync("c1");
+        var inner = new StubScaleDriver();
+        var driver = new TestDriver(inner, new FakeBackupEngine());
+        var process = BuildProcess(new FakeBackupS3(), driver);
+        _receiver.GetReply = new ReceiverReply(404, null, null);
+        var op = await SeedRestoreAsync("c1", "shard1", "20260911121009Z",
+            backupId: "20260910120000Z", state: RestoreStatus.Running,
+            startedUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 60,
+            phase: "downloading",
+            phaseUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 50);
+        (await _claims.TryClaimClusterAsync("c1", ct)).Value.Should().BeTrue();
+
+        // Act 1 — супервиз: операция vanished → фаза обратно в "demolished"
+        (await process.TickAsync(BuildSnap(), await BackupsFromEtcdAsync("c1"), ct))
+            .IsSuccess.Should().BeTrue();
+
+        // Assert 1 — нода НЕ тронута, статус жив (RUNNING, не фейл), команду
+        // супервиз не повторяет
+        inner.RemovedNodes.Should().BeEmpty("the node is alive — no docker removal on vanish");
+        _receiver.StartCalls.Should().Be(0, "the supervise tick polls, it does not command");
+        var alive = (await ReadRestoresAsync("c1", "shard1")).Single(r => r.Id == op.Id);
+        alive.State.Should().Be(RestoreStatus.Running,
+            "the vanish is a transient — the request is not failed");
+        alive.Phase.Should().Be("demolished",
+            "the command is re-sent without a repeated demolition");
+
+        // Act 2 — следующий тик: фаза "demolished" → шаг запуска повторяет POST
+        _receiver.GetReply = new ReceiverReply(200,
+            new ReceiverStatus("running", "downloading"), null);
+        (await process.TickAsync(BuildSnap(), await BackupsFromEtcdAsync("c1"), ct))
+            .IsSuccess.Should().BeTrue();
+
+        // Assert 2 — команда запуска повторена, демонтажа нет (ensure no-op)
+        _receiver.StartCalls.Should().Be(1, "the launch command is re-sent on the next tick");
+        inner.RemovedNodes.Should().BeEmpty();
+        inner.EnsuredNodes.Should().Contain("shard1/shard1a");
+    }
+
+    // AAA: операторская отмена restore (POST /api/ops/cancel приёмника —
+    // внешний канал мимо воркера; GET отдаёт снимок state=cancelled — НЕ failed
+    // и НЕ 404-vanished) — всё как до старта операции: первая нода сносится
+    // вместе с data-volume (до-restore «пустое» состояние), щит initialize
+    // снят, запись заявки УДАЛЕНА из etcd (операции нет — записи нет);
+    // никакого перманентного FAILED; следующий тик ничего не пересоздаёт.
+    [Fact]
+    public async Task ReceiverCancelledRemovesNodeShieldDeletesRequest()
+    {
+        // Arrange — RUNNING-заявка, щит-заполнитель; GET cancelled
+        var ct = TestContext.Current.CancellationToken;
+        await SeedAsync("c1");
+        var inner = new StubScaleDriver();
+        var driver = new TestDriver(inner, new FakeBackupEngine());
+        var process = BuildProcess(new FakeBackupS3(), driver);
+        _receiver.GetReply = new ReceiverReply(200,
+            new ReceiverStatus("cancelled", "recovering", Error: "cancelled by operator"), null);
+        var op = await SeedRestoreAsync("c1", "shard1", "20260911121010Z",
+            backupId: "20260910120000Z", state: RestoreStatus.Running,
+            startedUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 60,
+            phase: "recovering",
+            phaseUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 50);
+        await fixture.Gateway.PutAsync(fixture.Endpoint, "/service/c1-shard1/initialize",
+            "restore-in-progress", null, ct);
+        (await _claims.TryClaimClusterAsync("c1", ct)).Value.Should().BeTrue();
+        var requestKey = BackupNames.RestoreKey("c1", "shard1", op.Id);
+
+        // Act 1 — супервиз: операция отменена оператором
+        (await process.TickAsync(BuildSnap(), await BackupsFromEtcdAsync("c1"), ct))
+            .IsSuccess.Should().BeTrue();
+
+        // Assert 1 — первая нода снесена (volume уходит с нодой); запись заявки
+        // удалена; щит снят (заполнитель запер бы bootstrap пустых нод)
+        inner.RemovedNodes.Should().BeEquivalentTo(["shard1/shard1a"]);
+        (await fixture.Gateway.GetAsync(fixture.Endpoint, requestKey, ct)).Value.Should().BeNull(
+            "the operation is as if it never started — no request key left");
+        (await fixture.Gateway.GetAsync(fixture.Endpoint, "/service/c1-shard1/initialize", ct))
+            .Value.Should().BeNull("the initialize placeholder is removed with the cancelled restore");
+        (await fixture.Gateway.GetAsync(fixture.Endpoint, "/pgworker/work/c1", ct)).Value!.Value
+            .Should().Contain($"cancelled-by-operator/shard1/{op.Id}");
+        _receiver.StartCalls.Should().Be(0, "cancel is observed, not re-commanded");
+
+        // Act 2 — следующий тик: заявок нет — ничего не пересоздаётся
+        (await process.TickAsync(BuildSnap(), await BackupsFromEtcdAsync("c1"), ct))
+            .IsSuccess.Should().BeTrue();
+
+        // Assert 2 — ни ensure, ни новой команды, ни FAILED
+        inner.EnsuredNodes.Should().BeEmpty("the cancelled operation leaves no request to retry");
+        _receiver.StartCalls.Should().Be(0);
+    }
+
+    // AAA: failed+downloading — МАРКЕР ТРАНЗИЕНТА: статус не трогаем (RUNNING
+    // остаётся), фаза обратно в "demolished" (ensure no-op — нода уже наша),
+    // docker-сносов нет; следующий тик повторяет POST — операция начнётся
+    // заново (резюмов нет).
+    [Fact]
+    public async Task FailedDownloadingResetsPhaseStatusUntouchedRelaunches()
+    {
+        // Arrange — фаза downloading записана; GET failed/downloading
+        var ct = TestContext.Current.CancellationToken;
+        await SeedAsync("c1");
+        var inner = new StubScaleDriver();
+        var driver = new TestDriver(inner, new FakeBackupEngine());
+        var process = BuildProcess(new FakeBackupS3(), driver);
+        _receiver.GetReply = new ReceiverReply(200,
+            new ReceiverStatus("failed", "downloading", Error: "s3 throttled"), null);
+        var op = await SeedRestoreAsync("c1", "shard1", "20260911121011Z",
+            backupId: "20260910120000Z", state: RestoreStatus.Running,
+            startedUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 60,
+            phase: "downloading",
+            phaseUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 50);
+        (await _claims.TryClaimClusterAsync("c1", ct)).Value.Should().BeTrue();
+
+        // Act 1 — супервиз: сбой скачивания
+        (await process.TickAsync(BuildSnap(), await BackupsFromEtcdAsync("c1"), ct))
+            .IsSuccess.Should().BeTrue();
+
+        // Assert 1 — статус RUNNING не тронут, фаза "demolished", нода жива,
+        // запись журнала download-retry
+        inner.RemovedNodes.Should().BeEmpty("a download failure is transient — the node stays");
+        _receiver.StartCalls.Should().Be(0, "the supervise tick does not re-post");
+        var alive = (await ReadRestoresAsync("c1", "shard1")).Single(r => r.Id == op.Id);
+        alive.State.Should().Be(RestoreStatus.Running);
+        alive.Phase.Should().Be("demolished", "the next tick re-launches without demolition");
+        alive.Error.Should().BeNull("the download failure never fails the request");
+        (await fixture.Gateway.GetAsync(fixture.Endpoint, "/pgworker/work/c1", ct)).Value!.Value
+            .Should().Contain($"download-retry/shard1/{op.Id}");
+
+        // Act 2 — следующий тик: шаг запуска повторяет POST
+        _receiver.GetReply = new ReceiverReply(200,
+            new ReceiverStatus("running", "downloading"), null);
+        (await process.TickAsync(BuildSnap(), await BackupsFromEtcdAsync("c1"), ct))
+            .IsSuccess.Should().BeTrue();
+
+        // Assert 2 — команда повторена, демонтажа нет
+        _receiver.StartCalls.Should().Be(1, "the operation restarts with a fresh command");
+        inner.RemovedNodes.Should().BeEmpty();
+    }
+
+    // AAA: RUNNING-restore старше статусного бюджета (сжат до 60 c в опциях
+    // теста) → первая нода сносится (volume уходит с нодой), заявка FAILED
+    // "restore-job-timeout", щит initialize снят.
+    [Fact]
+    public async Task RunningOlderThanBudgetFailedJobTimeoutShieldRemoved()
+    {
+        // Arrange — заявка RUNNING started_unix = now - 2h; сид щита initialize
+        var ct = TestContext.Current.CancellationToken;
+        await SeedAsync("c1");
+        var inner = new StubScaleDriver();
+        var driver = new TestDriver(inner, new FakeBackupEngine());
+        var op = await SeedRestoreAsync("c1", "shard1", "20260911121012Z",
+            backupId: "20260910120000Z", state: RestoreStatus.Running,
+            startedUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 7200);
+        await fixture.Gateway.PutAsync(fixture.Endpoint, "/service/c1-shard1/initialize",
+            "restore-in-progress", null, ct);
+        (await _claims.TryClaimClusterAsync("c1", ct)).Value.Should().BeTrue();
+        var process = BuildProcess(new FakeBackupS3(), driver,
+            options: Options() with { JobRestoreTimeoutSec = 60 });
+
+        // Act — тик
+        (await process.TickAsync(BuildSnap(), await BackupsFromEtcdAsync("c1"), ct)).IsSuccess.Should().BeTrue();
+
+        // Assert — нода удалена; FAILED restore-job-timeout; щит снят;
+        // до ноды/приёмника тик не дошёл (бюджет проверяется раньше)
+        inner.RemovedNodes.Should().Contain("shard1/shard1a");
+        var failed = (await ReadRestoresAsync("c1", "shard1")).Single(r => r.Id == op.Id);
+        failed.State.Should().Be(RestoreStatus.Failed);
+        failed.Error.Should().Contain("restore-job-timeout");
+        (await fixture.Gateway.GetAsync(fixture.Endpoint, "/service/c1-shard1/initialize", ct))
+            .Value.Should().BeNull("the initialize shield is removed by FailPermanentAsync");
+        inner.EnsuredNodes.Should().BeEmpty();
+        _receiver.StartCalls.Should().Be(0);
+    }
+
+    // AAA: failed-ветка супервиза сносит ТОЛЬКО первую ноду — полный демонтаж
+    // шарда на тиках супервиза не повторяется (фаза далека от demolished),
+    // вторая нода жива; итог операции при этом доводится до статуса.
+    [Fact]
+    public async Task SuperviseFailedRemovesFirstNodeOnlyNotFullDemolish()
+    {
+        // Arrange — двух-нодовый шард, фаза recovering записана; приёмник
+        // отвечает failed/recovering
+        var ct = TestContext.Current.CancellationToken;
+        await SeedAsync("c1");
+        await SeedTwoNodeAllocAsync();
+        var inner = new StubScaleDriver();
+        var driver = new TestDriver(inner, new FakeBackupEngine());
+        var process = BuildProcess(new FakeBackupS3(), driver);
+        _receiver.GetReply = new ReceiverReply(200,
+            new ReceiverStatus("failed", "recovering", Error: "boom"), null);
+        var op = await SeedRestoreAsync("c1", "shard1", "20260911121013Z",
+            backupId: "20260910120000Z", state: RestoreStatus.Running, startedUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 60,
+            phase: "recovering", phaseUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 50);
+        (await _claims.TryClaimClusterAsync("c1", ct)).Value.Should().BeTrue();
+
+        // Act
+        (await process.TickAsync(BuildTwoNodeSnap(), await BackupsFromEtcdAsync("c1"), ct))
+            .IsSuccess.Should().BeTrue();
+
+        // Assert — только первая нода снесена (не полный демонтаж), FAILED доведён
+        inner.RemovedNodes.Should().BeEquivalentTo(["shard1/shard1a"],
+            "the failed branch removes the first node only — no repeated demolition");
+        var failed = (await ReadRestoresAsync("c1", "shard1")).Single(r => r.Id == op.Id);
+        failed.State.Should().Be(RestoreStatus.Failed);
+        failed.Error.Should().Be("boom");
+    }
+
+    // AAA (регрессия): команда запуска — только тиком запуска. Повтор
+    // команды на каждом тике супервиза при терминальном снимке приёмника давал
+    // 202 (TryBegin перезаписывает терминал) РАНЬШЕ, чем тик читал GET
+    // succeeded, — операция перезапускалась вечно, статус etcd висел в RUNNING
+    // до бюджетного таймаута.
+    [Fact]
+    public async Task RunningWithRecordedPhaseDoesNotResendLaunchCommand()
+    {
+        // Arrange — RUNNING с записанной фазой (команда принята прошлым тиком);
+        // приёмник отвечает succeeded — терминальный снимок
+        var ct = TestContext.Current.CancellationToken;
+        await SeedAsync("c1");
+        var inner = new StubScaleDriver();
+        var driver = new TestDriver(inner, new FakeBackupEngine());
+        var process = BuildProcess(new FakeBackupS3(), driver);
+        _receiver.GetReply = new ReceiverReply(200,
+            new ReceiverStatus("succeeded", "recovering", RestoredToLsn: "0/42"), null);
+        var op = await SeedRestoreAsync("c1", "shard1", "20260911121014Z",
+            backupId: "20260910120000Z", state: RestoreStatus.Running,
+            startedUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 60,
+            phase: "recovering", phaseUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 50);
+        (await _claims.TryClaimClusterAsync("c1", ct)).Value.Should().BeTrue();
+
+        // Act — три тика подряд (фаза записана: только GET-поллинг)
+        for (var i = 0; i < 3; i++)
+            (await process.TickAsync(BuildSnap(), await BackupsFromEtcdAsync("c1"), ct))
+                .IsSuccess.Should().BeTrue();
+
+        // Assert — команда не повторялась ни разу; терминал дошёл до статуса
+        // (REJOINING), нода не тронута
+        _receiver.StartCalls.Should().Be(0,
+            "the launch command belongs to the launch tick only");
+        var restored = (await ReadRestoresAsync("c1", "shard1")).Single(r => r.Id == op.Id);
+        restored.State.Should().Be(RestoreStatus.Rejoining);
+        restored.RestoredToLsn.Should().Be("0/42");
+        inner.RemovedNodes.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task TargetTimeNormalizedToPgFormat()
+    {
+        // Arrange — RUNNING с target time:<RFC3339>: парсер recovery_target_time
+        // PG не принимает «T»-сепаратор и суффикс «Z», в команде приёмника уходит
+        // PG-формат «+00:00»
+        var ct = TestContext.Current.CancellationToken;
+        await SeedAsync("c1");
+        var driver = new TestDriver(new StubScaleDriver(), new FakeBackupEngine());
+        var process = BuildProcess(new FakeBackupS3(), driver);
+        var op = await SeedRestoreAsync("c1", "shard1", "20260911121015Z",
+            backupId: "20260910120000Z", target: "time:2026-09-11T10:00:00Z",
+            state: RestoreStatus.Running, startedUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 60,
+            phase: "demolished");
         (await _claims.TryClaimClusterAsync("c1", ct)).Value.Should().BeTrue();
 
         // Act
         (await process.TickAsync(BuildSnap(), await BackupsFromEtcdAsync("c1"), ct)).IsSuccess.Should().BeTrue();
 
-        // Assert — FAILED, заполнителя initialize больше нет
-        (await ReadRestoresAsync("c1", "shard1")).Single(r => r.Id == op.Id)
-            .State.Should().Be(RestoreStatus.Failed);
-        (await fixture.Gateway.GetAsync(fixture.Endpoint, "/service/c1-shard1/initialize", ct))
-            .Value.Should().BeNull("the shield without system_id does not survive permanent-FAILED");
+        // Assert — RFC3339 нормализован в PG-формат (в команде приёмника)
+        _receiver.StartBodies.Should().ContainSingle().Subject.TargetTime
+            .Should().Be("2026-09-11 10:00:00+00:00");
+        op.Should().NotBeNull();
     }
+
+    [Fact]
+    public async Task TargetTimeMalformedPermanentFailed()
+    {
+        // Arrange — RUNNING с time:не-RFC3339 (ручная запись мимо API)
+        var ct = TestContext.Current.CancellationToken;
+        await SeedAsync("c1");
+        var inner = new StubScaleDriver();
+        var engine = new FakeBackupEngine();
+        var driver = new TestDriver(inner, engine);
+        var process = BuildProcess(new FakeBackupS3(), driver);
+        var op = await SeedRestoreAsync("c1", "shard1", "20260911121016Z",
+            backupId: "20260910120000Z", target: "time:tomorrow-morning",
+            state: RestoreStatus.Running, startedUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 60);
+        (await _claims.TryClaimClusterAsync("c1", ct)).Value.Should().BeTrue();
+
+        // Act
+        (await process.TickAsync(BuildSnap(), await BackupsFromEtcdAsync("c1"), ct)).IsSuccess.Should().BeTrue();
+
+        // Assert — permanent FAILED, до ноды/приёмника тик не дошёл
+        var failed = (await ReadRestoresAsync("c1", "shard1")).Single(r => r.Id == op.Id);
+        failed.State.Should().Be(RestoreStatus.Failed);
+        failed.Error.Should().Contain("not RFC3339");
+        inner.EnsuredNodes.Should().BeEmpty();
+        _receiver.StartCalls.Should().Be(0);
+        engine.Created.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task TransientDockerFailureStatusUnchanged()
+    {
+        // Arrange — RUNNING на шаге запуска, EnsureNode падает (docker-транспорт)
+        var ct = TestContext.Current.CancellationToken;
+        await SeedAsync("c1");
+        var inner = new StubScaleDriver();
+        var driver = new TestDriver(inner, new FakeBackupEngine()) { EnsureFails = true };
+        var process = BuildProcess(new FakeBackupS3(), driver);
+        var op = await SeedRestoreAsync("c1", "shard1", "20260911121017Z",
+            backupId: "20260910120000Z", state: RestoreStatus.Running, startedUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 60,
+            phase: "demolished");
+        (await _claims.TryClaimClusterAsync("c1", ct)).Value.Should().BeTrue();
+
+        // Act
+        var result = await process.TickAsync(BuildSnap(), await BackupsFromEtcdAsync("c1"), ct);
+
+        // Assert — InProgress, статус RUNNING (фаза "demolished" — повтор),
+        // запись журнала docker-unavailable
+        result.IsSuccess.Should().BeTrue(result.Error?.ToString());
+        result.Value.Should().Be(ProcessOutcome.InProgress);
+        var alive = (await ReadRestoresAsync("c1", "shard1")).Single(r => r.Id == op.Id);
+        alive.State.Should().Be(RestoreStatus.Running);
+        alive.Phase.Should().Be("demolished");
+        (await fixture.Gateway.GetAsync(fixture.Endpoint, "/pgworker/work/c1", ct)).Value!.Value
+            .Should().Contain("docker-unavailable");
+    }
+
+    // ── REJOINING: ensure нод + пробы + COMPLETED ──
 
     [Fact]
     public async Task RejoinFailedDoesNotTouchInitializeWithSystemId()
@@ -615,212 +1227,9 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string c, Cancel
     }
 
     [Fact]
-    public async Task TickWithExistingJobDoesNotRepeatDemolitionAndDeliversOutcome()
-    {
-        // Arrange — RUNNING + exited-1 джоб: контейнер существует и держит
-        // data-volume первой ноды (реальный docker — 409 «volume is in use»).
-        // Регрессия Release-гейта t05: повторный демонтаж при живом джобе
-        // падал 409 и зацикливал статус в RUNNING, итог джоба не доносился.
-        var ct = TestContext.Current.CancellationToken;
-        await SeedAsync("c1");
-        var inner = new StubScaleDriver();
-        var engine = new FakeBackupEngine();
-        var driver = new TestDriver(inner, engine);
-        var process = BuildProcess(new FakeBackupS3(), driver);
-        var name = BackupNames.RestoreContainerName("c1", "shard1", "20260911121002Z");
-        engine.Containers[name] = new FakeBackupEngine.ContainerRec(
-            "cnt-restore", "exited", 1, "{\"ok\":false,\"error\":\"boom\"}\n");
-        var op = await SeedRestoreAsync("c1", "shard1", "20260911121002Z",
-            backupId: "20260910120000Z", state: RestoreStatus.Running, startedUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 60);
-        (await _claims.TryClaimClusterAsync("c1", ct)).Value.Should().BeTrue();
-
-        // Act
-        (await process.TickAsync(BuildSnap(), await BackupsFromEtcdAsync("c1"), ct)).IsSuccess.Should().BeTrue();
-
-        // Assert — демонтаж НЕ повторялся (контейнер существует ⇒ уже разобран),
-        // итог джоба доведён до статуса, контейнер и volume прибраны
-        inner.RemovedNodes.Should().BeEmpty("demolition is not repeated when the job already exists");
-        var failed = (await ReadRestoresAsync("c1", "shard1")).Single(r => r.Id == op.Id);
-        failed.State.Should().Be(RestoreStatus.Failed);
-        failed.Error.Should().Be("boom");
-        engine.Removed.Should().Contain(name);
-        engine.RemovedVolumes.Should().Contain("pgw-c1-shard1-shard1a-data");
-    }
-
-    [Fact]
-    public async Task JobOverBudgetKillAndFailed()
-    {
-        // Arrange — running-контейнер; started_unix глубже бюджета (1800+60)
-        var ct = TestContext.Current.CancellationToken;
-        await SeedAsync("c1");
-        var engine = new FakeBackupEngine();
-        var driver = new TestDriver(new StubScaleDriver(), engine);
-        var process = BuildProcess(new FakeBackupS3(), driver);
-        var name = BackupNames.RestoreContainerName("c1", "shard1", "20260911121003Z");
-        engine.Containers[name] = new FakeBackupEngine.ContainerRec(
-            "cnt-restore", "running", -1, "{\"phase\":\"recovering\"}\n");
-        var op = await SeedRestoreAsync("c1", "shard1", "20260911121003Z",
-            backupId: "20260910120000Z", state: RestoreStatus.Running,
-            startedUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 2000);
-        (await _claims.TryClaimClusterAsync("c1", ct)).Value.Should().BeTrue();
-
-        // Act
-        (await process.TickAsync(BuildSnap(), await BackupsFromEtcdAsync("c1"), ct)).IsSuccess.Should().BeTrue();
-
-        // Assert — докилл force + FAILED «бюджет»
-        engine.Removed.Should().Contain(name);
-        var failed = (await ReadRestoresAsync("c1", "shard1")).Single(r => r.Id == op.Id);
-        failed.State.Should().Be(RestoreStatus.Failed);
-        failed.Error.Should().Contain("budget");
-    }
-
-    // AAA (AC5, t07): RUNNING-restore старше статусного бюджета (сжат до 60 c в
-    // опциях теста) → restore-джоб kill+rm, заявка FAILED "restore-job-timeout",
-    // щит initialize снят, volume первой ноды удалён
-    [Fact]
-    public async Task RunningOlderThanBudgetFailedJobTimeoutShieldRemoved()
-    {
-        // Arrange — заявка RUNNING started_unix = now - 2h; FakeBackupEngine держит
-        // running-контейнер restore-джоба без маркеров; сид щита initialize
-        var ct = TestContext.Current.CancellationToken;
-        await SeedAsync("c1");
-        var engine = new FakeBackupEngine();
-        var driver = new TestDriver(new StubScaleDriver(), engine);
-        var name = BackupNames.RestoreContainerName("c1", "shard1", "20260911121005Z");
-        engine.Containers[name] = new FakeBackupEngine.ContainerRec(
-            "cnt-restore", "running", -1, "{\"phase\":\"downloading\"}\n");
-        var op = await SeedRestoreAsync("c1", "shard1", "20260911121005Z",
-            backupId: "20260910120000Z", state: RestoreStatus.Running,
-            startedUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 7200);
-        await fixture.Gateway.PutAsync(fixture.Endpoint, "/service/c1-shard1/initialize",
-            "restore-in-progress", null, ct);
-        (await _claims.TryClaimClusterAsync("c1", ct)).Value.Should().BeTrue();
-        var process = BuildProcess(new FakeBackupS3(), driver,
-            options: Options() with { JobRestoreTimeoutSec = 60 });
-
-        // Act — тик
-        (await process.TickAsync(BuildSnap(), await BackupsFromEtcdAsync("c1"), ct)).IsSuccess.Should().BeTrue();
-
-        // Assert — контейнер и volume удалены; FAILED restore-job-timeout; щит снят
-        engine.Removed.Should().Contain(name);
-        engine.RemovedVolumes.Should().Contain("pgw-c1-shard1-shard1a-data");
-        var failed = (await ReadRestoresAsync("c1", "shard1")).Single(r => r.Id == op.Id);
-        failed.State.Should().Be(RestoreStatus.Failed);
-        failed.Error.Should().Contain("restore-job-timeout");
-        var init = await fixture.Gateway.GetAsync(fixture.Endpoint, "/service/c1-shard1/initialize", ct);
-        init.Value.Should().BeNull("the initialize shield is removed by FailPermanentAsync (fd5342e mechanics)");
-    }
-
-    [Fact]
-    public async Task RunningWithoutContainerRestartIsIdempotent()
-    {
-        // Arrange — RUNNING, джоба нет (после рестарта docker-хоста)
-        var ct = TestContext.Current.CancellationToken;
-        await SeedAsync("c1");
-        var engine = new FakeBackupEngine();
-        var driver = new TestDriver(new StubScaleDriver(), engine);
-        var process = BuildProcess(new FakeBackupS3(), driver);
-        var op = await SeedRestoreAsync("c1", "shard1", "20260911121004Z",
-            backupId: "20260910120000Z", state: RestoreStatus.Running, startedUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 60);
-        (await _claims.TryClaimClusterAsync("c1", ct)).Value.Should().BeTrue();
-
-        // Act — два тика подряд
-        (await process.TickAsync(BuildSnap(), await BackupsFromEtcdAsync("c1"), ct)).IsSuccess.Should().BeTrue();
-        (await process.TickAsync(BuildSnap(), await BackupsFromEtcdAsync("c1"), ct)).IsSuccess.Should().BeTrue();
-
-        // Assert — джоб создан и запущен; второй тик идемпотентен (created →
-        // довыгон start, без нового create); env: source-префикс, пустая цель
-        // (latest), volume первой ноды
-        var (name, spec) = engine.Created.Should().ContainSingle().Subject;
-        name.Should().Be(BackupNames.RestoreContainerName("c1", "shard1", op.Id));
-        engine.Started.Count(s => s == name).Should().BeGreaterThanOrEqualTo(1);
-        spec.Env!["SRC_PREFIX"].Should().Be("c1/shard1");
-        spec.Env!["TARGET_TIME"].Should().Be("");
-        spec.VolumeName.Should().Be("pgw-c1-shard1-shard1a-data");
-        // BACKUP_ID — резолвнутый полный (op.BackupId), не id заявки:
-        // джоб качает full/<backup_id>/ (регрессия E2E-гейта t05)
-        spec.Env!["BACKUP_ID"].Should().Be("20260910120000Z").And.NotBe(op.Id);
-    }
-
-    [Fact]
-    public async Task TargetTimeNormalizedToPgFormat()
-    {
-        // Arrange — RUNNING с target time:<RFC3339>: парсер recovery_target_time
-        // PG не принимает «T»-сепаратор и суффикс «Z» (инцидент E2E-гейта t05),
-        // в env джоба уходит PG-формат «+00:00»
-        var ct = TestContext.Current.CancellationToken;
-        await SeedAsync("c1");
-        var engine = new FakeBackupEngine();
-        var driver = new TestDriver(new StubScaleDriver(), engine);
-        var process = BuildProcess(new FakeBackupS3(), driver);
-        var op = await SeedRestoreAsync("c1", "shard1", "20260911121005Z",
-            backupId: "20260910120000Z", target: "time:2026-09-11T10:00:00Z",
-            state: RestoreStatus.Running, startedUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 60);
-        (await _claims.TryClaimClusterAsync("c1", ct)).Value.Should().BeTrue();
-
-        // Act
-        (await process.TickAsync(BuildSnap(), await BackupsFromEtcdAsync("c1"), ct)).IsSuccess.Should().BeTrue();
-
-        // Assert
-        engine.Created.Should().ContainSingle().Subject.Spec.Env!["TARGET_TIME"]
-            .Should().Be("2026-09-11 10:00:00+00:00");
-    }
-
-    [Fact]
-    public async Task TargetTimeMalformedPermanentFailed()
-    {
-        // Arrange — RUNNING с time:не-RFC3339 (ручная запись мимо API)
-        var ct = TestContext.Current.CancellationToken;
-        await SeedAsync("c1");
-        var engine = new FakeBackupEngine();
-        var driver = new TestDriver(new StubScaleDriver(), engine);
-        var process = BuildProcess(new FakeBackupS3(), driver);
-        var op = await SeedRestoreAsync("c1", "shard1", "20260911121006Z",
-            backupId: "20260910120000Z", target: "time:tomorrow-morning",
-            state: RestoreStatus.Running, startedUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 60);
-        (await _claims.TryClaimClusterAsync("c1", ct)).Value.Should().BeTrue();
-
-        // Act
-        (await process.TickAsync(BuildSnap(), await BackupsFromEtcdAsync("c1"), ct)).IsSuccess.Should().BeTrue();
-
-        // Assert — permanent FAILED, джоб не создаётся
-        var failed = (await ReadRestoresAsync("c1", "shard1")).Single(r => r.Id == op.Id);
-        failed.State.Should().Be(RestoreStatus.Failed);
-        failed.Error.Should().Contain("not RFC3339");
-        engine.Created.Should().BeEmpty();
-    }
-
-    [Fact]
-    public async Task TransientDockerFailureStatusUnchanged()
-    {
-        // Arrange — RUNNING, list docker падает
-        var ct = TestContext.Current.CancellationToken;
-        await SeedAsync("c1");
-        var engine = new FakeBackupEngine { ListFails = true };
-        var driver = new TestDriver(new StubScaleDriver(), engine);
-        var process = BuildProcess(new FakeBackupS3(), driver);
-        var op = await SeedRestoreAsync("c1", "shard1", "20260911121005Z",
-            backupId: "20260910120000Z", state: RestoreStatus.Running, startedUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 60);
-        (await _claims.TryClaimClusterAsync("c1", ct)).Value.Should().BeTrue();
-
-        // Act
-        var result = await process.TickAsync(BuildSnap(), await BackupsFromEtcdAsync("c1"), ct);
-
-        // Assert — InProgress, статус RUNNING сохранён, журнал-факт docker-unavailable
-        result.IsSuccess.Should().BeTrue(result.Error?.ToString());
-        result.Value.Should().Be(ProcessOutcome.InProgress);
-        (await ReadRestoresAsync("c1", "shard1")).Single(r => r.Id == op.Id)
-            .State.Should().Be(RestoreStatus.Running);
-        (await fixture.Gateway.GetAsync(fixture.Endpoint, "/pgworker/work/c1", ct)).Value!.Value
-            .Should().Contain("docker-unavailable");
-    }
-
-    // ── REJOINING: ensure нод + пробы + COMPLETED ──
-
-    [Fact]
     public async Task RejoinEnsuresFirstNodeAndWaitsForProbe()
     {
-        // Arrange — REJOINING после успешного джоба; Patroni отвечает «start»
+        // Arrange — REJOINING после успешного restore; Patroni отвечает «start»
         var ct = TestContext.Current.CancellationToken;
         await SeedAsync("c1");
         var inner = new StubScaleDriver();
@@ -839,8 +1248,8 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string c, Cancel
         result.Value.Should().Be(ProcessOutcome.InProgress);
         inner.EnsuredNodes.Should().Contain("shard1/shard1a");
         inner.EnsuredNodes.Should().NotContain("shard1/shard1b");
-        // t22: без окна ротации — ключ кластера (эффективная пара restore-пути)
-        inner.EnsuredRestPasswords["shard1/shard1a"].Should().Be("Key0Pass00000000000000000000000A");
+        // без окна ротации — ключ кластера (эффективная пара restore-пути)
+        inner.EnsuredRestPasswords["shard1/shard1a"].Should().Be(RestPassword);
         (await ReadRestoresAsync("c1", "shard1")).Single(r => r.Id == op.Id)
             .State.Should().Be(RestoreStatus.Rejoining);
     }
@@ -918,9 +1327,9 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string c, Cancel
     [Fact]
     public async Task RejoinSetsInitializeShieldSystemIdBeforeNodeEnsure()
     {
-        // Arrange — REJOINING с system_id от джобы; в scope — заполнитель демонтажа.
-        // Щит перезаписывается ДО ensure первой ноды: параллельно поднятая пустая
-        // нода initdb'нуться в чужой кластер не может (гонка 2026-09-13)
+        // Arrange — REJOINING с system_id от restore-операции; в scope —
+        // заполнитель демонтажа. Щит перезаписывается ДО ensure первой ноды:
+        // параллельно поднятая пустая нода initdb'нуться в чужой кластер не может
         var ct = TestContext.Current.CancellationToken;
         await SeedAsync("c1");
         await SeedTwoNodeAllocAsync();
@@ -1033,9 +1442,9 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string c, Cancel
             "replicas start only after a leader is elected");
     }
 
-    // ── REJOINING: SQL-гейт мастера перед COMPLETED (t10) ──
+    // ── REJOINING: SQL-гейт мастера перед COMPLETED ──
 
-    // AAA (t10-а): Patroni-пробы готовы, но мастер «висит в recovery»
+    // AAA (а): Patroni-пробы готовы, но мастер «висит в recovery»
     // (pg_is_in_recovery=true) → гейт не пускает: статус REJOINING, ноды не
     // переводятся в RUNNING, wal-ключ жив; тик InProgress, журнал —
     // master-sql-wait (без мутаций — тик повторит).
@@ -1069,14 +1478,14 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string c, Cancel
             .State.Should().Be(RestoreStatus.Rejoining);
         (await fixture.Gateway.GetAsync(fixture.Endpoint,
             "/clusters/c1/shards/shard1/nodes/shard1a/state", ct)).Value
-            .Should().BeNull("RUNNING is set only after the SQL gate (t10)");
+            .Should().BeNull("RUNNING is set only after the SQL gate (SQL gate)");
         (await fixture.Gateway.GetAsync(fixture.Endpoint, "/pgworker/backups/c1/shard1/wal", ct))
             .Value.Should().NotBeNull("the wal key is removed only on COMPLETED");
         (await fixture.Gateway.GetAsync(fixture.Endpoint, "/pgworker/work/c1", ct)).Value!.Value
             .Should().Contain("master-sql-wait/shard1/");
     }
 
-    // AAA (t10-б): Patroni готов + мастер принял SQL (pg_is_in_recovery=false)
+    // AAA (б): Patroni готов + мастер принял SQL (pg_is_in_recovery=false)
     // → гейт пропускает: ноды RUNNING, COMPLETED, wal-ключ удалён.
     [Fact]
     public async Task RejoinMasterAcceptedSqlGateProceedsToCompleted()
@@ -1110,7 +1519,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string c, Cancel
             .Value.Should().BeNull("COMPLETED resets the chain (AC4)");
     }
 
-    // AAA (t10-в): SQL-гейт не сходится дольше PatroniBootSec → permanent-FAILED
+    // AAA (в): SQL-гейт не сходится дольше PatroniBootSec → permanent-FAILED
     // «мастер не принял SQL» (фиксированные часы: тик 1 фиксирует since, тик 2
     // после +700 с > 600).
     [Fact]
@@ -1143,7 +1552,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string c, Cancel
         failed.Error.Should().Contain("members=", "Patroni diagnostics snapshot in the reason");
     }
 
-    // AAA (t10-г): takeover — инстанс A застрял в SQL-ожидании (REJOINING в
+    // AAA (г): takeover — инстанс A застрял в SQL-ожидании (REJOINING в
     // etcd — истина), инстанс B (свежий, без in-memory трекера) продолжает по
     // статусу: мастер принял SQL → COMPLETED (waitKey стабилен:
     // {cluster}/{shard}/{op.Id} — от инстанса не зависит).
@@ -1222,7 +1631,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string c, Cancel
             .State.Should().Be(RestoreStatus.Planned);
     }
 
-    // AAA: t14 — оба терминальных исхода restore: permanent-FAILED ("failed")
+    // AAA: — оба терминальных исхода restore: permanent-FAILED ("failed")
     // в точке записи статуса и COMPLETED ("ok") после успешного putDone
     // (симметрия drill-теста; обе точки вставки 3b/3c)
     [Fact]

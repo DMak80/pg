@@ -13,17 +13,17 @@ public sealed record ConvergenceDivergence(
     string? Patch, int Updated, int Added, int Removed, bool PostmasterTouched);
 
 /// <summary>
-/// Патч-билдер конвергенции DCS-конфига (t11, arch/14 §5 C; поглощает
-/// PatroniTimings.DivergencePatch t09 — тайминги по-прежнему из PatroniTimings):
+/// Патч-билдер конвергенции DCS-конфига (arch/14 §5 C; поглощает
+/// PatroniTimings.DivergencePatch — тайминги по-прежнему из PatroniTimings):
 /// расхождение фактического динамического конфига (GET /config, JSON) с каноном
 /// → минимальный патч-документ для PATCH /config. Конвергентно → null —
-/// мутаций нет («не второй регулярный писатель», t09). desiredParameters ==
+/// мутаций нет («не второй регулярный писатель»). desiredParameters ==
 /// null → патч только таймингов (нет/неполна заявка — домен не наш). Битый/
-/// чужой JSON → полный патч (безопасный исход t09: непонятный конфиг
+/// чужой JSON → полный патч (безопасный исход : непонятный конфиг
 /// приводится к канону). Нормализация НЕ семантическая: "2048MB" ≠ "2GB",
 /// "on" ≠ "true" — источники нашего формата едины (bootstrap из того же
 /// набора), посторонние форматы конвергируются первым патчем и далее стабильны.
-/// Порядок ключей патча: тайминги, strict (t06 — per-cluster из config
+/// Порядок ключей патча: тайминги, strict (— per-cluster из config
 /// кластера), затем параметры в порядке желаемого набора,
 /// удаления — в конце (стабильный детерминированный документ).
 /// </summary>
@@ -44,7 +44,7 @@ public static class DcsConfigConvergence
 
     /// <summary>Минимальный патч-документ для PATCH /config; null — конвергентно.
     /// syncStrict — per-cluster ожидание synchronous_mode_strict из config
-    /// кластера (t06, arch/14 §5 C).</summary>
+    /// кластера (arch/14 §5 C).</summary>
     public static string? DivergencePatch(
         string? configJson, bool syncStrict,
         IReadOnlyList<(string Name, string RawValue)>? desiredParameters)
@@ -70,7 +70,7 @@ public static class DcsConfigConvergence
         AddIfDivergent(timingPatch, root, "loop_wait", PatroniTimings.LoopWait);
         AddIfDivergent(timingPatch, root, "retry_timeout", PatroniTimings.RetryTimeout);
         AddIfDivergent(timingPatch, root, "synchronous_mode", PatroniTimings.SynchronousMode);
-        // t06: strict — per-cluster ожидание из config кластера (arch/14 §5 C).
+        // strict — per-cluster ожидание из config кластера (arch/14 §5 C).
         AddIfDivergent(timingPatch, root, "synchronous_mode_strict", syncStrict);
 
         var updated = 0;

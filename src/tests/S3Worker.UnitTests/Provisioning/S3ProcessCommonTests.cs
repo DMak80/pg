@@ -112,7 +112,7 @@ public class S3ProcessCommonTests
         noPort.Should().Be(("h1", 9000));
     }
 
-    // ============ зонды t33: ключи/сериализаторы/парсеры (arch/23 §3/§8) ============
+    // ============ зонды : ключи/сериализаторы/парсеры (arch/23 §3/§8) ============
 
     [Fact]
     public void ProbeKeysExact()

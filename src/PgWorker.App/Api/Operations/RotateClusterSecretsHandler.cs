@@ -10,7 +10,7 @@ namespace PgWorker.App.Api.Operations;
 // Ответ 201 POST /api/clusters/{c}/secrets/rotate (арх-канон arch/02 §9.8; дубль осознан).
 public sealed record ClusterSecretsRotatedDto(string Cluster, long RequestedUnix, string RequestedBy);
 
-// Заявка ротации per-cluster секретов через API воркера (t02): порт панельного
+// Заявка ротации per-cluster секретов через API воркера : порт панельного
 // RotateClusterSecretsCommandHandler; выполняет ClusterSecretRotator (ALTER ROLE
 // app/bucket_admin/bucket_mover на всех шардах + атомарная замена кредов с
 // перезаписью dsn). requested_by — заголовок X-Requested-By, fallback "api"
@@ -68,7 +68,7 @@ public sealed partial class RotateClusterSecretsHandler(IEtcdGateway gateway, st
         var requestedUnix = time.GetUtcNow().ToUnixTimeSeconds();
         var payload = JsonSerializer.Serialize(
             new TicketBody(requestedUnix, requestedBy), TicketJson);
-        var txn = await EtcdFailover.CallAsync(endpoints, endpoint => gateway.TxnAsync(
+        var txn = await EtcdEndpointFailover.CallAsync(endpoints, endpoint => gateway.TxnAsync(
             endpoint,
             TxnRequest.Of([TxnCompare.NotExists(key)], [new TxnOp.Put(key, payload, null)]),
             ct));
@@ -83,7 +83,7 @@ public sealed partial class RotateClusterSecretsHandler(IEtcdGateway gateway, st
 
     private async Task<Result<string?>> ReadKeyAsync(string key, CancellationToken ct)
     {
-        var range = await EtcdFailover.CallAsync(endpoints,
+        var range = await EtcdEndpointFailover.CallAsync(endpoints,
             endpoint => gateway.RangeAsync(endpoint, key, ct));
         if (!range.IsSuccess)
             return Result<string?>.Failed(range.Error!);

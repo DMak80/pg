@@ -21,11 +21,11 @@ public sealed record KafkaClusterSummaryDto(
     string? Endpoints,
     bool RotationPending,
     bool RebalancePending,
-    bool CaRotationPending = false); // t10: живая заявка CA-ротации (бейдж UI)
+    bool CaRotationPending = false); // живая заявка CA-ротации (бейдж UI)
 
 // Детали кластера: config, брокеры, топики, группы пробы (волна C), ротация,
-// ребалансировка (t02), прогресс регенерации (t06), CA-ротация и исход
-// заявки (t10).
+// ребалансировка, прогресс регенерации, CA-ротация и исход
+// заявки.
 public sealed record KafkaClusterDto(
     string Name,
     string State,
@@ -45,8 +45,8 @@ public sealed record KafkaClusterDto(
     bool? ProbeOk = null,
     string? ProbeError = null,
     KafkaRegenDto? Regen = null,
-    KafkaCaRotationTicketDto? CaRotation = null, // t10: живая заявка CA-ротации (бейдж UI)
-    TicketOutcomeDto? TicketOutcome = null);     // t10: последний исход заявки
+    KafkaCaRotationTicketDto? CaRotation = null, // живая заявка CA-ротации (бейдж UI)
+    TicketOutcomeDto? TicketOutcome = null);     // последний исход заявки
 
 public sealed record KafkaBrokerDto(
     string Name,
@@ -68,7 +68,7 @@ public sealed record KafkaTopicDto(
     bool Missing,
     long? SyncedUnix,
     int? UnderReplicatedPartitions = null, // null — проба молчит
-    TopicLifecycleDto? Lifecycle = null);  // живая lifecycle-заявка (t01)
+    TopicLifecycleDto? Lifecycle = null);  // живая lifecycle-заявка 
 
 // Live-группа пробы (вкладка Группы, arch/03 §7.2).
 public sealed record KafkaGroupDto(string Group, string? State, int Members, long TotalLag);
@@ -80,7 +80,7 @@ public sealed record TopicDesiredDto(
     long? RequestedUnix,
     string? RequestedBy);
 
-// Lifecycle-часть строки топика (arch/03 §7.2, t01): op + параметры + аудит.
+// Lifecycle-часть строки топика (arch/03 §7.2): op + параметры + аудит.
 public sealed record TopicLifecycleDto(
     string Op,
     int? Partitions,
@@ -92,10 +92,10 @@ public sealed record TopicLifecycleDto(
 
 public sealed record KafkaRotationTicketDto(long RequestedUnix, string? RequestedBy);
 
-// Заявка ребалансировки (t02, 03 §7.2); null = заявки нет.
+// Заявка ребалансировки (03 §7.2); null = заявки нет.
 public sealed record KafkaRebalanceTicketDto(long RequestedUnix, string? RequestedBy);
 
-// Прогресс reassignment (t02, 03 §7.2); null = операции нет.
+// Прогресс reassignment (03 §7.2); null = операции нет.
 public sealed record KafkaReassignmentDto(
     string Mode,
     string? DrainBroker,
@@ -103,17 +103,17 @@ public sealed record KafkaReassignmentDto(
     int PartitionsRemaining,
     long UpdatedUnix);
 
-// Live-прогресс rolling-регенерации брокеров (t06, 03 §7.2); null = операции нет.
+// Live-прогресс rolling-регенерации брокеров (03 §7.2); null = операции нет.
 public sealed record KafkaRegenDto(
     int BrokersTotal,
     int BrokersRemaining,
     string? CurrentBroker,
     long UpdatedUnix);
 
-// Живая заявка CA-ротации (t10, 03 §7.2); null = заявки нет.
+// Живая заявка CA-ротации (03 §7.2); null = заявки нет.
 public sealed record KafkaCaRotationTicketDto(long RequestedUnix, string? RequestedBy);
 
-// Последний исход заявки (t10, 03 §7.2): expired|done; null = исходов нет.
+// Последний исход заявки (03 §7.2): expired|done; null = исходов нет.
 public sealed record TicketOutcomeDto(
     string Kind, string Outcome, string? Reason, long RequestedUnix, string? RequestedBy, long FinishedUnix);
 
@@ -164,7 +164,7 @@ public static class KafkaMappers
         var outcome = (ticketOutcomes ?? []).FirstOrDefault(o => o.Cluster == cluster.Name);
         var clusterLive = live.GetValueOrDefault(cluster.Name);
 
-        // Мерж lifecycle-тикетов (t01): delete/create — к существующей строке;
+        // Мерж lifecycle-тикетов : delete/create — к существующей строке;
         // create без топика — «виртуальная» строка: факт-поля null/0 (спека
         // §5.3), параметры — только в lifecycle-части. Коллизия заявок на один
         // топик (etcd-мусор, arch/15 §3.1) — не ошибка читателя (arch/15 §6):

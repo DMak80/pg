@@ -9,7 +9,7 @@ using Xunit;
 
 namespace PgWorker.IntegrationTests.Backups;
 
-// Резолв sync-standby шарда (t27, arch/19 §3.3 п.2): Patroni GET /cluster на
+// Резолв sync-standby шарда (arch/19 §3.3 п.2): Patroni GET /cluster на
 // динамическом порту (TcpListener(0)-зонд + HttpListener — fейк Patroni),
 // portalloc-сид с patroni=<порт>. Не найден/недоступен → null БЕЗ fallback
 // (второй агент поднимется тиком при появлении sync).
@@ -111,7 +111,7 @@ public class ShardEndpointsSyncTests(EtcdFixture fixture)
         result.Value.Should().BeNull();
     }
 
-    // DRY: ResolveBackupSourceAsync — sync ?? мастер (поведение t02 не меняется)
+    // DRY: ResolveBackupSourceAsync — sync ?? мастер (поведение не меняется)
     [Fact]
     public async Task ResolveBackupSourceSyncPriorityAndMasterFallback()
     {

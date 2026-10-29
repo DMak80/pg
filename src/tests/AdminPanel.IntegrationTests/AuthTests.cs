@@ -141,12 +141,16 @@ public sealed class TestEtcdGateway : IEtcdGateway
 }
 
 // Единая на сборку фабрика (collection fixture "api"): статический кеш сборок
-// attribute-DI не допускает второй хост в процессе (spec t02 §10, §14).
+// attribute-DI не допускает второй хост в процессе (spec §10, §14).
 public sealed class AuthWebFactory : WebApplicationFactory<Program>
 {
+    // Тестовые креды админа хоста (литералы — только в константах).
+    internal const string AdminPassword = "adminpw";
+    internal const string WrongPassword = "wrong";
+
     public FixedTimeProvider Time { get; } = new();
 
-    // t08: build хоста под замком с очисткой статического кеша сборок attribute-DI —
+    // build хоста под замком с очисткой статического кеша сборок attribute-DI —
     // в процессе теперь ДВА Program-хоста (появилась BackupsWebFactory), кеш
     // сканирования процессный, без очистки второй хост терял бы [Config]/[InjectAs*]
     // регистрации (см. PanelHostBuilder).
@@ -154,9 +158,9 @@ public sealed class AuthWebFactory : WebApplicationFactory<Program>
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
-        // http-стенд: без AllowHttp Secure-cookie не вернётся по http (spec t02 §10, §14).
+        // http-стенд: без AllowHttp Secure-cookie не вернётся по http (spec §10, §14).
         builder.UseSetting("AdminPanel:Auth:Username", "admin");
-        builder.UseSetting("AdminPanel:Auth:Password", "adminpw");
+        builder.UseSetting("AdminPanel:Auth:Password", AdminPassword);
         builder.UseSetting("AdminPanel:Auth:AllowHttp", "true");
 
         // Подмена времени ПОСЛЕ композиции Program (ConfigureTestServices):
@@ -165,9 +169,9 @@ public sealed class AuthWebFactory : WebApplicationFactory<Program>
         {
             services.Replace(ServiceDescriptor.Singleton(typeof(TimeProvider), Time));
 
-            // t04: hosted не стартуют — тики refresher'а перезатирали бы тестовые снапшоты (spec §3.16);
+            // hosted не стартуют — тики refresher'а перезатирали бы тестовые снапшоты (spec §3.16);
             // снапшот общего хоста под контролем тестов через TestSnapshotStore.
-            // Заметка: при появлении новых hosted-сервисов (t06 пробы) потребуется точечное
+            // Заметка: при появлении новых hosted-сервисов (пробы) потребуется точечное
             // отключение только refresher'а (spec §16).
             services.RemoveAll<IHostedService>();
             services.Replace(new ServiceDescriptor(typeof(ISnapshotStore), new TestSnapshotStore()));
@@ -179,7 +183,7 @@ public sealed class AuthWebFactory : WebApplicationFactory<Program>
         });
     }
 
-    // t04: снапшот хоста под контролем тестов инспекции (spec §3.16).
+    // снапшот хоста под контролем тестов инспекции (spec §3.16).
     public EtcdSnapshot? Snapshot
     {
         get => Store.Current;
@@ -197,7 +201,7 @@ public sealed class AuthWebFactory : WebApplicationFactory<Program>
 [CollectionDefinition("api")]
 public sealed class ApiCollection : ICollectionFixture<AuthWebFactory>;
 
-// Интеграция auth-модуля: login/logout/me, 401 без cookie, rate-limit (spec t02 §10).
+// Интеграция auth-модуля: login/logout/me, 401 без cookie, rate-limit (spec §10).
 [Collection("api")]
 public class AuthTests
 {
@@ -218,7 +222,7 @@ public class AuthTests
         // Act
         var response = await client.PostAsJsonAsync(
             "/api/auth/login",
-            new { username = "admin", password = "adminpw" },
+            new { username = "admin", password = AuthWebFactory.AdminPassword },
             TestContext.Current.CancellationToken);
 
         // Assert
@@ -237,7 +241,7 @@ public class AuthTests
         // Act
         var response = await client.PostAsJsonAsync(
             "/api/auth/login",
-            new { username = "admin", password = "wrong" },
+            new { username = "admin", password = AuthWebFactory.WrongPassword },
             TestContext.Current.CancellationToken);
 
         // Assert
@@ -255,7 +259,7 @@ public class AuthTests
         // Act
         var response = await client.PostAsJsonAsync(
             "/api/auth/login",
-            new { username = "root", password = "adminpw" },
+            new { username = "root", password = AuthWebFactory.AdminPassword },
             TestContext.Current.CancellationToken);
 
         // Assert
@@ -287,11 +291,11 @@ public class AuthTests
         for (var i = 0; i < 5; i++)
             await client.PostAsJsonAsync(
                 "/api/auth/login",
-                new { username = "admin", password = "wrong" },
+                new { username = "admin", password = AuthWebFactory.WrongPassword },
                 TestContext.Current.CancellationToken);
         var sixth = await client.PostAsJsonAsync(
             "/api/auth/login",
-            new { username = "admin", password = "wrong" },
+            new { username = "admin", password = AuthWebFactory.WrongPassword },
             TestContext.Current.CancellationToken);
 
         // Assert
@@ -308,7 +312,7 @@ public class AuthTests
         // Act
         var response = await client.GetAsync("/api/auth/me", TestContext.Current.CancellationToken);
 
-        // Assert: ровно 401 — никаких 302-редиректов на логин (spec t02 §3.7).
+        // Assert: ровно 401 — никаких 302-редиректов на логин (spec §3.7).
         response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
     }
 
@@ -320,7 +324,7 @@ public class AuthTests
         using var client = _factory.CreateClient();
         await client.PostAsJsonAsync(
             "/api/auth/login",
-            new { username = "admin", password = "adminpw" },
+            new { username = "admin", password = AuthWebFactory.AdminPassword },
             TestContext.Current.CancellationToken);
 
         // Act
@@ -340,7 +344,7 @@ public class AuthTests
         using var client = _factory.CreateClient();
         await client.PostAsJsonAsync(
             "/api/auth/login",
-            new { username = "admin", password = "adminpw" },
+            new { username = "admin", password = AuthWebFactory.AdminPassword },
             TestContext.Current.CancellationToken);
 
         // Act

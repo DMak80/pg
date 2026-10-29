@@ -4,7 +4,7 @@ using Shared.Core.DI;
 
 namespace AdminPanel.Api.Operations.Kafka;
 
-// ===== 15. Изменение ресурсов брокера (t06, 02 §10.2-15): декларация в etcd
+// ===== 15. Изменение ресурсов брокера (02 §10.2-15): декларация в etcd
 // через API воркера; применяет NodeRegenerator (rolling, автоконверге) =====
 
 public sealed record UpdateKafkaBrokerResourcesCommand(

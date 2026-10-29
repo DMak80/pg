@@ -8,16 +8,16 @@ using PgWorker.Provisioning.Processes;
 
 namespace PgWorker.Backups.Supervisor;
 
-/// <summary>BackupSupervisorProcess — per-cluster сверка S3↔etcd (t07, arch/19
+/// <summary>BackupSupervisorProcess — per-cluster сверка S3↔etcd (arch/19
 /// §4) под клэймом &lt;C&gt; по расписанию Supervisor:IntervalSec: префиксы
 /// full/&lt;id&gt;/ живого шарда БЕЗ etcd-ключа — мусор (выбора кандидатов
 /// restore нет) — немедленный batch-delete с list-подтверждением и journal-фактом
-/// swept-full. WAL-префикс НЕ трогаем (владельцы — контроль цепочки t03 и
-/// ретенция t06). Гварды: клэйм, Enabled (runtime()==null — no-op), Active;
+/// swept-full. WAL-префикс НЕ трогаем (владельцы — контроль цепочки и
+/// ретенция). Гварды: клэйм, Enabled (runtime()==null — no-op), Active;
 /// шард в активном restore — skip (гвард владельца). Таймауты операций — в их
 /// процессах (§3.3), здесь только сверка хранилища. Ошибка шарда не роняет
 /// остальные (образец WalStreamProcess); повторный проход — no-op
-/// (list подтверждает пустоту, образец FinishDeletionAsync t06).</summary>
+/// (list подтверждает пустоту, образец FinishDeletionAsync).</summary>
 public sealed class BackupSupervisorProcess(
     IEtcdGateway etcd,
     string[] endpoints,
@@ -64,7 +64,7 @@ public sealed class BackupSupervisorProcess(
             return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
         _lastPassUnix[cluster] = nowUnix;
 
-        // t36 (arch/19 §5): пул-клиент кластера (удаления сирот full/<id>/ —
+        //  (arch/19 §5): пул-клиент кластера (удаления сирот full/<id>/ —
         // первая доступная нода: put/delete-семантика пула). null (пул не
         // выбран) → проход молчит; Failed → journal, ретраи проходом.
         var poolRead = await s3Factory.ResolveAsync(cluster, ct);
@@ -76,7 +76,8 @@ public sealed class BackupSupervisorProcess(
         }
         if (poolRead.Value is not { } poolCtx)
             return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
-        await using var s3 = s3Factory.Create(poolCtx);
+        // Клиент — кэш фабрики (breaker переживает тики) — НЕ диспоузим.
+        var s3 = s3Factory.Create(poolCtx);
 
         foreach (var shard in snap.Shards)
         {
@@ -87,13 +88,16 @@ public sealed class BackupSupervisorProcess(
             {
                 var shardBackups = backups?.Shards.GetValueOrDefault(shard.Name);
 
-                // Гвард владельца (t05 §3.4): шард в активном restore — контуры
+                // Гвард владельца (§3.4): шард в активном restore — контуры
                 // бэкапов его не трогают (объекты качает restore-джоб).
                 if (shardBackups?.Restores.Any(r => r.State
                         is RestoreStatus.Planned or RestoreStatus.Running or RestoreStatus.Rejoining) == true)
                     continue;
 
-                await SweepShardAsync(cluster, shard.Name, shardBackups, s3, ct);
+                // Возрастной гейт мусора (arch/19 §4 «Гейты мусора»):
+                // policy-ключ кластера перекрывает дефолт конфига.
+                var garbageMinAgeSec = backups?.Policy?.GarbageMinAgeSec ?? options.GarbageMinAgeSec;
+                await SweepShardAsync(cluster, shard.Name, shardBackups, garbageMinAgeSec, s3, ct);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -112,10 +116,12 @@ public sealed class BackupSupervisorProcess(
     }
 
     // Сверка одного шарда: list full/-префиксов → отбор без etcd-ключа →
+    // гейты мусора (arch/19 §4): свежее чтение ключа + возрастной гейт →
     // batch-delete каждого с list-подтверждением пустоты (иначе журнал-ошибка —
     // следующий проход повторит, идемпотентно).
     private async Task SweepShardAsync(
-        string cluster, string shard, ShardBackups? shardBackups, IBackupS3 s3, CancellationToken ct)
+        string cluster, string shard, ShardBackups? shardBackups,
+        long garbageMinAgeSec, IBackupS3 s3, CancellationToken ct)
     {
         var listed = await S3PulseAsync(token => s3.ListFullsAsync(cluster, shard, ct: token), ct);
         if (!listed.IsSuccess)
@@ -124,12 +130,35 @@ public sealed class BackupSupervisorProcess(
         var unowned = SupervisorPlanner.SelectUnownedFulls(listed.Value, shardBackups?.Full ?? []);
         foreach (var id in unowned)
         {
+            // Гейт 1 : свежее чтение etcd-ключа — снапшот тика снят ДО
+            // планирования; планировщик этого же тика мог запланировать и
+            // запустить полный ПОСЛЕ снапшота (заливка уже в S3, ключа в
+            // снапшоте нет — ложный unowned). Ключ появился → живой полный.
+            var fresh = await GetFullKeyAsync(cluster, shard, id, ct);
+            if (!fresh.IsSuccess)
+                throw new ApplicationException(
+                    $"fresh key check {cluster}/{shard}/{id}: {fresh.Error!.Message}");
+            if (fresh.Value is not null)
+                continue;
+
             var prefix = $"{cluster}/{shard}/full/{id}/";
             var objects = await S3PulseAsync(token => s3.ListPrefixAsync(prefix, ct: token), ct);
             if (!objects.IsSuccess)
                 throw new ApplicationException($"list {prefix}: {objects.Error!.Message}");
             if (objects.Value.Count > 0)
             {
+                // Гейт 2 : самый старый объект префикса моложе порога →
+                // заливка in-flight (снапшот мог отстать, гейт 1 — страховка
+                // фантомов) — не мусор, остаётся следующему проходу.
+                var oldest = objects.Value.Min(o => o.LastModified);
+                if (!SupervisorPlanner.IsGarbageMatured(oldest, garbageMinAgeSec, time.GetUtcNow()))
+                {
+                    logger?.LogInformation(
+                        "{Op} {Cluster}/{Shard}: prefix {Id} is younger than {Age}s — not garbage yet",
+                        Op, cluster, shard, id, garbageMinAgeSec);
+                    continue;
+                }
+
                 var deleted = await S3PulseAsync(token => s3.DeleteKeysAsync(
                     objects.Value.Select(o => o.Key).ToList(), token), ct);
                 if (!deleted.IsSuccess)
@@ -140,7 +169,7 @@ public sealed class BackupSupervisorProcess(
                         $"deletion of {prefix} did not complete — next pass will retry");
             }
 
-            // Объектов не было (пустой префикс) или удалены — журнал-факт.
+            // Объектов не было (пустой префикс) или удалены — запись журнала.
             await journal.WritePhaseAsync(cluster, Op, $"swept-full/{shard}/{id}",
                 claims.InstanceId, null, ct);
             logger?.LogInformation("{Op} {Cluster}/{Shard}: prefix {Id} without etcd key deleted",
@@ -148,7 +177,26 @@ public sealed class BackupSupervisorProcess(
         }
     }
 
-    /// <summary>S3-вызовы сверки — с пульсом прогресса (S3Pulse, канон t19):
+    // Свежее чтение ключа полного (failover по endpoints — образец
+    // BackupOrphanSweeper.ReadRegistryAsync): снапшот тика мог отстать от
+    // планировщика этого же тика; все endpoints недоступны → Failed (transient).
+    private async Task<Result<Kv?>> GetFullKeyAsync(
+        string cluster, string shard, string id, CancellationToken ct)
+    {
+        Result<Kv?> last = default;
+        foreach (var endpoint in endpoints)
+        {
+            var result = await etcd.GetAsync(endpoint, BackupNames.FullKey(cluster, shard, id), ct);
+            if (result.IsSuccess)
+                return result;
+            last = result;
+        }
+
+        return Result<Kv?>.Failed(last.Error
+            ?? new ApplicationException($"fresh key {cluster}/{shard}/{id}: no live etcd endpoints"));
+    }
+
+    /// <summary>S3-вызовы сверки — с пульсом прогресса (S3Pulse, канон):
     /// прямой вызов на недоступном endpoint висит до HttpClient-таймаута без
     /// отметок — watchdog (порт сноса 30 c) гасил reconcile посреди сверки
     /// (bad-S3 — штатный прод-контур, arch/19 §4 «transient — следующий проход»).</summary>

@@ -8,14 +8,14 @@
 шифруется и как аутентифицируется. Базовые кластеры без бакетов — матрица
 вырождается в «наружу только HAProxy» ([02](02-topology.md)).
 
-Инварианты (P17, 2026-08-22):
+Инварианты (P17):
 
 - **etcd — внешний инфраструктурный слой**: на нодах кластера `:2379` не
-  слушается вообще; ссылка на etcd — настройка при старте кластера
-  ([11](11-bucket-sharding.md) §2);
+ слушается вообще; ссылка на etcd — настройка при старте кластера
+ ([11](11-bucket-sharding.md) §2);
 - наружу от нод кластера — только **`:6432`** (приложениям) и **`:5432`**
-  (межшард-подписки и админка); всё остальное — внутри зоны кластера или
-  на отдельном infra-слое.
+ (межшард-подписки и админка); всё остальное — внутри зоны кластера или
+ на отдельном infra-слое.
 
 ---
 
@@ -48,7 +48,7 @@
 | админка (admin) | Patroni, etcd, HAProxy | 8008, 2379, 5432 (+7000 stats) | patronictl, etcdctl, psql | эксплуатация; PG `:5432` **напрямую** — только аварийно |
 | мониторинг (doorman/etcd metrics) | doorman metrics, etcd metrics | 6432, 2379 | HTTP scrape | метрики, алерты (P21) |
 | pg_doorman | `127.0.0.1` той же ноды | 5432 | PostgreSQL, **SCRAM** (не trust, §5) | loopback — вне firewall, но под pg_hba |
-| PgWorker | docker-хосты (Engine API) | 2376 | HTTPS **mTLS** (клиентский серт per-install docker-CA; `--tlsverify` на демоне) или SSH-key-туннель :22 → daemon :2376 loopback | provisioning/надзор/rebuild (arch/14 §2.2.1, t03); `:2375` plaintext — запрещён |
+| PgWorker | docker-хосты (Engine API) | 2376 | HTTPS **mTLS** (клиентский серт per-install docker-CA; `--tlsverify` на демоне) или SSH-key-туннель :22 → daemon :2376 loopback | provisioning/надзор/rebuild (arch/14 §2.2.1); `:2375` plaintext — запрещён |
 | панель / Prometheus | PgWorker, KafkaWorker | 8080 | HTTPS **mTLS** (клиентские серты per-install API-CA: `panel.crt`, `seed.crt`, `prometheus.crt`) | мутации/healthz/скрейп (arch/14 §1.1, arch/16 §1.1, arch/18 §5.2) |
 | панель | Patroni REST :8008 | 8008 | HTTPS (GET /cluster, ca.pem) | live-пробы кластера (arch/adminpanel/02 §6.1) |
 | Prometheus | Patroni :8008 | 8008 | HTTPS scrape (ca.pem), сеть pgw-metrics | метрики Patroni-нод, алерты (arch/18 §5.2) |
@@ -57,29 +57,29 @@
 
 - **app → :5432 / :8008** — приложениям напрямую к PG и Patroni хода нет;
 - **app-ноды как источники межшард-трафика** — межшардовое только нода↔нода
-  через HAProxy;
+ через HAProxy;
 - **`:2379` на нодах кластера** — etcd внешний (P17);
 - **`:6432` между нодами** — doorman всегда локален своей ноде
-  (бэкенд строго `127.0.0.1:5432`).
+ (бэкенд строго `127.0.0.1:5432`).
 
 ---
 
 ## 3. Принципы
 
 1. **Default deny**: разрешено только перечисленное в матрице; правила
-   группируются по подсетям зон (app-net, shard-net, infra-net, admin-net).
+ группируются по подсетям зон (app-net, shard-net, infra-net, admin-net).
 2. **Приложению — два адреса**: `2379` (infra etcd) и `6432` (ноды шардов).
-   Всё остальное для app-зоны закрыто.
+ Всё остальное для app-зоны закрыто.
 3. **Межшард — только через HAProxy `:5432`**: подписки/tablesynс/mover не
-   ходят в PG-ноды напрямую; источник видит IP HAProxy-нод (правило pg_hba
-   `bucket_mover`, [11](11-bucket-sharding.md) §4).
+ ходят в PG-ноды напрямую; источник видит IP HAProxy-нод (правило pg_hba
+ `bucket_mover`, [11](11-bucket-sharding.md) §4).
 4. **`:8008` не покидает зону shard/admin** — его клиенты: HAProxy,
-   PgWorker (сверяющий демон), HAProxy-синкеры, админка, панель, Prometheus,
-   межнодовые вызовы Patroni и loopback lease-скрипт ноды (P11) — всё по TLS.
+ PgWorker (сверяющий демон), HAProxy-синкеры, админка, панель, Prometheus,
+ межнодовые вызовы Patroni и loopback lease-скрипт ноды (P11) — всё по TLS.
 5. **`:5432` PG напрямую** — loopback и реплики своего шарда; всё остальное
-   проходит HAProxy (или аварийная админка).
+ проходит HAProxy (или аварийная админка).
 6. **`:2379`** слушается только на infra-слое; клиенты — app (watch),
-   Patroni, mover, админка, мониторинг ([04](04-deploy-etcd.md) — TLS etcd).
+ Patroni, mover, админка, мониторинг ([04](04-deploy-etcd.md) — TLS etcd).
 
 ---
 
@@ -113,7 +113,7 @@ SCRAM-SHA-256. **Passthrough-режим pg_doorman** (дефолт, рекоме
 криптографический proof** (SCRAM ClientKey) для аутентификации к PG —
 plaintext-пароля в конфиге doorman нет, только хэш из `pg_authid`.
 
-**Per-bucket роли — отклонены (2026-08-22).** Пул doorman — пара
+**Per-bucket роли — отклонены .** Пул doorman — пара
 `(database, user)`: каждая роль = отдельный пул со своим `pool_size` и
 `max_db_connections`, общего капа «на ноду» нет ([12](12-bucket-pitfalls.md)
 P14/P15) — 256 пулов ломают бюджет 55/ноду. Радиус компрометации кредов
@@ -125,7 +125,7 @@ app-роли = все бакеты кластера — принято вмес�
 клиентского юзера (`app`). pg_hba PG:
 
 ```
-host    <C>    app    127.0.0.1/32    scram-sha-256
+host <C> app 127.0.0.1/32 scram-sha-256
 ```
 
 **Не trust**: trust на loopback открывал бы PG любому процессу на

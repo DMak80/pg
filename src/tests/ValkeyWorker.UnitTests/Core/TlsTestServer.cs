@@ -7,7 +7,7 @@ using System.Text;
 
 namespace ValkeyWorker.UnitTests.Core;
 
-// Фейк-TLS-сервер юнит-тестов ValkeyConnection (t06): TcpListener на
+// Фейк-TLS-сервер юнит-тестов ValkeyConnection : TcpListener на
 // 127.0.0.1:0 (динамический порт — литералов нет), SslStream поверх
 // принятого сокета с серверным сертом. RESP-логика — порт RespStub
 // (очередь кадров на каждый запрос, chunked, Received); канон-режим —

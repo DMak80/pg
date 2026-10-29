@@ -8,7 +8,7 @@ using Xunit;
 
 namespace ValkeyWorker.UnitTests.Provisioning;
 
-// TlsMigrator (t06, arch/21 §5 T): детект (ключи CA/args живого контейнера),
+// TlsMigrator (arch/21 §5 T): детект (ключи CA/args живого контейнера),
 // фазы T0–T3 (journal started → ensured-ca → recreated → done), идемпотентность
 // re-run (канонический кластер — NotNeeded, docker не тронут), гонка
 // TO_REMOVE посреди миграции — abort.

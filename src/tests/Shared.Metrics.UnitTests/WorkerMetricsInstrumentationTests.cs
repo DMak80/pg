@@ -111,7 +111,7 @@ public sealed class WorkerMetricsInstrumentationTests
         using var sut = new WorkerMetricsInstrumentation(meter, TimeProvider.System);
         sut.OnJournalPhase("demo", op, "phase-a");
 
-        // Act: терминальная фаза expired (возрастное снятие не-начатой заявки, t10).
+        // Act: терминальная фаза expired (возрастное снятие не-начатой заявки).
         sut.OnJournalPhase("demo", op, "expired");
 
         // Assert: серия фаз закрыта (не вечная); операция посчитана result=expired.
@@ -163,12 +163,20 @@ public sealed class WorkerMetricsInstrumentationTests
         // WriteSupervisionAsync мимо события) и evacuate (только waiting-*) не имеют
         // терминальной фазы: фазовые серии для них НЕ эмитим — иначе вечно горящий
         // ProcessPhaseStuck; живость надзора закрывает WorkerLoopStalled.
+        // backup-orphan-sweeper — журнал домена сирот (свой ключ
+        // /pgworker/backups/orphan-journal): его фазы подавлены тоже.
+        // healing-portalloc — точечная реконструкция portalloc внутри клэйм-тика
+        // надзора (arch/21 §5 C / arch/23 §7): фазы started/reconstructed не
+        // терминальные — без подавления серия не сбрасывалась бы никогда.
         using var meter = new Meter("TestWorker");
         using var sut = new WorkerMetricsInstrumentation(meter, TimeProvider.System);
 
         // Act
         sut.OnJournalPhase("demo", "supervise", "dcs-converge");
         sut.OnJournalPhase("demo", "evacuate", "waiting-alive");
+        sut.OnJournalPhase("demo", "backup-orphan-sweeper", "orphan-deleting/ghost/s1");
+        sut.OnJournalPhase("demo", "healing-portalloc", "started");
+        sut.OnJournalPhase("demo", "healing-portalloc", "reconstructed");
 
         // Assert: подавлены полностью — ни серий, ни операций
         sut.DebugSnapshot().Phases.Should().BeEmpty();
@@ -206,7 +214,7 @@ public sealed class WorkerMetricsInstrumentationTests
     }
 
     // AAA: counter pgworker_backup_verify_total{cluster,shard,result} — лейблы
-    // cluster/shard добавлены (миграция серии t14, arch/18 §2.7): инкременты по тройке
+    // cluster/shard добавлены (миграция серии, arch/18 §2.7): инкременты по тройке
     [Fact]
     public void BackupVerify_IncrementsPerClusterShardResult()
     {
@@ -280,7 +288,7 @@ public sealed class WorkerMetricsInstrumentationTests
         sut.DebugSnapshot().ClaimsHeld.Should().Be(3);
     }
 
-    // AAA: t14 — набор тика замещает стейт кластера ЦЕЛИКОМ: age null → age-серия
+    // AAA: — набор тика замещает стейт кластера ЦЕЛИКОМ: age null → age-серия
     // отсутствует, max_age пишется всегда, ушедший из набора шард не эмитится
     [Fact]
     public void BackupFullAge_SetReplacesState_nullRemovesAge_maxAgeAlways()
@@ -308,7 +316,7 @@ public sealed class WorkerMetricsInstrumentationTests
         d.FullMaxAge[("c1", "s2")].Should().Be(43_200);
     }
 
-    // AAA: t14 — age-серия шарда исчезает при null-факте, max_age остаётся
+    // AAA: — age-серия шарда исчезает при null-факте, max_age остаётся
     [Fact]
     public void BackupFullAge_nullRemovesOnlyAge_shardsOfDifferentClustersIndependent()
     {
@@ -327,7 +335,7 @@ public sealed class WorkerMetricsInstrumentationTests
         d.FullMaxAge.Should().HaveCount(2); // max_age обоих кластеров жив
     }
 
-    // AAA: t14 — uploaded-age хранится как unix-факт (now − age на момент
+    // AAA: — uploaded-age хранится как unix-факт (now − age на момент
     // наблюдения — колбэк гейджа пересчитывает на каждом scrape); null удаляет
     [Fact]
     public void BackupWalUploadedAge_unixFact_nullRemoves()
@@ -346,7 +354,7 @@ public sealed class WorkerMetricsInstrumentationTests
         sut.DebugSnapshot().WalUploadedUnix.Should().BeEmpty();
     }
 
-    // AAA: t17 — единый марк-метод HaDurations: набор шардов тика замещает стейт
+    // AAA: — единый марк-метод HaDurations: набор шардов тика замещает стейт
     // кластера целиком; null-факт — серия шарда исчезает (arch/18 §2.7)
     [Fact]
     public void HaDurations_SetReplacesState_nullRemoves_ShardSeriesDisappears()
@@ -373,7 +381,7 @@ public sealed class WorkerMetricsInstrumentationTests
         state.HaRebuildDurations.Should().BeEmpty();
     }
 
-    // AAA: t17 — кластеры независимы (failover/rebuild — независимые серии)
+    // AAA: — кластеры независимы (failover/rebuild — независимые серии)
     [Fact]
     public void HaDurations_DifferentClustersIndependent()
     {
@@ -406,5 +414,22 @@ public sealed class WorkerMetricsInstrumentationTests
         // Assert: counter per-loop (лейбл цикла), пассивность — без исключений
         sut.DebugSnapshot().WatchdogRestarts["reconcile"].Should().Be(2);
         sut.DebugSnapshot().WatchdogRestarts["keepalive"].Should().Be(1);
+    }
+
+    [Fact]
+    public void BackupOrphanSkippedPool_CountsPerPool()
+    {
+        // Arrange
+        using var meter = new Meter("TestWorker");
+        using var sut = new WorkerMetricsInstrumentation(meter, TimeProvider.System);
+
+        // Act: свипер сирот дважды исключил пул p1 (недоступен/листинг не удался), один раз p2
+        sut.BackupOrphanSkippedPool("p1");
+        sut.BackupOrphanSkippedPool("p1");
+        sut.BackupOrphanSkippedPool("p2");
+
+        // Assert: counter per-pool (лейбл пула), пассивность — без исключений
+        sut.DebugSnapshot().OrphanSkippedPools["p1"].Should().Be(2);
+        sut.DebugSnapshot().OrphanSkippedPools["p2"].Should().Be(1);
     }
 }

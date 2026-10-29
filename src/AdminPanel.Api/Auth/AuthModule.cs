@@ -15,7 +15,7 @@ namespace AdminPanel.Api.Auth;
 // Тело POST /api/auth/login.
 public sealed record LoginRequest(string? Username, string? Password);
 
-// Композиция auth-модуля: cookie-схема, guard /api/*, эндпоинты (spec t02 §7.5).
+// Композиция auth-модуля: cookie-схема, guard /api/*, эндпоинты (spec §7.5).
 public static class AuthModule
 {
     public const string CookieName = "adminpanel_session";
@@ -35,7 +35,7 @@ public static class AuthModule
                 o.Cookie.SameSite = SameSiteMode.Lax;
                 o.Cookie.SecurePolicy = CookieSecurePolicy.Always;
                 o.SlidingExpiration = true;
-                // API не редиректит на логин-страницу: чистые 401/403 (spec t02 §3.7).
+                // API не редиректит на логин-страницу: чистые 401/403 (spec §3.7).
                 o.Events.OnRedirectToLogin = ctx =>
                 {
                     ctx.Response.StatusCode = StatusCodes.Status401Unauthorized;
@@ -48,7 +48,7 @@ public static class AuthModule
                 };
             });
 
-        // Срок сессии и Secure-политика — из AuthOptions (spec t02 §3.7).
+        // Срок сессии и Secure-политика — из AuthOptions (spec §3.7).
         // ILogger<Program>: маркер-тип не-static (AuthModule — static, иначе CS0718).
         services
            .AddOptions<CookieAuthenticationOptions>(CookieAuthenticationDefaults.AuthenticationScheme)
@@ -71,7 +71,7 @@ public static class AuthModule
         return services;
     }
 
-    // Default-deny guard: всё /api/*, кроме login и healthz, требует cookie (spec t02 §3.8).
+    // Default-deny guard: всё /api/*, кроме login и healthz, требует cookie (spec §3.8).
     public static IApplicationBuilder UseApiAuthorization(this IApplicationBuilder app)
         => app.Use(ApiGuard);
 
@@ -95,11 +95,11 @@ public static class AuthModule
         await next();
     }
 
-    // Сравнение пути без учёта регистра (spec t02 §3.8).
+    // Сравнение пути без учёта регистра (spec §3.8).
     private static bool PathEquals(PathString path, string value)
         => path.Equals((PathString)value, StringComparison.OrdinalIgnoreCase);
 
-    // Эндпоинты логина/логаута/сессии (arch/03 §1, spec t02 §4).
+    // Эндпоинты логина/логаута/сессии (arch/03 §1, spec §4).
     public static IEndpointRouteBuilder MapAuthApi(this IEndpointRouteBuilder endpoints)
     {
         endpoints.MapPost(

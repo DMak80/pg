@@ -17,7 +17,7 @@ using Xunit;
 
 namespace PgWorker.IntegrationTests.Api;
 
-// mTLS HTTP API PgWorker (spec §8.2, t03): клиент без серта — отказ TLS-хендшейка,
+// mTLS HTTP API PgWorker (spec §8.2): клиент без серта — отказ TLS-хендшейка,
 // с сертом API-CA — 200; /healthz за тем же TLS. Реальный Kestrel-сокет (WAF-
 // транспорт in-memory TLS не исполняет) — порт динамический (зонд FreePort).
 // https-валидация advertise: http-URL при выключенном AllowInsecureHttp — fail-fast

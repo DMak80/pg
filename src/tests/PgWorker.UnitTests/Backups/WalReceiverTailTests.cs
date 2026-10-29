@@ -6,7 +6,7 @@ using Xunit;
 
 namespace PgWorker.UnitTests.Backups;
 
-// Резолв стартовой позиции приёмника от хвоста S3 (t27, arch/19 §3): хвост —
+// Резолв стартовой позиции приёмника от хвоста S3 (arch/19 §3): хвост —
 // конец последнего сегмента непрерывной части цепочки (WalChain), дыра — старт
 // от конца непрерывной части (повторная доставка выше дыры идемпотентна), пустой
 // префикс — null (старт от restart_lsn слота).
@@ -45,6 +45,13 @@ public class WalReceiverTailTests
             string cluster, string shard, int? maxKeysPerTest = null, CancellationToken ct = default)
             => throw new NotSupportedException();
 
+// файловые методы интерфейса в этом тесте не используются —
+        // заглушка (фейк нужен только перечисленным выше операциям).
+        public Task<Result> PutFileAsync(string key, string filePath, CancellationToken ct = default)
+            => Task.FromResult(Result.Failed(new ApplicationException("put-file: not supported by this fake")));
+
+        public Task<Result> GetObjectToFileAsync(string cluster, string shard, string key, string destFilePath, CancellationToken ct = default)
+            => Task.FromResult(Result.Failed(new ApplicationException("get-to-file: not supported by this fake")));
         public Task<Result<string>> DownloadTextAsync(
             string cluster, string shard, string objectKey, CancellationToken ct = default)
             => throw new NotSupportedException();
@@ -52,7 +59,7 @@ public class WalReceiverTailTests
 
     private static WalObject Seg(string name) => new(name, DateTimeOffset.UnixEpoch);
 
-    private static ulong? Resolve(params WalObject[] objects)
+    private static WalTail? Resolve(params WalObject[] objects)
     {
         // Arrange / Act
         var result = S3TailResolver.ResolveTailAsync(new FakeS3(objects), "c1", "shard1", CancellationToken.None)
@@ -74,8 +81,9 @@ public class WalReceiverTailTests
             Seg("000000010000000000000004"),
             Seg("000000010000000000000005"));
 
-        // Act / Assert — конец сегмента 5: (5+1)<<24
-        tail.Should().Be(6UL << 24);
+        // Act / Assert — конец сегмента 5: (5+1)<<24; имя хвоста — последний сегмент
+        tail!.Position.Should().Be(6UL << 24);
+        tail.SegmentName.Should().Be("000000010000000000000005");
     }
 
     [Fact]
@@ -88,7 +96,7 @@ public class WalReceiverTailTests
             Seg("000000010000000000000004"));
 
         // Act / Assert — конец непрерывной части (сегмент 2), старт выше дыры
-        tail.Should().Be(3UL << 24);
+        tail!.Position.Should().Be(3UL << 24);
     }
 
     [Fact]
@@ -109,7 +117,7 @@ public class WalReceiverTailTests
             Seg("00000002.history"));
 
         // Act / Assert — цепочка непрерывна, хвост — конец сегмента TLI 2
-        tail.Should().Be(3UL << 24);
+        tail!.Position.Should().Be(3UL << 24);
     }
 
     [Fact]

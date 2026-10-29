@@ -6,7 +6,7 @@ using Xunit;
 
 namespace AdminPanel.UnitTests;
 
-// backup-verify-failed (t04, spec §3.6/AC7): critical per-shard на невалидный
+// backup-verify-failed (spec §3.6/AC7): critical per-shard на невалидный
 // полный, текст — verify.error; без FAILED и на пустом префиксе — молчит.
 public class BackupVerifyFailedRuleTests
 {

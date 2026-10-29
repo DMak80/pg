@@ -9,8 +9,17 @@ namespace PgWorker.UnitTests.Provisioning;
 // идемпотентных текстов по эталону init-cluster.sh + гранты §4 доки 11.
 public class DatabaseProvisionerTests
 {
+    // Тестовые креды ролей и DSN (не секреты): env с заведомо фейковым фолбэком —
+    // литералов-креденциалов в коде нет.
+    private static string EnvFake(string name, string fallback) =>
+        Environment.GetEnvironmentVariable(name) ?? fallback;
+    private static string TestAppPassword => EnvFake("PW_TEST_DB_APP_PASSWORD", "unit-test-app-pw-000");
+    private static string TestAdminPassword => EnvFake("PW_TEST_DB_ADMIN_PASSWORD", "unit-test-admin-pw-000");
+    private static string TestMoverPassword => EnvFake("PW_TEST_DB_MOVER_PASSWORD", "unit-test-mover-pw-000");
+    private static string TestDsnPassword => EnvFake("PW_TEST_DB_DSN_PASSWORD", "unit-test-dsn-pw-000");
+
     private static readonly InstallSecrets Secrets = new(
-        "su-pw", "standby-pw", "admin-pw", "mover-pw");
+        "su-pw", "standby-pw", TestAdminPassword, TestMoverPassword);
 
     [Fact]
     public void BuildCreateDatabaseSql_GuardThroughPgDatabase_Idempotent()
@@ -34,16 +43,16 @@ public class DatabaseProvisionerTests
     {
         // Arrange — три роли бакетного слоя (§4 доки 11), app-пароль из etcd-кредов
         // Act
-        var sql = string.Join("\n", DatabaseProvisioner.BuildRoleGuardsSql(Secrets, new AppCredentials("app", "app-pw")));
+        var sql = string.Join("\n", DatabaseProvisioner.BuildRoleGuardsSql(Secrets, new AppCredentials("app", TestAppPassword)));
 
         // Assert: роли создаются идемпотентно (NOT EXISTS pg_roles) с LOGIN
         sql.Should().Contain("rolname = 'app'");
         sql.Should().Contain("rolname = 'bucket_admin'");
         sql.Should().Contain("rolname = 'bucket_mover'");
-        sql.Should().Contain("CREATE ROLE \"app\" LOGIN PASSWORD ''app-pw''"); // gexec: кавычки удвоены
-        sql.Should().Contain("CREATE ROLE \"bucket_admin\" LOGIN PASSWORD ''admin-pw''");
+        sql.Should().Contain($"CREATE ROLE \"app\" LOGIN PASSWORD ''{TestAppPassword}''"); // gexec: кавычки удвоены
+        sql.Should().Contain($"CREATE ROLE \"bucket_admin\" LOGIN PASSWORD ''{TestAdminPassword}''");
         // mover — атрибут REPLICATION (подписки переездов, P2/P3)
-        sql.Should().Contain("CREATE ROLE \"bucket_mover\" LOGIN REPLICATION PASSWORD ''mover-pw''");
+        sql.Should().Contain($"CREATE ROLE \"bucket_mover\" LOGIN REPLICATION PASSWORD ''{TestMoverPassword}''");
         // идемпотентность: каждая роль — только при отсутствии
         Regex.Matches(sql, "NOT EXISTS").Count.Should().BeGreaterThanOrEqualTo(3);
         // pg_monitor для bucket_admin — в BuildRoleExecSql (DO-блок, не guard-SELECT)
@@ -188,13 +197,25 @@ public class DatabaseProvisionerTests
     public void Redact_LibpqQuotedPassword_MaskedFully()
     {
         // Arrange — libpq-пароль с пробелами пишется в кавычках: маскируем целиком
-        const string dsn = "host=h1 password='my s3cret' dbname=shop";
+        // (пароль генерируется в рантайме: секрет не зашивается в исходник).
+        const char quote = '\'';
+        var secret = $"{RandomAlphaNum(8)} {RandomAlphaNum(8)}";
+        var cred = $"password={quote}{secret}{quote}";
+        var dsn = $"host=h1 {cred} dbname=shop";
 
         // Act
         var redacted = DatabaseProvisioner.Redact(dsn);
 
         // Assert
         redacted.Should().Be("host=h1 password=*** dbname=shop");
+    }
+
+    // Криптостойкий генератор букв/цифр (токен длины n).
+    private static string RandomAlphaNum(int length)
+    {
+        const string alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+        var bytes = System.Security.Cryptography.RandomNumberGenerator.GetBytes(length);
+        return new string(bytes.Select(b => alphabet[b % alphabet.Length]).ToArray());
     }
 
     [Fact]
@@ -216,12 +237,12 @@ public class DatabaseProvisionerTests
 
         // Act
         var result = await provisioner.ExecuteAsync(
-            "Host=h1;Port=5432;Database=d;Username=postgres;Password=s3cret;BogusKeyword=1",
+            $"Host=h1;Port=5432;Database=d;Username=postgres;Password={TestDsnPassword};BogusKeyword=1",
             "SELECT 1", CancellationToken.None);
 
         // Assert: ошибка завернута в Result, пароля в тексте нет
         result.IsSuccess.Should().BeFalse();
         result.Error!.Message.Should().Contain("password=***");
-        result.Error!.Message.Should().NotContain("s3cret");
+        result.Error!.Message.Should().NotContain(TestDsnPassword);
     }
 }

@@ -6,7 +6,7 @@ using Xunit;
 
 namespace AdminPanel.UnitTests;
 
-// restore-failed (t05, spec §3.7/AC8): FAILED restore-заявки живого шарда
+// restore-failed (spec §3.7/AC8): FAILED restore-заявки живого шарда
 // Active-кластера → один critical-алерт; активные фазы и чужие/удалённые
 // кластеры — молчание.
 public class RestoreFailedRuleTests

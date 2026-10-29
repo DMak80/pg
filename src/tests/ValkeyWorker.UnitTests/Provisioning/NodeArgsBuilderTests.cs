@@ -19,7 +19,7 @@ public class NodeArgsBuilderTests
         // Act
         var args = NodeArgsBuilder.Build(maxmemory, policy, "ADMINPWD32SYMBOLSxxxxxxxxxxx", "APPPWD32SYMBOLSxxxxxxxxxxxxx");
 
-        // Assert — порядок флагов канонический (детерминизм сверки V3), хвост TLS (t06)
+        // Assert — порядок флагов канонический (детерминизм сверки V3), хвост TLS 
         args.Should().Equal(
             "valkey-server",
             "--user", "default", "off",
@@ -61,7 +61,7 @@ public class NodeArgsBuilderTests
         first.Should().NotEqual(second);
     }
 
-    // AAA: TLS-хвост канон arch/21 §2 (t06) — TLS-порт = контейнерный 6379,
+    // AAA: TLS-хвост канон arch/21 §2 — TLS-порт = контейнерный 6379,
     // plain закрыт, серты из /tls, клиенты без сертов (ACL).
     [Fact]
     public void Build_IncludesCanonicalTlsFlags()

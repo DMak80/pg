@@ -4,7 +4,7 @@ using PgWorker.Provisioning.Processes;
 
 namespace PgWorker.UnitTests.Provisioning;
 
-// RemoveShardProcess S0–S4 (t06 spec §5.3; arch/14 §5 H): таблица guard'ов
+// RemoveShardProcess S0–S4 (spec §5.3; arch/14 §5 H): таблица guard'ов
 // G1–G7, «сначала docker, потом etcd», чистка ключей/portalloc/журнала эвакуации.
 public class RemoveShardProcessTests
 {
@@ -65,10 +65,11 @@ public class RemoveShardProcessTests
         return new Rig(usedEtcd, usedDriver, claims, journal, process, puts);
     }
 
-    // AAA (t05 §3.4): активная restore-заявка снимаемого шарда — permanent-FAILED
-    // «cancelled-by-remove», restore-джобы шарда — вниз (RemoveRestoreJobsAsync).
+    // AAA (§3.4): активная restore-заявка снимаемого шарда — permanent-FAILED
+    // «cancelled-by-remove»; restore-операция уходит с нодой шарда (отдельных
+    // restore-джобов нет).
     [Fact]
-    public async Task Tick_ActiveRestore_FailedCancelledByRemove_JobsRemoved()
+    public async Task Tick_ActiveRestore_FailedCancelledByRemove()
     {
         // Arrange — базовый сид + RUNNING restore-заявка shard1
         var etcd = SeedBase();
@@ -81,14 +82,12 @@ public class RemoveShardProcessTests
         var outcome = await rig.Process.TickAsync(await Snapshot(rig.Etcd), "shard1", CancellationToken.None);
 
         // Assert — FAILED-put выполнен (cancelled-by-remove); сам ключ после
-        // успешного демонтажа не переживает (шаг 4 чистит весь префикс шарда);
-        // драйвер чистил restore-джобы шарда
+        // успешного демонтажа не переживает (шаг 4 чистит весь префикс шарда)
         outcome.IsSuccess.Should().BeTrue();
         rig.Puts.Should().Contain($"/pgworker/backups/shop/shard1/restore/{opId}",
             "cancel: the FAILED status is put before the key cleanup");
         rig.Etcd.Store.Should().NotContainKey($"/pgworker/backups/shop/shard1/restore/{opId}",
             "the teardown is finished — the key does not survive (step 4)");
-        rig.Driver.RemovedRestoreJobs.Should().Contain(("shop", "shard1"));
     }
 
     [Theory]

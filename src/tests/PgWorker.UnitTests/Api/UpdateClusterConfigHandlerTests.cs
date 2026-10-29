@@ -4,12 +4,12 @@ using PgWorker.UnitTests.Provisioning;
 
 namespace PgWorker.UnitTests.Api;
 
-// t06 (spec §3.3/§6.5): мутация config — чистая функция RewriteStrict (поле
+//  (spec §3.3/§6.5): мутация config — чистая функция RewriteStrict (поле
 // заменено/добавлено, прочие перенесены) + детерминированный юнит гонки RMW
 // (проигрыш compare mod_revision → ClusterConcurrentWriteException → 503).
 public class UpdateClusterConfigHandlerTests
 {
-    // AAA (t06): пересборка config — поле заменено/добавлено, прочие сохранены.
+    // AAA : пересборка config — поле заменено/добавлено, прочие сохранены.
     [Theory]
     [InlineData("""{"buckets":10,"dbname":"demo","created_unix":123,"synchronous_mode_strict":true}""", false)]
     [InlineData("""{"buckets":10,"dbname":"demo","created_unix":123}""", true)]
@@ -26,7 +26,7 @@ public class UpdateClusterConfigHandlerTests
         doc.RootElement.GetProperty("synchronous_mode_strict").GetBoolean().Should().Be(strict);
     }
 
-    // AAA (t06, spec §6.5 — форма: юнит, см. примечание в Задаче 15 шаг 2):
+    // AAA (spec §6.5 — форма: юнит, см. примечание в Задаче 15 шаг 2):
     // конкурентная запись между read и txn — compare проигран, хендлер возвращает
     // ClusterConcurrentWriteException (маппинг ApiModule — 503, retry клиентом).
     [Fact]

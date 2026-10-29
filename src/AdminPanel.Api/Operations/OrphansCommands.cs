@@ -4,7 +4,7 @@ using Shared.Core.DI;
 
 namespace AdminPanel.Api.Operations;
 
-// Сироты бэкапов: hold/unhold/delete-заявка (reliability t04, arch/02 §9.10) —
+// Сироты бэкапов: hold/unhold/delete-заявка (reliability, arch/02 §9.10) —
 // прокси в API PgWorker; панель в etcd не пишет.
 public sealed record HoldOrphanCommand(string Cluster, string Shard, string RequestedBy)
     : ICommand<OrphanMutatedDto>;

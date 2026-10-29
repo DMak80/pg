@@ -6,7 +6,7 @@ using Xunit;
 
 namespace PgWorker.IntegrationTests.E2e;
 
-// HA-etcd контур E2E (t09, spec §8): отказ ОДНОГО узла 3-нодового контура
+// HA-etcd контур E2E (spec §8): отказ ОДНОГО узла 3-нодового контура
 // посреди надзора — не-событие. Изоляция/телеметрия — docs/e2e-isolation.md,
 // docs/e2e-launch.md (guid-имена, own-only teardown, MarkFailed — стоп без
 // удаления). Проверки после отказа узла №1 идут через выживший endpoint
@@ -48,7 +48,7 @@ public class E2eHaEtcdScenarios
 
             // Assert (интервал отказа): healthz жив, lease-ключи API не гаснут,
             // master-ключ пережил отказ (непрерывно жив > 2×TTL 5 c — пишет
-            // через второй endpoint, задача 4). По-пробная телеметрия (t29 §3.5):
+            // через второй endpoint, задача 4). По-пробная телеметрия (§3.5):
             // каждая проба видна в журнале; пробы остаются жёсткими — НЕ ретрай.
             for (var probe = 0; probe < 5; probe++)
             {

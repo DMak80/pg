@@ -4,7 +4,7 @@ using PgWorker.Etcd.Parsing;
 namespace PgWorker.Backups.Drill;
 
 // Сериализация статуса дрилла в JSON канона /pgworker/backups/<C>/<X>/drill
-// (arch/19 §4, reliability t02): пишет ТОЛЬКО воркер под клэймом; null/опциональные
+// (arch/19 §4, reliability): пишет ТОЛЬКО воркер под клэймом; null/опциональные
 // поля не сериализуются (образец RestoreStatusJson). Парсинг — снапшотный
 // BackupsParser.TryParseDrill (PgWorker.Etcd), панель — своим парсером.
 public static class DrillStatusJson

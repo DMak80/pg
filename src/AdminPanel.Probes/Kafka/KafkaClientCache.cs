@@ -5,7 +5,7 @@ using System.IO;
 namespace AdminPanel.Probes.Kafka;
 
 /// <summary>
-/// Кэш нативных kafka-клиентов пробы (t11): один AdminClient/Consumer на
+/// Кэш нативных kafka-клиентов пробы : один AdminClient/Consumer на
 /// (bootstrap, user, password) вместо «клиент на каждый вызов» — churn
 /// rd_kafka-инстансов и LongRunning poll-потоков на недоступных брокерах
 /// съедал ~99% ядра панели (инцидент 2026-09-02). Пересоздание — только при
@@ -15,7 +15,7 @@ namespace AdminPanel.Probes.Kafka;
 /// </summary>
 public sealed class KafkaClientCache(ILogger<KafkaClientCache>? logger = null) : IDisposable
 {
-    // Профиль librdkafka для проб (t11): дефолтные 100 мс retry/reconnect-
+    // Профиль librdkafka для проб : дефолтные 100 мс retry/reconnect-
     // backoff при мгновенном connection-refusal превращаются в reconnect-шторм
     // (FAIL/ERROR-лог каждую секунду, poll-потоки жгут ядро) — затыкаем до ≥1 c.
     private const int BackoffMs = 1000;
@@ -29,7 +29,7 @@ public sealed class KafkaClientCache(ILogger<KafkaClientCache>? logger = null) :
     private readonly Dictionary<(string Bootstrap, string User, string Password, string? CaPem), Entry> _entries = [];
 
     // Сколько нативных клиентов создано за жизнь кэша — метрика churn'а
-    // (интеграционный тест t11 строит на ней границы).
+    // (интеграционный тест строит на ней границы).
     public int CreatedClients { get; private set; }
 
     public IAdminClient GetAdmin(string bootstrap, string user, string password, string? caPem)
@@ -130,7 +130,7 @@ public sealed class KafkaClientCache(ILogger<KafkaClientCache>? logger = null) :
         var config = new AdminClientConfig
         {
             BootstrapServers = bootstrap,
-            SecurityProtocol = SecurityProtocol.SaslSsl, // t03: дискавери-канон arch/15 §5
+            SecurityProtocol = SecurityProtocol.SaslSsl, // дискавери-канон arch/15 §5
             SaslMechanism = SaslMechanism.Plain,
             SaslUsername = user,
             SaslPassword = password,
@@ -139,11 +139,11 @@ public sealed class KafkaClientCache(ILogger<KafkaClientCache>? logger = null) :
             ReconnectBackoffMaxMs = BackoffMaxMs,
         };
         if (caPem is not null)
-            config.Set("ssl.ca.location", CaPemFile(caPem)); // файл: bundle окна ротации (t07)
+            config.Set("ssl.ca.location", CaPemFile(caPem)); // файл: bundle окна ротации 
         return config;
     }
 
-    // Truststore ФАЙЛОМ (t07): inline ssl.ca.pem у librdkafka — один серт,
+    // Truststore ФАЙЛОМ : inline ssl.ca.pem у librdkafka — один серт,
     // bundle OLD+NEW окна ротации CA требует файла. Кеш по SHA-256 содержимого.
     private static string CaPemFile(string caPem)
     {

@@ -9,7 +9,7 @@ using Xunit;
 namespace AdminPanel.IntegrationTests;
 
 // Живой путь «etcd-сид → refresher(+состояние проб) → API» (spec §9.3): клейка —
-// перенос снапшота в TestSnapshotStore фабрики (прецедент t04 §3.17).
+// перенос снапшота в TestSnapshotStore фабрики (прецедент §3.17).
 [Collection("api")]
 public class InspectionProbeApiTests(AuthWebFactory factory, EtcdContainerFixture fixture)
     : IClassFixture<EtcdContainerFixture>

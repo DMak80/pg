@@ -9,6 +9,9 @@ namespace S3Worker.UnitTests.Docker;
 // сироты X2, placement-атрибуты хостов (arch/23 §4).
 public class ClusterDriverTests
 {
+    // Тестовый кред env-образца (литералы — только в константах).
+    private const string TestRootPassword = "secret";
+
     // Движок-дублёр: запоминает spec создания, хранит контейнеры/тома/факты
     // инспекта (порт StubEngine ClusterDriverEnvTests valkey).
     private sealed class StubEngine : IDockerEngine
@@ -95,6 +98,9 @@ public class ClusterDriverTests
         }
 
         public Task<Result> StopContainerAsync(string idOrName, int timeoutSec, CancellationToken ct)
+            => Task.FromResult(Result.Success());
+
+        public Task<Result> KillContainerAsync(string idOrName, CancellationToken ct)
             => Task.FromResult(Result.Success());
 
         public Task<Result> RemoveContainerAsync(string idOrName, bool force, CancellationToken ct)
@@ -195,7 +201,7 @@ public class ClusterDriverTests
         new Dictionary<string, string>
         {
             ["OWNS3_ROOT_USER"] = "root",
-            ["OWNS3_ROOT_PASSWORD"] = "secret",
+            ["OWNS3_ROOT_PASSWORD"] = TestRootPassword,
             ["OWNS3_DATA_DIR"] = "/data",
         };
 

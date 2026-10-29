@@ -99,7 +99,7 @@ public sealed class RemoveBrokerProcess(
 
     // «На брокере есть реплики» — по DescribeTopics.ReplicasPerPartition (A8).
     // Недоступность кластера — консервативно «есть» (демонтаж подождёт): без
-    // факта рисковать нельзя (roadmap t02 разблокирует drain).
+    // факта рисковать нельзя (roadmap разблокирует drain).
     private async Task<bool> HasPartitionsAsync(KafkaClusterSnapshot snap, string broker, CancellationToken ct)
     {
         if (snap.Endpoints is null || snap.AppUser is null || snap.AppPassword is null)
@@ -109,7 +109,7 @@ public sealed class RemoveBrokerProcess(
         await using var admin = adminFactory.Create(snap.Endpoints, snap.AdminUser ?? "admin", snap.AdminPassword!, snap.CaPem);
         // Describe-all: guard видит и internal-реплики (__consumer_offsets) —
         // раньше фильтр __ прятал их и «пустой» брокер демонтировался с
-        // потерей этих реплик (t02 §1, arch/16 §5 I/G).
+        // потерей этих реплик (§1, arch/16 §5 I/G).
         var topics = await admin.DescribeTopicsAsync(includeInternal: true, ct);
         if (!topics.IsSuccess)
             return true; // факт неизвестен — консервативно ждём

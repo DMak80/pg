@@ -10,11 +10,11 @@ using Xunit;
 
 namespace KafkaWorker.IntegrationTests.Kafka;
 
-// Reassignment против реального Kafka (t02; Docker required, spec §11.2/§11.3/
+// Reassignment против реального Kafka ( Docker required, spec §11.2/§11.3/
 // §11.5/§11.7): drain непустого broker-only со снижением RF 4→3 (данные целы,
 // internal-топики уехали), идемпотентность повторной подачи того же assignment.
 
-// Per-class коллекция (t24/AGENTS.base §13; spec §6.3.2): свой инстанс
+// Per-class коллекция (/AGENTS.base §13; spec §6.3.2): свой инстанс
 // KafkaClusterFixture — свой etcd-контур, свои кластеры/сети (RunTag),
 // своё окно портов и AdminFactory; классы параллельны (потолок —
 // xunit.runner.json), факты класса последовательны.
@@ -60,8 +60,8 @@ public class ReassignmentTests(KafkaClusterFixture fixture)
             new DeprovisioningProcess(
                 fixture.Gateway, [fixture.Endpoint], fixture.Driver, claims, journal, snapshot: null),
             new PartitionReassignerProcess(
-                fixture.Gateway, [fixture.Endpoint], fixture.Driver, claims, journal,
-                fixture.AdminFactory, new ReassignOptions(IntervalSec: 0, BatchPartitions: 10, ExecSec: 180, RetrySubmitSec: 120),
+                fixture.Gateway, [fixture.Endpoint], claims, journal,
+                fixture.AdminFactory, new ReassignOptions(IntervalSec: 0, BatchPartitions: 10, SubmitSec: 60, RetrySubmitSec: 120),
                 TimeProvider.System),
             new RemoveBrokerProcess(
                 fixture.Gateway, [fixture.Endpoint], fixture.Driver, claims, journal,
@@ -141,7 +141,7 @@ public class ReassignmentTests(KafkaClusterFixture fixture)
         await rig.Claims.DisposeAsync();
     }
 
-    // describe-all через адаптер воркера (включая __-топики, t02).
+    // describe-all через адаптер воркера (включая __-топики).
     private async Task<IReadOnlyList<KafkaTopicView>> DescribeAllAsync(Creds creds)
     {
         await using var admin = fixture.AdminFactory.Create(
@@ -153,7 +153,7 @@ public class ReassignmentTests(KafkaClusterFixture fixture)
     }
 
     // Produce коротких сообщений (ключи → разные партиции). Канон клиента
-    // t03: SASL_SSL + доверие per-cluster CA (ca_pem из etcd, arch/15 §5).
+    // SASL_SSL + доверие per-cluster CA (ca_pem из etcd, arch/15 §5).
     private static async Task ProduceAsync(Creds creds, string topic, int count)
     {
         var config = new ProducerConfig
@@ -239,7 +239,7 @@ public class ReassignmentTests(KafkaClusterFixture fixture)
                 "all messages are readable before drain");
 
             // Act: broker4 TO_REMOVE → тики reassigner+remove+topicsync до демонтажа.
-            // Транзиентные отказы тика (exec CLI, коннекты) — не провал: реальный
+            // Транзиентные отказы тика (подача, коннекты) — не провал: реальный
             // ReconcileLoop ретраит следующим тиком; здесь проверяется сходимость.
             await fixture.Gateway.PutAsync(fixture.Endpoint, $"/kafka/clusters/{cluster}/brokers/broker4/state",
                 "TO_REMOVE", lease: null, ct);
@@ -347,22 +347,20 @@ public class ReassignmentTests(KafkaClusterFixture fixture)
             (await rig.Reassigner.RunAsync(snap!, ct)).IsSuccess.Should().BeTrue(
                 "a repeat reassigner tick on the converged fact succeeds");
 
-            // Act 2: повторная CLI-подача того же assignment (факт == план) —
-            // Kafka обязана принять идемпотентно (KIP-455).
+            // Act 2: двойная подача того же assignment seam-методом (факт ==
+            // план) — Kafka обязана принять идемпотентно (KIP-455, §2.4).
             var before = await DescribeAllAsync(creds);
             var moves = before
                 .SelectMany(t => t.ReplicasPerPartition.Select((_, p) => new ReassignMove(t.Topic, p, [.. t.ReplicasPerPartition[p]])))
                 .ToList();
-            var bootstrap = ReassignCli.Bootstrap(["broker1", "broker2", "broker3"]);
-            // CLI-канон t03: SASL_SSL command-config с admin-кредами и per-cluster
-            // CA из etcd (литералы "adminpw"/"CAPEM" — легаси PLAINTEXT-эпохи).
             var adminUser = await fixture.GetAsync($"/kafka/clusters/{cluster}/admin_user");
             var adminPassword = await fixture.GetAsync($"/kafka/clusters/{cluster}/admin_password");
-            var cmd = ReassignCli.BuildExecCommand(moves, bootstrap, adminUser!, adminPassword!, creds.CaPem);
+            await using var submitAdmin = fixture.AdminFactory.Create(
+                creds.Bootstrap, adminUser!, adminPassword!, creds.CaPem);
             for (var i = 0; i < 2; i++)
             {
-                var exec = await fixture.Driver.ExecNodeAsync(cluster, "broker1", cmd, ct);
-                exec.IsSuccess.Should().BeTrue($"resubmission #{i + 1} must not fail: {exec.Error?.Message}");
+                var submit = await submitAdmin.AlterReassignmentsAsync(moves, ct);
+                submit.IsSuccess.Should().BeTrue($"resubmission #{i + 1} must not fail: {submit.Error?.Message}");
             }
 
             // Assert: describe до/после идентичен по assignment всех партиций.

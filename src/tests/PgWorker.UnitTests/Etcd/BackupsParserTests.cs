@@ -3,7 +3,7 @@ using PgWorker.Etcd.Parsing;
 
 namespace PgWorker.UnitTests.Etcd;
 
-// Парсер /pgworker/backups/* (arch/19 §4, t01): полный набор ключей,
+// Парсер /pgworker/backups/* (arch/19 §4): полный набор ключей,
 // битые значения — parseErrors + пропуск записи, неизвестные ключи и чужие
 // префиксы — игнор (толерантность снапшот-парсеров).
 public class BackupsParserTests
@@ -120,18 +120,18 @@ public class BackupsParserTests
             .Which.State.Should().Be(FullBackupStatus.Planned);
     }
 
-    // AAA (t07, arch/19 §4 — прогон 2026-09-13): BROKEN обязан читаться
+    // AAA (arch/19 §4 — прогон 2026-09-13): WAL_CHAIN_ERROR обязан читаться
     // СНАПШОТНЫМ парсером: неизвестное state давало Wal=null → контроль шёл от
-    // min COMPLETED (ниже границы разрыва), ключ замерал в BROKEN, планировщик
+    // min COMPLETED (ниже границы разрыва), ключ замерал в WAL_CHAIN_ERROR, планировщик
     // штормовал пересъёмами (walKeyExists=false при живом ключе).
     [Fact]
     public void Parse_WalBroken_StateBroken_FieldsIntact()
     {
-        // Arrange — живой BROKEN-ключ шарда (граница разрыва в chain_start).
+        // Arrange — живой WAL_CHAIN_ERROR-ключ шарда (граница разрыва в chain_start).
         var kvs = new List<Kv>
         {
             new("/pgworker/backups/demo/s1/wal",
-                "{\"state\":\"BROKEN\",\"slot\":\"pgw_bkp_demo_s1\",\"master_node\":\"pgw-demo-s1-1\"," +
+                "{\"state\":\"WAL_CHAIN_ERROR\",\"slot\":\"pgw_bkp_demo_s1\",\"master_node\":\"pgw-demo-s1-1\"," +
                 "\"chain_start_segment\":\"000000010000000000000029\",\"last_received_segment\":\"000000010000000000000029\"," +
                 "\"last_uploaded_segment\":\"000000010000000000000029\",\"last_uploaded_unix\":1789324156," +
                 "\"error\":\"WAL chain gap: expected 00000001000000000000002a, found 00000001000000000000002b\"}", 1),
@@ -144,8 +144,8 @@ public class BackupsParserTests
         result.IsSuccess.Should().BeTrue();
         errors.Should().BeEmpty();
         var s1 = result.Value.Should().ContainSingle().Subject.Shards["s1"];
-        s1.Wal.Should().NotBeNull("BROKEN is a valid state — the key is not discarded");
-        s1.Wal!.State.Should().Be(WalStreamStatus.Broken);
+        s1.Wal.Should().NotBeNull("WAL_CHAIN_ERROR is a valid state — the key is not discarded");
+        s1.Wal!.State.Should().Be(WalStreamStatus.WalChainError);
         s1.Wal.Slot.Should().Be("pgw_bkp_demo_s1");
         s1.Wal.ChainStartSegment.Should().Be("000000010000000000000029");
         s1.Wal.LastUploadedSegment.Should().Be("000000010000000000000029");
@@ -266,7 +266,7 @@ public class BackupsParserTests
         result.Value.Should().Contain(c => c.Cluster == "s1").Which.Policy.Should().BeNull();
     }
 
-    // restore/<id> (t05, arch/19 §4): полный статус разбирается во все поля.
+    // restore/<id> (arch/19 §4): полный статус разбирается во все поля.
     [Fact]
     public void Parse_RestoreKey_FullStatusParsed()
     {
@@ -372,6 +372,82 @@ public class BackupsParserTests
         shard.Full.Should().ContainSingle();
         shard.Wal.Should().NotBeNull();
         shard.Restores.Should().ContainSingle().Which.State.Should().Be(RestoreStatus.Planned);
+    }
+
+    // AAA: gap wal-ключа (tli-зазор, arch/19 §4) доезжает в СНАПШОТ —
+    // планировщик переснимает полный по walGapUncovered из снапшотного
+    // чтения (: снапшотный парсер Gap терял — живой непокрытый зазор
+    // для планировщика не существовал, пересъём не планировался).
+    [Fact]
+    public void Parse_WalKeyWithGap_GapStateCollected()
+    {
+        // Arrange — wal-ключ DEGRADED с gap-профилем, как пишет контроль.
+        var kvs = new List<Kv>
+        {
+            new("/pgworker/backups/c1/x1/wal",
+                """{"state":"DEGRADED","slot":"s","master_node":"n1","chain_start_segment":"000000020000000100000000","last_received_segment":"000000020000000100000001","last_uploaded_segment":"000000020000000100000001","last_uploaded_unix":5,"error":"tli-gap: segments (…, …] will not be delivered","gap":{"from":"000000010000000000000008","to":"000000020000000100000001","tli":2},"agents":[{"node":"n1","state":"running"}]}""", 1),
+        };
+
+        // Act
+        var result = BackupsParser.Parse(kvs, out var errors);
+
+        // Assert — gap прочитан со всеми границами (пересъём снапшотом).
+        errors.Should().BeEmpty();
+        var wal = result.Value.Single().Shards["x1"].Wal;
+        wal.Should().NotBeNull();
+        wal!.Gap.Should().NotBeNull("the snapshot parser must carry the live gap to the planner");
+        wal.Gap!.From.Should().Be("000000010000000000000008");
+        wal.Gap!.To.Should().Be("000000020000000100000001");
+        wal.Gap!.Tli.Should().Be(2u);
+    }
+
+    // AAA: СКВОЗНОЙ путь планировщика на живом tli-gap : снапшот из
+    // точных JSON etcd прогона (wal с gap.to выше wal_start COMPLETED-полных)
+    // → due по walGapUncovered И бэкофф держит (непокрывшие COMPLETED —
+    // попытки): пересъём редкий, шторма «полный каждые 10 с» нет.
+    [Fact]
+    public void Parse_PlannerPipeline_OnLiveTliGap_RetakeIsDueAndBackedOff()
+    {
+        // Arrange — снапшот: wal DEGRADED с gap.to=…002; COMPLETED с
+        // wal_start=…001 (ниже границы — redo/restart-точка источника ещё
+        // в предыдущем сегменте); FAILED от старой TLI.
+        var kvs = new List<Kv>
+        {
+            new("/pgworker/backups/c1/x1/wal",
+                """{"state":"DEGRADED","slot":"pgw_bkp_c_shard1","master_node":"shard1a","chain_start_segment":"000000020000000100000001","last_received_segment":"000000020000000100000002","last_uploaded_segment":"000000020000000100000002","last_uploaded_unix":1793128136,"lag_segments":0,"error":"tli-gap: segments will not be delivered","agents":[{"node":"shard1a","state":"running"}],"gap":{"from":"000000010000000000000003","to":"000000020000000100000002","tli":2}}""", 1),
+            new("/pgworker/backups/c1/x1/full/20261027190850Z",
+                """{"state":"COMPLETED","node":"shard1b","role":"replica","started_unix":1793128130,"finished_unix":1793128136,"wal_start_segment":"000000020000000100000001","size_bytes":69856707,"verify":{"state":"PENDING"}}""", 2),
+            new("/pgworker/backups/c1/x1/full/20261027185115Z",
+                """{"state":"FAILED","node":"shard1a","role":"replica","started_unix":1793127075,"finished_unix":1793127248,"error":"operation-vanished"}""", 3),
+        };
+
+        // Act — снапшот → границы → IsDue → BackoffPassed (как в тике G3).
+        var result = BackupsParser.Parse(kvs, out var errors);
+        var shard = result.Value.Single().Shards["x1"];
+        var fulls = shard.Full;
+        var gapBoundary = shard.Wal is { Gap: { } liveGap } ? liveGap.To : null;
+        var gapCovered = gapBoundary is { Length: > 0 } to
+            && fulls.Any(f => f.State == FullBackupStatus.Completed
+                && f.WalStartSegment is { Length: > 0 } ws
+                && string.CompareOrdinal(ws, to) >= 0);
+        Func<FullBackupState, bool>? uncovered = gapBoundary is { Length: > 0 } boundary && !gapCovered
+            ? f => f.State == FullBackupStatus.Completed
+                && f.WalStartSegment is { Length: > 0 } ws
+                && string.CompareOrdinal(ws, boundary) < 0
+            : null;
+        var nowUnix = 1793128141; // 5 с после COMPLETED-полного
+        var isDue = BackupPlanner.IsDue(fulls, 3600, nowUnix,
+            walChainBroken: false,
+            walGapUncovered: gapBoundary is not null && !gapCovered);
+        var backoff = BackupPlanner.BackoffPassed(fulls, 300, 3600, nowUnix, uncovered);
+
+        // Assert
+        errors.Should().BeEmpty();
+        gapBoundary.Should().Be("000000020000000100000002",
+            "the snapshot parser carries the live gap to the planner");
+        isDue.Should().BeTrue("the live uncovered gap forces the retake");
+        backoff.Should().BeFalse(
+            "COMPLETED below the gap boundary is a backoff attempt — no 10 s retake storm");
     }
 
     // Restore-ключи шарда сортированы по Id (Ordinal), как полные.
@@ -508,7 +584,7 @@ public class BackupsParserTests
     }
 }
 
-// t36 (arch/19 §4): секция s3 policy — пул + списки write_master/write_replica.
+//  (arch/19 §4): секция s3 policy — пул + списки write_master/write_replica.
 public class BackupsParserS3Tests
 {
     // AAA: policy с секцией s3 — пул и списки читаются в порядке JSON.

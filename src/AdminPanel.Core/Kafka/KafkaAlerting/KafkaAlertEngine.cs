@@ -5,7 +5,7 @@ using Microsoft.Extensions.Options;
 namespace AdminPanel.Core.Kafka.KafkaAlerting;
 
 // Чистая функция (KafkaSnapshot next, prev) → Alert[] — кластерные kinds волны B
-// каталога arch/03 §7.4 (probe-алерты волн C добавляются сюда же; t10 —
+// каталога arch/03 §7.4 (probe-алерты волн C добавляются сюда же; —
 // ca-rotation-pending, stale-ротации, ticket-expired). sinceUnix —
 // по стабильному id из prev.Alerts (механика pg AlertEngine); сортировка
 // severity → kind → target.
@@ -23,7 +23,7 @@ public sealed class KafkaAlertEngine(IOptions<KafkaAlertsOptions> options) : IKa
 
     private readonly KafkaAlertsOptions _options = options.Value;
 
-    // securityReady (t03): имена кластеров с полным набором admin_user+admin_password+
+    // securityReady : имена кластеров с полным набором admin_user+admin_password+
     // валидного ca_pem в internal-сторе (считает KafkaSnapshotRefresher из ReadSecrets);
     // null — стор недоступен (прямые вызовы Evaluate без данных стора) — правило
     // безопасности не оценивается.
@@ -44,7 +44,7 @@ public sealed class KafkaAlertEngine(IOptions<KafkaAlertsOptions> options) : IKa
     private IEnumerable<Alert> Enumerate(
         KafkaSnapshot next, KafkaSnapshot? previous, IReadOnlyCollection<string>? securityReady)
     {
-        // kafka-security-missing (critical, t03, arch/15 §6): Active-кластер без
+        // kafka-security-missing (critical, arch/15 §6): Active-кластер без
         // полного набора admin-кредов/CA в сторе — пробы SASL_SSL не исполнимы
         // (премиграционный кластер ждёт SecurityMigrator).
         if (securityReady is not null)
@@ -62,7 +62,7 @@ public sealed class KafkaAlertEngine(IOptions<KafkaAlertsOptions> options) : IKa
                     null,
                     "Active cluster without admin_user/admin_password/ca_pem: worker ensure must write the secrets (or the cluster is pre-migration — SecurityMigrator will perform the migration)",
                     AlertRemedy.WorkerAuto,
-                    "worker ensure/migration will add the secrets (t03); if it hangs — check the worker journal");
+                    "worker ensure/migration will add the secrets ; if it hangs — check the worker journal");
         }
 
         // worker-api-unreachable (critical, task etcd-via-worker-api): нет живых
@@ -81,7 +81,7 @@ public sealed class KafkaAlertEngine(IOptions<KafkaAlertsOptions> options) : IKa
                 Remedy: AlertRemedy.OperatorRunbook,
                 RemedyText: "start the worker container (kafka profile of the stand compose), check /healthz and KafkaWorker:Api:AdvertiseUrl");
 
-        // worker-unhealthy (warning, t09; arch/03 §4, arch/adminpanel/02 §2.3.2): живой
+        // worker-unhealthy (warning; arch/03 §4, arch/adminpanel/02 §2.3.2): живой
         // ключ /kafkaworker/api/<id>, но опрос /healthz ≠ 200 — процесс нездоров ДО
         // истечения lease (порт WorkerUnhealthyRule pg-грани; docker-health и панель
         // видят одно и то же — расхождений больше нет).
@@ -170,7 +170,7 @@ public sealed class KafkaAlertEngine(IOptions<KafkaAlertsOptions> options) : IKa
                 AlertRemedy.WorkerAuto,
                 "the worker executes the rotation (phases A/B/C), the key will disappear; if it hangs — the worker is stuck, check the journal");
 
-        // Ротации admin-пароля (t03, arch/15 §4): порт kafka-rotation-pending —
+        // Ротации admin-пароля (arch/15 §4): порт kafka-rotation-pending —
         // только заявки живых кластеров.
         foreach (var rotation in (next.AdminRotations ?? []).Where(r => alive.Contains(r.Cluster)))
             yield return new Alert(
@@ -189,7 +189,7 @@ public sealed class KafkaAlertEngine(IOptions<KafkaAlertsOptions> options) : IKa
                 AlertRemedy.WorkerAuto,
                 "the worker executes the rotation (phases A/B/C), the key will disappear; if it hangs — the worker is stuck, check the journal");
 
-        // Заявки ребалансировки (t02, arch/03 §7.4) — только живых кластеров.
+        // Заявки ребалансировки (arch/03 §7.4) — только живых кластеров.
         foreach (var rebalance in next.Rebalances.Where(r => alive.Contains(r.Cluster)))
             yield return new Alert(
                 $"kafka-rebalance-pending:{rebalance.Cluster}",
@@ -207,7 +207,7 @@ public sealed class KafkaAlertEngine(IOptions<KafkaAlertsOptions> options) : IKa
                 AlertRemedy.WorkerAuto,
                 "the worker submits the batches and clears the request on convergence; if it hangs — check the live brokers (fallback-exec)");
 
-        // ===== t10 (arch/03 §7.4): видимость зависших ротационных заявок =====
+        // ===== (arch/03 §7.4): видимость зависших ротационных заявок =====
 
         var rotationNowUnix = next.BuiltAtUtc.ToUnixTimeSeconds();
 
@@ -230,7 +230,7 @@ public sealed class KafkaAlertEngine(IOptions<KafkaAlertsOptions> options) : IKa
                 AlertRemedy.WorkerAuto,
                 "the worker executes the rotation, the key will disappear; if it hangs — check the journal (waiting phase)");
 
-        // Stale-алерты ротационных заявок (t10, warning): живая заявка старше
+        // Stale-алерты ротационных заявок (warning): живая заявка старше
         // RotationStaleSeconds — видимость ДО возрастного снятия воркером.
         // Пароль-ротации app/admin — один алерт на кластер по старейшей заявке;
         // CA и rebalances — свои kinds.
@@ -256,7 +256,7 @@ public sealed class KafkaAlertEngine(IOptions<KafkaAlertsOptions> options) : IKa
                 yield return RotationStaleAlert("kafka-rebalance-stale", rebalance.Cluster, age, "partition rebalance");
         }
 
-        // kafka-ticket-expired (warning, t10): заявка снята возрастным таймаутом
+        // kafka-ticket-expired (warning): заявка снята возрастным таймаутом
         // воркера — устранить причину и повторить; гаснет перезаписью исхода done.
         foreach (var outcome in (next.TicketOutcomes ?? []).Where(
                      o => o.Outcome == "expired" && alive.Contains(o.Cluster)))
@@ -277,7 +277,7 @@ public sealed class KafkaAlertEngine(IOptions<KafkaAlertsOptions> options) : IKa
                 AlertRemedy.OperatorRunbook,
                 "fix the cause of the waiting phase (waiting-cluster — bring the cluster up; waiting-reassignment — wait for the execution) and re-submit the request; a successful rotation will overwrite the outcome with done and the alert will clear");
 
-        // Стагнация reassignment (t02): прогресс жив, но partitions_remaining не
+        // Стагнация reassignment : прогресс жив, но partitions_remaining не
         // двигается дольше ReassignStaleSec. Пара (prev, next): остаток тот же
         // и стоит дольше порога; prev нет — алерт по возрасту updated_unix.
         foreach (var progress in next.Reassignments.Where(p => alive.Contains(p.Cluster)))
@@ -375,7 +375,7 @@ public sealed class KafkaAlertEngine(IOptions<KafkaAlertsOptions> options) : IKa
         }
     }
 
-    // Lifecycle-алерты (t01, arch/03 §7.4): pending-заявки + буксование.
+    // Lifecycle-алерты (arch/03 §7.4): pending-заявки + буксование.
     // Stale-порог тот же, что у desired (StaleDesiredSeconds).
     private IEnumerable<Alert> LifecycleAlerts(KafkaClusterInfo cluster, long nowUnix)
     {
@@ -444,7 +444,7 @@ public sealed class KafkaAlertEngine(IOptions<KafkaAlertsOptions> options) : IKa
                 "analyze the group consumers (speed/partitioning/instance liveness) — the panel and the worker do not manage consumers");
     }
 
-    // Stale-алерт ротационной заявки (t10): warning с возрастом и остатком до
+    // Stale-алерт ротационной заявки : warning с возрастом и остатком до
     // возрастного снятия (связность stale = RotationTicketTimeoutSec/2 — spec §2).
     private Alert RotationStaleAlert(string kind, string cluster, long age, string what)
         => new(
@@ -461,7 +461,7 @@ public sealed class KafkaAlertEngine(IOptions<KafkaAlertsOptions> options) : IKa
             null,
             $"request not started for more than {_options.RotationStaleSeconds} s — {Math.Max(0, 2 * _options.RotationStaleSeconds - age)} s left until the worker age-based removal; check the journal (waiting phase)",
             AlertRemedy.WorkerAuto,
-            "the worker will clear the request by the age timeout (t10); if it hangs — check the worker journal and cluster availability");
+            "the worker will clear the request by the age timeout ; if it hangs — check the worker journal and cluster availability");
 
     // kafka-broker-not-running + kafka-endpoints-missing (только Active-кластер).
     private IEnumerable<Alert> BrokerAlerts(

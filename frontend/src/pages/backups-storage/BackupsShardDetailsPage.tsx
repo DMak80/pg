@@ -203,7 +203,8 @@ function WalCard({ wal }: { wal: BackupWalDto | null }) {
                   <Text size="sm">—</Text>
                 ) : (
                   <Badge
-                    color={wal.etcdState === 'ACTIVE' ? 'teal' : wal.etcdState === 'BROKEN' ? 'red' : 'blue'}
+                    color={wal.etcdState === 'ACTIVE' ? 'teal'
+                      : wal.etcdState === 'WAL_CHAIN_ERROR' ? 'red' : 'blue'}
                     variant="light"
                   >
                     {wal.etcdState}

@@ -123,12 +123,12 @@ public sealed class DeprovisioningProcess(
             ($"/kafkaworker/work/{cluster}", false),
             ($"/kafkaworker/portalloc/{cluster}", false),
             ($"/kafkaworker/rotations/{cluster}", false), // заявка ротации не переживает кластер
-            ($"/kafkaworker/admin_rotations/{cluster}", false), // заявка admin-ротации не переживает кластер (инвариант «заявка не переживает кластер», t10)
-            ($"/kafkaworker/ca_rotations/{cluster}", false),    // заявка CA-ротации не переживает кластер (t10)
-            ($"/kafkaworker/ticket_outcomes/{cluster}", false), // исходы заявок не переживают кластер (t10) — иначе вечный kafka-ticket-expired
-            ($"/kafkaworker/rebalances/{cluster}", false), // заявка ребалансировки не переживает кластер (t02 §11.9)
+            ($"/kafkaworker/admin_rotations/{cluster}", false), // заявка admin-ротации не переживает кластер (инвариант «заявка не переживает кластер»)
+            ($"/kafkaworker/ca_rotations/{cluster}", false),    // заявка CA-ротации не переживает кластер 
+            ($"/kafkaworker/ticket_outcomes/{cluster}", false), // исходы заявок не переживают кластер — иначе вечный kafka-ticket-expired
+            ($"/kafkaworker/rebalances/{cluster}", false), // заявка ребалансировки не переживает кластер (§11.9)
             ($"/kafkaworker/reassignments/{cluster}", false), // прогресс reassignment не переживает кластер
-            ($"/kafkaworker/regens/{cluster}", false), // regens — live-прогресс регенерации, не переживает демонтаж (t06, spec §10.5)
+            ($"/kafkaworker/regens/{cluster}", false), // regens — live-прогресс регенерации, не переживает демонтаж (spec §10.5)
         };
 
         foreach (var (key, prefix) in deletions)

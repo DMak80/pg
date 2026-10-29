@@ -29,6 +29,7 @@ public sealed class ProvisioningProcess(
     IEtcdGateway etcd,
     string[] endpoints,
     IClusterDriver driver,
+    INodeDataProbe nodeProbe,
     ISqlExecutor db,
     ShardProbe probe,
     ClaimStore claims,
@@ -105,14 +106,14 @@ public sealed class ProvisioningProcess(
             return await FailAsync(cluster, allocation.Error!, "planning", ct, series);
         var addresses = allocation.Value;
 
-        // P1.5 (spec §3.3): ensure per-cluster тройки кредов (t02) — до любых
+        // P1.5 (spec §3.3): ensure per-cluster тройки кредов — до любых
         // контейнеров/ролей: приложение получает креды в etcd раньше, чем
         // поднимутся ноды; mover/bucket_admin — канонические ключи etcd.
         var creds = await appSecret.EnsureAsync(cluster, snap.Config, ct);
         if (!creds.IsSuccess)
             return await FailAsync(cluster, creds.Error!, "ensure-app-secret", ct, series);
 
-        // Per-cluster credentials (t02): ensured-значения из etcd — env-fallback
+        // Per-cluster credentials : ensured-значения из etcd — env-fallback
         // исчезает после ensure (arch/14 §4: порядок чтения ключи → config → env).
         var clusterSecrets = secrets with
         {
@@ -278,7 +279,7 @@ public sealed class ProvisioningProcess(
             return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(adopted.Error!);
         var skipped = adopted.Value.Skipped;
 
-        // t90: быстрый пред-выход ДО глобального portalloc-клэйма — всё
+        // быстрый пред-выход ДО глобального portalloc-клэйма — всё
         // закреплено, adoption не изменил и detach ничего бы не снял
         // (AllConfirmed: object не трогается R9, прочее подтверждено фактом):
         // тики waiting-patroni не соперничают за глобальный клэйм (§2.4).
@@ -287,7 +288,7 @@ public sealed class ProvisioningProcess(
             && PortPlanConvergence.AllConfirmed(existing, adopted.Value.SelfFactByNode, wanted))
             return await PlannedAsync(existing, cluster, ct, series, skipped);
 
-        // t90: глобальный portalloc-клэйм — секция «busy → detach → allocate →
+        // глобальный portalloc-клэйм — секция «busy → detach → allocate →
         // commit portalloc» взаимоисключающа между кластерами/инстансами
         // (гонка параллельного посева, arch/14 §2.4/§3.3). Сбой захвата —
         // обычный фейл (бэкофф); занят — PortLockBusyException → тик-ретрай.
@@ -376,7 +377,7 @@ public sealed class ProvisioningProcess(
         var byNode = snap.Shards
             .SelectMany(s => s.Nodes.Select(n => (Key: $"{s.Name}/{n.Name}", Name: n.Name)))
             .ToList();
-        // heartbeat (t19-канон): инспект — пачка docker list+inspect по всем нодам
+        // heartbeat (канон): инспект — пачка docker list+inspect по всем нодам
         // (2–7.5 c каждый, 4+ ноды) — без Mark на медленном хосте даёт watchdog-тишину.
         progress?.Mark();
         var discovered = await driver.InspectNodesAsync(
@@ -411,7 +412,7 @@ public sealed class ProvisioningProcess(
             {
                 if (current.Object is not null)
                     continue; // object-запись (усыновлённая ранее) не перезаписываем
-                // t15: scrape-поля записи переживают перезапись фактом — без
+                // scrape-поля записи переживают перезапись фактом — без
                 // переноса record-Equals(current с alias, fact без) ложь на каждом
                 // тике → вечная перезапись portalloc (Decorate допишет при записи,
                 // но сравнение происходит ДО сериализации).
@@ -467,7 +468,7 @@ public sealed class ProvisioningProcess(
     }
 
     // P2.1: EnsureNode всех нод шарда (state != RUNNING) + nodes/<n>/state=PROVISIONING.
-    // syncStrict — per-cluster опция из config (t06): bootstrap ноды несёт strict кластера.
+    // syncStrict — per-cluster опция из config : bootstrap ноды несёт strict кластера.
     private async Task<Result> EnsureNodesAsync(
         string cluster, ShardSpec shard, ShardTopology topology, NodeResources? resources,
         PgTuneResult tuning, InstallSecrets clusterSecrets, bool syncStrict,
@@ -567,8 +568,8 @@ public sealed class ProvisioningProcess(
                 var presences = new List<DataPresence>();
                 foreach (var node in shard.Nodes)
                 {
-                    var presence = await driver.NodeDataPresenceAsync(cluster, shard.Name, node.Name, ct);
-                    presences.Add(presence.IsSuccess ? presence.Value : DataPresence.Unknown);
+                    var presence = await nodeProbe.ProbeAsync(cluster, shard.Name, node.Name, ct);
+                    presences.Add(presence.ToPresence());
                 }
 
                 if (presences.All(p => p == DataPresence.Absent))
@@ -603,12 +604,15 @@ public sealed class ProvisioningProcess(
     }
 
     // Д3: чистка HA-scope (Patroni бутстрапится заново): точечные initialize/leader/
-    // sync + префиксы optime//members/; request_* — декларации панели — НЕ трогаем
-    // (spec §3.7 Д3, arch/14 §5 A P2.2/R11). Одна чистка на scope за бюджет —
+    // sync/failover + префиксы optime//members/; request_* — декларации панели — НЕ трогаем
+    // (spec §3.7 Д3, arch/14 §5 A P2.2/R11). failover обязателен: остаточный маркер
+    // с scheduled_at в прошлом гонит Patroni новой жизни в accelerated failover на
+    // неинициализированного кандидата — лидерство недостижимо (arch/14 §5 C).
+    // Одна чистка на scope за бюджет —
     // трекер сброшен, следующая не раньше нового бюджета.
     private async Task<Result> ResetScopeAsync(string scope, CancellationToken ct)
     {
-        foreach (var key in new[] { "initialize", "leader", "sync" })
+        foreach (var key in new[] { "initialize", "leader", "sync", "failover" })
         {
             var del = await DeleteAsync($"/service/{scope}/{key}", prefix: false, ct);
             if (!del.IsSuccess)
@@ -627,14 +631,23 @@ public sealed class ProvisioningProcess(
 
     // Адрес master-ноды шарда для SQL-фаз: master-ключ (host|имяНоды:clientPort —
     // порт ключа клиентский, SQL-порт берём из portalloc) → fallback Patroni REST.
+    // Ключ дискриминирует ноду только ОДНОЗНАЧНЫМ матчем: advertised-режим
+    // (arch/16) несёт ОДИН host у всех нод шарда (E2E: host.docker.internal), и
+    // host-матч выбирал бы произвольную ноду — на практике реплику (25006 на
+    // CREATE DATABASE, provisioning-stuck); callback on_start пишет ключ ещё до
+    // provisioning. Имя ноды приоритетнее; совпадений 0 или >1 — истина
+    // за Patroni-пробами.
     private async Task<NodeAddress?> ResolveMasterAsync(ShardSpec shard, ShardTopology topology, CancellationToken ct)
     {
         if (!string.IsNullOrWhiteSpace(shard.Master))
         {
             var left = shard.Master.Split(':')[0];
-            var byKey = topology.Nodes.FirstOrDefault(p => p.Value.Host == left || p.Key == left);
-            if (byKey.Value is not null)
-                return byKey.Value;
+            var byName = topology.Nodes.Where(p => p.Key == left).Select(p => p.Value).ToList();
+            if (byName.Count == 1)
+                return byName[0];
+            var byHost = topology.Nodes.Where(p => p.Value.Host == left).Select(p => p.Value).ToList();
+            if (byHost.Count == 1)
+                return byHost[0];
         }
 
         foreach (var node in topology.Nodes.Keys)
@@ -755,7 +768,7 @@ public sealed class ProvisioningProcess(
     }
 
     // P4: txn compare config.mod_revision → put канонического JSON без state (Д1).
-    // synchronous_mode_strict (t06) — переносится из прочитанного config БЕЗ
+    // synchronous_mode_strict — переносится из прочитанного config БЕЗ
     // изменения: пер-кластерная опция не стирается (созданный со strict=false
     // кластер не «молча» становится strict, arch/14 §3.2).
     private async Task<Result> CommitConfigAsync(ClusterSnapshot snap, CancellationToken ct)
@@ -844,7 +857,7 @@ public sealed class ProvisioningProcess(
         return Portalloc.Parse(cluster, kv.Value);
     }
 
-    // t15 (arch/14 §2.4): при заданном ключе ScrapeNetwork каноническим записям
+    //  (arch/14 §2.4): при заданном ключе ScrapeNetwork каноническим записям
     // дописывается сетевая идентичность (alias/net) — покрывает обе точки
     // CommitPortAllocAsync; пустой ключ — словарь без изменений.
     private string SerializePortAlloc(string cluster, IReadOnlyDictionary<string, NodeAddress> addresses)
@@ -912,7 +925,7 @@ public sealed class ProvisioningProcess(
         [property: JsonPropertyName("buckets")] int Buckets,
         [property: JsonPropertyName("dbname")] string DbName,
         [property: JsonPropertyName("created_unix")] long? CreatedUnix,
-        // t06: переносится БЕЗ изменения (всегда явленно — отсутствие поля
+        // переносится БЕЗ изменения (всегда явленно — отсутствие поля
         // легаси-конфига трактуется читателями как true, значение не меняется).
         [property: JsonPropertyName("synchronous_mode_strict")] bool SyncStrict);
 }

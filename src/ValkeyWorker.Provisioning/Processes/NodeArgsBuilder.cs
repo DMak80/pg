@@ -19,7 +19,7 @@ public static class NodeArgsBuilder
             "--maxmemory-policy", maxmemoryPolicy,
             "--save", "",
             "--appendonly", "no",
-            // TLS (t06, arch/21 §2): тот же клиентский порт portalloc (контейнерный
+            // TLS (arch/21 §2): тот же клиентский порт portalloc (контейнерный
             // 6379 слушает TLS), plain закрыт; серты — /tls (env-TLS: PEM в env
             // VALKEY_TLS_{CERT,KEY,CA}, раскатка обёрткой BuildCmd); клиенты без
             // сертификатов — принципалы из ACL.

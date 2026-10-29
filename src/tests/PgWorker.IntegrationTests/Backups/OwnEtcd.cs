@@ -12,7 +12,7 @@ namespace PgWorker.IntegrationTests.Backups;
 /// <summary>
 /// СОБСТВЕННОЕ etcd-окружение одного Fact (e2e-isolation §1/§3, docs/e2e-isolation.md):
 /// guid-имя pgw-ee-{guid}, динамический хост-порт, свой ключевой контур — тест
-/// НЕ делит etcd ни с соседними классами, ни с чужими прогонами (инцидент t02:
+/// НЕ делит etcd ни с соседними классами, ни с чужими прогонами (инцидент :
 /// джобы/ключи соседних сценариев в общем etcd). Ключи умирают вместе с
 /// контейнером — отдельная чистка не нужна. Teardown в DisposeAsync при ЛЮБОМ
 /// исходе (фикстура в await using тела Fact) + АССЕРТ ЧИСТОТЫ: своего
@@ -40,7 +40,7 @@ public sealed class OwnEtcd : IAsyncDisposable
     public string RunId { get; }
 
     /// <summary>Имя контейнера (pgw-ee-{guid}): публичное для docker cp/exec
-    /// etcdctl в restore-verify сценариях (t08).</summary>
+    /// etcdctl в restore-verify сценариях.</summary>
     public string ContainerName => $"pgw-ee-{RunId}";
 
     public EtcdGateway Gateway { get; }
@@ -72,7 +72,7 @@ public sealed class OwnEtcd : IAsyncDisposable
 
     // Готовность POST-ретраем с конечным бюджетом (30 c): встроенные HTTP-wait
     // testcontainers шлют GET, а /v3/* принимает только POST (паттерн EtcdFixture).
-    // Транзиентные транспортные сбои (t29 §4.7): клиентский таймаут пробы (3 c)
+    // Транзиентные транспортные сбои (§4.7): клиентский таймаут пробы (3 c)
     // при холодном/медленном старте контейнера — «ещё не готов» (как
     // StartHostOnPortAsync-readiness); отмена теста продолжает всплывать.
     private async Task WaitReadyAsync(CancellationToken ct)
@@ -100,7 +100,7 @@ public sealed class OwnEtcd : IAsyncDisposable
             catch (OperationCanceledException) when (!ct.IsCancellationRequested)
             {
                 // Клиентский таймаут пробы (3 c) при холодном/медленном старте
-                // контейнера — «ещё не готов»; бюджет 30×1 c неизменен (t29 §4.7).
+                // контейнера — «ещё не готов»; бюджет 30×1 c неизменен (§4.7).
             }
 
             lastLatencyMs = sw.Elapsed.TotalMilliseconds;

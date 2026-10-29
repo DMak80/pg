@@ -7,7 +7,7 @@ using Xunit;
 
 namespace AdminPanel.UnitTests;
 
-// backup-full-stale (t02, spec §3.5): 4 случая каталога + переопределение
+// backup-full-stale (spec §3.5): 4 случая каталога + переопределение
 // панельного дефолта policy кластера. Критичный severity — данные без свежего
 // полного = риск потери восстановимости.
 public class BackupFullStaleRuleTests
@@ -114,7 +114,7 @@ public class BackupFullStaleRuleTests
     }
 
     // AAA: единственный COMPLETED — с FAILED-verify: парсер отдаёт null (валидных
-    // нет) → «никогда не завершался» (свежий-но-битый не гасит stale, t04/AC6)
+    // нет) → «никогда не завершался» (свежий-но-битый не гасит stale, /AC6)
     [Fact]
     public void OnlyFailedVerified_NeverCompleted()
     {

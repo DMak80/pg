@@ -6,7 +6,7 @@ using Shared.Etcd.Client;
 using PgWorker.Core.Writing;
 namespace PgWorker.App.Api.Operations;
 
-// Ответ 201 POST /api/clusters/{cluster}/shards (arch/02 §9.5; дубль панельного DTO осознан, t08).
+// Ответ 201 POST /api/clusters/{cluster}/shards (arch/02 §9.5; дубль панельного DTO осознан).
 public sealed record ShardAddedDto(
     string Cluster, string Name, int Replicas,
     string RequestCpu, string RequestMem, string RequestDisk, string State);
@@ -55,7 +55,7 @@ public sealed partial class AddShardHandler(IEtcdGateway gateway, string[] endpo
         if (rawState is not null)
             return Result<ShardAddedDto>.Failed(new ClusterNotActiveException(cluster, rawState));
 
-        // t06 (arch/14 §5 G): strict-кластер требует replicas ≥ 2 и на новом шарде —
+        //  (arch/14 §5 G): strict-кластер требует replicas ≥ 2 и на новом шарде —
         // однорепликный шард в strict-кластере навсегда блокирует запись.
         var clusterStrict = ReadStrictField(config.Value);
         if (clusterStrict && request.Replicas < 2)
@@ -70,7 +70,7 @@ public sealed partial class AddShardHandler(IEtcdGateway gateway, string[] endpo
         //    недодекларация (выжил только replicas после провалившейся
         //    компенсации) НЕ считается — повтор вычислит ТО ЖЕ имя и проиграет
         //    клэйм → 409 (молча создать «другой» шард повтор не может, §9.5).
-        var shardsRange = await EtcdFailover.CallAsync(endpoints,
+        var shardsRange = await EtcdEndpointFailover.CallAsync(endpoints,
             endpoint => gateway.RangeAsync(endpoint, $"/clusters/{cluster}/shards/", ct));
         if (!shardsRange.IsSuccess)
             return Result<ShardAddedDto>.Failed(shardsRange.Error!);
@@ -109,7 +109,7 @@ public sealed partial class AddShardHandler(IEtcdGateway gateway, string[] endpo
 
         // 4) Клэйм-txn имени (§9.5): compare NotExists(replicas) + put replicas.
         var plan = ShardScalePlan.Build(cluster, shard, request);
-        var claim = await EtcdFailover.CallAsync(endpoints, endpoint => gateway.TxnAsync(
+        var claim = await EtcdEndpointFailover.CallAsync(endpoints, endpoint => gateway.TxnAsync(
             endpoint,
             TxnRequest.Of([TxnCompare.NotExists(plan.ReplicasKey)], [new TxnOp.Put(plan.ReplicasKey, plan.ReplicasValue, null)]),
             ct));
@@ -121,15 +121,15 @@ public sealed partial class AddShardHandler(IEtcdGateway gateway, string[] endpo
         // 5) Пакет PUT; сбой посередине → компенсация best-effort (§9.5).
         foreach (var put in plan.Puts)
         {
-            var putResult = await EtcdFailover.CallAsync(endpoints,
+            var putResult = await EtcdEndpointFailover.CallAsync(endpoints,
                 endpoint => gateway.PutAsync(endpoint, put.Key, put.Value, null, ct));
             if (putResult.IsSuccess)
                 continue;
 
-            await EtcdFailover.CallAsync(endpoints, endpoint => gateway.DeleteAsync(
+            await EtcdEndpointFailover.CallAsync(endpoints, endpoint => gateway.DeleteAsync(
                 endpoint, $"/clusters/{cluster}/shards/{shard}/", prefix: true, ct));
             foreach (var key in plan.RequestKeys)
-                await EtcdFailover.CallAsync(endpoints,
+                await EtcdEndpointFailover.CallAsync(endpoints,
                     endpoint => gateway.DeleteAsync(endpoint, key, prefix: false, ct));
             return Result<ShardAddedDto>.Failed(putResult.Error!);
         }
@@ -144,7 +144,7 @@ public sealed partial class AddShardHandler(IEtcdGateway gateway, string[] endpo
     // Различаем сбой и отсутствие (§6.1): Failed → 503, Success(null) — «ключа нет».
     private async Task<Result<string?>> ReadKeyAsync(string key, CancellationToken ct)
     {
-        var range = await EtcdFailover.CallAsync(endpoints,
+        var range = await EtcdEndpointFailover.CallAsync(endpoints,
             endpoint => gateway.RangeAsync(endpoint, key, ct));
         if (!range.IsSuccess)
             return Result<string?>.Failed(range.Error!); // 503: etcd недоступен
@@ -172,7 +172,7 @@ public sealed partial class AddShardHandler(IEtcdGateway gateway, string[] endpo
             : 0;
     }
 
-    // strict из config-JSON; отсутствие/не-bool = true (t06, arch/14 §3).
+    // strict из config-JSON; отсутствие/не-bool = true (arch/14 §3).
     internal static bool ReadStrictField(string raw)
     {
         using var doc = JsonDocument.Parse(raw);

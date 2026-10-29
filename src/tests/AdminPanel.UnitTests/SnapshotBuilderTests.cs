@@ -10,7 +10,7 @@ namespace AdminPanel.UnitTests;
 // Сборка EtcdSnapshot из частей тика (spec §10.7).
 public class SnapshotBuilderTests
 {
-    // FixedTimeProvider — существующий из t02 (src/tests/AdminPanel.UnitTests/FixedTimeProvider.cs).
+    // FixedTimeProvider — существующий из (src/tests/AdminPanel.UnitTests/FixedTimeProvider.cs).
     [Fact]
     public void Build_FullParts_AssemblesSnapshot()
     {
@@ -34,8 +34,8 @@ public class SnapshotBuilderTests
         snapshot.HaScopes.Should().Contain(s => s.Scope == "demo-s1");
         snapshot.StandNodes.Should().HaveCount(4);
         snapshot.MoveTickets.Should().BeEmpty(); // очередь заявок — образец portalloc
-        snapshot.Alerts.Should().BeEmpty();   // AlertEngine — t04
-        snapshot.Probes.Should().BeEmpty();   // пробы — t06
+        snapshot.Alerts.Should().BeEmpty();   // AlertEngine — 
+        snapshot.Probes.Should().BeEmpty();   // пробы — 
         snapshot.PgWorkerWork.Should().BeEmpty(); // журналы воркера — без сида
         snapshot.UnknownKeyCount.Should().Be(0);
         snapshot.ParseErrors.Should().BeEmpty();

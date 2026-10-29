@@ -23,8 +23,3 @@ public class InjectAsTransientAttribute(params Type[] interfaces)
 public class InjectAsScopedAttribute(params Type[] interfaces) : InjectAsAttribute(ServiceLifetime.Scoped, interfaces)
 {
 }
-//
-// [AttributeUsage(AttributeTargets.Interface)]
-// public class Injectable : Attribute
-// {
-// }

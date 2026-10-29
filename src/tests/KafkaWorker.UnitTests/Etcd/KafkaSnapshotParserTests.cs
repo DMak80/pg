@@ -13,7 +13,7 @@ namespace KafkaWorker.UnitTests.Etcd;
 
 public class KafkaSnapshotParserTests
 {
-    // Валидные PEM-ключи CA для кейсов безопасности t03 (генерация один раз).
+    // Валидные PEM-ключи CA для кейсов безопасности (генерация один раз).
     private static readonly (string CaPem, string CaKeyPem) ValidCa = ClusterPki.GenerateCa("test");
     private static string ValidCaPem => ValidCa.CaPem;
     private static string ValidCaKeyPem => ValidCa.CaKeyPem;

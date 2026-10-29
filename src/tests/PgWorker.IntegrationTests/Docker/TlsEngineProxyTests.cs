@@ -7,7 +7,7 @@ using static PgWorker.IntegrationTests.Docker.EngineProxyTestPki;
 
 namespace PgWorker.IntegrationTests.Docker;
 
-// TLS к Engine API (spec §5.5/§8.2, t03): nginx stream-прокси (listen … ssl →
+// TLS к Engine API (spec §5.5/§8.2): nginx stream-прокси (listen … ssl →
 // unix:/var/run/docker.sock) с сертами фикстуры — DockerEngineFactory на
 // tcp://localhost:<mapped> + DockerTlsOptions выполняет Ping/ListContainers и
 // create/start/delete одноразового контейнера. Порт — динамический.

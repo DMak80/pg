@@ -8,9 +8,10 @@
 
 ## 0. Статика E2E — отдельная фаза подготовки ДО тестов
 
-Publish-выводы и docker-образы контура (pgworker:e2e, pgw-e2e-runner:e2e,
-pgworker-node:e2e, owns3:e2e, job/wal/sd-образы) собирает **один процесс
-до запуска тестов** — утилита подготовки:
+Publish-выводы и docker-образы контура (pgworker:e2e-<worktree>,
+pgw-e2e-runner:e2e-<worktree>, pgworker-node:e2e-<worktree>, owns3:dev,
+job/wal/sd-образы) собирает **один процесс до запуска тестов** — утилита
+подготовки:
 
 ```
 dotnet run --project src/tests/PgWorker.E2ePrepare -c Release
@@ -32,6 +33,13 @@ dotnet run --project src/tests/PgWorker.E2ePrepare -c Release
   выполняется).
 - Метки сборки — `[PHASE] e2e-static …` (файл `/tmp/pgw-e2e-static-phase.log`),
   полный вывод шагов — `/tmp/pgw-e2e-static-process-*.log`.
+- Теги pg-собираемых образов — **per-worktree** (`…:e2e-<ветка>-<хэш пути>`,
+  суффикс задаёт `E2eEnvironment` и передаётся раннеру env `PGW_E2E_TAG`):
+  параллельные агенты одного docker-хоста не перезаписывают образы друг
+  друга между prepare и прогоном (общий фиксированный тег отдавал раннеру
+  чужие бинари — стеки указывали на чужой worktree). Слои docker-кэша
+  общие — пересборка тега инкрементальна; накопившиеся теги снимаются
+  `docker rmi` руками.
 
 ## 1. Логи максимально полные — всегда
 
@@ -42,9 +50,12 @@ dotnet run --project src/tests/PgWorker.E2ePrepare -c Release
   SUT-воркеры, раннер) снимаются в teardown **до любого удаления** —
   `E2eEnvironment.CollectDiagnosticsAsync` (каталог телеметрии:
   `/tmp/pgw-e2e-artifacts-{guid}/`, выводится в журнал строкой
-  `e2e[slug]: телеметрия … → …`);
+  `e2e[slug]: телеметрия … → …`); docker-логи снимаются **объединённо**:
+  stdout-блок, затем stderr-блок (docker logs разделяет потоки контейнера
+  по потокам CLI);
 - полный stdout/stderr раннера (тестовый журнал, `[PHASE]`-строки,
-  диагностика ассертов) — `runner.log` там же (вывод `docker logs` раннера);
+  диагностика ассертов) — `runner.log` там же (вывод `docker logs` раннера,
+  объединённо stdout+stderr);
   логи воркеров — `docker logs` их контейнеров (хост-процессов и host.log
   в контуре нет);
 - вывод внешних процессов переживает таймаут: kill по бюджету оставляет
@@ -158,7 +169,7 @@ per-контур окна PortRange для продуктовых публика
 
 | Что | Где |
 |---|---|
-| docker-логи контейнеров (`container-*.log`, `container-*.json`, вкл. воркеров и раннера) | `/tmp/pgw-e2e-artifacts-<guid>/` |
+| docker-логи контейнеров (`container-*.log` (stdout+stderr), `container-*.json`, вкл. воркеров и раннера) | `/tmp/pgw-e2e-artifacts-<guid>/` |
 | полный тестовый журнал раннера (`runner.log`) | там же |
 | фазовый журнал (`phases.log`, UTC-метки) | там же |
 | отметки медленных фаз (`*-slow-phase-*.txt`) | там же |
@@ -172,7 +183,7 @@ per-контур окна PortRange для продуктовых публика
 Состояние реализации: `E2eEnvironment` (фаза 1: сеть/etcd/ownS3 без
 publish, teardown + телеметрия + stop-режим), `E2eContour` (двухфазный
 запуск: хост-оркестрация + раннер-контейнер), воркер — контейнер
-`pgworker:e2e` (`StartHostAsync`), канон фазовых ожиданий — `E2ePhase`
+`pgworker:e2e-<worktree>` (`StartHostAsync`), канон фазовых ожиданий — `E2ePhase`
 (`[PHASE]`/`[PHASE-TICK]`, `phases.log`, пороги 60 с / failed-phase);
 `RunProcessAsync` сохраняет вывод при kill по бюджету и пишет полные логи
 build-вызовов.

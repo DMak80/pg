@@ -2,7 +2,7 @@ using Shared.Etcd.Coordination;
 
 namespace Shared.Etcd.UnitTests;
 
-// TicketExpirator (t10, arch/15 §4 / arch/20 §3): возрастная экспирация
+// TicketExpirator (arch/15 §4 / arch/20 §3): возрастная экспирация
 // не-начатой заявки под тройным гвардом §3.1 — journal expired
 // (journal-before-manipulations) → ОДНА txn [compare Exists][del заявку][put ticket_outcomes].
 public class TicketExpiratorTests

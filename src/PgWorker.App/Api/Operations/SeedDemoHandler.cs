@@ -9,7 +9,7 @@ public sealed record SeedDemoDto(bool Seeded);
 
 // Демо-сид pg-контура через API воркера (task etcd-via-worker-api): перенос
 // dev-stand/adminpanel/seed.sh + обязательные заявки request_{cpu,mem} шардов
-// (t25). Идемпотентен
+// . Идемпотентен
 // по живому /clusters/demo/config (образец скрипта: существующий config =>
 // состояние засеяно, НЕ перезаписываем). Пакет плоских PutAsync без txn —
 // как скрипт; флаг EnableSeedEndpoint=false → псевдо-404 до любых чтений.
@@ -23,7 +23,7 @@ public sealed class SeedDemoHandler(IEtcdGateway gateway, string[] endpoints, Ti
                 new WorkerApiNotFoundException("seed endpoint disabled (PgWorker:Api:EnableSeedEndpoint)"));
 
         // 2) Идемпотентность: сбой чтения → 503; config жив → no-op.
-        var config = await EtcdFailover.CallAsync(endpoints,
+        var config = await EtcdEndpointFailover.CallAsync(endpoints,
             endpoint => gateway.GetAsync(endpoint, "/clusters/demo/config", ct));
         if (!config.IsSuccess)
             return Result<SeedDemoDto>.Failed(config.Error!);
@@ -36,7 +36,7 @@ public sealed class SeedDemoHandler(IEtcdGateway gateway, string[] endpoints, Ti
         var plan = new PostgresDemoSeedPlan(clock.GetUtcNow().ToUnixTimeSeconds());
         foreach (var put in plan.Puts)
         {
-            var result = await EtcdFailover.CallAsync(endpoints,
+            var result = await EtcdEndpointFailover.CallAsync(endpoints,
                 endpoint => gateway.PutAsync(endpoint, put.Key, put.Value, null, ct));
             if (!result.IsSuccess)
                 return Result<SeedDemoDto>.Failed(result.Error!);

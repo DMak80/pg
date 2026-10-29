@@ -6,11 +6,14 @@ using Xunit;
 
 namespace AdminPanel.IntegrationTests;
 
-// Раздача SPA и fallback-семантика /api/* (spec t07 §9): guard раньше fallback,
+// Раздача SPA и fallback-семантика /api/* (spec §9): guard раньше fallback,
 // авторизованный unknown-API-путь — 404 ProblemDetails, статика — без auth.
 [Collection("api")]
 public class SpaHostingTests
 {
+    // Тестовый пароль админа (литералы — только в константах).
+    private const string AdminPassword = "adminpw";
+
     private readonly AuthWebFactory _factory;
 
     public SpaHostingTests(AuthWebFactory factory) => _factory = factory;
@@ -40,7 +43,7 @@ public class SpaHostingTests
         using var client = _factory.CreateClient();
         var login = await client.PostAsJsonAsync(
             "/api/auth/login",
-            new { username = "admin", password = "adminpw" },
+            new { username = "admin", password = AdminPassword },
             TestContext.Current.CancellationToken);
         login.StatusCode.Should().Be(HttpStatusCode.NoContent);
 

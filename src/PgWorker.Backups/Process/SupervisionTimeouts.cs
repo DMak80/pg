@@ -2,7 +2,7 @@ using PgWorker.Etcd.Parsing;
 
 namespace PgWorker.Backups;
 
-/// <summary>Чистые решения бюджетов зависших джобов (t07, arch/19 §6): отбор
+/// <summary>Чистые решения бюджетов зависших джобов (arch/19 §6): отбор
 /// кандидатов таймаута по статусу/возрасту — без I/O, юнит-тестируемо.
 /// Применение — супервизия существующих процессов (BackupProcess/
 /// BackupVerifyProcess/RestoreProcess): kill+rm + FAILED/квота попытки по

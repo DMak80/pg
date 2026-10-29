@@ -17,6 +17,11 @@ internal static partial class OrphanGuards
     [GeneratedRegex("^[a-z][a-z0-9_]{0,30}$")]
     private static partial Regex ShardPattern();
 
+    // Гвард имён (общий для hold/unhold — симметрия контракта): имена
+    // канонические (иначе 404 без похода в etcd).
+    public static bool ValidNames(string cluster, string shard)
+        => ClusterPattern().IsMatch(cluster) && ShardPattern().IsMatch(shard);
+
     // Чтение записи реестра для префикса: имена → 404 без etcd; выключено →
     // 503; сбой всех endpoints → 503 (EtcdWriteUnavailableException);
     // префикса нет → 404; DELETING → 409.
@@ -24,14 +29,14 @@ internal static partial class OrphanGuards
         IEtcdGateway gateway, string[] endpoints, string cluster, string shard,
         Func<BackupsRuntimeOptions?> runtime, CancellationToken ct)
     {
-        if (!ClusterPattern().IsMatch(cluster) || !ShardPattern().IsMatch(shard))
+        if (!ValidNames(cluster, shard))
             return Result<OrphanEntry>.Failed(
                 new OrphanNotFoundException($"{cluster}/{shard}"));
         if (runtime() is null)
             return Result<OrphanEntry>.Failed(new BackupsDisabledException());
 
         var prefix = $"{cluster}/{shard}";
-        var kv = await EtcdFailover.CallAsync(endpoints,
+        var kv = await EtcdEndpointFailover.CallAsync(endpoints,
             e => gateway.GetAsync(e, OrphanRegistry.Key, ct));
         if (!kv.IsSuccess)
             return Result<OrphanEntry>.Failed(kv.Error!);
@@ -46,7 +51,7 @@ internal static partial class OrphanGuards
     }
 }
 
-// POST /api/backups/orphans/{c}/{x}/hold и DELETE ... (t04, arch/19 §4):
+// POST /api/backups/orphans/{c}/{x}/hold и DELETE... (arch/19 §4):
 // hold-флаг сироты «до разбора». Put делает ТОЛЬКО API (атомарный put/del
 // одного ключа, без read-modify-write); повторный hold идемпотентен (put
 // поверх), unhold идемпотентен (del, ключа нет — тоже успех). Реестр не пишет.
@@ -62,24 +67,28 @@ public sealed class OrphanHoldHandler(
             return Result.Failed(guard.Error!);
 
         var now = time.GetUtcNow().ToUnixTimeSeconds();
-        return await EtcdFailover.CallAsync(endpoints,
+        return await EtcdEndpointFailover.CallAsync(endpoints,
             e => gateway.PutAsync(e, OrphanRegistry.HoldKey(guard.Value.Prefix),
                 OrphanRegistry.HoldToJson(now, requestedBy), null, ct));
     }
 
     // Del hold-ключа — 204 идемпотентен (ключа нет — тоже успех). Реестр НЕ
-    // читаем: у unhold по контракту только 503 (spec §3.4).
+    // читаем: у unhold по контракту только 503 (spec §3.4). Гвард имён — тот
+    // же, что у hold (симметрия): ключ строится из сегментов URL только после
+    // проверки каноничности.
     public async Task<Result> RemoveAsync(string cluster, string shard, CancellationToken ct)
     {
+        if (!OrphanGuards.ValidNames(cluster, shard))
+            return Result.Failed(new OrphanNotFoundException($"{cluster}/{shard}"));
         if (runtime() is null)
             return Result.Failed(new BackupsDisabledException());
 
-        return await EtcdFailover.CallAsync(endpoints,
+        return await EtcdEndpointFailover.CallAsync(endpoints,
             e => gateway.DeleteAsync(e, OrphanRegistry.HoldKey($"{cluster}/{shard}"), prefix: false, ct));
     }
 }
 
-// POST /api/backups/orphans/{c}/{x}/delete (t04, arch/19 §4): заявка явного
+// POST /api/backups/orphans/{c}/{x}/delete (arch/19 §4): заявка явного
 // удаления сироты — единственный путь удалить защищённую (hold/валидный
 // полный): минует оба гварда отбора. Повторная заявка — put поверх (не 409:
 // заявка — состояние, не эксклюзивный клэйм). Исполняет sweeper ближайшим
@@ -103,7 +112,7 @@ public sealed class OrphanDeleteHandler(
                 new OrphanConfirmMismatchException(prefix, body?.Confirm ?? ""));
 
         var now = time.GetUtcNow().ToUnixTimeSeconds();
-        var put = await EtcdFailover.CallAsync(endpoints,
+        var put = await EtcdEndpointFailover.CallAsync(endpoints,
             e => gateway.PutAsync(e, OrphanRegistry.DeleteKey(prefix),
                 OrphanRegistry.DeleteToJson(now, requestedBy), null, ct));
         if (!put.IsSuccess)

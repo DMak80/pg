@@ -3,7 +3,7 @@ using PgWorker.Core.Writing;
 
 namespace PgWorker.UnitTests.Writing;
 
-// t06 (spec §3.2/§6.2): опция strict в создании — нормализация null→true,
+//  (spec §3.2/§6.2): опция strict в создании — нормализация null→true,
 // валидация strict→replicas≥2, wire-имя synchronousModeStrict, ConfigJson.
 public class CreateClusterStrictTests
 {

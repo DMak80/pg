@@ -12,7 +12,7 @@ using PgWorker.Provisioning.Probes;
 
 namespace PgWorker.UnitTests.Provisioning;
 
-// AddShardProcess A0–A6 (t06 spec §5.2; arch/14 §5 G): подъём ОТДЕЛЬНОГО
+// AddShardProcess A0–A6 (spec §5.2; arch/14 §5 G): подъём ОТДЕЛЬНОГО
 // пустого шарда в Active-кластере. Главный ассерт границы §2.1 — SQL не
 // содержит CREATE SCHEMA bucket_*, routing/status не пишутся.
 public class AddShardProcessTests
@@ -21,13 +21,25 @@ public class AddShardProcessTests
     private static readonly EtcdEndpoints EtcdEndp = new(["http://etcd:2379"]);
     private const string Ep = "http://etcd:2379";
 
+    // Ротированный пароль генерируется в рантайме: секрет не зашивается в
+    // исходник; поле переиспользуется всеми обращениями.
+    private static readonly string RotatedPassword = GenerateTestPassword();
+
+    private static string GenerateTestPassword()
+    {
+        // Криптостойкий генератор: 24 символа букв/цифр (безопасно для DSN/env).
+        const string alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+        var bytes = System.Security.Cryptography.RandomNumberGenerator.GetBytes(24);
+        return new string(bytes.Select(b => alphabet[b % alphabet.Length]).ToArray());
+    }
+
     // Сид Active-кластера: config без state, shard1/shard2 подняты (dsn +
     // service initialize/leader), routing 0..5, portalloc живых нод.
     private static void SeedActiveCluster(Fakes.FakeEtcd etcd)
     {
         etcd.Seed("/clusters/shop/config",
             """{"buckets":6,"dbname":"shop","created_unix":1755900000}""");
-        // Per-cluster креды (t02): ensure принимает существующие — dsn с adm-pw
+        // Per-cluster креды : ensure принимает существующие — dsn с adm-pw
         etcd.Seed("/clusters/shop/bucket_admin_user", "bucket_admin");
         etcd.Seed("/clusters/shop/bucket_admin_password", "adm-pw");
         etcd.Seed("/clusters/shop/shards/shard1/replicas", "2");
@@ -50,7 +62,7 @@ public class AddShardProcessTests
         etcd.Seed("/service/shop-shard2/request_cpu", "2");
         etcd.Seed("/service/shop-shard2/request_mem", "8Gi");
 
-        // Тройки портов ПОСЛЕДОВАТЕЛЬНЫЕ (t24, arch/14 §2.4 п.2): per-host базы
+        // Тройки портов ПОСЛЕДОВАТЕЛЬНЫЕ (arch/14 §2.4 п.2): per-host базы
         // разносятся на ширину тройки — shard1 h1/h2 15000-15002, shard2 15003-15005.
         var existing = new Dictionary<string, NodeAddress>
         {
@@ -130,7 +142,7 @@ public class AddShardProcessTests
     }
 
     // Порты живых нод (docker видит публикации контейнеров) — новые ноды уходят выше:
-    // все тройки живых нод обоих шардов на обоих хостах (последовательные слоты, t24).
+    // все тройки живых нод обоих шардов на обоих хостах (последовательные слоты).
     private static IReadOnlySet<(string Host, int Port)> LiveNodePorts() => new HashSet<(string, int)>
     {
         ("h1", 15000), ("h1", 15001), ("h1", 15002), ("h1", 15003), ("h1", 15004), ("h1", 15005),
@@ -392,7 +404,7 @@ public class AddShardProcessTests
         rig.Etcd.Seed("/service/shop-shard3/initialize", "7403705125687833998");
         rig.Etcd.Seed("/service/shop-shard3/leader", """{"name":"shard3a","poll_queued_commands":0}""");
         await new ClusterSecretEnsurer(rig.Etcd, [Ep]).EnsureAsync("shop", (await Snapshot(rig.Etcd)).Config, CancellationToken.None);
-        var newPassword = "Rotated00000000000000000000000Z";
+        var newPassword = RotatedPassword;
         await rig.Etcd.PutAsync(Ep, "/clusters/shop/app_password", newPassword, null, CancellationToken.None);
 
         // Act
@@ -431,7 +443,7 @@ public class AddShardProcessTests
         raw.Should().Contain("\"shard3/shard3a\":{\"host\":\"h1\",\"pg\":15003");
     }
 
-    // AAA (t90): глобальный portalloc-клэйм занят — add-shard ждёт
+    // AAA : глобальный portalloc-клэйм занят — add-shard ждёт
     // (waiting-portalloc-lock) без мутаций portalloc; после release — доводит.
     // Сид: SeedActiveCluster уже записал /pgworker/portalloc/shop (шарды 1–2),
     // новый шард — shard3 (недобор записей shard3/*).

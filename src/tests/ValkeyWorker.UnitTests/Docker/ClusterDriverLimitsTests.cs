@@ -7,7 +7,7 @@ using Xunit;
 
 namespace ValkeyWorker.UnitTests.Docker;
 
-// Конверсия лимитов в драйвере (t07 §4.6.2, шаг 6.6 плана): движок возвращает
+// Конверсия лимитов в драйвере (§4.6.2, шаг 6.6 плана): движок возвращает
 // docker-факт Shared.Docker.NodeLimits(long NanoCpus, long MemoryBytes),
 // доменная запись NodeLimits(decimal? CpuCores, long? MemoryBytes). 0 = без
 // лимита → null (семантика значений прежнего vwk-движка — сверено с ассертами
@@ -35,6 +35,7 @@ public class ClusterDriverLimitsTests
         public Task<Result> CreateContainerAsync(ContainerSpec spec, string name, CancellationToken ct) => throw NotUsed();
         public Task<Result> StartContainerAsync(string idOrName, CancellationToken ct) => throw NotUsed();
         public Task<Result> StopContainerAsync(string idOrName, int timeoutSec, CancellationToken ct) => throw NotUsed();
+        public Task<Result> KillContainerAsync(string idOrName, CancellationToken ct) => Task.FromResult(Result.Success());
         public Task<Result> RemoveContainerAsync(string idOrName, bool force, CancellationToken ct) => throw NotUsed();
         public Task<Result<string>> ExecAsync(string containerId, IReadOnlyList<string> cmd, CancellationToken ct) => throw NotUsed();
         public Task<Result> EnsureNetworkAsync(string name, CancellationToken ct) => throw NotUsed();

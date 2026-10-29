@@ -4,9 +4,9 @@ using PgWorker.Etcd.Parsing;
 namespace PgWorker.Backups.Restore;
 
 // Сериализация статуса restore в JSON канона /pgworker/backups/<C>/<X>/restore/<id>
-// (arch/19 §4, t05): пишет ТОЛЬКО воркер (держатель клэйма); обязательные поля
+// (arch/19 §4): пишет ТОЛЬКО воркер (держатель клэйма); обязательные поля
 // заявки — всегда, опциональные — по факту (null не сериализуем). Roundtrip с
-// BackupsParser t01 — гарантия согласованности writer/reader (юнит-тест).
+// BackupsParser — гарантия согласованности writer/reader (юнит-тест).
 public static class RestoreStatusJson
 {
     private static readonly JsonSerializerOptions Options = new(JsonSerializerDefaults.Web);
@@ -29,13 +29,17 @@ public static class RestoreStatusJson
             o["finished_unix"] = finished;
         if (state.Phase is { } phase)
             o["phase"] = phase;
+        // Unix перехода в текущую фазу: стенка наката restore — от перехода в
+        // recovering (скачивание набора recovery-бюджет не съедает).
+        if (state.PhaseUnix is { } phaseUnix)
+            o["phase_unix"] = phaseUnix;
         if (state.RestoredToLsn is { } lsn)
             o["restored_to_lsn"] = lsn;
         if (state.SystemId is { } sysid)
             o["system_id"] = sysid;
         if (state.Error is { } error)
             o["error"] = error;
-        // t36 (arch/14 §1.1): пул чтения DR-источника — roundtrip с парсером
+        //  (arch/14 §1.1): пул чтения DR-источника — roundtrip с парсером
         // (BackupsParser читает source_pool); потеря поля уводит DR-заявку в
         // «собственный пул» — при wiped/отсутствии policy она навсегда висит
         // в transient «пул не выбран» (PLANNED без продвижения).

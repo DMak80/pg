@@ -6,12 +6,12 @@ using System.Security.Cryptography.X509Certificates;
 namespace ValkeyWorker.Core.Valkey;
 
 /// <summary>
-/// Per-cluster PKI valkey (arch/20 §2, arch/21 §2; t06): self-signed CA
+/// Per-cluster PKI valkey (arch/20 §2, arch/21 §2;): self-signed CA
 /// (RSA-2048, CN=vwk-&lt;C&gt;-ca-&lt;отпечаток&gt; — subject уникален на генерацию,
 /// 10 лет) и серверные серты нод (CN=node&lt;k&gt;, SAN ТОЛЬКО advertised-хост
 /// DNS|IP, EKU ServerAuth, 10 лет зажаты в CA) — CertificateRequest .NET,
 /// без внешних инструментов. PEM — одной строкой с \n (канон значений etcd).
-/// Порт kafka ClusterPki (t03/t07); клиентские серты не выпускает —
+/// Порт kafka ClusterPki (/); клиентские серты не выпускает —
 /// принципалы из ACL (--tls-auth-clients no).
 /// </summary>
 public static class ValkeyPki
@@ -22,7 +22,7 @@ public static class ValkeyPki
     {
         using var rsa = RSA.Create(2048);
         // Отпечаток ключа в CN: одинаковые subject поколений ломали
-        // верификацию в бандлах двойного доверия (t07 kafka) — фикс переносится.
+        // верификацию в бандлах двойного доверия (kafka) — фикс переносится.
         var fingerprint = Convert.ToHexString(
             SHA256.HashData(rsa.ExportSubjectPublicKeyInfo()), 0, 4).ToLowerInvariant();
         var request = new CertificateRequest(

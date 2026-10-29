@@ -22,4 +22,10 @@
         <Using Include="Shared.Etcd.Coordination"/>
     </ItemGroup>
 
+    <ItemGroup>
+        <!-- t01: протокольный миниклиент AlterReassignments (§2.4) — валидация
+             цепочки через Shared.Tls (CA-bundle окна ротации). -->
+        <ProjectReference Include="..\Shared.Tls\Shared.Tls.csproj"/>
+    </ItemGroup>
+
 </Project>

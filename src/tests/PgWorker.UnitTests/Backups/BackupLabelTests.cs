@@ -2,8 +2,8 @@ using PgWorker.Backups.Restore;
 
 namespace PgWorker.UnitTests.Backups;
 
-// Разбор backup_label полного бэкапа (t05 §3.6): стартовый WAL-сегмент —
-// из строки START WAL LOCATION (sed-эквивалент entrypoint t02).
+// Разбор backup_label полного бэкапа (§3.6): стартовый WAL-сегмент —
+// из строки START WAL LOCATION (sed-эквивалент entrypoint).
 public class BackupLabelTests
 {
     // AAA: сегмент из START WAL LOCATION; мусор → null.

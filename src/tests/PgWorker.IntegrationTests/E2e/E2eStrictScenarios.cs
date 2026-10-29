@@ -9,7 +9,7 @@ using Xunit;
 
 namespace PgWorker.IntegrationTests.E2e;
 
-// E2E strict-режима (t06, spec §6.7): bootstrap несёт strict кластера в
+// E2E strict-режима (spec §6.7): bootstrap несёт strict кластера в
 // SPILO_CONFIGURATION и DCS-конфиг; мутация PUT /api/clusters/{c}/config
 // (mTLS, тело {"synchronousModeStrict":bool}) — 204; конвергенция DCS тиком
 // надзора приводит живой Patroni к false БЕЗ рестартов нод; включение strict
@@ -27,7 +27,7 @@ public class E2eStrictScenarios
 
     private EtcdGateway G => Fx.Gateway;
 
-    // AAA (t06, AC §6.7 п.1–4): strict-кластер (replicas=2) после подъёма —
+    // AAA (AC §6.7 п.1–4): strict-кластер (replicas=2) после подъёма —
     // bootstrap.dcs SPILO_CONFIGURATION и живой GET /config несут
     // synchronous_mode_strict: true; PUT false → 204; конвергенция DCS в
     // пределах тиков надзора приводит /config к false без рестартов нод.
@@ -53,14 +53,14 @@ public class E2eStrictScenarios
             // Ожидание Active: P4 provisioning переписывает config каноническим
             // JSON БЕЗ поля state (arch/14 §5 A, Д1) — мутация разрешена только
             // Active-кластерам (PUT до этого перехода = 409). Прогресс-тик —
-            // какой state висит (t29 §3.10).
+            // какой state висит (§3.10).
             var active = await E2ePhase.WaitAsync(Fx, "strict-active", async () =>
                 await ConfigStateFieldAsync(Cluster) is null, TimeSpan.FromSeconds(60), ct,
                 progress: async () => $"state={await ConfigStateFieldAsync(Cluster) ?? "absent (Active)"}");
             active.Should().BeTrue("the cluster became Active (config without state)");
 
             // Assert 1 (bootstrap): SPILO_CONFIGURATION первой ноды несёт
-            // synchronous_mode_strict: true (t06 — значение из config кластера).
+            // synchronous_mode_strict: true (— значение из config кластера).
             var spilo = (await ContainerEnvAsync($"pgw-{Cluster}-shard1-shard1a", ct))["SPILO_CONFIGURATION"];
             spilo.Should().Contain("synchronous_mode_strict: true")
                 .And.Contain("synchronous_mode: true");
@@ -140,7 +140,7 @@ public class E2eStrictScenarios
         }
     }
 
-    // AAA (t06, AC §6.7 п.5): strict=false кластер с однорепликным шардом —
+    // AAA (AC §6.7 п.5): strict=false кластер с однорепликным шардом —
     // попытка включения strict → 400 (errors.syncStrict); запись в etcd не
     // выполняется (значение остаётся false).
     [Fact]
@@ -164,7 +164,7 @@ public class E2eStrictScenarios
 
             // Ожидание Active: PUT разрешён только Active-кластерам (config без
             // state — P4 provisioning, arch/14 §5 A), иначе 409; прогресс-тик —
-            // какой state висит (t29 §3.10).
+            // какой state висит (§3.10).
             var active = await E2ePhase.WaitAsync(Fx, "strict-active", async () =>
                 await ConfigStateFieldAsync(Cluster) is null, TimeSpan.FromSeconds(60), ct,
                 progress: async () => $"state={await ConfigStateFieldAsync(Cluster) ?? "absent (Active)"}");
@@ -199,7 +199,7 @@ public class E2eStrictScenarios
     // E2eWorkerCertScenarios — файлы сценариев независимы, паттерн репо) =====
 
     // Сид кластера в стиле панели (образец E2eRotateScenarios.SeedClusterAsync)
-    // с полем synchronous_mode_strict в config (t06) и переменным числом реплик
+    // с полем synchronous_mode_strict в config и переменным числом реплик
     // shard2 (sub-кейс однорепликного шарда).
     private async Task SeedClusterAsync(string cluster, bool strict, int shard2Replicas)
     {
@@ -258,7 +258,7 @@ public class E2eStrictScenarios
         return JsonSerializer.Deserialize<Dictionary<string, NodeAddr>>(kv.Value, Json) ?? [];
     }
 
-    // t22: Patroni REST нод — https (цепочка к per-contour CA, без hostname)
+    // Patroni REST нод — https (цепочка к per-contour CA, без hostname)
     private HttpClient PatroniHttp => Fx.NewPatroniHttpClient();
 
     // GET /config живого Patroni (образец E2eScenarios:523): порт из portalloc.
@@ -300,7 +300,7 @@ public class E2eStrictScenarios
     // Дискавери API воркера (образец E2eWorkerCertScenarios.WaitForDiscoveryAsync):
     // ждём ключ /pgworker/api/<id>, возвращаем ФАКТИЧЕСКИЙ url и thumbprint
     // применённого серверного серта (новейший инстанс по since_unix). Фаза
-    // strict-discovery (t29 §3.10): прогресс — лёгкий range-подсчёт api-ключей.
+    // strict-discovery (§3.10): прогресс — лёгкий range-подсчёт api-ключей.
     private async Task<(string Url, string Thumbprint)> WaitForDiscoveryAsync(CancellationToken ct)
     {
         string? url = null;
@@ -343,7 +343,7 @@ public class E2eStrictScenarios
         return (url!, thumb!);
     }
 
-    // Прогресс provisioning-гейта (t29 §3.10): state-ключи нод и dsn из etcd;
+    // Прогресс provisioning-гейта (§3.10): state-ключи нод и dsn из etcd;
     // число нод — из ключа replicas (shard2 однорепликный в тесте 2).
     private async Task<string> ProvisioningProgressAsync()
     {

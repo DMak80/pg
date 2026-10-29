@@ -27,7 +27,7 @@ S3 только читает.
    связи сносятся доводкой G);
 6. **SyncProbeProcess** (F) — зонд связности/синхронности
    (`connectivity`/`sync` arch/23 §3; каркас канонизируется, реализация —
-   t33);
+
 7. **MeshGovernance** (G, доводка состава) — приведение фактического
    mesh инстансов к декларации: links → join/удаление target-записей,
    deny-list → отзовы (§5 G).
@@ -39,7 +39,7 @@ lease-клэймы, arch/23 §8); смерть контролирующего и
 
 Границы (что НЕ входит): механика mesh-репликации ownS3 (канон
 [owns3/07-replication.md](../OwnS3/arch/owns3/07-replication.md)); зонды
-синхронности (t33); панель домена S3 (канон adminpanel/02 §12).
+синхронности; панель домена S3 (канон adminpanel/02 §12).
 
 ---
 
@@ -117,7 +117,7 @@ critical-алерт).
 | `POST /api/s3/clusters/{c}/nodes/{n}/deny` | отзыв ключа инстанса: имя в `denylist` кластера → 202 (доводка G: `PUT /replication/denylist` всем инстансам, связи с ним сносятся) |
 | `POST /api/s3/clusters/{c}/nodes/{n}/allow` | снятие отзыва (имя из `denylist`) → 202 |
 | `POST /api/s3/clusters/{c}/rotations` | заявка ротации клиентских кредов кластера (`/s3worker/rotations/<C>`, клэйм-txn — §9.8-паттерн) |
-| `POST /api/s3/clusters/{c}/sync-probe` | внеплановый зонд синхронности/связности (202 — заявка `/s3worker/probes/<C>` put-if-absent, already → 202 идемпотентно; исполняет зонд F, результат — ключи arch/23 §3) — реализация t33 |
+| `POST /api/s3/clusters/{c}/sync-probe` | внеплановый зонд синхронности/связности (202 — заявка `/s3worker/probes/<C>` put-if-absent, already → 202 идемпотентно; исполняет зонд F, результат — ключи arch/23 §3) |
 
 **Валидация** (сервер — источник истины): `name` кластера — паттерн
 arch/23; `platform` — единственное значение `owns3`; инстансы — 0..9
@@ -149,7 +149,7 @@ etcd-backup кластера гварды: единственность приз
 - **Portalloc**: S3-порт ноды (контейнерный 9000) → последовательные
   host-слоты диапазона `PortRange`; закрепление
   `/s3worker/portalloc/<C>` (переживает rebuild); довыделение — только
-  держателем глобального клэйма `/s3worker/locks/portalloc` (t90-паттерн:
+  держателем глобального клэйма `/s3worker/locks/portalloc` (паттерн portalloc-клэйма:
   занятость = docker-публикации ∪ portalloc всех кластеров — образец
   [14-pgworker.md](14-pgworker.md) §2.4).
 - **Advertised-адреса** — только от фактических публикаций
@@ -173,7 +173,7 @@ etcd-backup кластера гварды: единственность приз
   детерминированных имён невозможен).
   Сам воркер — контейнер с `docker.sock`, поставка через
   `deploy/docker-compose.yml`; **два инстанса по умолчанию** (образец pg
-  t07 — [14-pgworker.md](14-pgworker.md) §2.4): уникальный хост-порт API и
+  — [14-pgworker.md](14-pgworker.md) §2.4): уникальный хост-порт API и
   уникальный `Api:AdvertiseUrl` на инстанс, уникальность — случайный
   `InstanceId`.
 
@@ -187,7 +187,10 @@ etcd-backup кластера гварды: единственность приз
 - **Инвариант мутаций**: любые записи в `/s3/` — только держателем клэйма
   `<C>` (`/s3worker/claims/<C>`); API воркера пишет декларации/заявки под
   клэйм-txn `version==0` (создание кластера/ноды, заявка ротации) —
-  панель через него, никогда напрямую.
+  панель через него, никогда напрямую. Владение держится на всём
+  протяжении мутации: потеря lease прерывает исполняющийся тик
+  (cancellation-гвард), критические шаги — после живой сверки клэйма
+  (S5 [17](17-synchronization-principles.md)).
 - **Txn с compare**: снятие `config.state` (P5) и перевод в `TO_REMOVE`
   сравниваются по `mod_revision` config — внешняя правка между read и
   write закрывается ретраем тика; RMW `endpoints` — по value
@@ -271,11 +274,14 @@ P2 выпуск per-cluster secrets (EnsureSecrets, txn put-if-absent — arch/2
    volume данных + контейнер ownS3 (образ из Images{OwnS3}; env: креды
    из secrets-ключа — OWNS3_ROOT_*/OWNS3_ACCESS_KEYS__*, репликационный материал —
    OWNS3_REPLICATION_{CERT,PRIVATE_KEY,TRUST_CA} +
-   OWNS3_REPLICATION_ADVERTISED_ENDPOINT (arch/23 §6), OWNS3_DATA_DIR=/data;
+   OWNS3_REPLICATION_ADVERTISED_ENDPOINT (arch/23 §6), OWNS3_DATA_DIR=/data,
+   `OWNS3_REPLICATION_RECONCILE_INTERVAL_SECONDS` (значение — из опции
+   `S3Worker:OwnS3:ReplicationReconcileIntervalSec`, §8; не задана/0 —
+   переменная не ставится: прод-дефолт OwnS3 3 ч);
    состав mesh НЕ env — доводится P4/G; лимиты resources; S3-порт из
    portalloc);
    health-ожидание — бюджет NodeBootSec, transient-толерантный цикл
-   (поллинг-инвариант t19 — без одиночных блокирующих вызовов)
+   (поллинг-инвариант — без одиночных блокирующих вызовов)
 P3 bucket'ы на каждом инстансе — идемпотентно (exists → пропуск;
    CreateBucket root-кредом из secrets-ключа — права admin, owns3/05 §3):
    per-install + для etcd-backup кластера фиксированный etcd-слепковый
@@ -389,7 +395,7 @@ portalloc (`AdvertisedHost` §2). Пределы: full-mesh не инвариа�
 нормален; зеркальность пары обеспечивает join-механика ownS3).
 Диагностика — journal-фазы (`op=mesh-governance`) и метрики §7.
 
-### F. SyncProbeProcess (реализация — t33)
+### F. SyncProbeProcess
 
 Периодический (гейт `SyncIntervalSec` по `checked_unix`, §8) и
 по-командный (заявка `/s3worker/probes/<C>` из `POST …/sync-probe` §1.1 —
@@ -467,6 +473,7 @@ S3Worker:Docker { Mode: Plain|Swarm, Hosts[{Name,Endpoint}], SwarmManager,
                   PortRange{From,To}, Images{OwnS3="owns3:dev"},
                   Tls, Ssh, ContourNetwork, AdvertisedHost }
 S3Worker:Loops { ScanIntervalSec=5, KeepaliveSec=5, Watchdog{...} }
+S3Worker:OwnS3 { ReplicationReconcileIntervalSec=0 }   # период reconcile mesh-репликации инстансов (env OWNS3_REPLICATION_RECONCILE_INTERVAL_SECONDS, owns3/07 §9; 0 — не ставится, дефолт OwnS3 3 ч)
 S3Worker:Thresholds { NodeBootSec=100, NodeDeadSec=90, HealthIntervalSec=15,
                       SyncIntervalSec=60 }   # SyncIntervalSec — период зонда F (§5 F)
 S3Worker:Parallelism { MaxClusters=4 }
@@ -488,7 +495,7 @@ Fail-fast валидации старта — по образцу pg (непол
 |---|---|---|
 | R1 | Инстанс без входящих связей в `links` (частичный граф) или единственный инстанс: гибель его диска — потеря доли данных без реплики | рекомендация N≥2/3 и full-связность гео-групп (операционная, arch/23 §2); панель — индикация состава связей; риск осознан декларативностью, не запретом |
 | R2 | Снос кластера/вывод инстанса уничтожает данные бэкапов его инстансов | осознанное действие оператора: панель — confirm (§5 B/E); вывод последнего инстанса запрещён гвардой E (кластер без инстансов — только созданием); риск-строка канона |
-| R3 | Собственный зонд — единственный честный источник синхронности | зонд — процесс F (t33), форматы arch/23 §3; метрики доставки ownS3 (R2 `../OwnS3/docs/owns3-replication-requirements.md`) — наблюдаемость механики, не источник истины о данных |
+| R3 | Собственный зонд — единственный честный источник синхронности | зонд — процесс F, форматы arch/23 §3; метрики доставки ownS3 (R2 `../OwnS3/docs/owns3-replication-requirements.md`) — наблюдаемость механики, не источник истины о данных |
 | R4 | Отсутствие per-cluster сети — межнодовые линки зависят от advertised-адресов и открытых межхостовых портов | ограничение фиксируется явно (§2); раснос по площадкам — явные селекторы оператора |
 | R5 | Смена per-install advertised-адресов (AdvertisedHost) — target-записи соседей держат прежние endpoint'ы | join идемпотентно обновляет endpoint (owns3/07 §2); лечение — переприсвоение пары в `links` (снос + повторный join) или пересоздание связей; плановая смена адресов — вне штатных операций |
 | R6 | Ротация ключей репликации/CA не автоматизирована (сертификаты бессрочные) | отзыв компрометации — deny-list (§5 G, мгновенный); плановая ротация — roadmap (owns3/07 §12); enterprise-CRL — вне |

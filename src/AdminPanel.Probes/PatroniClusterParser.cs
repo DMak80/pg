@@ -15,7 +15,7 @@ public sealed record PatroniClusterMember(
 // Толерантен: отсутствующие поля, null-лаг, строковые числа (arch/02 §8).
 public static class PatroniClusterParser
 {
-    // AllowReadingFromString — тот же приём, что EtcdGateway для decimal-строк etcd (t03 §4.2).
+    // AllowReadingFromString — тот же приём, что EtcdGateway для decimal-строк etcd (§4.2).
     private static readonly JsonSerializerOptions Json = new()
     {
         NumberHandling = JsonNumberHandling.AllowReadingFromString,

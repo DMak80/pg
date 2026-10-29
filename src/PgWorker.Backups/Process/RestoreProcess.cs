@@ -13,15 +13,14 @@ using PgWorker.Provisioning.Sql;
 
 namespace PgWorker.Backups.Process;
 
-// RestoreProcess (t05, arch/19 §3.5): машина восстановления шарда из бэкапа.
-// Поддерживается ТОЛЬКО в Mode=Plain (подсистема бэкапов plain-only с t02/t03;
-// swarm-драйвер джобы бэкапов не исполняет — прецедент
-// SwarmClusterDriver.EnsureBackupAgentAsync). Тик под клэймом <C>: активная
+// RestoreProcess (arch/19 §3.5): машина восстановления шарда из бэкапа.
+// Поддерживается ТОЛЬКО в Mode=Plain (подсистема бэкапов plain-only с /;
+// swarm-драйвер джобы бэкапов не исполняет). Тик под клэймом <C>: активная
 // заявка (максимум одна на шард) проводится по фазам
 // PLANNED (валидация: усыновление/полный/manifest/цепочка) →
 // RUNNING (демонтаж + ephemeral restore-джоб, Task 9) →
 // REJOINING (EnsureNode + Patroni-пробы, Task 10) →
-// COMPLETED (del wal-ключа → планировщик t02 переснимает полный).
+// COMPLETED (del wal-ключа → планировщик переснимает полный).
 // permanent/transient: валидационные отказы — permanent-FAILED (повтор заявки
 // оператором); docker/S3-транспортные отказы — transient (статус не меняем,
 // следующий тик повторит). Takeover: всё состояние — в etcd-статусе заявки;
@@ -31,6 +30,7 @@ public sealed class RestoreProcess(
     string[] endpoints,
     IClusterDriver driver,
     BackupS3Factory s3Factory,
+    IWalReceiverApiClient receiver,
     ClaimStore claims,
     WorkJournal journal,
     BackupsRuntimeOptions options,
@@ -42,7 +42,7 @@ public sealed class RestoreProcess(
     ThresholdsOptions thresholds,
     TimeProvider time,
     ILogger<RestoreProcess>? logger = null,
-    Action<string, string, string>? restoreObserver = null, // (cluster, shard, ok|failed) — t14, arch/18 §2.7
+    Action<string, string, string>? restoreObserver = null, // (cluster, shard, ok|failed), arch/18 §2.7
     TimeSpan? watchdogWindow = null,
     Shared.Core.Hosting.ILoopProgress? progress = null) // аудит долгих фаз: итерации поллинга дают Mark (spec §1.2 п.4)
 {
@@ -116,7 +116,7 @@ public sealed class RestoreProcess(
         }
     }
 
-    // t36 (arch/19 §4.2/§3.5): пул чтения restore — source_pool DR-заявки
+    //  (arch/19 §4.2/§3.5): пул чтения restore — source_pool DR-заявки
     // (чужой пул, CreateForPoolAsync) ?? собственный пул кластера (policy.s3).
     private async Task<Result<(PoolBackupS3 Client, BackupPoolContext Context)>> ResolveReadPoolAsync(
         string cluster, RestoreOperationState op, CancellationToken ct)
@@ -140,7 +140,12 @@ public sealed class RestoreProcess(
     {
         var cluster = snap.Config.Cluster;
 
-        // t36 (arch/19 §5): пул чтения — source_pool DR-заявки ?? собственный
+        // Живая сверка клэйма перед фазой заявки (arch/17 S5).
+        if (!await ClaimAliveAsync(cluster, shard.Name, op, ct))
+            return Result<ProcessOutcome>.Failed(new ApplicationException(
+                $"{Op} {cluster}: claim lost before validate of {shard.Name}/{op.Id}"));
+
+        //  (arch/19 §5): пул чтения — source_pool DR-заявки ?? собственный
         // пул policy.s3. null/Failed — transient: journal, ретраи тиком.
         var poolRead = await ResolveReadPoolAsync(cluster, op, ct);
         if (!poolRead.IsSuccess)
@@ -151,7 +156,8 @@ public sealed class RestoreProcess(
         }
         // (клиент, контекст): клиент — IAsyncDisposable, контекст — списки env.
         var (readS3, poolCtx) = poolRead.Value;
-        await using var s3 = readS3;
+        // Клиент — кэш фабрики (breaker переживает тики) — НЕ диспоузим.
+        var s3 = readS3;
 
         // 1. Усыновлённые (object) ноды — ручной путь, restore plain-only.
         var addresses = await ReadPortAllocAsync(cluster, ct);
@@ -204,10 +210,10 @@ public sealed class RestoreProcess(
             backupId = fulls.Value[^1];
         }
 
-        // 4. Факт целостности кандидата: upload t02 (mc cp --recursive) не
+        // 4. Факт целостности кандидата: upload (mc cp --recursive) не
         // атомарен и не гарантирует «манифест последним» — упавший на середине
         // джоб оставляет частичный префикс full/<id>/, а при DR etcd-статусов
-        // нет; инвариант «префикс ⇔ манифест» механикой t02 НЕ обеспечивается →
+        // нет; инвариант «префикс ⇔ манифест» механикой НЕ обеспечивается →
         // частичный кандидат отсеивается проверкой манифеста.
         var manifest = await S3Pulse.CallAsync(progress, token => s3.DownloadTextAsync(srcC, srcX, $"full/{backupId}/backup_manifest", token), ct, WatchdogWindow / 2);
         if (!manifest.IsSuccess)
@@ -218,7 +224,7 @@ public sealed class RestoreProcess(
         }
 
         // 5. Стартовая точка WAL: свой свежий полный → etcd-статус; иначе
-        // backup_label из S3 (BackupLabel.WalStartSegment — sed-эквивалент t02).
+        // backup_label из S3 (BackupLabel.WalStartSegment — sed-эквивалент).
         string? walStart = ownFresh?.WalStartSegment;
         if (walStart is not { Length: > 0 })
         {
@@ -239,7 +245,7 @@ public sealed class RestoreProcess(
             return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
         }
 
-        // 6. Непрерывность WAL-цепочки от стартовой точки (WalChain t03):
+        // 6. Непрерывность WAL-цепочки от стартовой точки (WalChain):
         // дыра → permanent с границами; S3-отказ → transient (статус не меняем).
         var wal = await S3Pulse.CallAsync(progress, token => s3.ListWalAsync(srcC, srcX, ct: token), ct, WatchdogWindow / 2);
         if (!wal.IsSuccess)
@@ -268,27 +274,20 @@ public sealed class RestoreProcess(
         return Result<ProcessOutcome>.Success(ProcessOutcome.InProgress);
     }
 
-    // ── RUNNING: демонтаж шарда + ephemeral restore-джоб (§3.4) ──
+    // ── RUNNING: демонтаж + restore-операция WalReceiver первой ноды (§3.5) ──
 
     private async Task<Result<ProcessOutcome>> RunAsync(
         ClusterSnapshot snap, ShardSpec shard, RestoreOperationState op, CancellationToken ct)
     {
         var cluster = snap.Config.Cluster;
 
-        // t36: пул чтения — source_pool DR-заявки ?? собственный пул policy.s3.
-        var poolRead = await ResolveReadPoolAsync(cluster, op, ct);
-        if (!poolRead.IsSuccess)
-        {
-            await journal.WritePhaseAsync(cluster, Op, "waiting-backup-pool", claims.InstanceId,
-                poolRead.Error!.Message, ct);
-            return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
-        }
-        // (клиент, контекст): клиент — IAsyncDisposable, контекст — списки env.
-        var (readS3, poolCtx) = poolRead.Value;
-        await using var s3 = readS3;
+        // Живая сверка клэйма перед фазой демонтажа/восстановления (arch/17 S5).
+        if (!await ClaimAliveAsync(cluster, shard.Name, op, ct))
+            return Result<ProcessOutcome>.Failed(new ApplicationException(
+                $"{Op} {cluster}: claim lost before run of {shard.Name}/{op.Id}"));
 
-        // Первая нода (джоб пишет восстановленный PGDATA в её data-volume);
-        // адрес из portalloc, движок — по хосту (null → transient).
+        // Первая нода — её WalReceiver исполняет restore-операцию (arch/19 §3.5);
+        // адрес из portalloc (null → permanent: заявка не исполнима).
         var addresses = await ReadPortAllocAsync(cluster, ct);
         if (!addresses.IsSuccess)
             return await TransientAsync(cluster, $"portalloc-unavailable/{shard.Name}/{op.Id}",
@@ -302,40 +301,29 @@ public sealed class RestoreProcess(
                 $"node {first ?? "?"} of shard {shard.Name} not found in portalloc", ct);
             return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
         }
-        var engine = driver.EngineFor(addr.Host);
 
-        // t07 (arch/19 §6): статусный бюджет заявки (downloading/демонтаж могут
-        // transient-циклиться без контейнера — возраст считаем от started_unix).
-        // Канон допускает «restore-джоб часами»; сутки — явный завис. REJOINING
-        // не таймаутим (бюджеты Patroni-проб — свои); RecoveryTimeoutSec внутри
-        // джоба закрывает recovering раньше. Удаление джоба/volume — best-effort
-        // (transient docker): статус FAILED важнее.
+        //  (arch/19 §6): статусный бюджет заявки (downloading/демонтаж могут
+        // transient-циклиться без ноды — возраст считаем от started_unix).
+        // Канон допускает «restore часами»; сутки — явный завис. REJOINING не
+        // таймаутим (бюджеты Patroni-проб — свои); RecoveryTimeoutSec — бюджет
+        // ВНУТРИ операции приёмника (§3.5). Снос первой ноды — вместе с
+        // volume (restore-операция уходит с нодой); best-effort (transient):
+        // статус FAILED важнее.
         var opStarted = op.StartedUnix ?? NowUnix();
         if (SupervisionTimeouts.IsTimedOut(opStarted, NowUnix(), options.JobRestoreTimeoutSec))
         {
-            var jobName = BackupNames.RestoreContainerName(cluster, shard.Name, op.Id);
-            if (engine is not null)
-            {
-                var listed = await engine.ListContainersAsync(jobName, all: true, ct);
-                if (listed.IsSuccess && listed.Value.Any(c => c.Names.Contains(jobName)))
-                    await engine.RemoveContainerAsync(jobName, force: true, ct);
-                await engine.RemoveVolumeAsync($"pgw-{cluster}-{shard.Name}-{first}-data", ct);
-            }
+            await driver.RemoveNodeAsync(cluster, shard.Name, first, ct);
             await FailPermanentAsync(cluster, shard.Name, op,
                 $"restore-job-timeout: {NowUnix() - opStarted}s > {options.JobRestoreTimeoutSec}", ct);
             return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
         }
 
-        if (engine is null)
-            return await TransientAsync(cluster, $"engine-unavailable/{shard.Name}/{op.Id}",
-                $"docker host {addr.Host} is unknown", ct);
-
-        // Цель: "time:<RFC3339>" → строка конфига recovery_target_time; latest → "".
-        // RFC3339 нормализуем к PG-формату: парсер recovery_target_time не
-        // принимает ни «T»-сепаратор ISO-8601, ни суффикс «Z» (инцидент E2E:
-        // FATAL invalid value) — приняты «пробел» и «+00:00». Битое время
-        // (ручная запись мимо API) — permanent FAILED.
-        string targetTime = "";
+        // Цель: "time:<RFC3339>" → PG-формат recovery_target_time (парсер не
+        // принимает ни «T»-сепаратор ISO-8601, ни суффикс «Z» — приняты «пробел»
+        // и «+00:00»); latest → null (ЕДИНОЕ ПРАВИЛО контракта: latest = null,
+        // пустая строка приёмнику не передаётся). Битое время (ручная запись
+        // мимо API) — permanent FAILED.
+        string? targetTime = null;
         if (op.Target.StartsWith("time:", StringComparison.Ordinal))
         {
             if (!DateTimeOffset.TryParse(op.Target["time:".Length..],
@@ -351,131 +339,338 @@ public sealed class RestoreProcess(
                 "yyyy-MM-dd HH:mm:sszzz", CultureInfo.InvariantCulture);
         }
 
-        var name = BackupNames.RestoreContainerName(cluster, shard.Name, op.Id);
-        var list = await engine.ListContainersAsync(name, all: true, ct);
-        if (!list.IsSuccess)
-            return await TransientAsync(cluster, $"docker-unavailable/{shard.Name}/{op.Id}",
-                list.Error!.Message, ct);
-        var found = list.Value.FirstOrDefault(c => c.Names.Contains(name));
+        // Адрес приёмника первой ноды (arch/19 §2/§3.5) — alias:8080 в общей
+        // сети воркера и нод.
+        var receiverUrl = WalReceiverAddress.ForNode(cluster, shard.Name, first, addr.Object);
 
-        // Идемпотентный запуск: джоба нет → демонтаж + create + start; старт —
-        // в обоих случаях (created прошлым тиком / только что созданный); отказ
-        // create/start → transient, следующий тик повторит.
-        if (found is null)
+        // ── Фазы RUNNING (в поле Phase заявки; фазы операции приёмника
+        // downloading/recovering перезаписывают их при поллинге) ──
+        // null/"" → ДЕМОНТАЖ (безусловный: живой шард обязан быть снесён ДО
+        //   restore — данные переписываются; идемпотентен при takeover-повторе) →
+        //   Phase="demolished".
+        // "demolished" → EnsureNode первой ноды (щит "restore-in-progress"
+        //   удерживает Patroni от bootstrap пустого PGDATA) + POST /api/ops/restore
+        //   → Phase="launching". 409 (чужая ops-операция — verify, arch/19 §3.5)
+        //   — transient: фаза остаётся "demolished", повтор следующим тиком.
+        //   Краш между POST и put фазы — редкое окно: повторный POST получает
+        //   409, пока операция жива, и доезжает до перезапуска операции после
+        //   её терминала (резюмов нет — скачивание заново, идемпотентно).
+        // "launching"/"downloading"/"recovering" → только GET-поллинг: повтор
+        //   команды на каждом тике супервиза НЕБЕЗОПАСЕН — когда операция
+        //   приёмника достигла терминала, 409-гвард принимает новую команду
+        //   (202) РАНЬШЕ, чем тот же тик успевает прочитать GET succeeded, —
+        //   операция перезапускается вечно до бюджетного таймаута. Команду
+        //   повторяют ТОЛЬКО ветки супервиза vanished/failed+downloading —
+        //   сбросом Phase обратно в "demolished" (ensure no-op на живой ноде).
+        switch (op.Phase)
         {
-            // Демонтаж — ТОЛЬКО до первого запуска джоба: повтор при живом/
-            // завершённом джобе упирается 409 «volume is in use» (джоб держит
-            // data-volume первой ноды) и блокирует обработку его итога — статус
-            // замирал в RUNNING навсегда (инцидент E2E-гейта t05). Контейнер
-            // существует ⇒ демонтаж уже выполнен тиком запуска.
-            var demolished = await DemolishAsync(cluster, shard, op, ct);
-            if (!demolished.IsSuccess)
-                return Result<ProcessOutcome>.Failed(demolished.Error!);
+            case null or "":
+                return await DemolishStepAsync(cluster, shard, op, ct);
 
-            // BACKUP_ID — резолвнутый валидацией полный (op.BackupId), НЕ id
-            // заявки: джоб качает full/<backup_id>/ (инцидент E2E: в спеку
-            // уходил op.Id — mc «Object does not exist»).
-            if (op.BackupId.Length == 0)
+            case "demolished":
+                return await LaunchStepAsync(snap, shard, op, first, addr, receiverUrl,
+                    addresses.Value, targetTime, ct);
+
+            default:
+                return await SuperviseRestoreOpAsync(
+                    snap, shard, op, first, receiverUrl, addresses.Value, ct);
+        }
+    }
+
+    // Шаг демонтажа (Phase null/""): снос нод шарда с data-volume + чистка
+    // HA-scope + щит (см. DemolishAsync); факт — Phase="demolished" (тик
+    // запуска продолжается следующим тиком — takeover между шагами безопасен:
+    // демонтаж идемпотентен).
+    private async Task<Result<ProcessOutcome>> DemolishStepAsync(
+        string cluster, ShardSpec shard, RestoreOperationState op, CancellationToken ct)
+    {
+        var demolished = await DemolishAsync(cluster, shard, op, ct);
+        if (!demolished.IsSuccess)
+            return Result<ProcessOutcome>.Failed(demolished.Error!);
+        var put = await PutStatusAsync(cluster, shard.Name, op with { Phase = "demolished" }, ct);
+        if (!put.IsSuccess)
+            return Result<ProcessOutcome>.Failed(put.Error!);
+        return Result<ProcessOutcome>.Success(ProcessOutcome.InProgress);
+    }
+
+    // Шаг запуска (Phase "demolished"): EnsureNode первой ноды + команда
+    // restore её приёмнику.
+    private async Task<Result<ProcessOutcome>> LaunchStepAsync(
+        ClusterSnapshot snap, ShardSpec shard, RestoreOperationState op, string first,
+        NodeAddress addr, string receiverUrl, IReadOnlyDictionary<string, NodeAddress> addresses,
+        string? targetTime, CancellationToken ct)
+    {
+        var cluster = snap.Config.Cluster;
+
+        // BACKUP_ID — резолвнутый валидацией полный (op.BackupId), НЕ id
+        // заявки: качается full/<backup_id>/.
+        if (op.BackupId.Length == 0)
+        {
+            await FailPermanentAsync(cluster, shard.Name, op,
+                "backup_id is not recorded in the request (expected after validation)", ct);
+            return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
+        }
+
+        // Подъём первой ноды (EnsureNode — идемпотентен: живой контейнер с
+        // планом портов не трогает). Щит initialize="restore-in-progress"
+        // (DemolishAsync) удерживает Patroni от bootstrap пустого PGDATA —
+        // постгрес Patroni не поднимает, PGDATA ноды свободен для операции
+        // (arch/19 §3.5). Поллинг create/start — arch/14 §6 инвариант.
+        var ensured = await EnsureShardNodeAsync(snap, shard, first, addr, addresses, ct);
+        if (!ensured.IsSuccess)
+            return await TransientAsync(cluster, $"docker-unavailable/{shard.Name}/{op.Id}",
+                ensured.Error!.Message, ct);
+
+        // Команда запуска restore-операции: backup_id / target_time (null =
+        // latest) / recovery_timeout_sec / S3-контекст source_pool ?? своего
+        // пула (prefix — DR-источник). Секреты — только в POST-теле (Р4).
+        var poolRead = await ResolveReadPoolAsync(cluster, op, ct);
+        if (!poolRead.IsSuccess)
+        {
+            await journal.WritePhaseAsync(cluster, Op, "waiting-backup-pool", claims.InstanceId,
+                poolRead.Error!.Message, ct);
+            return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
+        }
+        var poolCtx = poolRead.Value.Context;
+
+        var launch = await receiver.StartRestoreAsync(
+            receiverUrl,
+            new StartRestoreRequest(
+                BackupId: op.BackupId,
+                Id: null, // restore — не drill
+                TargetTime: targetTime,
+                RecoveryTimeoutSec: options.RestoreRecoveryTimeoutSec,
+                S3: new S3Context(
+                    Endpoints: [.. poolCtx.ReadAll],
+                    AccessKey: poolCtx.AccessKey,
+                    SecretKey: poolCtx.SecretKey,
+                    Bucket: options.S3Bucket,
+                    Prefix: $"{SrcCluster(op)}/{SrcShard(op)}",
+                    CaPem: BackupCaPem.ReadIfConfigured(options.S3CaBundlePath))), ct);
+        if (launch.IsConflict)
+        {
+            // 409 — в общем ops-реестре приёмника ЧУЖАЯ ops-операция (verify
+            // свежего полного; одна ops-операция на процесс, arch/19 §5).
+            // Снимок 409 не различает свою/чужую — принять 409 за «свою живую»
+            // НЕЛЬЗЯ: verify затирает снимки общего реестра, и воркер уходит в
+            // REJOINING от чужого succeeded БЕЗ system_id (щит-заполнитель
+            // навсегда запирает bootstrap, firstReady недостижим). Запуск
+            // откладывается: фаза остаётся «demolished», повтор следующим
+            // тиком до освобождения реестра (arch/19 §3.5).
+            return await TransientAsync(cluster, $"receiver-busy/{shard.Name}/{op.Id}",
+                "restore launch deferred: the receiver ops-registry is busy (verify/drill in flight)", ct);
+        }
+        if (!launch.IsAccepted)
+        {
+            // Транспортный отказ/5xx команды — transient: статус не меняем
+            // (фаза "demolished" остаётся — команда повторится), следующий тик
+            // повторит POST.
+            return await TransientAsync(cluster, $"receiver-unavailable/{shard.Name}/{op.Id}",
+                launch.Error, ct);
+        }
+
+        // Команда принята — фаза "launching": следующий тик поллит GET
+        // (перезапуск команды запрещён — см. комментарий свитча фаз).
+        var putPhase = await PutStatusAsync(cluster, shard.Name, op with { Phase = "launching" }, ct);
+        if (!putPhase.IsSuccess)
+            return Result<ProcessOutcome>.Failed(putPhase.Error!);
+        return Result<ProcessOutcome>.Success(ProcessOutcome.InProgress);
+    }
+
+    // EnsureNode одной ноды шарда (тик запуска restore/rejoin): идемпотентно,
+    // поллинг create/start (arch/14 §6 инвариант), бюджет — PatroniBootSec.
+    // Креды (P1.5-образец): ensured тройка — env ноды; REST-пара —
+    // EffectivePassword (arch/14 §5 I).
+    private async Task<Result> EnsureShardNodeAsync(
+        ClusterSnapshot snap, ShardSpec shard, string node, NodeAddress addr,
+        IReadOnlyDictionary<string, NodeAddress> addresses, CancellationToken ct)
+    {
+        var cluster = snap.Config.Cluster;
+        var creds = await appSecret.EnsureAsync(cluster, snap.Config, ct);
+        if (!creds.IsSuccess)
+            return creds;
+        var clusterSecrets = secrets with
+        {
+            BucketAdminUser = creds.Value.BucketAdmin.User,
+            BucketAdminPassword = creds.Value.BucketAdmin.Password,
+            MoverPassword = creds.Value.MoverPassword,
+        };
+        var topology = Topology(cluster, shard.Name, addresses);
+        var resources = await ReadShardResourcesAsync(cluster, shard.Name, ct);
+        var work = await journal.ReadAsync(cluster, ct);
+        if (!work.IsSuccess)
+            return work;
+        var restPassword = RestRotation.EffectivePassword(snap.RestPassword, work.Value?.RestPending)
+            ?? throw new ApplicationException(
+                $"restore {cluster}: cluster rest_password is unknown (no key and no pending)");
+        return await LongCallPolling.EnsureAsync(
+            $"create/start of node {node}",
+            token => driver.EnsureNodeAsync(
+                topology, node, addr, clusterSecrets, etcdEndpoints, resources, null,
+                snap.Config.SyncStrict, restPassword, token),
+            progress, logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<RestoreProcess>.Instance,
+            TimeSpan.FromTicks(Math.Max(TimeSpan.TicksPerSecond, WatchdogWindow.Ticks / 2)),
+            TimeSpan.FromSeconds(thresholds.PatroniBootSec), ct);
+    }
+
+    // Супервиз restore-операции приёмника первой ноды (§3.5): итог — ТОЛЬКО
+    // по API (GetRestoreAsync).
+    private async Task<Result<ProcessOutcome>> SuperviseRestoreOpAsync(
+        ClusterSnapshot snap, ShardSpec shard, RestoreOperationState op, string first,
+        string receiverUrl, IReadOnlyDictionary<string, NodeAddress> addresses,
+        CancellationToken ct)
+    {
+        var cluster = snap.Config.Cluster;
+        var reply = await receiver.GetRestoreAsync(receiverUrl, ct);
+
+        if (reply.IsNotFound)
+        {
+            // Нода жива, операции нет (рестарт приёмника) — transient: фаза
+            // обратно в "demolished" (без повторного демонтажа: volume уже
+            // чистый, EnsureNode no-op) — командой повтором следующим тиком;
+            // резюмов нет — скачивание заново (Р9).
+            var putReset = await PutStatusAsync(cluster, shard.Name, op with { Phase = "demolished" }, ct);
+            if (!putReset.IsSuccess)
+                return Result<ProcessOutcome>.Failed(putReset.Error!);
+            return await TransientAsync(cluster, $"receiver-vanished/{shard.Name}/{op.Id}",
+                "restore operation vanished — command re-sent on next tick", ct);
+        }
+
+        if (reply.IsTransient)
+            return Result<ProcessOutcome>.Success(ProcessOutcome.InProgress); // ждём
+
+        var status = reply.Status;
+        if (status is null)
+            return Result<ProcessOutcome>.Success(ProcessOutcome.InProgress);
+
+        switch (status.State)
+        {
+            case "running":
             {
-                await FailPermanentAsync(cluster, shard.Name, op,
-                    "backup_id is not recorded in the request (expected after validation)", ct);
+                // Фаза операции → Phase статуса etcd (панель видит
+                // downloading/recovering, arch/19 §4); вместе с фазой — факт
+                // её перехода PhaseUnix (стенка наката — от перехода).
+                var current = op;
+                if (status.Phase is { Length: > 0 } phase && phase != op.Phase)
+                {
+                    current = op with { Phase = phase, PhaseUnix = NowUnix() };
+                    var putPhase = await PutStatusAsync(cluster, shard.Name, current, ct);
+                    if (!putPhase.IsSuccess)
+                        return Result<ProcessOutcome>.Failed(putPhase.Error!);
+                }
+
+                // Стенка наката — ТОЛЬКО в фазе recovering и от ПЕРЕХОДА в неё
+                // (PhaseUnix): скачивание набора (downloading) recovery-бюджет
+                // не съедает — долгий download на здоровой операции больше не
+                // даёт premature FAILED «recovery budget exhausted»; он под
+                // статусным бюджетом заявки Job:RestoreTimeoutSec (выше) и
+                // transient-семантикой download-retry. Внутри recovering
+                // приёмник держит свой бюджет RecoveryTimeoutSec — воркерская
+                // стенка (запас 60 c) — backstop зависшего приёмника. Ключ без
+                // PhaseUnix (в момент обновления воркера) — от started_unix
+                // (прежнее поведение).
+                var recoveringUnix = current.PhaseUnix ?? current.StartedUnix;
+                if (current.Phase == "recovering" && recoveringUnix is { } wallFrom)
+                {
+                    var budgetSec = options.RestoreRecoveryTimeoutSec + 60;
+                    if (NowUnix() - wallFrom > budgetSec)
+                    {
+                        await driver.RemoveNodeAsync(cluster, shard.Name, first, ct);
+                        await FailPermanentAsync(cluster, shard.Name, op,
+                            $"recovery budget exhausted ({budgetSec}s)", ct);
+                        return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
+                    }
+                }
+
+                return Result<ProcessOutcome>.Success(ProcessOutcome.InProgress); // жив — ждём
+            }
+
+            case "succeeded":
+            {
+                // SUCCESS: REJOINING; RestoredToLsn/SystemId — из статуса API.
+                // Рестарта ноды НЕТ: restore-операция сама вернула Patroni
+                // (start spilo в finally) уже с валидным initialize и
+                // остановленной промоутнутой базой — Patroni поднимает её и
+                // доводит recovery до промоута. Volume первой ноды содержит
+                // восстановленный PGDATA — НЕ трогаем.
+                var rejoining = op with
+                {
+                    State = RestoreStatus.Rejoining,
+                    Phase = null,
+                    RestoredToLsn = status.RestoredToLsn,
+                    SystemId = status.SystemId,
+                };
+                var put = await PutStatusAsync(cluster, shard.Name, rejoining, ct);
+                if (!put.IsSuccess)
+                    return Result<ProcessOutcome>.Failed(put.Error!);
+                await journal.WritePhaseAsync(cluster, Op, $"restored/{shard.Name}/{op.Id}",
+                    claims.InstanceId, null, ct);
+                return Result<ProcessOutcome>.Success(ProcessOutcome.InProgress);
+            }
+
+            case "cancelled":
+            {
+                // Операторская отмена (POST /api/ops/cancel приёмника —
+                // внешний канал мимо воркера; снимок state=cancelled отличает
+                // её от vanished): всё как до старта операции — первая нода
+                // сносится вместе с data-volume (до-restore «пустое»
+                // состояние демонтажа), щит initialize снимается (заполнитель
+                // «restore-in-progress» навсегда запер бы bootstrap пустых
+                // нод), запись заявки УДАЛЯЕТСЯ — операции нет, записи нет;
+                // никакого FAILED (arch/19 §3.5).
+                await driver.RemoveNodeAsync(cluster, shard.Name, first, ct);
+                var initKey = $"/service/{cluster}-{shard.Name}/initialize";
+                var init = await etcd.GetAsync(endpoints[0], initKey, ct);
+                if (init.IsSuccess && init.Value?.Value == "restore-in-progress")
+                {
+                    var delShield = await etcd.DeleteAsync(endpoints[0], initKey, prefix: false, ct);
+                    if (!delShield.IsSuccess)
+                        logger?.LogError(
+                            "backup-restore {Cluster}/{Shard}/{Id}: initialize placeholder was not deleted — {Error}",
+                            cluster, shard.Name, op.Id, delShield.Error?.Message);
+                }
+                var delOp = await etcd.DeleteAsync(endpoints[0],
+                    BackupNames.RestoreKey(cluster, shard.Name, op.Id), prefix: false, ct);
+                if (!delOp.IsSuccess)
+                    return Result<ProcessOutcome>.Failed(delOp.Error!);
+                await journal.WritePhaseAsync(cluster, Op,
+                    $"cancelled-by-operator/{shard.Name}/{op.Id}", claims.InstanceId,
+                    "restore operation cancelled by operator — request removed, shard back to pre-restore state", ct);
+                logger?.LogInformation(
+                    "backup-restore {Cluster}/{Shard}/{Id}: cancelled by operator — request removed, shard back to pre-restore state",
+                    cluster, shard.Name, op.Id);
                 return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
             }
 
-            var spec = Restore.RestoreJobSpec.Build(options, cluster, shard.Name, op.BackupId,
-                $"pgw-{cluster}-{shard.Name}-{first}-data", targetTime,
-                SrcCluster(op), SrcShard(op),
-                poolCtx.ReadAll, poolCtx.AccessKey, poolCtx.SecretKey);
-            var created = await engine.CreateContainerAsync(spec, name, ct);
-            if (!created.IsSuccess)
-                return await TransientAsync(cluster, $"docker-unavailable/{shard.Name}/{op.Id}",
-                    created.Error!.Message, ct);
-        }
-
-        if (found is not { State: "running" or "exited" })
-        {
-            var started = await engine.StartContainerAsync(name, ct);
-            if (!started.IsSuccess)
-                return await TransientAsync(cluster, $"docker-unavailable/{shard.Name}/{op.Id}",
-                    started.Error!.Message, ct);
-            return Result<ProcessOutcome>.Success(ProcessOutcome.InProgress);
-        }
-
-        // created — аномалия (start потерялся между тиками): довыгоняем (304 = ок).
-        if (found is { State: "created" })
-        {
-            await engine.StartContainerAsync(name, ct);
-            return Result<ProcessOutcome>.Success(ProcessOutcome.InProgress);
-        }
-
-        // Логи — транспорт guarded: недоступны → transient (статус не меняем).
-        var logs = await engine.GetContainerLogsAsync(name, tail: 200, ct);
-        if (!logs.IsSuccess)
-            return await TransientAsync(cluster, $"docker-unavailable/{shard.Name}/{op.Id}",
-                logs.Error!.Message, ct);
-        var markers = Restore.RestoreJobLog.Parse(logs.Value);
-
-        if (found is { State: "running" or "restarting" })
-        {
-            // фаза джоба → Phase статуса (пишем только при изменении —
-            // панель видит downloading/recovering, arch/19 §4)
-            if (markers.Phase is { Length: > 0 } phase && phase != op.Phase)
+            case "failed" when status.Phase == "downloading":
             {
-                var putPhase = await PutStatusAsync(cluster, shard.Name,
-                    op with { Phase = phase }, ct);
-                if (!putPhase.IsSuccess)
-                    return Result<ProcessOutcome>.Failed(putPhase.Error!);
+                // МАРКЕР ТРАНЗИЕНТА: сбой скачивания — статус не трогаем
+                // (RUNNING остаётся), фаза обратно в "demolished" (EnsureNode
+                // no-op — нода уже наша); следующий тик повторит POST (операция
+                // начнётся заново — резюмов нет; недокачанные файлы набора
+                // перезаписываются — набор детерминирован).
+                var putReset = await PutStatusAsync(cluster, shard.Name, op with { Phase = "demolished" }, ct);
+                if (!putReset.IsSuccess)
+                    return Result<ProcessOutcome>.Failed(putReset.Error!);
+                return await TransientAsync(cluster, $"download-retry/{shard.Name}/{op.Id}",
+                    status.Error ?? "download failed", ct);
             }
 
-            // бюджет наката (§3.5): started_unix + RecoveryTimeoutSec + 60 (запас
-            // на download) — докилл и permanent-FAILED (Phase не меняем).
-            var startedUnix = op.StartedUnix ?? NowUnix();
-            var budgetSec = options.RestoreRecoveryTimeoutSec + 60;
-            if (NowUnix() - startedUnix > budgetSec)
+            case "failed":
             {
-                await engine.RemoveContainerAsync(name, force: true, ct);
-                await FailPermanentAsync(cluster, shard.Name, op,
-                    $"recovery budget exhausted ({budgetSec}s)", ct);
+                // PERMANENT (phase=recovering): причина из статуса; volume
+                // первой ноды удаляется вместе с нодой (мог остаться битым —
+                // restoration = конец, шард остаётся разобранным, разбор по
+                // runbook).
+                var error = status.Error ?? "restore operation failed";
+                await driver.RemoveNodeAsync(cluster, shard.Name, first, ct);
+                await FailPermanentAsync(cluster, shard.Name, op, error, ct);
                 return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
             }
 
-            return Result<ProcessOutcome>.Success(ProcessOutcome.InProgress); // жив — ждём
+            default:
+                return Result<ProcessOutcome>.Success(ProcessOutcome.InProgress); // незнакомое — ждём
         }
-
-        // exited: exit-код — истина итога (инспект недоступен → transient —
-        // без гварда успешный restore ушёл бы в ЛОЖНЫЙ FAILED, прецедент t02).
-        var inspect = await engine.InspectContainerAsync(found.Id, ct);
-        if (!inspect.IsSuccess)
-            return await TransientAsync(cluster, $"docker-unavailable/{shard.Name}/{op.Id}",
-                inspect.Error!.Message, ct);
-        var exitCode = inspect.Value.ExitCode ?? -1;
-        if (exitCode == 0 && markers.Result is { Ok: true } ok)
-        {
-            // SUCCESS: REJOINING (Task 10 поднимет ноды); RestoredToLsn/SystemId
-            // — из result (system_id старым образам джоба не знаком — null)
-            var rejoining = op with
-            {
-                State = RestoreStatus.Rejoining,
-                RestoredToLsn = ok.RestoredToLsn,
-                SystemId = ok.SystemId,
-            };
-            var put = await PutStatusAsync(cluster, shard.Name, rejoining, ct);
-            if (!put.IsSuccess)
-                return Result<ProcessOutcome>.Failed(put.Error!);
-            await journal.WritePhaseAsync(cluster, Op, $"restored/{shard.Name}/{op.Id}",
-                claims.InstanceId, null, ct);
-            await engine.RemoveContainerAsync(name, force: true, ct);
-            return Result<ProcessOutcome>.Success(ProcessOutcome.InProgress);
-        }
-
-        // FAIL: причина из result-JSON или exit-код; чистим контейнер; volume
-        // первой ноды удаляем (мог остаться битым — restoration = конец, шард
-        // остаётся разобранным, разбор по runbook).
-        var error = markers.Result is { Ok: false, Error: { } reason } ? reason : $"exit {exitCode}";
-        await engine.RemoveContainerAsync(name, force: true, ct);
-        await engine.RemoveVolumeAsync($"pgw-{cluster}-{shard.Name}-{first}-data", ct);
-        await FailPermanentAsync(cluster, shard.Name, op, error, ct);
-        return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
     }
 
     // Демонтаж шарда под restore (§3.4, идемпотентно — каждый шаг 404 = ок):
@@ -486,6 +681,11 @@ public sealed class RestoreProcess(
     private async Task<Result> DemolishAsync(
         string cluster, ShardSpec shard, RestoreOperationState op, CancellationToken ct)
     {
+        // Живая сверка клэйма перед сносом нод шарда (arch/17 S5).
+        if (!await ClaimAliveAsync(cluster, shard.Name, op, ct))
+            return Result.Failed(new ApplicationException(
+                $"{Op} {cluster}: claim lost before demolish of {shard.Name}/{op.Id}"));
+
         var agents = await driver.RemoveBackupAgentsAsync(cluster, shard.Name, ct);
         if (!agents.IsSuccess)
             return agents;
@@ -510,7 +710,12 @@ public sealed class RestoreProcess(
         // status чистим ОБЯЗАТЕЛЬНО: в нём optime прошлой жизни лидера; без чистки
         // восстановленная нода (LSN = точке restore, ниже старого optime при PITR-откате)
         // «отстаёт» больше maximum_lag_on_failover и навечно отказывается избираться
-        foreach (var key in new[] { "initialize", "leader", "sync", "status" })
+        // failover чистим ОБЯЗАТЕЛЬНО: остаточный маркер (надзор успел ускорить
+        // failover в окне демонтажа — гвард на шаге мутации, arch/19 §3.5) с
+        // scheduled_at в прошлом для Patroni новой жизни — «accelerated failover»
+        // на неинициализированного кандидата: восстановленная нода не лидерится
+        // (первыйReady-гейт rejoin недостижим).
+        foreach (var key in new[] { "initialize", "leader", "sync", "status", "failover" })
         {
             var del = await etcd.DeleteAsync(endpoints[0], $"/service/{scope}/{key}", prefix: false, ct);
             if (!del.IsSuccess)
@@ -523,7 +728,7 @@ public sealed class RestoreProcess(
                 return del;
         }
 
-        // Щит против re-bootstrap (инцидент E2E-гейта t05, 2026-09-13): в окне
+        // Щит против re-bootstrap (инцидент E2E-гейта, 2026-09-13): в окне
         // демонтаж→джоба→rejoin (~15–30 c) пустая нода, поднятая кем-то параллельно
         // (супервиз/гонка тиков), без initialize успевает initdb'нуться и стать
         // лидером НОВОГО пустого кластера — восстановленная навечно получает
@@ -558,6 +763,11 @@ public sealed class RestoreProcess(
         var cluster = snap.Config.Cluster;
         var waitKey = $"{cluster}/{shard.Name}/{op.Id}";
 
+        // Живая сверка клэйма перед фазой реинтеграции нод (arch/17 S5).
+        if (!await ClaimAliveAsync(cluster, shard.Name, op, ct))
+            return Result<ProcessOutcome>.Failed(new ApplicationException(
+                $"{Op} {cluster}: claim lost before rejoin of {shard.Name}/{op.Id}"));
+
         // Креды (P1.5-копия): ensured тройка — env нод (mover/bucket_admin —
         // канонические ключи etcd).
         var creds = await appSecret.EnsureAsync(cluster, snap.Config, ct);
@@ -578,7 +788,7 @@ public sealed class RestoreProcess(
         var topology = Topology(cluster, shard.Name, addresses.Value);
         var resources = await ReadShardResourcesAsync(cluster, shard.Name, ct);
 
-        // Первая нода — на volume с восстановленным PGDATA (джоб t05 уже
+        // Первая нода — на volume с восстановленным PGDATA (джоб уже
         // записал его в pgw-<C>-<X>-<n>-data; docker смонтирует существующий).
         var ordered = shard.Nodes.Select(n => n.Name).OrderBy(n => n, StringComparer.Ordinal).ToList();
         var first = ordered[0];
@@ -608,11 +818,25 @@ public sealed class RestoreProcess(
                 cluster, shard.Name, op.Id);
         }
 
+        // Санитизация failover-маркера (прецедент NodeSupervisor — «хвост
+        // failover-first ускорения»): демонтаж чистит HA-scope с failover
+        // (arch/19 §3.5), а гвард надзора на шаге мутации закрывает гонку
+        // «долгий тик надзора, начавшийся до заявки»; маркер, всё же
+        // положенный в окне демонтаж→rejoin, для Patroni восстановленной
+        // ноды — «accelerated failover» на неинициализированного кандидата:
+        // она не лидерится, firstReady ждёт бюджет впустую. Удаление на
+        // КАЖДОМ тике rejoin (идемпотентно, отсутствие ключа = успех) —
+        // лечит и поздние маркеры; P2.2-проба ниже читает scope после чистки.
+        var delFailover = await etcd.DeleteAsync(endpoints[0],
+            $"/service/{cluster}-{shard.Name}/failover", prefix: false, ct);
+        if (!delFailover.IsSuccess)
+            return Result<ProcessOutcome>.Failed(delFailover.Error!);
+
         // Поллинг create/start (arch/14 §6 инвариант поллинга): одиночный вызов
         // таймаутом короче окна проверки (половина), идемпотентный повтор;
-        // бюджет — существующий порог PatroniBootSec. t06: bootstrap
+        // бюджет — существующий порог PatroniBootSec. : bootstrap
         // восстановленной ноды несёт strict кластера.
-        // Эффективная REST-пара restore-пути (t22, arch/14 §5 I): окно ротации
+        // Эффективная REST-пара restore-пути (arch/14 §5 I): окно ротации
         // не расширяется — EnsureNode любым путём ставит pending-пару (журнал
         // работы читается тем же резолвором, что и в надзоре).
         var work = await journal.ReadAsync(cluster, ct);
@@ -671,12 +895,12 @@ public sealed class RestoreProcess(
                     ensured.Error!.Message, ct);
         }
 
-        // Пробы всех нод (тот же трекер-бюджет). Контракт (решение t05, 2026-09-12):
+        // Пробы всех нод (тот же трекер-бюджет). Контракт (решение, 2026-09-12):
         // COMPLETED ждёт ЛИДЕР running/streaming + реплики, УСПЕШНО СТАРТОВАВШИЕ
         // синхронизацию — "creating replica" (pg_basebackup от лидера пошёл) или
         // уже готовые ("running"/"streaming"). Полного окончания basebackup ждёт
         // не заявка, а Patroni (свой retry) — rejoin на нём не висит. Patroni 4.x
-        // у healthy-реплики отдаёт state "streaming" (инцидент E2E-гейта t05).
+        // у healthy-реплики отдаёт state "streaming" (инцидент E2E-гейта).
         var clusterState = await probe.GetClusterAsync(firstAddr, ct);
         var allStarted = clusterState.IsSuccess
                          && ordered.All(n => clusterState.Value.Any(
@@ -685,7 +909,7 @@ public sealed class RestoreProcess(
         if (!allStarted)
             return await RejoinWaitAsync(cluster, shard.Name, op, waitKey, firstAddr, ct);
 
-        // SQL-гейт мастера (t10, arch/19 §3.5): Patroni-пробы живы и в
+        // SQL-гейт мастера (arch/19 §3.5): Patroni-пробы живы и в
         // переходном окне рестарта postmaster (57P01 у клиентов), а COMPLETED
         // обязан означать закрытое окно — после него планировщик полных
         // немедленно стартует пересъём, тесты/панель читают. Проба фактического
@@ -694,7 +918,7 @@ public sealed class RestoreProcess(
         // (Patroni /primary там уже 200). Запрос БЕЗ ::text — Npgsql-скаляр
         // PG-boolean приходит boxed-bool и сравнивается с false: строковый
         // контракт «"f"» не сработал на PG18 (boolean::text там «false», а не
-        // «f», как в PG≤17) — осознанное уточнение spec t10 §4.2 по фактам
+        // «f», как в PG≤17) — осознанное уточнение spec §4.2 по фактам
         // прогона E2E (решение пользователя, 2026-09-15).
         var adminDsn = ShardEndpoints.AdminDsn(firstAddr, snap.Config.DbName, secrets);
         var masterProbe = await db.ExecuteScalarAsync(adminDsn, "SELECT pg_is_in_recovery()", ct);
@@ -703,7 +927,7 @@ public sealed class RestoreProcess(
                 masterProbe.IsSuccess ? "pg_is_in_recovery != false" : masterProbe.Error!.Message, ct);
 
         // COMPLETED (AC4): ноды RUNNING; wal-ключ шарда удаляется — сброс цепочки,
-        // планировщик t02 немедленно переснимает полный; мастер-ключ обновит сам
+        // планировщик немедленно переснимает полный; мастер-ключ обновит сам
         // лидер (lease-скрипт P11) — RestoreProcess его не пишет.
         foreach (var node in ordered)
         {
@@ -721,7 +945,7 @@ public sealed class RestoreProcess(
         var putDone = await PutStatusAsync(cluster, shard.Name, completed, ct);
         if (!putDone.IsSuccess)
             return Result<ProcessOutcome>.Failed(putDone.Error!);
-        restoreObserver?.Invoke(cluster, shard.Name, "ok"); // t14: COMPLETED зафиксирован в etcd
+        restoreObserver?.Invoke(cluster, shard.Name, "ok"); // COMPLETED зафиксирован в etcd
         var delWal = await etcd.DeleteAsync(endpoints[0],
             $"/pgworker/backups/{cluster}/{shard.Name}/wal", prefix: false, ct);
         if (!delWal.IsSuccess)
@@ -734,7 +958,7 @@ public sealed class RestoreProcess(
 
     // Бюджет ожидания Patroni (PatroniBootSec): не готово → InProgress; исчерпан
     // → permanent-FAILED (трекер снять — новая заявка получает полный бюджет).
-    // Телеметрия (t05, гейт 2026-09-13): каждый 10-й тик пишет warn с живым
+    // Телеметрия (гейт 2026-09-13): каждый 10-й тик пишет warn с живым
     // снимком пробы — журнал воркера обязан объяснять «почему так долго» без
     // перезапуска теста (в терминальном FAILED он приходит слишком поздно).
     private async Task<Result<ProcessOutcome>> RejoinWaitAsync(
@@ -783,7 +1007,7 @@ public sealed class RestoreProcess(
         return await TransientAsync(cluster, $"rejoin-wait/{shard}/{op.Id}", null, ct);
     }
 
-    // Бюджет SQL-ожидания мастера (t10): образец RejoinWaitAsync — тот же
+    // Бюджет SQL-ожидания мастера : образец RejoinWaitAsync — тот же
     // трекер _rejoinWaitSince (суффикс «/sql» отделяет от Patroni-ожидания),
     // тот же бюджет PatroniBootSec; телеметрия каждые ~10 тиков — окно обязано
     // объясняться журналом без перезапуска. Никаких мутаций до готовности
@@ -909,11 +1133,26 @@ public sealed class RestoreProcess(
             logger?.LogError("backup-restore {Cluster}/{Shard}/{Id}: FAILED status was not written — {Error}",
                 cluster, shard, op.Id, put.Error?.Message);
         else
-            restoreObserver?.Invoke(cluster, shard, "failed"); // t14: терминальный исход зафиксирован в etcd
+            restoreObserver?.Invoke(cluster, shard, "failed"); // терминальный исход зафиксирован в etcd
         await journal.WritePhaseAsync(cluster, Op, $"failed/{shard}/{op.Id}", claims.InstanceId, error, ct);
     }
 
-    // transient-отказ: статус не меняем, журнал-факт, следующий тик повторит.
+    // transient-отказ: статус не меняем, запись журнала, следующий тик повторит.
+    // Живая сверка клэйма перед мутациями фазы restore (arch/17 S5): IsMine на
+    // входе тика не защищает длинную фазу от takeover. false — ключа нет/чужой/
+    // etcd недоступен: мутации не начинаются (P9), журнал несёт claim-lost/<фазу>.
+    private async Task<bool> ClaimAliveAsync(
+        string cluster, string shard, RestoreOperationState op, CancellationToken ct)
+    {
+        var alive = await claims.EnsureClaimAliveAsync(cluster, ct);
+        if (alive is { IsSuccess: true, Value: true })
+            return true;
+
+        await journal.WritePhaseAsync(cluster, Op, $"claim-lost/{shard}/{op.Id}", claims.InstanceId,
+            alive.IsSuccess ? "claim key is gone or foreign" : alive.Error!.Message, ct);
+        return false;
+    }
+
     private async Task<Result<ProcessOutcome>> TransientAsync(
         string cluster, string phase, string? error, CancellationToken ct)
     {

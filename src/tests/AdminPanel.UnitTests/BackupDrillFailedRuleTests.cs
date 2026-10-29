@@ -6,7 +6,7 @@ using Xunit;
 
 namespace AdminPanel.UnitTests;
 
-// backup-drill-failed (critical, reliability t02, arch/19 §3.6): последний
+// backup-drill-failed (critical, reliability, arch/19 §3.6): последний
 // дрилл FAILED живого шарда Active-кластера → алерт; прочие состояния и
 // не-Active/удалённые — молчание.
 public class BackupDrillFailedRuleTests

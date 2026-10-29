@@ -1,5 +1,6 @@
 using KafkaWorker.Core;
 using KafkaWorker.Provisioning.Kafka;
+using KafkaWorker.Provisioning.Processes;
 
 namespace KafkaWorker.UnitTests.Provisioning;
 
@@ -35,14 +36,19 @@ public sealed class FakeKafkaAdminClient : IKafkaAdminClient
     public int AlterTopicFailCount { get; set; }
     private int _alterTopicFailures;
 
-    // Lifecycle-журнал вызовов (t01): создание/удаление + транзиенты.
+    // Lifecycle-журнал вызовов : создание/удаление + транзиенты.
     public List<(string Topic, int Partitions, short ReplicationFactor, IReadOnlyDictionary<string, string>? Configs)> CreatedTopics = [];
     public List<string> DeletedTopics = [];
+
+    // Reassignment : журнал подач + переключатель отказа (юзает
+    // PartitionReassignerProcessTests).
+    public List<ReassignMove> SubmittedMoves = [];
+    public bool FailSubmits;
     public int CreateTopicFailCount { get; set; }
     public int DeleteTopicFailCount { get; set; }
     private int _createFails, _deleteFails;
 
-    // ACL (t03): факт-список (describe), журнал мутаций для assert'ов converge.
+    // ACL : факт-список (describe), журнал мутаций для assert'ов converge.
     public List<KafkaAclBinding> Acls = [];
     public List<IReadOnlyList<KafkaAclBinding>> CreatedAcls = [];
     public List<IReadOnlyList<KafkaAclBinding>> DeletedAcls = [];
@@ -159,7 +165,7 @@ public sealed class FakeKafkaAdminClient : IKafkaAdminClient
         return Task.FromResult(Result<TopicDeleteOutcome>.Success(TopicDeleteOutcome.NotFound));
     }
 
-    // Коллектор лагов (t04, arch/18 §4): процессы seam-методы не используют —
+    // Коллектор лагов (arch/18 §4): процессы seam-методы не используют —
     // заглушки-провалы по умолчанию; настраиваемые данные добавит фейк коллектора.
     public Task<Result<IReadOnlyList<KafkaGroupView>>> ListGroupsAsync(CancellationToken ct)
         => Task.FromResult(Result<IReadOnlyList<KafkaGroupView>>.Failed(
@@ -190,6 +196,14 @@ public sealed class FakeKafkaAdminClient : IKafkaAdminClient
         DeletedAcls.Add(acls);
         Acls = Acls.Where(a => !acls.Contains(a)).ToList();
         return Task.FromResult(Result.Success());
+    }
+
+    public Task<Result> AlterReassignmentsAsync(IReadOnlyList<ReassignMove> moves, CancellationToken ct)
+    {
+        SubmittedMoves.AddRange(moves);
+        return Task.FromResult(FailSubmits
+            ? Result.Failed(new ApplicationException("kafka: submit failed"))
+            : Result.Success());
     }
 
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;

@@ -8,7 +8,7 @@ using Xunit;
 
 namespace PgWorker.IntegrationTests.Docker;
 
-// SSH-туннель к Engine API (spec §5.5/§8.2, t03): sshd-контейнер c key-аутентификацией
+// SSH-туннель к Engine API (spec §5.5/§8.2): sshd-контейнер c key-аутентификацией
 // и socat (TCP-LISTEN:2376 → unix:docker.sock); DockerEngineFactory на
 // ssh://testuser@localhost:<mapped> — Ping/ListContainers через ForwardedPortLocal.
 // Fingerprint-pin: корректный pin — подключается; неверный — отказ host-key.

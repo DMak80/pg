@@ -4,7 +4,7 @@ using Xunit;
 
 namespace AdminPanel.UnitTests;
 
-// Сверка S3-инвентаря с etcd-состоянием бэкапов (t08, AC4/AC5): все ветви
+// Сверка S3-инвентаря с etcd-состоянием бэкапов (AC4/AC5): все ветви
 // статусов полных, сироты с джойном на реестр воркера, wal-факты без вердикта.
 public class S3ReconcilerTests
 {

@@ -4,7 +4,7 @@ namespace AdminPanel.Etcd.Workers;
 
 /// <summary>
 /// Настройки обращений панели в API воркеров (секция AdminPanel:Workers).
-/// Оба воркера — mTLS клиентским сертом (t03, arch/02 §2.3.2): X-Api-Key удалён.
+/// Оба воркера — mTLS клиентским сертом (arch/02 §2.3.2): X-Api-Key удалён.
 /// </summary>
 [Config("AdminPanel:Workers")]
 public sealed class WorkerApiOptions
@@ -24,7 +24,7 @@ public sealed class WorkerApiOptions
 }
 
 /// <summary>
-/// mTLS обращений в API ОБОИХ воркеров (arch/02 §2.3.2, t03): единый клиентский
+/// mTLS обращений в API ОБОИХ воркеров (arch/02 §2.3.2): единый клиентский
 /// серт per-install API-CA + ServerCA для доверия серверу; env
 /// WORKERS_PANEL_TLS_{CERT,KEY,SERVER_CA}[_PATH] (таблица WorkerTlsHandler.EnvBindings).
 /// </summary>

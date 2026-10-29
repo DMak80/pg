@@ -1,6 +1,6 @@
 namespace AdminPanel.Core;
 
-// Live-инвентарь S3-грани «Хранилище бэкапов» (t08, arch/adminpanel/02 §2.5).
+// Live-инвентарь S3-грани «Хранилище бэкапов» (arch/adminpanel/02 §2.5).
 // Заполняет S3InventoryLoop (Probes/S3) через IS3InventoryStore; снапшот
 // вносит refresher. Все метрики — факты, без вердиктов (вердикты — воркер).
 
@@ -41,7 +41,7 @@ public sealed partial record S3Inventory(
 
 /// <summary>Состояние грани в снапшоте: null — AdminPanel:Backups:S3 не настроен
 /// (configured=false); Configured=true + UpdatedAtUnix=0 — первый тик ещё шёл.
-/// t36 (adminpanel/02 §2.5): Endpoints — цели инвентаря списком (env Endpoints;
+///  (adminpanel/02 §2.5): Endpoints — цели инвентаря списком (env Endpoints;
 /// одиночный Endpoint — валидный частный случай, один элемент); ключей нет.</summary>
 public sealed record S3StorageInfo(
     bool Configured, IReadOnlyList<string> Endpoints, string Bucket,

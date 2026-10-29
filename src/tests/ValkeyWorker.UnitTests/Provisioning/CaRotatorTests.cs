@@ -9,7 +9,7 @@ using Xunit;
 
 namespace ValkeyWorker.UnitTests.Provisioning;
 
-// CaRotator (t07, arch/21 §5 K): диспетчеризация K0 (окно/заявка/ждущие),
+// CaRotator (arch/21 §5 K): диспетчеризация K0 (окно/заявка/ждущие),
 // фазы P (staging put-if-absent) и D (bundle OLD+NEW, compare по OLD).
 // ВАЖНО: против реализации Task 2 цикл останавливается после D, поэтому
 // кейсы «окна» ассертят ПРОМЕЖУТОЧНОЕ состояние (staging/bundle) — Task 3
@@ -122,12 +122,12 @@ public class CaRotatorTests
             => Etcd.PutAsync("http://etcd:2379", key, value, null, TestContext.Current.CancellationToken)
                 .GetAwaiter().GetResult();
 
-        // Свежая заявка: K0.5-точки экспирационные (t10) — старую они сняли бы.
+        // Свежая заявка: K0.5-точки экспирационные — старую они сняли бы.
         public void SeedTicket(string cluster)
             => Put($"/valkeyworker/ca_rotations/{cluster}",
                 $$"""{"requested_unix":{{DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 10}},"requested_by":"it"}""");
 
-        // Старая заявка (возраст > порога) — для кейсов экспирации (t10).
+        // Старая заявка (возраст > порога) — для кейсов экспирации.
         public void SeedOldTicket(string cluster)
             => Put($"/valkeyworker/ca_rotations/{cluster}",
                 $$"""{"requested_unix":{{DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 3700}},"requested_by":"it"}""");
@@ -558,7 +558,7 @@ public class CaRotatorTests
         rig.Valkey.LastCaPem.Should().BeNull("tail PING is not executed");
     }
 
-    // ===== t10: экспирация K0.5-точек под гвардом; окно уводит в доигрывание =====
+    // ===== : экспирация K0.5-точек под гвардом; окно уводит в доигрывание =====
 
     [Fact]
     public async Task Run_ClusterDown_OldCaTicket_Expired()

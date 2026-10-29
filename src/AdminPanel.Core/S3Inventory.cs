@@ -1,6 +1,6 @@
 namespace AdminPanel.Core;
 
-// Агрегация list-v2 bucket в дерево <C>/<X> (t08, arch/19 §5, AC2): чистая
+// Агрегация list-v2 bucket в дерево <C>/<X> (arch/19 §5, AC2): чистая
 // функция — вход «ключ + размер + lastModified», выход — дерево кластеров.
 // Layout: <C>/<X>/full/<id>/… — файлы полного; <C>/<X>/wal/<segment> — сегмент;
 // <C>/<X>/wal/<TLI>.history — timeline-история; короче <C>/<X>/… — корневой

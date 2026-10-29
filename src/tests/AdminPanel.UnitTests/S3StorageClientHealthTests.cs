@@ -5,7 +5,7 @@ using Xunit;
 
 namespace AdminPanel.UnitTests;
 
-// Health-проба S3StorageClient на ownS3-контур (t41, arch/adminpanel/02 §2.5):
+// Health-проба S3StorageClient на ownS3-контур (arch/adminpanel/02 §2.5):
 // /s3/health/live 404 ИЛИ 403 → фолбэк GET /healthz (403 — канонический
 // ответ ownS3 на анонимный запрос вне /healthz и /metrics, arch/owns3/03/05;
 // 404 — несуществующий путь ownS3-контура); cluster 404/403 → null. S3-API
@@ -56,7 +56,7 @@ public class S3StorageClientHealthTests
             },
             new FakeHttpClientFactory(handler));
 
-        // Цели — из снапшота (t31): endpoint фиктивный, S3-API недостижим
+        // Цели — из снапшота : endpoint фиктивный, S3-API недостижим
         // мгновенно (connection refused) — apiOk=false вне предмета кейсов.
         client.UpdateTargets(new S3StorageTargets("demo", ["http://127.0.0.1:9"], "k", "s"));
         return client;

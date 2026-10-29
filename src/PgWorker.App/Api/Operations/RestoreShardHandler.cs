@@ -12,7 +12,7 @@ using PgWorker.Etcd.Parsing;
 using PgWorker.Core.Writing;
 namespace PgWorker.App.Api.Operations;
 
-// POST /api/clusters/{c}/shards/{x}/restore (t05, arch/19 §3.5/§4): заявка
+// POST /api/clusters/{c}/shards/{x}/restore (arch/19 §3.5/§4): заявка
 // восстановления шарда из бэкапа. Хендлер ТОЛЬКО валидирует и пишет
 // PLANNED-ключ (put-if-not-exists, txn 409 при гонке) — исполняет воркер,
 // держатель клэйма (RestoreProcess). Гварды: confirm = имя шарда (необратимая
@@ -92,7 +92,7 @@ public sealed partial class RestoreShardHandler(IEtcdGateway gateway, string[] e
         }
         source = hasSourceCluster ? $"{body.SourceCluster}/{body.SourceShard}" : $"{cluster}/{shard}";
 
-        // 5.5) t36: source_pool — живое чтение /s3/clusters/<C>/config: пул
+        // 5.5) : source_pool — живое чтение /s3/clusters/<C>/config: пул
         // существует и не TO_REMOVE, иначе 400 по полю (arch/14 §1.1).
         if (!string.IsNullOrWhiteSpace(body.SourcePool))
         {
@@ -109,7 +109,7 @@ public sealed partial class RestoreShardHandler(IEtcdGateway gateway, string[] e
 
         // 6) Гвард «максимум один активный restore на шард» (§3.1) + существующие
         //    id (NextId суффиксирует коллизию в ту же секунду).
-        var range = await EtcdFailover.CallAsync(endpoints,
+        var range = await EtcdEndpointFailover.CallAsync(endpoints,
             e => gateway.RangeAsync(e, $"/pgworker/backups/{cluster}/{shard}/restore/", ct));
         if (!range.IsSuccess)
             return Result<RestoreRequestedDto>.Failed(range.Error!);
@@ -133,7 +133,7 @@ public sealed partial class RestoreShardHandler(IEtcdGateway gateway, string[] e
             source, target, node, time.GetUtcNow().ToUnixTimeSeconds(), requestedBy,
             SourcePool: string.IsNullOrWhiteSpace(body.SourcePool) ? null : body.SourcePool);
         var key = BackupNames.RestoreKey(cluster, shard, id);
-        var txn = await EtcdFailover.CallAsync(endpoints,
+        var txn = await EtcdEndpointFailover.CallAsync(endpoints,
             e => gateway.TxnAsync(e,
                 TxnRequest.Of([TxnCompare.NotExists(key)],
                     [new TxnOp.Put(key, RestoreStatusJson.Serialize(op), null)]), ct));
@@ -174,13 +174,13 @@ public sealed partial class RestoreShardHandler(IEtcdGateway gateway, string[] e
     }
 }
 
-/// <summary>Тело заявки restore (t05 §3.2); JSON-поля snake_case.</summary>
+/// <summary>Тело заявки restore (§3.2); JSON-поля snake_case.</summary>
 public sealed record RestoreShardRequest(
     [property: JsonPropertyName("backup_id")] string? BackupId,
     [property: JsonPropertyName("target_time")] string? TargetTime,
     [property: JsonPropertyName("source_cluster")] string? SourceCluster,
     [property: JsonPropertyName("source_shard")] string? SourceShard,
-    // t36 (arch/14 §1.1): пул чтения DR-источника; отсутствие — собственный пул.
+    //  (arch/14 §1.1): пул чтения DR-источника; отсутствие — собственный пул.
     [property: JsonPropertyName("source_pool")] string? SourcePool,
     [property: JsonPropertyName("confirm")] string Confirm,
     [property: JsonPropertyName("requested_by")] string? RequestedBy);

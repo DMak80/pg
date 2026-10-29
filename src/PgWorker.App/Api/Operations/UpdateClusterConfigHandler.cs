@@ -5,12 +5,12 @@ using Shared.Etcd.Client;
 
 namespace PgWorker.App.Api.Operations;
 
-// Тело PUT /api/clusters/{c}/config (t06, 02 §9.10): поле обязательное —
+// Тело PUT /api/clusters/{c}/config (02 §9.10): поле обязательное —
 // отсутствие/не-bool → 400 (выключение strict «по умолчанию» недопустимо).
 // camelCase-биндинг Minimal API: SynchronousModeStrict → "synchronousModeStrict".
 public sealed record UpdateClusterConfigRequest(bool? SynchronousModeStrict);
 
-// Мутация synchronous_mode_strict через API воркера (t06, arch/14 §1.1):
+// Мутация synchronous_mode_strict через API воркера (arch/14 §1.1):
 // RMW-txn по mod_revision прочитанного config (образец — KafkaWorker §10.2).
 // Гварды: кластер Active; включение strict требует replicas ≥ 2 на всех шардах.
 // Успех — 204 (без тела); применение к Patroni — конвергенция DCS воркера.
@@ -26,7 +26,7 @@ public sealed class UpdateClusterConfigHandler(IEtcdGateway gateway, string[] en
         // 2) Имя каноническое + чтение config с mod_revision (напрямую у etcd).
         if (!CreateClusterLimits.NamePattern().IsMatch(cluster))
             return Result.Failed(new ClusterNotFoundException(cluster));
-        var read = await EtcdFailover.CallAsync(endpoints,
+        var read = await EtcdEndpointFailover.CallAsync(endpoints,
             endpoint => gateway.RangeAsync(endpoint, $"/clusters/{cluster}/config", ct));
         if (!read.IsSuccess)
             return Result.Failed(read.Error!); // 503
@@ -77,7 +77,7 @@ public sealed class UpdateClusterConfigHandler(IEtcdGateway gateway, string[] en
         //    (поле обновлено, прочие поля перенесены без изменений).
         //    Kv.ModRevision — ulong, ModRevisionEqual(long) — каст обязателен.
         var updated = RewriteStrict(kv.Value, strict);
-        var txn = await EtcdFailover.CallAsync(endpoints, endpoint => gateway.TxnAsync(
+        var txn = await EtcdEndpointFailover.CallAsync(endpoints, endpoint => gateway.TxnAsync(
             endpoint,
             TxnRequest.Of(
                 [TxnCompare.ModRevisionEqual(kv.Key, (long)kv.ModRevision)],
@@ -93,7 +93,7 @@ public sealed class UpdateClusterConfigHandler(IEtcdGateway gateway, string[] en
     // Шард с replicas < 2 (имя, напр. "shard3"); null — все ≥ 2; Failed — 503.
     private async Task<Result<string?>> HasUndersizedShardAsync(string cluster, CancellationToken ct)
     {
-        var range = await EtcdFailover.CallAsync(endpoints,
+        var range = await EtcdEndpointFailover.CallAsync(endpoints,
             endpoint => gateway.RangeAsync(endpoint, $"/clusters/{cluster}/shards/", ct));
         if (!range.IsSuccess)
             return Result<string?>.Failed(range.Error!);

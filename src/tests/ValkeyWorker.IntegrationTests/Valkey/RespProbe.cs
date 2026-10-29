@@ -18,7 +18,7 @@ public static class RespProbe
         return ExecuteOn(stream, user, password, command);
     }
 
-    // TLS-проба (t06): SslStream с валидацией против ca_pem (CustomRootTrust +
+    // TLS-проба : SslStream с валидацией против ca_pem (CustomRootTrust +
     // SAN-хост) — тот же доверительный путь, что у воркера/панели.
     public static (bool Ok, string Error, string? Value) ExecuteTls(
         string host, int port, string user, string password, string caPem, params string[] command)

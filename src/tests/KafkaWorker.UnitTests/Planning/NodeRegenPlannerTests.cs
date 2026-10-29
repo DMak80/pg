@@ -5,7 +5,7 @@ using Xunit;
 
 namespace KafkaWorker.UnitTests.Planning;
 
-// Сверка лимитов контейнера с декларацией resources (t06, spec §5.2 J2 / §5.3).
+// Сверка лимитов контейнера с декларацией resources (spec §5.2 J2 / §5.3).
 // ВАЖНО: формула cpu повторяет арифметику ЗАПИСИ DockerEngine — decimal →
 // double → (long)(cores * 1e9) — иначе значения, непредставимые точно в
 // double (0.01, 1.15), дают вечное «расхождение» и цикл рестартов

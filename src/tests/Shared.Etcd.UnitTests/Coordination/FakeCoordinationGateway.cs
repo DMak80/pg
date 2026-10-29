@@ -2,7 +2,7 @@ using Shared.Etcd.Client;
 
 namespace Shared.Etcd.UnitTests;
 
-// Канон in-memory-фейка etcd для тестов координации (t09): txn-compare
+// Канон in-memory-фейка etcd для тестов координации : txn-compare
 // version/value, lease grant/revoke/keepalive. Перенесён из Pg-копии
 // CoordinationTests; расширен TxnFault (инъекция сбоя txn), Seed (прямой посев
 // ключа) и PutFault (инъекция сбоя Put — кейс «неудачный Put — без эвента»).
@@ -29,6 +29,9 @@ internal sealed class FakeCoordinationGateway : IEtcdGateway
     // Инъекция сбоя Put (etcd недоступен): если задан — возвращает её результат.
     public Func<string, Result>? PutFault;
 
+    // Инъекция сбоя Get (etcd недоступен): если задан — возвращает её результат.
+    public Func<string, Result<Kv?>>? GetFault;
+
     // Прямой посев ключа (имитация перехвата к чужого инстанса): put БЕЗ lease —
     // снимает привязку ключа к прежнему lease (семантика etcd), иначе revoke
     // держателя удалил бы перезаписанный чужой ключ.
@@ -50,8 +53,10 @@ internal sealed class FakeCoordinationGateway : IEtcdGateway
     }
 
     public Task<Result<Kv?>> GetAsync(string endpoint, string key, CancellationToken ct)
-        => Task.FromResult(Result<Kv?>.Success(
-            Store.TryGetValue(key, out var v) ? new Kv(key, v, 1) : null));
+        => Task.FromResult(GetFault is { } fault
+            ? fault(key)
+            : Result<Kv?>.Success(
+                Store.TryGetValue(key, out var v) ? new Kv(key, v, 1) : null));
 
     public async Task<Result> PutAsync(string endpoint, string key, string value, long? lease, CancellationToken ct)
     {
@@ -89,7 +94,7 @@ internal sealed class FakeCoordinationGateway : IEtcdGateway
         var succeeded = req.Compare.All(c => c.Target switch
         {
             TxnTarget.Version => c.Pred == TxnPredicate.Greater
-                ? Store.ContainsKey(c.Key) // version > Num (Num=0) ⇔ ключ существует — Exists (t10)
+                ? Store.ContainsKey(c.Key) // version > Num (Num=0) ⇔ ключ существует — Exists 
                 : !Store.ContainsKey(c.Key) && c.Num == 0
                     || (Store.ContainsKey(c.Key) && c.Num != 0),
             TxnTarget.Value => Store.TryGetValue(c.Key, out var v) && v == c.Arg,

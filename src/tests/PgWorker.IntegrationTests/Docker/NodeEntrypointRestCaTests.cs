@@ -9,7 +9,7 @@ using Xunit;
 namespace PgWorker.IntegrationTests.Docker;
 
 // Entrypoint ноды: материализация CA REST-TLS в /home/postgres/pgw-node-ca.pem
-// + строка-путь PGW_NODE_CA в pgw-node.env (t22, arch/14 §2.1) — PEM в
+// + строка-путь PGW_NODE_CA в pgw-node.env (arch/14 §2.1) — PEM в
 // KEY=VALUE-файл не переносится. Прогон скрипта ДО supervisord: заглушка
 // supervisord bind-mount'ится ПОВЕРХ /usr/bin/supervisord (exec идёт по
 // абсолютному пути — PATH-подмена не работает), adduser добавляет postgres

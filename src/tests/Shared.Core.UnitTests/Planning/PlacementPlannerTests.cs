@@ -1,6 +1,6 @@
 namespace Shared.Core.UnitTests.Planning;
 
-// PlacementPlanner: анти-аффинити нод группы по docker-хостам (t09, обобщение
+// PlacementPlanner: анти-аффинити нод группы по docker-хостам (обобщение
 // Pg/Kfw; Pg-кейсы перенесены из PgWorker.UnitTests, вход — NodeGroup).
 
 public class PlacementPlannerTests

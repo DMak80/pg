@@ -17,12 +17,12 @@ public sealed record ValkeyRotationsParseResult(
     IReadOnlyList<ValkeyRotationTicket> Tickets,
     IReadOnlyList<KeyParseError> Errors);
 
-// Результат разбора очереди CA-ротаций /valkeyworker/ca_rotations/ (t07, 02 §11.1).
+// Результат разбора очереди CA-ротаций /valkeyworker/ca_rotations/ (02 §11.1).
 public sealed record ValkeyCaRotationsParseResult(
     IReadOnlyList<ValkeyCaRotationTicket> Tickets,
     IReadOnlyList<KeyParseError> Errors);
 
-// Результат разбора исходов заявок /valkeyworker/ticket_outcomes/ (t10).
+// Результат разбора исходов заявок /valkeyworker/ticket_outcomes/.
 public sealed record ValkeyTicketOutcomesParseResult(
     IReadOnlyList<ValkeyTicketOutcome> Tickets,
     IReadOnlyList<KeyParseError> Errors);
@@ -78,7 +78,7 @@ public static class ValkeyParser
 
                 // Креды: панель app_* не читает вовсе, admin_* — только refresher в
                 // secrets-стор (§4.4); здесь — expected-skip без unknownKeys (02 §11.1).
-                // ca_pem (t06) — факт TLS-канона: строку не поднимаем, только флаг.
+                // ca_pem — факт TLS-канона: строку не поднимаем, только флаг.
                 case "app_user" or "app_password" or "admin_user" or "admin_password"
                     when segments.Length == 5:
                     break;
@@ -156,7 +156,7 @@ public static class ValkeyParser
         return new(tickets, errors);
     }
 
-    // CA-ротации (t07): {"requested_unix","requested_by"} — БЕЗ role; битый
+    // CA-ротации : {"requested_unix","requested_by"} — БЕЗ role; битый
     // JSON / нет requested_unix / лишняя глубина → parseError-запись
     // (точный порт ParseRotations на префикс ca_rotations).
     public static ValkeyCaRotationsParseResult ParseCaRotations(IReadOnlyList<Kv> kvs)
@@ -198,7 +198,7 @@ public static class ValkeyParser
         return new(tickets, errors);
     }
 
-    // Исходы заявок /valkeyworker/ticket_outcomes/<C> (t10, arch/20 §3):
+    // Исходы заявок /valkeyworker/ticket_outcomes/<C> (arch/20 §3):
     // обязательны kind/outcome/requested_unix/finished_unix (outcome —
     // толерантно-строковый); reason/requested_by опциональны; битый JSON /
     // нет поля → parseError-запись (порт kafka-парсера исходов).

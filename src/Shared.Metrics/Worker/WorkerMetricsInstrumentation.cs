@@ -11,14 +11,21 @@ namespace Shared.Metrics.Worker;
 public sealed class WorkerMetricsInstrumentation : IDisposable
 {
     // Терминальные фазы — фактический словарь журналов обоих воркеров (arch/18 §2.2).
-    // expired — возрастное снятие не-начатой заявки (t10).
+    // expired — возрастное снятие не-начатой заявки.
     public static readonly IReadOnlySet<string> FinalPhases =
         new HashSet<string> { "done", "failed", "crashed", "rejected", "cancelled", "expired" };
 
     // Ops без терминальной фазы: supervise (стационарные записи, часть через
-    // WriteSupervisionAsync мимо события) и evacuate (только waiting-*/blocked-moving).
+    // WriteSupervisionAsync мимо события), evacuate (только waiting-*/blocked-moving),
+    // backup-orphan-sweeper (журнал домена сирот — свой ключ
+    // /pgworker/backups/orphan-journal, arch/19 §4, в work-фазовые метрики
+    // не входит) и healing-portalloc (вспомогательная точечная реконструкция
+    // portalloc внутри клэйм-тика надзора, arch/21 §5 C / arch/23 §7).
+    // Живость: supervise/evacuate/healing-portalloc — клэйм-циклы
+    // (алерт WorkerLoopStalled), backup-orphan-sweeper — цикл orphan-sweep
+    // (алерт OrphanSweepStalled, arch/18 §2.2).
     public static readonly IReadOnlySet<string> SuppressedOps =
-        new HashSet<string> { "supervise", "evacuate" };
+        new HashSet<string> { "supervise", "evacuate", "backup-orphan-sweeper", "healing-portalloc" };
 
     private readonly TimeProvider _clock;
     private readonly object _lock = new();
@@ -40,6 +47,7 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
     private readonly Dictionary<string, long> _watchdogRestarts = new();
     private readonly Dictionary<(string Cluster, string Shard, string Result), long> _backupRestore = new();
     private readonly Dictionary<(string Cluster, string Shard, string Result), long> _backupDrill = new();
+    private readonly Dictionary<string, long> _orphanSkippedPools = new();
     private int _claimsHeld;
 
     private bool _disposed;
@@ -54,7 +62,7 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
         var operations = meter.CreateCounter<long>(
             "worker.operation.total", description: "Completed operations (result: ok/error/expired)");
         var backupVerify = meter.CreateCounter<long>(
-            "pgworker_backup_verify_total", description: "Full backup verify results (arch/19 §5, t04)");
+            "pgworker_backup_verify_total", description: "Full backup verify results (arch/19 §5)");
         var backupRestore = meter.CreateCounter<long>(
             "pgworker_backup_restore_total",
             description: "Terminal outcomes of restore jobs (arch/18 §2.7)");
@@ -64,6 +72,9 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
         var watchdogRestarts = meter.CreateCounter<long>(
             "worker_watchdog_restarts_total",
             description: "Watchdog-initiated stops on staleness (arch/18 §2.2)");
+        var orphanSkippedPools = meter.CreateCounter<long>(
+            "pgworker_backup_orphan_skipped_pools_total",
+            description: "Orphan sweeper pass excluded an S3 pool — incomplete orphan union (arch/19 §5)");
 
         // Gauge-серии: по одному ObservableGauge на серию; колбэки читают стейт;
         // длительность фазы вычисляется в колбэке как clock.GetUtcNow() - startedAt.
@@ -92,7 +103,7 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
                     new KeyValuePair<string, object?>("shard", kv.Key.Shard)))),
             unit: "{segment}", description: "Backup WAL stream lag, segments (arch/19 §3)");
 
-        // t14 (arch/18 §2.7): возрастные серии хранят unix-факт, колбэк пересчитывает
+        //  (arch/18 §2.7): возрастные серии хранят unix-факт, колбэк пересчитывает
         // now − unix на КАЖДОМ scrape — между тиками процессов значение не замирает
         // (паттерн worker_snapshot_age_seconds).
         meter.CreateObservableGauge(
@@ -121,7 +132,7 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
                     new KeyValuePair<string, object?>("shard", kv.Key.Shard)))),
             unit: "s", description: "Age of the last WAL segment upload to S3, s (arch/18 §2.7)");
 
-        // t17 (arch/18 §2.7): RTO-длительности — только ЗАВЕРШЁННЫЕ факты надзора
+        //  (arch/18 §2.7): RTO-длительности — только ЗАВЕРШЁННЫЕ факты надзора
         // (resolved − detected, arch/14 §3.3); открытого события/факта нет — серия
         // не эмитится. Источник — тик NodeSupervisor (наблюдатель haDurations).
         meter.CreateObservableGauge(
@@ -239,6 +250,17 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
                 // Пассивный наблюдатель.
             }
         };
+        BackupOrphanSkippedPoolMark = pool =>
+        {
+            try
+            {
+                orphanSkippedPools.Add(1, new KeyValuePair<string, object?>("pool", pool));
+            }
+            catch
+            {
+                // Пассивный наблюдатель.
+            }
+        };
     }
 
     private readonly Action<string, bool> LoopTickMark;
@@ -247,6 +269,7 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
     private readonly Action<string, string, string> BackupRestoreMark;
     private readonly Action<string, string, string> BackupDrillMark;
     private readonly Action<string> WatchdogRestartMark;
+    private readonly Action<string> BackupOrphanSkippedPoolMark;
 
     // Колбэк ObservableGauge: чтение стейта под lock; после Dispose — серии пустые.
     // Материализация (.ToArray) ОБЯЗАТЕЛЬНА под lock: OTel перечисляет результат
@@ -317,7 +340,7 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
         }
     }
 
-    // Gauge pgworker_backup_full_age_seconds/full_max_age_seconds (t14, arch/18
+    // Gauge pgworker_backup_full_age_seconds/full_max_age_seconds (arch/18
     // §2.7): ЕДИНЫЙ марк-метод на тик кластера — набор шардов тика замещает
     // стейт кластера ЦЕЛИКОМ (паттерн UpdateCluster §4.2: шард, не пришедший в
     // наборе, серии больше не эмитит). Элемент набора: LastValidUnix — источник
@@ -391,7 +414,7 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
         }
     }
 
-    // Gauge pgworker_backup_wal_last_uploaded_age_seconds (t14, arch/18 §2.7):
+    // Gauge pgworker_backup_wal_last_uploaded_age_seconds (arch/18 §2.7):
     // возраст последней доставки закрытого сегмента — наблюдение контрольного
     // прохода WalStreamProcess; null — серия исчезает (симметрия BackupWalLag).
     // Хранится unix-факт (now − age наблюдения), колбэк гейджа пересчитывает
@@ -490,6 +513,25 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
         }
     }
 
+    /// <summary>Counter pgworker_backup_orphan_skipped_pools_total{pool}: проход свипера
+    /// сирот исключил пул из union (недоступен/без кредов, листинг не удался) —
+    /// реестр сирот неполный до следующего прохода (BackupOrphanSweeper, arch/19 §5).</summary>
+    public void BackupOrphanSkippedPool(string pool)
+    {
+        try
+        {
+            BackupOrphanSkippedPoolMark(pool);
+            lock (_lock)
+            {
+                _orphanSkippedPools[pool] = _orphanSkippedPools.TryGetValue(pool, out var n) ? n + 1 : 1;
+            }
+        }
+        catch
+        {
+            // Пассивный наблюдатель: ошибка инструментария не влияет на цикл.
+        }
+    }
+
     // Число удерживаемых клэймов: gauge worker_claims_held.
     public void ClaimsHeld(int count)
     {
@@ -540,9 +582,11 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
     }
 
     // Журнальное событие фазы (подписка WorkJournal.PhaseWritten/WriteAsync):
-    //  - ops без терминальной фазы (SuppressedOps: supervise, evacuate) — ИГНОР:
+    //  - ops без терминальной фазы (SuppressedOps: supervise, evacuate,
+    //    backup-orphan-sweeper, healing-portalloc) — ИГНОР:
     //    стационарные записи (часть — через WriteSupervisionAsync мимо события),
-    //    живость надзора закрывает WorkerLoopStalled (решение ревью Ф4-2);
+    //    живость supervise/evacuate закрывает WorkerLoopStalled (решение ревью Ф4-2),
+    //    backup-orphan-sweeper — цикл orphan-sweep (алерт OrphanSweepStalled);
     //  - терминальные фазы (FinalPhases, фактический словарь журналов обоих
     //    воркеров): done, failed, crashed, rejected, cancelled, expired →
     //    ProcessFinished + Operation(process, result: done → ok, expired →
@@ -570,7 +614,7 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
     }
 
     // Завершённая операция: counter worker_operation_total{operation, result};
-    // result ∈ {"ok","error","expired"} (expired — снята возрастным таймаутом, t10).
+    // result ∈ {"ok","error","expired"} (expired — снята возрастным таймаутом).
     public void Operation(string operation, string result)
     {
         try
@@ -636,8 +680,9 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
                 _walUploadedUnix.ToFrozenDictionary(),
                 age,
                 _haFailoverSec.ToFrozenDictionary(),
-                _haRebuildSec.ToFrozenDictionary());
-        }
+                _haRebuildSec.ToFrozenDictionary(),
+                _orphanSkippedPools.ToFrozenDictionary());
+    }
     }
 
     /// <summary>Immutable-снимок стейта для тестов (InternalsVisibleTo Shared.Metrics.UnitTests).</summary>
@@ -657,7 +702,8 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
         IReadOnlyDictionary<(string Cluster, string Shard), long> WalUploadedUnix,
         double? SnapshotAgeSeconds,
         IReadOnlyDictionary<(string Cluster, string Shard), long> HaFailoverDurations,
-        IReadOnlyDictionary<(string Cluster, string Shard), long> HaRebuildDurations);
+        IReadOnlyDictionary<(string Cluster, string Shard), long> HaRebuildDurations,
+        IReadOnlyDictionary<string, long> OrphanSkippedPools);
 
     internal sealed record DebugPhase(string Phase, DateTimeOffset StartedAt);
 }

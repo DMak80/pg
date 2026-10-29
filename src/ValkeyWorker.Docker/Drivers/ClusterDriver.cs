@@ -1,7 +1,7 @@
 using Shared.Core.Planning;
 using Shared.Core;
 using ValkeyWorker.Core.Model;
-// t07: движок возвращает docker-факт Shared.Docker.NodeLimits(long,long);
+// движок возвращает docker-факт Shared.Docker.NodeLimits(long,long);
 // доменная запись NodeLimits(decimal? ядра, long?) остаётся в ValkeyWorker.Core
 // — конверсия у драйвера (Convert). Алиасы снимают коллизию имён.
 using NodeLimits = ValkeyWorker.Core.Model.NodeLimits;
@@ -104,11 +104,11 @@ public sealed class PlainClusterDriver(
     // Контейнерный порт ноды valkey → выделенный host-порт (arch/21 §2).
     public const int ClientContainerPort = 6379;
 
-    // Label-ключ контейнеров/сервисов vwk-домена (t07: наследие-литерал
+    // Label-ключ контейнеров/сервисов vwk-домена (: наследие-литерал
     // "pgworker" заменён доменным; читателей label в коде нет).
     internal const string LabelKey = "valkeyworker";
 
-    // Конверсия docker-факта лимитов в доменную запись (t07 §4.6.2):
+    // Конверсия docker-факта лимитов в доменную запись (§4.6.2):
     // 0 = без лимита → null — семантика значений прежнего vwk-движка.
     internal static NodeLimits Convert(DockerLimits limits)
         => new(
@@ -238,7 +238,7 @@ public sealed class PlainClusterDriver(
 
     // Перебор хостов: первый хост с контейнером отдаёт факт (симметрия args).
     // Движок возвращает docker-факт (NanoCpus/Memory) — конверсия в доменные
-    // decimal?-ядра у драйвера (t07 §4.6.2).
+    // decimal?-ядра у драйвера (§4.6.2).
     public async Task<Result<NodeLimits?>> NodeResourcesAsync(string cluster, string nodeName, CancellationToken ct)
     {
         var name = NodeName(cluster, nodeName);

@@ -7,6 +7,14 @@
 # с обрезанным окружением и читает их оттуда.
 set -e
 
+# Tool-режим контейнера (spec t26 §3.3): никаких PG-команд при старте —
+# только старт контейнера; WalReceiver — главный процесс (PID-1), весь
+# жизненный цикл операций — через его HTTP API. Patroni/supervisord и
+# генерация нодовых конфигов не запускаются.
+if [ "$PGW_NODE_TOOL" = "1" ]; then
+    exec /opt/pgw-wal/walreceiver
+fi
+
 mkdir -p /etc/haproxy /etc/pg_doorman
 
 if [ -n "$HAPROXY_CONFIG" ]; then

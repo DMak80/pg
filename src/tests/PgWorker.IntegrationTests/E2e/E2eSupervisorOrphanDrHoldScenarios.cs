@@ -11,12 +11,12 @@ using Xunit;
 namespace PgWorker.IntegrationTests.E2e;
 
 
-// E2E DR-hold сирот (t24/ревизия 8 — разбиение E2eSupervisorScenarios;
+// E2E DR-hold сирот (/ревизия 8 — разбиение E2eSupervisorScenarios;
 // хелперы — копии): OrphanDrHold (~4-5 мин).
 // E2eEnvironment (своя сеть/etcd/ownS3, динамические порты, полный teardown
 // в DisposeAsync — docs/e2e-isolation.md; телеметрия — docs/e2e-launch.md).
 // Два сценария AC10: (1) ChainBroken_SelfHeals — дыра ВНУТРИ цепочки живого
-// кластера → wal=BROKEN → планировщик переснимает полный → цепь непрерывна от
+// кластера → wal=WAL_CHAIN_ERROR → планировщик переснимает полный → цепь непрерывна от
 // нового wal_start → ACTIVE, агент жив; (2) OrphanRegistry_TtlDelete —
 // чужой префикс без владельца → реестр /pgworker/backups/orphans (OBSERVED) →
 // сжатый TTL → объекты удалены, запись погашена.
@@ -24,7 +24,7 @@ public class E2eSupervisorOrphanDrHoldScenarios
 {
     private const string Bucket = "pgworker-backups";
 
-    // t36: пул E2E (однонодовый — ownS3-ноды окружения; etcd у каждого Fact'а свой).
+    // пул E2E (однонодовый — ownS3-ноды окружения; etcd у каждого Fact'а свой).
     private const string Pool = "bkpool";
 
     // Окружение Fact'а (своя сеть/etcd/ownS3); создаётся в начале сценария.
@@ -171,16 +171,14 @@ public class E2eSupervisorOrphanDrHoldScenarios
 
     // Воркер самолечения: S3 на ownS3-ноду, ускоренный бэкофф, ретенция
     // выключена (IntervalSec большой — чистка не мешает сценарию), Wal-контроль
-    // каждые 5 c (скорость BROKEN), сверка супервизора раз в 60 c.
+    // каждые 5 c (скорость WAL_CHAIN_ERROR), сверка супервизора раз в 60 c.
     private Task<HostInstance> StartSupervisorHostAsync(string name, CancellationToken ct)
         => Fx.StartHostAsync(name, extraEnv: new Dictionary<string, string>
         {
             ["PgWorker__Backups__Enabled"] = "true",
             ["PgWorker__Backups__S3__Bucket"] = Bucket,
-            // t36: креды пула — env-профиль (arch/19 §7); пул — policy.s3, адреса
+            // креды пула — env-профиль (arch/19 §7); пул — policy.s3, адреса
             // резолвит воркер из /s3/ (advertised host.docker.internal, extra_hosts).
-            ["PgWorker__Backups__Job__Image"] = E2eEnvironment.JobImage,
-            ["PgWorker__Backups__Wal__AgentImage"] = E2eEnvironment.WalImage,
             ["PgWorker__Backups__Retry__BaseSec"] = "2",
             ["PgWorker__Backups__Retry__MaxSec"] = "4",
             ["PgWorker__Backups__Policy__FullMaxAgeSec"] = "3600",
@@ -196,10 +194,8 @@ public class E2eSupervisorOrphanDrHoldScenarios
         {
             ["PgWorker__Backups__Enabled"] = "true",
             ["PgWorker__Backups__S3__Bucket"] = Bucket,
-            // t36: креды пула — env-профиль (arch/19 §7); пул — policy.s3, адреса
+            // креды пула — env-профиль (arch/19 §7); пул — policy.s3, адреса
             // резолвит воркер из /s3/ (advertised host.docker.internal, extra_hosts).
-            ["PgWorker__Backups__Job__Image"] = E2eEnvironment.JobImage,
-            ["PgWorker__Backups__Wal__AgentImage"] = E2eEnvironment.WalImage,
             ["PgWorker__Backups__Policy__VerifyOnCreate"] = "false",
             ["PgWorker__Backups__Supervisor__IntervalSec"] = "60",
             ["PgWorker__Backups__Supervisor__OrphanTtlSec"] = "120",
@@ -272,7 +268,7 @@ public class E2eSupervisorOrphanDrHoldScenarios
                 """{"state":"NOT_INITIALIZED"}""", null, ct);
         }
 
-        // t36: пул + policy с секцией s3 (идемпотентно при пересоздании кластера) —
+        // пул + policy с секцией s3 (идемпотентно при пересоздании кластера) —
         // без неё подсистема бэкапов кластера молчит.
         await Fx.SeedS3PoolAsync(Pool, ct);
         await G.PutAsync(Endpoint, $"/pgworker/backups/{cluster}/policy",
@@ -281,7 +277,7 @@ public class E2eSupervisorOrphanDrHoldScenarios
 
     // Published pg-порт мастера шарда из portalloc (копия MasterPgAsync —
     // резолв фактического primary по пробам Patroni /primary).
-    // t22: Patroni REST нод — https (цепочка к per-contour CA, без hostname)
+    // Patroni REST нод — https (цепочка к per-contour CA, без hostname)
     private HttpClient PatroniHttp => Fx.NewPatroniHttpClient();
 
     private async Task<(string Host, int Port)> MasterPgAsync(string cluster, string shard, CancellationToken ct)

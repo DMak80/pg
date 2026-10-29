@@ -102,7 +102,7 @@ public sealed class ValkeyProbeLoop(
                 int.Parse(resolved[(resolved.LastIndexOf(':') + 1)..]),
                 creds.AdminUser,
                 creds.AdminPassword,
-                creds.CaPem); // TLS-доверие пробы (t06, arch/02 §11.1)
+                creds.CaPem); // TLS-доверие пробы (arch/02 §11.1)
             var probe = await client.PingAsync(target, timeout, ct);
             var node = cluster.NodesList.FirstOrDefault()?.Name ?? "node1";
             results.Add(new ValkeyProbeResult(

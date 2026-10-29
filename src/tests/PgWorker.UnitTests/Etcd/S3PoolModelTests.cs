@@ -3,7 +3,7 @@ using Shared.Etcd.Client;
 
 namespace PgWorker.UnitTests.Etcd;
 
-// Модель пула S3 (t36, arch/23 §2/§8): парсинг endpoints-строки/config/portalloc,
+// Модель пула S3 (arch/23 §2/§8): парсинг endpoints-строки/config/portalloc,
 // имена инстансов — из ключей заявки nodes/<I>/state|placement (portalloc —
 // только адреса).
 public class S3PoolModelTests

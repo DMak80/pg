@@ -230,7 +230,7 @@ public class E2eWorkerCertScenarios
     // после старта) и возвращаем ФАКТИЧЕСКИЙ url+thumbprint НОВЕЙШЕГО инстанса
     // (максимум since_unix — старый ключ мог доживать по TTL lease): ассерты
     // наверху сверяют факт с ожиданием, а не эхируют вход. Фаза cert-discovery
-    // (t29 §3.7): прогресс — живость процесса + число api-ключей в range.
+    // (§3.7): прогресс — живость процесса + число api-ключей в range.
     private static async Task<(string Url, string Thumbprint)> WaitForDiscoveryAsync(
         E2eEnvironment fx, HostInstance host, CancellationToken ct)
     {

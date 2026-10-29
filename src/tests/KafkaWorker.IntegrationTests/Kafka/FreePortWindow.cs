@@ -8,14 +8,15 @@ namespace KafkaWorker.IntegrationTests.Kafka;
 // в тестах — динамические»): окно зондится TcpListener'ом на старте фикстуры —
 // никаких литералов вида 16000 и никакой зависимости от поднятого dev-станда
 // (стенд живёт в зоне 15000–17000: kfw-брокеры 16xxx + portalloc PgWorker) и от
-// параллельных прогонов тестов.
+// параллельных прогонов тестов. Зоны тестов не пересекаются между сборками:
+// kafka — 21–26xxx, valkey — 26–31xxx, S3 — 31–41xxx.
 internal static class FreePortWindow
 {
     // Поиск выше порт-зоны dev-станда: 21000+ (16xxx занят стендовыми
     // kafka-брокерами, 15xxx — portalloc PgWorker-нод стенда).
     private const int SearchFrom = 21000;
 
-    private const int SearchTo = 31000;
+    private const int SearchTo = 26000;
 
     // Окно с запасом: коллекция kafka-e2e держит несколько кластеров по 1–4
     // брокера одновременно (itlifecycle*, re2, it1 — пик ~10 контейнеров).

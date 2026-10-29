@@ -5,7 +5,7 @@ using Xunit;
 
 namespace Shared.Docker.UnitTests.Engine;
 
-// Тело create супер-спеки ContainerSpec (t07): RestartPolicy (нода —
+// Тело create супер-спеки ContainerSpec : RestartPolicy (нода —
 // «unless-stopped», TLS-helper — «no»), флаг ResetEntrypoint, label-пара,
 // опциональность Env.
 public class ContainerSpecTests
@@ -40,12 +40,12 @@ public class ContainerSpecTests
         ReadRestartPolicy(body).Should().Be("no");
     }
 
-    // pg-семантика (t03): Cmd + ResetEntrypoint → ENTRYPOINT образа сброшен.
+    // pg-семантика : Cmd + ResetEntrypoint → ENTRYPOINT образа сброшен.
     [Fact]
     public void BuildContainerBody_CmdWithResetEntrypoint_SetsEmptyEntrypoint()
     {
-        // Arrange — WAL-агент бэкапов поверх образа с ENTRYPOINT джоба
-        var spec = new ContainerSpec("pgworker-backup:test", [], "job",
+        // Arrange — агент поверх образа с ENTRYPOINT (сброс → inline-команда)
+        var spec = new ContainerSpec("pgworker-node:test", [], "job",
             Cmd: ["bash", "-c", "pg_receivewal"],
             ResetEntrypoint: true);
 

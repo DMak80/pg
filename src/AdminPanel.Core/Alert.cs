@@ -1,6 +1,6 @@
 namespace AdminPanel.Core;
 
-// Алерт из AlertEngine (t04): стабильный id "kind:target" (arch/01 §3).
+// Алерт из AlertEngine : стабильный id "kind:target" (arch/01 §3).
 public enum AlertSeverity
 {
     Info,

@@ -1,7 +1,7 @@
 namespace PgWorker.Core.Tuning;
 
 /// <summary>
-/// Единый желаемый набор pg-параметров (t11, arch/14 §2.1/§5 C):
+/// Единый желаемый набор pg-параметров (arch/14 §2.1/§5 C):
 /// merge(PGTune ∪ канон) — ОДИН источник и для bootstrap (SpiloEnvBuilder,
 /// SPILO_CONFIGURATION), и для конвергенции живого DCS-конфига
 /// (DcsConfigConvergence, PATCH /config). Bootstrap и конвергенция не могут
@@ -15,7 +15,7 @@ public static class PgParametersCanon
     /// slots, wal_level=logical всегда) и лог-блок. Константы
     /// max_connections/shared_buffers/effective_cache_size/
     /// checkpoint_completion_target/random_page_cost из канона УБРАТЫ — их
-    /// несёт PGTune. Значения БЕЗ кавычек (переехали из SpiloEnvBuilder, t11).
+    /// несёт PGTune. Значения БЕЗ кавычек (переехали из SpiloEnvBuilder).
     /// </summary>
     public static readonly IReadOnlyList<(string Name, string RawValue)> CanonParameters =
     [

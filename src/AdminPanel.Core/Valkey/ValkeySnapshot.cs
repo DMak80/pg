@@ -17,8 +17,8 @@ public sealed record ValkeySnapshot(
     IReadOnlyList<Alert> Alerts,                       // ValkeyAlertEngine (arch/03 §8.4)
     IReadOnlyList<KeyParseError> ParseErrors,          // битые JSON valkey-ключей (arch/20 §5)
     int UnknownKeyCount,
-    IReadOnlyList<ValkeyCaRotationTicket>? CaRotations = null, // /valkeyworker/ca_rotations/ (t07, 02 §11.1)
-    IReadOnlyList<ValkeyTicketOutcome>? TicketOutcomes = null, // /valkeyworker/ticket_outcomes/ (t10, arch/20 §3)
+    IReadOnlyList<ValkeyCaRotationTicket>? CaRotations = null, // /valkeyworker/ca_rotations/ (02 §11.1)
+    IReadOnlyList<ValkeyTicketOutcome>? TicketOutcomes = null, // /valkeyworker/ticket_outcomes/ (arch/20 §3)
     WorkerApiCert? WorkerApiCert = null);              // целевой серт /workers/api_tls/valkeyworker (arch/02 §9.9)
 
 // Кластер /valkey/clusters/<C>/ (arch/20 §2): config + state + факт (nodes/endpoints).
@@ -32,8 +32,8 @@ public sealed record ValkeyClusterInfo(
     string? Endpoints,                       // null/пусто — воркер не дописал (алерт у Active)
     IReadOnlyList<ValkeyNodeInfo> NodesList, // node1 (v1 — один элемент)
     ValkeyRotationTicket? Rotation = null,   // живая заявка ротации (джойн по кластеру)
-    bool HasCaPem = false,                   // ca_pem в etcd (t06): bool-флаг; сам PEM в API не отдаётся
-    ValkeyCaRotationTicket? CaRotation = null); // живая заявка CA-ротации (t07, джойн по кластеру)
+    bool HasCaPem = false,                   // ca_pem в etcd : bool-флаг; сам PEM в API не отдаётся
+    ValkeyCaRotationTicket? CaRotation = null); // живая заявка CA-ротации (джойн по кластеру)
 
 // Нода node<k>: state — raw-строка (NOT_INITIALIZED|PROVISIONING|RUNNING|UNREACHABLE|
 // REMOVING|TO_REMOVE; толерантно к новым); Live — из PING-пробы (null — проба молчит).
@@ -50,12 +50,12 @@ public sealed record ValkeyNodeInfo(
 public sealed record ValkeyRotationTicket(
     string Cluster, string Role, long RequestedUnix, string? RequestedBy);
 
-// Заявка ротации CA /valkeyworker/ca_rotations/<C> (t07, arch/20 §3):
+// Заявка ротации CA /valkeyworker/ca_rotations/<C> (arch/20 §3):
 // payload {"requested_unix","requested_by"} — без role.
 public sealed record ValkeyCaRotationTicket(
     string Cluster, long RequestedUnix, string? RequestedBy);
 
-// Исход заявки /valkeyworker/ticket_outcomes/<C> (t10, arch/20 §3): последний
+// Исход заявки /valkeyworker/ticket_outcomes/<C> (arch/20 §3): последний
 // исход заявки кластера (expired|done), перезаписывается каждым новым исходом.
 public sealed record ValkeyTicketOutcome(
     string Cluster, string Kind, string Outcome, string? Reason,

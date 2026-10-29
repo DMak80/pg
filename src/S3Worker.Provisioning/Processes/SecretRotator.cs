@@ -155,7 +155,8 @@ public sealed class SecretRotator(
 
             var env = envComposer.Compose(
                 nodeSecrets, nodePki.Value, clusterPki.Value.Ca.Ca,
-                $"http://{options.AdvertisedHost ?? address.Value.Host}:{address.Value.S3Port}");
+                $"http://{options.AdvertisedHost ?? address.Value.Host}:{address.Value.S3Port}",
+                options.OwnS3ReplicationReconcileIntervalSec);
             var resources = S3ProcessCommon.ParseResources(node.Resources);
             var ensured = await driver.EnsureNodeAsync(
                 new S3NodeSpec(

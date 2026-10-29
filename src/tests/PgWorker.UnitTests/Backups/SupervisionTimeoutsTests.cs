@@ -5,7 +5,7 @@ using Xunit;
 
 namespace PgWorker.UnitTests.Backups;
 
-// Чистые решения бюджетов зависших джобов (t07, arch/19 §6): отбор активных
+// Чистые решения бюджетов зависших джобов (arch/19 §6): отбор активных
 // полных-кандидатов таймаута по возрасту; COMPLETED/FAILED не в счёт.
 public class SupervisionTimeoutsTests
 {

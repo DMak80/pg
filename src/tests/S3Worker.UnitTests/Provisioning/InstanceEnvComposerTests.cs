@@ -39,4 +39,29 @@ public class InstanceEnvComposerTests
         env["OWNS3_REPLICATION_TRUST_CA"].Should().Be(ca.ToJson());
         env["OWNS3_REPLICATION_ADVERTISED_ENDPOINT"].Should().Be("http://s3-host:18001");
     }
+
+    // AAA (arch/24 §5 A/§8): опция reconcile-интервала — 0/не задана → env НЕ
+    // ставится (прод-дефолт OwnS3 3 ч); задана → переменная равна значению
+    [Theory]
+    [InlineData(0, false)]
+    [InlineData(10, true)]
+    public void Compose_ReconcileInterval_OptionalEnv(int intervalSec, bool expected)
+    {
+        // Arrange — минимальный материал (креды/CA/PKI как в Compose_FullEnvSet)
+        var secrets = new OwnS3NodeSecrets("root-u", "root-p", []);
+        var ca = new PeerTrustAnchor("backups", "-----BEGIN PUBLIC KEY-----CA-----");
+        var nodePki = new IssuedPkiMaterial(
+            new PeerCertificate("east1", "-----BEGIN PUBLIC KEY-----NODE-----", 1760156800000, 0, "backups", "sig"),
+            """{"name":"east1","publicKeyPem":"-----BEGIN PUBLIC KEY-----NODE-----","issuedAtUnixMs":1760156800000,"expiresAtUnixMs":0,"caName":"backups","signature":"sig"}""",
+            "-----BEGIN PRIVATE KEY-----NODE-----");
+
+        // Act
+        var env = new InstanceEnvComposer().Compose(secrets, nodePki, ca, "http://s3-host:18001", intervalSec);
+
+        // Assert
+        if (expected)
+            env["OWNS3_REPLICATION_RECONCILE_INTERVAL_SECONDS"].Should().Be("10");
+        else
+            env.Should().NotContainKey("OWNS3_REPLICATION_RECONCILE_INTERVAL_SECONDS");
+    }
 }

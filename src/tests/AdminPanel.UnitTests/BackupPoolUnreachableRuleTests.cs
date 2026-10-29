@@ -6,7 +6,7 @@ using Xunit;
 
 namespace AdminPanel.UnitTests;
 
-// backup-pool-unreachable (t36, каталог 03 §4): маркер s3-pool-exhausted в
+// backup-pool-unreachable (каталог 03 §4): маркер s3-pool-exhausted в
 // wal DEGRADED / full FAILED → critical; без маркера → нет; чистый статус → нет.
 public class BackupPoolUnreachableRuleTests
 {

@@ -18,6 +18,9 @@ namespace AdminPanel.IntegrationTests;
 // Hosted сняты; build строго через PanelHostBuilder.
 public sealed class WorkersWebFactory : WebApplicationFactory<Program>
 {
+    // Тестовый пароль админа хоста (литералы — только в константах).
+    private const string AdminPassword = "adminpw";
+
     public string EtcdEndpoint { get; set; } = "";
     public TestWorkerApi WorkerApi { get; } = new();
     public FixedTimeProvider Time { get; } = new();
@@ -34,7 +37,7 @@ public sealed class WorkersWebFactory : WebApplicationFactory<Program>
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseSetting("AdminPanel:Auth:Username", "admin");
-        builder.UseSetting("AdminPanel:Auth:Password", "adminpw");
+        builder.UseSetting("AdminPanel:Auth:Password", AdminPassword);
         builder.UseSetting("AdminPanel:Auth:AllowHttp", "true");
         if (EtcdEndpoint.Length > 0)
             builder.UseSetting("AdminPanel:Etcd:Endpoints:0", EtcdEndpoint);

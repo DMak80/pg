@@ -25,7 +25,7 @@ public static class AbortBucketValidator
     }
 }
 
-// Заявка на отмену переезда (t07): быстрые пред-проверки семантики force по
+// Заявка на отмену переезда : быстрые пред-проверки семантики force по
 // прямым чтениям etcd (Д4: свежесть AbortMinAgeSec по updated_unix,
 // routing==target); авторитетно перепроверит AbortSequence. Порог — из
 // MovesRuntimeOptions (единый источник с процессом, appsettings PgWorker:Moves).

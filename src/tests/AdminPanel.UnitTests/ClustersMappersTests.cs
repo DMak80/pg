@@ -5,7 +5,7 @@ using Xunit;
 
 namespace AdminPanel.UnitTests;
 
-// Мапперы кластерных DTO: чистые функции (spec §10.2) + standNodes (t08 spec §8).
+// Мапперы кластерных DTO: чистые функции (spec §10.2) + standNodes (spec §8).
 public class ClustersMappersTests
 {
     private static readonly DateTimeOffset Now = new(2026, 8, 22, 12, 0, 0, TimeSpan.Zero);
@@ -80,7 +80,7 @@ public class ClustersMappersTests
         // Act
         var dto = ClustersMapper.Map([cluster]).Single();
 
-        // Assert: бейдж-флаг есть; activeMoves = только реальные переезды (spec t12 §3.6);
+        // Assert: бейдж-флаг есть; activeMoves = только реальные переезды (spec §3.6);
         // «без мастера» у не поднятого кластера — не деградация (arch/03 §2)
         dto.NotInitialized.Should().BeTrue();
         dto.ActiveMoves.Should().Be(1);
@@ -109,11 +109,11 @@ public class ClustersMappersTests
         s1.ReplicasDeclared.Should().Be(1);
         s1.MasterAddress.Should().Be("s1a:5432");
         s1.MasterLeaseAlive.Should().BeTrue();
-        s1.Runtime.Should().BeNull(); // t05: данных SQL-пробы нет (spec §3.14)
+        s1.Runtime.Should().BeNull(); // данных SQL-пробы нет (spec §3.14)
         dto.Shards[1].MasterLeaseAlive.Should().BeFalse();
         dto.Buckets.Should().HaveCount(16);
         dto.Heals.Should().HaveCount(2);
-        dto.StandNodes.Should().BeEmpty(); // пустой реестр → пустой список (t08 spec §8)
+        dto.StandNodes.Should().BeEmpty(); // пустой реестр → пустой список (spec §8)
     }
 
     [Fact]
@@ -193,7 +193,7 @@ public class ClustersMappersTests
     [Fact]
     public void ClusterDetailsMapper_RuntimeMapped_WhenPresent()
     {
-        // Arrange: модель t03 → DTO arch/03 §2 — маппинг фиксируется до данных t06 (spec §3.14).
+        // Arrange: модель → DTO arch/03 §2 — маппинг фиксируется до данных (spec §3.14).
         var runtime = new ShardRuntime(
             "s1",
             [
@@ -257,7 +257,7 @@ public class ClustersMappersTests
     [Fact]
     public void ClusterDetailsMapper_StandNodes_MappedFromSnapshot()
     {
-        // Arrange: стендовый топо-реестр глобален — передаётся в маппер отдельно от кластера (t08 spec §8).
+        // Arrange: стендовый топо-реестр глобален — передаётся в маппер отдельно от кластера (spec §8).
         var nodes = new[] { new StandNode("node1", "10.0.0.5"), new StandNode("node2", null) };
 
         // Act
@@ -297,7 +297,7 @@ public class ClustersMappersTests
     [Fact]
     public void ClusterDetailsMapper_ShardState_MappedToDto()
     {
-        // Arrange: шард с маркером демонтажа + обычный шард (t06 arch/03 §2)
+        // Arrange: шард с маркером демонтажа + обычный шард (arch/03 §2)
         var cluster = TestSnapshots.FullCluster() with
         {
             Shards =
@@ -337,7 +337,7 @@ public class ClustersMappersTests
         with.Work.LastError.Should().BeNull();
         without.Work.Should().BeNull();
     }
-    // AAA (t06): поле strict проходит в сводку и детали кластера.
+    // AAA : поле strict проходит в сводку и детали кластера.
     [Fact]
     public void Map_ClusterCarriesSynchronousModeStrict()
     {

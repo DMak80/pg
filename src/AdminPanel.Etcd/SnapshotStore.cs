@@ -6,7 +6,7 @@ namespace AdminPanel.Etcd;
 // Хранилище текущего снапшота: читатели никогда не блокируются (arch/01 §1).
 public interface ISnapshotStore : ISnapshotReader
 {
-    // До первого тика снапшота нет — потребители (t04) показывают «загрузка» (spec §3.13).
+    // До первого тика снапшота нет — потребители показывают «загрузка» (spec §3.13).
     // new: контракт уже задан ISnapshotReader, переобъявление — самодокументирование.
     new EtcdSnapshot? Current { get; }
 

@@ -134,6 +134,33 @@ public class PgtuneInputsFactoryTests
     }
 
     [Fact]
+    public void Create_SameInput_LogsWarningsOnce()
+    {
+        // Arrange: фабрика с перехватывающим логгером; тик надзора повторяет
+        // расчёт ~1/с с теми же заявками (конвергенция DCS, arch/14 §5 C).
+        var logger = new CapturingLogger();
+        var factory = new PgtuneInputsFactory(DefaultSettings(), logger);
+        var resources = new NodeResources(2, 104857600);
+
+        // Act: 50 вызовов с одним входом, затем вызов с изменившейся заявкой.
+        var first = factory.Create(resources);
+        var warningsAfterFirst = logger.Entries.Count(e => e.Level == LogLevel.Warning);
+        for (var i = 0; i < 50; i++)
+            factory.Create(resources);
+        var changed = factory.Create(new NodeResources(4, 4294967296));
+        var changedWarnings = changed.Warnings.Count(w => w.Length > 0 && w != "WARNING");
+
+        // Assert: предупреждения в журнале ОДНОКРАТНО на вход (шторм «одинаковые
+        // warning каждый тик» исключён) — повторные вызовы молчаливы; изменившийся
+        // вход — свой расчёт и свой лог; результаты детерминированы.
+        warningsAfterFirst.Should().BeGreaterThan(0);
+        logger.Entries.Count(e => e.Level == LogLevel.Warning)
+            .Should().Be(warningsAfterFirst + changedWarnings);
+        factory.Create(resources).Parameters.Should().Equal(first.Parameters);
+        changed.Parameters.Should().NotEqual(first.Parameters);
+    }
+
+    [Fact]
     public void Create_FeedsWorkerOptionsThroughCoreInput()
     {
         // Arrange: НЕ-дефолтные настройки — канал «опции воркера → вход ядра →

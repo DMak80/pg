@@ -42,8 +42,18 @@ function redirectOnUnauthorized(): void {
   window.location.replace(`/login?from=${from}`);
 }
 
+// SSRF-guard единственного HTTP-канала: только same-origin относительные пути
+// (spec §3.13). Абсолютные URL (http(s):, //host) и обратные слеши — отказ:
+// схема/хост у fetch всегда от страницы, пользовательский ввод не меняет цель.
+function assertSameOriginRelativePath(path: string): void {
+  if (!path.startsWith('/') || path.startsWith('//') || path.startsWith('/\\')) {
+    throw new Error(`apiFetch: non-relative path rejected: ${path}`);
+  }
+}
+
 // Единственная точка HTTP фронта: относительные пути, cookie same-origin (spec §3.13).
 export async function apiFetch<T>(path: string, init?: ApiFetchInit): Promise<T> {
+  assertSameOriginRelativePath(path);
   const hasBody = init?.body !== undefined;
   const response = await fetch(path, {
     method: init?.method ?? 'GET',

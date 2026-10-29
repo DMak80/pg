@@ -75,6 +75,7 @@ public class ClusterDriverEnvTests
         public Task<Result<DockerContainerInspect>> InspectContainerAsync(string id, CancellationToken ct) => throw NotUsed();
         public Task<Result<string>> GetContainerLogsAsync(string idOrName, int tail, CancellationToken ct) => throw NotUsed();
         public Task<Result> StopContainerAsync(string idOrName, int timeoutSec, CancellationToken ct) => throw NotUsed();
+        public Task<Result> KillContainerAsync(string idOrName, CancellationToken ct) => Task.FromResult(Result.Success());
         public Task<Result> RemoveContainerAsync(string idOrName, bool force, CancellationToken ct) => throw NotUsed();
         public Task<Result<string>> ExecAsync(string containerId, IReadOnlyList<string> cmd, CancellationToken ct) => throw NotUsed();
         public Task<Result> EnsureNetworkAsync(string name, CancellationToken ct) => throw NotUsed();

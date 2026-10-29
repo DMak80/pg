@@ -22,6 +22,18 @@ public class SecretRotatorTests
     // getenv-профиль store'а: спец-ключ etcd-backup (тестами не используется).
     private static readonly Dictionary<string, string?> Env = [];
 
+    // Секреты генерируются в рантайме: не зашиваются в исходник; поле
+    // переиспользуется всеми обращениями (сид etcd, сценарий journal).
+    private static readonly string RootPassword = GenerateTestPassword();
+
+    private static string GenerateTestPassword()
+    {
+        // Криптостойкий генератор: 24 символа букв/цифр.
+        const string alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+        var bytes = System.Security.Cryptography.RandomNumberGenerator.GetBytes(24);
+        return new string(bytes.Select(b => alphabet[b % alphabet.Length]).ToArray());
+    }
+
     private sealed class Rig
     {
         public Fakes.FakeEtcd Etcd = new();
@@ -60,8 +72,9 @@ public class SecretRotatorTests
         public async Task SeedAsync(
             string node1State = S3NodeStates.Running, string node2State = S3NodeStates.Running,
             bool withTicket = true, string envUser = OldUser,
-            bool withSecrets = true, string rootPassword = "root-password-fixed")
+            bool withSecrets = true, string? rootPassword = null)
         {
+            rootPassword ??= RootPassword;
             Etcd.Seed("/s3/clusters/demo/config",
                 """{"platform":"owns3","nodes":2,"created_unix":1760156800}""");
             if (withSecrets)
@@ -353,8 +366,9 @@ public class SecretRotatorTests
     [Fact]
     public async Task SecretsNotInJournal()
     {
-        // Arrange: пароль «суперсекрет» в secrets кластера; ноды с чужим env.
-        const string password = "supersecret-value";
+        // Arrange: сгенерированный в рантайме пароль в secrets кластера; ноды
+        // с чужим env (значение не зашивается в исходник).
+        var password = GenerateTestPassword();
         var rig = Rig.New();
         await rig.SeedAsync(rootPassword: password);
 

@@ -11,7 +11,7 @@ using Xunit;
 
 namespace AdminPanel.IntegrationTests;
 
-// Panel policy-API бэкапов (reliability t02, 02 §9.12): GET деталей шарда
+// Panel policy-API бэкапов (reliability, 02 §9.12): GET деталей шарда
 // несёт drill-бейдж, GET грани — policy кластера; PUT policy — команда-прокси
 // в POST policy-API воркера ПОЛНЫМ телом (панель в etcd не пишет).
 [Collection("backups")]
@@ -204,7 +204,7 @@ public class BackupsPolicyPanelApiTests : IClassFixture<EtcdContainerFixture>,
 
     public async ValueTask DisposeAsync() => await _factory.DisposeAsync();
 
-    // ---- t36 (arch/02 §9.12): s3 в policy-мутации панели ----
+    // --- (arch/02 §9.12): s3 в policy-мутации панели ----
 
     // AAA: PUT policy с секцией s3 → тело прокси воркеру содержит s3.
     [Fact]

@@ -18,7 +18,14 @@ export function LoginPage() {
   const [submitting, setSubmitting] = useState(false);
 
   // Возврат на исходную страницу после 401-редиректа (spec §3.11).
-  const from = searchParams.get('from');
+  // from — URL-ввод: разрешаем ТОЛЬКО путь внутри приложения (начинается с «/»,
+  // не «//» и не «/\») — внешние схемы/хосты и protocol-relative — на «/»
+  // (open-redirect исключён).
+  const fromParam = searchParams.get('from');
+  const from =
+    fromParam !== null && fromParam.startsWith('/') && !fromParam.startsWith('//') && !fromParam.startsWith('/\\')
+      ? fromParam
+      : null;
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();

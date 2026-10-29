@@ -6,7 +6,7 @@ using Xunit;
 
 namespace AdminPanel.UnitTests;
 
-// backup-drill-stale (warning, reliability t02, arch/19 §3.6): у шарда
+// backup-drill-stale (warning, reliability, arch/19 §3.6): у шарда
 // Active-кластера есть COMPLETED-полные и интервал включён, а успешного
 // дрилла нет/он старше 2×интервала — восстановимость не доказывается.
 public class BackupDrillStaleRuleTests

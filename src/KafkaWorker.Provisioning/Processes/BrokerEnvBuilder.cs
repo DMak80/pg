@@ -9,7 +9,7 @@ namespace KafkaWorker.Provisioning.Processes;
 /// Сборка env брокера для процессов B-волны (add-broker, ротация, надзор):
 /// кворум — ТОЛЬКО из существующих controller-нод (роль фиксируется при
 /// создании, arch/15 §2), advertised — по правилу arch/16 §2.1; креды
-/// admin/app и per-cluster PKI — из снапшота + кеша сертов (t03, arch/16
+/// admin/app и per-cluster PKI — из снапшота + кеша сертов (arch/16
 /// §2.2/§2.3). Дублирование с ProvisioningProcess осознанное (прецедент
 /// надзора).
 /// </summary>
@@ -36,7 +36,7 @@ internal static class BrokerEnvBuilder
 
     // Env одного брокера: guard премиграционного кластера (нет CA/admin-ключей —
     // сначала M), креды (1 пароль штатно, 2 — окно ротации), серт ноды — один
-    // раз на (кластер, нода, CA) через кеш R3. Окно ротации CA (t07, arch/16
+    // раз на (кластер, нода, CA) через кеш R3. Окно ротации CA (arch/16
     // §2.3): подпись серта — NEW CA (signingCa*), truststore — bundle OLD+NEW
     // (trustCaPem); вне ротации все три параметра null → snap-значения.
     internal static IReadOnlyDictionary<string, string> Build(

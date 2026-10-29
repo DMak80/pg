@@ -3,7 +3,7 @@ using Shared.Core.DI;
 
 namespace AdminPanel.Core.Alerting.Rules;
 
-// key-malformed (warning): ключ не разобран — по одному на ParseError (arch/03 §4; t03 §3.4).
+// key-malformed (warning): ключ не разобран — по одному на ParseError (arch/03 §4; §3.4).
 [InjectAsSingleton(typeof(IAlertRule))]
 public sealed class KeyMalformedRule : IAlertRule
 {

@@ -8,7 +8,7 @@ using Xunit;
 
 namespace PgWorker.UnitTests.Moves;
 
-// ShardEndpoints (t01 задача 9): адресация мастеров (перенос ResolveMasterAsync
+// ShardEndpoints : адресация мастеров (перенос ResolveMasterAsync
 // из BucketEvacuator) + DSN-билдеры — admin-Npgsql, mover-libpq-conninfo,
 // mover-Npgsql-DSN для SQL-проб роли bucket_mover (spec §6.1 M0, ревью №2).
 public class ShardEndpointsTests
@@ -211,7 +211,7 @@ public class ShardEndpointsTests
     // AAA (advertised-режим): master-ключ формата host:doorman может нести хост
     // ноды (env PGW_NODE_HOST контейнера, созданного до advertised-конфигурации),
     // а portalloc — advertised-имя; резолв по doorman-порту (уникален per-node,
-    // e2e-факт t01): расхождение хост-части не роняет резолв и не провоцирует
+    // факт стенда): расхождение хост-части не роняет резолв и не провоцирует
     // войну писателей мастер-ключа
     [Fact]
     public async Task ResolveMasterAsync_MasterKeyHostDiffersFromPortalloc_ResolvesByDoormanPort()

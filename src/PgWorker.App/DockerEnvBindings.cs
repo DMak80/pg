@@ -2,7 +2,7 @@ using Microsoft.Extensions.Configuration;
 
 namespace PgWorker.App;
 
-// env-секреты docker-транспорта PgWorker (t07: перенесены из опций-моделей
+// env-секреты docker-транспорта PgWorker (: перенесены из опций-моделей
 // Shared.Docker — env-имена PGW_DOCKER_* — pg-специфика, модели в общей сборке
 // их не знают). PEM-дуализм env-секретов — значение или _PATH-файл; перенос
 // env → конфиг-дерево — до всего остального (Program.cs).
@@ -27,7 +27,7 @@ internal static class DockerEnvBindings
         ("PGW_DOCKER_SSH_FINGERPRINT", "PgWorker:Docker:Ssh:FingerprintSha256"),
     ];
 
-    // REST-TLS нод (t22, arch/14 §4 гр.3): per-install CA + ключ выпуска
+    // REST-TLS нод (arch/14 §4 гр.3): per-install CA + ключ выпуска
     // серверных сертов REST-эндпоинтов нод; PEM-дуализм значение/_PATH-файл.
     private static readonly (string Env, string Key)[] RestTlsBindings =
     [

@@ -4,17 +4,17 @@ using Shared.Etcd.Client;
 
 namespace PgWorker.Provisioning.Processes;
 
-/// <summary>Итог ensure кластерных кредов (t02, arch/14 §4 / arch/19 §7): app
+/// <summary>Итог ensure кластерных кредов (arch/14 §4 / arch/19 §7): app
 /// (приложения), mover (роль bucket_mover переездов), bucket_admin (DSN-точка
 /// входа), backup (роль backup_exec полных бэкапов t02-backups), rest
-/// (basic-auth Patroni REST :8008, t22; username — константа patroni).
+/// (basic-auth Patroni REST :8008; username — константа patroni).
 /// Все значения гарантированно существуют в etcd после EnsureAsync.</summary>
 public sealed record ClusterCredentials(
     AppCredentials App, string MoverPassword, AppCredentials BucketAdmin, string BackupPassword,
     string RestPassword);
 
 /// <summary>
-/// Ensure per-cluster кредов (t02, arch/14 §4 / arch/19 §7): чтение
+/// Ensure per-cluster кредов (arch/14 §4 / arch/19 §7): чтение
 /// /clusters/&lt;C&gt;/{app_user,app_password,mover_password,bucket_admin_user,bucket_admin_password,backup_password};
 /// отсутствующие ключи генерируются (bucket_admin — из config кластера или
 /// генерация) и кладутся ОДНОЙ txn put-if-absent (compare NotExists только на

@@ -147,7 +147,7 @@ public class DeprovisioningProcessTests
     public async Task Deprovision_WithLiveCaRotationTicket_CleansCoordination()
     {
         // Arrange — TO_REMOVE-кластер с ЖИВОЙ заявкой ca_rotations и staging
-        // (t07, X2: координация ротации CA сносится вместе с прочей)
+        // (X2: координация ротации CA сносится вместе с прочей)
         const string cluster = "x2ca";
         var rig = Rig.Create();
         rig.SeedCluster(cluster);
@@ -171,7 +171,7 @@ public class DeprovisioningProcessTests
     [Fact]
     public async Task Run_CleansTicketOutcomes()
     {
-        // Arrange (t10): исходы заявок не переживают кластер — X2 удаляет
+        // Arrange : исходы заявок не переживают кластер — X2 удаляет
         // /valkeyworker/ticket_outcomes/<C> вместе с прочей координацией.
         const string cluster = "depout";
         var rig = Rig.Create();

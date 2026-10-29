@@ -15,7 +15,7 @@ public class InspectionQueryHandlerTests
     [Fact]
     public async Task OverviewHandle_NoSnapshot_ReturnsFailedSnapshotNotReady()
     {
-        // Arrange: до первого тика Current = null (t03 §3.13).
+        // Arrange: до первого тика Current = null (§3.13).
         var handler = new OverviewQueryHandler(new SnapshotStore(), new KafkaSnapshotStore(), new ValkeySnapshotStore(), new S3SnapshotStore(), _time, Options.Create(new EtcdOptions()));
 
         // Act

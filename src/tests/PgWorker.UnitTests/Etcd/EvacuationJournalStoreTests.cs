@@ -4,8 +4,8 @@ using Xunit;
 
 namespace PgWorker.UnitTests.Etcd;
 
-// EvacuationJournalStore (t09): Pg-доменный журнал эвакуаций /pgworker/evacuations/<C>/<X> —
-// выделен из WorkJournal при переносе координации в Shared.Etcd (t09, spec §4.1).
+// EvacuationJournalStore : Pg-доменный журнал эвакуаций /pgworker/evacuations/<C>/<X> —
+// выделен из WorkJournal при переносе координации в Shared.Etcd (spec §4.1).
 public class EvacuationJournalStoreTests
 {
     private const string Ep = "http://etcd:2379";

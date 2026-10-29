@@ -4,8 +4,8 @@ using Xunit;
 
 namespace PgWorker.UnitTests.Api;
 
-// Guard-логика move-ops handler'ов на моках gateway (t07, спека §7): тексты
-// и ветки 409/404 без docker; авторитетные перепроверки — у процесса (t01).
+// Guard-логика move-ops handler'ов на моках gateway (спека §7): тексты
+// и ветки 409/404 без docker; авторитетные перепроверки — у процесса.
 public class MoveOpsHandlersTests
 {
     private const string Ep = "http://etcd";

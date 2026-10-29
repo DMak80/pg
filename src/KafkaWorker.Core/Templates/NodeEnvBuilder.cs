@@ -17,7 +17,7 @@ namespace KafkaWorker.Core.Templates;
 /// <param name="QuorumVoters">Кворум "id@host:9093" (только controller-ноды).</param>
 /// <param name="AppUser">SASL-пользователь приложений (обычно "app").</param>
 /// <param name="AppPasswords">1 пароль (штатно) или 2 (окно ротации: OLD + NEW).</param>
-/// <param name="AdminUser">SASL-пользователь администрирования ("admin", ensure t03).</param>
+/// <param name="AdminUser">SASL-пользователь администрирования ("admin", ensure).</param>
 /// <param name="AdminPasswords">1 пароль admin (штатно) или 2 (окно ротации admin).</param>
 /// <param name="CaPem">PEM публичного серта per-cluster CA (truststore брокера).</param>
 /// <param name="BrokerCertPem">PEM серверного серта ноды (keystore, SAN 16 §2.3).</param>

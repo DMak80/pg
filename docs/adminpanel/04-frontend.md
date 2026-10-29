@@ -38,10 +38,10 @@
 
 - **TS7 и css-импорт**: typescript 7 (tsgo) проверяет side-effect-импорты строже —
   `@mantine/core/styles.css` требует ambient-декларацию `vite-env.d.ts`
-  (`declare module '*.css'`; t07, коммит f4edda4). Удалять `vite-env.d.ts` нельзя.
+  (`declare module '*.css'`). Удалять `vite-env.d.ts` нельзя.
 - **`.npmrc` с публичным registry обязателен**: дефолтный registry окружения может
   быть приватным — `npm ci` в Docker/чистом окружении идёт через
-  `registry.npmjs.org` из `frontend/.npmrc` (t07, c0c5ac9). Копировать в сборке
+  `registry.npmjs.org` из `frontend/.npmrc` (c0c5ac9). Копировать в сборке
   вместе с package*.json.
 - **wwwroot не в git** (артефакт vite): «SPA не отдаётся» в свежем клоне — это
   warning в логе хоста и `npm run build`, не поломка API.

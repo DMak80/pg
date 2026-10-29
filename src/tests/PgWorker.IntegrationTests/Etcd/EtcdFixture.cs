@@ -73,7 +73,7 @@ public sealed class EtcdFixture : IAsyncLifetime
         return port;
     }
 
-    // Готовность POST-ретраем (30×1 c); транзиентные транспортные сбои (t29
+    // Готовность POST-ретраем (30×1 c); транзиентные транспортные сбои (
     // §4.7): клиентский таймаут пробы (3 c) — «ещё не готов», отмена теста
     // продолжает всплывать; реальный фейл — с попытками и латентностью.
     private async Task WaitReadyAsync(CancellationToken ct)
@@ -101,7 +101,7 @@ public sealed class EtcdFixture : IAsyncLifetime
             catch (OperationCanceledException) when (!ct.IsCancellationRequested)
             {
                 // Клиентский таймаут пробы (3 c) при холодном/медленном старте
-                // контейнера — «ещё не готов»; бюджет 30×1 c неизменен (t29 §4.7).
+                // контейнера — «ещё не готов»; бюджет 30×1 c неизменен (§4.7).
             }
 
             lastLatencyMs = sw.Elapsed.TotalMilliseconds;

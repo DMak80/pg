@@ -6,7 +6,7 @@ using Xunit;
 
 namespace ValkeyWorker.UnitTests.Core;
 
-// RESP-миниклиент (spec §4.3, t06 TLS): фрейминг запросов (AUTH-массив),
+// RESP-миниклиент (spec §4.3, TLS): фрейминг запросов (AUTH-массив),
 // разбор кадров сервера (простые/ошибки/целые/bulk/массивы, куски), команды
 // AUTH/PING/CONFIG/ACL, таймаут — на фейк-TLS-сервере (динамический порт —
 // литералов нет; транспорт один — TLS с per-cluster CA). Парсер кадров —
@@ -220,7 +220,7 @@ public class ValkeyConnectionTests
         result.IsSuccess.Should().BeFalse();
     }
 
-    // ── TLS-транспорт (t06): доверие per-cluster CA + SAN-хост endpoint'а ──
+    // ── TLS-транспорт : доверие per-cluster CA + SAN-хост endpoint'а ──
 
     [Fact]
     public async Task Ping_TlsTrustedCa_Pong()
@@ -357,7 +357,7 @@ public class ValkeyConnectionTests
         list.Should().Equal("foo", "bar");
     }
 
-    // ── INFO all: парсер + команда (t05, arch/18 §4.2) ──
+    // ── INFO all: парсер + команда (arch/18 §4.2) ──
 
     // AAA: заголовки секций «# Name», пустые строки и \r\n — парсер даёт плоский словарь.
     [Fact]

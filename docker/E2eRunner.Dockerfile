@@ -4,7 +4,9 @@
 # тестовая сборка собирается НА ХОСТЕ (dotnet publish
 # PgWorker.IntegrationTests → artifacts/e2e/tests), в образ — ТОЛЬКО готовый
 # publish-вывод; sdk-стадий и COPY исходников нет.
-# Тег: pgw-e2e-runner:e2e (локально собираемый, в registry не кладётся).
+# Тег: pgw-e2e-runner:e2e-<worktree> (суффикс ветка+хэш пути задаёт
+# E2eEnvironment; per-worktree — параллельные агенты не перезаписывают образы
+# друг друга; локально собираемый, в registry не кладётся).
 # Контекст сборки — каталог publish-вывода тестов (artifacts/e2e/tests).
 FROM mcr.microsoft.com/dotnet/aspnet:10.0
 
@@ -19,6 +21,6 @@ RUN apt-get update \
 WORKDIR /tests
 COPY . .
 
-# Фильтр и env контура задаёт запуск (docker run pgw-e2e-runner:e2e …);
+# Фильтр и env контура задаёт запуск (docker run pgw-e2e-runner:e2e-<worktree> …);
 # xunit.v3 in-process runner: dotnet exec <assembly> -method <FQN>.
 ENTRYPOINT ["dotnet", "exec", "/tests/PgWorker.IntegrationTests.dll"]

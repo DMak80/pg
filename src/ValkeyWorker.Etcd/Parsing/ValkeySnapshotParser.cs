@@ -124,7 +124,7 @@ public static class ValkeySnapshotParser
 
     private static ValkeyClusterSnapshot BuildCluster(ClusterAcc acc)
     {
-        // CA-ключи t06 (arch/20 §5): битый PEM → parseError, поле в null —
+        // CA-ключи (arch/20 §5): битый PEM → parseError, поле в null —
         // кластер жив (миграция/надзор доберут или алертят).
         var caPem = acc.CaPem;
         if (caPem is not null && !ValkeyPki.TryParseCertificate(caPem, out _))

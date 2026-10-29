@@ -12,7 +12,7 @@ using Xunit;
 
 namespace ValkeyWorker.IntegrationTests.Valkey;
 
-// Живой коллектор против docker-ноды (t05, spec §9): provisioning кластера →
+// Живой коллектор против docker-ноды (spec §9): provisioning кластера →
 // CollectOnceAsync → серии словаря со значениями (роль master, maxmemory из
 // декларации); docker stop ноды → тик не падает, LastSuccess стоит, стейт не
 // перезаписан. Отдельный от live-WAF (задача 5) тест: прямой контроль тиков.
@@ -53,11 +53,15 @@ public sealed class MetricsCollectorTests(ValkeyClusterFixture fx)
 
     private static void DockerStop(string container)
     {
-        var psi = new ProcessStartInfo("docker", $"stop {container}")
+        // Аргументы списком без shell: имя контейнера не попадает в строку команды.
+        var psi = new ProcessStartInfo("docker")
         {
             RedirectStandardOutput = true,
         };
-        using var proc = Process.Start(psi)!;
+        psi.ArgumentList.Add("stop");
+        psi.ArgumentList.Add(container);
+        using var proc = new Process { StartInfo = psi };
+        proc.Start();
         proc.WaitForExit();
     }
 

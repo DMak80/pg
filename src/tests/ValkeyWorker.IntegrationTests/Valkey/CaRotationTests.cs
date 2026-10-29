@@ -5,7 +5,7 @@ using Xunit;
 
 namespace ValkeyWorker.IntegrationTests.Valkey;
 
-// Интеграция ротации CA (t07): заявка → CaRotator доводит окно двойного
+// Интеграция ротации CA : заявка → CaRotator доводит окно двойного
 // доверия на живом docker-valkey; после коммита ca_pem/ca_key = NEW,
 // staging удалён, заявка снята, PING по NEW отвечает, OLD доверия нет.
 // Контур — реальный etcd + реальный valkey-контейнер (см. примечание задачи).
@@ -228,16 +228,21 @@ public class CaRotationTests(ValkeyClusterFixture fx)
         (await fx.GetAsync($"/valkeyworker/claims/{cluster}")).Should().BeNull();
     }
 
-    // docker inspect -f {{.Id}} (пусто — объекта нет).
+    // docker inspect -f {{.Id}} (пусто — объекта нет); аргументы списком
+    // без shell: имя контейнера не попадает в строку команды.
     private static string ContainerId(string name)
     {
-        var psi = new System.Diagnostics.ProcessStartInfo(
-            "docker", $"inspect --format {{{{.Id}}}} {name}")
+        var psi = new System.Diagnostics.ProcessStartInfo("docker")
         {
             RedirectStandardOutput = true,
             RedirectStandardError = true,
         };
-        using var proc = System.Diagnostics.Process.Start(psi)!;
+        psi.ArgumentList.Add("inspect");
+        psi.ArgumentList.Add("--format");
+        psi.ArgumentList.Add("{{.Id}}");
+        psi.ArgumentList.Add(name);
+        using var proc = new System.Diagnostics.Process { StartInfo = psi };
+        proc.Start();
         var id = proc.StandardOutput.ReadToEnd().Trim();
         proc.WaitForExit(5000);
         return proc.ExitCode == 0 ? id : string.Empty;

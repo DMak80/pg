@@ -24,7 +24,7 @@ public class KafkaAlertRulesTests
     private static KafkaSnapshot Snapshot(params KafkaClusterInfo[] clusters)
         => Snapshot([], clusters);
 
-    // Перегрузка со здоровьем воркера (t09): params остаётся последним.
+    // Перегрузка со здоровьем воркера : params остаётся последним.
     private static KafkaSnapshot Snapshot(
         IReadOnlyList<WorkerHealth> workerHealth, params KafkaClusterInfo[] clusters) => new(
         Now, EtcdReachable: true, ConsecutiveFailures: 0,
@@ -32,7 +32,7 @@ public class KafkaAlertRulesTests
         WorkerEndpoints: [new WorkerEndpoint("kw1", "http://kafkaworker:8080", 1)],
         WorkerHealth: workerHealth, Probes: [], Alerts: [], ParseErrors: [], UnknownKeyCount: 0);
 
-    // ===== worker-unhealthy (t09, arch/03 §4; arch/adminpanel/02 §2.3.2) =====
+    // ===== worker-unhealthy (arch/03 §4; arch/adminpanel/02 §2.3.2) =====
 
     [Fact]
     public void WorkerUnhealthy_Degraded_WarningKafkaworkerTarget()
@@ -483,7 +483,7 @@ public class KafkaAlertRulesTests
         alerts.Select(a => a.Severity).Should().BeInDescendingOrder();
     }
 
-    // ===== Lifecycle-заявки топиков (t01, arch/03 §7.4) =====
+    // ===== Lifecycle-заявки топиков (arch/03 §7.4) =====
 
     private static KafkaClusterInfo ActiveWithTickets(params KafkaTopicLifecycleTicket[] tickets)
         => new(
@@ -556,7 +556,7 @@ public class KafkaAlertRulesTests
             || a.Kind == "kafka-topic-delete-pending" || a.Kind == "kafka-lifecycle-stale");
     }
 
-    // ===== Ребалансировка (t02, arch/03 §7.4): pending + stale =====
+    // ===== Ребалансировка (arch/03 §7.4): pending + stale =====
 
     [Fact]
     public void RebalanceTicket_PendingInfoAlert()
@@ -653,7 +653,7 @@ public class KafkaAlertRulesTests
         alerts.Should().NotContain(a => a.Kind == "kafka-reassignment-stale");
     }
 
-    // ===== t03 (arch/15 §6): kafka-security-missing / kafka-admin-rotation-pending =====
+    // ===== (arch/15 §6): kafka-security-missing / kafka-admin-rotation-pending =====
 
     [Fact]
     public void Evaluate_ActiveClusterWithoutSecurity_CriticalKafkaSecurityMissing()
@@ -704,9 +704,9 @@ public class KafkaAlertRulesTests
         Evaluate(snapshot).Should().NotContain(a => a.Kind == "kafka-security-missing");
     }
 
-    // ===== t10 (arch/03 §7.4): ca-rotation-pending, stale-ротации, ticket-expired =====
+    // ===== (arch/03 §7.4): ca-rotation-pending, stale-ротации, ticket-expired =====
 
-    // Снапшот с ротационным набором (t10): канонический Active-кластер events +
+    // Снапшот с ротационным набором : канонический Active-кластер events +
     // заявки/исходы в именованных списках.
     private static KafkaSnapshot RotationSnapshot(
         IReadOnlyList<KafkaRotationTicket>? rotations = null,

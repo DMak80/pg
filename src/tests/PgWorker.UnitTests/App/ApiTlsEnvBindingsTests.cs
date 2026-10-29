@@ -5,7 +5,7 @@ using Xunit;
 
 namespace PgWorker.UnitTests.App;
 
-// Env-секреты mTLS API (arch/14 §1.1, t03): PEM и _PATH; порт — из
+// Env-секреты mTLS API (arch/14 §1.1): PEM и _PATH; порт — из
 // ASPNETCORE_URLS/urls (E2E поднимает хост-процесс на свободном порту), иначе 8080.
 public class ApiTlsEnvBindingsTests
 {

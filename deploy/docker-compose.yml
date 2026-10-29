@@ -49,9 +49,6 @@ x-pgworker-env: &pgworker-env
   # Доверие CA https S3-целей (t42, arch/19 §7): путь ca.pem в контейнере
   # (ro-монтирование TLS-пакета, прод); единый на все цели. Пусто — http.
   PgWorker__Backups__S3__CaBundlePath: ${PGW_BACKUP_S3_CA_BUNDLE_PATH:-}
-  # Образ джоба полного бэкапа (t02): тег = дефолт Job.Image; сборка —
-  # build-сервис pgworker-backup ниже (compose build) или 00-up.sh.
-  PgWorker__Backups__Job__Image: ${PGW_BACKUP_JOB_IMAGE:-pgworker-backup:dev}
   # PGTune-параметры PG-нод (arch/14 §2.1/§8): postgresql.conf ноды
   # рассчитывается при СОЗДАНИИ контейнера; память/CPU — из etcd-заявок
   # request_{cpu,mem} ноды (НЕ env), остальное — эти константы; канон P3
@@ -71,8 +68,8 @@ x-pgworker-env: &pgworker-env
   # sd-generator строит таргеты <alias>:8008 (arch/14 §2.4). Пусто —
   # деградационный контур без сетевой идентичности (advertised-таргеты).
   PgWorker__Docker__ScrapeNetwork: ${PGW_SCRAPE_NETWORK:-pgw-metrics}
-  # Сеть контура поставки (t41, arch/14 §2.1): задана → ноды/wal-агенты/
-  # ephemeral-джобы бэкапов создаются в ней одной (pgw-net-<C> не создаётся,
+  # Сеть контура поставки (t41, arch/14 §2.1): задана → ноды/ephemeral-джобы
+  # бэкапов создаются в ней одной (pgw-net-<C> не создаётся,
   # extra_hosts спек не применяются); пусто — прод-режим (канон arch/14).
   PgWorker__Docker__ContourNetwork: ${PGW_CONTOUR_NETWORK:-}
 
@@ -498,29 +495,6 @@ services:
       OWNS3_REPLICATION_TARGETS__0__SECRETKEY: ${OWNS3_MESH_PEER1_SECRETKEY:?set the peer key of node 1}
     volumes:
       - owns3-m2-data:/data
-
-  # Образ джоба полного бэкапа (t02, arch/19 §2): только сборка — сервиса нет,
-  # джобы запускает PgWorker как ephemeral-контейнеры. Профиль build не даёт
-  # подняться в up; entrypoint-заглушка — защита от случайного run.
-  pgworker-backup:
-    build:
-      context: ..
-      dockerfile: docker/PgWorker.Backup.Dockerfile
-    image: pgworker-backup:dev
-    profiles: ["build"]
-    entrypoint: ["true"]
-
-  # Образ wal-агента (t27/t41, arch/19 §3): publish НА ХОСТЕ (00-up.sh,
-  # [PHASE]) → compose build пакует только вывод (канон E2E-образов).
-  pgworker-wal:
-    build:
-      context: ..
-      dockerfile: docker/PgWorker.Wal.Dockerfile
-      args:
-        WAL_PUBLISH_DIR: artifacts/wal/publish
-    image: pgworker-wal:dev
-    profiles: ["build"]
-    entrypoint: ["true"]
 
 # Единая сеть контура мониторинга (t15, arch/18 §5.4): deploy-проект ВЛАДЕЕТ
 # сетью — в ней deploy-воркеры PgWorker (aliases), Prometheus (external-attach

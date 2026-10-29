@@ -4,7 +4,7 @@ using System.Text.Json;
 namespace AdminPanel.IntegrationTests;
 
 // Сид контроль-плейна demo (arch/04 §2.2) — те же значения, что в EtcdFixtures/*.json;
-// скрипт seed.sh dev-станда (t10) обязан использовать те же (spec §3.16).
+// скрипт seed.sh dev-станда обязан использовать те же (spec §3.16).
 public static class EtcdSeed
 {
     public static readonly IReadOnlyList<(string Key, string Value)> Demo =
@@ -77,13 +77,13 @@ public static class EtcdSeed
             await PutAsync(endpoint, key, value, ct);
     }
 
-    // Ключи грани «Хранилище бэкапов» (t08, arch/19 §4; план Task 9 Step 2):
+    // Ключи грани «Хранилище бэкапов» (arch/19 §4; план Task 9 Step 2):
     // ОТДЕЛЬНЫЙ список, Demo НЕ расширяется (Решение 6 плана: существующие серии
     // с ассертами по снапшоту не должны видеть бэкап-ключи). Времена
     // now-относительные — параметр now (сек. Unix). Владельца /clusters/demo
     // наливает SeedAsync (тест зовёт оба сида). Кластер ghost_shard в /clusters/
     // ОТСУТСТВУЕТ — его wal-ключ делает его сиротой для сверки панели, при этом
-    // запись в реестре /pgworker/backups/orphans — факт реестра воркера (t07).
+    // запись в реестре /pgworker/backups/orphans — факт реестра воркера.
     public static IReadOnlyList<(string Key, string Value)> Backups(long now) =>
     [
         ("/pgworker/backups/demo/policy", "{\"full_max_age_sec\":86400}"),
@@ -93,17 +93,17 @@ public static class EtcdSeed
             $"{{\"state\":\"PLANNED\",\"node\":\"s1a\",\"role\":\"replica\",\"started_unix\":{now - 60}}}"),
         ("/pgworker/backups/demo/s1/wal",
             $"{{\"state\":\"ACTIVE\",\"slot\":\"wal_demo_s1\",\"master_node\":\"s1a\",\"last_uploaded_unix\":{now - 30},\"last_uploaded_segment\":\"000000010000000000000001\"}}"),
-        // Активная restore-заявка (t05-формат): бейдж деталей шарда (AC9).
+        // Активная restore-заявка (формат): бейдж деталей шарда (AC9).
         ("/pgworker/backups/demo/s1/restore/r1",
             $"{{\"state\":\"PLANNED\",\"backup_id\":\"b1\",\"source\":\"demo/s1\",\"target\":\"latest\",\"requested_unix\":{now - 10},\"phase\":\"downloading\"}}"),
         ("/pgworker/backups/demo/s2/full/b1",
             $"{{\"state\":\"COMPLETED\",\"node\":\"s2a\",\"role\":\"replica\",\"started_unix\":{now - 3600},\"finished_unix\":{now - 1800},\"size_bytes\":200}}"),
         ("/pgworker/backups/ghost_shard/s9/wal",
             $"{{\"state\":\"ACTIVE\",\"slot\":\"wal_ghost_s9\",\"master_node\":\"g9\",\"last_uploaded_unix\":{now - 30},\"last_uploaded_segment\":\"000000010000000000000009\"}}"),
-        // Квота/место — вердикт воркера (t06): WARN рядом с live-инвентарём (AC6).
+        // Квота/место — вердикт воркера : WARN рядом с live-инвентарём (AC6).
         ("/pgworker/backups/storage",
             $"{{\"used_bytes\":1000,\"quota_bytes\":10000,\"used_percent\":10.0,\"state\":\"WARN\",\"updated_unix\":{now}}}"),
-        // Реестр сирот (t07): ghost_shard/s9 под наблюдением супервизора.
+        // Реестр сирот : ghost_shard/s9 под наблюдением супервизора.
         ("/pgworker/backups/orphans",
             $"{{\"updated_unix\":{now},\"orphans\":[{{\"prefix\":\"ghost_shard/s9\",\"kind\":\"shard\",\"size_bytes\":50,\"first_seen_unix\":{now - 100},\"state\":\"OBSERVED\"}}]}}"),
     ];

@@ -7,10 +7,10 @@ namespace S3Worker.IntegrationTests.S3;
 // FreePortWindow valkey; AGENTS.md «порты docker-контейнеров — динамические»):
 // окно зондится TcpListener'ом на старте фикстуры — никаких литералов портов
 // и никаких пересечений с dev-стендом (pg 15xxx / kfw 16xxx / valkey 17xxx /
-// owns3+s3 стенды и valkey-тесты 21–31xxx: наша зона — 31–41xxx).
+// owns3+s3 стенды и valkey-тесты 26–31xxx: наша зона — 31–41xxx).
 internal static class FreePortWindow
 {
-    // Поиск выше зоны valkey-тестов (21–31xxx).
+    // Поиск выше зоны valkey-тестов (26–31xxx).
     private const int SearchFrom = 31000;
 
     private const int SearchTo = 41000;

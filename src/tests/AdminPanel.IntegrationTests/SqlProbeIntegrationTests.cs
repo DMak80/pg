@@ -133,7 +133,7 @@ public class SqlProbeIntegrationTests(PostgresFixture fixture) : IClassFixture<P
     [Fact]
     public async Task AlertRules_OnLiveRuntime()
     {
-        // Arrange: снапшот с живым runtime (без реплик, 16/16 схем) + движок t06.
+        // Arrange: снапшот с живым runtime (без реплик, 16/16 схем) + движок.
         await SeedSchemasAndSlotAsync();
         var probeResult = await Probe().ProbeAsync(DemoCluster(Shard()), Shard(), CancellationToken.None);
         var runtime = probeResult.Runtime;

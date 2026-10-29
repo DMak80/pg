@@ -118,7 +118,8 @@ public sealed class AddNodeProcess(
         // links (вызова в D нет — Active-G подхватит, arch/24 §5 D).
         var env = envComposer.Compose(
             nodeSecrets!, nodePki.Value, clusterPki.Value.Ca.Ca,
-            $"http://{options.AdvertisedHost ?? address.Host}:{address.S3Port}");
+            $"http://{options.AdvertisedHost ?? address.Host}:{address.S3Port}",
+            options.OwnS3ReplicationReconcileIntervalSec);
         var resources = S3ProcessCommon.ParseResources(node.Resources);
         var ensured = await driver.EnsureNodeAsync(
             new S3NodeSpec(cluster, node.Node, address.Host, address.S3Port, options.OwnS3Image, env,

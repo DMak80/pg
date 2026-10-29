@@ -3,7 +3,7 @@ using Shared.Core.DI;
 
 namespace AdminPanel.Core.Alerting.Rules;
 
-// backup-storage-quota (t06, arch/19 §4): занятость bucket по state глобального
+// backup-storage-quota (arch/19 §4): занятость bucket по state глобального
 // ключа /pgworker/backups/storage; ключа нет → молчим (подсистема не включена).
 // Реакции автоматикой нет — действует оператор (расширить квоту/ужать ретенцию).
 [InjectAsSingleton(typeof(IAlertRule))]

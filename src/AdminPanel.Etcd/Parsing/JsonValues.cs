@@ -25,7 +25,7 @@ internal static class JsonValues
         };
     }
 
-    // int-поля ключей (t06: brokers_total/brokers_remaining): вне int → null.
+    // int-поля ключей (: brokers_total/brokers_remaining): вне int → null.
     public static int? ReadInt(JsonElement root, string name)
     {
         var value = ReadLong(root, name);

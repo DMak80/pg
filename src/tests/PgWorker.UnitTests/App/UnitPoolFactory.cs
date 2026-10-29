@@ -4,7 +4,7 @@ using Shared.Core;
 
 namespace PgWorker.UnitTests.App;
 
-// t36: фабрика/пулы для юнит-процессов сирот (BackupOrphanSweeperLoop) —
+// фабрика/пулы для юнит-процессов сирот (BackupOrphanSweeperLoop) —
 // union по одному фиктивному пулу; цели — переданный IBackupS3 теста.
 public static class UnitPoolFactory
 {

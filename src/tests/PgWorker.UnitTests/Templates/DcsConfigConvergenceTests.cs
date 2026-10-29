@@ -5,8 +5,8 @@ using PgWorker.Core.Tuning;
 
 namespace PgWorker.UnitTests.Templates;
 
-// DcsConfigConvergence (t11, spec §4.2): минимальный патч-документ для PATCH
-// /config — тайминги Patroni (PatroniTimings, единый канон t09) +
+// DcsConfigConvergence (spec §4.2): минимальный патч-документ для PATCH
+// /config — тайминги Patroni (PatroniTimings, единый канон) +
 // postgresql.parameters от PgParametersCanon.Desired. Поглощает
 // PatroniTimings.DivergencePatch (кейсы Regression_T09_* мигрированы, смысл и
 // имена сохранены). Конвергентно → null («не второй регулярный писатель»).
@@ -18,7 +18,7 @@ public class DcsConfigConvergenceTests
             18, PgTuneOsType.Linux, PgTuneDbType.Oltp, 8388608, PgTuneMemoryUnit.KB,
             4, 60, PgTuneHdType.Ssd, PgTuneDbSize.MidRam)), null);
 
-    // AAA (t06, spec §6.4): strict расходится/отсутствует/битый → в патче;
+    // AAA (spec §6.4): strict расходится/отсутствует/битый → в патче;
     // конвергентно → null. Порядок: strict после synchronous_mode.
     [Fact]
     public void Divergence_StrictMismatch_PatchCarriesStrict()
@@ -70,9 +70,9 @@ public class DcsConfigConvergenceTests
             """{"ttl":20,"loop_wait":1,"retry_timeout":3,"synchronous_mode":true,"synchronous_mode_strict":true}""");
     }
 
-    // ---------- Миграция кейсов t09 (desired == null → патч только таймингов) ----------
+    // ---------- Миграция кейсов (desired == null → патч только таймингов) ----------
 
-    // AAA (t09): дефолтный конфиг Patroni — патч несёт ВСЕ канонические поля.
+    // AAA : дефолтный конфиг Patroni — патч несёт ВСЕ канонические поля.
     [Fact]
     public void Regression_T09_Divergence_DefaultConfig_PatchCarriesCanonical()
     {
@@ -90,11 +90,11 @@ public class DcsConfigConvergenceTests
         patch.Should().NotContain("postgresql");
     }
 
-    // AAA (t09): конфиг, молча скорректированный Patroni 4.1 — патч минимальный.
+    // AAA : конфиг, молча скорректированный Patroni 4.1 — патч минимальный.
     [Fact]
     public void Regression_T09_Divergence_PatroniAdjustedConfig_MinimalPatch()
     {
-        // Arrange — фактический /config из диагностики t09.
+        // Arrange — фактический /config из диагностики.
         const string config = """{"ttl":20,"loop_wait":2,"retry_timeout":3,"synchronous_mode":true}""";
 
         // Act
@@ -104,7 +104,7 @@ public class DcsConfigConvergenceTests
         patch.Should().Be("""{"loop_wait":1,"synchronous_mode_strict":true}""");
     }
 
-    // AAA (t09): канонический конфиг — null, мутаций нет.
+    // AAA : канонический конфиг — null, мутаций нет.
     [Fact]
     public void Regression_T09_Divergence_CanonicalConfig_NoPatch()
     {
@@ -118,7 +118,7 @@ public class DcsConfigConvergenceTests
         patch.Should().BeNull();
     }
 
-    // AAA (t09): пустой/битый/чужой ответ — полный патч (тайминги + весь desired).
+    // AAA : пустой/битый/чужой ответ — полный патч (тайминги + весь desired).
     [Theory]
     [InlineData(null)]
     [InlineData("")]
@@ -140,7 +140,7 @@ public class DcsConfigConvergenceTests
             .And.Contain("\"wal_level\":\"logical\"");
     }
 
-    // ---------- Новые кейсы t11 ----------
+    // ---------- Новые кейсы ---------
 
     // AAA: расходящееся значение параметра → обновление в патче; счётчик Updated.
     [Fact]
@@ -301,7 +301,7 @@ public class DcsConfigConvergenceTests
         divergence.PostmasterTouched.Should().BeFalse();
     }
 
-    // AAA (self-check SingleCanonicalSource, t11 spec §4.4): JSON, собранный из
+    // AAA (self-check SingleCanonicalSource, spec §4.4): JSON, собранный из
     // SPILO_CONFIGURATION текущего билдера, конвергентен с desired (null-патч)
     // — bootstrap и конвергенция из одного источника, молодой кластер не патчится.
     [Fact]

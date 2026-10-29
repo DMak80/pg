@@ -263,7 +263,7 @@ public sealed record KafkaRotationTicketJson(
         });
 }
 
-// Запрос мутации №15 — изменение ресурсов существующего брокера (t06,
+// Запрос мутации №15 — изменение ресурсов существующего брокера (
 // adminpanel/02 §10.2-15): null = не менять; хотя бы одно поле обязательно.
 public sealed record KafkaResourcesUpdateRequest(decimal? Cpu, int? MemGi, int? DiskGi);
 

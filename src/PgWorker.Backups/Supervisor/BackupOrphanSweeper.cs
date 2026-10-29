@@ -2,20 +2,25 @@ using Microsoft.Extensions.Logging;
 using PgWorker.Core;
 using PgWorker.Core.Model;
 using Shared.Etcd.Client;
+using Shared.Metrics.Worker;
 using PgWorker.Etcd.Parsing;
 
 namespace PgWorker.Backups.Supervisor;
 
-/// <summary>Глобальный проход сверки bucket↔etcd (t07, arch/19 §4): list ВСЕГО
+/// <summary>Глобальный проход сверки bucket↔etcd (arch/19 §4): list ВСЕГО
 /// bucket → префиксы «&lt;C&gt;/&lt;X&gt;/» без владельца (кластер ToRemove/исчез,
 /// шард удалён) — сироты: реестр /pgworker/backups/orphans (merge first_seen и
-/// has_valid_full, гвард воскресения) + отбор кандидата с приоритетом (t04,
-/// arch/19 §4): доводка первого DELETING → первая заявка /orphan-deletes/ (t04,
+/// has_valid_full, гвард воскресения) + отбор кандидата с приоритетом (
+/// arch/19 §4): доводка первого DELETING → первая заявка /orphan-deletes/ (
 /// обходит hold и автоправило) → TTL-кандидат без валидного полного и без
-/// hold-ключа (DR-hold t04). Санитар прохода (t04): hold/заявки с префиксом вне
+/// hold-ключа (DR-hold). Санитар прохода : hold/заявки с префиксом вне
 /// merged-реестра (воскрес/исчез/уже удалён) гасятся. ОДИН префикс за проход:
 /// DELETING → batch-delete → list-подтверждение → del записи (+ del заявки).
-/// Выполняется ТОЛЬКО глобальным лидером /pgworker/leader (двойного писателя
+/// Перед удалением — перепроверка (arch/19 §4): лидерство, владельцы /clusters/
+/// и hold-ключ кандидата заново (снимок /clusters/ мог устареть) — воскресший
+/// владелец отменяет и DELETING-доводку: гасятся запись/hold/заявка, объекты
+/// живого владельца не трогаются. Выполняется ТОЛЬКО глобальным лидером
+/// /pgworker/leader (двойного писателя
 /// нет); runtime() == null (Enabled=false) → no-op. Все шаги идемпотентны,
 /// transient-отказы (S3/etcd) — Result.Failed без мутаций, следующий проход
 /// повторит (arch/17).</summary>
@@ -25,10 +30,10 @@ public sealed class BackupOrphanSweeper(
     BackupS3Factory s3Factory,
     PgWorker.Etcd.S3.IS3PoolStore pools,
     ClaimStore claims,
-    WorkJournal journal,
     Func<BackupsRuntimeOptions?> runtime,
     TimeProvider time,
-    ILogger? logger = null)
+    ILogger? logger = null,
+    WorkerMetricsInstrumentation? metrics = null)
 {
     private const string Op = "backup-orphan-sweeper";
 
@@ -46,7 +51,7 @@ public sealed class BackupOrphanSweeper(
 
         var nowUnix = time.GetUtcNow().ToUnixTimeSeconds();
 
-        // (1) t36 (arch/19 §5): union по ВСЕМ существующим пулам /s3/clusters/
+        // (1) (arch/19 §5): union по ВСЕМ существующим пулам /s3/clusters/
         // (первый доступный endpoint каждого; дедуп по (пул, ключ)) → группировка.
         var poolNames = await pools.ListPoolNamesAsync(ct);
         if (!poolNames.IsSuccess)
@@ -57,11 +62,26 @@ public sealed class BackupOrphanSweeper(
         {
             var created = await s3Factory.CreateForPoolAsync(poolName, ct);
             if (!created.IsSuccess)
-                continue; // пул недоступен/без кредов — union по остальным
+            {
+                // Пул недоступен/без кредов — union по остальным; проход НЕПОЛНЫЙ
+                // до следующего прохода, поэтому след в логах/метриках обязателен.
+                logger?.LogWarning(
+                    "{Op}: pool {Pool} excluded from orphan union — client unavailable: {Error}",
+                    Op, poolName, created.Error!.Message);
+                metrics?.BackupOrphanSkippedPool(poolName);
+                continue;
+            }
             await using var poolS3 = created.Value.Client;
             var listed = await poolS3.ListPrefixAsync("", ct: ct);
             if (!listed.IsSuccess)
-                continue; // transient этого пула — повтор прохода
+            {
+                // Transient этого пула — повтор прохода; union неполный — логируем.
+                logger?.LogWarning(
+                    "{Op}: pool {Pool} excluded from orphan union — list failed: {Error}",
+                    Op, poolName, listed.Error!.Message);
+                metrics?.BackupOrphanSkippedPool(poolName);
+                continue;
+            }
             foreach (var obj in listed.Value)
                 if (observedKeys.Add((poolName, obj.Key)))
                     observedObjects.Add(obj);
@@ -94,9 +114,11 @@ public sealed class BackupOrphanSweeper(
         // только при изменении записей (безделье не пишет; updated_unix —
         // свежесть прохода, в сравнение не входит).
         var current = await ReadRegistryAsync(ct);
+        if (!current.IsSuccess)
+            return Result.Failed(current.Error!); // transient — повтор прохода
         var merged = OrphanRegistry.Merge(
-            current, observed, grouped.FullPrefixes, liveShards, liveClusters, nowUnix);
-        var changed = current is null || !OrphanRegistry.SameOrphans(current, merged);
+            current.Value, observed, grouped.FullPrefixes, liveShards, liveClusters, nowUnix);
+        var changed = current.Value is null || !OrphanRegistry.SameOrphans(current.Value, merged);
         if (changed && await PutRegistryAsync(merged, ct) is { IsSuccess: false } putMerged)
             return putMerged; // transient — реестр не записан, удаление не начинаем
 
@@ -119,8 +141,7 @@ public sealed class BackupOrphanSweeper(
             else if (await DeleteKeyAsync(kv.Key, ct) is { IsSuccess: false } delHold)
                 return delHold; // transient — следующий проход повторит
             else
-                await journal.WritePhaseAsync(prefix.Split('/')[0], Op,
-                    $"orphan-key-cleaned/{prefix}", claims.InstanceId, null, ct);
+                await WriteJournalAsync($"orphan-key-cleaned/{prefix}", ct);
         }
         string? requested = null; // префикс первой заявки (по ordinal ключа)
         foreach (var kv in deletesRange.Value.OrderBy(k => k.Key, StringComparer.Ordinal))
@@ -133,8 +154,7 @@ public sealed class BackupOrphanSweeper(
             }
             if (await DeleteKeyAsync(kv.Key, ct) is { IsSuccess: false } delReq)
                 return delReq;
-            await journal.WritePhaseAsync(prefix.Split('/')[0], Op,
-                $"orphan-key-cleaned/{prefix}", claims.InstanceId, null, ct);
+            await WriteJournalAsync($"orphan-key-cleaned/{prefix}", ct);
         }
 
         // (4) Отбор (спека §3.1): (1) доводка первого DELETING безусловно →
@@ -155,11 +175,59 @@ public sealed class BackupOrphanSweeper(
             return Result.Success();
         var entry = merged.Orphans.First(e => e.Prefix == candidate);
 
+        // (4.5) Перепроверка перед удалением (arch/19 §4): снимок /clusters/ (2)
+        // мог устареть — воскресение владельца между снимком и удалением отменяет
+        // и DELETING-доводку: вместо объектов гасятся запись реестра, hold-ключ и
+        // заявка (объекты живого владельца не трогаются). Потеря лидерства — тихий
+        // no-op (удаление повторит проход нового лидера). Hold, появившийся на
+        // TTL-кандидата после отбора, откладывает удаление до следующего прохода
+        // (DELETING-доводка и заявка hold не проверяют — канон: «DELETING-записи
+        // hold не защищают», заявка минует hold).
+        if (!claims.IsLeader)
+            return Result.Success();
+        var recheckClusters = await RangeClustersAsync(ct);
+        if (!recheckClusters.IsSuccess)
+            return Result.Failed(recheckClusters.Error!);
+        var reparsed = ClusterSnapshotParser.ParseClusters(recheckClusters.Value, out _);
+        if (!reparsed.IsSuccess)
+            return Result.Failed(reparsed.Error!);
+        var (candCluster, candShard) = SplitPrefix(candidate);
+        var ownerLive = candCluster is not null && reparsed.Value.Any(snap =>
+            snap.Config.Cluster == candCluster
+            && snap.Config.State != ClusterState.ToRemove
+            && snap.Shards.Any(sh => sh.Name == candShard && !sh.ToRemove));
+        if (ownerLive)
+        {
+            var cancelled = merged with
+            {
+                Orphans = merged.Orphans.Where(e => e.Prefix != candidate).ToList(),
+            };
+            if (await PutRegistryAsync(cancelled, ct) is { IsSuccess: false } putCancelled)
+                return putCancelled; // запись остаётся — следующий проход повторит отмену
+            if (await DeleteKeyAsync(OrphanRegistry.HoldKey(candidate), ct)
+                    is { IsSuccess: false } delHoldCancelled)
+                return delHoldCancelled;
+            if (await DeleteKeyAsync(OrphanRegistry.DeleteKey(candidate), ct)
+                    is { IsSuccess: false } delReqCancelled)
+                return delReqCancelled;
+            await WriteJournalAsync($"orphan-cancelled/{candidate}", ct);
+            logger?.LogInformation(
+                "{Op}: orphan {Prefix} cancelled — owner resurrected", Op, candidate);
+            return Result.Success();
+        }
+        if (!byRequest && entry.State == OrphanState.Observed)
+        {
+            var holdRecheck = await RangeKeysAsync(OrphanRegistry.HoldKey(candidate), ct);
+            if (!holdRecheck.IsSuccess)
+                return holdRecheck;
+            if (holdRecheck.Value.Any(kv => kv.Key == OrphanRegistry.HoldKey(candidate)))
+                return Result.Success(); // hold после отбора — удалит следующий проход
+        }
+
         // journal-before-manipulations: DELETING пишется ДО удаления объектов.
         // По заявке — журнал заявки до перехода в DELETING (AC4).
         if (byRequest)
-            await journal.WritePhaseAsync(candidate.Split('/')[0], Op,
-                $"orphan-delete-requested/{candidate}", claims.InstanceId, null, ct);
+            await WriteJournalAsync($"orphan-delete-requested/{candidate}", ct);
         var deleting = merged with
         {
             Orphans = merged.Orphans
@@ -169,11 +237,10 @@ public sealed class BackupOrphanSweeper(
         };
         if (await PutRegistryAsync(deleting, ct) is { IsSuccess: false } putDeleting)
             return putDeleting; // запись остаётся OBSERVED — следующий проход повторит
-        await journal.WritePhaseAsync(candidate.Split('/')[0], Op,
-            $"orphan-deleting/{candidate}", claims.InstanceId, null, ct);
+        await WriteJournalAsync($"orphan-deleting/{candidate}", ct);
 
         // batch-delete префикса + list-подтверждение пустоты — через КАЖДЫЙ
-        // доступный пул (t36: префикс <C>/<X> может лежать в любом пуле;
+        // доступный пул (: префикс <C>/<X> может лежать в любом пуле;
         // удаление идемпотентно, mesh разносит tombstone — arch/19 §5).
         var delPrefix = $"{candidate}/";
         foreach (var poolName in poolNames.Value)
@@ -198,15 +265,14 @@ public sealed class BackupOrphanSweeper(
             }
         }
 
-        // Объекты удалены — del записи из реестра + журнал-факт.
+        // Объекты удалены — del записи из реестра + запись журнала.
         var done = deleting with
         {
             Orphans = deleting.Orphans.Where(e => e.Prefix != candidate).ToList(),
         };
         if (await PutRegistryAsync(done, ct) is { IsSuccess: false } putDone)
             return putDone;
-        await journal.WritePhaseAsync(candidate.Split('/')[0], Op,
-            $"orphan-deleted/{candidate}", claims.InstanceId, null, ct);
+        await WriteJournalAsync($"orphan-deleted/{candidate}", ct);
         logger?.LogInformation("{Op}: orphan {Prefix} deleted {Reason}", Op, candidate,
             byRequest ? "by operator request" : "by TTL");
 
@@ -256,6 +322,15 @@ public sealed class BackupOrphanSweeper(
     private static string PrefixOfKey(string key)
         => string.Join('/', key.Split('/')[^2..]);
 
+    // «<C>/<X>» → компоненты (записи реестра всегда нашей формы — фильтр
+    // SplitPrefix merge'а); не-нашей-формы → (null, null): владельческая
+    // перепроверка мимо, удаление как раньше.
+    private static (string? Cluster, string? Shard) SplitPrefix(string prefix)
+    {
+        var parts = prefix.Split('/');
+        return parts.Length == 2 ? (parts[0], parts[1]) : (null, null);
+    }
+
     // Чтение /clusters/ (failover по endpoints) — владельцы префиксов.
     private async Task<Result<IReadOnlyList<Kv>>> RangeClustersAsync(CancellationToken ct)
     {
@@ -272,25 +347,27 @@ public sealed class BackupOrphanSweeper(
             ?? new EtcdUnreachableException("etcd endpoints not configured"));
     }
 
-    // Чтение реестра (failover по endpoints); ключа нет → null; битый → null.
-    private async Task<OrphanRegistry.Registry?> ReadRegistryAsync(CancellationToken ct)
+    // Чтение реестра (failover по endpoints): ключа нет или битый → Success(null)
+    // (следующий проход пересоберёт реестр — Parse), все endpoints недоступны →
+    // Failed (transient — повтор прохода): контракт как у соседних методов, без
+    // throw мимо различения шага.
+    private async Task<Result<OrphanRegistry.Registry?>> ReadRegistryAsync(CancellationToken ct)
     {
-        Result last = default;
+        Result<OrphanRegistry.Registry?> last = default;
         foreach (var endpoint in endpoints)
         {
             var result = await etcd.GetAsync(endpoint, OrphanRegistry.Key, ct);
             if (!result.IsSuccess)
             {
-                last = result;
+                last = Result<OrphanRegistry.Registry?>.Failed(result.Error!);
                 continue;
             }
 
             return result.Value is { } kv ? OrphanRegistry.Parse(kv.Value) : null;
         }
 
-        if (!last.IsSuccess)
-            throw new ApplicationException($"get {OrphanRegistry.Key}: {last.Error!.Message}");
-        return null;
+        return Result<OrphanRegistry.Registry?>.Failed(last.Error
+            ?? new EtcdUnreachableException("etcd endpoints not configured"));
     }
 
     // Failover-put реестра (образец WalStreamProcess.PutAsync).
@@ -308,5 +385,25 @@ public sealed class BackupOrphanSweeper(
 
         return Result.Failed(last.Error ?? new ApplicationException(
             $"put {OrphanRegistry.Key}: no live endpoints"));
+    }
+
+    // Фаза свипера — глобальный ключ /pgworker/backups/orphan-journal
+    // (arch/19 §4): failover-put по endpoints (образец PutRegistryAsync),
+    // plain put без read-modify-write. Журнал — наблюдаемость: неудача
+    // записи НЕ роняет проход (все endpoints упали — предупреждение).
+    private async Task WriteJournalAsync(string phase, CancellationToken ct)
+    {
+        foreach (var endpoint in endpoints)
+        {
+            var put = await etcd.PutAsync(
+                endpoint, OrphanRegistry.JournalKey,
+                OrphanRegistry.JournalPhaseToJson(
+                    phase, claims.InstanceId, time.GetUtcNow().ToUnixTimeSeconds(), null),
+                null, ct);
+            if (put.IsSuccess)
+                return;
+        }
+
+        logger?.LogWarning("{Op}: orphan journal write failed for phase {Phase}", Op, phase);
     }
 }

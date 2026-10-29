@@ -6,7 +6,7 @@ using Xunit;
 
 namespace PgWorker.IntegrationTests.Etcd;
 
-// t90: гонка ПАРАЛЛЕЛЬНОГО provisioning на реальном etcd — две критические
+// гонка ПАРАЛЛЕЛЬНОГО provisioning на реальном etcd — две критические
 // секции «ReadBusy → Allocate → put portalloc» под глобальным клэймом дают
 // НЕПЕРЕСЕКАЮЩИЕСЯ порты; без клэйма обе читали бы пустой префикс (воспроизведение
 // dev-стенда 2026-08-25: «port is already allocated»).

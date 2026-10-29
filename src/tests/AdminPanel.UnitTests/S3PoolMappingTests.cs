@@ -5,7 +5,7 @@ using Xunit;
 
 namespace AdminPanel.UnitTests;
 
-// Проекция пулов для грани «Хранилище бэкапов» (t36, adminpanel/02 §12.4):
+// Проекция пулов для грани «Хранилище бэкапов» (adminpanel/02 §12.4):
 // S3Snapshot → S3PoolDto (единый домен S3 — второго парсера/тика нет).
 // Active — по канону arch/23 §2: только отсутствие state (= S3ClusterState.Active).
 public class S3PoolMappingTests
@@ -39,7 +39,7 @@ public class S3PoolMappingTests
     }
 
     // AAA: NOT_INITIALIZED/TO_REMOVE — не Active (отсутствие state = Active, arch/23 §2;
-    // read-минимум t36 считал Active любой не-TO_REMOVE — унификация выравнивает на канон).
+    // read-минимум считал Active любой не-TO_REMOVE — унификация выравнивает на канон).
     [Theory]
     [InlineData(S3ClusterState.NotInitialized)]
     [InlineData(S3ClusterState.ToRemove)]

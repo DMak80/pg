@@ -8,7 +8,7 @@ using Shared.Tls;
 
 namespace KafkaWorker.App.Api;
 
-// mTLS HTTP-грани воркера (arch/16 §1.1, t03): вся грань (вкл. /healthz) —
+// mTLS HTTP-грани воркера (arch/16 §1.1): вся грань (вкл. /healthz) —
 // только TLS; клиентские серты — per-install API-CA (ClientCaPem|ClientCaPath).
 // Вызывается на WebApplicationBuilder ДО Build() (ConfigureKestrel — этап
 // хоста) — общий код Program.cs и MtlsApiTests. Сертификаты живут всё

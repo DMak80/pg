@@ -2,7 +2,7 @@ using AdminPanel.Core;
 
 namespace AdminPanel.Probes.S3;
 
-// Реализация Core.IS3InventoryStore (t08): писатель один — S3InventoryLoop,
+// Реализация Core.IS3InventoryStore : писатель один — S3InventoryLoop,
 // читают SnapshotRefresher (вносит в снапшот) и тесты. Volatile-замена ссылки —
 // паттерн KafkaProbeStore/WorkerHealthStore (KV-тик не блокируется).
 public sealed class S3InventoryStore : IS3InventoryStore

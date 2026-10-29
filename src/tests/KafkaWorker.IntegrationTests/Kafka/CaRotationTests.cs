@@ -8,10 +8,10 @@ using Xunit;
 
 namespace KafkaWorker.IntegrationTests.Kafka;
 
-// Интеграция ротации CA (t07, arch/16 §2.3/§5 K): заявка → CaRotator доводит
+// Интеграция ротации CA (arch/16 §2.3/§5 K): заявка → CaRotator доводит
 // окно двойного доверия на живом docker-кластере; после коммита ca_pem = NEW,
 // staging удалён, клиенты с NEW работают, клиенты со старым CA-кэшем отвергаются.
-// Per-class коллекция (t24/AGENTS.base §13; spec §6.3.2): свой инстанс
+// Per-class коллекция (/AGENTS.base §13; spec §6.3.2): свой инстанс
 // KafkaClusterFixture — свой etcd-контур, свои кластеры/сети (RunTag),
 // своё окно портов и AdminFactory; классы параллельны (потолок —
 // xunit.runner.json), факты класса последовательны.
@@ -163,20 +163,26 @@ public class CaRotationTests(KafkaClusterFixture fixture)
     private static string Certs(string? pem)
         => pem is null ? "-" : (pem.Split("-----BEGIN CERTIFICATE-----").Length - 1).ToString();
 
-    // Хвост логов брокера в diagnose-сообщение (root-cause застрявшей ротации).
+    // Хвост логов брокера в diagnose-сообщение (root-cause застрявшей ротации);
+    // аргументы — списком без shell: имя кластера не попадает в строку команды
+    // (оба потока объединяются в памяти вместо shell-перенаправления 2>&1).
     private static string BrokerLogTail(string cluster)
     {
         try
         {
-            var psi = new System.Diagnostics.ProcessStartInfo(
-                "/bin/sh", $"-c \"docker logs --tail 25 kfw-{cluster}-broker1 2>&1\"")
+            var psi = new System.Diagnostics.ProcessStartInfo("docker")
             {
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 UseShellExecute = false,
             };
-            using var proc = System.Diagnostics.Process.Start(psi)!;
-            var output = proc.StandardOutput.ReadToEnd();
+            psi.ArgumentList.Add("logs");
+            psi.ArgumentList.Add("--tail");
+            psi.ArgumentList.Add("25");
+            psi.ArgumentList.Add($"kfw-{cluster}-broker1");
+            using var proc = new System.Diagnostics.Process { StartInfo = psi };
+            proc.Start();
+            var output = proc.StandardOutput.ReadToEnd() + proc.StandardError.ReadToEnd();
             proc.WaitForExit(5000);
             return output.Length > 2600 ? output[^2600..] : output;
         }
@@ -199,7 +205,7 @@ public class CaRotationTests(KafkaClusterFixture fixture)
             MessageTimeoutMs = 20000,
             SocketTimeoutMs = 15000,
         };
-        // Файловый truststore (t07): inline ssl.ca.pem у librdkafka — один серт,
+        // Файловый truststore : inline ssl.ca.pem у librdkafka — один серт,
         // bundle окна ротации требует файла (ssl.ca.location).
         var caPath = Path.Combine(Path.GetTempPath(),
             $"carot-ca-{Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(

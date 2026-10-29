@@ -2,9 +2,9 @@ using PgWorker.App;
 
 namespace PgWorker.UnitTests.App;
 
-// Каркас конфигурации бэкапов (arch/19 §9, t01): default выключен и валиден,
+// Каркас конфигурации бэкапов (arch/19 §9): default выключен и валиден,
 // включение требует полный S3-комплект — fail-fast старта (образец TLS
-// arch/14 §2.2.1). Процессной логики в t01 нет — только options.
+// arch/14 §2.2.1). Процессной логики в нет — только options.
 public class BackupsOptionsTests
 {
     [Fact]
@@ -66,27 +66,25 @@ public class BackupsOptionsTests
     [Fact]
     public void Defaults_JobRetry_CanonValues()
     {
-        // Arrange / Act — дефолты t02 (arch/19 §9): образ джоба + бэкофф 300/3600.
+        // Arrange / Act — дефолты (arch/19 §9): бэкофф 300/3600.
         var options = new BackupsOptions();
 
         // Assert
-        options.Job.Image.Should().Be("pgworker-backup:dev");
         options.Retry.BaseSec.Should().Be(300);
         options.Retry.MaxSec.Should().Be(3600);
     }
 
     [Fact]
-    public void Enabled_EmptyJobImage_Invalid()
+    public void Enabled_EmptyBucket_Invalid()
     {
-        // Arrange — включили с S3-комплектом, но образ джоба не задан.
+        // Arrange — включили без bucket (env PGW_BACKUP_S3_BUCKET).
         var options = new BackupsOptions
         {
             Enabled = true,
             S3 = new BackupsS3Options
             {
-                Bucket = "pgworker-backups",
+                Bucket = "",
             },
-            Job = new BackupsJobOptions { Image = "" },
         };
 
         // Act / Assert — fail-fast старта (Program.cs ValidateOnStart).
@@ -94,40 +92,33 @@ public class BackupsOptionsTests
     }
 
     [Fact]
-    public void Defaults_PolicyStagingAgent_CanonValues()
+    public void Defaults_PolicyStaging_CanonValues()
     {
-        // Arrange / Act — дефолты каркаса (арх/19 §4/§6/§9).
+        // Arrange / Act — дефолты каркаса (арх/19 §4/§9).
         var options = new BackupsOptions();
 
-        // Assert — GFS 1/1/1 — целевая схема (t18: последний + недельная +
-        // месячная позиции), суточное окно, verify при создании; staging-каталог;
-        // квота и лимиты джобов — null (без лимита, образец request_* нод
-        // arch/14 §2.4 п.4).
+        // Assert — GFS 1/1/1 — целевая схема (: последний + недельная +
+        // месячная позиции), суточное окно, verify при создании; staging-каталог.
         options.Policy.Retention.Days.Should().Be(1);
         options.Policy.Retention.Weeks.Should().Be(1);
         options.Policy.Retention.Months.Should().Be(1);
         options.Policy.FullMaxAgeSec.Should().Be(86400);
         options.Policy.VerifyOnCreate.Should().BeTrue();
-        options.Staging.Dir.Should().Be("/backup-staging");
-        options.Staging.QuotaBytes.Should().BeNull();
-        options.Agent.Cpu.Should().BeNull();
-        options.Agent.Mem.Should().BeNull();
+        options.Staging.Dir.Should().Be("/home/postgres/pgdata/backup-staging");
     }
 
     [Fact]
-    public void ToRuntime_MergesAllSections_AndAdvertisedFallback()
+    public void ToRuntime_MergesAllSections()
     {
         // Arrange — из per-install констант только bucket/CA (креды — пул и
         // его per-cluster secrets-ключ etcd).
         var options = new BackupsOptions
         {
-            Job = new BackupsJobOptions { Image = "pgworker-backup:test" },
             S3 = new BackupsS3Options
             {
                 Bucket = "b",
             },
-            Staging = new BackupsStagingOptions { Dir = "/st", QuotaBytes = 1024 },
-            Agent = new BackupsAgentOptions { Cpu = 0.5, Mem = 512 },
+            Staging = new BackupsStagingOptions { Dir = "/st" },
             Wal = new BackupsWalOptions { VerifyIntervalSec = 5, LagMaxSegments = 10, StaleSec = 60 },
         };
 
@@ -135,14 +126,13 @@ public class BackupsOptionsTests
         var runtime = options.ToRuntime();
 
         // Assert
-        runtime.JobImage.Should().Be("pgworker-backup:test");
         runtime.WalVerifyIntervalSec.Should().Be(5);
         runtime.WalLagMaxSegments.Should().Be(10);
         runtime.WalStaleSec.Should().Be(60);
-        runtime.StagingQuotaBytes.Should().Be(1024);
+        runtime.StagingDir.Should().Be("/st");
     }
 
-    // t36: endpoint/креды в runtime не переносятся — цели даёт пул per-cluster.
+    // endpoint/креды в runtime не переносятся — цели даёт пул per-cluster.
     [Fact]
     public void ToRuntime_WithoutEndpointCreds_IsValid()
     {
@@ -162,7 +152,7 @@ public class BackupsOptionsTests
         runtime.WalStaleSec.Should().Be(300);
     }
 
-    // AAA: CaBundlePath прокидывается в runtime (t42, arch/19 §7) — null по умолчанию
+    // AAA: CaBundlePath прокидывается в runtime (arch/19 §7) — null по умолчанию
     [Fact]
     public void ToRuntime_Carries_CaBundlePath()
     {
@@ -179,7 +169,7 @@ public class BackupsOptionsTests
         new BackupsOptions().ToRuntime().S3CaBundlePath.Should().BeNull();
     }
 
-    // ---- t06: ретенция/квота ----
+    // ---: ретенция/квота ----
 
     [Fact]
     public void Quota_WarnAboveCrit_Invalid()
@@ -223,7 +213,7 @@ public class BackupsOptionsTests
     [Fact]
     public void KeepFailedBelow5_Invalid()
     {
-        // Arrange — слишком мелкая FAILED-глубина (риск бэкофф-сдвига t02).
+        // Arrange — слишком мелкая FAILED-глубина (риск бэкофф-сдвига).
         var options = new BackupsOptions
         {
             Retention = new BackupsRetentionPassOptions { IntervalSec = 600, KeepFailed = 4 },
@@ -239,7 +229,7 @@ public class BackupsOptionsTests
         // Arrange — дефолтная секция (appsettings без ретенции/квоты).
         var options = new BackupsOptions();
 
-        // Act / Assert — дефолты t06 (arch/19 §9) валидны и соответствуют канону.
+        // Act / Assert — дефолты (arch/19 §9) валидны и соответствуют канону.
         options.IsValid().Should().BeTrue();
         options.Retention.IntervalSec.Should().Be(600);
         options.Retention.KeepFailed.Should().Be(20);
@@ -278,7 +268,7 @@ public class BackupsOptionsTests
         runtime.QuotaCritPercent.Should().Be(95);
     }
 
-    // ---- t07: супервизор и бюджеты зависших джобов ----
+    // ---: супервизор и бюджеты зависших джобов ----
 
     // AAA (spec §3.6): отрицательные таймауты/TTL супервизора — fail-fast старта
     [Theory]
@@ -322,7 +312,7 @@ public class BackupsOptionsTests
         options.IsValid().Should().BeTrue("OrphanTtlSec=0 — alert-only mode, the config is valid");
     }
 
-    // AAA: дефолты t07 каноничны (arch/19 §9) и ToRuntime их проксирует
+    // AAA: дефолты каноничны (arch/19 §9) и ToRuntime их проксирует
     [Fact]
     public void Supervisor_AndBudgets_Defaults_Canonical()
     {
@@ -345,7 +335,7 @@ public class BackupsOptionsTests
         runtime.JobRestoreTimeoutSec.Should().Be(86400);
     }
 
-    // ---- reliability t02: дрилл восстановимости (arch/19 §9) ----
+    // ---- reliability : дрилл восстановимости (arch/19 §9) ----
 
     // AAA: Drill-секция склеивается в runtime (дефолты 1/21600)
     [Fact]
@@ -393,52 +383,5 @@ public class BackupsOptionsTests
         // Act / Assert
         options.IsValid().Should().BeTrue("0 is a legitimate switch-off of new runs");
         options.ToRuntime().DrillIntervalDays.Should().Be(0);
-    }
-
-    // ---- t27: Wal:AgentImage (arch/19 §3/§9) ----
-
-    // AAA: дефолт образа wal-агента — pgworker-wal:dev (arch/19 §9)
-    [Fact]
-    public void Wal_AgentImage_Default_IsCanonical()
-    {
-        // Arrange
-        var options = new BackupsOptions();
-
-        // Act / Assert
-        options.Wal.AgentImage.Should().Be("pgworker-wal:dev");
-        options.ToRuntime().WalAgentImage.Should().Be("pgworker-wal:dev");
-    }
-
-    // AAA: Enabled=true с пустым AgentImage — мусорный конфиг (fail-fast старта)
-    [Fact]
-    public void Wal_AgentImage_Empty_Invalid()
-    {
-        // Arrange — включили с полным S3-комплектом, но образ агента не задан
-        var options = new BackupsOptions
-        {
-            Enabled = true,
-            S3 = new BackupsS3Options
-            {
-                Bucket = "pgworker-backups",
-            },
-            Wal = new BackupsWalOptions { AgentImage = "" },
-        };
-
-        // Act / Assert
-        options.IsValid().Should().BeFalse();
-    }
-
-    // AAA: ToRuntime переносит AgentImage (пер-инсталльная настройка образа)
-    [Fact]
-    public void Wal_AgentImage_ToRuntime_Carries()
-    {
-        // Arrange
-        var options = new BackupsOptions
-        {
-            Wal = new BackupsWalOptions { AgentImage = "pgworker-wal:e2e" },
-        };
-
-        // Act / Assert
-        options.ToRuntime().WalAgentImage.Should().Be("pgworker-wal:e2e");
     }
 }

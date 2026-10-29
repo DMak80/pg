@@ -12,7 +12,7 @@ using Xunit;
 namespace PgWorker.IntegrationTests.Backups;
 
 /// <summary>
-/// СОБСТВЕННАЯ ownS3-нода одного Fact (t36: хранилище — пул ownS3; e2e-isolation
+/// СОБСТВЕННАЯ ownS3-нода одного Fact (: хранилище — пул ownS3; e2e-isolation
 /// §1/§3, docs/e2e-isolation.md): guid-имя pgw-eo-{guid}, динамический хост-порт,
 /// свой bucket — тесты не делят хранилище ни с соседними классами, ни с чужими
 /// прогонами, посев одного теста физически не виден другому. Готовность —
@@ -24,9 +24,18 @@ namespace PgWorker.IntegrationTests.Backups;
 /// </summary>
 public sealed class OwnS3 : IAsyncDisposable
 {
-    // Root-пара ownS3-ноды (fail-fast старта) — ею же сеет тест.
-    public const string AccessKey = "owns3-test-root";
-    public const string SecretKey = "owns3-test-root-pwd";
+    // Root-пара ownS3-ноды (fail-fast старта) — ею же сеет тест. Генерируется
+    // в рантайме: секреты не зашиваются в исходник; одна пара на процесс.
+    public static readonly string AccessKey = $"owns3-test-root-{ShortToken()}";
+    public static readonly string SecretKey = $"owns3-test-root-pwd-{ShortToken()}-{ShortToken()}";
+
+    private static string ShortToken()
+    {
+        // Криптостойкий генератор: 20 символов букв/цифр (формат ownS3-кредов).
+        const string alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+        var bytes = System.Security.Cryptography.RandomNumberGenerator.GetBytes(20);
+        return new string(bytes.Select(b => alphabet[b % alphabet.Length]).ToArray());
+    }
 
     /// <summary>Bucket своего окружения (внутри pgw-em-{guid} имя может быть
     /// константным — снаружи контейнер не виден никому).</summary>
@@ -101,14 +110,19 @@ public sealed class OwnS3 : IAsyncDisposable
         {
             if (_imageReady)
                 return;
-            var inspect = new ProcessStartInfo("docker", $"image inspect {Image}")
+            // Список аргументов без shell: имя образа не попадает в строку команды.
+            var inspect = new ProcessStartInfo("docker")
             {
                 UseShellExecute = false,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 CreateNoWindow = true,
             };
-            using var process = Process.Start(inspect)!;
+            inspect.ArgumentList.Add("image");
+            inspect.ArgumentList.Add("inspect");
+            inspect.ArgumentList.Add(Image);
+            using var process = new Process { StartInfo = inspect };
+            process.Start();
             await process.WaitForExitAsync(ct);
             if (process.ExitCode != 0)
                 throw new ApplicationException(
@@ -137,15 +151,14 @@ public sealed class OwnS3 : IAsyncDisposable
         }
     }
 
-    /// <summary>S3-цель своего окружения (t36: S3ClientOptions для BackupS3).</summary>
+    /// <summary>S3-цель своего окружения (: S3ClientOptions для BackupS3).</summary>
     public S3ClientOptions S3() => new(HostEndpoint, Bucket, AccessKey, SecretKey);
 
     /// <summary>Runtime-опции подсистемы на своё окружение (bucket per-install).</summary>
     public BackupsRuntimeOptions Runtime() => new(
         Enabled: true,
         S3Bucket: Bucket,
-        JobImage: "pgworker-backup:test",
-        StagingDir: "/backup-staging",
+        StagingDir: "/home/postgres/pgdata/backup-staging",
         WalVerifyIntervalSec: 30,
         WalLagMaxSegments: 1024,
         WalStaleSec: 300);

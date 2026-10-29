@@ -93,7 +93,7 @@ public sealed class KafkaE2eEnvironment : IAsyncDisposable
 
     public void MarkFailed() => _failed = true;
 
-    /// <summary>Подъём двухинстансного контура (spec t20 §5.1): сеть + etcd +
+    /// <summary>Подъём двухинстансного контура (spec §5.1): сеть + etcd +
     /// ew1/ew2 (общие TLS-пакет/etcd/PortRange — гонки portalloc закрывает
     /// клэйм кластера; УНИКАЛЬНЫЙ Api__AdvertiseUrl каждому). 3 попытки —
     /// против гонок глобального prune.</summary>
@@ -145,7 +145,7 @@ public sealed class KafkaE2eEnvironment : IAsyncDisposable
                     {
                         ["KafkaWorker__Etcd__Endpoints__0"] = $"http://host.docker.internal:{etcdPort}",
                         ["KafkaWorker__AdvertisedClientHost"] = "host.docker.internal",
-                        // Уникальный AdvertiseUrl каждому инстансу (t07): одинаковые
+                        // Уникальный AdvertiseUrl каждому инстансу : одинаковые
                         // URL гасят оба дискавери-ключа.
                         ["KafkaWorker__Api__AdvertiseUrl"] = $"https://host.docker.internal:{apiPort}",
                         ["KafkaWorker__Docker__Mode"] = "Plain",
@@ -260,19 +260,23 @@ public sealed class KafkaE2eEnvironment : IAsyncDisposable
 
     private static async Task<string> RunProcessAsync(
         string file, string[] args, CancellationToken ct, TimeSpan timeout,
-        string? workingDirectory = null, string? logFile = null)
+        string? workingDirectory = null, string? logFile = null,
+        bool mergeStderrOnSuccess = false)
     {
-        var psi = new ProcessStartInfo(file, args)
+        // Список аргументов без shell: данные не попадают в строку команды.
+        var psi = new ProcessStartInfo(file)
         {
             UseShellExecute = false,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             CreateNoWindow = true,
         };
+        foreach (var arg in args)
+            psi.ArgumentList.Add(arg);
         if (workingDirectory is not null)
             psi.WorkingDirectory = workingDirectory;
-        using var process = Process.Start(psi)
-            ?? throw new ApplicationException($"failed to start {file}");
+        using var process = new Process { StartInfo = psi };
+        process.Start();
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeoutCts.CancelAfter(timeout);
         // Оба потока параллельно и БЕЗ токена бюджета: при kill по бюджету пайпы
@@ -288,7 +292,7 @@ public sealed class KafkaE2eEnvironment : IAsyncDisposable
                 await File.AppendAllTextAsync(logFile, output + error);
             if (process.ExitCode != 0)
                 throw new ApplicationException($"{file} {string.Join(' ', args)} → {process.ExitCode}: {error.Trim()}");
-            return output.Trim();
+            return mergeStderrOnSuccess ? MergeOutput(output, error) : output.Trim();
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
@@ -319,6 +323,34 @@ public sealed class KafkaE2eEnvironment : IAsyncDisposable
         }
     }
 
+    /// <summary>Объединение потоков (канон docs/e2e-launch.md §1):
+    /// stdout-блок, затем stderr-блок; между двумя непустыми блоками ровно
+    /// один перевод строки, края тримятся. docker-CLI разводит потоки
+    /// контейнера по своим потокам — stdout-only теряет stderr-диагностику.
+    /// Интерливинг по времени не восстанавливается.</summary>
+    private static string MergeOutput(string output, string error)
+    {
+        var o = output.Trim();
+        var e = error.Trim();
+        return e.Length == 0 ? o : o.Length == 0 ? e : o + "\n" + e;
+    }
+
+    /// <summary>Процесс с объединённым возвратом (stdout+stderr) при exit=0 —
+    /// телеметрия docker logs; контракт RunProcessAsync/RunDockerAsync
+    /// (только stdout) не меняется.</summary>
+    internal static Task<string> RunProcessMergedAsync(
+        string file, string[] args, CancellationToken ct, TimeSpan timeout,
+        string? workingDirectory = null, string? logFile = null)
+        => RunProcessAsync(file, args, ct, timeout, workingDirectory, logFile,
+            mergeStderrOnSuccess: true);
+
+    /// <summary>docker logs — всегда объединённо (stdout+stderr контейнера):
+    /// ["logs", .. logsArgs] — подкоманду logs подставляет сам хелпер;
+    /// бюджет 60 с (канон docs/e2e-launch.md §1).</summary>
+    public Task<string> RunDockerLogsAsync(IReadOnlyList<string> logsArgs, CancellationToken ct)
+        => RunProcessMergedAsync("docker", ["logs", .. logsArgs], ct,
+            TimeSpan.FromSeconds(60));
+
     // ── Хелперы etcd (обёртки над Gateway) ──
 
     /// <summary>Get-значение или null (ключа нет).</summary>
@@ -340,8 +372,19 @@ public sealed class KafkaE2eEnvironment : IAsyncDisposable
     {
         foreach (var name in new[] { Worker1Name, Worker2Name, $"kfw-ee-{_runId}" })
         {
-            await ShellToFileAsync($"logs --tail 2000 {name}",
-                Path.Combine(ArtifactsDir, $"container-{name}-{mark}.log"));
+            // docker logs — объединённо (stdout+stderr); телеметрия —
+            // «лучшими усилиями», не роняет сбор.
+            try
+            {
+                await File.WriteAllTextAsync(
+                    Path.Combine(ArtifactsDir, $"container-{name}-{mark}.log"),
+                    await RunDockerLogsAsync(["--tail", "2000", name], CancellationToken.None));
+            }
+            catch
+            {
+                // телеметрия — лучшее усилие
+            }
+
             await ShellToFileAsync($"inspect {name}",
                 Path.Combine(ArtifactsDir, $"container-{name}-{mark}.json"));
         }
@@ -355,8 +398,20 @@ public sealed class KafkaE2eEnvironment : IAsyncDisposable
             .ToList();
         await File.WriteAllLinesAsync(Path.Combine(ArtifactsDir, $"nodes-{mark}.txt"), names);
         foreach (var name in names)
-            await ShellToFileAsync($"logs --tail 2000 {name}",
-                Path.Combine(ArtifactsDir, $"node-{name}-{mark}.log"));
+        {
+            // docker logs — объединённо (stdout+stderr); телеметрия —
+            // «лучшими усилиями», не роняет сбор.
+            try
+            {
+                await File.WriteAllTextAsync(
+                    Path.Combine(ArtifactsDir, $"node-{name}-{mark}.log"),
+                    await RunDockerLogsAsync(["--tail", "2000", name], CancellationToken.None));
+            }
+            catch
+            {
+                // телеметрия — лучшее усилие
+            }
+        }
     }
 
     /// <summary>Полный teardown при любом исходе: телеметрия ДО удалений →

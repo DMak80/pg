@@ -16,7 +16,7 @@ public class ClusterDriverTests
     private sealed class FakeEngine : IDockerEngine
     {
 
-        // ── union-члены t07 (kfw/vwk-методы): pg-доменом не используются — стабы ──
+        // ── union-члены (kfw/vwk-методы): pg-доменом не используются — стабы ──
         public Task<Result> DeleteNetworkAsync(string name, CancellationToken ct)
         {
             Calls.Add(("delete-network", name));
@@ -50,7 +50,7 @@ public class ClusterDriverTests
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 
-        // t41: ensure сети контура — сеть уже существует у поставки (движок
+        // ensure сети контура — сеть уже существует у поставки (движок
         // отвечает 409 already exists) → драйвер трактует как успех.
         public bool EnsureNetworkFailure = false;
 
@@ -62,9 +62,9 @@ public class ClusterDriverTests
                 : Result.Success());
         }
 
-        // t24 (arch/14 §2.1): подключение контейнера к сети кластера —
+        //  (arch/14 §2.1): подключение контейнера к сети кластера —
         // ensure-инвариант; записываем для юнит-проверок лечения ноды.
-        // t15: scrape-сеть — единственный потребитель с отказом «сети нет»
+        // scrape-сеть — единственный потребитель с отказом «сети нет»
         // (fail-fast провижининга) — override результата по сетям.
         public Func<string, Result>? NetworkConnectFailure = null;
 
@@ -120,6 +120,12 @@ public class ClusterDriverTests
             return Task.FromResult(Result.Success());
         }
 
+        public Task<Result> KillContainerAsync(string idOrName, CancellationToken ct)
+        {
+            Calls.Add(("kill", idOrName));
+            return Task.FromResult(Result.Success());
+        }
+
         public Task<Result> RemoveContainerAsync(string idOrName, bool force, CancellationToken ct)
         {
             Calls.Add(("rm-container", idOrName));
@@ -132,7 +138,7 @@ public class ClusterDriverTests
             return Task.FromResult(Result.Success());
         }
 
-        // t02: логи джобов бэкапов — стаб не нужен драйверным тестам, трекаем вызов.
+        // логи джобов бэкапов — стаб не нужен драйверным тестам, трекаем вызов.
         public Task<Result<string>> GetContainerLogsAsync(string idOrName, int tail, CancellationToken ct)
         {
             Calls.Add(("logs", idOrName));
@@ -213,16 +219,66 @@ public class ClusterDriverTests
 
     private static readonly EtcdEndpoints Etcd = new(["http://etcd:2379"]);
 
-    // Тестовый кеш сертов REST-TLS (t22): пер-install CA юнит-фикстуры —
+    // Пароль REST-API ноды генерируется в рантайме: секрет не зашивается в
+    // исходник; одно поле фикстуры переиспользуется всеми обращениями тестов.
+    private static readonly string RestTestPassword = GenerateRestPassword();
+
+    private static string GenerateRestPassword()
+    {
+        // Криптостойкий генератор: 24 символа из букв/цифр (без спецсимволов,
+        // чтобы не зависеть от квотинга в env/YAML-шаблонах).
+        const string alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+        var bytes = System.Security.Cryptography.RandomNumberGenerator.GetBytes(24);
+        return new string(bytes.Select(b => alphabet[b % alphabet.Length]).ToArray());
+    }
+
+    // Тестовый кеш сертов REST-TLS : пер-install CA юнит-фикстуры —
     // BuildSpec выпускает серт ноды (HTTP-режима не существует).
     private static readonly (string CaPem, string CaKeyPem) RestCaPair = TestRestCa.Generate();
     private static readonly RestCertificateCache RestCache = new(RestCaPair.CaPem, RestCaPair.CaKeyPem);
 
     private static PlainClusterDriver NewPlainDriver(FakeEngine engine, string? advertisedHost = null,
-        string? scrapeNetwork = null, string? contourNetwork = null)
+        string? scrapeNetwork = null, string? contourNetwork = null, NodeBackupEnv? nodeBackupEnv = null)
         => new([new HostEndpoint("h1", "fake://h1")], new FakeFactory(engine), enableDoorman: true,
             advertisedHost: advertisedHost, scrapeNetwork: scrapeNetwork, contourNetwork: contourNetwork,
-            restCertificates: RestCache);
+            restCertificates: RestCache, nodeBackupEnv: nodeBackupEnv);
+
+    // Бэкап-цели приёмника WAL (arch/19 §7): NodeBackupEnv задан — env
+    // ноды несёт PGW_BACKUP_S3_BUCKET/PGW_BACKUP_S3_CA_PEM (per-install).
+    [Fact]
+    public void BuildSpec_NodeBackupEnv_CarriesBucketAndCa()
+    {
+        // Arrange: драйвер с NodeBackupEnv (bucket + PEM CA https S3).
+        var engine = new FakeEngine();
+        var driver = NewPlainDriver(engine,
+            nodeBackupEnv: new NodeBackupEnv("backups", "-----BEGIN CERTIFICATE-----\nMIIBca\n-----END CERTIFICATE-----\n"));
+
+        // Act: сборка спеки ноды.
+        var spec = driver.BuildSpec(Topology(Addr), "shard1a", Addr, Secrets, Etcd, null, null, false, RestTestPassword);
+
+        // Assert: bucket и PEM CA в env ноды.
+        spec.Env!.Should().ContainKey("PGW_BACKUP_S3_BUCKET");
+        spec.Env!["PGW_BACKUP_S3_BUCKET"].Should().Be("backups");
+        spec.Env!.Should().ContainKey("PGW_BACKUP_S3_CA_PEM");
+        spec.Env!["PGW_BACKUP_S3_CA_PEM"].Should().Contain("BEGIN CERTIFICATE");
+    }
+
+    // NodeBackupEnv не задан (DI без Backups) — bucket/CA env НЕ ставится:
+    // приёмник старт-фейлится (подсистема выключена валидацией старта).
+    [Fact]
+    public void BuildSpec_WithoutNodeBackupEnv_DoesNotSetBackupEnv()
+    {
+        // Arrange: драйвер без NodeBackupEnv.
+        var engine = new FakeEngine();
+        var driver = NewPlainDriver(engine);
+
+        // Act: сборка спеки ноды.
+        var spec = driver.BuildSpec(Topology(Addr), "shard1a", Addr, Secrets, Etcd, null, null, false, RestTestPassword);
+
+        // Assert: бэкап-целей в env нет.
+        spec.Env!.Should().NotContainKey("PGW_BACKUP_S3_BUCKET");
+        spec.Env!.Should().NotContainKey("PGW_BACKUP_S3_CA_PEM");
+    }
 
     // AAA: Ф7-live — имена нод НЕуникальны между кластерами одного docker-хоста
     // (pgw-canon-/pgw-canon10-/pgw-smoke- все с hostname/alias "shard1a"):
@@ -395,7 +451,7 @@ public class ClusterDriverTests
 
         // Act
         var result = await driver.EnsureNodeAsync(
-            Topology(addr), "shard1a", addr, Secrets, Etcd, resources: null, tuning: null, syncStrict: false, restPassword: "rest-test-pw", ct: CancellationToken.None);
+            Topology(addr), "shard1a", addr, Secrets, Etcd, resources: null, tuning: null, syncStrict: false, restPassword: RestTestPassword, ct: CancellationToken.None);
 
         // Assert: движок найден (create прошёл), PGW_NODE_HOST = advertised.
         result.IsSuccess.Should().BeTrue();
@@ -425,59 +481,6 @@ public class ClusterDriverTests
         factory.Engines.Should().ContainSingle().Which.HostAlias.Should().Be("host.docker.internal");
     }
 
-    // AAA: Д3 — проба данных ноды: docker-exec test -f PG_VERSION → Present/Absent;
-    // контейнера нет → Unknown (транспорт ≠ доказательство утраты, arch/14 R11)
-    [Fact]
-    public async Task NodeDataPresence_StdoutPresent_Present()
-    {
-        // Arrange: running-контейнер ноды; exec вернул "present" (PG_VERSION есть).
-        var engine = new FakeEngine
-        {
-            Containers = [new DockerContainer("id1", ["pgw-shop-shard1-shard1a"], "running", "img")],
-            ExecStdout = "present",
-        };
-        var driver = NewPlainDriver(engine);
-
-        // Act
-        var result = await driver.NodeDataPresenceAsync("shop", "shard1", "shard1a", CancellationToken.None);
-
-        // Assert: данные доказанно есть.
-        result.IsSuccess.Should().BeTrue();
-        result.Value.Should().Be(DataPresence.Present);
-    }
-
-    [Fact]
-    public async Task NodeDataPresence_StdoutAbsent_Absent()
-    {
-        // Arrange: контейнер жив, PG_VERSION нет (volume пуст — доказанная утрата).
-        var engine = new FakeEngine
-        {
-            Containers = [new DockerContainer("id1", ["pgw-shop-shard1-shard1a"], "running", "img")],
-            ExecStdout = "absent",
-        };
-        var driver = NewPlainDriver(engine);
-
-        // Act
-        var result = await driver.NodeDataPresenceAsync("shop", "shard1", "shard1a", CancellationToken.None);
-
-        // Assert: данных доказанно нет.
-        result.Value.Should().Be(DataPresence.Absent);
-    }
-
-    [Fact]
-    public async Task NodeDataPresence_NoRunningContainer_Unknown()
-    {
-        // Arrange: контейнера нет — утрата НЕ доказана.
-        var engine = new FakeEngine { Containers = [] };
-        var driver = NewPlainDriver(engine);
-
-        // Act
-        var result = await driver.NodeDataPresenceAsync("shop", "shard1", "shard1a", CancellationToken.None);
-
-        // Assert: Unknown — чистка scope запрещена.
-        result.Value.Should().Be(DataPresence.Unknown);
-    }
-
     [Fact]
     public async Task EnsureNode_ExistingContainer_DoesNotRecreate()
     {
@@ -494,7 +497,7 @@ public class ClusterDriverTests
         var driver = NewPlainDriver(engine);
 
         // Act
-        var result = await driver.EnsureNodeAsync(Topology(Addr), "shard1a", Addr, Secrets, Etcd, resources: null, tuning: null, syncStrict: false, restPassword: "rest-test-pw", ct: CancellationToken.None);
+        var result = await driver.EnsureNodeAsync(Topology(Addr), "shard1a", Addr, Secrets, Etcd, resources: null, tuning: null, syncStrict: false, restPassword: RestTestPassword, ct: CancellationToken.None);
 
         // Assert: ни create, ни start — только сверка списком и инспектом
         result.IsSuccess.Should().BeTrue();
@@ -520,12 +523,12 @@ public class ClusterDriverTests
         var driver = NewPlainDriver(engine);
 
         // Act
-        var result = await driver.EnsureNodeAsync(Topology(Addr), "shard1a", Addr, Secrets, Etcd, resources: null, tuning: null, syncStrict: false, restPassword: "rest-test-pw", ct: CancellationToken.None);
+        var result = await driver.EnsureNodeAsync(Topology(Addr), "shard1a", Addr, Secrets, Etcd, resources: null, tuning: null, syncStrict: false, restPassword: RestTestPassword, ct: CancellationToken.None);
 
-        // Assert: stop → create → start с планом портов (PROVISIONING-фаза, volume жив).
+        // Assert: kill → create → start с планом портов (PROVISIONING-фаза, volume жив).
         result.IsSuccess.Should().BeTrue();
         var calls = engine.Calls.Select(c => c.Call).ToList();
-        calls.Should().ContainInOrder("stop", "create", "start");
+        calls.Should().ContainInOrder("kill", "create", "start");
         engine.CreatedSpec!.Ports.Should().Contain(new PortMap(5432, 15432));
     }
 
@@ -547,7 +550,7 @@ public class ClusterDriverTests
             restCertificates: RestCache);
 
         // Act
-        await driver.EnsureNodeAsync(Topology(Addr), "shard1a", Addr, Secrets, Etcd, resources: null, tuning: null, syncStrict: false, restPassword: "rest-test-pw", ct: CancellationToken.None);
+        await driver.EnsureNodeAsync(Topology(Addr), "shard1a", Addr, Secrets, Etcd, resources: null, tuning: null, syncStrict: false, restPassword: RestTestPassword, ct: CancellationToken.None);
 
         // Assert: пересоздание (отсутствие ожидаемого биндинга = расхождение).
         engine.Calls.Select(c => c.Call).Should().Contain("create");
@@ -571,7 +574,7 @@ public class ClusterDriverTests
         var addr = new NodeAddress("h1", new NodePorts(15432, 18008, 16432), Object: "foreign-1");
 
         // Act
-        var result = await driver.EnsureNodeAsync(Topology(addr), "shard1a", addr, Secrets, Etcd, resources: null, tuning: null, syncStrict: false, restPassword: "rest-test-pw", ct: CancellationToken.None);
+        var result = await driver.EnsureNodeAsync(Topology(addr), "shard1a", addr, Secrets, Etcd, resources: null, tuning: null, syncStrict: false, restPassword: RestTestPassword, ct: CancellationToken.None);
 
         // Assert: никаких stop/remove/create.
         result.IsSuccess.Should().BeTrue();
@@ -587,7 +590,7 @@ public class ClusterDriverTests
         var driver = NewPlainDriver(engine);
 
         // Act
-        var result = await driver.EnsureNodeAsync(Topology(Addr), "shard1a", Addr, Secrets, Etcd, resources: null, tuning: null, syncStrict: false, restPassword: "rest-test-pw", ct: CancellationToken.None);
+        var result = await driver.EnsureNodeAsync(Topology(Addr), "shard1a", Addr, Secrets, Etcd, resources: null, tuning: null, syncStrict: false, restPassword: RestTestPassword, ct: CancellationToken.None);
 
         // Assert: имя pgw-<C>-<X>-<n>; env из SpiloEnvBuilder + PGW_NODE_HOST;
         // volume -data; publish тройка портов; затем start
@@ -629,7 +632,7 @@ public class ClusterDriverTests
 
         // Act
         var result = await driver.EnsureNodeAsync(
-            Topology(Addr), "shard1a", Addr, Secrets, Etcd, resources: null, tuning, syncStrict: false, "rest-test-pw", CancellationToken.None);
+            Topology(Addr), "shard1a", Addr, Secrets, Etcd, resources: null, tuning, syncStrict: false, RestTestPassword, CancellationToken.None);
 
         // Assert: SPILO_CONFIGURATION — merge(PGTune ∪ канон) от tuning (не хардкод
         // "2GB"), exclude применён при сборке YAML; doorman = max_connections − 5.
@@ -651,7 +654,7 @@ public class ClusterDriverTests
             restCertificates: RestCache);
 
         // Act
-        var result = await driver.EnsureNodeAsync(Topology(Addr), "shard1a", Addr, Secrets, Etcd, resources: null, tuning: null, syncStrict: false, restPassword: "rest-test-pw", ct: CancellationToken.None);
+        var result = await driver.EnsureNodeAsync(Topology(Addr), "shard1a", Addr, Secrets, Etcd, resources: null, tuning: null, syncStrict: false, restPassword: RestTestPassword, ct: CancellationToken.None);
 
         // Assert: порт 6432 не публикуется, DOORMAN_CONFIG не генерируется
         result.IsSuccess.Should().BeTrue();
@@ -672,18 +675,18 @@ public class ClusterDriverTests
         // Act
         var result = await driver.RemoveNodeAsync("shop", "shard1", "shard1a", CancellationToken.None);
 
-        // Assert: stop → rm(force) → volume rm; далее демонтажный контроль
+        // Assert: kill → rm(force) → volume rm; далее демонтажный контроль
         // (объектов кластера нет → delete-network per-cluster сети, arch/14 §2.1)
         result.IsSuccess.Should().BeTrue();
         var calls = engine.Calls.Select(c => c.Call).ToList();
-        calls.Take(3).Should().Equal("stop", "rm-container", "rm-volume");
+        calls.Take(3).Should().Equal("kill", "rm-container", "rm-volume");
         engine.Calls[1].Arg.Should().Be("pgw-shop-shard1-shard1a");
         engine.Calls[2].Arg.Should().Be("pgw-shop-shard1-shard1a-data");
         calls.Should().Contain("delete-network");
         engine.Calls.Should().Contain(c => c.Call == "delete-network" && c.Arg!.Equals("pgw-net-shop"));
     }
 
-    // AAA (t24, arch/14 §2.1): имя сети нод — PER-CLUSTER (kfw-паттерн):
+    // AAA (arch/14 §2.1): имя сети нод — PER-CLUSTER (kfw-паттерн):
     // префикс + имя кластера; единая сеть делала DNS-зону общей для всех
     // кластеров docker-хоста (перекрёстная видимость чужих алиасов).
     [Fact]
@@ -695,7 +698,7 @@ public class ClusterDriverTests
         PlainClusterDriver.NodesNetworkPrefix.Should().Be("pgw-net-");
     }
 
-    // AAA (t24, arch/14 §2.1): ensure ноды создаёт и держит СЕТЬ КЛАСТЕРА
+    // AAA (arch/14 §2.1): ensure ноды создаёт и держит СЕТЬ КЛАСТЕРА
     // pgw-net-<C>, спека контейнера несёт её же — «нода в сети кластера».
     [Fact]
     public async Task EnsureNode_Network_AndSpec_PerCluster()
@@ -706,7 +709,7 @@ public class ClusterDriverTests
 
         // Act
         var result = await driver.EnsureNodeAsync(
-            Topology(Addr), "shard1a", Addr, Secrets, Etcd, resources: null, tuning: null, syncStrict: false, restPassword: "rest-test-pw", ct: CancellationToken.None);
+            Topology(Addr), "shard1a", Addr, Secrets, Etcd, resources: null, tuning: null, syncStrict: false, restPassword: RestTestPassword, ct: CancellationToken.None);
 
         // Assert — ensure сети + спека с per-cluster Network
         result.IsSuccess.Should().BeTrue();
@@ -714,7 +717,7 @@ public class ClusterDriverTests
         engine.CreatedSpec!.Network.Should().Be("pgw-net-shop");
     }
 
-    // AAA (t24, arch/14 §2.1): ensure-инвариант — существующая нода с планом
+    // AAA (arch/14 §2.1): ensure-инвариант — существующая нода с планом
     // портов, но в ЧУЖОЙ сети (наследие единой pgw-net) подключается к сети
     // кластера docker network connect; пересоздание недопустимо (нода с данными).
     [Fact]
@@ -735,7 +738,7 @@ public class ClusterDriverTests
 
         // Act
         var result = await driver.EnsureNodeAsync(
-            Topology(Addr), "shard1a", Addr, Secrets, Etcd, resources: null, tuning: null, syncStrict: false, restPassword: "rest-test-pw", ct: CancellationToken.None);
+            Topology(Addr), "shard1a", Addr, Secrets, Etcd, resources: null, tuning: null, syncStrict: false, restPassword: RestTestPassword, ct: CancellationToken.None);
 
         // Assert — connect к сети кластера, БЕЗ пересоздания
         result.IsSuccess.Should().BeTrue();
@@ -744,7 +747,7 @@ public class ClusterDriverTests
         engine.Calls.Should().NotContain(c => c.Call == "create");
     }
 
-    // AAA (t24, arch/14 §2.1): нода уже в сети кластера — идемпотентность,
+    // AAA (arch/14 §2.1): нода уже в сети кластера — идемпотентность,
     // никаких connect/create.
     [Fact]
     public async Task EnsureNode_NodeInClusterNetwork_IsIdempotent()
@@ -764,7 +767,7 @@ public class ClusterDriverTests
 
         // Act
         var result = await driver.EnsureNodeAsync(
-            Topology(Addr), "shard1a", Addr, Secrets, Etcd, resources: null, tuning: null, syncStrict: false, restPassword: "rest-test-pw", ct: CancellationToken.None);
+            Topology(Addr), "shard1a", Addr, Secrets, Etcd, resources: null, tuning: null, syncStrict: false, restPassword: RestTestPassword, ct: CancellationToken.None);
 
         // Assert
         result.IsSuccess.Should().BeTrue();
@@ -772,7 +775,7 @@ public class ClusterDriverTests
         engine.Calls.Should().NotContain(c => c.Call == "create");
     }
 
-    // AAA (t15 ревизия 3, arch/14 §2.1): ключ ScrapeNetwork задан — существующая
+    // AAA (ревизия 3, arch/14 §2.1): ключ ScrapeNetwork задан — существующая
     // нода с планом портов Ensure-attach'ится к сети контура мониторинга
     // (поверх pgw-net-<C>, идемпотентно по inspect).
     [Fact]
@@ -793,7 +796,7 @@ public class ClusterDriverTests
 
         // Act
         var result = await driver.EnsureNodeAsync(
-            Topology(Addr), "shard1a", Addr, Secrets, Etcd, resources: null, tuning: null, syncStrict: false, restPassword: "rest-test-pw", ct: CancellationToken.None);
+            Topology(Addr), "shard1a", Addr, Secrets, Etcd, resources: null, tuning: null, syncStrict: false, restPassword: RestTestPassword, ct: CancellationToken.None);
 
         // Assert — connect к scrape-сети, без пересоздания.
         result.IsSuccess.Should().BeTrue();
@@ -802,7 +805,7 @@ public class ClusterDriverTests
         engine.Calls.Should().NotContain(c => c.Call == "create");
     }
 
-    // AAA (t15 ревизия 3): нода уже в scrape-сети — идемпотентность, connect не вызывается.
+    // AAA (ревизия 3): нода уже в scrape-сети — идемпотентность, connect не вызывается.
     [Fact]
     public async Task EnsureNode_ScrapeNetwork_AlreadyAttached_NoConnect()
     {
@@ -821,14 +824,14 @@ public class ClusterDriverTests
 
         // Act
         var result = await driver.EnsureNodeAsync(
-            Topology(Addr), "shard1a", Addr, Secrets, Etcd, resources: null, tuning: null, syncStrict: false, restPassword: "rest-test-pw", ct: CancellationToken.None);
+            Topology(Addr), "shard1a", Addr, Secrets, Etcd, resources: null, tuning: null, syncStrict: false, restPassword: RestTestPassword, ct: CancellationToken.None);
 
         // Assert — ни одного connect (кластер-инвариант и scrape уже держит inspect).
         result.IsSuccess.Should().BeTrue();
         engine.Calls.Should().NotContain(c => c.Call == "network-connect");
     }
 
-    // AAA (t15 ревизия 3): новый контейнер — attach к scrape-сети после старта.
+    // AAA (ревизия 3): новый контейнер — attach к scrape-сети после старта.
     [Fact]
     public async Task EnsureNode_ScrapeNetwork_NewContainer_AfterStart()
     {
@@ -838,7 +841,7 @@ public class ClusterDriverTests
 
         // Act
         var result = await driver.EnsureNodeAsync(
-            Topology(Addr), "shard1a", Addr, Secrets, Etcd, resources: null, tuning: null, syncStrict: false, restPassword: "rest-test-pw", ct: CancellationToken.None);
+            Topology(Addr), "shard1a", Addr, Secrets, Etcd, resources: null, tuning: null, syncStrict: false, restPassword: RestTestPassword, ct: CancellationToken.None);
 
         // Assert — create → start → connect scrape-сети.
         result.IsSuccess.Should().BeTrue();
@@ -847,7 +850,7 @@ public class ClusterDriverTests
             c.Call == "network-connect" && c.Arg!.Equals("pgw-metrics:pgw-shop-shard1-shard1a"));
     }
 
-    // AAA (t15 ревизия 3): ключ не задан — ни одного network-connect сверх
+    // AAA (ревизия 3): ключ не задан — ни одного network-connect сверх
     // кластер-инварианта (поведение бинарно базе).
     [Fact]
     public async Task EnsureNode_NoScrapeNetwork_NoConnect()
@@ -858,7 +861,7 @@ public class ClusterDriverTests
 
         // Act
         var result = await driver.EnsureNodeAsync(
-            Topology(Addr), "shard1a", Addr, Secrets, Etcd, resources: null, tuning: null, syncStrict: false, restPassword: "rest-test-pw", ct: CancellationToken.None);
+            Topology(Addr), "shard1a", Addr, Secrets, Etcd, resources: null, tuning: null, syncStrict: false, restPassword: RestTestPassword, ct: CancellationToken.None);
 
         // Assert — create/start есть, connect нет вовсе.
         result.IsSuccess.Should().BeTrue();
@@ -866,7 +869,7 @@ public class ClusterDriverTests
         engine.Calls.Should().NotContain(c => c.Call == "network-connect");
     }
 
-    // AAA (t15 ревизия 3, arch/14 §2.1): scrape-сети нет на docker-хосте —
+    // AAA (ревизия 3, arch/14 §2.1): scrape-сети нет на docker-хосте —
     // fail-fast с diagnose (имя сети в ошибке), не молчаливый пропуск.
     [Fact]
     public async Task EnsureNode_ScrapeNetworkMissing_FailsFast()
@@ -881,14 +884,14 @@ public class ClusterDriverTests
 
         // Act
         var result = await driver.EnsureNodeAsync(
-            Topology(Addr), "shard1a", Addr, Secrets, Etcd, resources: null, tuning: null, syncStrict: false, restPassword: "rest-test-pw", ct: CancellationToken.None);
+            Topology(Addr), "shard1a", Addr, Secrets, Etcd, resources: null, tuning: null, syncStrict: false, restPassword: RestTestPassword, ct: CancellationToken.None);
 
         // Assert — провижининг несёт diagnose с именем сети.
         result.IsSuccess.Should().BeFalse();
         result.Error!.Message.Should().Contain("pgw-metrics");
     }
 
-    // AAA (t15 ревизия 3, R9): усыновлённая нода (object) — чужой контейнер,
+    // AAA (ревизия 3, R9): усыновлённая нода (object) — чужой контейнер,
     // scrape-attach не выполняется.
     [Fact]
     public async Task EnsureNode_AdoptedObject_NoScrapeAttach()
@@ -903,7 +906,7 @@ public class ClusterDriverTests
 
         // Act
         var result = await driver.EnsureNodeAsync(
-            Topology(addr), "shard1a", addr, Secrets, Etcd, resources: null, tuning: null, syncStrict: false, restPassword: "rest-test-pw", ct: CancellationToken.None);
+            Topology(addr), "shard1a", addr, Secrets, Etcd, resources: null, tuning: null, syncStrict: false, restPassword: RestTestPassword, ct: CancellationToken.None);
 
         // Assert — чужой контейнер не тронут.
         result.IsSuccess.Should().BeTrue();
@@ -911,37 +914,35 @@ public class ClusterDriverTests
         engine.Calls.Should().NotContain(c => c.Call == "create");
     }
 
-    // AAA (t24, arch/14 §2.1): ensure-инвариант агента — агент в ЧУЖОЙ сети
-    // мастера не видит (pg_receivewal-рестарт-луп); лечение — пересоздание
-    // (stateless) со staging-volume, новый агент создаётся в pgw-net-<C>.
+    // AAA : санитарный снос legacy wal-контейнеров pgw-backup-wal-<C>-* —
+    // stop + rm + rm -staging-тома; пустой листинг — no-op (идемпотентность,
+    // 404-семантика: вызов в начале каждого тика WalStreamProcess).
     [Fact]
-    public async Task EnsureBackupAgent_AgentInForeignNetwork_IsRecreated()
+    public async Task RemoveBackupAgents_RemovesLegacyContainersAndVolumes()
     {
-        // Arrange — агент жив, но в старой единой сети
+        // Arrange — legacy агент на хосте (per-node имя) + staging-том
         var engine = new FakeEngine
         {
             Containers = [new DockerContainer("id-ag", ["pgw-backup-wal-shop-shard1-shard1a"], "running", "wal-img")],
-            Inspects = new Dictionary<string, DockerContainerInspect>
-            {
-                ["id-ag"] = new("id-ag", "pgw-backup-wal-shop-shard1-shard1a", [], [], [], Networks: ["pgw-net-legacy"]),
-            },
         };
         var driver = NewPlainDriver(engine);
-        var spec = new ContainerSpec("pgworker-wal:dev", [], "pgw-backup-wal-shop-shard1-shard1a",
-            Env: new Dictionary<string, string>(), ResetEntrypoint: false, LabelKey: "pgworker", Label: "shop");
 
         // Act
-        var ensured = await driver.EnsureBackupAgentAsync(
-            "shop", "shard1", "shard1a", spec, "h1", CancellationToken.None);
+        var removed = await driver.RemoveBackupAgentsAsync("shop", shard: null, CancellationToken.None);
 
-        // Assert — stop + rm + rm staging-volume, затем create в per-cluster сети
-        ensured.IsSuccess.Should().BeTrue();
-        engine.Calls.Select(c => c.Call).Should().ContainInOrder("stop", "rm-container", "rm-volume", "create", "start");
+        // Assert — stop + rm контейнера + rm -staging-тома; второй вызов (листинг
+        // пуст) — no-op (движок без вызовов stop/rm)
+        removed.IsSuccess.Should().BeTrue();
+        engine.Calls.Select(c => c.Call).Should().ContainInOrder("stop", "rm-container", "rm-volume");
         engine.Calls.Should().Contain(c => c.Call == "rm-volume" && c.Arg!.Equals("pgw-backup-wal-shop-shard1-shard1a-staging"));
-        engine.CreatedSpec!.Network.Should().Be("pgw-net-shop");
+
+        var engine2 = new FakeEngine();
+        var driver2 = NewPlainDriver(engine2);
+        (await driver2.RemoveBackupAgentsAsync("shop", shard: null, CancellationToken.None)).IsSuccess.Should().BeTrue();
+        engine2.Calls.Should().NotContain(c => c.Call == "rm-container", "empty listing is a no-op");
     }
 
-    // AAA (t24, arch/14 §2.1): демонтаж сети кластера — только когда объектов
+    // AAA (arch/14 §2.1): демонтаж сети кластера — только когда объектов
     // кластера не осталось; чужие контейнеры кластера держат сеть живой.
     [Fact]
     public async Task RemoveNode_LiveClusterObjects_KeepNetwork()
@@ -971,9 +972,9 @@ public class ClusterDriverTests
         // Act
         var result = await driver.StopNodeAsync("shop", "shard1", "shard1a", CancellationToken.None);
 
-        // Assert: только stop
+        // Assert: только kill
         result.IsSuccess.Should().BeTrue();
-        engine.Calls.Select(c => c.Call).Should().Equal("stop");
+        engine.Calls.Select(c => c.Call).Should().Equal("kill");
         engine.Calls[0].Arg.Should().Be("pgw-shop-shard1-shard1a");
     }
 
@@ -1014,7 +1015,7 @@ public class ClusterDriverTests
             restCertificates: RestCache);
 
         // Act
-        var result = await driver.EnsureNodeAsync(Topology(Addr), "shard1a", Addr, Secrets, Etcd, resources: null, tuning: null, syncStrict: false, restPassword: "rest-test-pw", ct: CancellationToken.None);
+        var result = await driver.EnsureNodeAsync(Topology(Addr), "shard1a", Addr, Secrets, Etcd, resources: null, tuning: null, syncStrict: false, restPassword: RestTestPassword, ct: CancellationToken.None);
 
         // Assert: ServiceSpec с constraint по id найденной ноды; шаблон — как у plain
         result.IsSuccess.Should().BeTrue();
@@ -1024,7 +1025,7 @@ public class ClusterDriverTests
         spec.NodeConstraint.Should().Be("node-id-1");
         spec.Template.Ports.Should().Contain(p => p.ContainerPort == 5432 && p.HostPort == 15432);
         spec.Template.VolumeName.Should().Be("pgw-shop-shard1-shard1a-data");
-        // t22: внутренний plain BuildSpec несёт REST-TLS материал (кеш передан)
+        // внутренний plain BuildSpec несёт REST-TLS материал (кеш передан)
         spec.Template.Env.Should().ContainKey("SSL_RESTAPI_CERTIFICATE");
         spec.Template.Env.Should().ContainKey(RestRotation.EnvPasswordHash);
     }
@@ -1036,14 +1037,14 @@ public class ClusterDriverTests
         var driver = NewPlainDriver(new FakeEngine());
 
         // Act: сборка спеки — серт выпускается из кеша, хеш пары в env.
-        var spec = driver.BuildSpec(Topology(Addr), "shard1a", Addr, Secrets, Etcd, null, null, false, "rest-test-pw");
+        var spec = driver.BuildSpec(Topology(Addr), "shard1a", Addr, Secrets, Etcd, null, null, false, RestTestPassword);
 
         // Assert: env несёт PEM серта + CA + sha256-хез эффективной пары; SAN
         // серта покрывает короткое имя, полное docker-имя и loopback (арх/14 §2.4).
         spec.Env!.Should().ContainKey("SSL_RESTAPI_CERTIFICATE");
         spec.Env!.Should().ContainKey("SSL_RESTAPI_PRIVATE_KEY");
         spec.Env!.Should().ContainKey("SSL_RESTAPI_CA");
-        spec.Env![RestRotation.EnvPasswordHash].Should().Be(RestRotation.PasswordHash("rest-test-pw"));
+        spec.Env![RestRotation.EnvPasswordHash].Should().Be(RestRotation.PasswordHash(RestTestPassword));
         using var cert = System.Security.Cryptography.X509Certificates.X509Certificate2
             .CreateFromPem(spec.Env!["SSL_RESTAPI_CERTIFICATE"]!);
         var san = cert.Extensions.OfType<System.Security.Cryptography.X509Certificates.X509SubjectAlternativeNameExtension>().Single();
@@ -1059,8 +1060,8 @@ public class ClusterDriverTests
         var driver = NewPlainDriver(new FakeEngine());
 
         // Act: две сборки спеки одной ноды.
-        var first = driver.BuildSpec(Topology(Addr), "shard1a", Addr, Secrets, Etcd, null, null, false, "rest-test-pw");
-        var second = driver.BuildSpec(Topology(Addr), "shard1a", Addr, Secrets, Etcd, null, null, false, "rest-test-pw");
+        var first = driver.BuildSpec(Topology(Addr), "shard1a", Addr, Secrets, Etcd, null, null, false, RestTestPassword);
+        var second = driver.BuildSpec(Topology(Addr), "shard1a", Addr, Secrets, Etcd, null, null, false, RestTestPassword);
 
         // Assert: тот же PEM (серт кешируется — повторные ensure не перегенерируют).
         first.Env!["SSL_RESTAPI_CERTIFICATE"].Should().Be(second.Env!["SSL_RESTAPI_CERTIFICATE"]);
@@ -1074,7 +1075,7 @@ public class ClusterDriverTests
             [new HostEndpoint("h1", "fake://h1")], new FakeFactory(new FakeEngine()), enableDoorman: true);
 
         // Act: BuildSpec → fail-fast (HTTP-режима провижининга не существует).
-        var act = () => driver.BuildSpec(Topology(Addr), "shard1a", Addr, Secrets, Etcd, null, null, false, "rest-test-pw");
+        var act = () => driver.BuildSpec(Topology(Addr), "shard1a", Addr, Secrets, Etcd, null, null, false, RestTestPassword);
 
         // Assert: diagnose называет кеш сертов.
         act.Should().Throw<ApplicationException>().Which.Message.Should().Contain("RestCertificateCache");
@@ -1091,7 +1092,7 @@ public class ClusterDriverTests
         var resources = new NodeResources(CpuCores: 2, MemoryBytes: 8L * 1024 * 1024 * 1024);
 
         // Act
-        var result = await driver.EnsureNodeAsync(Topology(Addr), "shard1a", Addr, Secrets, Etcd, resources, tuning: null, syncStrict: false, "rest-test-pw", CancellationToken.None);
+        var result = await driver.EnsureNodeAsync(Topology(Addr), "shard1a", Addr, Secrets, Etcd, resources, tuning: null, syncStrict: false, RestTestPassword, CancellationToken.None);
 
         // Assert
         result.IsSuccess.Should().BeTrue();
@@ -1174,39 +1175,11 @@ public class ClusterDriverTests
     }
 
     [Fact]
-    public async Task EnsureBackupAgent_AdvertisedHost_ResolvesToSingleEngine()
+    public async Task ListNodeObjects_Filter_AgentsAreNotNodes()
     {
-        // Arrange — advertised-режим dev-стенда: portalloc несёт advertised-имя,
-        // движок один (ревью Ф4-2 №3: без fallback подъём агента в стенде падал бы
-        // «хост не в таблице»)
-        var engine = new FakeEngine();
-        var driver = NewPlainDriver(engine, advertisedHost: "host.docker.internal");
-        var spec = new ContainerSpec(
-            "pgworker-wal:dev", [], "pgw-backup-wal-shop-shard1-shard1a",
-            Env: new Dictionary<string, string>(),
-            VolumeName: null,   // t27: staging-том упразднён — буфер в памяти приёмника
-            VolumeDest: null,
-            ResetEntrypoint: false,
-            LabelKey: "pgworker",
-            Label: "shop");
-
-        // Act
-        var ensured = await driver.EnsureBackupAgentAsync(
-            "shop", "shard1", "shard1a", spec, "host.docker.internal", ct: CancellationToken.None);
-
-        // Assert — драйвер владеет сетью нод: NetworkMode=pgw-net-<C> в созданной
-        // спеке (ревью Ф7 №1: без сети агент в default bridge не резолвит alias мастера)
-        ensured.IsSuccess.Should().BeTrue();
-        engine.CreatedName.Should().Be("pgw-backup-wal-shop-shard1-shard1a");
-        engine.Calls.Should().Contain(c => c.Call == "create").And.Contain(c => c.Call == "start");
-        engine.CreatedSpec!.Network.Should().Be(PlainClusterDriver.NetworkName("shop"));
-    }
-
-    [Fact]
-    public async Task ListBackupAgents_And_ListNodeObjectsFilter_AgentsAreNotNodes()
-    {
-        // Arrange — живой агент + нода кластера: ListNodeObjectsAsync обязан
-        // вернуть ТОЛЬКО ноду (агенты — не ноды, их жизнью управляет WalStreamProcess).
+        // Arrange — legacy агент + нода кластера: ListNodeObjectsAsync обязан
+        // вернуть ТОЛЬКО ноду (: агентов больше нет; legacy-остатки — не ноды,
+        // их сносит санитарный вызов WalStreamProcess).
         var engine = new FakeEngine
         {
             Containers =
@@ -1219,15 +1192,13 @@ public class ClusterDriverTests
 
         // Act
         var listed = await driver.ListNodeObjectsAsync("shop", CancellationToken.None);
-        var agents = await driver.ListBackupAgentsAsync("shop", CancellationToken.None);
 
-        // Assert
+        // Assert — только объекты нод (agents отфильтрованы)
         listed.Value.Should().ContainSingle(n => n == "pgw-shop-shard1-shard1a")
             .And.NotContain(n => n.StartsWith("pgw-backup-wal-", StringComparison.Ordinal));
-        agents.Value.Should().ContainSingle(c => c.Names.Contains("pgw-backup-wal-shop-shard1"));
     }
 
-    // AAA (t41): сеть ноды/ensure по режиму — контур поставки или per-cluster
+    // AAA : сеть ноды/ensure по режиму — контур поставки или per-cluster
     // pgw-net-<C> (прод); alias'ы спеки (nodeName, pgw-<C>-<X>-<n>) не меняются.
     [Theory]
     [InlineData(null, "pgw-net-shop")]                           // прод-режим
@@ -1240,7 +1211,7 @@ public class ClusterDriverTests
 
         // Act
         (await driver.EnsureNodeAsync(Topology(Addr), "shard1a", Addr, Secrets, Etcd,
-            resources: null, tuning: null, syncStrict: false, restPassword: "rest-test-pw",
+            resources: null, tuning: null, syncStrict: false, restPassword: RestTestPassword,
             ct: CancellationToken.None)).IsSuccess.Should().BeTrue();
 
         // Assert — ensure и спека несут сеть режима; alias'ы на месте
@@ -1250,26 +1221,7 @@ public class ClusterDriverTests
             .Should().Contain(new[] { "shard1a", "pgw-shop-shard1-shard1a" });
     }
 
-    // AAA (t41): wal-агент в контур-режиме создаётся в сети контура (спека
-    // процесса несёт Network: null — сеть назначает драйвер).
-    [Fact]
-    public async Task EnsureBackupAgent_ContourMode_CreatedInContourNetwork()
-    {
-        // Arrange
-        var engine = new FakeEngine { Containers = [] };
-        var driver = NewPlainDriver(engine, contourNetwork: "adminpanel-stand-net");
-        var spec = new ContainerSpec("pgworker-wal:dev", [], "agent-host",
-            Env: new Dictionary<string, string>());
-
-        // Act
-        (await driver.EnsureBackupAgentAsync("shop", "shard1", "shard1a", spec, "h1", CancellationToken.None))
-            .IsSuccess.Should().BeTrue();
-
-        // Assert — созданный контейнер агента в сети контура
-        engine.CreatedSpec!.Network.Should().Be("adminpanel-stand-net");
-    }
-
-    // AAA (t41): полный демонтаж ноды — per-cluster сеть удаляется ТОЛЬКО в
+    // AAA : полный демонтаж ноды — per-cluster сеть удаляется ТОЛЬКО в
     // прод-режиме; сеть контура принадлежит поставке — движок её не трогает.
     [Theory]
     [InlineData(null, "pgw-net-shop")]
@@ -1292,7 +1244,7 @@ public class ClusterDriverTests
             deleted.Should().Contain(c => (string)c.Arg! == expectedDeletedNetwork);
     }
 
-    // AAA (t41): ensure сети контура идемпотентен — сеть уже существует у
+    // AAA : ensure сети контура идемпотентен — сеть уже существует у
     // поставки (движок отвечает 409 already exists) → успех, не ошибка.
     [Fact]
     public async Task EnsureNode_ContourNetworkAlreadyExists409_Success()
@@ -1303,7 +1255,7 @@ public class ClusterDriverTests
 
         // Act
         var result = await driver.EnsureNodeAsync(Topology(Addr), "shard1a", Addr, Secrets, Etcd,
-            resources: null, tuning: null, syncStrict: false, restPassword: "rest-test-pw",
+            resources: null, tuning: null, syncStrict: false, restPassword: RestTestPassword,
             ct: CancellationToken.None);
 
         // Assert — 409 = успех (идемпотентность ensure)

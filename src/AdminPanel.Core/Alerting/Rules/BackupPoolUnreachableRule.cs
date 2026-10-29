@@ -2,7 +2,7 @@ using Shared.Core.DI;
 
 namespace AdminPanel.Core.Alerting.Rules;
 
-// backup-pool-unreachable (critical, t36, каталог 03 §4): маркер
+// backup-pool-unreachable (critical, каталог 03 §4): маркер
 // s3-pool-exhausted в error статусов воркера — wal DEGRADED (приёмник в
 // ретрай-цикле исчерпания списка) или любой full FAILED (исчерпание
 // списка/Failed-резолв пула, arch/19 §4). Единая алертная грань «запись в пул
@@ -19,12 +19,12 @@ public sealed class BackupPoolUnreachableRule : IAlertRule
         foreach (var cluster in snapshot.Backups)
         {
             var hits = new List<string>();
-            // wal DEGRADED с маркером (Shards — словарь wal-статусов, t03-модель).
+            // wal DEGRADED с маркером (Shards — словарь wal-статусов, модель).
             foreach (var (shard, wal) in cluster.Shards ?? new Dictionary<string, WalStreamInfo?>())
                 if (wal is { State: WalStreamInfoState.Degraded }
                     && wal.Error?.Contains(Marker, StringComparison.Ordinal) == true)
                     hits.Add($"wal {shard}: {wal.Error}");
-            // Любой full FAILED с маркером (ShardsFulls — t08-модель полных).
+            // Любой full FAILED с маркером (ShardsFulls — модель полных).
             foreach (var (_, fulls) in cluster.ShardsFulls ?? new Dictionary<string, IReadOnlyList<BackupFullInfo>>())
                 foreach (var full in fulls.Where(f =>
                     f.State == "FAILED" && f.Error?.Contains(Marker, StringComparison.Ordinal) == true))

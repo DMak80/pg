@@ -3,7 +3,7 @@ using Shared.Etcd.Client;
 
 namespace PgWorker.UnitTests.Api;
 
-// Мини-имитация etcd в памяти для юнит-тестов API-хендлеров (t07): range/get/
+// Мини-имитация etcd в памяти для юнит-тестов API-хендлеров : range/get/
 // put/delete + txn-compare version==0. Порт fake из Etcd/CoordinationTests.
 internal sealed class FakeEtcdGateway : IEtcdGateway
 {

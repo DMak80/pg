@@ -10,11 +10,11 @@ using Xunit;
 
 namespace PgWorker.IntegrationTests.E2e;
 
-// E2E тренировочных восстановлений (t24/ревизия 8 — разбиение
+// E2E тренировочных восстановлений (/ревизия 8 — разбиение
 // E2eBackupScenarios): Drill_Succeeds/Drill_Failed (~2,5 мин суммарно).
-// E2E полных бэкапов (t02, spec §7.1–7.4): изолированное окружение E2eEnvironment
+// E2E полных бэкапов (spec §7.1–7.4): изолированное окружение E2eEnvironment
 // (своя docker-сеть, свой etcd, СВОЯ ownS3-нода — withS3Node:true; порт динамический)
-// + образ pgworker-backup:e2e + живой кластер воркером с Backups:Enabled=true.
+// + drill-операции в приёмнике WalReceiver первой ноды (arch/19 §3.6) + живой кластер воркером с Backups:Enabled=true.
 // COMPLETED с полными полями и объектами в S3; FAILED по недоступному S3 с
 // переснятием новым id; deprovisioning чистит джобы и префикс; ротация
 // backup_password включает backup_exec. Каждый Fact — своё окружение: методы
@@ -26,7 +26,7 @@ public class E2eDrillScenarios
 {
     private const string Bucket = "pgworker-backups";
 
-    // t36: пул E2E (однонодовый — ownS3-ноды окружения; etcd у каждого Fact'а свой).
+    // пул E2E (однонодовый — ownS3-ноды окружения; etcd у каждого Fact'а свой).
     private const string Pool = "bkpool";
 
     // Окружение Fact'а (своя сеть/etcd/ownS3); создаётся в начале каждого сценария.
@@ -110,17 +110,6 @@ public class E2eDrillScenarios
             ["ps", "--format", "{{.Names}}", "--filter", $"name=pgw-{cluster}-shard1-"], ct);
         nodes.Length.Should().BeGreaterThan(0, "the drill does not dismantle the prod nodes of the shard (state RUNNING)");
 
-        // Assert — контейнер и volume дрилла отсутствуют (ассерт чистоты, AC4/AC2)
-        var cleaned = await E2eFixture.WaitForAsync(async () =>
-        {
-            var containers = await Fx.RunDockerAsync(
-                ["ps", "-a", "--format", "{{.Names}}", "--filter", $"name=pgw-backup-drill-{cluster}-"], ct);
-            var volumes = await Fx.RunDockerAsync(
-                ["volume", "ls", "-q", "--filter", $"name=pgw-backup-drill-{cluster}-"], ct);
-            return containers.Length == 0 && volumes.Length == 0;
-        }, TimeSpan.FromSeconds(60), ct);
-        cleaned.Should().BeTrue("the drill contour is torn down after the outcome");
-
         // Assert — оба парсера без ошибок; панельные правила молчат на успехе (AC5)
         var kvs = (await G.RangeAsync(Endpoint, $"/pgworker/backups/{cluster}/", ct)).Value;
         var parsed = BackupsParser.Parse(kvs, out var parseErrors);
@@ -194,13 +183,13 @@ public class E2eDrillScenarios
         await GenerateWalAsync(adminDsn, ct);
 
         // Act — жертва = САМ wal_start COMPLETED-полного (валидация дрилла идёт
-        // от него; он гарантированно в wal/ — дублирование t02). Дыра обязана
+        // от него; он гарантированно в wal/ — дублирование). Дыра обязана
         // иметь «найдено» — сегмент позже wal_start (гвард ниже). ВАЖНО: сегменты
         // НИЖЕ wal_start (агент начинает поток раньше бэкапа) цепью не являются —
         // дыра «второй объект списка» может лечь ниже chain_start и Check её не
         // видит (прогон 2026-10-01: дрилл легитимно SUCCEEDED за 6 c). Затем
         // включаем дриллы policy-полем (применяется следующим тиком без рестарта
-        // — AC7). Пересъём BROKEN-цепочки занимает минуты — дыра живёт до
+        // — AC7). Пересъём WAL_CHAIN_ERROR-цепочки занимает минуты — дыра живёт до
         // валидации дрилла (тик 1 с).
         var done = (await FullKeysAsync(cluster, "shard1")).Single(f => f.Value.Contains("COMPLETED"));
         var fullStatus = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(done.Value)!;
@@ -237,30 +226,27 @@ public class E2eDrillScenarios
             var walObjectsDiag = await corruptS3.ListWalAsync(cluster, "shard1", ct: ct);
             var walKvDiag = await GetOrNullAsync($"/pgworker/backups/{cluster}/shard1/wal");
             var workKvDiag = await GetOrNullAsync($"/pgworker/work/{cluster}");
-            var agentsDiag = await Fx.RunDockerAsync(
-                ["ps", "-a", "--format", "{{.Names}} {{.State}}", "--filter", $"name=pgw-backup-wal-{cluster}-"], ct);
+            var receiversDiag = await Fx.ReadWalAgentFactsAsync(cluster, "shard1", ct);
             throw new ApplicationException(
                 $"the victim {victim.Name} was not delivered: " +
                 $"walObjects=[{string.Join(",", walObjectsDiag.IsSuccess ? walObjectsDiag.Value.Select(o => o.Name) : [])}] " +
                 $"wal=[{walKvDiag?.Value ?? "-"}] " +
                 $"journal=[{workKvDiag?.Value[..Math.Min(400, workKvDiag?.Value.Length ?? 0)]}] " +
-                $"agents=[{agentsDiag.Replace('\n', ';')}]");
+                $"receivers=[{string.Join("; ", receiversDiag.Select(f => $"{f.Node}:{f.State}"))}]");
         }
-        // Останавливаем ВСЕ агенты шарда ДО порчи (их по два, t07): живой агент
-        // доставляет сегмент раньше контрольного тика — дыра заживает до
-        // валидации дрилла. НО супервизор пересоздаёт остановленных агентов
-        // за пару секунд, а бутстрап с чекпойнта слота ПЕРЕЗАЛИВАЕТ весь хвост
-        // (от restart_lsn до confirmed_flush) — перезаливка возвращает жертву
-        // быстрее тика дрилла. Поэтому дриллы включаем СРАЗУ после порчи
-        // (валидация стартует на первом тике — пока дыра жива) и ГЛУШИМ
-        // пересоздания циклом docker stop до фиксации валидационного FAILED.
-        var agents = await Fx.RunDockerAsync(
-            ["ps", "--format", "{{.Names}}", "--filter", $"name=pgw-backup-wal-{cluster}-shard1"], ct);
-        var agentNames = agents.Split('\n', StringSplitOptions.RemoveEmptyEntries)
-            .Select(n => n.Trim()).ToList();
-        agentNames.Should().NotBeEmpty("the shard1 agents are alive — a stop precondition");
-        foreach (var agentName in agentNames)
-            await Fx.RunDockerAsync(["stop", agentName], ct);
+        // Останавливаем walreceiver ВСЕХ нод шарда ДО порчи (: приёмник —
+        // supervisord-программа контейнера ноды): живой приёмник доставляет
+        // сегмент раньше контрольного тика — дыра заживает до валидации дрилла.
+        // Supervisord не перезапускает остановленную программу (stop = admin stop),
+        // а бутстрап с чекпойнта слота ПЕРЕЗАЛИВАЕТ весь хвост (от restart_lsn до
+        // confirmed_flush) — перезаливка возвращает жертву быстрее тика дрилла.
+        // Поэтому дриллы включаем СРАЗУ после порчи (валидация стартует на первом
+        // тике — пока дыра жива) и ГЛУШИМ приёмники циклом supervisorctl stop до
+        // фиксации валидационного FAILED.
+        var nodeNames = await Fx.ShardNodeContainerNamesAsync(cluster, "shard1", ct);
+        nodeNames.Should().NotBeEmpty("the shard1 nodes are provisioned — a stop precondition");
+        foreach (var nodeName in nodeNames)
+            await Fx.RunDockerAsync(["exec", nodeName, "supervisorctl", "stop", "walreceiver"], ct);
 
         (await corruptS3.DeleteKeysAsync([$"{cluster}/shard1/wal/{victim.Name}"], ct))
             .IsSuccess.Should().BeTrue("the victim segment must be removed");
@@ -285,10 +271,9 @@ public class E2eDrillScenarios
         var suppressSw = Stopwatch.StartNew();
         while (!failed && suppressSw.Elapsed < TimeSpan.FromSeconds(60))
         {
-            var alive = await Fx.RunDockerAsync(
-                ["ps", "--format", "{{.Names}}", "--filter", $"name=pgw-backup-wal-{cluster}-shard1"], ct);
-            foreach (var name in alive.Split('\n', StringSplitOptions.RemoveEmptyEntries).Select(n => n.Trim()))
-                await Fx.RunDockerAsync(["stop", name], ct);
+            // глушим приёмники нод (supervisord-программа) — идемпотентно
+            foreach (var nodeName in nodeNames)
+                await Fx.RunDockerAsync(["exec", nodeName, "supervisorctl", "stop", "walreceiver"], ct);
             var drillKv = await GetOrNullAsync($"/pgworker/backups/{cluster}/shard1/drill");
             failed = drillKv?.Value.Contains("\"FAILED\"") == true;
             if (!failed)
@@ -327,11 +312,6 @@ public class E2eDrillScenarios
             .And.Contain(found!, "the gap boundary — the found segment")
             .And.NotContain("phase", "no job — a clean outcome");
 
-        // Assert — контейнеров дрилла нет вовсе (джоб не запускался).
-        var containers = await Fx.RunDockerAsync(
-            ["ps", "-a", "--format", "{{.Names}}", "--filter", $"name=pgw-backup-drill-{cluster}-"], ct);
-        containers.Should().BeEmpty("the job did not run — the validation refusal");
-
         // Assert — панельный алерт провала горит на фактических kvs кластера.
         var kvs = (await G.RangeAsync(Endpoint, $"/pgworker/backups/{cluster}/", ct)).Value;
         var panelCluster = AdminPanel.Etcd.Parsing.BackupsParser.Parse(kvs)
@@ -361,7 +341,7 @@ public class E2eDrillScenarios
     // AAA (AC1/AC3/AC4): первый дрилл стартует сам после COMPLETED-полного,
 
     // Воркер с включённой подсистемой бэкапов: S3 на ownS3-ноду,
-    // образ pgworker-backup:e2e, ускоренный бэкофф.
+    // drill-операция — в приёмнике первой ноды (arch/19 §3.6), ускоренный бэкофф.
     private Task<HostInstance> StartBackupHostAsync(
         string name, CancellationToken ct,
         IReadOnlyDictionary<string, string>? extraEnv = null)
@@ -370,8 +350,6 @@ public class E2eDrillScenarios
         {
             ["PgWorker__Backups__Enabled"] = "true",
             ["PgWorker__Backups__S3__Bucket"] = Bucket,
-            ["PgWorker__Backups__Job__Image"] = E2eEnvironment.JobImage,
-            ["PgWorker__Backups__Wal__AgentImage"] = E2eEnvironment.WalImage,
             ["PgWorker__Backups__Retry__BaseSec"] = "2",
             ["PgWorker__Backups__Retry__MaxSec"] = "4",
         };
@@ -410,7 +388,7 @@ public class E2eDrillScenarios
                 """{"state":"NOT_INITIALIZED"}""", null, ct);
         }
 
-        // t36: пул сидится до старта воркера; policy кластера кладёт факт строкой
+        // пул сидится до старта воркера; policy кластера кладёт факт строкой
         // ниже (с секцией s3 — без неё подсистема кластера молчит).
         await Fx.SeedS3PoolAsync(Pool, ct);
     }
@@ -430,10 +408,10 @@ public class E2eDrillScenarios
     }
 
     // Published pg-порт мастера шарда из portalloc (host-клиент: localhost).
-    // Резолв фактического primary — по пробам Patroni /primary (t02-подход
+    // Резолв фактического primary — по пробам Patroni /primary (подход
     // WaitForMasterAsync: master-ключ host:0 при EnableDoorman=false
     // недискриминантен); primary появляется после dsn/RUNNING — ждём.
-    // t22: Patroni REST нод — https (цепочка к per-contour CA, без hostname)
+    // Patroni REST нод — https (цепочка к per-contour CA, без hostname)
     private HttpClient PatroniHttp => Fx.NewPatroniHttpClient();
 
     private async Task<(string Host, int Port, string Node)> MasterPgAsync(string cluster, string shard, CancellationToken ct)

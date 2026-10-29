@@ -161,7 +161,7 @@ public class WalChainTests
         result.IsContinuous.Should().BeFalse();
     }
 
-    // ── CheckRange (t04, arch/19 §3): непрерывность [start..end] ──
+    // ── CheckRange (arch/19 §3): непрерывность [start..end] ──
 
     // AAA: сплошной диапазон [1..3] с end=3 — непрерывен, LastSegment == end
     [Fact]
@@ -182,7 +182,7 @@ public class WalChainTests
     [Fact]
     public void CheckRange_SegmentsAboveEnd_AreIgnored()
     {
-        // Arrange — end=2, но wal/ содержит ещё 3 и 4 (поток t03 продолжился)
+        // Arrange — end=2, но wal/ содержит ещё 3 и 4 (поток продолжился)
         var objects = new[]
         {
             "000000010000000000000001", "000000010000000000000002",
@@ -214,7 +214,7 @@ public class WalChainTests
     }
 
     // AAA: сегмент end есть в наборе (pg_wal), но объекта wal/<end> нет — дыра
-    // дублирования t02 (AC3)
+    // дублирования (AC3)
     [Fact]
     public void CheckRange_NoEndObjectInWal_Hole()
     {
@@ -243,7 +243,7 @@ public class WalChainTests
 
     // ── CheckRange: TLI-переходы ──
 
-    // AAA: fallback — без historyContents работает эвристика t03 (history-объект
+    // AAA: fallback — без historyContents работает эвристика (history-объект
     // в листинге + первый сегмент нового TLI ∈ {последний старого, Next(last)})
     [Fact]
     public void CheckRange_SwitchWithoutContent_Heuristic()
@@ -341,7 +341,7 @@ public class WalChainTests
         result.GapError.Should().Contain("000000020000000000000003");
     }
 
-    // ── CheckWithRestart (t05 AC4): promote восстановленного шарда легитимно
+    // ── CheckWithRestart (AC4): promote восстановленного шарда легитимно
     // обрезает старый TLI в архиве — дыра на TLI-границе не деградация ──
 
     // AAA: restore-профиль — старый поток tl1 оборван на 0A, новый tl3 начат
@@ -419,9 +419,9 @@ public class WalChainTests
         result.IsContinuous.Should().BeFalse();
     }
 
-    // ---- t18: RatchetedStart — одиночный кандидат (новейший verify-OK полный) ----
+    // ---: RatchetedStart — одиночный кандидат (новейший verify-OK полный) ----
 
-    // AAA (t18): кандидат ≥ записанной границы — контроль от кандидата
+    // AAA : кандидат ≥ записанной границы — контроль от кандидата
     // (новый OK-полный закрывает разрыв/поднимает точку).
     [Fact]
     public void RatchetedStart_CandidateAboveBounds_Accepted()
@@ -437,7 +437,7 @@ public class WalChainTests
         start!.Value.Name.Should().Be("000000010000000000000009");
     }
 
-    // AAA (t18): ratchet — кандидат НИЖЕ границы не понижает точку: verify-
+    // AAA : ratchet — кандидат НИЖЕ границы не понижает точку: verify-
     // перепроверка старшего OK→FAILED откатила кандидата — контроль остаётся
     // на прежней границе (полные ниже границы разрыва игнорируются).
     [Fact]
@@ -454,7 +454,7 @@ public class WalChainTests
         start.Should().Be(recorded);
     }
 
-    // AAA (t18): записи нет — контроль от кандидата (первый OK-полный задаёт
+    // AAA : записи нет — контроль от кандидата (первый OK-полный задаёт
     // стартовую точку; полных нет — остаётся min-объект потока у вызова).
     [Fact]
     public void RatchetedStart_NoRecord_Candidate()
@@ -469,7 +469,7 @@ public class WalChainTests
         start!.Value.Name.Should().Be("000000010000000000000003");
     }
 
-    // AAA (t18): кандидата нет (verify-OK-полных нет) — записанная точка
+    // AAA : кандидата нет (verify-OK-полных нет) — записанная точка
     // держится; нет и записи — null (контролю остаётся min-объект).
     [Fact]
     public void RatchetedStart_NoCandidate_Recorded()

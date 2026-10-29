@@ -4,7 +4,7 @@ using Xunit;
 
 namespace ValkeyWorker.IntegrationTests.Valkey;
 
-// TlsMigrator на реальном valkey/valkey:9.1.2 (t06, spec §4.9): премиграционный
+// TlsMigrator на реальном valkey/valkey:9.1.2 (spec §4.9): премиграционный
 // plain-контейнер (аргументы старого канона, ca-ключей нет) → тик мигратора →
 // контейнер пересоздан с cmd-обёрткой TLS-канона и env VALKEY_TLS_* на ТОМ ЖЕ
 // host-порту, ca_pem/ca_key появились, PING по TLS отвечает, journal
@@ -138,16 +138,21 @@ public class TlsMigrationTests(ValkeyClusterFixture fx)
         prefix.Value.Should().BeEmpty();
     }
 
-    // docker inspect -f {{.Id}} (пусто — объекта нет).
+    // docker inspect -f {{.Id}} (пусто — объекта нет); аргументы списком
+    // без shell: имя контейнера не попадает в строку команды.
     private static string ContainerId(string name)
     {
-        var psi = new System.Diagnostics.ProcessStartInfo(
-            "docker", $"inspect --format {{{{.Id}}}} {name}")
+        var psi = new System.Diagnostics.ProcessStartInfo("docker")
         {
             RedirectStandardOutput = true,
             RedirectStandardError = true,
         };
-        using var proc = System.Diagnostics.Process.Start(psi)!;
+        psi.ArgumentList.Add("inspect");
+        psi.ArgumentList.Add("--format");
+        psi.ArgumentList.Add("{{.Id}}");
+        psi.ArgumentList.Add(name);
+        using var proc = new System.Diagnostics.Process { StartInfo = psi };
+        proc.Start();
         var id = proc.StandardOutput.ReadToEnd().Trim();
         proc.WaitForExit(5000);
         return proc.ExitCode == 0 ? id : string.Empty;

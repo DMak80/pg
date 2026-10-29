@@ -4,7 +4,7 @@ using Xunit;
 
 namespace PgWorker.IntegrationTests.Docker;
 
-// Rolling-ротация rest_password на живом контейнере (t22, arch/14 §5 I):
+// Rolling-ротация rest_password на живом контейнере (arch/14 §5 I):
 // заявка → первый тик ротатора фиксирует NEW в rest_pending → тики надзора
 // катят пересоздания (hash env != hash(pending)) → txn коммитит четвёрку и
 // сбрасывает pending; окно без PATCH конвергенции DCS; идемпотентность

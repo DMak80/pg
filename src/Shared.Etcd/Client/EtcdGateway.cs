@@ -118,7 +118,7 @@ public sealed class EtcdGateway(HttpClient httpClient) : IEtcdGateway
 
             // grpc-gateway отдаёт поток JSON-фреймов {"result":{"blob":"<base64>"}}\n
             // (по чанку на Send) — декодируем в бинарный слепок БД; сырой бинарный
-            // поток (если endpoint отдаёт его напрямую) возвращаем как есть (t08).
+            // поток (если endpoint отдаёт его напрямую) возвращаем как есть.
             var body = await response.Content.ReadAsByteArrayAsync(ct);
             return DecodeSnapshotBody(body);
         });

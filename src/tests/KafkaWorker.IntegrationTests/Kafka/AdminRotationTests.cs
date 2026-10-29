@@ -9,12 +9,12 @@ using Xunit;
 
 namespace KafkaWorker.IntegrationTests.Kafka;
 
-// Интеграционный тест ротации admin-пароля (t03 Ф4, spec §8.2): TLS-кластер →
+// Интеграционный тест ротации admin-пароля (Ф4, spec §8.2): TLS-кластер →
 // заявка /kafkaworker/admin_rotations → тики PasswordRotator до завершения.
 // Assert: admin_password изменён, заявка удалена; app-кред работает НЕПРЕРЫВНО
 // (Produce+Consume после каждого тика — точки на всём окне фаз A→C);
 // admin-дискавери с НОВЫМ паролем успешен, со старым — SASL-отказ.
-// Per-class коллекция (t24/AGENTS.base §13; spec §6.3.2): свой инстанс
+// Per-class коллекция (/AGENTS.base §13; spec §6.3.2): свой инстанс
 // KafkaClusterFixture — свой etcd-контур, свои кластеры/сети (RunTag),
 // своё окно портов и AdminFactory; классы параллельны (потолок —
 // xunit.runner.json), факты класса последовательны.

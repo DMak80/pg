@@ -73,23 +73,23 @@ Infrastructure.App.Metrics   ──порт──► src/Shared.Metrics
 | `dotnet_*` (gc, threadpool, allocations, process) | разные | OTel `System.Runtime`-метры |
 | `http_server_request_duration_seconds` | histogram | OTel ASP.NET-метр (панель; у воркеров — при наличии HTTP-грани). Факт пинов 1.16.0-beta.1 (фиксирует тест `Shared.Metrics.UnitTests`): на минимальном slim-хосте гистограмма не эмитится; фактически присутствуют `http_server_active_requests`, `kestrel_*`, `aspnetcore_memory_pool_*` — на реальных сервисах сверяют интеграционные тесты Ф3–Ф5 |
 
-### 2.2. Воркер-паттерн (`Shared.Metrics` WorkerMetrics; PgWorker + KafkaWorker)
+### 2.2. Воркер-паттерн (`Shared.Metrics` WorkerMetrics; воркеры PgWorker/KafkaWorker/ValkeyWorker/S3Worker)
 
 Имена инструментов глобальны (имя Meter в метрику не входит) — оба воркера
 пишут в одни серии; различение сервисов/инстансов — лейблы `job`/`instance`,
 которые назначает Prometheus по scrape-джобе (§5.2). Факт экспортёра
 1.16.0-beta.1 (фиксирует интеграционный тест §6): к каждой серии добавляется
-системный лейбл `otel_scope_name` = имя Meter (`PgWorker`/`KafkaWorker`) —
+системный лейбл `otel_scope_name` = имя Meter (свой у каждого воркера) —
  PromQL-запросы словаря от него не зависят, но факт зафиксирован для инспекции.
 
 | Имя | Тип | Лейблы | Смысл |
 |---|---|---|---|
-| `worker_loop_ticks_total` | counter | `loop`, `ok` | тики циклов (Reconcile/Keepalive/Snapshot); `ok` ∈ {true,false} |
-| `worker_loop_last_success_timestamp_seconds` | gauge | `loop` | unix-время последнего успешного тика (алерт «цикл умер» WorkerLoopStalled — только быстрые циклы `{loop=~"reconcile\|keepalive"}`, порог 60 с: reconcile/keepalive тикают каждые 5 с; snapshot-цикл тикает раз в SnapshotIntervalMin (6 ч) и под порог не попадает — его живость закрывает SnapshotStale по `worker_snapshot_age_seconds`) |
+| `worker_loop_ticks_total` | counter | `loop`, `ok` | тики циклов (Reconcile/Keepalive/Snapshot/OrphanSweep); `ok` ∈ {true,false} |
+| `worker_loop_last_success_timestamp_seconds` | gauge | `loop` | unix-время последнего успешного тика (алерт «цикл умер» WorkerLoopStalled — только быстрые циклы `{loop=~"reconcile\|keepalive"}`, порог 60 с: reconcile/keepalive тикают каждые 5 с; snapshot-цикл тикает раз в SnapshotIntervalMin (6 ч) и под порог не попадает — его живость закрывает SnapshotStale по `worker_snapshot_age_seconds`; цикл `orphan-sweep` (BackupOrphanSweeperLoop, тик лидера раз в `Backups:Supervisor:IntervalSec`, дефолт 600 с; `ok` = успех прохода `SweepAsync`) — живость закрывает отдельное правило **OrphanSweepStalled** (`time() - worker_loop_last_success_timestamp_seconds{loop="orphan-sweep"} > 1800`, порог 3× дефолтного интервала; серия эмитится только лидером при `Backups:Enabled=true` — выключенная подсистема не алертится, смерть процесса ловит ServiceDown)) |
 | `worker_loop_duration_seconds` | gauge | `loop` | длительность последнего тика |
 | `worker_claims_held` | gauge | — | сколько кластеров держим под клэймом |
 | `worker_process_phase_duration_seconds` | gauge | `cluster`, `process`, `phase` | сколько секунд кластер в текущей фазе процесса (source: марк-методы фаз; смена фазы/завершение процесса сбрасывает серию) |
-| `worker_operation_total` | counter | `operation`, `result` | завершённые операции (provision/deprovision/rotate/move/rollback/finalize/abort…; подавленные ops — supervise/evacuate — не считаются, см. ниже), `result` ∈ {ok,error,expired} (`expired` — заявка снята возрастным таймаутом воркером, t10) |
+| `worker_operation_total` | counter | `operation`, `result` | завершённые операции (provision/deprovision/rotate/move/rollback/finalize/abort…; подавленные ops — supervise/evacuate/backup-orphan-sweeper — не считаются, см. ниже), `result` ∈ {ok,error,expired} (`expired` — заявка снята возрастным таймаутом воркером) |
 | `worker_snapshot_age_seconds` | gauge | — | возраст последнего снапшота P12 |
 | `worker_watchdog_restarts_total` | counter | `loop` | инициированные watchdog-остановки цикла по отсутствию активности (тик или прогресс-отметка) (внутренний watchdog воркера: arch/14 §6, arch/16 §6, arch/21 §6); источник — марк-метод `WatchdogRestart` |
 
@@ -98,18 +98,26 @@ Infrastructure.App.Metrics   ──порт──► src/Shared.Metrics
 `add-shard`, `remove-shard`, `rotate-app-password`, `move`, `rollback`,
 `finalize`, `repair`, `abort`; у KafkaWorker — `provision`, `deprovision`, `add-broker`,
 `remove-broker`, `reassign`, `rotate`, `regen`, `topicsync`;
-у ValkeyWorker — `provision`, `deprovision`, `rotate`, `supervise` (подавляемый),
-`healing-portalloc` (вспомогательный). `phase` —
+у ValkeyWorker — `provision`, `deprovision`, `rotate`, `supervise` (подавляемый);
+у S3Worker — `provision`, `deprovision`, `add-node`, `remove-node`,
+`rotate-secrets`, `supervise` (подавляемый). `phase` —
 фаза машины состояний (journal-фаза). Завершение фазовой серии —
 терминальные фазы журнала по фактическому словарю: `done`, `failed`,
 `crashed`, `rejected`, `cancelled`, `expired` (возрастное снятие
-не-начатой заявки, t10; сброс серии + счёт `worker_operation_total`;
+не-начатой заявки; сброс серии + счёт `worker_operation_total`;
 `skipped` — промежуточная фаза усыновления, серию НЕ закрывает).
 Стационарные ops без терминальной фазы — `supervise` (пишется и через
 `WriteSupervisionAsync`, мимо фазового события) и `evacuate` (только
-`waiting-*`/`blocked-moving`) — фазовых серий НЕ эмитят: их живость
-закрывает `worker_loop_last_success_timestamp_seconds` (алерт
-WorkerLoopStalled), вечные серии не копятся.
+`waiting-*`/`blocked-moving`), а также `backup-orphan-sweeper`
+(журнал домена сирот — свой ключ `/pgworker/backups/orphan-journal`
+(arch/19 §4), в work-фазовые метрики не входит) — фазовых серий НЕ
+эмитят, вечные серии не копятся: живость `supervise`/`evacuate` закрывают клэйм-циклы
+(`loop="reconcile"` → алерт WorkerLoopStalled), живость `backup-orphan-sweeper` —
+цикл `orphan-sweep` (LoopTick по итогам SweepAsync → алерт OrphanSweepStalled).
+Подавляемый также `healing-portalloc` — вспомогательная точечная реконструкция
+portalloc внутри клэйм-тика надзора (arch/21 §5 C / arch/23 §7, общий
+EtcdPortAllocHealer): фазовые серии не нужны, зависание закрывается watchdog'ом
+того же reconcile-цикла.
 
 ### 2.3. Kafka-домен (коллектор KafkaWorker §4)
 
@@ -194,10 +202,12 @@ docker-E2E (§6, M3): полный фактический набор шире �
 BackupProcess (планировщик уже вычисляет обе величины, arch/19 §2), WAL-серии —
 контрольный проход WalStreamProcess (`Wal:VerifyIntervalSec`, arch/19 §3),
 counters — точки фиксации терминальных исходов verify/restore/drill. RTO-длительности
-пишутся тиком надзора (NodeSupervisor) из фактов work-ключа (arch/14 §3.3). Набор серий
+пишутся тиком надзора (NodeSupervisor) из фактов work-ключа (arch/14 §3.3);
+skipped-пулы свипера сирот — тиком глобального лидера свипера
+(BackupOrphanSweeperLoop, arch/19 §4–§5, вне клэймов). Набор серий
 кластера перезатирается каждым тиком (паттерн `UpdateCluster` §4.2): ушедшие
 шарды/кластеры стейт не копят; null-факт (нет валидного полного, зонд не удался,
-wal-ключ STOPPED/BROKEN/удалён) — серия исчезает до появления факта. Панель этих
+wal-ключ STOPPED/WAL_CHAIN_ERROR/удалён) — серия исчезает до появления факта. Панель этих
 серий не читает (живёт на etcd-снапшоте) — словарь для Prometheus/Grafana/алертов;
 панельные правила бэкапов (etcd-истина) остаются, Prometheus-группа — независимый
 от панели канал наблюдения.
@@ -211,6 +221,7 @@ wal-ключ STOPPED/BROKEN/удалён) — серия исчезает до �
 | `pgworker_backup_verify_total` | counter | cluster, shard, result | исходы verify полных, `result` ∈ {ok,failed,transient} |
 | `pgworker_backup_restore_total` | counter | cluster, shard, result | терминальные исходы restore-заявок, `result` ∈ {ok,failed} |
 | `pgworker_backup_drill_total` | counter | cluster, shard, result | терминальные исходы дрилов восстановимости, `result` ∈ {ok,failed} |
+| `pgworker_backup_orphan_skipped_pools_total` | counter | `pool` | проход свипера сирот исключил пул из union (пул недоступен/без кредов, листинг не удался — arch/19 §5): реестр сирот неполный до следующего прохода (интервал 600 с); источник — марк-метод `BackupOrphanSkippedPool` |
 | `pgworker_ha_failover_duration_seconds` | gauge | cluster, shard | длительность последнего ЗАВЕРШЁННОГО failover (смена лидера после недоступности; resolved − detected, arch/14 §3.3); открытого события/факта нет — серия не эмитится |
 | `pgworker_ha_rebuild_duration_seconds` | gauge | cluster, shard | длительность последнего ЗАВЕРШЁННОГО rebuild ноды; факта нет — серия не эмитится |
 
@@ -222,6 +233,43 @@ Prometheus-алерты группы `backups` (rules.yml; severity — зерк
 (warning; порог = дефолт `Wal:StaleSec`), `BackupVerifyFailed`,
 `BackupRestoreFailed`, `BackupDrillFailed` (critical; `increase(total{result=
 "failed"}[15m]) > 0`).
+
+### 2.8. Приёмник WAL бэкапов (экспонирует сам приёмник, arch/19 §3)
+
+Приёмник WAL — процесс внутри контейнера PG-ноды (arch/14 §2.1) — несёт
+СОБСТВЕННУЮ телеметрию своей работы (в отличие от §2.7 — серий воркера):
+экспозиция — Kestrel `:8080` ВНУТРИ контейнера ноды, `/metrics`
+(`Shared.Metrics`, Meter `PgWorker.WalReceiver`; порт наружу хоста НЕ
+публикуется). Тот же порт `:8080` несёт HTTP API операций бэкапов
+([19](19-backups.md) §2/§3.5/§3.6/§5, канал [25](25-component-communications.md) №22);
+новых серий приёмника операции не вводят — наблюдаемость операций
+бэкапов: etcd-статусы воркера ([19](19-backups.md) §4) и журнал воркера.
+Скрейп — Prometheus по `alias:8080` через
+`Docker:ScrapeNetwork` (та же сеть/та же file_sd-запись, что patroni-нод
+§2.5 — порт другой), джоба `walreceiver-nodes` — http (закрытая сеть
+скрейпа контура; прецедент — джоба `adminpanel`). Скрейп-сети нет —
+теле­метрия приёмника недоступна снаружи (локальная диагностика curl'ом
+внутри контейнера), дашборд показывает пусто; состояние доставки при этом
+полностью наблюдаемо сериями §2.7 и etcd-статусами (arch/19 §4). Лейблы
+конечны: `cluster`, `shard`, `node`, `role` (только у `walreceiver_role`).
+
+| Имя | Тип | Лейблы | Смысл |
+|---|---|---|---|
+| `walreceiver_role` | gauge | cluster, shard, node, role | роль источника приёмника (REST-проба своей ноды, arch/19 §3), `role` ∈ {master,sync,none} — 1 в активной серии |
+| `walreceiver_streaming` | gauge | cluster, shard, node | 1 = replication-стрим активен (приём/доставка), 0 = ожидание (роль/условия/стоп-семантика) |
+| `walreceiver_segments_delivered_total` | counter | cluster, shard, node | доставлено закрытых сегментов в S3 (сброс при рестарте процесса — counter от старта) |
+| `walreceiver_bytes_delivered_total` | counter | cluster, shard, node | доставлено байт сегментов/`.history` |
+| `walreceiver_backlog_bytes` | gauge | cluster, shard, node | размер WAL-хвоста к отправке: позиция записи сервера (walEnd потока) − последний подтверждённый хвост |
+| `walreceiver_put_retries_total` | counter | cluster, shard, node | повторные попытки put (перебор целей пула) |
+| `walreceiver_put_errors_total` | counter | cluster, shard, node | неудачные попытки put (вкл. исчерпание списка пула) |
+| `walreceiver_reconnects_total` | counter | cluster, shard, node | переподключения к источнику (обрывы/смены роли) |
+| `walreceiver_last_success_timestamp_seconds` | gauge | cluster, shard, node | unix-время последнего успешного put (знак живости доставки из первых рук) |
+
+Отдельных Prometheus-алертов на серии приёмника НЕ заводится: здоровье
+доставки закрывают алерты группы `backups` по сериям воркера §2.7
+(BackupWalLagHigh/BackupWalStale — истина по объектам S3), серии приёмника —
+дашборд и разбор инцидентов (who/where: какая нода стримит, где копится
+хвост). Дашборд — `dashboards/backups.json` (панель per-node приёмников).
 
 ## 3. Экспозиция и безопасность
 
@@ -296,6 +344,7 @@ TCP-проба (не тяжёлый AdminClient); лежачая нода сто
 | `valkeyworker` | имя сети стенда `valkeyworker:8080` (профиль `valkey`; хост-публикации нет — чеки ходят изнутри контейнера) | §2.1–2.2, §2.6 |
 | `adminpanel` | имя сети стенда `adminpanel:8080` (хост-публикация 5050 — только для браузера/чеков) | §2.4 |
 | `patroni-nodes` | file_sd `/etc/prometheus/sd/patroni-nodes.json` (источник файла — генератор §5.4 из `/pgworker/portalloc/`) | §2.5 нативные `patroni_*` |
+| `walreceiver-nodes` | file_sd `/etc/prometheus/sd/walreceiver-nodes.json` (источник — тот же генератор §5.4, те же записи portalloc, порт 8080; http — закрытая сеть скрейпа) | §2.8 серии приёмника WAL |
 | `sd-generator` | static: имя сети стенда `sd-generator:8080` (профиль `metrics`) | самонаблюдение генератора §5.4 |
 
 Джоба `patroni-nodes` — `scheme: https` +
@@ -303,12 +352,12 @@ TCP-проба (не тяжёлый AdminClient); лежачая нода сто
 `verify_client` у REST нет; серт нод выпускает воркер из per-install CA —
 arch/14 §2.1; REST-скрейп нод — по TLS одного per-install CA, §5.4).
 Джобы воркеров — `scheme: https` + `tls_config {ca_file: /tls/ca.pem,
-cert_file: /tls/prometheus.crt, key_file: /tls/prometheus.key}` (t03: /metrics
+cert_file: /tls/prometheus.crt, key_file: /tls/prometheus.key}` (/metrics
 обоих воркеров — за mTLS, arch/14 §1.1/arch/16 §1.1; клиентский серт
 скрейпера `prometheus.crt` — из той же per-install API-CA; контейнер
 прометеуса монтирует TLS-пакет стенда ro; сетевой адрес не меняет
 транспорт). Джоба `adminpanel` — http (панель
-без TLS на стенде, вне скоупа t03). extra_hosts (`host.docker.internal`,
+без TLS на стенде). extra_hosts (`host.docker.internal`,
 `local`) из as-prometheus удалены — все таргеты прометея сетевые (единая
 стендовая сеть контура, §5.4); SAN серверного серта покрывает
 compose-DNS-имена (deploy/tls/gen.sh).
@@ -341,7 +390,10 @@ single-хост-контур «дома»).
 `src/Metrics.SdGenerator`): тиком читает `/pgworker/portalloc/`
 (read-only, `RangeAsync`, без клэймов) и пишет `sd/patroni-nodes.json` в
 volume Prometheus; таргет ноды — per-node правило §2.5 (`alias:8008`
-штатно, `host:patroni` деградационно). Механика file_sd/единой сети —
+штатно, `host:patroni` деградационно). Тем же проходом пишется
+`sd/walreceiver-nodes.json` — те же записи per-node, порт `:8080`
+(теле­метрия приёмника WAL §2.8; джоба http — без TLS-конфига).
+Механика file_sd/единой сети —
 без изменений; фиксируется: REST-скрейп нод — по TLS одного
 per-install CA (§5.2). Сеть `pgw-metrics` генератору не
 нужна: etcd читает по compose-DNS сети стенда, таргеты резолвит
@@ -412,6 +464,7 @@ ValkeyWorker:Metrics { CollectIntervalSec=30 }          # коллектор §4
 SdGenerator:Etcd:Endpoints[]           # узлы HA-контура
 SdGenerator:RefreshIntervalSec=15      # <=0 → 15 + warning
 SdGenerator:OutputPath=/sd/patroni-nodes.json
+SdGenerator:WalOutputPath=/sd/walreceiver-nodes.json   # §2.8: те же ноды, порт 8080
 SdGenerator:Metrics { Enabled=true, Path="/metrics" }
 # стенд (env-override compose):
 METRICS_PROMETHEUS_PORT=9090, METRICS_GRAFANA_PORT=3000,
@@ -426,11 +479,10 @@ METRICS_ALERTMANAGER_PORT=9093, METRICS_ALERT_WEBHOOK_URL=   # пусто — т
 | M2 | Коллектор лагов грузит AdminClient/брокеров | один проход за тик, интервал 30 с, короткий таймаут; ошибки сбора не ретраятся поллерами циклов |
 | M3 | OTel-суффиксы имён отличаются от словаря (версии экспортёра) | интеграционный тест фиксирует фактические имена против словаря §2; версия пин в Directory.Packages.props |
 | M4 | Порт 3000/9090/9093 занят на хосте стенда | env-override compose (§8) |
-| M5 | Эмуляторы Patroni без /metrics | расширение emulator.py (§2.5) — часть задачи |
+| M5 | Эмуляторы Patroni без /metrics | расширение emulator.py (§2.5) |
 
 ---
 
 → Возврат к [README.md](README.md). Воркеры — [14-pgworker.md](14-pgworker.md)
 §7, [16-kafkaworker.md](16-kafkaworker.md) §7; панель —
-[adminpanel/01-architecture.md](adminpanel/01-architecture.md); реализация —
-`docs/superpowers/2026-09-04-t04-unified-metrics/` (spec/plan).
+[adminpanel/01-architecture.md](adminpanel/01-architecture.md)

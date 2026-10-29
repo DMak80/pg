@@ -52,7 +52,7 @@ public sealed class ValkeyConnection(TimeSpan? connectAndCommandTimeout = null) 
             using var client = new TcpClient();
             await client.ConnectAsync(ep.Host, ep.Port, timeout.Token);
 
-            // TLS (t06, arch/21 §6): доверие — ТОЛЬКО per-cluster CA; системные
+            // TLS (arch/21 §6): доверие — ТОЛЬКО per-cluster CA; системные
             // якоря не участвуют (SslPolicyErrors игнорируем — строим свою цепочку
             // CustomRootTrust) + SAN обязан покрывать хост endpoint'а.
             // Валидатор — ЗАМЫКАНИЕ на распарсенный CA и ep.Host (не поле класса:

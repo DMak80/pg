@@ -5,8 +5,8 @@ using Xunit;
 
 namespace PgWorker.UnitTests.Backups;
 
-// Чистые функции реестра сирот (t07, arch/19 §4): группировка по префиксам
-// нашей формы (с детектом валидных полных — DR-hold, reliability t04), merge
+// Чистые функции реестра сирот (arch/19 §4): группировка по префиксам
+// нашей формы (с детектом валидных полных — DR-hold, reliability), merge
 // с переносом first_seen/has_valid_full, гвард воскресения, TTL-отбор с
 // hold-множеством, JSON roundtrip формата ключа /pgworker/backups/orphans,
 // ключи/JSON hold-заявок канона.
@@ -279,7 +279,7 @@ public class OrphanRegistryTests
         OrphanRegistry.SameOrphans(a, changed).Should().BeFalse("size changed — a put is needed");
     }
 
-    // AAA (t08): объекты etcd/* не группируются реестром сирот — префикс служебный,
+    // AAA : объекты etcd/* не группируются реестром сирот — префикс служебный,
     // не форма <C>/<X>/ (ключи короче 3 сегментов); реестр пуст (spec §3.2, AC8)
     [Fact]
     public void GroupPrefixes_EtcdObjects_OutsideRegistry()

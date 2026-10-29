@@ -3,7 +3,7 @@ using Microsoft.Extensions.Configuration;
 using PgWorker.App;
 using Xunit;
 
-// env-секреты docker-транспорта pg (t07): PGW_DOCKER_TLS_*/PGW_DOCKER_SSH_* →
+// env-секреты docker-транспорта pg : PGW_DOCKER_TLS_*/PGW_DOCKER_SSH_* →
 // конфиг-дерево. Биндинги — pg-специфика в PgWorker.App (модели в Shared.Docker
 // env-имён не знают).
 public class DockerEnvBindingsTests
@@ -50,7 +50,7 @@ public class DockerEnvBindingsTests
     [Fact]
     public void ApplyRestTlsEnvOverrides_AllFourKeysMapped()
     {
-        // Arrange: REST-TLS-пакет (t22) — PEM-значения и _PATH-файлы.
+        // Arrange: REST-TLS-пакет — PEM-значения и _PATH-файлы.
         var env = new Dictionary<string, string>
         {
             ["PGW_REST_TLS_CA"] = "ca-pem",
@@ -70,7 +70,7 @@ public class DockerEnvBindingsTests
         config["PgWorker:Docker:RestTls:CaKeyPath"].Should().Be("/tls/ca.key");
     }
 
-    // AAA (t41): PgWorker:Docker:ContourNetwork биндится в DockerOptions
+    // AAA : PgWorker:Docker:ContourNetwork биндится в DockerOptions
     // (режим сети контура; значение приносит env PgWorker__Docker__ContourNetwork
     // из deploy-compose — PGW_CONTOUR_NETWORK сам по себе не маппится).
     [Fact]

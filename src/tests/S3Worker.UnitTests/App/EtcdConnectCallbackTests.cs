@@ -4,7 +4,7 @@ using S3Worker.App;
 
 namespace S3Worker.UnitTests.App;
 
-// etcd-клиент против DNS-флейпа Docker embedded DNS (t09): PooledConnectionLifetime
+// etcd-клиент против DNS-флейпа Docker embedded DNS : PooledConnectionLifetime
 // (пере-резолв после пересоздания etcd-контейнера) + IPv4-first последовательный
 // резолв (параллельные A/AAAA флейпят). Поведение handler'а — без env-специфики.
 public class EtcdConnectCallbackTests

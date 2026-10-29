@@ -24,7 +24,7 @@ public sealed class PgWorkerOptions
 
     public SnapshotOptions Snapshots { get; set; } = new();
 
-    /// <summary>Параметры процессов переезда бакетов (t01, spec §9).</summary>
+    /// <summary>Параметры процессов переезда бакетов (spec §9).</summary>
     public MovesOptions Moves { get; set; } = new();
 
     /// <summary>Per-node серверные параметры подключения (app_params, spec §3.1;
@@ -37,16 +37,12 @@ public sealed class PgWorkerOptions
     /// <summary>Экспозиция метрик (arch/18 §3): /metrics на том же порту, что /healthz.</summary>
     public Shared.Metrics.MetricsOptions Metrics { get; set; } = new();
 
-    /// <summary>Подсистема бэкапов шардов (arch/19, t01): каркас конфигурации;
-    /// процессная логика — t02–t07. Default Enabled=false.</summary>
+    /// <summary>Подсистема бэкапов шардов (arch/19): каркас конфигурации;
+    /// процессная логика. Default Enabled=false.</summary>
     public BackupsOptions Backups { get; set; } = new();
 
-    /// <summary>Единая точка сборки BackupsRuntimeOptions (t41): контур-сеть
-    /// читается ЗДЕСЬ из Docker-секции — все процессы-потребители (полные/
-    /// restore/wal/ретенция/verify/drill/супервизор) получают один и тот же
-    /// режим сетей спек джобов и адресации источника.</summary>
-    public BackupsRuntimeOptions BackupsRuntime() => Backups.ToRuntime(
-        Docker.ContourNetwork is { Length: > 0 } ? Docker.ContourNetwork : null);
+    /// <summary>Единая точка сборки BackupsRuntimeOptions.</summary>
+    public BackupsRuntimeOptions BackupsRuntime() => Backups.ToRuntime();
 
     /// <summary>Входы PGTune-расчёта параметров PG (spec.md §4.2): константы
     /// воркера + exclude-параметры. Fail-fast валидация старта.</summary>
@@ -127,12 +123,12 @@ public sealed class ApiOptions
     /// <summary>Демо-сид-эндпоинт POST /api/seed/demo (стенд; default false).</summary>
     public bool EnableSeedEndpoint { get; set; }
 
-    /// <summary>mTLS-грань API (arch/14 §1.1, t03): серверный серт + ClientCA;
+    /// <summary>mTLS-грань API (arch/14 §1.1): серверный серт + ClientCA;
     /// AllowInsecureHttp — ТОЛЬКО WAF-тесты (warning при старте).</summary>
     public TlsOptions Tls { get; set; } = new();
 }
 
-/// <summary>mTLS HTTP API (arch/14 §1.1, t03): PEM/PATH-дуализм env-секретов
+/// <summary>mTLS HTTP API (arch/14 §1.1): PEM/PATH-дуализм env-секретов
 /// PGW_API_TLS_{CERT,KEY,CLIENT_CA}[_PATH] (env → конфиг — ApiTlsEndpoints).</summary>
 public sealed class TlsOptions
 {
@@ -200,7 +196,7 @@ public sealed class DockerOptions
     public string? AdvertisedHost { get; set; }
 
     /// <summary>
-    /// Имя docker-сети контура мониторинга поставки (t15, arch/14 §2.1/§2.4,
+    /// Имя docker-сети контура мониторинга поставки (arch/14 §2.1/§2.4,
     /// arch/18 §5.4): задано → движок Ensure-attach'ит канонические ноды к ней
     /// (поверх pgw-net-<C>) и точки записи portalloc дописывают alias/net,
     /// sd-generator строит таргеты <alias>:8008. Пусто — поведение идентично
@@ -221,14 +217,14 @@ public sealed class DockerOptions
     /// </summary>
     public string ContourNetwork { get; set; } = "";
 
-    /// <summary>TLS к Engine API (arch/14 §2.2.1, t03); null — без TLS (unix/dev).</summary>
+    /// <summary>TLS к Engine API (arch/14 §2.2.1); null — без TLS (unix/dev).</summary>
     public DockerTlsOptions? Tls { get; set; }
 
-    /// <summary>SSH-туннели ssh://-хостов (arch/14 §2.2.1, t03); null — дефолты.</summary>
+    /// <summary>SSH-туннели ssh://-хостов (arch/14 §2.2.1); null — дефолты.</summary>
     public SshTunnelOptions? Ssh { get; set; }
 
     /// <summary>
-    /// REST-TLS нод (t22, arch/14 §8): per-install API-CA и его ключ для
+    /// REST-TLS нод (arch/14 §8): per-install API-CA и его ключ для
     /// выпуска серверных сертов REST-эндпоинтов нод. Оба обязательны —
     /// fail-fast старта (HTTP-режим провижининга не существует); WAF-фикстуры
     /// передают тестовый CA.
@@ -281,7 +277,7 @@ public sealed class DockerHostOptions
 }
 
 /// <summary>Диапазон портов нод [From, To): последовательные слоты per-node
-/// (pg / patroni / doorman = base / base+1 / base+2 — arch/14 §2.4 п.2, t24:
+/// (pg / patroni / doorman = base / base+1 / base+2 — arch/14 §2.4 п.2:
 /// схема смещений +3000/+1500 упразднена); параметризуется средой — прод
 /// per-install, E2E — per-contour окно.</summary>
 public sealed class PortRangeOptions
@@ -316,7 +312,7 @@ public sealed class LoopsOptions
 }
 
 /// <summary>Пороги надзора: rebuild ноды / эвакуация шарда / бюджет ожидания Patroni
-/// + пороги cutover-переездов (t01, spec §9).</summary>
+/// + пороги cutover-переездов (spec §9).</summary>
 public sealed class ThresholdsOptions
 {
     public int NodeDeadSec { get; set; } = 90;
@@ -325,10 +321,10 @@ public sealed class ThresholdsOptions
 
     public int PatroniBootSec { get; set; } = 300;
 
-    /// <summary>Бюджет ожидания слота на догон LSN при cutover (t01, spec §9).</summary>
+    /// <summary>Бюджет ожидания слота на догон LSN при cutover (spec §9).</summary>
     public int CutoverTimeoutSec { get; set; } = 90;
 
-    /// <summary>Бюджет недоступности шарда в ожиданиях переезда (t01, spec §9).</summary>
+    /// <summary>Бюджет недоступности шарда в ожиданиях переезда (spec §9).</summary>
     public int ConnFailBudgetSec { get; set; } = 120;
 
     /// <summary>Бэкофф ретраев provision (arch/14 §5 A): база задержки (n-й фейл подряд → Base·2^(n−1)).</summary>
@@ -338,7 +334,7 @@ public sealed class ThresholdsOptions
     public int ProvisionRetryMaxSec { get; set; } = 60;
 }
 
-/// <summary>Параметры процессов переезда бакетов (t01, spec §9; дефолты — из скриптов
+/// <summary>Параметры процессов переезда бакетов (spec §9; дефолты — из скриптов
 /// move-bucket.sh/abort-move.sh). Склейка с порогами Thresholds — ToRuntime.</summary>
 public sealed class MovesOptions
 {
@@ -374,7 +370,7 @@ public sealed class MovesOptions
     /// 120 = AbortMinAgeSec, spec §2.3).</summary>
     public int RepairFrozenSec { get; set; } = 120;
 
-    /// <summary>Runtime-опции процессов переезда: склейка Moves + Thresholds (t01 задача 17).</summary>
+    /// <summary>Runtime-опции процессов переезда: склейка Moves + Thresholds.</summary>
     public MovesRuntimeOptions ToRuntime(ThresholdsOptions thresholds) => new(
         PollIntervalSec, FreezeWaitSec, FreezeLockTimeoutSec, FreezeLockTries,
         AbortMinAgeSec, FailoverSlots, thresholds.CutoverTimeoutSec, thresholds.ConnFailBudgetSec,
@@ -402,12 +398,12 @@ public sealed class AppParamsOptions
     public string Default { get; set; } = "sslmode=require";
 }
 
-/// <summary>Подсистема бэкапов шардов (arch/19, t01): каркас без процессной
-/// логики (джобы/агенты — t02–t07); Enabled=false — поведение воркера не
+/// <summary>Подсистема бэкапов шардов (arch/19): каркас без процессной
+/// логики (джобы/агенты); Enabled=false — поведение воркера не
 /// меняется.</summary>
 public sealed class BackupsOptions
 {
-    /// <summary>Вкл/выкл подсистемы (t01: только каркас; потребители — t02+).</summary>
+    /// <summary>Вкл/выкл подсистемы (: только каркас; потребители — +).</summary>
     public bool Enabled { get; set; }
 
     public BackupsS3Options S3 { get; set; } = new();
@@ -416,52 +412,44 @@ public sealed class BackupsOptions
 
     public BackupsStagingOptions Staging { get; set; } = new();
 
-    public BackupsAgentOptions Agent { get; set; } = new();
-
     public BackupsJobOptions Job { get; set; } = new();
 
     public BackupsRetryOptions Retry { get; set; } = new();
 
-    /// <summary>WAL-поток (t03, arch/19 §3/§9): расписание контроля, пороги.</summary>
+    /// <summary>WAL-поток (arch/19 §3/§9): расписание контроля, пороги.</summary>
     public BackupsWalOptions Wal { get; set; } = new();
 
-    /// <summary>Ретенционный проход (t06, arch/19 §9): период и FAILED-глубина.</summary>
+    /// <summary>Ретенционный проход (arch/19 §9): период и FAILED-глубина.</summary>
     public BackupsRetentionPassOptions Retention { get; set; } = new();
 
-    /// <summary>Квота bucket установки (t06, arch/19 §9).</summary>
+    /// <summary>Квота bucket установки (arch/19 §9).</summary>
     public BackupsQuotaOptions Quota { get; set; } = new();
 
-    /// <summary>Восстановление шарда (t05, arch/19 §3.5/§9): бюджеты.</summary>
+    /// <summary>Восстановление шарда (arch/19 §3.5/§9): бюджеты.</summary>
     public BackupsRestoreOptions Restore { get; set; } = new();
 
-    /// <summary>Супервизор бэкапов (t07, arch/19 §4/§9): период сверок S3↔etcd
+    /// <summary>Супервизор бэкапов (arch/19 §4/§9): период сверок S3↔etcd
     /// per-cluster и глобального лидер-прохода; TTL сирот S3.</summary>
     public BackupsSupervisorOptions Supervisor { get; set; } = new();
 
-    /// <summary>Дрилл восстановимости (reliability t02, arch/19 §9): дефолт
+    /// <summary>Дрилл восстановимости (reliability, arch/19 §9): дефолт
     /// периода дрилов шардов кластеров без policy-поля drill.interval_days
     /// (0 — глобальное выключение новых запусков) и бюджет активного дрилла.</summary>
     public BackupsDrillOptions Drill { get; set; } = new();
 
     /// <summary>Runtime-опции подсистемы бэкапов: склейка Backups-секции
-    /// (t02: джобы/ретраи; t03: advertised-S3/Wal-пороги; t06: ретенция/квота)
-    /// — именованными аргументами: record расширялся с обеих сторон.
-    /// t41: contourNetwork — режим сети контура (Docker.ContourNetwork;
-    /// единая точка сборки — PgWorkerOptions.BackupsRuntime()).</summary>
-    public BackupsRuntimeOptions ToRuntime(string? contourNetwork = null) => new(
+    /// — именованными аргументами: record расширялся с обеих сторон
+    /// (контейнеров/джобов бэкапов нет — операции исполняют приёмники нод).</summary>
+    public BackupsRuntimeOptions ToRuntime() => new(
         Enabled: Enabled,
         FullMaxAgeSec: Policy.FullMaxAgeSec,
         VerifyOnCreate: Policy.VerifyOnCreate,
         VerifyIntervalSec: Policy.VerifyIntervalSec,
         S3Bucket: S3.Bucket,
         S3CaBundlePath: S3.CaBundlePath,
-        JobImage: Job.Image,
         RetryBaseSec: Retry.BaseSec,
         RetryMaxSec: Retry.MaxSec,
         StagingDir: Staging.Dir,
-        StagingQuotaBytes: Staging.QuotaBytes,
-        AgentCpu: Agent.Cpu,
-        AgentMem: Agent.Mem,
         WalVerifyIntervalSec: Wal.VerifyIntervalSec,
         WalLagMaxSegments: Wal.LagMaxSegments,
         WalStaleSec: Wal.StaleSec,
@@ -476,25 +464,21 @@ public sealed class BackupsOptions
         RestoreRecoveryTimeoutSec: Restore.RecoveryTimeoutSec,
         SupervisorIntervalSec: Supervisor.IntervalSec,
         SupervisorOrphanTtlSec: Supervisor.OrphanTtlSec,
+        GarbageMinAgeSec: Supervisor.GarbageMinAgeSec,
         JobFullTimeoutSec: Job.FullTimeoutSec,
         JobVerifyTimeoutSec: Job.VerifyTimeoutSec,
         JobRestoreTimeoutSec: Job.RestoreTimeoutSec,
         DrillIntervalDays: Drill.IntervalDays,
-        DrillTimeoutSec: Drill.TimeoutSec,
-        WalAgentImage: Wal.AgentImage,
-        ContourNetwork: contourNetwork);
+        DrillTimeoutSec: Drill.TimeoutSec);
 
     /// <summary>Fail-fast старта (образец TLS arch/14 §2.2.1): Enabled=true
     /// обязан иметь непустой Bucket (env PGW_BACKUP_S3_BUCKET); env-профили
     /// кредов пулов упразднены — креды читаются per-cluster из etcd
     /// (/s3/clusters/&lt;C&gt;/secrets), проверок их наличия на старте нет;
-    /// false — подсистема не активна. Диапазоны ретенции/квоты (t06) — всегда:
+    /// false — подсистема не активна. Диапазоны ретенции/квоты — всегда:
     /// мусорный конфиг виден на старте.</summary>
     public bool IsValid()
-        => (!Enabled
-            || (!string.IsNullOrWhiteSpace(S3.Bucket)
-                && !string.IsNullOrWhiteSpace(Job.Image)
-                && !string.IsNullOrWhiteSpace(Wal.AgentImage)))   // t27: образ wal-агента
+        => (!Enabled || !string.IsNullOrWhiteSpace(S3.Bucket))
            && Quota.WarnPercent < Quota.CritPercent
            && Quota.CritPercent <= 100
            && Retention.IntervalSec >= 60
@@ -508,7 +492,7 @@ public sealed class BackupsOptions
            && Drill.TimeoutSec > 0;               // бюджет активного дрилла обязателен
 }
 
-/// <summary>Дрилл восстановимости (reliability t02, arch/19 §9): IntervalDays —
+/// <summary>Дрилл восстановимости (reliability, arch/19 §9): IntervalDays —
 /// дефолт периода дрилов (суток) для кластеров без policy-поля drill.interval_days,
 /// 0 — глобальное выключение новых запусков при доводке активных; TimeoutSec —
 /// бюджет активного дрилла от started_unix → FAILED drill-timeout.</summary>
@@ -519,7 +503,7 @@ public sealed class BackupsDrillOptions
     public int TimeoutSec { get; set; } = 21600;
 }
 
-/// <summary>Параметры ретенционного прохода (t06, arch/19 §9): период и
+/// <summary>Параметры ретенционного прохода (arch/19 §9): период и
 /// FAILED-глубина. Имя НЕ BackupsRetentionOptions — то занято GFS-гранулами
 /// политики (BackupsPolicyOptions.Retention).</summary>
 public sealed class BackupsRetentionPassOptions
@@ -529,7 +513,7 @@ public sealed class BackupsRetentionPassOptions
     public int KeepFailed { get; set; } = 20;
 }
 
-/// <summary>Квота bucket установки (t06, arch/19 §9): Bytes=0 — квота не задана.</summary>
+/// <summary>Квота bucket установки (arch/19 §9): Bytes=0 — квота не задана.</summary>
 public sealed class BackupsQuotaOptions
 {
     public long Bytes { get; set; }
@@ -539,45 +523,50 @@ public sealed class BackupsQuotaOptions
     public int CritPercent { get; set; } = 90;
 }
 
-/// <summary>Restore-подсистема (t05, arch/19 §9): бюджет локального наката
+/// <summary>Restore-подсистема (arch/19 §9): бюджет локального наката
 /// WAL restore-джобом (фаза recovering); env-переменная не нужна — не секрет.</summary>
 public sealed class BackupsRestoreOptions
 {
     public int RecoveryTimeoutSec { get; set; } = 1800;
 }
 
-/// <summary>Супервизор бэкапов (t07, arch/19 §4/§9): период сверок S3↔etcd
+/// <summary>Супервизор бэкапов (arch/19 §4/§9): период сверок S3↔etcd
 /// per-cluster и глобального лидер-прохода (реестр сирот
 /// /pgworker/backups/orphans); OrphanTtlSec=0 — авто-удаление выключено,
-/// только алерт панели.</summary>
+/// только алерт панели; GarbageMinAgeSec — дефолт возрастного гейта мусора
+/// (arch/19 §4 «Гейты мусора»; policy-ключ garbage_min_age_sec кластера
+/// перекрывает), 0 — гейт снят.</summary>
 public sealed class BackupsSupervisorOptions
 {
     public int IntervalSec { get; set; } = 600;
 
     public long OrphanTtlSec { get; set; } = 604800;
+
+    public long GarbageMinAgeSec { get; set; } = 600;
 }
 
-/// <summary>Образ джоба полного бэкапа (arch/19 §2/§9, t02): собирается из
-/// docker/PgWorker.Backup.Dockerfile; запуск — воркер, содержимое — без .NET.
-/// Таймауты (t07, arch/19 §6/§9) — бюджеты зависших джобов: полный/verify/restore.</summary>
+/// <summary>Бюджеты операций бэкапов (arch/19 §6/§9): возрастные гварды
+/// зависших — полный/verify/restore (исполняют приёмники WalReceiver нод,
+/// воркер супервизит через API приёмника).</summary>
 public sealed class BackupsJobOptions
 {
-    public string Image { get; set; } = "pgworker-backup:dev";
-
-    /// <summary>Бюджет активного полного (PLANNED/RUNNING/UPLOADING), c (t07):
-    /// возраст > лимита → kill+rm + FAILED job-timeout → переснятие по бэкоффу.</summary>
+    /// <summary>Бюджет активного полного (PLANNED/RUNNING/UPLOADING), c :
+    /// возраст > лимита → FAILED job-timeout + cancel API приёмника → переснятие
+    /// по бэкоффу (: контейнера полного нет, staging чистит приёмник).</summary>
     public int FullTimeoutSec { get; set; } = 21600;
 
-    /// <summary>Бюджет running verify-джоба по docker-факту StartedAt, c (t07):
-    /// kill+rm, кандидат остаётся PENDING с checked_unix = now (попытка зачтена).</summary>
+    /// <summary>Бюджет running verify-операции приёмника (started_unix снимка
+    /// API), c: cancel best-effort, кандидат остаётся PENDING с
+    /// checked_unix = now (попытка зачтена).</summary>
     public int VerifyTimeoutSec { get; set; } = 21600;
 
-    /// <summary>Бюджет RUNNING-фазы restore-заявки, c (t07): kill+rm + FAILED
-    /// restore-job-timeout с чисткой щита initialize; REJOINING не таймаутится.</summary>
+    /// <summary>Бюджет RUNNING-фазы restore-заявки, c: снос первой ноды
+    /// (операция уходит с ней) + FAILED restore-job-timeout с чисткой щита
+    /// initialize; REJOINING не таймаутится.</summary>
     public int RestoreTimeoutSec { get; set; } = 86400;
 }
 
-/// <summary>Бэкофф переснятия FAILED-полного (arch/19 §2, t02):
+/// <summary>Бэкофф переснятия FAILED-полного (arch/19 §2):
 /// задержка n-й попытки после последнего COMPLETED =
 /// min(BaseSec·2^(n−1), MaxSec), без лимита попыток.</summary>
 public sealed class BackupsRetryOptions
@@ -587,14 +576,14 @@ public sealed class BackupsRetryOptions
     public int MaxSec { get; set; } = 3600;
 }
 
-/// <summary>S3-хранилище бэкапов (t36, arch/19 §5/§7): bucket per-install
+/// <summary>S3-хранилище бэкапов (arch/19 §5/§7): bucket per-install
 /// (единый на всех нодах пулов) + CA https; endpoint/креды пула — per-cluster
 /// в etcd (/s3/clusters/&lt;C&gt;/secrets, не конфиг).</summary>
 public sealed class BackupsS3Options
 {
     public string Bucket { get; set; } = "";
 
-    /// <summary>Путь CA-bundle (ca.pem) для доверия https S3-endpoint (t42,
+    /// <summary>Путь CA-bundle (ca.pem) для доверия https S3-endpoint (
     /// arch/19 §7; env PGW_BACKUP_S3_CA_BUNDLE_PATH → compose-биндинг).
     /// Пусто — http-endpoint, SDK-доверие системное.</summary>
     public string? CaBundlePath { get; set; }
@@ -610,12 +599,12 @@ public sealed class BackupsPolicyOptions
 
     public bool VerifyOnCreate { get; set; } = true;
 
-    /// <summary>Период перепроверки оставшихся полных, c (t04, arch/19 §4):
+    /// <summary>Период перепроверки оставшихся полных, c (arch/19 §4):
     /// verify.interval_sec policy-ключа перекрывает; &lt;= 0 — периодика выключена.</summary>
     public long VerifyIntervalSec { get; set; } = 604800;
 }
 
-/// <summary>GFS-ретенция полных бэкапов (дни/недели/месяцы, t06; t18 —
+/// <summary>GFS-ретенция полных бэкапов (дни/недели/месяцы; —
 /// дефолт целевой схемы: последний + недельная + месячная позиции).</summary>
 public sealed class BackupsRetentionOptions
 {
@@ -626,28 +615,16 @@ public sealed class BackupsRetentionOptions
     public int Months { get; set; } = 1;
 }
 
-/// <summary>Staging джобов/агентов бэкапов (arch/19 §6): ephemeral volume с
-/// квотой (guard «нет места» → FAILED, реализация t02; null — без квоты).</summary>
+/// <summary>Staging полного (arch/19 §9): каталог в data-volume ноды
+/// (дефолт — канон); ENOSPC — реактивный FAILED приёмника; квоты нет.</summary>
 public sealed class BackupsStagingOptions
 {
-    public string Dir { get; set; } = "/backup-staging";
-
-    public long? QuotaBytes { get; set; }
+    public string Dir { get; set; } = "/home/postgres/pgdata/backup-staging";
 }
 
-/// <summary>Ресурсные лимиты джоба/агента бэкапов (arch/19 §6) →
-/// HostConfig.NanoCPUs/Memory; null — без лимита (образец request_* нод,
-/// arch/14 §2.4 п.4). Cpu — ядра, Mem — байты.</summary>
-public sealed class BackupsAgentOptions
-{
-    public double? Cpu { get; set; }
-
-    public long? Mem { get; set; }
-}
-
-/// <summary>WAL-поток шарда (t03, arch/19 §3/§9): период list/контроля цепочки,
-/// порог отставания в сегментах, порог тишины загрузок; t27 — образ
-/// wal-агента-приёмника (per-node long-running контейнеры).</summary>
+/// <summary>WAL-поток шарда (arch/19 §3/§9): период list/контроля цепочки,
+/// порог отставания в сегментах, порог тишины загрузок (контроль воркера;
+/// конфигурация приёмника — etcd/env ноды).</summary>
 public sealed class BackupsWalOptions
 {
     public int VerifyIntervalSec { get; set; } = 30;
@@ -655,8 +632,4 @@ public sealed class BackupsWalOptions
     public int LagMaxSegments { get; set; } = 1024;
 
     public int StaleSec { get; set; } = 300;
-
-    /// <summary>Образ wal-агента-приёмника (t27, arch/19 §3/§9): дефолт —
-    /// локальная сборка стенда; E2E — pgworker-wal:e2e.</summary>
-    public string AgentImage { get; set; } = "pgworker-wal:dev";
 }

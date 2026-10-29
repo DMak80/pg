@@ -10,6 +10,7 @@ using PgWorker.Core.Templates;
 using Shared.Etcd.Client;
 using PgWorker.Provisioning.Sql;
 using PgWorker.Provisioning.Processes;
+using PgWorker.Provisioning.Probes;
 
 namespace PgWorker.UnitTests.Provisioning;
 
@@ -26,7 +27,7 @@ internal static class Fakes
 
     // Настройки PgWorker:Pgtune для конструкторов процессов (дефолты опций);
     // отдельная сущность от PgtuneFactory — NodeSupervisor получает её
-    // конструкторно для ExcludeParams (t11 spec §4.3 п.3).
+    // конструкторно для ExcludeParams (spec §4.3 п.3).
     internal static PgtuneSettings PgtuneSettings() => new(
         18, "oltp", "ssd", "mid_ram", 60,
         new HashSet<string>(StringComparer.Ordinal));
@@ -47,10 +48,10 @@ internal static class Fakes
         // когда gateway бросает, а не возвращает Result.Failed).
         public Func<string, Exception?>? RangeFault { get; set; }
 
-        // Сбой-инъекция txn (t90: ошибка захвата PortAllocLock → Result.Failed).
+        // Сбой-инъекция txn (: ошибка захвата PortAllocLock → Result.Failed).
         public Func<TxnRequest, Result<TxnResult>>? TxnFault { get; set; }
 
-        // Гонка RMW (t06, образец KafkaWorker Fakes): конкурентная запись ДО compare.
+        // Гонка RMW (образец KafkaWorker Fakes): конкурентная запись ДО compare.
         public Action<TxnRequest>? OnTxnBeforeCompare { get; set; }
 
         private long _rev;
@@ -114,7 +115,7 @@ internal static class Fakes
         {
             if (TxnFault?.Invoke(req) is { } failed)
                 return Task.FromResult(failed);
-            OnTxnBeforeCompare?.Invoke(req); // t06: инжекция гонки до compare
+            OnTxnBeforeCompare?.Invoke(req); // инжекция гонки до compare
             bool succeeded;
             lock (_gate)
             {
@@ -228,11 +229,21 @@ internal static class Fakes
     // Записывающий мок драйвера кластера: порядок вызовов проверяют тесты.
     // Потокобезопасен: EnsureNode идёт параллельно по нодам/шардам —
     // обычные List-ы теряли записи (флaky-тесты).
-    // Стаб ensure кластерных кредов (t22): шаг пересоздания REST-TLS берёт пару
+    // Стаб ensure кластерных кредов : шаг пересоздания REST-TLS берёт пару
 // из РЕЗУЛЬТАТА ensure (легаси-кластер без ключа в снапшоте).
 internal sealed class FakeSecretEnsurer : IClusterSecretEnsurer
 {
-    public const string RestPassword = "EnsuredRest0Pass0000000000000000A";
+    // Пароль генерируется в рантайме: секрет не зашивается в исходник; одно
+    // поле переиспользуется всеми обращениями (результат ensure и сравнения).
+    public static readonly string RestPassword = GenerateTestPassword();
+
+    private static string GenerateTestPassword()
+    {
+        // Криптостойкий генератор: 24 символа букв/цифр (безопасно для DSN/env).
+        const string alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+        var bytes = System.Security.Cryptography.RandomNumberGenerator.GetBytes(24);
+        return new string(bytes.Select(b => alphabet[b % alphabet.Length]).ToArray());
+    }
 
     public Task<Result<ClusterCredentials>> EnsureAsync(
         string cluster, ClusterConfig config, CancellationToken ct)
@@ -242,17 +253,24 @@ internal sealed class FakeSecretEnsurer : IClusterSecretEnsurer
             RestPassword)));
 }
 
-// Фейк docker-движка для шага пересоздания REST-TLS (t22): трекер stop/rm
+// Фейк docker-движка для шага пересоздания REST-TLS : трекер stop/rm
 // контейнера (volume НЕ трогается — RemoveVolumeAsync считает вызовы).
 internal sealed class FakeContainerEngine : IDockerEngine
 {
     public readonly List<string> Stopped = [];
+    public readonly List<string> Killed = [];
     public readonly List<string> Removed = [];
     public readonly List<string> RemovedVolumes = [];
 
     public Task<Result> StopContainerAsync(string idOrName, int timeoutSec, CancellationToken ct)
     {
         Stopped.Add(idOrName);
+        return Task.FromResult(Result.Success());
+    }
+
+    public Task<Result> KillContainerAsync(string idOrName, CancellationToken ct)
+    {
+        Killed.Add(idOrName);
         return Task.FromResult(Result.Success());
     }
 
@@ -319,46 +337,37 @@ internal sealed class FakeDriver : IClusterDriver
 
         public readonly List<string> EnsuredNodes = [];
         public readonly List<(string Node, NodeResources? Resources)> EnsuredDetails = [];
-        public readonly List<bool> EnsuredSyncStrict = []; // t06: strict из EnsureNode-вызовов
-        // t22: env живых контейнеров (ключ "<shard>/<node>" → env-словарь; нет
+        public readonly List<bool> EnsuredSyncStrict = []; // strict из EnsureNode-вызовов
+        // env живых контейнеров (ключ "<shard>/<node>" → env-словарь; нет
         // записи — пустой) + переданный restPassword каждого EnsureNode-вызова.
         public readonly Dictionary<string, IReadOnlyDictionary<string, string>> NodeEnvs = new();
         public readonly Dictionary<string, string> EnsuredRestPasswords = new();
         public readonly List<string> RemovedNodes = [];
         public readonly List<string> StoppedNodes = [];
-        public readonly List<(string Node, IReadOnlyList<string> Cmd)> Executed = [];
         public List<string> NodeObjects = [];
         public Func<string, Result>? EnsureResultByNode { get; set; }
-        public Func<string, IReadOnlyList<string>, Result<string>>? ExecResult { get; set; }
+        // Исход StopNodeAsync по ноде "<shard>/<node>" (null — успех); вызов
+        // фиксируется в StoppedNodes ДО исхода (порядок событий теста).
+        public Func<string, Result>? StopResultByNode { get; set; }
         public bool RemoveFailsOnce { get; set; }
         private bool _removeFailed;
         public IReadOnlyList<HostInfo> Hosts = [new HostInfo("h1", 0), new HostInfo("h2", 0)];
         public IReadOnlySet<(string Host, int Port)> BusyPorts = new HashSet<(string, int)>();
 
-        // t03: контейнеры WAL-агентов — фиксация ensure/remove + мутабельная карта.
-        public readonly List<string> EnsuredBackupAgents = [];
+        // legacy wal-контейнеры pgw-backup-wal-* — карта живых объектов для
+        // санитарного сноса + журнал удалённых имён; ensure/list/logs упразднены.
         public readonly List<string> RemovedBackupAgents = [];
         public List<DockerContainer> BackupAgentObjects = [];
 
-        public Task<Result> EnsureBackupAgentAsync(
-            string cluster, string shard, string node, ContainerSpec spec, string host, CancellationToken ct)
-        {
-            lock (_gate)
-            {
-                var name = BackupAgentNames.Container(cluster, shard, node);
-                EnsuredBackupAgents.Add(name);
-                if (BackupAgentObjects.All(c => !c.Names.Contains("/" + name)))
-                    BackupAgentObjects.Add(new DockerContainer($"id-{name}", ["/" + name], "running", spec.Image));
-            }
-
-            return Task.FromResult(Result.Success());
-        }
+        // число вызовов санитарного сноса (тик WalStreamProcess).
+        public int RemoveBackupAgentsCalls;
 
         public Task<Result> RemoveBackupAgentsAsync(string cluster, string? shard, CancellationToken ct)
         {
             lock (_gate)
             {
-                var prefix = BackupAgentNames.Prefix(cluster);
+                RemoveBackupAgentsCalls++;
+                var prefix = $"pgw-backup-wal-{cluster}-";
                 var names = BackupAgentObjects
                     .SelectMany(c => c.Names)
                     .Select(n => n.TrimStart('/'))
@@ -376,23 +385,6 @@ internal sealed class FakeDriver : IClusterDriver
             return Task.FromResult(Result.Success());
         }
 
-    // t36: заглушка хвоста лога агента (интерфейсный член; сценарию не нужен).
-    public Task<Result<string>> BackupAgentLogsAsync(string cluster, string containerName, int tailLines, CancellationToken ct)
-        => Task.FromResult(Result<string>.Success(""));
-
-        public Task<Result<IReadOnlyList<DockerContainer>>> ListBackupAgentsAsync(
-            string cluster, CancellationToken ct)
-        {
-            lock (_gate)
-            {
-                var prefix = BackupAgentNames.Prefix(cluster);
-                IReadOnlyList<DockerContainer> result = BackupAgentObjects
-                    .Where(c => c.Names.Any(n => n.TrimStart('/').StartsWith(prefix, StringComparison.Ordinal)))
-                    .ToList();
-                return Task.FromResult(Result<IReadOnlyList<DockerContainer>>.Success(result));
-            }
-        }
-
         public Task<Result<IReadOnlyList<HostInfo>>> GetHostsAsync(CancellationToken ct)
             => Task.FromResult(Result<IReadOnlyList<HostInfo>>.Success(Hosts));
 
@@ -407,7 +399,7 @@ internal sealed class FakeDriver : IClusterDriver
             {
                 EnsuredNodes.Add($"{topology.Shard}/{nodeName}");
                 EnsuredDetails.Add((nodeName, resources));
-                EnsuredSyncStrict.Add(syncStrict); // t06: значение фиксируется для ассертов
+                EnsuredSyncStrict.Add(syncStrict); // значение фиксируется для ассертов
                 EnsuredRestPasswords[$"{topology.Shard}/{nodeName}"] = restPassword;
                 // Пересоздание шагом REST-TLS — новый контейнер несёт полный env
                 // (серт + hash фактической пары): тестовая семантика «ensure пишет env».
@@ -421,11 +413,11 @@ internal sealed class FakeDriver : IClusterDriver
             return Task.FromResult(EnsureResultByNode is { } f ? f(nodeName) : Result.Success());
         }
 
-        // t22: env живого контейнера (шаг пересоздания). Дефолт — «TLS уже на
+        // env живого контейнера (шаг пересоздания). Дефолт — «TLS уже на
         // месте» (существующие тесты надзора: шаг no-op); кейсы шага затирают
         // NodeEnvs управляемым env (легаси без серта / чужой hash).
         public bool DefaultNodeEnvIsLegacy { get; set; }
-        // t22-ротация: оверрайд env инспекции (кейс «нода несёт hash(pending)» —
+        // ротация: оверрайд env инспекции (кейс «нода несёт hash(pending)» —
         // тесты ротатора читают журнал напрямую).
         public Func<string, string, IReadOnlyDictionary<string, string>>? InspectEnvOverride { get; set; }
         public Task<Result<IReadOnlyDictionary<string, string>>> InspectNodeEnvAsync(
@@ -464,25 +456,14 @@ internal sealed class FakeDriver : IClusterDriver
 
         public Task<Result> StopNodeAsync(string cluster, string shard, string nodeName, CancellationToken ct)
         {
+            string key;
             lock (_gate)
             {
-                StoppedNodes.Add($"{shard}/{nodeName}");
+                key = $"{shard}/{nodeName}";
+                StoppedNodes.Add(key);
             }
 
-            return Task.FromResult(Result.Success());
-        }
-
-        public Task<Result<string>> ExecNodeAsync(
-            string cluster, string shard, string node, IReadOnlyList<string> cmd, CancellationToken ct)
-        {
-            lock (_gate)
-            {
-                Executed.Add(($"{shard}/{node}", cmd));
-            }
-
-            return Task.FromResult(ExecResult is { } f
-                ? f(node, cmd)
-                : Result<string>.Success(string.Empty));
+            return Task.FromResult(StopResultByNode is { } stopResult ? stopResult(key) : Result.Success());
         }
 
         // Инспекция усыновления (adopt-repair T3): фиксированная карта находок;
@@ -493,8 +474,6 @@ internal sealed class FakeDriver : IClusterDriver
         // сбой-инъекция: docker-хост недоступен (Д2: transport-провал инспекции — transient).
         public Exception? InspectFault { get; set; }
 
-        public readonly List<(string Container, IReadOnlyList<string> Cmd)> ContainerExecs = [];
-
         public Task<Result<IReadOnlyDictionary<string, DiscoveredNode>>> InspectNodesAsync(
             string cluster, IReadOnlyCollection<string> nodeNames, CancellationToken ct)
             => InspectFault is { } fault
@@ -503,22 +482,6 @@ internal sealed class FakeDriver : IClusterDriver
                     (IReadOnlyDictionary<string, DiscoveredNode>)InspectResult
                         .Where(p => nodeNames.Contains(p.Key))
                         .ToDictionary(p => p.Key, p => p.Value)));
-
-        // Д3: карта присутствия данных по имени ноды (default Present — чистка запрещена).
-        public Func<string, DataPresence> DataPresenceByNode { get; set; } = _ => DataPresence.Present;
-
-        public Task<Result<DataPresence>> NodeDataPresenceAsync(string cluster, string shard, string node, CancellationToken ct)
-            => Task.FromResult(Result<DataPresence>.Success(DataPresenceByNode(node)));
-
-        public Task<Result<string>> ExecContainerAsync(string containerName, IReadOnlyList<string> cmd, CancellationToken ct)
-        {
-            lock (_gate)
-            {
-                ContainerExecs.Add((containerName, cmd));
-            }
-
-            return Task.FromResult(Result<string>.Success(string.Empty));
-        }
 
         public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, CancellationToken ct)
         {
@@ -536,25 +499,26 @@ internal sealed class FakeDriver : IClusterDriver
             return Task.FromResult(Result<IReadOnlyList<string>>.Success(objects));
         }
 
-        // t02: чистка джобов бэкапов (D2) — фейк помнит вызов, движки не нужны.
-        public bool RemoveBackupJobsCalled { get; private set; }
-
-        // t05: чистка restore-джобов шарда (remove-shard) — помним вызовы.
-        public List<(string Cluster, string Shard)> RemovedRestoreJobs { get; } = [];
-
         public IDockerEngine? Engine { get; set; }
         public IDockerEngine? EngineFor(string host) => Engine;
+    }
 
-        public Task<Result> RemoveBackupJobsAsync(string cluster, CancellationToken ct)
-        {
-            RemoveBackupJobsCalled = true;
-            return Task.FromResult(Result.Success());
-        }
+    // Проба данных ноды (Д3): карта вердиктов по имени ноды (default Present —
+    // чистка scope запрещена). Unknown — ответ 500 (транспорт-отказ приёмника).
+    internal sealed class FakeNodeDataProbe : INodeDataProbe
+    {
+        public Func<string, DataPresence> PresenceByNode { get; set; } = _ => DataPresence.Present;
 
-        public Task<Result> RemoveRestoreJobsAsync(string cluster, string shard, CancellationToken ct)
+        public Task<NodeDataProbeReply> ProbeAsync(
+            string cluster, string shard, string node, CancellationToken ct)
         {
-            RemovedRestoreJobs.Add((cluster, shard));
-            return Task.FromResult(Result.Success());
+            var reply = PresenceByNode(node) switch
+            {
+                DataPresence.Present => new NodeDataProbeReply(200, "present", null),
+                DataPresence.Absent => new NodeDataProbeReply(200, "absent", null),
+                _ => new NodeDataProbeReply(500, null, "receiver status 500"),
+            };
+            return Task.FromResult(reply);
         }
     }
 
@@ -571,7 +535,7 @@ internal sealed class FakeDriver : IClusterDriver
         public Func<string, Result>? ExecuteResultByDsn { get; set; }
         public Func<string, Result<object?>>? ScalarResultByDsn { get; set; }
 
-        // t02: ответ гварда роли зависит от SQL (роль есть → null, нет → CREATE-текст)
+        // ответ гварда роли зависит от SQL (роль есть → null, нет → CREATE-текст)
         public Func<string, string, Result<object?>>? ScalarResultBySql { get; set; }
 
         public Action<string>? OnExecute { get; set; }
@@ -592,7 +556,7 @@ internal sealed class FakeDriver : IClusterDriver
         {
             lock (_gate)
             {
-                Scalars.Add((dsn, sql)); // t06: гварды ролей идут скалярами — трекаем их
+                Scalars.Add((dsn, sql)); // гварды ролей идут скалярами — трекаем их
             }
 
             return Task.FromResult(ScalarResultBySql is { } bySql ? bySql(dsn, sql)
@@ -616,7 +580,7 @@ internal sealed class FakeDriver : IClusterDriver
     }
 
     // Записывающий ILogger: фиксирует отформатированные сообщения — проверка
-    // warning-логов процессов (t11: skip pgtune-конвергенции по заявке).
+    // warning-логов процессов (: skip pgtune-конвергенции по заявке).
     internal sealed class RecordingLogger<T> : ILogger<T>
     {
         public readonly List<(LogLevel Level, string Message)> Entries = [];
@@ -666,6 +630,13 @@ internal sealed class FakeDriver : IClusterDriver
             string cluster, string shard, int? maxKeysPerTest = null, CancellationToken ct = default)
             => Task.FromResult(Off<IReadOnlyList<string>>());
 
+// файловые методы интерфейса в этом тесте не используются —
+        // заглушка (фейк нужен только перечисленным выше операциям).
+        public Task<Result> PutFileAsync(string key, string filePath, CancellationToken ct = default)
+            => Task.FromResult(Result.Failed(new ApplicationException("put-file: not supported by this fake")));
+
+        public Task<Result> GetObjectToFileAsync(string cluster, string shard, string key, string destFilePath, CancellationToken ct = default)
+            => Task.FromResult(Result.Failed(new ApplicationException("get-to-file: not supported by this fake")));
         public Task<Result<string>> DownloadTextAsync(
             string cluster, string shard, string objectKey, CancellationToken ct = default)
             => Task.FromResult(Off<string>());

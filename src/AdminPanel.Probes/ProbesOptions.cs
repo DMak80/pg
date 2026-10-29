@@ -3,7 +3,7 @@ using Shared.Core.DI;
 namespace AdminPanel.Probes;
 
 // [Config]-POCO live-проб: секция AdminPanel:Probes (arch/01 §6, arch/02 §6; spec §4.4).
-// Суффикс Seconds — прецедент EtcdOptions (t03 §3.3).
+// Суффикс Seconds — прецедент EtcdOptions (§3.3).
 [Config("AdminPanel:Probes")]
 public class ProbesOptions
 {
@@ -27,7 +27,7 @@ public class ProbesOptions
     // точное совпадение ключа, иначе адрес без изменений; по умолчанию пуст (прод).
     public Dictionary<string, string> HostMap { get; set; } = [];
 
-    // Valkey-PING-пробы (t03, arch/03 §8): RESP-миниклиент панели.
+    // Valkey-PING-пробы (arch/03 §8): RESP-миниклиент панели.
     public ValkeyProbesOptions Valkey { get; set; } = new();
 }
 

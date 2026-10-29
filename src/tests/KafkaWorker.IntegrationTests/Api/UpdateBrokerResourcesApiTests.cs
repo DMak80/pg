@@ -6,7 +6,7 @@ using Xunit;
 using KafkaWorker.Core.Writing;
 namespace KafkaWorker.IntegrationTests.Api;
 
-// Мутация №15 (t06, spec §4.2): guard'ы/канонизация/идемпотентность на
+// Мутация №15 (spec §4.2): guard'ы/канонизация/идемпотентность на
 // настоящем etcd (loops выключены — применяется NodeRegenerator'ом отдельно).
 [Collection(KafkaApiCollection.Name)]
 public class UpdateBrokerResourcesApiTests(KafkaApiFixture fixture)

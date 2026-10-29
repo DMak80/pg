@@ -191,7 +191,7 @@ public sealed class SnapshotRefresher(
             with
         {
             WorkerHealth = workerHealthStore.Current ?? [],
-            // t08: live-S3-инвентарь — готовым состоянием из стора (по образцу
+            // live-S3-инвентарь — готовым состоянием из стора (по образцу
             // WorkerHealth: poller пишет независимо, KV-тик не блокируется).
             S3Storage = inventoryStore.Current,
  // health etcdworker-инстансов — готовым из стора общего
@@ -227,19 +227,13 @@ public sealed class SnapshotRefresher(
         Func<string, CancellationToken, Task<Result<T>>> call,
         CancellationToken ct)
     {
-        var start = Array.IndexOf(alive, active);
-        Exception? last = null;
-        for (var i = 0; i < alive.Length; i++)
-        {
-            var endpoint = alive[(start + i) % alive.Length];
-            var result = await call(endpoint.Url, ct);
-            if (result.IsSuccess)
-                return result;
-            last = result.Error!;
-        }
-
-        return Result<T>.Failed(new EtcdUnreachableException(
-            $"all alive endpoints failed to answer: {last?.Message}"));
+        var result = await EtcdEndpointFailover.CallAsync(
+            alive.Select(e => e.Url).ToArray(), call, ct,
+            Math.Max(Array.IndexOf(alive, active), 0));
+        return result.IsSuccess
+            ? result
+            : Result<T>.Failed(new EtcdUnreachableException(
+                $"all alive endpoints failed to answer: {result.Error!.Message}"));
     }
 
     // Отказ тика: свежий Etcd-статус + прежние данные/BuiltAtUtc (spec §3.9).
@@ -266,17 +260,17 @@ public sealed class SnapshotRefresher(
             previous?.HaScopes ?? [],
             previous?.StandNodes ?? [],
             previous?.MoveTickets ?? [],  // очередь заявок не теряется на отказном тике — как Clusters
-            previous?.Backups ?? [],      // префикс бэкапов переживает отказный тик — как moves (t02)
+            previous?.Backups ?? [],      // префикс бэкапов переживает отказный тик — как moves 
             previous?.PgWorkerEndpoints ?? [], // ключи доступа воркера переживают отказ etcd
             previous?.PgWorkerWork ?? [], // журналы процессов воркера переживают отказ etcd (R4)
             previous?.WorkerHealth ?? [], // health-пробы переживают отказ etcd (poller независим)
-            previous?.Probes ?? [],   // t06: пробы — часть снапшота, отказ etcd их не теряет (spec §4.3)
+            previous?.Probes ?? [],   // пробы — часть снапшота, отказ etcd их не теряет (spec §4.3)
             [],
             previous?.ParseErrors ?? [],
             previous?.UnknownKeyCount ?? 0,
-            previous?.BackupStorage, // ключ storage переживает отказный тик — как Backups (t06)
-            previous?.BackupOrphans, // реестр сирот переживает отказный тик — как storage (t07)
-            previous?.S3Storage, // S3-инвентарь переживает отказ etcd (t08, как WorkerHealth)
+            previous?.BackupStorage, // ключ storage переживает отказный тик — как Backups 
+            previous?.BackupOrphans, // реестр сирот переживает отказный тик — как storage 
+            previous?.S3Storage, // S3-инвентарь переживает отказ etcd (как WorkerHealth)
             null, // WorkerApiCert — прежнее поведение отказного тика (серт не переносится)
             previous?.EtcdSnapshots, // статус DR-выгрузки слепков переживает отказный тик
             previous?.EtcdDomain, // домен EtcdWorker переживает отказный тик
@@ -307,7 +301,7 @@ public sealed class SnapshotRefresher(
             && uri.Scheme is "http" or "https"
             && !string.IsNullOrEmpty(uri.Host);
 
-    // Эффективный интервал тика: RefreshIntervalSeconds или fallback 3 c (t03 §3.3);
+    // Эффективный интервал тика: RefreshIntervalSeconds или fallback 3 c (§3.3);
     // тот же порог ×3 кормит snapshot-stale (spec §3.3).
     private double EffectiveIntervalSeconds()
     {

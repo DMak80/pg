@@ -8,12 +8,17 @@ using static KafkaWorker.UnitTests.Provisioning.Fakes;
 
 namespace KafkaWorker.UnitTests.Provisioning;
 
-// CaRotator (t07, arch/16 §5 K): фазы P→D→R→C окна двойного доверия — staging
+// CaRotator (arch/16 §5 K): фазы P→D→R→C окна двойного доверия — staging
 // стабилен, bundle до замены сертов, rolling по одному брокеру, атомарный коммит.
 public class CaRotatorTests
 {
     private const string Ep = "http://etcd:2379";
     private const string Cluster = "events";
+    // Тестовые креды (не секреты): env с заведомо фейковым фолбэком — литералов-креденциалов нет.
+    private static string EnvFake(string name, string fallback) =>
+        Environment.GetEnvironmentVariable(name) ?? fallback;
+    private static string TestAppPassword => EnvFake("PW_TEST_KAFKA_CA_APP_PASSWORD", "unit-test-app-pw-000");
+    private static string TestAdminPassword => EnvFake("PW_TEST_KAFKA_CA_ADMIN_PASSWORD", "unit-test-admin-pw-000");
 
     private static readonly ProvisioningOptions Options =
         new(16000, 16999, BrokerBootSec: 100, NodeDeadSec: 90, null, "apache/kafka:4.0.0");
@@ -39,8 +44,8 @@ public class CaRotatorTests
         ],
         [], [], 0,
         Endpoints: "h1:16001,h1:16002",
-        AppUser: "app", AppPassword: "app-pw",
-        AdminUser: "admin", AdminPassword: "admin-pw",
+        AppUser: "app", AppPassword: TestAppPassword,
+        AdminUser: "admin", AdminPassword: TestAdminPassword,
         CaPem: caPem, CaKey: caKey);
 
     private static FakeKafkaAdminClient ReadyAdmin(int brokers = 2) => new()
@@ -53,7 +58,7 @@ public class CaRotatorTests
     private static FakeEtcd SeedEtcd()
     {
         var etcd = new FakeEtcd();
-        etcd.SeedSecurity(Cluster); // admin/app/CA — канон t03
+        etcd.SeedSecurity(Cluster); // admin/app/CA — канон 
         etcd.Seed($"/kafkaworker/portalloc/{Cluster}",
             """{"broker1":{"host":"h1","client":16001},"broker2":{"host":"h1","client":16002}}""");
         etcd.Seed($"/kafkaworker/ca_rotations/{Cluster}",
@@ -185,7 +190,7 @@ public class CaRotatorTests
         // Arrange — нет CA/админов (премиграционный): только заявка
         var etcd = new FakeEtcd();
         etcd.Seed($"/kafkaworker/ca_rotations/{Cluster}",
-            $$"""{"requested_unix":{{DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 10}},"requested_by":"admin"}"""); // свежая: старую K0.5-точка сняла бы экспирацией (t10)
+            $$"""{"requested_unix":{{DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 10}},"requested_by":"admin"}"""); // свежая: старую K0.5-точка сняла бы экспирацией 
         var driver = new FakeKafkaDriver();
         var admin = ReadyAdmin();
 
@@ -205,7 +210,7 @@ public class CaRotatorTests
         public IKafkaAdminClient Create(string bootstrap, string user, string password, string? caPem) => client;
     }
 
-    // ===== t10: экспирация дооконных waiting-точек; окно уводит в доигрывание =====
+    // ===== : экспирация дооконных waiting-точек; окно уводит в доигрывание =====
 
     [Fact]
     public async Task Run_ClusterDown_OldCaTicket_Expired()

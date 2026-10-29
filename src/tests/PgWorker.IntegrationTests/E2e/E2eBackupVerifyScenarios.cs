@@ -9,11 +9,11 @@ using Xunit;
 
 namespace PgWorker.IntegrationTests.E2e;
 
-// E2E verify-джобов (t24/ревизия 8 — разбиение E2eBackupScenarios): пара
+// E2E verify-джобов (/ревизия 8 — разбиение E2eBackupScenarios): пара
 // Verify_Ok/Verify_Corruption (~2,5 мин суммарно — под порогом класса).
-// E2E полных бэкапов (t02, spec §7.1–7.4): изолированное окружение E2eEnvironment
+// E2E полных бэкапов (spec §7.1–7.4): изолированное окружение E2eEnvironment
 // (своя docker-сеть, свой etcd, СВОЯ ownS3-нода — withS3Node:true; порт динамический)
-// + образ pgworker-backup:e2e + живой кластер воркером с Backups:Enabled=true.
+// + verify/drill-операции в приёмниках WalReceiver нод (arch/19 §5) + живой кластер воркером с Backups:Enabled=true.
 // COMPLETED с полными полями и объектами в S3; FAILED по недоступному S3 с
 // переснятием новым id; deprovisioning чистит джобы и префикс; ротация
 // backup_password включает backup_exec. Каждый Fact — своё окружение: методы
@@ -25,7 +25,7 @@ public class E2eBackupVerifyScenarios
 {
     private const string Bucket = "pgworker-backups";
 
-    // t36: пул E2E (однонодовый — ownS3-ноды окружения; etcd у каждого Fact'а свой).
+    // пул E2E (однонодовый — ownS3-ноды окружения; etcd у каждого Fact'а свой).
     private const string Pool = "bkpool";
 
     // Окружение Fact'а (своя сеть/etcd/ownS3); создаётся в начале каждого сценария.
@@ -46,25 +46,20 @@ public class E2eBackupVerifyScenarios
         Fx = fx;
         var cluster = $"bkvrfy{Fx.ClusterTag}";
         await SeedClusterAsync(cluster);
-        // t36: пул + policy с секцией s3.
+        // пул + policy с секцией s3.
         await Fx.SeedS3PoolAsync(Pool, ct);
         await G.PutAsync(Endpoint, $"/pgworker/backups/{cluster}/policy",
             $$"""{"full_max_age_sec":86400,"verify":{"on_create":true,"interval_sec":0},{{E2eEnvironment.PoolS3(Pool)}}}""", null, ct);
         await using var app = await StartBackupHostAsync("bkverify", ct);
 
-        // Act 1 — фаза PENDING пройдена: в ключе PENDING (t02 пишет при COMPLETED)
-        // и/или жив контейнер pgw-backup-verify-<C>-* (PENDING держится в ключе
-        // до итога — стабильное условие; контейнер — свидетельство джоба)
+        // Act 1 — фаза PENDING пройдена: в ключе PENDING (пишет при COMPLETED;
+        // PENDING держится в ключе до итога — стабильное условие; verify-операцию
+        // исполняет WalReceiver ноды-источника — отдельного контейнера нет)
         var sawPending = await E2eFixture.WaitForAsync(async () =>
-        {
-            if ((await FullKeysAsync(cluster, "shard1"))
-                .Any(f => f.Value.Contains(""""verify":{"state":"PENDING"""")))
-                return true;
-            var containers = await Fx.RunDockerAsync(
-                ["ps", "-a", "--format", "{{.Names}}", "--filter", $"name=pgw-backup-verify-{cluster}-"], ct);
-            return containers.Length > 0;
-        }, TimeSpan.FromSeconds(180), ct);
-        sawPending.Should().BeTrue("on_create: verify must start (PENDING in the key / pgw-backup-verify-* container)");
+            (await FullKeysAsync(cluster, "shard1"))
+                .Any(f => f.Value.Contains(""""verify":{"state":"PENDING"""")),
+            TimeSpan.FromSeconds(180), ct);
+        sawPending.Should().BeTrue("on_create: verify must start (PENDING in the key)");
 
         // Act 2 — ждём verify.state=OK (бюджет 300 c: полный ~минуты + verify-скачивание)
         var verified = await E2eFixture.WaitForAsync(async () =>
@@ -78,19 +73,8 @@ public class E2eBackupVerifyScenarios
         status["verify"].GetProperty("state").GetString().Should().Be("OK");
         status["verify"].GetProperty("checked_unix").GetInt64().Should().BeGreaterThan(0);
 
-        // Assert 2 — verify-джоб отработал и снесён (контейнер/volume-префиксы чисты)
-        var cleaned = await E2eFixture.WaitForAsync(async () =>
-        {
-            var containers = await Fx.RunDockerAsync(
-                ["ps", "-a", "--format", "{{.Names}}", "--filter", $"name=pgw-backup-verify-{cluster}-"], ct);
-            var volumes = await Fx.RunDockerAsync(
-                ["volume", "ls", "-q", "--filter", $"name=pgw-backup-verify-{cluster}-"], ct);
-            return containers.Length == 0 && volumes.Length == 0;
-        }, TimeSpan.FromSeconds(60), ct);
-        cleaned.Should().BeTrue("the verify job and volume are torn down after the outcome (AC8)");
-
         // Assert 3 — воркерный и панельный парсеры читают без parseErrors (AC1);
-        // Kv общий (Shared.Etcd.Client, t08) — тот же набор подаётся в оба парсера
+        // Kv общий (Shared.Etcd.Client) — тот же набор подаётся в оба парсера
         var kvs = (await G.RangeAsync(Endpoint, $"/pgworker/backups/{cluster}/", ct)).Value;
         var parsed = BackupsParser.Parse(kvs, out var parseErrors);
         parseErrors.Should().BeEmpty();
@@ -114,7 +98,7 @@ public class E2eBackupVerifyScenarios
         Fx = fx;
         var cluster = $"bkcrpt{Fx.ClusterTag}";
         await SeedClusterAsync(cluster);
-        // t36: пул + policy с секцией s3.
+        // пул + policy с секцией s3.
         await Fx.SeedS3PoolAsync(Pool, ct);
         await G.PutAsync(Endpoint, $"/pgworker/backups/{cluster}/policy",
             $$"""{"full_max_age_sec":86400,"verify":{"on_create":true,"interval_sec":5},{{E2eEnvironment.PoolS3(Pool)}}}""", null, ct);
@@ -154,7 +138,7 @@ public class E2eBackupVerifyScenarios
             .Should().Be(1, "a new COMPLETED full does not manage to appear at the moment verify fails");
     }
 
-    // ===== Дрилл восстановимости (reliability t02, spec Фаза 5) =====
+    // ===== Дрилл восстановимости (reliability, spec Фаза 5) =====
 
     // Минимальный снапшот панели для правил дрилла («панельный алерт» в E2E:
 
@@ -178,7 +162,7 @@ public class E2eBackupVerifyScenarios
     // AAA (AC1/AC3/AC4): первый дрилл стартует сам после COMPLETED-полного,
 
     // Воркер с включённой подсистемой бэкапов: пул — policy.s3 (etcd), bucket и
-    // env-профиль кредов — env (t36); образ pgworker-backup:e2e, ускоренный бэкофф.
+    // env-профиль кредов — env; операции — в приёмниках нод (arch/19 §5), ускоренный бэкофф.
     private Task<HostInstance> StartBackupHostAsync(
         string name, CancellationToken ct,
         IReadOnlyDictionary<string, string>? extraEnv = null)
@@ -187,8 +171,6 @@ public class E2eBackupVerifyScenarios
         {
             ["PgWorker__Backups__Enabled"] = "true",
             ["PgWorker__Backups__S3__Bucket"] = Bucket,
-            ["PgWorker__Backups__Job__Image"] = E2eEnvironment.JobImage,
-            ["PgWorker__Backups__Wal__AgentImage"] = E2eEnvironment.WalImage,
             ["PgWorker__Backups__Retry__BaseSec"] = "2",
             ["PgWorker__Backups__Retry__MaxSec"] = "4",
         };

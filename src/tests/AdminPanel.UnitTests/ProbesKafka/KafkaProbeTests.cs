@@ -97,7 +97,7 @@ public class KafkaProbeTests
         rig.Client.Calls.Should().ContainSingle().Which
             .Bootstrap.Should().Be("host.docker.internal:16001");
         rig.Client.Calls.Single().User.Should().Be("admin");
-        // CA из стора передан наружу (SASL_SSL-доверие per-cluster CA, t03).
+        // CA из стора передан наружу (SASL_SSL-доверие per-cluster CA).
         rig.Client.Calls.Single().CaPem.Should().Be("CAPEM");
         var state = rig.ProbeStore.Current!;
         state.Results.Should().ContainSingle().Which.Ok.Should().BeTrue();
@@ -200,7 +200,7 @@ public class KafkaProbeTests
         rig.ProbeStore.Current!.Results.Should().BeEmpty();
     }
 
-    // Backoff недоступного кластера (t11): окно повтора 15 c → 60 c → 300 c —
+    // Backoff недоступного кластера : окно повтора 15 c → 60 c → 300 c —
     // мёртвые endpoints не штурмуются каждый тик (churn-инцидент 2026-09-02).
     [Fact]
     public async Task RunOnce_FailingCluster_BackoffSkipsTicksAndGrowsWindow()
@@ -210,16 +210,16 @@ public class KafkaProbeTests
         var rig = NewRig(time: clock, clusters: ActiveCluster());
         rig.Client.Error = new InvalidOperationException("connection refused");
 
-        // Act/Assert: тик 1 (t0) — первая неудача, окно = обычный интервал 15 c.
+        // Act/Assert: тик 1 — первая неудача, окно = обычный интервал 15 c.
         await rig.Loop.RunOnceAsync(CancellationToken.None);
         rig.Client.Calls.Should().HaveCount(1);
 
-        // Тик 2 (t0+15) — вторая неудача, окно растёт до 60 c (след. t0+75).
+        // Тик 2 (+15) — вторая неудача, окно растёт до 60 c (след. +75).
         clock.Utc = clock.Utc.AddSeconds(15);
         await rig.Loop.RunOnceAsync(CancellationToken.None);
         rig.Client.Calls.Should().HaveCount(2);
 
-        // Тик 3 (t0+30) — внутри окна: проба пропущена, состояние несёт ошибку
+        // Тик 3 (+30) — внутри окна: проба пропущена, состояние несёт ошибку
         // с пометкой backoff (кластер не мерцает, клиент не дёргается).
         clock.Utc = clock.Utc.AddSeconds(15);
         await rig.Loop.RunOnceAsync(CancellationToken.None);
@@ -229,17 +229,17 @@ public class KafkaProbeTests
         skipped.Error.Should().Contain("connection refused").And.Contain("backoff");
         rig.ProbeStore.Current!.Clusters.Should().BeEmpty();
 
-        // Тик 4 (t0+60) — всё ещё внутри 60-секундного окна.
+        // Тик 4 (+60) — всё ещё внутри 60-секундного окна.
         clock.Utc = clock.Utc.AddSeconds(30);
         await rig.Loop.RunOnceAsync(CancellationToken.None);
         rig.Client.Calls.Should().HaveCount(2);
 
-        // Тик 5 (t0+75) — окно истекло, третья неудача растит его до 300 c.
+        // Тик 5 (+75) — окно истекло, третья неудача растит его до 300 c.
         clock.Utc = clock.Utc.AddSeconds(15);
         await rig.Loop.RunOnceAsync(CancellationToken.None);
         rig.Client.Calls.Should().HaveCount(3);
 
-        // Тик 6 (t0+200) — внутри 300-секундного окна: снова пропуск.
+        // Тик 6 (+200) — внутри 300-секундного окна: снова пропуск.
         clock.Utc = clock.Utc.AddSeconds(125);
         await rig.Loop.RunOnceAsync(CancellationToken.None);
         rig.Client.Calls.Should().HaveCount(3);

@@ -3,7 +3,7 @@ using System.Text.Json.Serialization;
 
 namespace PgWorker.Backups.Supervisor;
 
-/// <summary>Состояние записи реестра сирот (arch/19 §4, t07): OBSERVED —
+/// <summary>Состояние записи реестра сирот (arch/19 §4): OBSERVED —
 /// наблюдается, ждёт TTL; DELETING — идёт batch-delete префикса (доводка).</summary>
 public enum OrphanState
 {
@@ -14,15 +14,15 @@ public enum OrphanState
 /// <summary>Одна запись реестра сирот: осиротевший S3-префикс «&lt;C&gt;/&lt;X&gt;»
 /// (kind: shard — кластер жив, шарда нет; cluster — кластер исчез), суммарный
 /// размер, время первого наблюдения (TTL отсчитывается от него — переносится
-/// merge'ем), состояние, признак валидного полного (DR-hold, reliability t04:
+/// merge'ем), состояние, признак валидного полного (DR-hold, reliability :
 /// сирота с валидным полным автоматикой не удаляется никогда).</summary>
 public sealed record OrphanEntry(
     string Prefix, string Kind, long SizeBytes, long FirstSeenUnix, OrphanState State,
     bool HasValidFull = false);
 
-/// <summary>Чистые функции реестра сирот (t07, arch/19 §4): группировка объектов
+/// <summary>Чистые функции реестра сирот (arch/19 §4): группировка объектов
 /// S3 по префиксам нашей формы (с детектом валидных полных — DR-hold, reliability
-/// t04), merge с переносом first_seen/has_valid_full и гвардом воскресения
+///, merge с переносом first_seen/has_valid_full и гвардом воскресения
 /// владельца, отбор TTL-кандидата с hold-множеством, JSON 1:1 с каноном, ключи и
 /// JSON per-префиксных hold/заявок удаления. Реестр пишет ТОЛЬКО глобальный лидер
 /// /pgworker/leader; hold/заявки пишет только API воркера атомарными put/del.
@@ -35,15 +35,24 @@ public static class OrphanRegistry
     /// (D2-чистки deprovisioning не касается), как /pgworker/backups/storage.</summary>
     public const string Key = "/pgworker/backups/orphans";
 
-    /// <summary>Префикс per-префиксных hold-ключей сирот (arch/19 §4, t04):
+    /// <summary>Префикс per-префиксных hold-ключей сирот (arch/19 §4):
     /// put/del делает ТОЛЬКО API воркера; sweeper читает при TTL-отборе и гасит
     /// ключи несирот (санитар прохода).</summary>
     public const string HoldsPrefix = "/pgworker/backups/orphan-holds/";
 
     /// <summary>Префикс per-префиксных заявок явного удаления сирот (arch/19 §4,
-    /// t04): put делает ТОЛЬКО API воркера; sweeper исполняет заявку ближайшим
+    ///: put делает ТОЛЬКО API воркера; sweeper исполняет заявку ближайшим
     /// проходом (обходит hold и автоправило) и гасит ключ по исполнении/погашении.</summary>
     public const string DeletesPrefix = "/pgworker/backups/orphan-deletes/";
+
+    /// <summary>Глобальный ключ журнала фаз лидер-прохода свипера сирот
+    /// (arch/19 §4): {"op":"backup-orphan-sweeper","phase":"orphan-…/&lt;C&gt;/&lt;X&gt;",
+    /// "instance":"…","updated_unix":T,"last_error"?}; вне per-cluster префиксов
+    /// (D2-чистки deprovisioning не касается); пишет ТОЛЬКО глобальный лидер
+    /// /pgworker/leader plain put'ом без read-modify-write (единственный
+    /// писатель — гонок нет); «последняя фаза побеждает» — ключ перезаписывается
+    /// каждым проходом, чистка не нужна.</summary>
+    public const string JournalKey = "/pgworker/backups/orphan-journal";
 
     /// <summary>Реестр осиротевших S3-префиксов установки — значение глобального
     /// ключа /pgworker/backups/orphans (формат arch/19 §4). Пишет ТОЛЬКО
@@ -80,7 +89,7 @@ public static class OrphanRegistry
         [property: JsonPropertyName("size_bytes")] long? SizeBytes,
         [property: JsonPropertyName("first_seen_unix")] long? FirstSeenUnix,
         [property: JsonPropertyName("state")] string? State,
-        // has_valid_full — DR-hold (reliability t04); nullable: старый ключ без
+        // has_valid_full — DR-hold (reliability); nullable: старый ключ без
         // поля парсится (AC9) как false, писать всегда как bool.
         [property: JsonPropertyName("has_valid_full")] bool? HasValidFull);
 
@@ -92,12 +101,19 @@ public static class OrphanRegistry
         [property: JsonPropertyName("requested_unix")] long RequestedUnix,
         [property: JsonPropertyName("requested_by")] string RequestedBy);
 
+    private sealed record JournalPayload(
+        [property: JsonPropertyName("op")] string Op,
+        [property: JsonPropertyName("phase")] string Phase,
+        [property: JsonPropertyName("instance")] string Instance,
+        [property: JsonPropertyName("updated_unix")] long UpdatedUnix,
+        [property: JsonPropertyName("last_error")] string? LastError);
+
     /// <summary>Группировка list-объектов (один проход): суммы размеров по
     /// префиксам «&lt;C&gt;/&lt;X&gt;/» нашей формы (имена валидны по regex;
     /// посторонние корневые объекты вне реестра) + детект валидных полных —
     /// ключ full/&lt;id&gt;/backup_manifest (5 сегментов, 3-й full, последний
     /// backup_manifest) — критерий DR-выбора, из уже снятого list, ноль лишних
-    /// запросов к S3 (arch/19 §4, DR-hold t04).</summary>
+    /// запросов к S3 (arch/19 §4, DR-hold).</summary>
     public static PrefixGrouping GroupPrefixes(IReadOnlyList<S3ObjectInfo> objects)
     {
         var sizes = new Dictionary<string, long>(StringComparer.Ordinal);
@@ -207,11 +223,11 @@ public static class OrphanRegistry
             ?.Prefix;
     }
 
-    /// <summary>Ключ hold-флага сироты (arch/19 §4, t04):
+    /// <summary>Ключ hold-флага сироты (arch/19 §4):
     /// /pgworker/backups/orphan-holds/&lt;C&gt;/&lt;X&gt;.</summary>
     public static string HoldKey(string prefix) => $"{HoldsPrefix}{prefix}";
 
-    /// <summary>Ключ заявки явного удаления сироты (arch/19 §4, t04):
+    /// <summary>Ключ заявки явного удаления сироты (arch/19 §4):
     /// /pgworker/backups/orphan-deletes/&lt;C&gt;/&lt;X&gt;.</summary>
     public static string DeleteKey(string prefix) => $"{DeletesPrefix}{prefix}";
 
@@ -224,6 +240,14 @@ public static class OrphanRegistry
     /// {"requested_unix":T,"requested_by":"…"}.</summary>
     public static string DeleteToJson(long requestedUnix, string requestedBy)
         => JsonSerializer.Serialize(new DeletePayload(requestedUnix, requestedBy), Json);
+
+    /// <summary>Значение ключа журнала фаз свипера (arch/19 §4, строго):
+    /// {"op":"backup-orphan-sweeper","phase":"…","instance":"…",
+    /// "updated_unix":T,"last_error"?} — null-поля опускаются сериализацией
+    /// (WhenWritingNull); парсер в прод-коде не нужен (читатель — оператор).</summary>
+    public static string JournalPhaseToJson(string phase, string instance, long updatedUnix, string? lastError)
+        => JsonSerializer.Serialize(
+            new JournalPayload("backup-orphan-sweeper", phase, instance, updatedUnix, lastError), Json);
 
     /// <summary>Сериализация в формат ключа arch/19 §4 (snake_case).</summary>
     public static string ToJson(Registry registry)

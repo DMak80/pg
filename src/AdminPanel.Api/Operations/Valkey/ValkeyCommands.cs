@@ -12,7 +12,7 @@ namespace AdminPanel.Api.Operations.Valkey;
 public sealed record CreateValkeyClusterCommand(CreateValkeyClusterRequest Request)
     : ICommand<ValkeyClusterCreatedDto>;
 
-// Ответ 201 POST /api/valkey/clusters (arch/03 §8.2; поля — DTO воркера t02).
+// Ответ 201 POST /api/valkey/clusters (arch/03 §8.2; поля — DTO воркера).
 public sealed record ValkeyClusterCreatedDto(
     string Name, string State, int Nodes, long MaxmemoryBytes,
     string MaxmemoryPolicy, string Cpu, string MemGi, string DiskGi);
@@ -99,7 +99,7 @@ public sealed class RotateValkeyPasswordCommandHandler(IWorkerApiGateway api)
             new RotateValkeyPasswordRequest(command.Role), command.RequestedBy, ct);
 }
 
-// 6. Заявка ротации per-cluster CA/сертов (02 §11.2-6, t07; окно двойного
+// 6. Заявка ротации per-cluster CA/сертов (02 §11.2-6; окно двойного
 // доверия P/D/R/C исполняет CaRotator воркера; нода пересоздаётся).
 public sealed record RotateValkeyCaCommand(string Cluster, string RequestedBy)
     : ICommand<ValkeyCaRotatedDto>;

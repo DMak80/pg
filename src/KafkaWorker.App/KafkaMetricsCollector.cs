@@ -6,7 +6,7 @@ using Microsoft.Extensions.Logging;
 
 namespace KafkaWorker.App;
 
-// Коллектор kafka-метрик (t04, arch/18 §4): hosted-сервис с тиком
+// Коллектор kafka-метрик (arch/18 §4): hosted-сервис с тиком
 // KafkaWorker:Metrics:CollectIntervalSec; по Active-кластерам (снапшот etcd)
 // через IKafkaAdminClientFactory — группы/committed/watermarks → consumer-lag,
 // describe топиков → USR. Сбор read-only вне клэймов, без ретраев; ошибка
@@ -86,7 +86,7 @@ public sealed class KafkaMetricsCollector(
 
     // Сбор одного кластера: один AdminClient-коннект за тик, без ретраев (M2/S4).
     // false — ошибка сбора (тик жив, LastSuccess не обновляется). Обёртка над
-    // ядром: фейл сбора → RecordFailure, полный успех → RecordSuccess (t05:
+    // ядром: фейл сбора → RecordFailure, полный успех → RecordSuccess (:
     // коллектор — второй kafka-контакт конвейера, окно backoff пишет он тоже).
     private async Task<bool> TryCollectClusterAsync(KafkaClusterSnapshot snap, CancellationToken ct)
     {
@@ -105,7 +105,7 @@ public sealed class KafkaMetricsCollector(
         {
             await using var admin = adminFactory.Create(snap.Endpoints!, snap.AppUser!, snap.AppPassword!, snap.CaPem);
 
-            // Проба живости ДО ListGroups (t05, инцидент-репро 2026-09-04):
+            // Проба живости ДО ListGroups (инцидент-репро 2026-09-04):
             // ListConsumerGroups на недоступном bootstrap роняет процесс нативно
             // (double-free rd_kafka_ListConsumerGroupsResult_free на error-path
             // librdkafka 2.14.2); DescribeCluster безопасен и дёшев (клиент

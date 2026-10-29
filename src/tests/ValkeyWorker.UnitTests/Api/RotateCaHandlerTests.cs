@@ -5,7 +5,7 @@ using Xunit;
 
 namespace ValkeyWorker.UnitTests.Api;
 
-// RotateCaHandler (t07): валидация имени → 404; config-гейт → 404;
+// RotateCaHandler : валидация имени → 404; config-гейт → 404;
 // state-гейт (НЕ-Active) → 409; живая заявка → 409; happy-path → 202-DTO +
 // payload заявки {"requested_unix","requested_by"} без role. AAA.
 public class RotateCaHandlerTests

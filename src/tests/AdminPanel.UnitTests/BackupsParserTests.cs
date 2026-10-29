@@ -6,7 +6,7 @@ using Xunit;
 
 namespace AdminPanel.UnitTests;
 
-// Панельный парсер /pgworker/backups/ (t02): never-семантика — шард с ключами
+// Панельный парсер /pgworker/backups/ : never-семантика — шард с ключами
 // полных, но без COMPLETED, попадает в словарь со значением null (не молчит:
 // молчание правила — только для ПУСТОГО префикса кластера).
 public class BackupsParserTests
@@ -177,7 +177,7 @@ public class BackupsParserTests
         result.Errors.Should().BeEmpty();
     }
 
-    // ---- t06: ключ storage + DELETING-полные ----
+    // ---: ключ storage + DELETING-полные ----
 
     // AAA: валидный storage-ключ → Storage со всеми полями, state=WARN
     [Fact]
@@ -327,7 +327,7 @@ public class BackupsParserTests
         result.Storage.Should().NotBeNull();
     }
 
-    // AAA (t05): restore-ключ → RestoreOperationInfo; сортировка по Id
+    // AAA : restore-ключ → RestoreOperationInfo; сортировка по Id
     [Fact]
     public void Parse_RestoreKey_GoesToShardsRestores()
     {
@@ -356,7 +356,7 @@ public class BackupsParserTests
         restores[1].StartedUnix.Should().BeNull();
     }
 
-    // AAA (t05): битый restore (незнакомое state) — KeyParseError, записи нет
+    // AAA : битый restore (незнакомое state) — KeyParseError, записи нет
     [Fact]
     public void Parse_RestoreBrokenState_KeyParseError()
     {
@@ -375,7 +375,7 @@ public class BackupsParserTests
         result.Clusters.Where(c => c.ShardsRestores is { Count: > 0 }).Should().BeEmpty();
     }
 
-    // AAA (t05): шард без restore-ключей — ShardsRestores не содержит его
+    // AAA : шард без restore-ключей — ShardsRestores не содержит его
     [Fact]
     public void Parse_ShardWithoutRestore_NoRestoresEntry()
     {
@@ -396,17 +396,17 @@ public class BackupsParserTests
         cluster.ShardsRestores.Should().BeEmpty("no restore keys — rules stay silent");
     }
 
-// ---- t07: BROKEN wal + ключ реестра сирот ----
+// ---: WAL_CHAIN_ERROR wal + ключ реестра сирот ----
 
-// AAA (AC8): state=BROKEN читается; незнакомое state — KeyParseError (как прежде)
+// AAA (AC8): state=WAL_CHAIN_ERROR читается; незнакомое state — KeyParseError (как прежде)
 [Fact]
-public void Parse_WalBroken_IsRead()
+public void Parse_WalChainError_IsRead()
 {
-    // Arrange — wal-ключ с state=BROKEN (граница разрыва в chain_start_segment)
+    // Arrange — wal-ключ с state=WAL_CHAIN_ERROR (граница разрыва в chain_start_segment)
     var kvs = new List<Kv>
     {
         new("/pgworker/backups/c1/s1/wal",
-            """{"state":"BROKEN","slot":"pgw_bkp_c1_s1","master_node":"s1a","chain_start_segment":"000000010000000000000005","last_received_segment":"000000010000000000000005","last_uploaded_segment":"000000010000000000000005","last_uploaded_unix":1760000000,"error":"WAL chain hole: expected 000000010000000000000006"}""", 1),
+            """{"state":"WAL_CHAIN_ERROR","slot":"pgw_bkp_c1_s1","master_node":"s1a","chain_start_segment":"000000010000000000000005","last_received_segment":"000000010000000000000005","last_uploaded_segment":"000000010000000000000005","last_uploaded_unix":1760000000,"error":"WAL chain hole: expected 000000010000000000000006"}""", 1),
     };
 
     // Act
@@ -416,7 +416,7 @@ public void Parse_WalBroken_IsRead()
     result.Errors.Should().BeEmpty();
     var wal = result.Clusters.Single().Shards!["s1"];
     wal.Should().NotBeNull();
-    wal!.State.Should().Be(WalStreamInfoState.Broken);
+    wal!.State.Should().Be(WalStreamInfoState.WalChainError);
     wal.Error.Should().Contain("hole");
 }
 
@@ -438,12 +438,12 @@ public void Parse_WalUnknownState_KeyParseError()
     result.Errors.Should().ContainSingle().Which.Key.Should().Be("/pgworker/backups/c1/s1/wal");
 }
 
-// AAA (t27 AC7): wal-ключ с полем agents (супервиз-факты per-node) читается
+// AAA (AC7): wal-ключ с полем agents (супервиз-факты per-node) читается
 // без parseErrors — панель игнорирует незнакомое поле (backwards-compat, §4)
 [Fact]
 public void Parse_WalWithAgents_NoParseErrors()
 {
-    // Arrange — новый воркер t27: wal-ключ с agents (running/exited/absent)
+    // Arrange — новый воркер : wal-ключ с agents (running/exited/absent)
     var kvs = new List<Kv>
     {
         new("/pgworker/backups/c1/s1/wal",
@@ -458,6 +458,87 @@ public void Parse_WalWithAgents_NoParseErrors()
     var wal = result.Clusters.Single().Shards!["s1"];
     wal!.State.Should().Be(WalStreamInfoState.Active);
     wal.MasterNode.Should().Be("s1a");
+}
+
+// AAA (/AC5): wal-ключ с полем gap (границы RPO-зазора tli-прыжка) читается —
+// WalGapInfo с границами и TLI доступен правилу backup-wal-tli-gap
+[Fact]
+public void Parse_WalWithGap_GapRead()
+{
+    // Arrange — воркер : wal-ключ с gap
+    var kvs = new List<Kv>
+    {
+        new("/pgworker/backups/c1/s1/wal",
+            """{"state":"DEGRADED","slot":"pgw_bkp_c1_s1","master_node":"s1a","last_uploaded_unix":1760000000,"error":"tli-gap: ...","gap":{"from":"000000010000000000000003","to":"000000020000000000000007","tli":2}}""", 1),
+    };
+
+    // Act
+    var result = BackupsParser.Parse(kvs);
+
+    // Assert — Gap прочитан целиком
+    result.Errors.Should().BeEmpty();
+    var wal = result.Clusters.Single().Shards!["s1"];
+    wal!.Gap.Should().NotBeNull();
+    wal.Gap!.From.Should().Be("000000010000000000000003");
+    wal.Gap.To.Should().Be("000000020000000000000007");
+    wal.Gap.Tli.Should().Be(2);
+}
+
+// AAA (backwards-compat): ключ без gap → Gap == null, parseErrors нет
+[Fact]
+public void Parse_WalWithoutGap_GapNull_NoParseErrors()
+{
+    // Arrange — «старый» воркер: ключ без gap
+    var kvs = new List<Kv>
+    {
+        new("/pgworker/backups/c1/s1/wal",
+            """{"state":"ACTIVE","slot":"pgw_bkp_c1_s1","master_node":"s1a","last_uploaded_unix":1760000000}""", 1),
+    };
+
+    // Act
+    var result = BackupsParser.Parse(kvs);
+
+    // Assert
+    result.Errors.Should().BeEmpty();
+    result.Clusters.Single().Shards!["s1"]!.Gap.Should().BeNull();
+}
+
+// AAA (толерантность): gap не объект (строка) → Gap == null, parseError не пишется
+[Fact]
+public void Parse_WalGapNotObject_GapNull_NoParseErrors()
+{
+    // Arrange — «"gap":"junk"» — битое поле
+    var kvs = new List<Kv>
+    {
+        new("/pgworker/backups/c1/s1/wal",
+            """{"state":"ACTIVE","slot":"pgw_bkp_c1_s1","master_node":"s1a","last_uploaded_unix":1760000000,"gap":"junk"}""", 1),
+    };
+
+    // Act
+    var result = BackupsParser.Parse(kvs);
+
+    // Assert — ключ читается, Gap null, ошибки нет (backwards-compat §4)
+    result.Errors.Should().BeEmpty();
+    result.Clusters.Single().Shards!["s1"]!.Gap.Should().BeNull();
+}
+
+// AAA (толерантность): gap без обязательных полей → Gap == null, parseError не пишется
+[Fact]
+public void Parse_WalGapIncomplete_GapNull_NoParseErrors()
+{
+    // Arrange — объект без to/tli
+    var kvs = new List<Kv>
+    {
+        new("/pgworker/backups/c1/s1/wal",
+            """{"state":"ACTIVE","slot":"pgw_bkp_c1_s1","master_node":"s1a","last_uploaded_unix":1760000000,"gap":{"from":"000000010000000000000003"}}""", 1),
+    };
+
+    // Act
+    var result = BackupsParser.Parse(kvs);
+
+    // Assert
+    result.Errors.Should().BeEmpty();
+    result.Clusters.Single().Shards!["s1"]!.Gap.Should().BeNull();
 }
 
 // AAA (AC7/AC8): глобальный ключ orphans парсится; битая запись — ошибка ключа
@@ -530,7 +611,7 @@ public void Parse_KeepsFulls_AndRequests_Tolerantly()
     result.Errors.Should().ContainSingle(e => e.Key == "/pgworker/backups/orphan-holds/g/s3");
 }
 
-// AAA: full-ключ собирает полный факт per-full для сверки (t08): state/verify/size
+// AAA: full-ключ собирает полный факт per-full для сверки : state/verify/size
 [Fact]
 public void Parse_FullKey_CollectsFullInfo()
 {
@@ -544,7 +625,7 @@ public void Parse_FullKey_CollectsFullInfo()
     // Act
     var result = BackupsParser.Parse(kvs);
 
-    // Assert — ShardsFulls["s1"] несёт полный факт (t08)
+    // Assert — ShardsFulls["s1"] несёт полный факт 
     result.Errors.Should().BeEmpty();
     var cluster = result.Clusters.Single(c => c.Cluster == "demo");
     cluster.ShardsFulls.Should().NotBeNull();
@@ -644,7 +725,7 @@ public void Parse_FullKey_UnknownState_Tolerated()
     full.State.Should().Be("WEIRD");
 }
 
-    // ---- reliability t02: drill-ключи + полная policy ----
+    // ---- reliability : drill-ключи + полная policy ----
 
     // AAA: <X>/drill → DrillInfo в ShardsDrills (state/фазы/lsn/error).
     [Fact]

@@ -138,8 +138,8 @@ public class AlertEngineTests
         // Arrange / Act
         var kinds = AlertTestRules.All().Select(r => r.Kind).ToList();
 
-        // Assert: защита каркаса от copy-paste новых правил t05/t06 (spec §10.1):
-        // 15 (t04+t05) + 9 HA-правил t06 + cluster-not-initialized +
+        // Assert: защита каркаса от copy-paste новых правил / (spec §10.1):
+        // 15 (+) + 9 HA-правил + cluster-not-initialized +
         // worker-api-unreachable (task etcd-via-worker-api, arch/03 §4.1) +
         // provision-stuck (spec D3) + worker-unhealthy (spec D4, arch/03 §4) — каталог 03 §4.
         kinds.Should().HaveCount(28).And.OnlyHaveUniqueItems();

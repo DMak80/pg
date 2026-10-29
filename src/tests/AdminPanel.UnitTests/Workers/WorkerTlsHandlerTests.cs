@@ -9,7 +9,7 @@ using Microsoft.Extensions.Configuration;
 
 namespace AdminPanel.UnitTests.Workers;
 
-// WorkerTlsHandler (t03, arch/02 §2.3.2): клиентский серт панели — ЕДИНЫЙ на оба
+// WorkerTlsHandler (arch/02 §2.3.2): клиентский серт панели — ЕДИНЫЙ на оба
 // воркера (pgworker и kafkaworker — одна per-install API-CA, t03-pg); доверие
 // ServerCA в SocketsHttpHandler; env-маппинг WORKERS_PANEL_TLS_*; пустые опции —
 // plain handler (dev/локальные http://-вызовы).

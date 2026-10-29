@@ -6,7 +6,7 @@ using Shared.Etcd.Client;
 
 namespace EtcdWorker.Provisioning;
 
-/// <summary>Перенос EtcdSnapshotSink t08 (arch/25 §4): цель — живой резолв
+/// <summary>Перенос EtcdSnapshotSink (arch/25 §4): цель — живой резолв
 /// etcd-backup кластера, bucket etcd-backups; статус/ретенция/CatchUp/пульс —
 /// механика 1:1. Путь ОДИН, без сравнения с прошлым состоянием — каждый снятый
 /// слепок уезжает новой парой: put etcd/&lt;имя&gt;.db (серверная SHA256-проверка

@@ -179,9 +179,9 @@ public class PortPlanConvergenceTests
     }
 }
 
-// t90: быстрый пред-выход до portalloc-клэйма — всё закреплено и detach ничего
+// быстрый пред-выход до portalloc-клэйма — всё закреплено и detach ничего
 // бы не снял (object не трогается R9; прочее подтверждено фактом своей ноды).
-// t09: перенесён из PortAllocatorTests.cs (юнит ушёл в Shared.Core.UnitTests).
+// перенесён из PortAllocatorTests.cs (юнит ушёл в Shared.Core.UnitTests).
 public class PortPlanConvergenceAllConfirmedTests
 {
     private static NodeAddress Addr(string host = "h1", int pg = 15000)

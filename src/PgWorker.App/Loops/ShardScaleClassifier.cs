@@ -2,7 +2,7 @@ using PgWorker.Core.Model;
 
 namespace PgWorker.App.Loops;
 
-/// <summary>Кандидаты scale-прохода Active-ветки (t06 spec §5.1): чистая функция над снапшотом.</summary>
+/// <summary>Кандидаты scale-прохода Active-ветки (spec §5.1): чистая функция над снапшотом.</summary>
 public sealed record ShardScaleCandidates(IReadOnlyList<string> Remove, IReadOnlyList<string> Add);
 
 /// <summary>

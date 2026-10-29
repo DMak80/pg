@@ -1,3 +1,4 @@
+using System.Globalization;
 using S3Worker.Core.OwnS3;
 using OwnS3.Protocol.PeerAuth;
 
@@ -19,7 +20,8 @@ public sealed class InstanceEnvComposer
         OwnS3NodeSecrets secrets,
         IssuedPkiMaterial nodePki,
         PeerTrustAnchor ca,
-        string advertisedEndpoint)
+        string advertisedEndpoint,
+        int replicationReconcileIntervalSec = 0)
     {
         var env = new Dictionary<string, string>(secrets.ToContainerEnv())
         {
@@ -29,6 +31,11 @@ public sealed class InstanceEnvComposer
             ["OWNS3_REPLICATION_TRUST_CA"] = ca.ToJson(),
             ["OWNS3_REPLICATION_ADVERTISED_ENDPOINT"] = advertisedEndpoint,
         };
+        // Период reconcile mesh-репликации (owns3/07 §9): 0/не задана —
+        // переменная НЕ ставится (прод-дефолт OwnS3 3 ч); E2E задаёт 10 с.
+        if (replicationReconcileIntervalSec > 0)
+            env["OWNS3_REPLICATION_RECONCILE_INTERVAL_SECONDS"] =
+                replicationReconcileIntervalSec.ToString(CultureInfo.InvariantCulture);
         return env;
     }
 }

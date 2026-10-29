@@ -6,7 +6,7 @@ using KafkaWorker.UnitTests.Provisioning;
 
 namespace KafkaWorker.UnitTests.Kafka;
 
-// Кэш AdminClient'ов (t05, spec §3.1): sharable-фабрика per
+// Кэш AdminClient'ов (spec §3.1): sharable-фабрика per
 // (bootstrap,user,password) — «клиент на тик» давал churn rd_kafka-инстансов
 // и 100% ядра на лежащем кластере (инцидент as-kafkaworker 2026-09-04).
 // Адаптер строит нативный клиент лениво (первая операция) — юниты кэша
@@ -48,8 +48,8 @@ public class KafkaAdminClientFactoryTests
     }
 
     // AAA: пины librdkafka в конфиге (reconnect-шторм дефолтных 100 мс)
-    // + t03-канон соединения: SASL_SSL, per-cluster CA — только при caPem.
-    // t07: доверие ФАЙЛОМ ssl.ca.location (inline ssl.ca.pem у librdkafka
+    // + канон соединения: SASL_SSL, per-cluster CA — только при caPem.
+    // доверие ФАЙЛОМ ssl.ca.location (inline ssl.ca.pem у librdkafka
     // читает один серт — bundle окна ротации CA требует файла).
     [Fact]
     public void BaseAdminConfig_PinsLibrdkafkaBackoffs()
@@ -72,7 +72,7 @@ public class KafkaAdminClientFactoryTests
         File.ReadAllText(location!).Should().Contain("-----BEGIN CERTIFICATE-----");
     }
 
-    // AAA: caPem — часть ключа кэша (t03×t05): клиенты кластеров с разным
+    // AAA: caPem — часть ключа кэша (×): клиенты кластеров с разным
     // per-cluster CA не шарятся (разный TLS-контекст нативного клиента).
     [Fact]
     public void Create_DifferentCaPem_DifferentClient()
@@ -239,18 +239,45 @@ public class KafkaAdminClientFactoryTests
         client.ActiveOperations.Should().Be(0);
     }
 
-    // AAA: бюджет дрейна — по исчерпании принудительный dispose (не ждать
-    // вечно), операция при этом остаётся при своём исходе.
+    // AAA: замена/вытеснение — бюджет дрейна НЕ превращается в dispose под
+    // операцией: предупреждение, затем ожидание фактического нуля.
     [Fact]
-    public async Task DisposeWhenIdle_BudgetExhausted_ForcesDispose()
+    public async Task DisposeWhenIdle_ReplacementBudgetExhausted_DoesNotForceDispose()
     {
         // Arrange: операция висит дольше бюджета.
         var client = new KafkaAdminClient("h:9092", "app", "pw", caPem: null, TimeSpan.FromSeconds(3));
         var gate = new TaskCompletionSource<Result>();
         var operation = client.RunUnderOperationAsync(_ => gate.Task, TestContext.Current.CancellationToken);
 
-        // Act: дрейн с коротким бюджетом.
-        var drain = client.DisposeWhenIdleAsync(TimeSpan.FromMilliseconds(300), TestContext.Current.CancellationToken);
+        // Act: дрейн замены с коротким бюджетом.
+        var drain = client.DisposeWhenIdleAsync(
+            TimeSpan.FromMilliseconds(200), TestContext.Current.CancellationToken, forceOnBudgetExhausted: false);
+        await Task.Delay(400, TestContext.Current.CancellationToken);
+
+        // Assert: dispose не исполнился — операция жива и не сорвана ERR__DESTROYED.
+        drain.IsCompleted.Should().BeFalse("replacement drain waits for the actual idle fact");
+        client.DisposeNativeCount.Should().Be(0, "native handle must not be destroyed under a pending operation");
+
+        // Cleanup: операция завершается — дрейн диспозит по факту нуля.
+        gate.TrySetResult(Result.Success());
+        await operation;
+        await drain;
+        client.DisposeNativeCount.Should().Be(1);
+    }
+
+    // AAA: бюджет дрейна остановки host'а — по исчерпании принудительный dispose
+    // (детерминированный shutdown), операция при этом остаётся при своём исходе.
+    [Fact]
+    public async Task DisposeWhenIdle_ShutdownBudgetExhausted_ForcesDispose()
+    {
+        // Arrange: операция висит дольше бюджета.
+        var client = new KafkaAdminClient("h:9092", "app", "pw", caPem: null, TimeSpan.FromSeconds(3));
+        var gate = new TaskCompletionSource<Result>();
+        var operation = client.RunUnderOperationAsync(_ => gate.Task, TestContext.Current.CancellationToken);
+
+        // Act: дрейн остановки с коротким бюджетом.
+        var drain = client.DisposeWhenIdleAsync(
+            TimeSpan.FromMilliseconds(300), TestContext.Current.CancellationToken, forceOnBudgetExhausted: true);
         await drain;
 
         // Assert: принудительный dispose по бюджету; операция не сорвана
@@ -375,5 +402,26 @@ public class KafkaAdminClientFactoryTests
             $"{(late.IsSuccess ? "success" : late.Error!.Message)}");
         client.DisposeNativeCount.Should().Be(1, "client still gets disposed after the gap");
         client.ActiveOperations.Should().Be(0, "no pending operations left");
+    }
+
+    // AAA: отказ протокольной операции (без нативного клиента) не инвалидирует
+    // кэш — short-lived соединение не является отказом кэшируемого rd_kafka.
+    [Fact]
+    public async Task LocalOperationFailure_DoesNotInvalidateCachedClient()
+    {
+        // Arrange: клиент в кэше.
+        var factory = new KafkaAdminClientFactory(TimeSpan.FromSeconds(3));
+        var first = (KafkaAdminClient)factory.Create("h:9092", "app", "pw", caPem: null);
+
+        // Act: протокольный каркас завершается исключением.
+        var failed = await first.RunLocalUnderOperationAsync(
+            () => throw new ApplicationException("protocol submit failed"), TestContext.Current.CancellationToken);
+        var second = factory.Create("h:9092", "app", "pw", caPem: null);
+
+        // Assert: операция Failed, но запись кэша остаётся здоровой.
+        failed.IsSuccess.Should().BeFalse("the local operation failure is still reported");
+        failed.Error!.Message.Should().Contain("protocol submit failed");
+        second.Should().BeSameAs(first, "a protocol-only failure must not recreate the cached native client");
+        factory.CreatedClients.Should().Be(1);
     }
 }

@@ -2,10 +2,10 @@ using System.Security.Cryptography;
 
 namespace Shared.Docker;
 
-// SSH-туннель к Engine API (arch/14 §2.2.1, t03): worker-managed
+// SSH-туннель к Engine API (arch/14 §2.2.1): worker-managed
 // ForwardedPortLocal → RemoteDaemonHost:RemoteDaemonPort. key-аутентификация
 // (пароли вне канона); fingerprint-pin опционален (без него TOFU+warning, R14).
-// env-биндинги PGW_DOCKER_SSH_* — pg-специфика, живут в PgWorker.App (t07).
+// env-биндинги PGW_DOCKER_SSH_* — pg-специфика, живут в PgWorker.App.
 public sealed class SshTunnelOptions
 {
     /// <summary>PEM приватного ключа PKCS#8/OpenSSL RSA (или KEY_PATH файл).</summary>

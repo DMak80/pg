@@ -3,7 +3,7 @@ using Shared.Core.DI;
 
 namespace AdminPanel.Core.Alerting.Rules;
 
-// wal-stream-stopped (warning, t03, arch/19 §3/§8): STOPPED при живом шарде
+// wal-stream-stopped (warning, arch/19 §3/§8): STOPPED при живом шарде
 // Active-кластера — операционная остановка (Enabled=false/QUARANTINED) пишется
 // этим же статусом; алерт информирует, что поток бэкапов не идёт.
 [InjectAsSingleton(typeof(IAlertRule))]

@@ -2,7 +2,7 @@ using System.Security.Cryptography.X509Certificates;
 
 namespace Shared.Tls;
 
-// Загрузка PEM-материала (t08: копии из ApiTlsEndpoints/TlsEndpoints/WorkerTlsHandler/DockerEngine слиты).
+// Загрузка PEM-материала (: копии из ApiTlsEndpoints/TlsEndpoints/WorkerTlsHandler/DockerEngine слиты).
 public static class TlsMaterial
 {
     // PFX round-trip: ключ из CreateFromPem эфемерный (не экспортируемый) —

@@ -20,7 +20,7 @@ public sealed class SnapshotJob(
 {
     // Локальное время последнего обслуживания (compact + defrag).
     // Статичная переменная: переживает реконструкцию SnapshotJob (singleton),
-    // protects от частых тиков SnapshotLoop. Воркеры — разные процессы (t09),
+    // protects от частых тиков SnapshotLoop. Воркеры — разные процессы,
     // статика остаётся корректной.
     private static DateTimeOffset? _lastMaintenanceUtc;
 

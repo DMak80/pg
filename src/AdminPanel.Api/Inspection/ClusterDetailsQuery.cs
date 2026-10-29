@@ -18,7 +18,7 @@ public sealed record ClusterDto(
     bool Incomplete,
     string State,
     bool Sharded,
-    bool SynchronousModeStrict, // t06: снапшот-поле (config.synchronous_mode_strict)
+    bool SynchronousModeStrict, // снапшот-поле (config.synchronous_mode_strict)
     IReadOnlyList<ShardDto> Shards,
     IReadOnlyList<BucketDto> Buckets,
     IReadOnlyList<MoveTicketDto> PendingMoves,   // очередь заявок переездов кластера (arch/03 §2)
@@ -26,11 +26,11 @@ public sealed record ClusterDto(
     IReadOnlyList<StandNodeDto> StandNodes,
     WorkDto? Work);
 
-// Журнал последнего процесса воркера кластера /pgworker/work/<C> (t07, arch/03 §2):
+// Журнал последнего процесса воркера кластера /pgworker/work/<C> (arch/03 §2):
 // op/phase/возраст/lastError — результат исполненной/отвергнутой заявки переездов.
 public sealed record WorkDto(string Op, string Phase, long UpdatedUnix, string? LastError);
 
-// arch/03 §2: masterLeaseAlive — семантика lease (arch/02 §1); hosts — multi-host из DsnParser t03.
+// arch/03 §2: masterLeaseAlive — семантика lease (arch/02 §1); hosts — multi-host из DsnParser.
 public sealed record ShardDto(
     string Name,
     string Dsn,
@@ -61,14 +61,14 @@ public static class ClusterStates
         };
 }
 
-// Канон state шарда (arch/03 §2, t06): отсутствие ключа = ACTIVE.
+// Канон state шарда (arch/03 §2): отсутствие ключа = ACTIVE.
 public static class ShardStates
 {
     public static string Name(ShardState state)
         => state == ShardState.ToRemove ? "TO_REMOVE" : "ACTIVE";
 }
 
-// Контракт runtime фиксируется сейчас (фронтенд t08 типизирует сразу), данные — t06 (spec §3.14).
+// Контракт runtime фиксируется сейчас (фронтенд типизирует сразу), данные — (spec §3.14).
 public sealed record ShardRuntimeDto(
     int? StandbiesSync,
     long? SlotsLagMaxBytes,
@@ -150,7 +150,7 @@ public static class ClusterDetailsMapper
             // sharded — вычисляемое поле отображения (arch/03 §2): false ⟺ ровно 1
             // бакет и не более 1 шарда; признак «тип БД» в etcd не хранится (02 §9.1).
             !(cluster.BucketsCount == 1 && cluster.Shards.Count <= 1),
-            cluster.SynchronousModeStrict, // t06
+            cluster.SynchronousModeStrict, 
             [.. cluster.Shards.Select(s =>
             {
                 // Заявка шарда — join scope "<C>-<X>" (все три ключа обязательны)
@@ -186,7 +186,7 @@ public static class ClusterDetailsMapper
             work is null ? null : new WorkDto(work.Op, work.Phase, work.UpdatedUnix, work.LastError));
     }
 
-    // Маппинг runtime — по стабильной модели t03; поля arch/03 §2 (spec §3.14).
+    // Маппинг runtime — по стабильной модели; поля arch/03 §2 (spec §3.14).
     public static ShardRuntimeDto MapRuntime(ShardRuntime runtime)
         => new(
             runtime.Standbies.Count(s => s.SyncState is "sync" or "quorum"),

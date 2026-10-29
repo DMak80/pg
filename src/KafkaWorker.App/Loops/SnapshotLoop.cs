@@ -46,36 +46,51 @@ internal sealed class SnapshotLoop(
 
                 if (claims.IsLeader)
                 {
-                    var started = Stopwatch.GetTimestamp();
-                    var shot = await snapshots.TakeAsync(stoppingToken);
-                    metrics.LoopDuration("snapshot", Stopwatch.GetElapsedTime(started).TotalSeconds);
-                    if (shot.IsSuccess)
+                    try
                     {
-                        // healthz = «последний тик» (живой-Ф7): успешный снимок гасит ошибку
-                        // прошлого — иначе единственный фейл = вечный unhealthy.
-                        StatusError = Result.Success();
-                        health.MarkSnapshotTaken();
-                        metrics.SnapshotTaken(clock.GetUtcNow());
-                        logger.LogInformation("etcd snapshot taken: {Path}", shot.Value);
-                        // Обслуживание etcd: compact + defrag (не чаще раза в час).
-                        var maintenance = await snapshots.MaintainAsync(stoppingToken);
-                        if (!maintenance.IsSuccess)
-                            logger.LogWarning(maintenance.Error, "etcd maintenance failed: {Message}", maintenance.Error!.Message);
-                    }
-                    else
-                    {
-                        StatusError = shot;
-                        logger.LogError(shot.Error, "etcd snapshot failed: {Message}", shot.Error!.Message);
-                    }
+                        // Cancellation-гвард лидерства (arch/17 S5): потеря leader-lease
+                        // прерывает тик лидера; цикл продолжит как не-лидер.
+                        using var leaderLease = CancellationTokenSource.CreateLinkedTokenSource(
+                            stoppingToken, claims.LeaderToken);
+                        var tick = leaderLease.Token;
 
-                    health.MarkSnapshotTick();
-                    metrics.LoopTick("snapshot", ok: true);
-                    // Сон длиннее порога сноса — пульсирующий (чанк < окна проверки 15 c):
-                    // MarkSnapshotActivity — активность без тика (healthz loops-alive не меняется)
-                    await Shared.Core.Hosting.PulsingDelay.SleepAsync(
-                        TimeSpan.FromMinutes(options.CurrentValue.Loops.SnapshotIntervalMin),
-                        TimeSpan.FromSeconds(options.CurrentValue.Loops.Watchdog.CheckIntervalSec),
-                        health.MarkSnapshotActivity, stoppingToken);
+                        var started = Stopwatch.GetTimestamp();
+                        var shot = await snapshots.TakeAsync(tick);
+                        metrics.LoopDuration("snapshot", Stopwatch.GetElapsedTime(started).TotalSeconds);
+                        if (shot.IsSuccess)
+                        {
+                            // healthz = «последний тик» (живой-Ф7): успешный снимок гасит ошибку
+                            // прошлого — иначе единственный фейл = вечный unhealthy.
+                            StatusError = Result.Success();
+                            health.MarkSnapshotTaken();
+                            metrics.SnapshotTaken(clock.GetUtcNow());
+                            logger.LogInformation("etcd snapshot taken: {Path}", shot.Value);
+                            // Обслуживание etcd: compact + defrag (не чаще раза в час).
+                            var maintenance = await snapshots.MaintainAsync(tick);
+                            if (!maintenance.IsSuccess)
+                                logger.LogWarning(maintenance.Error, "etcd maintenance failed: {Message}", maintenance.Error!.Message);
+                        }
+                        else
+                        {
+                            StatusError = shot;
+                            logger.LogError(shot.Error, "etcd snapshot failed: {Message}", shot.Error!.Message);
+                        }
+
+                        health.MarkSnapshotTick();
+                        metrics.LoopTick("snapshot", ok: true);
+                        // Сон длиннее порога сноса — пульсирующий (чанк < окна проверки 15 c):
+                        // MarkSnapshotActivity — активность без тика (healthz loops-alive не меняется)
+                        await Shared.Core.Hosting.PulsingDelay.SleepAsync(
+                            TimeSpan.FromMinutes(options.CurrentValue.Loops.SnapshotIntervalMin),
+                            TimeSpan.FromSeconds(options.CurrentValue.Loops.Watchdog.CheckIntervalSec),
+                            health.MarkSnapshotActivity, tick);
+                    }
+                    catch (OperationCanceledException) when (!stoppingToken.IsCancellationRequested)
+                    {
+                        // Потеря leader-lease прервала тик (гвард arch/17 S5): не ошибка —
+                        // цикл продолжит как не-лидер и пере-захватит ≤ TTL + тик скана.
+                        logger.LogWarning("snapshot leadership lost mid-tick");
+                    }
                 }
                 else
                 {

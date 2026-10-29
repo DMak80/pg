@@ -27,7 +27,7 @@ public class AdoptionProcessTests
     {
         etcd.Seed("/clusters/demo/config",
             """{"buckets":12,"dbname":"demo","created_unix":1755900000}""");
-        // Per-cluster креды (t02): ensure принимает существующие — dsn тестов стабилен
+        // Per-cluster креды : ensure принимает существующие — dsn тестов стабилен
         etcd.Seed("/clusters/demo/bucket_admin_user", "bucket_admin");
         etcd.Seed("/clusters/demo/bucket_admin_password", "adm-pw");
         foreach (var shard in shards)
@@ -68,7 +68,7 @@ public class AdoptionProcessTests
     {
         var claims = new ClaimStore("/pgworker", [Ep], etcd, TimeProvider.System);
         await claims.TryClaimClusterAsync("demo", CancellationToken.None);
-        // t90: по умолчанию — свежий свободный лок (все существующие тесты
+        // по умолчанию — свежий свободный лок (все существующие тесты
         // исполняются в одиночном режиме, лок всегда берётся); занятый лок
         // передаёт только новый тест Tick_PortAllocLockBusy_WaitsWithoutPortallocWrite.
         portLock ??= new PortAllocLock("/pgworker", [Ep], etcd, TimeProvider.System, claims.InstanceId);
@@ -371,7 +371,7 @@ public class AdoptionProcessTests
         journal.Entries.Should().Contain(e => e.Phase == "recreated-node");
     }
 
-    // AAA (t09, arch/14 §5 D граница ensure-инварианта): шард, в котором НЕ жив
+    // AAA (arch/14 §5 D граница ensure-инварианта): шард, в котором НЕ жив
     // ни один контейнер (обе ноды стопнуты оператором/эмуляция смерти шарда),
     // — сценарий всего-шарда-мёртв: домен BucketEvacuator (E0–E4 после
     // NodeDeadSec+ShardDeadSec). Черепок-EnsureNode обязан МОЛЧАТЬ: мгновенный
@@ -403,7 +403,7 @@ public class AdoptionProcessTests
         driver.EnsuredNodes.Should().BeEmpty();
     }
 
-    // AAA (t09, гонка adoption/эвакуации, AC6 фикс-гейта): гвард «весь шард без
+    // AAA (гонка adoption/эвакуации, AC6 фикс-гейта): гвард «весь шард без
     // живых» не спасает при ПООЧЕРЁДНОЙ остановке нод кворового шарда — сосед
     // жив, шардовский скип не срабатывает, и adopt мгновенно пересоздавал
     // стопнутую ноду, не давая supervise досчитать до NodeDeadSec/ShardDeadSec.
@@ -511,7 +511,7 @@ public class AdoptionProcessTests
         etcd.Store["/pgworker/portalloc/demo"].Version.Should().Be(1);
     }
 
-    // AAA (t90): репарация адресов с недобором требует глобальный portalloc-клэйм;
+    // AAA : репарация адресов с недобором требует глобальный portalloc-клэйм;
     // занят — усыновление ждёт тик (waiting-portalloc-lock) без записи portalloc.
     // Кандидаты = {s1/s1a, s1/s1b} (HA-members), инспекция видит только s1a:
     // merge кладёт факт s1/s1a (changed=true), s1/s1b остаётся недобором —

@@ -3,7 +3,7 @@ using Microsoft.Extensions.Configuration;
 namespace Shared.Tls;
 
 // Перенос env-секретов → конфиг-дерево (PEM-значения и _PATH-файлы); наборы пар
-// остаются у потребителей (t08: три копии env→config слиты).
+// остаются у потребителей (: три копии env→config слиты).
 public static class TlsEnv
 {
     public static void ApplyEnvOverrides(

@@ -6,7 +6,7 @@ using Shared.Etcd.Client;
 namespace PgWorker.Etcd.Coordination;
 
 // Журнал эвакуации шарда (Pg-домен): /pgworker/evacuations/<C>/<X> — ключ жёсткий,
-// у Kfw аналога нет (t09: WorkJournal ушёл в Shared, эвакуации остались доменом).
+// у Kfw аналога нет (: WorkJournal ушёл в Shared, эвакуации остались доменом).
 public sealed record EvacuationJournal(
     [property: JsonPropertyName("buckets")] IReadOnlyDictionary<int, string> Buckets,
     [property: JsonPropertyName("reason")] string Reason,
@@ -15,7 +15,7 @@ public sealed record EvacuationJournal(
     [property: JsonPropertyName("returned_unix")] long? ReturnedUnix);
 
 // Обёртка над /pgworker/evacuations/<C>/<X>: чистая etcd-запись журнала эвакуаций
-// (t09: выделен из WorkJournal — Put/Get + JSON + failover).
+// (: выделен из WorkJournal — Put/Get + JSON + failover).
 public sealed class EvacuationJournalStore(IEtcdGateway gateway, string[] endpoints)
 {
     private static readonly JsonSerializerOptions Json = new()

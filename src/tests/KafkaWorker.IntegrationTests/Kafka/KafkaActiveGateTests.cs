@@ -7,10 +7,10 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace KafkaWorker.IntegrationTests.Kafka;
 
-// Гейт Active-ветки (t05, spec §7.5/§3.2, ревью F1): кластер в активном
+// Гейт Active-ветки (spec §7.5/§3.2, ревью F1): кластер в активном
 // backoff-окне — ActiveAsync (надзор-гейт + skip E–J/D) исполняется
 // хост-процессом без kafka-контакта: тик Success, фабрика не зовётся.
-// Per-class коллекция (t24/AGENTS.base §13; spec §6.3.2): свой инстанс
+// Per-class коллекция (/AGENTS.base §13; spec §6.3.2): свой инстанс
 // KafkaClusterFixture — свой etcd-контур, свои кластеры/сети (RunTag),
 // своё окно портов и AdminFactory; классы параллельны (потолок —
 // xunit.runner.json), факты класса последовательны.
@@ -58,8 +58,8 @@ public class KafkaActiveGateTests(KafkaClusterFixture fixture)
             new NodeSupervisor(fixture.Gateway, ep, fixture.Driver, claims, journal,
                 factory, fixture.Options, fixture.Certificates, backoff),
             new ClusterConfigConverger(factory),
-            new PartitionReassignerProcess(fixture.Gateway, ep, fixture.Driver, claims, journal,
-                factory, new ReassignOptions(15, 10, 180, 120), TimeProvider.System),
+            new PartitionReassignerProcess(fixture.Gateway, ep, claims, journal,
+                factory, new ReassignOptions(15, 10, 60, 120), TimeProvider.System),
             new RemoveBrokerProcess(fixture.Gateway, ep, fixture.Driver, claims, journal,
                 factory, fixture.Options),
             new AddBrokerProcess(fixture.Gateway, ep, fixture.Driver, claims, journal,

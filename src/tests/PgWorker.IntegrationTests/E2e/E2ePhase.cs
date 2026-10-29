@@ -3,12 +3,12 @@ using System.Diagnostics;
 namespace PgWorker.IntegrationTests.E2e;
 
 /// <summary>
-/// Единый фазовый телеметрический контур t29-классов (spec t29 §4.1): замер
+/// Единый фазовый телеметрический контур классов (spec §4.1): замер
 /// фазы + строки [PHASE]/[PHASE-TICK] в журнал теста (Console — прецедент
 /// StaticPhase) и в <see cref="E2eEnvironment.ArtifactsDir"/>/phases.log с
 /// UTC-меткой; пересечение 60 с — немедленный сбор docker-диагностики;
 /// провал окна (ok=False) — сбор failed-phase-* ДО возврата сценарию.
-/// Копии WaitPhaseAsync в не-t29-классах не мигрируются (объём); канон для
+/// Копии WaitPhaseAsync в не-классах не мигрируются (объём); канон для
 /// новых сценариев — docs/e2e-launch.md.
 /// </summary>
 internal static class E2ePhase

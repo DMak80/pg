@@ -21,7 +21,7 @@ public sealed record ValkeyClusterSummaryDto(
     long MaxmemoryBytes,
     string MaxmemoryPolicy);
 
-// Детали кластера: config, нода, ротация, CA-ротация (t07), исход заявки (t10).
+// Детали кластера: config, нода, ротация, CA-ротация, исход заявки.
 public sealed record ValkeyClusterDto(
     string Name,
     string State,
@@ -32,8 +32,8 @@ public sealed record ValkeyClusterDto(
     string? Endpoints,
     IReadOnlyList<ValkeyNodeDto> NodesList,
     ValkeyRotationDto? Rotation,
-    ValkeyCaRotationDto? CaRotation, // t07: живая заявка CA-ротации (бейдж UI)
-    TicketOutcomeDto? TicketOutcome = null); // t10: последний исход заявки
+    ValkeyCaRotationDto? CaRotation, // живая заявка CA-ротации (бейдж UI)
+    TicketOutcomeDto? TicketOutcome = null); // последний исход заявки
 
 // Нода node1: state raw + ресурсы + live из PING-пробы (null — проба молчит).
 public sealed record ValkeyNodeDto(
@@ -48,7 +48,7 @@ public sealed record ValkeyNodeDto(
 // Живая заявка ротации (бейдж UI).
 public sealed record ValkeyRotationDto(string Role, long RequestedUnix, string? RequestedBy);
 
-// Живая заявка ротации CA /valkeyworker/ca_rotations/<C> (t07, бейдж UI):
+// Живая заявка ротации CA /valkeyworker/ca_rotations/<C> (бейдж UI):
 // payload без role — {requestedUnix, requestedBy}.
 public sealed record ValkeyCaRotationDto(long RequestedUnix, string? RequestedBy);
 

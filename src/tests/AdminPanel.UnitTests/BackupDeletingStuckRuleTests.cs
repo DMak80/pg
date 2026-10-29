@@ -7,7 +7,7 @@ using Xunit;
 
 namespace AdminPanel.UnitTests;
 
-// backup-deleting-stuck (t06, spec §3.6): свежий DELETING — молчим;
+// backup-deleting-stuck (spec §3.6): свежий DELETING — молчим;
 // застарелый (по finished_unix либо по started_unix — fallback) — warning;
 // из нескольких — старейший.
 public class BackupDeletingStuckRuleTests

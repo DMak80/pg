@@ -344,7 +344,8 @@ public sealed class NodeSupervisor(
 
         var env = envComposer.Compose(
             nodeSecrets, nodePki.Value, clusterPki.Value.Ca.Ca,
-            $"http://{options.AdvertisedHost ?? address.Host}:{address.S3Port}");
+            $"http://{options.AdvertisedHost ?? address.Host}:{address.S3Port}",
+            options.OwnS3ReplicationReconcileIntervalSec);
         var ensured = await driver.EnsureNodeAsync(
             new S3NodeSpec(
                 cluster, node, address.Host, address.S3Port, options.OwnS3Image, env,
@@ -361,33 +362,12 @@ public sealed class NodeSupervisor(
     }
 
     // Failover-обёртки: первый успешный endpoint выигрывает.
-    private async Task<Result<Kv?>> GetAsync(string key, CancellationToken ct)
-    {
-        Result<Kv?> last = default;
-        foreach (var endpoint in endpoints)
-        {
-            var result = await gateway.GetAsync(endpoint, key, ct);
-            if (result.IsSuccess)
-                return result;
-            last = result;
-        }
+    // Failover-обёртки: первый успешный endpoint выигрывает (общий хелпер).
+    private Task<Result<Kv?>> GetAsync(string key, CancellationToken ct)
+        => EtcdEndpointFailover.CallAsync(endpoints, (endpoint, token) => gateway.GetAsync(endpoint, key, token), ct);
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
-    }
-
-    private async Task<Result> PutAsync(string key, string value, CancellationToken ct)
-    {
-        Result last = default;
-        foreach (var endpoint in endpoints)
-        {
-            var result = await gateway.PutAsync(endpoint, key, value, null, ct);
-            if (result.IsSuccess)
-                return result;
-            last = result;
-        }
-
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
-    }
+    private Task<Result> PutAsync(string key, string value, CancellationToken ct)
+        => EtcdEndpointFailover.CallAsync(endpoints, (endpoint, token) => gateway.PutAsync(endpoint, key, value, null, token), ct);
 
     // usage-ключ (arch/23 §2.1 — snake_case).
     private sealed record UsagePayload(

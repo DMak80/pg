@@ -33,7 +33,7 @@ public sealed record KafkaDemoSeedPlan(long NowUnix)
             new PlanPut("/kafka/clusters/events/topics/ghost",
                 """{"partitions":3,"replication_factor":1,"configs":{"retention.ms":"604800000"},"desired":{"configs":{"retention.ms":"86400000"}},"desired_unix":1750000200,"desired_by":"admin","synced_unix":1750000300,"missing":true}"""),
 
-            // lifecycle-заявки (t01, arch/15 §3.1): create без факт-ключа +
+            // lifecycle-заявки (arch/15 §3.1): create без факт-ключа +
             // delete на живой orders.
             new PlanPut("/kafka/clusters/events/topics/audit/desired.create",
                 """{"partitions":12,"replication_factor":3,"configs":{"retention.ms":"86400000"},"requested_unix":1756501200,"requested_by":"seed"}"""),
@@ -45,7 +45,7 @@ public sealed record KafkaDemoSeedPlan(long NowUnix)
             new PlanPut("/kafkaworker/rotations/events",
                 $$"""{"requested_unix":{{now}},"requested_by":"seed"}"""),
 
-            // Ребалансировка (t02): живая заявка + drain-прогресс — парсер/UI/
+            // Ребалансировка : живая заявка + drain-прогресс — парсер/UI/
             // алерты видны без живого воркера (арх/15 §4).
             new PlanPut("/kafkaworker/rebalances/events",
                 """{"requested_unix":1756500123,"requested_by":"seed"}"""),

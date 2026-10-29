@@ -3,7 +3,7 @@ using Xunit;
 
 namespace PgWorker.IntegrationTests.E2e;
 
-// t09, spec «фаза Г»: правило пересборки Release в статических ассетах
+// spec «фаза Г»: правило пересборки Release в статических ассетах
 // (E2eEnvironment.EnsureStaticAssetsAsync → E2eFixture.PublishProjectAsync).
 // Юнит-слой — fail-fast NOBUILD без publish-артефактов (EnsurePublishedDir);
 // автосборка проверяется живым прогоном.

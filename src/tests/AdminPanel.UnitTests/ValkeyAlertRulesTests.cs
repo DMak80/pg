@@ -273,7 +273,7 @@ public class ValkeyAlertRulesTests
         again.Single(x => x.Kind == "valkey-endpoints-missing").SinceUnix.Should().Be(100);
     }
 
-    // ===== valkey-security-missing (critical, t06) =====
+    // ===== valkey-security-missing (critical) =====
 
     // AAA: Active-кластер HasCaPem=false → critical valkey-security-missing;
     // с HasCaPem=true — алерта нет.
@@ -300,9 +300,9 @@ public class ValkeyAlertRulesTests
         withoutAlert.Should().NotContain(x => x.Kind == "valkey-security-missing");
     }
 
-    // ===== t10 (arch/03 §8.4): stale-ротации и ticket-expired =====
+    // ===== (arch/03 §8.4): stale-ротации и ticket-expired =====
 
-    // Снапшот с ротационным набором (t10): канонический Active-кластер live +
+    // Снапшот с ротационным набором : канонический Active-кластер live +
     // заявки/исходы в именованных списках.
     private static ValkeySnapshot RotationSnapshot(
         IReadOnlyList<ValkeyRotationTicket>? rotations = null,

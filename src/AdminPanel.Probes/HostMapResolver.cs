@@ -7,7 +7,7 @@ public static class HostMapResolver
 {
     // Конфиг-провайдеры .NET режут ключи секций по ':', поэтому словарь из
     // appsettings с ключами "host:port" биндится пустым. В конфигурации ключ
-    // задаётся как "host__port" (t10: единственный способ задать HostMap
+    // задаётся как "host__port" (: единственный способ задать HostMap
     // через appsettings; в памяти/тестах работает и канонический "host:port").
     public static string Resolve(IReadOnlyDictionary<string, string> hostMap, string host, int port)
         => hostMap.TryGetValue($"{host}:{port}", out var mapped)

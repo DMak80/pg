@@ -10,7 +10,7 @@ namespace AdminPanel.Probes.Valkey;
 
 // RESP-миниклиент панели (spec §4.6): копия паттерна ValkeyWorker.Core/Valkey/
 // ValkeyConnection.cs с усечением до AUTH+PING. Одна проба = одно короткоживущее
-// TLS-соединение (t06: доверие — per-cluster ca_pem из secrets-стора, CustomRootTrust
+// TLS-соединение (: доверие — per-cluster ca_pem из secrets-стора, CustomRootTrust
 // + SAN-хост endpoint'а; plain-пути нет). Таймаут connect+команда; ретраев нет —
 // следующий тик петли и есть ретрай (симметрия refresher'а). Ошибка сети/
 // протокола → Result.Failed.
@@ -18,11 +18,11 @@ public sealed class ValkeyConnection : IValkeyProbeClient
 {
     public async Task<Shared.Core.Result> PingAsync(ValkeyProbeTarget target, TimeSpan timeout, CancellationToken ct)
     {
-        // TLS-проба (t06) без ca_pem невозможна: миграция не доиграна/ключ потерян —
+        // TLS-проба без ca_pem невозможна: миграция не доиграна/ключ потерян —
         // Failed с диагнозом (алерт valkey-security-missing подхватит HasCaPem=false).
         if (target.CaPem is null)
             return Shared.Core.Result.Failed(new ApplicationException(
-                $"valkey {target.Host}:{target.Port}: no ca_pem — TLS probe impossible (t06 migration incomplete?)"));
+                $"valkey {target.Host}:{target.Port}: no ca_pem — TLS probe impossible (migration incomplete?)"));
 
         // Мини-парсер PEM: панель не ссылается на ValkeyWorker.Core; битый PEM →
         // Failed (толерантность как у кредов, arch/02 §11.1).

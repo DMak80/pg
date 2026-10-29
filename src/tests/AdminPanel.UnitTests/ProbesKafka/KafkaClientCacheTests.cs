@@ -8,7 +8,7 @@ using Xunit;
 
 namespace AdminPanel.UnitTests.ProbesKafka;
 
-// KafkaClientCache (t11): churn-инцидент 2026-09-02 — «клиент на каждый вызов»
+// KafkaClientCache : churn-инцидент 2026-09-02 — «клиент на каждый вызов»
 // плодил rd_kafka-инстансы и poll-потоки (~99% ядра на закрытых портах).
 // Кэш обязан переиспользовать клиент по (bootstrap, user, password) и
 // пересоздавать только при смене кредов/endpoints или Invalidate после фейла.
@@ -119,7 +119,7 @@ public class KafkaClientCacheTests : IDisposable
     [Fact]
     public void GetAdmin_CacheKeyIncludesCaPem_SameCaReuses_NewCaRecreates()
     {
-        // Arrange: два разных CA-PEM (t03: смена CA → пересоздание клиентов).
+        // Arrange: два разных CA-PEM (: смена CA → пересоздание клиентов).
 
         // Act: два GetAdmin с CA-A, затем один с CA-B.
         var caA = CaPem();
@@ -136,7 +136,7 @@ public class KafkaClientCacheTests : IDisposable
     [Fact]
     public void GetAdmin_BundleCaPem_BuildsClientAndRecreatesOnBundleChange()
     {
-        // Arrange: CA старой генерации и бандл OLD+NEW окна ротации CA (t07):
+        // Arrange: CA старой генерации и бандл OLD+NEW окна ротации CA :
         // доверие у пробы ФАЙЛОМ ssl.ca.location — inline ssl.ca.pem у librdkafka
         // читает один серт; бандл обязан строить клиент без исключений.
         var caOld = CaPem();

@@ -4,7 +4,7 @@ using KafkaWorker.Provisioning.Processes;
 namespace KafkaWorker.UnitTests.Provisioning;
 
 /// <summary>
-/// Юнит-тесты чистых функций планов reassignment (spec t02 §3.3/§3.4):
+/// Юнит-тесты чистых функций планов reassignment (spec §3.3/§3.4):
 /// drain (замещение/снижение RF/minISR-guard), balance (RF-цель, лидер,
 /// детерминизм), Pending/DrainComplete/HasUnderReplicated.
 /// </summary>

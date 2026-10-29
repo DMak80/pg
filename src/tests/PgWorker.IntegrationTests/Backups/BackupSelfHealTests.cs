@@ -18,8 +18,8 @@ using Xunit;
 
 namespace PgWorker.IntegrationTests.Backups;
 
-// Сквозной контур самолечения (t07 AC1, spec §3.2): дыра цепочки → WalStream
-// пишет BROKEN → BackupProcess планирует пересъём (IsDue walChainBroken) →
+// Сквозной контур самолечения (AC1, spec §3.2): дыра цепочки → WalStream
+// пишет WAL_CHAIN_ERROR → BackupProcess планирует пересъём (IsDue walChainBroken) →
 // симуляция COMPLETED переснятого полного → WalStream контроль заживляет
 // (ACTIVE + агент тем же тиком). Реальный etcd, фейки docker/SQL/S3.
 [Collection(NonE2eCollection.Name)]
@@ -59,6 +59,11 @@ public class BackupSelfHealTests(EtcdFixture fixture)
             $"host=shard1a port=5432 dbname={cluster} user=bucket_admin password=x", null, ct);
         await fixture.Gateway.PutAsync(fixture.Endpoint, $"/clusters/{cluster}/shards/shard1/master",
             "shard1a:17001", null, ct);
+        // приёмник мастера «жив» (статус-ключ lease) — контроль не
+        // деградирует not-running; конкретные тесты удаляют/сидируют факты.
+        await fixture.Gateway.PutAsync(fixture.Endpoint,
+            $"/pgworker/backups/{cluster}/shard1/agent/shard1a",
+            """{"node":"shard1a","state":"streaming","pool_exhausted":false}""", null, ct);
     }
 
     private WalStreamProcess BuildWalProcess(
@@ -73,17 +78,52 @@ public class BackupSelfHealTests(EtcdFixture fixture)
             new InstallSecrets("su-pw", "sb-pw", "adm-pw", "mov-pw"),
             TimeProvider.System);
 
+    /// <summary>Мини-фейк API приёмника: StartFull — 202 (журнал URL), прочее —
+    /// no-op (self-heal проверяет только факт запуска пересъёма).</summary>
+    private sealed class FakeReceiverClient : IWalReceiverApiClient
+    {
+        public readonly List<string> StartFullUrls = [];
+
+        public Task<ReceiverReply> StartFullAsync(string baseUrl, string id, CancellationToken ct)
+        {
+            StartFullUrls.Add(baseUrl);
+            return Task.FromResult(new ReceiverReply(202,
+                new ReceiverStatus("running", "basebackup"), null));
+        }
+
+        public Task<ReceiverReply> GetFullAsync(string baseUrl, CancellationToken ct)
+            => Task.FromResult(new ReceiverReply(404, null, null));
+        public Task<ReceiverReply> CancelFullAsync(string baseUrl, CancellationToken ct)
+            => Task.FromResult(new ReceiverReply(202, null, null));
+        public Task<ReceiverReply> StartVerifyAsync(string baseUrl, StartVerifyRequest body, CancellationToken ct)
+            => throw new NotSupportedException();
+        public Task<ReceiverReply> GetVerifyAsync(string baseUrl, CancellationToken ct)
+            => throw new NotSupportedException();
+        public Task<ReceiverReply> StartRestoreAsync(string baseUrl, StartRestoreRequest body, CancellationToken ct)
+            => throw new NotSupportedException();
+        public Task<ReceiverReply> GetRestoreAsync(string baseUrl, CancellationToken ct)
+            => throw new NotSupportedException();
+        public Task<ReceiverReply> CancelOpsAsync(string baseUrl, CancellationToken ct)
+            => throw new NotSupportedException();
+
+        public Task<NodeReply<HbaEnsureResponse>> EnsureHbaAsync(string baseUrl, CancellationToken ct)
+            => Task.FromResult(new NodeReply<HbaEnsureResponse>(200, new HbaEnsureResponse(true, false), null));
+        public Task<NodeReply<PgDumpResponse>> PgDumpAsync(string baseUrl, StartPgDumpRequest body, CancellationToken ct)
+            => throw new NotSupportedException();
+        public Task<NodeReply<PgDataResponse>> GetPgDataAsync(string baseUrl, CancellationToken ct)
+            => throw new NotSupportedException();
+    }
+
     // Тест-опции (позиционник BackupsRuntimeOptions — паттерн WalStreamProcessTests).
     private static BackupsRuntimeOptions Options() => new(
         Enabled: true,
         S3Bucket: "bkt",
-        JobImage: "pgworker-backup:test",
-        StagingDir: "/backup-staging",
+        StagingDir: "/home/postgres/pgdata/backup-staging",
         WalVerifyIntervalSec: 0,
         WalLagMaxSegments: 1024,
         WalStaleSec: 300);
 
-    // Полный COMPLETED с wal_start_segment; t18: якорь chain_start — только
+    // Полный COMPLETED с wal_start_segment; : якорь chain_start — только
     // verify-OK полные, поэтому по умолчанию полный валиден (Ok).
     private static ShardBackups FullShard(string walStart, WalStreamState? wal = null) => new(
         [new FullBackupState("20260910120000Z", FullBackupStatus.Completed, "shard1a",
@@ -114,7 +154,7 @@ public class BackupSelfHealTests(EtcdFixture fixture)
         return parsed.Value.Single(c => c.Config.Cluster == cluster);
     }
 
-    // AAA (AC1 сквозной): дыра → BROKEN → планировщик PLANNED/RUNNING → симуляция
+    // AAA (AC1 сквозной): дыра → WAL_CHAIN_ERROR → планировщик PLANNED/RUNNING → симуляция
     // завершения пересъёма (etcd-ключ COMPLETED с wal_start выше границы + объекты
     // S3) → WalStream контроль → ACTIVE + агент поднят
     [Fact]
@@ -137,26 +177,25 @@ public class BackupSelfHealTests(EtcdFixture fixture)
             new Dictionary<string, ShardBackups> { ["shard1"] = FullShard("000000010000000000000001") });
         (await walProcess.TickAsync(BuildSnap("sh1"), backups1, ct)).IsSuccess.Should().BeTrue();
 
-        // Assert 1 — wal=BROKEN с границей разрыва ..03
+        // Assert 1 — wal=WAL_CHAIN_ERROR с границей разрыва ..03
         var broken = await ReadWalAsync("sh1");
-        broken!.State.Should().Be(WalStreamStatus.Broken);
+        broken!.State.Should().Be(WalStreamStatus.WalChainError);
         broken.ChainStartSegment.Should().Be("000000010000000000000003");
 
-        // Arrange 2 — BackupProcess тик: джобов нет, BROKEN → due → PLANNED →
-        // create/start фейка → RUNNING (планировщик отреагировал)
-        var engine = new FakeBackupEngine();
+        // Arrange 2 — BackupProcess тик: WAL_CHAIN_ERROR → due → PLANNED → StartFullAsync
+        // приёмнику (фейк 202) → RUNNING (планировщик отреагировал)
+        var receiver = new FakeReceiverClient();
         var backupProcess = new BackupProcess(
             fixture.Gateway, [fixture.Endpoint],
-            new SelfHealDriver(driver, engine),
             new ShardEndpoints(fixture.Gateway, [fixture.Endpoint], new ShardProbe(new HttpClient())),
             new StubDb(), new StubSecrets(), _claims,
             new WorkJournal("/pgworker", fixture.Gateway, [fixture.Endpoint]),
             new InstallSecrets("su-pw", "sb-pw", "adm-pw", "mov-pw"),
-            Options(), FakePoolFactory.Single(new FakeBackupS3()), TimeProvider.System,
+            Options(), FakePoolFactory.Single(new FakeBackupS3()), receiver, TimeProvider.System,
             NullLogger<BackupProcess>.Instance);
         (await backupProcess.TickAsync(await SnapshotAsync("sh1"), [backups1], ct))
             .IsSuccess.Should().BeTrue();
-        engine.Created.Should().NotBeEmpty("BROKEN is healed by retaking — the job is started");
+        receiver.StartFullUrls.Should().NotBeEmpty("WAL_CHAIN_ERROR is healed by retaking — started via the receiver API");
 
         // Arrange 3 — симуляция завершения пересъёма: etcd-ключ COMPLETED нового id
         // с wal_start=..05 + объекты S3 5..6 (цепь от нового полного непрерывна)
@@ -169,7 +208,7 @@ public class BackupSelfHealTests(EtcdFixture fixture)
             BackupStatusJson.Serialize(recompleted), null, ct);
         s3.Objects.Add(("sh1", "shard1", "000000010000000000000006"));
 
-        // Act — WalStream тик (контроль при BROKEN — каждый тик; процесс новый —
+        // Act — WalStream тик (контроль при WAL_CHAIN_ERROR — каждый тик; процесс новый —
         // «рестарт воркера»: маркер разрыва читается из ключа, не из памяти)
         var rereadWal = await ReadWalAsync("sh1");
         var backups2 = new ClusterBackups("sh1", null,
@@ -184,41 +223,12 @@ public class BackupSelfHealTests(EtcdFixture fixture)
         var walProcess2 = BuildWalProcess(Options(), sql, s3, driver);
         (await walProcess2.TickAsync(BuildSnap("sh1"), backups2, ct)).IsSuccess.Should().BeTrue();
 
-        // Assert — wal.state=ACTIVE, chain_start от нового полного, агент поднят
+        // Assert — wal.state=ACTIVE, chain_start от нового полного (агентов
+        // больше нет: приёмник живёт в контейнере ноды, ensure-агента
+        // в тике нет)
         var healed = await ReadWalAsync("sh1");
         healed!.State.Should().Be(WalStreamStatus.Active);
         healed.ChainStartSegment.Should().Be("000000010000000000000005");
-        driver.EnsuredBackupAgents.Should().Contain("pgw-backup-wal-sh1-shard1-shard1a");
-    }
-
-    // Драйвер-композит (паттерн RestoreProcessTests.TestDriver): агентные вызовы —
-    // StubScaleDriver, движок джобов — FakeBackupEngine.
-    private sealed class SelfHealDriver(IClusterDriver inner, IDockerEngine engine) : IClusterDriver
-    {
-        public bool SupportsRunningInspection => inner.SupportsRunningInspection;
-        public IDockerEngine? EngineFor(string host) => engine;
-        public Task<Result<IReadOnlyList<HostInfo>>> GetHostsAsync(CancellationToken ct) => inner.GetHostsAsync(ct);
-        public Task<Result<IReadOnlySet<(string Host, int Port)>>> GetBusyPortsAsync(CancellationToken ct) => inner.GetBusyPortsAsync(ct);
-        public Task<Result> EnsureNodeAsync(ShardTopology t, string n, NodeAddress a, InstallSecrets s, EtcdEndpoints e, NodeResources? r, PgTuneResult? tuning, bool syncStrict, string restPassword, CancellationToken ct) => inner.EnsureNodeAsync(t, n, a, s, e, r, tuning, syncStrict, restPassword, ct);
-        public Task<Result> RemoveNodeAsync(string c, string sh, string node, CancellationToken ct) => inner.RemoveNodeAsync(c, sh, node, ct);
-        public Task<Result> StopNodeAsync(string c, string sh, string node, CancellationToken ct) => inner.StopNodeAsync(c, sh, node, ct);
-        public Task<Result<DataPresence>> NodeDataPresenceAsync(string c, string sh, string node, CancellationToken ct) => inner.NodeDataPresenceAsync(c, sh, node, ct);
-        public Task<Result<string>> ExecNodeAsync(string c, string sh, string node, IReadOnlyList<string> cmd, CancellationToken ct) => inner.ExecNodeAsync(c, sh, node, cmd, ct);
-        public Task<Result<string>> ExecContainerAsync(string container, IReadOnlyList<string> cmd, CancellationToken ct) => inner.ExecContainerAsync(container, cmd, ct);
-        public Task<Result<IReadOnlyDictionary<string, DiscoveredNode>>> InspectNodesAsync(string c, IReadOnlyCollection<string> names, CancellationToken ct) => inner.InspectNodesAsync(c, names, ct);
-            public Task<Result<IReadOnlyDictionary<string, string>>> InspectNodeEnvAsync(
-        string cluster, string shard, string nodeName, CancellationToken ct) => inner.InspectNodeEnvAsync(cluster, shard, nodeName, ct);
-
-public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string c, CancellationToken ct) => inner.ListNodeObjectsAsync(c, ct);
-        public Task<Result> EnsureBackupAgentAsync(string c, string sh, string n, ContainerSpec spec, string host, CancellationToken ct) => inner.EnsureBackupAgentAsync(c, sh, n, spec, host, ct);
-        public Task<Result> RemoveBackupAgentsAsync(string c, string? sh, CancellationToken ct) => inner.RemoveBackupAgentsAsync(c, sh, ct);
-    // t36: заглушка хвоста лога агента (интерфейсный член; сценарию не нужен).
-    public Task<Result<string>> BackupAgentLogsAsync(string cluster, string containerName, int tailLines, CancellationToken ct)
-        => Task.FromResult(Result<string>.Success(""));
-
-        public Task<Result<IReadOnlyList<DockerContainer>>> ListBackupAgentsAsync(string c, CancellationToken ct) => inner.ListBackupAgentsAsync(c, ct);
-        public Task<Result> RemoveBackupJobsAsync(string c, CancellationToken ct) => inner.RemoveBackupJobsAsync(c, ct);
-        public Task<Result> RemoveRestoreJobsAsync(string c, string sh, CancellationToken ct) => inner.RemoveRestoreJobsAsync(c, sh, ct);
     }
 
     // SQL-двойник: скаляр-гвард «роль уже есть» (паттерн BackupProcessTests.FakeSql).

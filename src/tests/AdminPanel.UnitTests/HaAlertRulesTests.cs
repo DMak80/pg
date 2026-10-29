@@ -7,7 +7,7 @@ using Xunit;
 
 namespace AdminPanel.UnitTests;
 
-// HA-правила алертов t06 (spec §10.1): источники /service/ и Patroni-проба.
+// HA-правила алертов (spec §10.1): источники /service/ и Patroni-проба.
 // SQL-правила (slot-*/sync/inventory) — в этом же файле, добавляются следующим таском.
 public class HaAlertRulesTests
 {
@@ -516,7 +516,7 @@ public class HaAlertRulesTests
             new InventoryMismatchRule().Evaluate(TestSnapshots.Healthy(Now), Context()),
         }.SelectMany(a => a).ToList();
 
-        // Assert: Healthy — шард без Runtime (t03-фикстура): правила молчат, не падают.
+        // Assert: Healthy — шард без Runtime (фикстура): правила молчат, не падают.
         riskOnNull.Should().BeEmpty();
         allOnError.Should().BeEmpty();
         allOnNoRuntime.Should().BeEmpty();
@@ -553,7 +553,7 @@ public class HaAlertRulesTests
         alerts.Should().BeEmpty();
     }
 
-    // Хелпер t06: снапшот demo-кластера с заданным strict-режимом (мастер
+    // Хелпер : снапшот demo-кластера с заданным strict-режимом (мастер
     // без sync-standby — Runtime от SnapshotWithRuntime-механики файла).
     private static EtcdSnapshot SnapshotWithStrictCluster(bool synchronousModeStrict)
         => TestSnapshots.Healthy(Now) with
@@ -569,7 +569,7 @@ public class HaAlertRulesTests
             ],
         };
 
-    // AAA (t06, spec §3.5/§6.9): strict-кластер без sync-standby — critical
+    // AAA (spec §3.5/§6.9): strict-кластер без sync-standby — critical
     // (запись блокирована); не-strict — warning (как раньше).
     [Fact]
     public void SyncStandbyMissing_SeverityDependsOnStrict()
@@ -680,7 +680,7 @@ public class HaAlertRulesTests
     {
         // Arrange: bucket_1 УЖЕ Active на новом владельце s2, но на старом шарде s1
         // до finalize остаются замороженная схема и подписка sub_bucket_1_rb —
-        // окно rollback завершённого переезда (t01), не аномалия.
+        // окно rollback завершённого переезда, не аномалия.
         var oldShard = TestSnapshots.FullCluster().Shards.Single() with
         {
             Name = "s1",
@@ -778,12 +778,12 @@ public class HaAlertRulesTests
         var alerts = engine.Evaluate(snapshot, null, Now, 3).ToList();
 
         // Assert: сортировка severity → kind (Ordinal): critical (shard-no-leader,
-        // slot-wal-lost, sync-standby-missing — t06: strict-кластер дефолта
+        // slot-wal-lost, sync-standby-missing: strict-кластер дефолта
         // фикстуры, запись блокирована) → warning (ha-member-not-streaming,
         // probe-failed, slot-invalidation-risk). probe-failed — warning
         // (spec 2026-09-01 §3.1) — стоит между ha-member и slot-риском.
         // Слот фикстуры несёт safe_wal_size 512 МБ < 1 GiB — risk-алерт входит
-        // в сценарий законно (6-й). t04/t05-правила на этой фикстуре молчат.
+        // в сценарий законно (6-й). /правила на этой фикстуре молчат.
         alerts.Select(a => a.Id).Should().ContainInOrder(
             "shard-no-leader:demo-s1",
             "slot-wal-lost:demo/s1/move_bucket_3",

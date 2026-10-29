@@ -76,7 +76,7 @@ public class InspectionMappersTests
         // Act
         var dto = OverviewMapper.Map(snapshot, BuiltAt + TimeSpan.FromSeconds(1), 3);
 
-        // Assert: заглушки t04 наполнены (spec §3.15 t04 → §1 t05).
+        // Assert: заглушки наполнены (spec §3.15 → §1).
         var cluster = dto.Clusters.Should().ContainSingle().Subject;
         cluster.Name.Should().Be("demo");
         cluster.Shards.Should().Be(2);

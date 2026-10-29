@@ -22,7 +22,7 @@ public sealed record ClusterSummaryDto(
     // Как в деталях (arch/03 §2): false ⟺ 1 бакет и ≤1 шард — нешардированная
     // БД; список рисует прочерк в «Бакеты»/«Шарды».
     bool Sharded,
-    bool SynchronousModeStrict); // t06: снапшот-поле (config.synchronous_mode_strict)
+    bool SynchronousModeStrict); // снапшот-поле (config.synchronous_mode_strict)
 
 // Снапшот → сводки: чистая функция; порядок кластеров — как в снапшоте (spec §3.3).
 public static class ClustersMapper
@@ -37,7 +37,7 @@ public static class ClustersMapper
             c.State == ClusterState.ToRemove, // «к удалению» — config.state TO_REMOVE (arch/02 §9.4)
             c.Shards.Count,
             c.Shards.Count(s => s.MasterAddress is not null),
-            // NOT_INITIALIZED — не переезд: только реальные состояния перемещения (spec t12 §3.6)
+            // NOT_INITIALIZED — не переезд: только реальные состояния перемещения (spec §3.6)
             c.Buckets.Count(b => b.State is BucketState.Syncing or BucketState.Frozen or BucketState.Aborting),
             !(c.BucketsCount == 1 && c.Shards.Count <= 1),
             c.SynchronousModeStrict))];

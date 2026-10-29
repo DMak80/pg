@@ -4,7 +4,7 @@ using Shared.Core;
 
 namespace PgWorker.WalReceiver;
 
-/// <summary>Чтение restart_lsn слота источника через SQL (t27, arch/19 §3.1):
+/// <summary>Чтение restart_lsn слота источника через SQL (arch/19 §3.1):
 /// пустой префикс S3 — стартовая позиция приёмника. Слот отсутствует → Failed
 /// (permanent-ветка ядра, код 4).</summary>
 public sealed class NpgsqlSlotPositionReader(WalReceiverOptions o) : ISlotPositionReader
@@ -22,7 +22,7 @@ public sealed class NpgsqlSlotPositionReader(WalReceiverOptions o) : ISlotPositi
             command.Parameters.AddWithValue(slot);
             var raw = await command.ExecuteScalarAsync(ct);
             if (raw is not string lsnText)
-                return Result<ulong>.Failed(new ApplicationException($"slot {slot} is missing"));
+                return Result<ulong>.Failed(new WalSlotMissing(slot)); // слота нет — waiting_slot (ensure воркера)
 
             return Result<ulong>.Success(ParseLsn(lsnText));
         }

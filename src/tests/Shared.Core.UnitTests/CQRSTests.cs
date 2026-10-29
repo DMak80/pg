@@ -40,7 +40,7 @@ public class CQRSTests
     }
 }
 
-// Тестовая команда (spec t12 §3.4).
+// Тестовая команда (spec §3.4).
 public sealed record TestCommand(string Value) : ICommand<string>;
 
 // Тестовый хендлер команды: scoped — как query, диспётчер резолвит из scope.

@@ -17,10 +17,10 @@ public sealed record CreateClusterRequest(
     int RequestDisk,
     bool? Sharded = null,
     // Wire-имя фиксировано атрибутом: camelCase от SyncStrict дал бы syncStrict,
-    // а контракт (спека §2 п.7, arch/03 §1.1) — synchronousModeStrict (t06).
+    // а контракт (спека §2 п.7, arch/03 §1.1) — synchronousModeStrict.
     [property: JsonPropertyName("synchronousModeStrict")] bool? SyncStrict = null)
 {
-    // Нормализация (arch/02 §9.3 + t06): sharded=false → buckets/shards в 1/1;
+    // Нормализация (arch/02 §9.3 +): sharded=false → buckets/shards в 1/1;
     // отсутствующий syncStrict трактуется как true (durability-first).
     // Вызывается ДО Validate. Идемпотентна.
     public CreateClusterRequest Normalize()
@@ -33,10 +33,10 @@ public sealed record CreateClusterRequest(
     }
 }
 
-// Границы создания кластера — arch/02 §9.3; константы кода, не конфиг (spec t12 §8.15).
+// Границы создания кластера — arch/02 §9.3; константы кода, не конфиг (spec §8.15).
 public static partial class CreateClusterLimits
 {
-    // Без дефиса: scope <C>-<X> и ScopeMatcher однозначны; dbname = <C> (spec t12 §8.5).
+    // Без дефиса: scope <C>-<X> и ScopeMatcher однозначны; dbname = <C> (spec §8.5).
     [GeneratedRegex("^[a-z][a-z0-9_]{0,62}$")]
     public static partial Regex NamePattern();
 
@@ -44,7 +44,7 @@ public static partial class CreateClusterLimits
     public const int MaxBuckets = 8192;
     public const int MinShards = 1;
     public const int MaxShards = 128;
-    public const int MinReplicas = 1;   // 1 = только мастер <X>a (spec t12 §8.4)
+    public const int MinReplicas = 1;   // 1 = только мастер <X>a (spec §8.4)
     public const int MaxReplicas = 26;  // буквы нод a..z
     public const decimal MinCpu = 0.01m;
     public const decimal MaxCpu = 64m;
@@ -52,7 +52,7 @@ public static partial class CreateClusterLimits
     public const int MaxGiB = 65536;
 }
 
-// Чистая функция валидации: сервер — источник истины (spec t12 §2).
+// Чистая функция валидации: сервер — источник истины (spec §2).
 public static class CreateClusterValidator
 {
     public static IReadOnlyList<ValidationError> Validate(CreateClusterRequest request)
@@ -67,7 +67,7 @@ public static class CreateClusterValidator
             errors.Add(new("shards", $"shards: integer {CreateClusterLimits.MinShards}..{CreateClusterLimits.MaxShards} and not more than buckets"));
         if (request.Replicas is < CreateClusterLimits.MinReplicas or > CreateClusterLimits.MaxReplicas)
             errors.Add(new("replicas", $"replicas: integer {CreateClusterLimits.MinReplicas}..{CreateClusterLimits.MaxReplicas}"));
-        // t06: strict-режим требует sync-standby → replicas ≥ 2; отсутствие опции = true.
+        // strict-режим требует sync-standby → replicas ≥ 2; отсутствие опции = true.
         if ((request.SyncStrict ?? true) && request.Replicas < 2)
             errors.Add(new("syncStrict", "strict mode requires replicas ≥ 2 on every shard (without sync-standby writes are blocked)"));
         if (request.RequestCpu < CreateClusterLimits.MinCpu || request.RequestCpu > CreateClusterLimits.MaxCpu)

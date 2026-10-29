@@ -6,10 +6,10 @@ using Xunit;
 
 namespace AdminPanel.UnitTests;
 
-// Перебор целей инвентаря (t36, adminpanel/02 §2.5): первая цель отказывает
+// Перебор целей инвентаря (adminpanel/02 §2.5): первая цель отказывает
 // соединением → list-вызовы успешны со второй; обе отказывают → Failed
 // (грань недоступна этим тиком). Цели подаются клиенту UpdateTargets'ом
-// из снапшота S3 (t31); клиенты per-цели подменяются internal-швом
+// из снапшота S3; клиенты per-цели подменяются internal-швом
 // (фейк-подкласс AmazonS3Client — методы виртуальные).
 public class S3StorageClientFailoverTests
 {

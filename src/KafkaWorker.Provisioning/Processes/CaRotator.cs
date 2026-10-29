@@ -10,7 +10,7 @@ using KafkaWorker.Provisioning.Kafka;
 namespace KafkaWorker.Provisioning.Processes;
 
 /// <summary>
-/// CaRotator (arch/16 §5 K, t07): ротация per-cluster CA и серверных сертов по
+/// CaRotator (arch/16 §5 K): ротация per-cluster CA и серверных сертов по
 /// заявке /kafkaworker/ca_rotations/&lt;C&gt; — окно двойного доверия без остановки
 /// записи. Фазы: P (staging ca_next_* put-if-absent — в etcd, переживает рестарт
 /// воркера) → D (ca_pem = bundle OLD+NEW — клиенты начинают доверять NEW до
@@ -18,7 +18,7 @@ namespace KafkaWorker.Provisioning.Processes;
 /// NEW CA, truststore = bundle, том жив) → C (атомарный txn: ca_pem/ca_key ←
 /// NEW, del staging, del заявки — OLD-ключ уничтожается перезаписью) → снапшот
 /// P12 + done. Вызывается только держателем клэйма &lt;C&gt;.
-/// <para>Структура тика (t10, зеркалит valkey K0.2→K0.5): K0.2 хвост committed →
+/// <para>Структура тика (зеркалит valkey K0.2→K0.5): K0.2 хвост committed →
 /// доигрывание финала; K0.3 детект ОТКРЫТОГО окна (staging жив ИЛИ журнал
 /// rotate-ca вне {done, waiting-*}) → доигрывание P→D→R→C БЕЗ ждущих guard'ов
 /// и БЕЗ экспирации (окно не сиротеет: слепой кластер посреди R — передержка);
@@ -47,7 +47,7 @@ public sealed class CaRotator(
     // начинается заново (env от NEW CA идемпотентен).
     private readonly ConcurrentDictionary<(string Cluster, string Phase), HashSet<string>> _rolled = new();
 
-    // t10: экспирация не-начатых заявок + исходы финалов.
+    // экспирация не-начатых заявок + исходы финалов.
     private readonly TicketExpirator _tickets = new(etcd, endpoints);
 
     // Аудит заявки текущей ротации (для исхода done; рестарт в окне C→финал
@@ -73,14 +73,14 @@ public sealed class CaRotator(
         if (ticket.Value is not null)
             _ticketAudit[cluster] = TicketOutcomes.ParseAudit(ticket.Value.Value);
 
-        // K0.2 (t10): хвост после C (заявка снята, done не записан — сбой между
+        // K0.2 : хвост после C (заявка снята, done не записан — сбой между
         // C и финалом): идемпотентное завершение — снапшот + done, staging/rolling
         // не трогаем.
         var afterCommit = journalState.Value is { Op: Op } j && j.Phase == PhaseCommitted;
         if (afterCommit && ticket.Value is null)
             return await FinishAsync(cluster, ct);
 
-        // K0.3 (t10, зеркалит valkey): окно открыто — staging жив ИЛИ журнал
+        // K0.3 (зеркалит valkey): окно открыто — staging жив ИЛИ журнал
         // rotate-ca в мутационной фазе (вне {done, waiting-*}) — доигрывание
         // P→D→R→C БЕЗ ждущих guard'ов и БЕЗ экспирации: слепой кластер посреди R —
         // передержка (rolling стоит на ожидании сходимости); потеря endpoints или
@@ -101,12 +101,12 @@ public sealed class CaRotator(
             return await PhasesAsync(snap, ct);
         }
 
-        // K0.4 (t10): заявки нет, хвостов нет — no-op.
+        // K0.4 : заявки нет, хвостов нет — no-op.
         if (ticket.Value is null)
             return Result.Success();
         var ticketPayload = ticket.Value.Value; // живая заявка (не null — K0.4)
 
-        // K0.5 (t10) — дооконные ждущие guard'ы (экспирационные под тройным
+        // K0.5 — дооконные ждущие guard'ы (экспирационные под тройным
         // гвардом §3.1; staging-предикат истинен по построению ветки — K0.3
         // уводит открытое окно мимо; журнал — явной проверкой ниже).
 
@@ -119,7 +119,7 @@ public sealed class CaRotator(
         }
 
         // Guard: живая пароль-ротация (H, app/admin) — rolling-ы не смешиваются
-        // (журнал один). Живая admin-заявка H — та же семья (приоритет H, t10).
+        // (журнал один). Живая admin-заявка H — та же семья (приоритет H).
         // «Живость по журналу» — ТОЛЬКО мутационные фазы роли (phase-a/
         // rotated-commit/phase-c): терминальный expired не живой (пишется
         // только вне мутаций) — иначе свежая ca-заявка после экспирации
@@ -255,7 +255,7 @@ public sealed class CaRotator(
 
         _rolled.TryRemove((cluster, "phase-r"), out _);
 
-        // Исход done ДО journal done (t10): провал put → тик Failed → финал
+        // Исход done ДО journal done : провал put → тик Failed → финал
         // повторится хвостом afterCommit — исход не теряется.
         var outcomeDone = await _tickets.WriteDoneAsync(
             TicketOutcomes.Key("/kafkaworker", cluster), TicketOutcomes.KindCa,
@@ -268,7 +268,7 @@ public sealed class CaRotator(
         return done.IsSuccess ? Result.Success() : Result.Failed(done.Error!);
     }
 
-    // Ждущий исход с экспирацией под гвардом (t10): ca-заявка старее порога и
+    // Ждущий исход с экспирацией под гвардом : ca-заявка старее порога и
     // гвард пройден (дооконная ветка: staging отсутствует по построению K0.3;
     // mutationLive — явная проверка журнала) → снятие (kind=ca), иначе
     // journal-waiting. Фаза expired — непрефиксованная (терминальная, FinalPhases).
@@ -391,7 +391,7 @@ public sealed class CaRotator(
     private async Task<Result<bool>> WaitForBrokersAsync(
         KafkaClusterSnapshot snap, int expected, CancellationToken ct)
     {
-        // Передержка окна (t10): DescribeCluster невозможен без endpoints —
+        // Передержка окна : DescribeCluster невозможен без endpoints —
         // считаем «не сошлось» (rolling стоит, следующий тик повторит).
         if (snap.Endpoints is null)
             return Result<bool>.Success(false);

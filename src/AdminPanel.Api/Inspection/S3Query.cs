@@ -66,7 +66,7 @@ public sealed record S3SyncPairDto(
     string From, string To, long Missing, long Extra, long? LagBytes, long? LagObjects);
 public sealed record S3RotationDto(long RequestedUnix, string? RequestedBy);
 
-// Пул S3 для грани «Хранилище бэкапов» (t36, adminpanel/02 §12.4): проекция
+// Пул S3 для грани «Хранилище бэкапов» (adminpanel/02 §12.4): проекция
 // ТОГО ЖЕ домена S3Snapshot — без ключей/секретов (GET /api/backups/s3-pools).
 public sealed record S3PoolDto(
     string Name,

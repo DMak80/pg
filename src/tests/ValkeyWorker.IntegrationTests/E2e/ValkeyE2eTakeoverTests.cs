@@ -7,7 +7,7 @@ using Xunit;
 
 namespace ValkeyWorker.IntegrationTests.E2e;
 
-// Takeover-E2E ValkeyWorker (spec t20 §8): kill ДЕРЖАТЕЛЯ клэйма ДО начала
+// Takeover-E2E ValkeyWorker (spec §8): kill ДЕРЖАТЕЛЯ клэйма ДО начала
 // X0 ДЕМОНТАЖА кластера (X0–X3, arch/21 §5 B) — выживший инстанс пере-захватывает
 // клэйм (TTL ≤15 с) и доигрывает демонтаж до терминальной чистоты: пустой
 // домен + пустая координация + нет контейнеров, без дублей (инварианты I1–I7).
@@ -282,7 +282,7 @@ public class ValkeyE2eTakeoverTests
             // демонтаж (logger ValkeyClusterProcesses «deprovision {C}: ok»;
             // обработчик DELETE такую строку не пишет — подтверждено grep'ом
             // логов прогона e055e1e0: у жертвы 0 вхождений).
-            var survivorLog = await fx.RunDockerAsync(["logs", survivorName], ct);
+            var survivorLog = await fx.RunDockerLogsAsync([survivorName], ct);
             survivorLog.Should().Contain($"deprovision {cluster}",
                 "documentary fact I2: the cluster deprovision was executed by the survivor — the victim was killed before X0 and never restarted");
 

@@ -8,7 +8,7 @@ using Shared.Etcd.Client;
 namespace S3Worker.Provisioning.Processes;
 
 /// <summary>
-/// Процесс F — SyncProbe (arch/24 §5 F, spec t33 §3.2–§3.5): зонд
+/// Процесс F — SyncProbe (arch/24 §5 F, spec §3.2–§3.5): зонд
 /// связности/синхронности ownS3-кластера — читатель факта, не надзиратель.
 /// Прогон: probe-опрос всех RUNNING (матрица настроенных линков + пары сверек),
 /// статусы приёмников (fetch-очередь для lag_objects), постраничная сверка пар

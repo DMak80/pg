@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <!-- pgwnodetool: одна .NET CLI-утилита для служебных демонов ноды/стенда.
+         Публикуется self-contained (как walreceiver): в контейнере нет .NET-рантайма. -->
+    <PropertyGroup>
+        <OutputType>Exe</OutputType>
+        <AssemblyName>pgwnodetool</AssemblyName>
+        <InvariantGlobalization>true</InvariantGlobalization>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <PackageReference Include="Npgsql"/>
+    </ItemGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\Shared.Etcd\Shared.Etcd.csproj"/>
+        <ProjectReference Include="..\Shared.Tls\Shared.Tls.csproj"/>
+    </ItemGroup>
+
+    <ItemGroup>
+        <Using Include="Shared.Core"/>
+        <Using Include="Shared.Etcd.Client"/>
+    </ItemGroup>
+</Project>

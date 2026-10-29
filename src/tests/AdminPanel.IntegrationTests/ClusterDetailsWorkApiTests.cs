@@ -7,7 +7,7 @@ using Xunit;
 
 namespace AdminPanel.IntegrationTests;
 
-// GET /api/clusters/{c}: поле work — журнал /pgworker/work/<C> (t07, спека
+// GET /api/clusters/{c}: поле work — журнал /pgworker/work/<C> (спека
 // §4.3): последняя запись процесса воркера; null при отсутствии журнала.
 [Collection("api")]
 public class ClusterDetailsWorkApiTests(AuthWebFactory factory)

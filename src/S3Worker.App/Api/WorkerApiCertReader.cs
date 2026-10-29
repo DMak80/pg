@@ -18,7 +18,7 @@ public sealed record ManagedCertRead(ManagedCertStatus Status, string? CertPem, 
 
 // Ридер ключа /workers/api_tls/<worker> ДО поднятия Kestrel (arch/24 §1.1):
 // одиночный /v3/kv/range к первому живому endpoint (формат gateway — EtcdGateway).
-// Панель — единственный писатель ключа (t34); воркер его только читает.
+// Панель — единственный писатель ключа; воркер его только читает.
 public static class WorkerApiCertReader
 {
     public const string KeyPrefix = "/workers/api_tls/";

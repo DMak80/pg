@@ -5,10 +5,10 @@ using Shared.Tls;
 
 namespace Shared.Docker;
 
-// Фабрика движков (arch/14 §2.2/§2.2.1, t03): endpoint "unix:///var/run/docker.sock"
+// Фабрика движков (arch/14 §2.2/§2.2.1): endpoint "unix:///var/run/docker.sock"
 // | "tcp://host[:2375]" (+TLS при заданном DockerTlsOptions) | "ssh://[user@]host[:22]"
 // (туннель — SshTunnelOptions). API-версия закреплена v1.44 (docker >= 23).
-// Общая фабрика трёх воркеров (t07): SSH/TLS — опции, доступные всем доменам
+// Общая фабрика трёх воркеров : SSH/TLS — опции, доступные всем доменам
 // (kfw/vwk `new DockerEngineFactory()` валиден — опции optional).
 public class DockerEngineFactory : IAsyncDisposable
 {
@@ -81,8 +81,22 @@ public class DockerEngineFactory : IAsyncDisposable
         return sockets;
     }
 
+    // Поллинг-инвариант (arch/14 §6): одиночный docker-вызов не молчит дольше
+    // окна проверки watchdog — пер-попыточный таймаут = половина окна (7.5 с при
+    // дефолтах), симметрия etcd/patroni (AddHttpClient воркеров). Зависший вызов →
+    // исключение → transient-фейл тика, а не молчание до дефолтных 100 с HttpClient.
+    // Гарантия для глобального portalloc-лока (arch/15 §4: без keepalive, секция
+    // ≪ TTL 15 с): любой одиночный docker-чтение секции довыделения умирает
+    // таймаутом задолго до истечения lease.
+    internal static readonly TimeSpan CallTimeout = TimeSpan.FromSeconds(7.5);
+
     // hostAlias — имя docker-хоста для BusyPorts plain-режима (swarm: null).
     public virtual IDockerEngine Create(string endpoint, string? hostAlias = null)
+        => Create(endpoint, hostAlias, CallTimeout);
+
+    // Тестовое окно: internal-перегрузка с настраиваемым пер-попыточным
+    // таймаутом; публичный контракт Create(endpoint, hostAlias) неизменен.
+    internal IDockerEngine Create(string endpoint, string? hostAlias, TimeSpan callTimeout)
     {
         var scheme = EndpointScheme.Parse(endpoint);
         if (scheme.Scheme == EndpointScheme.Ssh)
@@ -93,8 +107,12 @@ public class DockerEngineFactory : IAsyncDisposable
             ? "http://localhost" // фиктивный хост: соединение уходит в unix-сокет через ConnectCallback
             : (_tls is not null
                 ? $"https://{parsedEndpoint.Host}:{parsedEndpoint.Port}"
-                : $"http://{parsedEndpoint.Host}:{parsedEndpoint.Port}"); // HttpClient не понимает tcp://
-        var httpClient = new HttpClient(CreateHandler(endpoint)) { BaseAddress = new Uri(baseAddress) };
+                : $"http://{parsedEndpoint.Host}:{parsedEndpoint.Port}"); // HttpClient не понимает tcp:
+        var httpClient = new HttpClient(CreateHandler(endpoint))
+        {
+            BaseAddress = new Uri(baseAddress),
+            Timeout = callTimeout,
+        };
         return new DockerEngine(httpClient, hostAlias);
     }
 
@@ -161,7 +179,7 @@ internal sealed class DockerTlsMaterial
     }
 
     // Цепочка серверного серта демона против per-install docker-CA — обёртка
-    // над общим TlsChain.ValidateChain (t08: тело в Shared.Tls).
+    // над общим TlsChain.ValidateChain (: тело в Shared.Tls).
     public static bool ValidateChain(X509Certificate? certificate, X509Certificate2 ca)
         => TlsChain.ValidateChain(certificate, ca);
 }

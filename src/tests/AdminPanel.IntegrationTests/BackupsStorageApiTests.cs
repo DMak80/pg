@@ -10,7 +10,7 @@ using Xunit;
 
 namespace AdminPanel.IntegrationTests;
 
-// Серия грани «Хранилище бэкапов» (t08): классы серии выполняются последовательно
+// Серия грани «Хранилище бэкапов» : классы серии выполняются последовательно
 // (коллекция без общих фикстур — контейнеры свои у каждого класса, изоляция
 // e2e-isolation §1 за счёт IClassFixture на класс).
 [CollectionDefinition("backups")]
@@ -20,20 +20,23 @@ public sealed class BackupsCollection;
 // на класс не более 5 логинов (LoginRateLimiter.MaxAttempts).
 internal static class BackupsLogin
 {
+    // Тестовый пароль админа хоста фабрики (литералы — только в константах).
+    private const string AdminPassword = "adminpw";
+
     public static async Task<HttpClient> LoginAsync(BackupsWebFactory factory)
     {
         factory.EnsureBuilt();
         var client = factory.CreateClient();
         var login = await client.PostAsJsonAsync(
             "/api/auth/login",
-            new { username = "admin", password = "adminpw" },
+            new { username = "admin", password = AdminPassword },
             TestContext.Current.CancellationToken);
         login.StatusCode.Should().Be(HttpStatusCode.NoContent);
         return client;
     }
 }
 
-// AC1 (t08 spec §7.1): без S3-пула в /s3/clusters/ (нет Active-кластера
+// AC1 (spec §7.1): без S3-пула в /s3/clusters/ (нет Active-кластера
 // с endpoints и secrets) панель стартует,
 // GET /api/backups/storage → 200 {configured:false}, инвентарь-тик — no-op
 // (стоп пуст), алерт backup-s3-unreachable не горит.
@@ -85,7 +88,7 @@ public class BackupsStorageDisabledApiTests(EtcdContainerFixture etcd)
     public async ValueTask DisposeAsync() => await _factory.DisposeAsync();
 }
 
-// AC2+AC6 (t08 spec §7.2/§7.6): ownS3-нода с сеянными объектами <C>/<X>/full/<id>/…,
+// AC2+AC6 (spec §7.2/§7.6): ownS3-нода с сеянными объектами <C>/<X>/full/<id>/…,
 // wal/<segment>, wal/<tli>.history, посторонний корневой префикс → после тиков
 // сводка отдаёт buckets, health (api/live/cluster), дерево <C>/<X> с размерами/
 // счётчиками, foreign-префикс; usedBytes = сумме; ключ /pgworker/backups/storage
@@ -190,15 +193,15 @@ public class BackupsStorageInventoryApiTests(
 
     public async ValueTask DisposeAsync() => await _factory.DisposeAsync();
 
-    // AAA (t08): ключ /pgworker/etcd-snapshots попадает в DTO грани (панель
-    // читает, пишет только PgWorker); карточка живёт независимо от инвентаря.
+    // AAA : ключ /etcdworker/snapshots попадает в DTO грани (панель
+    // читает, пишет только EtcdWorker); карточка живёт независимо от инвентаря.
     [Fact]
     public async Task Storage_EtcdSnapshots_InDto()
     {
         _factory.EnsureBuilt(); // до любого Services — иначе ленивый build без очистки кеша
         // Arrange — свой etcd-класс серии: сид статус-ключа + тик снапшота
-        await EtcdSeed.PutAsync(etcd.Endpoint, "/pgworker/etcd-snapshots",
-            """{"enabled":true,"state":"OK","last_uploaded_unix":1759330000,"last_object":"etcd/snapshot-20261001-120000.db","last_sha256":"abc123","size_bytes":2048,"interval_min":360}""",
+        await EtcdSeed.PutAsync(etcd.Endpoint, "/etcdworker/snapshots",
+            """{"state":"OK","last_uploaded_unix":1759330000,"last_object":"etcd/snapshot-20261001-120000.db","last_sha256":"abc123","size_bytes":2048,"interval_min":360}""",
             TestContext.Current.CancellationToken);
         var refresher = _factory.Services.GetRequiredService<SnapshotRefresher>();
         (await refresher.RefreshOnceAsync(TestContext.Current.CancellationToken))
@@ -214,7 +217,6 @@ public class BackupsStorageInventoryApiTests(
         var dto = await response.Content.ReadFromJsonAsync<JsonElement>(
             TestContext.Current.CancellationToken);
         var export = dto.GetProperty("etcdSnapshots");
-        export.GetProperty("enabled").GetBoolean().Should().BeTrue();
         export.GetProperty("state").GetString().Should().Be("OK");
         export.GetProperty("lastUploadedUnix").GetInt64().Should().Be(1759330000);
         export.GetProperty("lastSha256").GetString().Should().Be("abc123");
@@ -223,7 +225,7 @@ public class BackupsStorageInventoryApiTests(
     }
 }
 
-// AC3 (t08 spec §7.3): остановленное хранилище → apiOk=false/liveOk=false, инвентарь
+// AC3 (spec §7.3): остановленное хранилище → apiOk=false/liveOk=false, инвентарь
 // устаревает (штамп прежний, inventoryError не пуст), алерт backup-s3-unreachable
 // после 2 неудачных тиков подряд (ручной прогон RunOnceAsync — spec §5 фаза 2).
 [Collection("backups")]
@@ -347,7 +349,7 @@ public class BackupsOptionsBindingApiTests : IAsyncDisposable
     public async ValueTask DisposeAsync() => await _factory.DisposeAsync();
 }
 
-// Сироты с защитой (reliability t04, AC7): сводка orphans несёт hasValidFull/
+// Сироты с защитой (reliability, AC7): сводка orphans несёт hasValidFull/
 // held/deleteRequested + hold/заявки из etcd (реестр без S3-факта — вторая
 // ветка слияния); TtlLeftSec null у защищённых.
 [Collection("backups")]

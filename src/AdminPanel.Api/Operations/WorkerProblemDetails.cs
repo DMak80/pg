@@ -88,7 +88,7 @@ internal static class WorkerProxy
 }
 
 /// <summary>
-/// Прокси-ответ с исходным статусом воркера (t34, arch/02 §12.2): Value — DTO
+/// Прокси-ответ с исходным статусом воркера (arch/02 §12.2): Value — DTO
 /// или null (204 без тела).
 /// </summary>
 public sealed record WorkerRaw<T>(int StatusCode, T? Value);

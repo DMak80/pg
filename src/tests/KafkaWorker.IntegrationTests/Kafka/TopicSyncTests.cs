@@ -14,7 +14,7 @@ namespace KafkaWorker.IntegrationTests.Kafka;
 // исчезновение топика без/с desired (missing-ветка) → отмена заявки удаляет
 // ключ. Фикстура — общая с волной A (etcd + 1-брокерный кластер через
 // ProvisioningProcess); все операции чтения ключей — только etcd.
-// Per-class коллекция (t24/AGENTS.base §13; spec §6.3.2): свой инстанс
+// Per-class коллекция (/AGENTS.base §13; spec §6.3.2): свой инстанс
 // KafkaClusterFixture — свой etcd-контур, свои кластеры/сети (RunTag),
 // своё окно портов и AdminFactory; классы параллельны (потолок —
 // xunit.runner.json), факты класса последовательны.

@@ -4,7 +4,7 @@ using Microsoft.Extensions.Options;
 
 namespace AdminPanel.Core.Alerting.Rules;
 
-// backup-deleting-stuck (warning, t06, arch/19 §4): полный в DELETING дольше
+// backup-deleting-stuck (warning, arch/19 §4): полный в DELETING дольше
 // Alerts:Backups:DeletingStaleSec (возраст по finished_unix, иначе started_unix)
 // — ретенция не может довести удаление (S3-отказ и т.п.).
 [InjectAsSingleton(typeof(IAlertRule))]

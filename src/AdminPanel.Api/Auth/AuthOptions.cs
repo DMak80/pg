@@ -2,7 +2,7 @@ using Shared.Core.DI;
 
 namespace AdminPanel.Api.Auth;
 
-// [Config]-POCO аутентификации: секция AdminPanel:Auth (arch/01 §6, spec t02 §6.1).
+// [Config]-POCO аутентификации: секция AdminPanel:Auth (arch/01 §6, spec §6.1).
 [Config("AdminPanel:Auth")]
 public class AuthOptions
 {

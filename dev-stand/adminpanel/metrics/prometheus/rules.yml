@@ -15,6 +15,13 @@ groups:
         annotations:
           summary: "{{ $labels.job }}/{{ $labels.loop }} loop not ticking for >60s"
           description: "only fast loops (reconcile/keepalive); snapshot liveness is covered by SnapshotStale; loop interval 5s, headroom for ErrorDelay backoff; runbook — arch/18 §2.2"
+      - alert: OrphanSweepStalled
+        expr: time() - worker_loop_last_success_timestamp_seconds{loop="orphan-sweep"} > 1800
+        for: 0m
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ $labels.job }} orphan sweeper not sweeping for >30m"
+          description: "fixed threshold 3x Supervisor:IntervalSec (600s default); series emitted only by the leader with Backups:Enabled=true; runbook — arch/18 §2.2, arch/19 §4"
       - alert: SnapshotStale
         expr: worker_snapshot_age_seconds > 28800
         for: 0m

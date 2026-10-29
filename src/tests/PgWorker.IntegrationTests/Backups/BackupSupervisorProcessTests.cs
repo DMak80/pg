@@ -9,7 +9,7 @@ using Xunit;
 
 namespace PgWorker.IntegrationTests.Backups;
 
-// Интеграции BackupSupervisorProcess (t07, spec §3.4): реальный etcd (клэйм/
+// Интеграции BackupSupervisorProcess (spec §3.4): реальный etcd (клэйм/
 // журнал) + FakeBackupS3 (префиксы/удаления). Снапшот кластера строится руками
 // (паттерн WalStreamProcessTests). Isolation — чистка своих префиксов в Arrange.
 [Collection(NonE2eCollection.Name)]
@@ -18,14 +18,14 @@ public class BackupSupervisorProcessTests(EtcdFixture fixture) : IAsyncLifetime
     // Per-class guid-тег (канон docs/e2e-isolation.md §1): имена кластеров уникальны
     // per-class-запуск — пересечение с ShardScaleContractTests (sc1..sc6) и любым
     // будущим классом не-E2E-коллекции (NonE2eCollection) механически невозможно
-    // (инцидент t07: клэйм sc3 этого класса жил 15с по TTL и ронял TryClaim жертвы).
+    // (инцидент : клэйм sc3 этого класса жил 15с по TTL и ронял TryClaim жертвы).
     private static readonly string Tag = Guid.NewGuid().ToString("N")[..8];
 
     private readonly ClaimStore _claims = new("/pgworker", [fixture.Endpoint], fixture.Gateway, TimeProvider.System);
 
     public ValueTask InitializeAsync() => ValueTask.CompletedTask;
 
-    // Own-only teardown клэйма (t12 spec §4.2 п.3): DisposeAsync отзывает lease —
+    // Own-only teardown клэйма (spec §4.2 п.3): DisposeAsync отзывает lease —
     // живых /pgworker/claims/<C> после тестов класса не остаётся, без TTL-ожидания.
     public ValueTask DisposeAsync() => _claims.DisposeAsync();
 
@@ -59,17 +59,19 @@ public class BackupSupervisorProcessTests(EtcdFixture fixture) : IAsyncLifetime
 
     private static ShardBackups FullsOf(params FullBackupState[] fulls) => new(fulls, null);
 
-    // AAA (AC6): мусор full/<id>/ живого шарда удаляется первым проходом, journal
-    // пишет supervisor/swept-full/<X>/<id>; повторный проход — no-op
+    // AAA (AC6): мусор full/<id>/ живого шарда (старше возрастного гейта —
+    //  «Гейты мусора») удаляется первым проходом, journal пишет
+    // supervisor/swept-full/<X>/<id>; повторный проход — no-op
     [Fact]
     public async Task PassGarbageOfLiveShardRemovedIdempotently()
     {
         // Arrange — клэйм c1; объекты c1/shard1/full/A/... и full/B/...;
-        // etcd-ключ только для A (COMPLETED); S3 wal-объекты — живы
+        // etcd-ключ только для A (COMPLETED); S3 wal-объекты — живы;
+        // объекты старше дефолтного GarbageMinAgeSec (600 с) — мусор дозрел
         var ct = TestContext.Current.CancellationToken;
         var cluster = $"sc1{Tag}";
         await SeedAsync(cluster);
-        var s3 = new FakeBackupS3();
+        var s3 = new FakeBackupS3 { LastModified = DateTimeOffset.UtcNow.AddMinutes(-30) };
         s3.PrefixObjects.Add(($"{cluster}/shard1/full/20260911110000Z/backup_manifest", 100));
         s3.PrefixObjects.Add(($"{cluster}/shard1/full/20260911110000Z/backup_label", 50));
         s3.PrefixObjects.Add(($"{cluster}/shard1/full/20260911120000Z/backup_manifest", 100));
@@ -97,6 +99,57 @@ public class BackupSupervisorProcessTests(EtcdFixture fixture) : IAsyncLifetime
         s3.DeletedKeys.Should().HaveCount(1, "idempotency: a repeated pass removes nothing");
     }
 
+    // AAA (гейт 2 — возрастной): unowned-префикс моложе GarbageMinAgeSec —
+    // заливка in-flight (снапшот тика мог отстать от планировщика того же тика) —
+    // НЕ удаляется, остаётся следующему проходу
+    [Fact]
+    public async Task PassSkipsYoungUnownedPrefix()
+    {
+        // Arrange — объекты без etcd-ключа, LastModified = сейчас (свежая заливка)
+        var ct = TestContext.Current.CancellationToken;
+        var cluster = $"sc4{Tag}";
+        await SeedAsync(cluster);
+        var s3 = new FakeBackupS3(); // LastModified = UtcNow — моложе дефолтных 600 с
+        s3.PrefixObjects.Add(($"{cluster}/shard1/full/20260911120000Z/backup_manifest", 100));
+        s3.PrefixObjects.Add(($"{cluster}/shard1/full/20260911120000Z/base/1/2600", 8192));
+        var process = BuildProcess(Options(), s3);
+
+        // Act
+        (await process.TickAsync(BuildSnap(cluster), null, ct)).IsSuccess.Should().BeTrue();
+
+        // Assert — объекты живы, запись журналаов удаления нет
+        s3.DeletedKeys.Should().BeEmpty("a young unowned prefix is an in-flight upload, not garbage");
+        s3.PrefixObjects.Should().HaveCount(2);
+    }
+
+    // AAA (гейт 1 — свежее чтение ключа): etcd-ключ появился ПОСЛЕ снятия
+    // снапшота тика (планировщик того же тика запланировал полный) — префикс
+    // «unowned» по снапшоту, но свежий range находит ключ → не удаляется
+    [Fact]
+    public async Task PassSkipsPrefixWithFreshlyWrittenKey()
+    {
+        // Arrange — S3-префикс старый (гейт 2 пройден бы), ключа в снапшоте нет,
+        // но ключ реально записан в etcd
+        var ct = TestContext.Current.CancellationToken;
+        var cluster = $"sc5{Tag}";
+        await SeedAsync(cluster);
+        var s3 = new FakeBackupS3 { LastModified = DateTimeOffset.UtcNow.AddMinutes(-30) };
+        s3.PrefixObjects.Add(($"{cluster}/shard1/full/20260911120000Z/backup_manifest", 100));
+        var process = BuildProcess(Options(), s3);
+        (await fixture.Gateway.PutAsync(fixture.Endpoint,
+            BackupNames.FullKey(cluster, "shard1", "20260911120000Z"),
+            PgWorker.Backups.Job.BackupStatusJson.Serialize(new FullBackupState("20260911120000Z",
+                FullBackupStatus.Uploading, "shard1a", BackupSourceRole.Replica,
+                1757500000, null, null, null, null, null)), null, ct)).IsSuccess.Should().BeTrue();
+
+        // Act
+        (await process.TickAsync(BuildSnap(cluster), null, ct)).IsSuccess.Should().BeTrue();
+
+        // Assert — объекты живы (ключ найден свежим чтением, не снапшотом)
+        s3.DeletedKeys.Should().BeEmpty("the fresh key check must protect a just-planned full");
+        s3.PrefixObjects.Should().ContainSingle();
+    }
+
     // AAA (AC9): шард в активном restore — супервизор его не трогает
     [Fact]
     public async Task PassSkipsShardInActiveRestore()
@@ -117,7 +170,7 @@ public class BackupSupervisorProcessTests(EtcdFixture fixture) : IAsyncLifetime
         // Act
         (await process.TickAsync(BuildSnap(cluster), backups, ct)).IsSuccess.Should().BeTrue();
 
-        // Assert — объекты живы (гвард владельца), журнал-фактов нет
+        // Assert — объекты живы (гвард владельца), запись журналаов нет
         s3.DeletedKeys.Should().BeEmpty("restore owns the shard — the sweep is not performed");
         s3.PrefixObjects.Should().ContainSingle();
     }

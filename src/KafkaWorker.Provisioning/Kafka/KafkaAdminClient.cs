@@ -8,20 +8,21 @@ namespace KafkaWorker.Provisioning.Kafka;
 
 // Адаптер над Confluent.Kafka IAdminClient — единственное место воркера с
 // Confluent-типами (seam-паттерн Puzzle §7.2). SASL_SSL/PLAIN + доверие
-// per-cluster CA по контракту дискавери arch/15 §5 (t03); RequestTimeout — из
+// per-cluster CA по контракту дискавери arch/15 §5 ; RequestTimeout — из
 // опций воркера (на вызов); любые исключения Kafka-клиента → Result.Failed
 // (процессы решают, транзиент или нет).
 
 /// <summary>
-/// Кэширующая фабрика AdminClient-адаптеров (t05, spec §3.1): один адаптер
+/// Кэширующая фабрика AdminClient-адаптеров (spec §3.1): один адаптер
 /// per (bootstrap, user, password, caPem) вместо «клиент на тик» — churn
 /// rd_kafka-инстансов и LongRunning-потоков на недоступном кластере съедал
 /// ~100% ядра (инцидент as-kafkaworker 2026-09-04). Sharable: DisposeAsync
 /// адаптера — no-op, владение у кэша; смена endpoints/кредов/TLS-доверия —
-/// другой ключ (инвалидация по построению; t03: caPem в ключе — клиенты с
-/// разным per-cluster CA не шарятся); Failed операции помечает запись
-/// Unhealthy — следующий Create пересоздаёт, заменяемый Disposeится в фоне
-/// ПОСЛЕ завершения его висящих операций — дрейн по счётчику с бюджетом;
+/// другой ключ (инвалидация по построению; : caPem в ключе — клиенты с
+/// разным per-cluster CA не шарятся); Failed нативной операции помечает запись
+/// Unhealthy (протокольная операция без нативного клиента — нет), заменяемый
+/// Disposeится в фоне ПОСЛЕ завершения его висящих операций — дрейн по
+/// счётчику с бюджетом; бюджет не превращается в dispose под операцией;
 /// вход операции и dispose-решение атомарны (один замок): dispose под
 /// начатой операцией исключён, опоздавшая операция получает транзиентный
 /// отказ «клиент в dispose» (arch/16 §6); неактивные
@@ -33,7 +34,7 @@ public sealed class KafkaAdminClientFactory(
     ILogger<KafkaAdminClientFactory>? logger = null,
     TimeProvider? clock = null) : IKafkaAdminClientFactory, IDisposable
 {
-    // Профиль librdkafka (t05, паттерн t11): дефолтные 100 мс backoff при
+    // Профиль librdkafka (паттерн): дефолтные 100 мс backoff при
     // мгновенном connection-refusal дают reconnect-шторм («3/3 brokers are
     // down» каждую секунду) — затыкаем до ≥1 c.
     internal const int BackoffMs = 1000;
@@ -78,9 +79,10 @@ public sealed class KafkaAdminClientFactory(
             {
                 // Замена немедленна (запись удалена из кеша); dispose
                 // заменяемого — фоном ПОСЛЕ его висящих операций (arch/16 §6,
-                // ERR__DESTROYED под операцией запрещён).
+                // ERR__DESTROYED под операцией запрещён; бюджет не принуждает).
                 Task.Run(() => replaced.Client.DisposeWhenIdleAsync(
-                    KafkaAdminClient.DrainGrace(requestTimeout), CancellationToken.None));
+                    KafkaAdminClient.DrainGrace(requestTimeout), CancellationToken.None,
+                    forceOnBudgetExhausted: false));
             }
             _entries[key] = entry;
         }
@@ -107,7 +109,8 @@ public sealed class KafkaAdminClientFactory(
             return;
         foreach (var entry in evicted)
             Task.Run(() => entry.Client.DisposeWhenIdleAsync(
-                KafkaAdminClient.DrainGrace(requestTimeout), CancellationToken.None));
+                KafkaAdminClient.DrainGrace(requestTimeout), CancellationToken.None,
+                forceOnBudgetExhausted: false));
     }
 
     // Остановка host'а — детерминированно: тот же дрейн с бюджетом по
@@ -126,11 +129,12 @@ public sealed class KafkaAdminClientFactory(
         }
 
         Task.WaitAll(removed.Select(
-            e => e.Client.DisposeWhenIdleAsync(grace, CancellationToken.None)).ToArray());
+            e => e.Client.DisposeWhenIdleAsync(
+                grace, CancellationToken.None, forceOnBudgetExhausted: true)).ToArray());
     }
 
     // Профиль конфига всех клиентов фабрики (internal — юнит-проверки пинов):
-    // t03 дискавери-канон arch/15 §5 — SASL_SSL/PLAIN + доверие per-cluster CA
+    //  дискавери-канон arch/15 §5 — SASL_SSL/PLAIN + доверие per-cluster CA
     // (caPem null — без ssl.ca.pem, системное доверие: тесты/fake).
     internal static AdminClientConfig BaseAdminConfig(string bootstrap, string user, string password, string? caPem)
     {
@@ -146,12 +150,12 @@ public sealed class KafkaAdminClientFactory(
             ReconnectBackoffMaxMs = BackoffMaxMs,
         };
         if (caPem is not null)
-            config.Set("ssl.ca.location", CaPemFile(caPem)); // файл: bundle окна ротации (t07)
+            config.Set("ssl.ca.location", CaPemFile(caPem)); // файл: bundle окна ротации 
         return config;
     }
 
     // Truststore ФАЙЛОМ, а не inline ssl.ca.pem: librdkafka инлайн-PEM читает
-    // ОДИН серт — bundle OLD+NEW окна ротации CA (t07) инлайн не работает.
+    // ОДИН серт — bundle OLD+NEW окна ротации CA инлайн не работает.
     // Файл кешируется по содержимому (SHA-256) — инвалидируется сменой CA.
     internal static string CaPemFile(string caPem)
     {
@@ -263,7 +267,7 @@ public sealed class KafkaAdminClient(
             return Result.Success();
         }, ct);
 
-    // DisposeAsync — no-op (t05, spec §3.1): владение у кэша фабрики,
+    // DisposeAsync — no-op (spec §3.1): владение у кэша фабрики,
     // «клиент на тик» не уничтожает нативные потоки; реальный Dispose —
     // вытеснение/вытеснение-по-неактивности/остановка host'а (DisposeNative).
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
@@ -302,13 +306,20 @@ public sealed class KafkaAdminClient(
 
     // Dispose после завершения висящих операций (arch/16 §6): операций нет —
     // немедленно (TryDisposeNative); есть — фоном ждём нуля (continuation
-    // последней) с бюджетом; бюджет исчерпан — принудительный dispose +
-    // warning («не ждать вечно», диагностика вместо зависания). Операция,
-    // входящая между нулём счётчика и dispose (гэп пробуждения дрейна),
+    // последней) с бюджетом. В режиме замены/вытеснения исчерпание бюджета —
+    // warning и продолжение ожидания: нативный хендл не уничтожается под
+    // операцией. Принудительный dispose допустим только при остановке host'а.
+    // Операция, входящая между нулём счётчика и dispose (гэп пробуждения дрейна),
     // получает транзиентный отказ «клиент в dispose» — на уничтожаемый
     // хендл не стартует. Гарантии сети не меняются: замена и раздача
     // клиентов уже произошли (запись удалена из кеша ДО этого вызова).
-    internal async Task DisposeWhenIdleAsync(TimeSpan budget, CancellationToken ct)
+    internal Task DisposeWhenIdleAsync(TimeSpan budget, CancellationToken ct)
+        => DisposeWhenIdleAsync(budget, ct, forceOnBudgetExhausted: false);
+
+    internal async Task DisposeWhenIdleAsync(
+        TimeSpan budget,
+        CancellationToken ct,
+        bool forceOnBudgetExhausted)
     {
         while (!TryDisposeNative())
         {
@@ -328,10 +339,20 @@ public sealed class KafkaAdminClient(
             if (finished != idle)
             {
                 log?.LogWarning(
-                    "Kafka AdminClient ({Bootstrap}): drain dispose budget of {Budget:F0} s exhausted with {Active} active operations — forced dispose",
+                    "Kafka AdminClient ({Bootstrap}): drain dispose budget of {Budget:F0} s exhausted with {Active} active operations",
                     bootstrap, budget.TotalSeconds, Volatile.Read(ref _activeOperations));
-                ForceDisposeNative(); // дрейн не дождался — dispose в любом случае
-                return;
+                if (forceOnBudgetExhausted)
+                {
+                    // Только остановка host'а: детерминированный выход важнее
+                    // гипотетически ещё живой операции; замена/вытеснение этот
+                    // путь не исполняет (ERR__DESTROYED под операцией).
+                    ForceDisposeNative();
+                    return;
+                }
+
+                // Нативный клиент жив до фактического нуля операций; ожидание
+                // завершит EndOperation. Итог фоновый, замена уже не блокирует.
+                await idle.ConfigureAwait(false);
             }
 
             // Ноль достигнут — цикл повторит попытку; операция, начатая в гэпе
@@ -350,6 +371,10 @@ public sealed class KafkaAdminClient(
     // не строится (действие решает само, звать ли EnsureClient).
     internal Task<Result> RunUnderOperationAsync(Func<IAdminClient, Task<Result>> action, CancellationToken ct)
         => RunAsync(action, ct);
+
+    // Тестовый шов каркаса протокольной операции: unhealthy-пометка не ставится.
+    internal Task<Result> RunLocalUnderOperationAsync(Func<Task<Result>> action, CancellationToken ct)
+        => RunLocalAsync(action, ct);
 
     public Task<Result<IReadOnlyDictionary<string, string>>> DescribeTopicConfigsAsync(string topic, CancellationToken ct)
         => RunAsync<IReadOnlyDictionary<string, string>>(async client =>
@@ -549,6 +574,32 @@ public sealed class KafkaAdminClient(
         }
     }
 
+    // Каркас для операций БЕЗ нативного клиента (протокольный миниклиент
+    // reassign-подачи): та же структура — TryBeginOperation/EndOperation
+    // (дрейн-dispose честен и для протокольных операций), catch → IsHostCancellation
+    // + Result.Failed с префиксом адаптера, — но EnsureClient не зовётся:
+    // rd_kafka-инстанс для операции не строится. Unhealthy-пометки нет: отказ
+    // короткоживущего протокольного соединения не говорит о здоровье кэшируемого
+    // нативного клиента и не должен вызывать его replace+dispose.
+    private async Task<Result> RunLocalAsync(Func<Task<Result>> action, CancellationToken ct)
+    {
+        if (!TryBeginOperation())
+            return Result.Failed(ClientDisposingError());
+        try
+        {
+            ct.ThrowIfCancellationRequested();
+            return await action();
+        }
+        catch (Exception e)
+        {
+            return Result.Failed(new ApplicationException($"Kafka AdminClient ({bootstrap}): {e.Message}", e));
+        }
+        finally
+        {
+            EndOperation();
+        }
+    }
+
     // Вход операции: под _clientGate вместе с dispose-решением
     // (TryDisposeNative) — атомарность «операция началась ДО dispose» /
     // «dispose закрыл вход». Инкремент и декремент по-прежнему симметричны
@@ -602,9 +653,9 @@ public sealed class KafkaAdminClient(
             if (_client is not null)
                 return _client;
 
-            // Пины backoff + rdkafka-лог на Debug (профиль фабрики, t05 spec §3.1):
+            // Пины backoff + rdkafka-лог на Debug (профиль фабрики, spec §3.1):
             // дефолтные 100 мс давали reconnect-шторм на лежащем кластере.
-            // t03: конфиг — SASL_SSL + per-cluster CA (BaseAdminConfig).
+            // конфиг — SASL_SSL + per-cluster CA (BaseAdminConfig).
             _client = new AdminClientBuilder(
                     KafkaAdminClientFactory.BaseAdminConfig(bootstrap, user, password, caPem))
                 .SetLogHandler((_, m) => log?.LogDebug("rdkafka: {Message}", m.Message))
@@ -613,7 +664,7 @@ public sealed class KafkaAdminClient(
         }
     }
 
-    // ===== ACL (t03, arch/16 §2.3/E): Describe/Create/Delete через seam-типы =====
+    // ===== ACL (arch/16 §2.3/E): Describe/Create/Delete через seam-типы =====
 
     public Task<Result<IReadOnlyList<KafkaAclBinding>>> DescribeAclsAsync(CancellationToken ct)
         => RunAsync<IReadOnlyList<KafkaAclBinding>>(async client =>
@@ -643,6 +694,25 @@ public sealed class KafkaAdminClient(
                     new DeleteAclsOptions { RequestTimeout = requestTimeout });
             return Result.Success();
         }, ct);
+
+    // ===== Reassignment (arch/16 §2.4): подача AlterReassignments =====
+
+    // Per-endpoint бюджет подач (connect+TLS+SASL+round-trip): подача
+    // регистрируется контроллером и отвечает быстро — это НЕ ожидание
+    // физического переноса данных (реквестный timeout_ms=60000 — таймаут
+    // обработки заявки). Внешний бюджет процесса — ReassignSubmitSec.
+    internal static readonly TimeSpan NetworkSubmitTimeout = TimeSpan.FromSeconds(30);
+
+    // Клиент протокола per-call: соединение короткоживущее, кэшировать нечего
+    // (нативного клиента нет — churn-проблемы не применимы). Каркас
+    // RunLocalAsync — без EnsureClient: протокольная операция нативный клиент
+    // не использует, строить rd_kafka-инстанс впустую не нужно. unhealthy-
+    // пометка для протокольных операций не срабатывает — миниклиент конвертирует
+    // любые отказы в Result.Failed (per-call клиенту нечего лечить); отмена
+    // host'а не фейлит (проброс из миниклиента и IsHostCancellation).
+    public Task<Result> AlterReassignmentsAsync(IReadOnlyList<ReassignMove> moves, CancellationToken ct)
+        => RunLocalAsync(async () => await new KafkaProtocolClient().AlterReassignmentsAsync(
+            bootstrap, user, password, caPem, moves, NetworkSubmitTimeout, ct), ct);
 
     // Фильтр «любой ACL»: не заполненные поля — Any (семантика «все»).
     private static AclBindingFilter AnyAclFilter()

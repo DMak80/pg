@@ -89,8 +89,8 @@ public sealed class ValkeySnapshotRefresher(
 
         var clusters = ValkeyParser.ParseClusters(clustersKv.Value);
         var rotations = ValkeyParser.ParseRotations(rotationsKv.Value);
-        var caRotations = ValkeyParser.ParseCaRotations(caRotationsKv.Value); // t07
-        var ticketOutcomes = ValkeyParser.ParseTicketOutcomes(ticketOutcomesKv.Value); // t10
+        var caRotations = ValkeyParser.ParseCaRotations(caRotationsKv.Value); 
+        var ticketOutcomes = ValkeyParser.ParseTicketOutcomes(ticketOutcomesKv.Value); 
         var workerApi = WorkerEndpointsParser.Parse(workerApiKv.Value);
         // Префикс-запрос точечный: ровно один ключ /workers/api_tls/valkeyworker.
         var certParsed = WorkerCertParser.Parse(Prefixes.WorkerApiCert, certKv.Value.FirstOrDefault());
@@ -119,7 +119,7 @@ public sealed class ValkeySnapshotRefresher(
                 probeReader?.Current),
             rotations.Tickets,
             workerApi.Endpoints,
-            workerHealthStore.Current ?? [],   // health-проб воркера вносит успешный тик (t03; arch/02 §2.3.3)
+            workerHealthStore.Current ?? [],   // health-проб воркера вносит успешный тик (; arch/02 §2.3.3)
             previous?.Probes ?? [],     // пробы переживают отказ etcd (симметрия pg/kafka)
             Alerts: [],
             [.. clusters.Errors, .. rotations.Errors, .. caRotations.Errors, .. ticketOutcomes.Errors,
@@ -158,23 +158,18 @@ public sealed class ValkeySnapshotRefresher(
     private async Task<Result<IReadOnlyList<Kv>>> RangeWithFailoverAsync(
         string[] endpoints, string active, string prefix, CancellationToken ct)
     {
-        var start = Array.IndexOf(endpoints, active);
-        Exception? last = null;
-        for (var i = 0; i < endpoints.Length; i++)
+        var start = Math.Max(Array.IndexOf(endpoints, active), 0);
+        var result = await EtcdEndpointFailover.CallAsync(endpoints, async (endpoint, token) =>
         {
-            var endpoint = endpoints[(start + i) % endpoints.Length];
-            var result = await gateway.RangeAsync(endpoint, prefix, ct);
-            if (result.IsSuccess)
-            {
+            var range = await gateway.RangeAsync(endpoint, prefix, token);
+            if (range.IsSuccess)
                 _activeEndpoint = endpoint;
-                return result;
-            }
-
-            last = result.Error!;
-        }
-
-        return Result<IReadOnlyList<Kv>>.Failed(new EtcdUnreachableException(
-            $"all endpoints failed to answer range {prefix}: {last?.Message}"));
+            return range;
+        }, ct, start);
+        return result.IsSuccess
+            ? result
+            : Result<IReadOnlyList<Kv>>.Failed(new EtcdUnreachableException(
+                $"all endpoints failed to answer range {prefix}: {result.Error!.Message}"));
     }
 
     // Отказ тика: прежние данные/BuiltAtUtc, Reachable=false, счётчик растёт.
@@ -192,7 +187,7 @@ public sealed class ValkeySnapshotRefresher(
     }
 
     // Креды проб: "/valkey/clusters/<C>/admin_user|admin_password|ca_pem" → стор;
-    // полный кред-набор → запись (ca_pem t06 — TLS-доверие пробы; ca без пары —
+    // полный кред-набор → запись (ca_pem — TLS-доверие пробы; ca без пары —
     // запись не создаётся: пробы невозможны без кредов), частичный — пропуск
     // без ошибки (ensure воркера/миграция в процессе).
     private static IReadOnlyDictionary<string, ValkeyClusterSecrets> ReadSecrets(IReadOnlyList<Kv> kvs)
@@ -244,8 +239,8 @@ public sealed class ValkeySnapshotRefresher(
     {
         public const string Clusters = "/valkey/clusters/";
         public const string Rotations = "/valkeyworker/rotations/";
-        public const string CaRotations = "/valkeyworker/ca_rotations/"; // t07
-        public const string TicketOutcomes = "/valkeyworker/ticket_outcomes/"; // t10
+        public const string CaRotations = "/valkeyworker/ca_rotations/"; 
+        public const string TicketOutcomes = "/valkeyworker/ticket_outcomes/"; 
         public const string WorkerApi = "/valkeyworker/api/";
         public const string WorkerApiCert = "/workers/api_tls/valkeyworker";
     }

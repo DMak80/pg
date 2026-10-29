@@ -152,7 +152,7 @@ public sealed class ProvisioningProcess(
 
     // P1: per-node placement (arch/23 §4: предикат равенства по атрибутам,
     // least-loaded + Ordinal tie-break) → порт-аллокация под глобальным клэймом
-    // /s3worker/locks/portalloc (t91: без него параллельные сеяния выбирают
+    // /s3worker/locks/portalloc (: без него параллельные сеяния выбирают
     // одинаковые порты) → txn put-if-absent portalloc → placed_on.
     // Журнал planned — с перечнем кандидатов каждой ноды (нуль кандидатов —
     // пустой перечень в transient-фейле).
@@ -306,7 +306,8 @@ public sealed class ProvisioningProcess(
             var addr = addresses[node.Node];
             var env = envComposer.Compose(
                 nodeSecrets, nodePki.Value, clusterPki.Value.Ca.Ca,
-                $"http://{options.AdvertisedHost ?? addr.Host}:{addr.S3Port}");
+                $"http://{options.AdvertisedHost ?? addr.Host}:{addr.S3Port}",
+                options.OwnS3ReplicationReconcileIntervalSec);
             var resources = S3ProcessCommon.ParseResources(node.Resources);
             var ensured = await driver.EnsureNodeAsync(
                 new S3NodeSpec(

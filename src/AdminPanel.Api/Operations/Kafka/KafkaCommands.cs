@@ -133,7 +133,7 @@ public sealed class RotateKafkaPasswordCommandHandler(IWorkerApiGateway api)
             body: null, command.RequestedBy, ct);
 }
 
-// ===== 16. Ротация admin-пароля (adminpanel/02 §10.2-16, t03) =====
+// ===== 16. Ротация admin-пароля (adminpanel/02 §10.2-16) =====
 
 public sealed record RotateKafkaAdminPasswordCommand(string Cluster, string RequestedBy)
     : ICommand<KafkaAdminPasswordRotatedDto>;
@@ -152,7 +152,7 @@ public sealed class RotateKafkaAdminPasswordCommandHandler(IWorkerApiGateway api
             body: null, command.RequestedBy, ct);
 }
 
-// ===== 17. Ротация per-cluster CA/сертов (arch/02 §10.2-17, t07) =====
+// ===== 17. Ротация per-cluster CA/сертов (arch/02 §10.2-17) =====
 
 public sealed record RotateCaCommand(string Cluster, string RequestedBy)
     : ICommand<KafkaCaRotatedDto>;

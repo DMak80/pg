@@ -66,7 +66,7 @@ public class RestPkiTests
         cert.NotAfter.Should().BeOnOrBefore(ca.NotAfter);
     }
 
-    // AAA (t41): свежий per-install CA (NotBefore = now, как deploy/tls/gen.sh
+    // AAA : свежий per-install CA (NotBefore = now, как deploy/tls/gen.sh
     // без backdate) — серт ноды обязан зажимать NotBefore в NotBefore CA:
     // skew-запас «сутки назад» моложе издателя быть не может (Create отвергает
     // notBefore < issuer.NotBefore — блокировал провижининг канонического demo).

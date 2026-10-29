@@ -11,7 +11,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace KafkaWorker.UnitTests.Provisioning;
 
-// Лестница E9 (t05, spec §3.3): portalloc пуст при объявленных брокерах —
+// Лестница E9 (spec §3.3): portalloc пуст при объявленных брокерах —
 // тупик «не закреплён в portalloc» (инцидент as-kafkaworker 2026-09-04)
 // заменён самолечением: инспекция живого контейнера либо новая аллокация
 // под клэймом locks/portalloc + RMW endpoints.
@@ -40,7 +40,7 @@ public class PortAllocHealerTests
         etcd.Seed("/kafka/clusters/events/brokers/broker1/role", "controller");
         etcd.Seed("/kafka/clusters/events/app_user", "app");
         etcd.Seed("/kafka/clusters/events/app_password", "AbCdEf0123456789AbCdEf0123456789");
-        etcd.SeedSecurity("events"); // t03: канонический кластер (ветка 3 строит env с PKI)
+        etcd.SeedSecurity("events"); // канонический кластер (ветка 3 строит env с PKI)
         if (pinned is { } addr)
             etcd.Seed("/kafkaworker/portalloc/events",
                 $"{{\"broker1\":{{\"host\":\"{addr.Host}\",\"client\":{addr.ClientPort}}}}}");
@@ -134,6 +134,64 @@ public class PortAllocHealerTests
         endpoints!.Value.Should().Contain(allocatedPort.ToString(), "endpoints RMW-updated (clients re-read on the next tick)");
     }
 
+    // AAA: ветка 3 — EnsureNode (docker-фаза) исполняется ПОСЛЕ освобождения
+    // portalloc-клэйма: секция лока — только «чтение занятости → запись
+    // portalloc» (arch/15 §4, без keepalive: docker-операции не укладываются
+    // в TTL 15 с, чужой takeover не должен застать секцию открытой).
+    [Fact]
+    public async Task Reallocate_EnsureNode_RunsOutsidePortLock()
+    {
+        // Arrange: во время docker-фазы сосед пробует взять клэйм.
+        var rig = await NewRig();
+        var foreign = new PortAllocLock("/kafkaworker", [Ep], rig.Etcd, TimeProvider.System, "other-instance");
+        var lockFreeDuringEnsure = false;
+        rig.Driver.EnsureResultByNode = _ =>
+        {
+            lockFreeDuringEnsure = foreign.TryAcquireAsync(CancellationToken.None).GetAwaiter().GetResult().Value;
+            return Result.Success();
+        };
+
+        // Act: лестница (ветка 3 — контейнера нет).
+        var resolved = await rig.Healer.ResolveAsync(rig.Snapshot, "broker1", rig.Addresses, CancellationToken.None);
+
+        // Assert: аллокация удалась, к моменту EnsureNode клэйм уже отпущен.
+        resolved.IsSuccess.Should().BeTrue();
+        lockFreeDuringEnsure.Should().BeTrue(
+            "EnsureNode runs after the portalloc lock is released");
+    }
+
+    // AAA: ветка 3 — endpoints строятся из СВЕЖЕГО portalloc (после
+    // освобождения лока): сосед, довыделивший broker2 за время нашей
+    // docker-фазы, остаётся в bootstrap-списке (снимок секции устарел бы).
+    [Fact]
+    public async Task Reallocate_EndpointsBuiltFromFreshPortAlloc()
+    {
+        // Arrange: во время docker-фазы сосед закрепляет broker2 в portalloc.
+        var rig = await NewRig();
+        rig.Driver.EnsureResultByNode = _ =>
+        {
+            var current = rig.Etcd
+                .GetAsync(Ep, "/kafkaworker/portalloc/events", CancellationToken.None)
+                .GetAwaiter().GetResult().Value!.Value; // наш broker1 уже записан
+            rig.Etcd.PutAsync(Ep, "/kafkaworker/portalloc/events",
+                current[..^1] + @",""broker2"":{""host"":""h1"",""client"":21090}}",
+                null, CancellationToken.None).GetAwaiter().GetResult();
+            return Result.Success();
+        };
+
+        // Act: лестница (ветка 3 — контейнера нет).
+        var resolved = await rig.Healer.ResolveAsync(rig.Snapshot, "broker1", rig.Addresses, CancellationToken.None);
+
+        // Assert: endpoints содержат и наш, и соседский адрес.
+        resolved.IsSuccess.Should().BeTrue();
+        var allocatedPort = resolved.Value.Address.ClientPort.ToString();
+        var endpoints = (await rig.Etcd.GetAsync(Ep, "/kafka/clusters/events/endpoints", CancellationToken.None)).Value;
+        endpoints.Should().NotBeNull();
+        endpoints!.Value.Should().Contain(allocatedPort, "our healed broker is in the bootstrap list");
+        endpoints!.Value.Should().Contain("21090",
+            "the neighbor's broker allocated during our docker phase stays in the bootstrap list");
+    }
+
     // AAA: ветка 1 — адрес уже в portalloc → без записей (ранний выход
     // гарантирует вызывающий; healer это тоже уважает).
     [Fact]
@@ -176,6 +234,37 @@ public class PortAllocHealerTests
         resolved.Value.Address.Should().Be(new NodeAddress("h1", 21050),
             "first writer wins (S5): re-read overrides our inspection 21037");
         rig.Driver.Ensured.Should().BeEmpty();
+    }
+
+    // AAA: ветка 2, частичная утеря — ключ portalloc жив с записью соседа
+    // broker2, записи нашего broker1 нет: RMW-merge дописывает broker1
+    // адресом инспекции, запись соседа не затёрта, контейнер не тронут.
+    [Fact]
+    public async Task Resolve_ContainerAlive_PartialLossMergesIntoLiveKey()
+    {
+        // Arrange: ключ жив с чужой записью broker2 (нашей broker1 нет);
+        // инспекция broker1 засеяна (живой контейнер).
+        var rig = await NewRig();
+        rig.Etcd.Seed("/kafkaworker/portalloc/events",
+            """{"broker2":{"host":"h2","client":21020}}""");
+        rig.Driver.Endpoints["broker1"] = new NodeEndpointInspection(
+            "h1", 21037, "CLIENT://host.docker.internal:21037");
+
+        // Act: лестница для broker1.
+        var resolved = await rig.Healer.ResolveAsync(rig.Snapshot, "broker1", rig.Addresses, CancellationToken.None);
+
+        // Assert: merge — ключ содержит и broker1 (адрес инспекции), и
+        // соседа broker2 (запись не затёрта); контейнер не тронут.
+        resolved.IsSuccess.Should().BeTrue();
+        resolved.Value.Address.Should().Be(new NodeAddress("h1", 21037));
+        resolved.Value.Recreated.Should().BeFalse("a live container is left untouched");
+        var pinned = await ReadPortAllocAsync(rig.Etcd);
+        pinned["broker1"].Should().Be(new NodeAddress("h1", 21037),
+            "reconstructed address is pinned in etcd");
+        pinned["broker2"].Should().Be(new NodeAddress("h2", 21020),
+            "neighbor records survive the merge");
+        rig.Driver.Ensured.Should().BeEmpty("a live container is left untouched");
+        rig.Driver.Removed.Should().BeEmpty("a live container is left untouched");
     }
 
     // AAA: клэйм занят — без мутаций, PortLockBusyException наружу

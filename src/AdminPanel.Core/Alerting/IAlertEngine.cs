@@ -1,7 +1,7 @@
 namespace AdminPanel.Core.Alerting;
 
 // Правило каталога алертов (arch/03 §4): один kind, чистая оценка снапшота.
-// Каркас: t05/t06 добавляют правила новыми классами без правки AlertEngine (spec §3.2).
+// Каркас: / добавляют правила новыми классами без правки AlertEngine (spec §3.2).
 public interface IAlertRule
 {
     // Kind каталога, напр. "etcd-unreachable" (arch/03 §4).

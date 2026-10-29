@@ -3,7 +3,7 @@ using Shared.Core;
 namespace PgWorker.Backups;
 
 /// <summary>
-/// Пул-клиент IBackupS3 (t36, arch/19 §5): write-цели (список роли источника),
+/// Пул-клиент IBackupS3 (arch/19 §5): write-цели (список роли источника),
 /// read-цели (все ноды пула, порядок endpoints); цель — существующий BackupS3
 /// (endpoint+креды одного адреса), кэш per-цели. Перебор всегда С ПЕРВОЙ цели
 /// («первый доступный по списку»); каждая попытка несёт per-попыточный таймаут
@@ -14,6 +14,8 @@ namespace PgWorker.Backups;
 /// Семантика: put/delete — write-список с перебором (исчерпание → маркер);
 /// точечные GET — read-список до найденного (NotFound → следующая, исходная
 /// ошибка наружу); листинги — первая доступная (пустой список = успех);
+/// union-листинги (wal-цепочка, full-набор verify/restore) — объединение
+/// read-целей с дедупом, успех — если ответил хотя бы один узел;
 /// BucketExists — любая доступная.
 /// </summary>
 public sealed class PoolBackupS3 : IBackupS3, IAsyncDisposable
@@ -147,21 +149,32 @@ public sealed class PoolBackupS3 : IBackupS3, IAsyncDisposable
             uri => Target(uri).ListWalAsync(cluster, shard, maxKeysPerTest, ct),
             "list-wal");
 
-    /// <summary>Union-листинг wal/ по ВСЕМ read-целям (t36, arch/19 §5 «где
+    /// <summary>Union-листинг wal/ по ВСЕМ read-целям (arch/19 §5 «где
     /// данные есть»): дедуп по имени объекта. Для сверки цепочки контроля:
     /// первая доступная нода может отставать (лаг mesh) — её соло-листинг даёт
-    /// ЛОЖНУЮ дыру и переводит шард в BROKEN (прецедент AC4: n1 после рестарта
+    /// ЛОЖНУЮ дыру и переводит шард в WAL_CHAIN_ERROR (прецедент AC4: n1 после рестарта
     /// догоняет mesh — 002 отсутствует только на ней). Успех — если ответил
     /// хотя бы один узел; исчерпание — маркер.</summary>
     public async Task<Result<IReadOnlyList<WalObject>>> ListWalUnionAsync(
         string cluster, string shard, int? maxKeysPerTest = null, CancellationToken ct = default)
+        => await ListUnionAsync(cluster, shard, "wal/", maxKeysPerTest, ct);
+
+    /// <summary>Union-листинг ПРОИЗВОЛЬНОГО префикса по ВСЕМ read-целям (
+    /// arch/19 §5 «где данные есть»): полный бэкап заливается на первую живую
+    /// ноду момента заливки — набор full/&lt;id&gt;/pg_wal/ и wal/-дубли
+    /// размещены по нодам; соло-листинг первой живой цели даёт ложное «пусто»
+    /// (verify FAILED «set contains no pg_wal WAL segments») и ложный gap
+    /// (drill). Дедуп по имени; успех — если ответил хотя бы один узел;
+    /// исчерпание — маркер.</summary>
+    public async Task<Result<IReadOnlyList<WalObject>>> ListUnionAsync(
+        string cluster, string shard, string prefix, int? maxKeysPerTest = null, CancellationToken ct = default)
     {
         var merged = new Dictionary<string, WalObject>(StringComparer.Ordinal);
         Result<IReadOnlyList<WalObject>> last = default;
         var anySuccess = false;
         foreach (var uri in _readTargets)
         {
-            var result = await AttemptAsync(uri, () => Target(uri).ListWalAsync(cluster, shard, maxKeysPerTest, ct));
+            var result = await AttemptAsync(uri, () => Target(uri).ListAsync(cluster, shard, prefix, maxKeysPerTest, ct));
             if (!result.IsSuccess)
             {
                 last = result;
@@ -175,7 +188,7 @@ public sealed class PoolBackupS3 : IBackupS3, IAsyncDisposable
 
         if (!anySuccess)
             return Result<IReadOnlyList<WalObject>>.Failed(new ApplicationException(
-                $"{S3PoolMarkers.Exhausted}: list-wal-union — all pool nodes are unavailable: {last.Error!.Message}"));
+                $"{S3PoolMarkers.Exhausted}: list-union {prefix} — all pool nodes are unavailable: {last.Error!.Message}"));
         return Result<IReadOnlyList<WalObject>>.Success([.. merged.Values]);
     }
 
@@ -184,6 +197,38 @@ public sealed class PoolBackupS3 : IBackupS3, IAsyncDisposable
         => await FirstAliveAsync(
             uri => Target(uri).ListPrefixAsync(prefix, maxKeysPerTest, ct),
             $"list {prefix}");
+
+    /// <summary>Union-листинг произвольного префикса (S3ObjectInfo) по ВСЕМ
+    /// read-целям, дедуп по ключу: полный набор заливается на первую живую
+    /// ноду момента заливки — при её отказе посреди заливки/лаге mesh соло-
+    /// листинг первой живой цели неполон, и скачивающий (verify/restore)
+    /// получает недокачанный набор — ложный permanent-FAILED. Успех — если
+    /// ответил хотя бы один узел; исчерпание — маркер.</summary>
+    public async Task<Result<IReadOnlyList<S3ObjectInfo>>> ListPrefixUnionAsync(
+        string prefix, int? maxKeysPerTest = null, CancellationToken ct = default)
+    {
+        var merged = new Dictionary<string, S3ObjectInfo>(StringComparer.Ordinal);
+        Result<IReadOnlyList<S3ObjectInfo>> last = default;
+        var anySuccess = false;
+        foreach (var uri in _readTargets)
+        {
+            var result = await AttemptAsync(uri, () => Target(uri).ListPrefixAsync(prefix, maxKeysPerTest, ct));
+            if (!result.IsSuccess)
+            {
+                last = result;
+                continue;
+            }
+
+            anySuccess = true;
+            foreach (var o in result.Value)
+                merged.TryAdd(o.Key, o);
+        }
+
+        if (!anySuccess)
+            return Result<IReadOnlyList<S3ObjectInfo>>.Failed(new ApplicationException(
+                $"{S3PoolMarkers.Exhausted}: list-prefix-union {prefix} — all pool nodes are unavailable: {last.Error!.Message}"));
+        return Result<IReadOnlyList<S3ObjectInfo>>.Success([.. merged.Values]);
+    }
 
     // Запись: попытка на текущей, отказ → следующая; исчерпание → маркер.
     public async Task<Result> PutObjectAsync(string key, byte[] data, string? sha256, CancellationToken ct = default)
@@ -242,6 +287,40 @@ public sealed class PoolBackupS3 : IBackupS3, IAsyncDisposable
         => await FirstFoundAsync(
             uri => Target(uri).DownloadTextAsync(cluster, shard, objectKey, ct),
             $"get {objectKey}");
+
+    // Запись файла: write-семантика put (перебор write-списка); исчерпание → маркер.
+    public async Task<Result> PutFileAsync(string key, string filePath, CancellationToken ct = default)
+    {
+        Result last = default;
+        foreach (var uri in _writeTargets)
+        {
+            var result = await AttemptAsync(uri, () => Target(uri).PutFileAsync(key, filePath, ct));
+            if (result.IsSuccess)
+                return result;
+            last = result;
+        }
+
+        return Result.Failed(new ApplicationException(
+            $"{S3PoolMarkers.Exhausted}: put-file {key} — all list nodes are unavailable: {last.Error!.Message}"));
+    }
+
+    // Файловый GET: перебор read-списка до найденного (как GetObjectAsync);
+    // исчерпание — последняя исходная ошибка (не маркер — причина важнее).
+    public async Task<Result> GetObjectToFileAsync(
+        string cluster, string shard, string key, string destFilePath, CancellationToken ct = default)
+    {
+        Result last = default;
+        foreach (var uri in _readTargets)
+        {
+            var result = await AttemptAsync(uri, () => Target(uri)
+                .GetObjectToFileAsync(cluster, shard, key, destFilePath, ct));
+            if (result.IsSuccess)
+                return result;
+            last = result;
+        }
+
+        return last;
+    }
 
     // Листинги: первая доступная read-цель (успех = пустой список тоже успех);
     // исчерпание — маркер (алертная грань «пул недоступен»).

@@ -5,7 +5,7 @@ using Shared.Etcd.Client;
 
 namespace PgWorker.App.Api.Operations;
 
-// Общая логика постановки заявок переездов (t07, arch/02 §9.7 п.3–5): чтение
+// Общая логика постановки заявок переездов (arch/02 §9.7 п.3–5): чтение
 // очереди напрямую у etcd, база requested_unix, txn-клэйм per key. Портировано
 // из MoveBucketsHandler без изменения поведения (регресс — MovesApiTests).
 internal static class MoveTickets
@@ -37,7 +37,7 @@ internal static class MoveTickets
     public static async Task<Result<Queue>> ReadQueueAsync(
         IEtcdGateway gateway, string[] endpoints, string cluster, CancellationToken ct)
     {
-        var range = await EtcdFailover.CallAsync(endpoints,
+        var range = await EtcdEndpointFailover.CallAsync(endpoints,
             endpoint => gateway.RangeAsync(endpoint, "/pgworker/moves/", ct));
         if (!range.IsSuccess)
             return Result<Queue>.Failed(range.Error!);
@@ -79,6 +79,6 @@ internal static class MoveTickets
     // перезаписи чужой заявки между чтением и записью.
     public static Task<Result<TxnResult>> ClaimAsync(
         IEtcdGateway gateway, string[] endpoints, string key, string json, CancellationToken ct)
-        => EtcdFailover.CallAsync(endpoints, endpoint => gateway.TxnAsync(endpoint,
+        => EtcdEndpointFailover.CallAsync(endpoints, endpoint => gateway.TxnAsync(endpoint,
             TxnRequest.Of([TxnCompare.NotExists(key)], [new TxnOp.Put(key, json, null)]), ct));
 }

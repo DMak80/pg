@@ -3,11 +3,11 @@ using Confluent.Kafka.Admin;
 
 namespace AdminPanel.Probes.Kafka;
 
-// Адаптер Confluent.Kafka для kafka-пробы: SASL/PLAIN поверх SASL_SSL (t03, arch/15 §5);
+// Адаптер Confluent.Kafka для kafka-пробы: SASL/PLAIN поверх SASL_SSL (arch/15 §5);
 // DescribeCluster с RequestTimeout на вызов (прецедент KafkaAdminClient воркера);
 // исключения → Result.Failed (проба не роняет панель). Единственное место
 // Probes-сборки с Confluent-типами.
-// Клиенты — из KafkaClientCache (t11): «один на вызов» с using-Dispose плодил
+// Клиенты — из KafkaClientCache : «один на вызов» с using-Dispose плодил
 // rd_kafka-инстансы и жёг ядро на недоступных брокерах; Dispose — только при
 // замене/выключении, фейл → Invalidate (пересоздание на следующей пробе).
 public sealed class ConfluentKafkaProbeClient(KafkaClientCache cache) : IKafkaProbeClient
@@ -38,7 +38,7 @@ public sealed class ConfluentKafkaProbeClient(KafkaClientCache cache) : IKafkaPr
 // Отдельный адаптер — DescribeCluster-путь пробы не меняется; исключения →
 // Result.Failed. End-оффсеты — через IConsumer.GetWatermarkOffsets (у
 // AdminClient в 2.14 нет ListOffsets); committed — ListConsumerGroupOffsets.
-// Все операции — на кэшированных клиентах (t11): один AdminClient/Consumer
+// Все операции — на кэшированных клиентах : один AdminClient/Consumer
 // на кластер на тик вместо отдельного инстанса на каждый вызов.
 public sealed class ConfluentKafkaRuntimeProbeClient(KafkaClientCache cache) : IKafkaProbeRuntimeClient
 {

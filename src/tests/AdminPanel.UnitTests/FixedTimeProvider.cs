@@ -1,6 +1,6 @@
 namespace AdminPanel.UnitTests;
 
-// Управляемый TimeProvider для тестов фиксированных окон rate-limiter'а (spec t02 §9.4).
+// Управляемый TimeProvider для тестов фиксированных окон rate-limiter'а (spec §9.4).
 public sealed class FixedTimeProvider : TimeProvider
 {
     // Текущее «время»; старт — фиксированная дата, двигается из тестов.

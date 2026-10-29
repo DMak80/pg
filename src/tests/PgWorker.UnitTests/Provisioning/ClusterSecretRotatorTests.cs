@@ -10,7 +10,7 @@ using Xunit;
 
 namespace PgWorker.UnitTests.Provisioning;
 
-// Ротация per-cluster секретов по заявке /pgworker/rotations/<C> (t02, arch/14
+// Ротация per-cluster секретов по заявке /pgworker/rotations/<C> (arch/14
 // §5 I): ALTER трёх ролей на мастерах всех шардов с dsn → атомарный txn-коммит
 // (новые креды + перезапись dsn + del заявки); transient-отказы.
 public class ClusterSecretRotatorTests
@@ -27,7 +27,7 @@ public class ClusterSecretRotatorTests
 
     // Сид: Active-кластер, 2 шарда с dsn + master-ключи (формат писателя —
     // <host>:<doormanPort> фактической ноды-мастера), тройка per-cluster кредов
-    // (t02 — ensure читает, txn не ставит), portalloc (мастера — первые ноды,
+    // (— ensure читает, txn не ставит), portalloc (мастера — первые ноды,
     // host h1/pg 15000 и h2/pg 15001).
     private static void SeedCluster(Fakes.FakeEtcd etcd, string cluster = "shop")
     {
@@ -91,7 +91,7 @@ public class ClusterSecretRotatorTests
         var probe = new ShardProbe(new HttpClient(new DeadHandler()));
         var driver = new Fakes.FakeDriver
         {
-            // t22: инспекция env нод — «rolling завершён» (hash pending журнала;
+            // инспекция env нод — «rolling завершён» (hash pending журнала;
             // pending нет — считаем конвергентным: ключ кластера уже NEW после
             // прошлых тиков теста).
             InspectEnvOverride = (shard, node) => ReadNodeEnvFromJournal(store, shard, node),
@@ -102,7 +102,7 @@ public class ClusterSecretRotatorTests
         return new Rig(store, usedSql, claims, journal, rotator, driver);
     }
 
-    // t22: env ноды по журналу ротации — hash(rest_pending) (rolling завершён);
+    // env ноды по журналу ротации — hash(rest_pending) (rolling завершён);
     // pending нет — hash ключа rest_password (конвергентно).
     private static IReadOnlyDictionary<string, string> ReadNodeEnvFromJournal(
         Fakes.FakeEtcd etcd, string shard, string node)
@@ -185,7 +185,7 @@ public class ClusterSecretRotatorTests
         newBackup.Should().MatchRegex("^[A-Za-z0-9]{32}$").And.NotBe("OldBackupPass0000000000000000000A");
         rig.Etcd.Store.Should().NotContainKey("/pgworker/rotations/shop");
 
-        // Коммит-txn узнаём по del заявки (ensure-txn R1 тоже ставит puts — t02)
+        // Коммит-txn узнаём по del заявки (ensure-txn R1 тоже ставит puts)
         var commit = rig.Etcd.Txns.Single(t =>
             t.Success.OfType<TxnOp.Delete>().Any(d => d.Key == "/pgworker/rotations/shop"));
         commit.Compare.Should().Contain(c =>
@@ -237,7 +237,7 @@ public class ClusterSecretRotatorTests
             .Should().MatchRegex("^[A-Za-z0-9]{32}$");
     }
 
-    // Деградировавший кейс бага t04-гейта (finding P1): при EnableDoorman=false
+    // Деградировавший кейс бага гейта (finding P1): при EnableDoorman=false
     // master-ключ вырождается в <host>:0 — оба ноды шарда на одном хосте равнозначны,
     // и старый host-match возвращал ПРОИЗВОЛЬНУЮ ноду (ALTER ROLE на реплике →
     // 25006 read-only, ротация зацикливалась). Резолв обязан идти по уникальному
@@ -324,7 +324,7 @@ public class ClusterSecretRotatorTests
     public async Task Tick_ExternalDsnChange_CompareLostRetriable()
     {
         // Arrange — внешняя запись dsn (репарация/оператор) между чтением и txn:
-        // инъекция при ПЕРВОМ ALTER (t02 §5 I R3: compare по dsn закрывает гонку)
+        // инъекция при ПЕРВОМ ALTER (§5 I R3: compare по dsn закрывает гонку)
         var rig = await NewRig();
         SeedTicket(rig.Etcd);
         var alters = 0;
@@ -392,7 +392,7 @@ public class ClusterSecretRotatorTests
         etcd.Store["/clusters/shop/app_password"].Value
             .Should().Be("OldPassword000000000000000000A");
     }
-    // ── t22: rest-ветка ротации (четвёртый секрет, arch/14 §5 I) ──
+    // ── : rest-ветка ротации (четвёртый секрет, arch/14 §5 I) ──
 
     // AAA (а): заявка → фаза rotate-rest-start фиксирует NEW в rest_pending;
     // rolling-гейт открыт (нода с чужим hash) — txn НЕ выполняется.
@@ -572,7 +572,7 @@ public class ClusterSecretRotatorTests
         rig.Etcd.Store.Should().NotContainKey("/pgworker/rotations/shop");
     }
 
-    // ── t22 рев.3, П2: гварды R2-rest гейта — окно не удерживают ──
+    // ── рев.3, П2: гварды R2-rest гейта — окно не удерживают ──
 
     // Общий ассерт коммита: заявка снята, ключ rest_password — NEW, pending сброшен.
     private static async Task AssertWindowCommittedAsync(Rig rig)
@@ -669,7 +669,7 @@ public class ClusterSecretRotatorTests
         // Act
         var outcome = await rig.Rotator.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
 
-        // Assert: гейт отключён — txn коммитит (приведение env Swarm-нод — t11).
+        // Assert: гейт отключён — txn коммитит (приведение env Swarm-нод).
         outcome.IsSuccess.Should().BeTrue(outcome.Error?.ToString());
         await AssertWindowCommittedAsync(rig);
     }

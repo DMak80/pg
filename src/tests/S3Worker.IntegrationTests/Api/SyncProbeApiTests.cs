@@ -6,7 +6,7 @@ using Xunit;
 
 namespace S3Worker.IntegrationTests.Api;
 
-// POST /api/s3/clusters/{c}/sync-probe (arch/24 §1.1, spec §8.1.9/§3.7, t33):
+// POST /api/s3/clusters/{c}/sync-probe (arch/24 §1.1, spec §8.1.9/§3.7):
 // 404 кластера нет; 409 не-Active; 202 + put-if-absent заявки /s3worker/probes/<C>;
 // повтор при живой заявке — 202 без перезаписи (requested_by первого сохраняется).
 [Collection(S3ApiCollection.Name)]

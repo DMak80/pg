@@ -89,7 +89,7 @@ public sealed class ValkeyParserTests
         Assert.Contains(result.Errors, e => e.Key == "/valkeyworker/rotations/nofield");
     }
 
-    // t06: ca_pem — факт TLS-канона: HasCaPem=true; отсутствие ключа — false;
+    // ca_pem — факт TLS-канона: HasCaPem=true; отсутствие ключа — false;
     // в unknownKeys ca_pem НЕ попадает (известный ключ, arch/20 §2).
     [Fact]
     public void ParseClusters_CaPem_HasCaPemFlag()
@@ -127,7 +127,7 @@ public sealed class ValkeyParserTests
         Assert.Contains(result.Errors, e => e.Key == "/valkeyworker/ca_rotations/nested/bad");
     }
 
-    // t10: исходы заявок /valkeyworker/ticket_outcomes/<C> — обязательны
+    // исходы заявок /valkeyworker/ticket_outcomes/<C> — обязательны
     // kind/outcome/requested_unix/finished_unix; reason/requested_by опциональны;
     // битый JSON/нет поля → parseError (порт kafka-парсера исходов).
     [Fact]

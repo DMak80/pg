@@ -6,7 +6,7 @@ using Xunit;
 
 namespace PgWorker.UnitTests.Backups;
 
-// Чистый отбор мусора (t07, arch/19 §4): full/<id>/ в S3 без etcd-ключа —
+// Чистый отбор мусора (arch/19 §4): full/<id>/ в S3 без etcd-ключа —
 // мусор (восстановление не выберет — выбора кандидатов нет); с ключом
 // (любой state) — не мусор.
 public class SupervisorPlannerTests
@@ -48,5 +48,28 @@ public class SupervisorPlannerTests
         // ключей нет вовсе — единственный S3-id без владельца (мусор)
         SupervisorPlanner.SelectUnownedFulls(["20260911120000Z"], [])
             .Should().ContainSingle().Which.Should().Be("20260911120000Z");
+    }
+
+    // AAA (arch/19 §4 «Гейты мусора»): возрастной гейт — самый старый
+    // объект префикса моложе порога → не дозрел (заливка in-flight); достиг
+    // порога → дозрел; порог <= 0 — гейт снят (мгновенное удаление)
+    [Fact]
+    public void IsGarbageMatured_AgeGate()
+    {
+        // Arrange
+        var now = DateTimeOffset.Parse("2026-10-28T12:00:00Z");
+
+        // Act / Assert
+        // моложе порога (9 мин из 10) — не дозрел
+        SupervisorPlanner.IsGarbageMatured(now.AddMinutes(-9), 600, now)
+            .Should().BeFalse("an in-flight upload must not be swept");
+        // ровно порог и старше — дозрел
+        SupervisorPlanner.IsGarbageMatured(now.AddMinutes(-10), 600, now)
+            .Should().BeTrue();
+        SupervisorPlanner.IsGarbageMatured(now.AddMinutes(-11), 600, now)
+            .Should().BeTrue();
+        // гейт снят (0/отрицательный) — дозрел всегда
+        SupervisorPlanner.IsGarbageMatured(now, 0, now).Should().BeTrue();
+        SupervisorPlanner.IsGarbageMatured(now, -5, now).Should().BeTrue();
     }
 }

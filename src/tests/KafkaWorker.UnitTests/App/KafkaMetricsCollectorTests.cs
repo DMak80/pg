@@ -4,15 +4,19 @@ using KafkaWorker.App;
 using KafkaWorker.Core;
 using KafkaWorker.Core.Model;
 using KafkaWorker.Provisioning.Kafka;
+using KafkaWorker.Provisioning.Processes;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace KafkaWorker.UnitTests.App;
 
-// Юнит-тесты KafkaMetricsCollector (t04, arch/18 §4) на фейках seam: лаг =
+// Юнит-тесты KafkaMetricsCollector (arch/18 §4) на фейках seam: лаг =
 // watermark − committed (clamped), USR по ISR, устойчивость к ошибке кластера,
 // самонаблюдение LastSuccess, пропуск неподнятых и не-Active кластеров.
 public sealed class KafkaMetricsCollectorTests
 {
+    // Тестовый кред снапшота (литералы — только в константах).
+    private const string TestPassword = "secret";
+
     // Настраиваемый фейк IKafkaAdminClient: ответы по группе, ошибки по флагу.
     private sealed class FakeAdmin : IKafkaAdminClient
     {
@@ -20,7 +24,7 @@ public sealed class KafkaMetricsCollectorTests
         public Dictionary<string, List<KafkaTopicPartitionOffset>> Committed = [];
         public List<KafkaTopicView> Topics = [];
         public Exception? FailAll;
-        public Exception? FailDescribe; // отдельный фейл пробы живости (t05 pre-gate)
+        public Exception? FailDescribe; // отдельный фейл пробы живости (pre-gate)
         public int DescribeCalls;
         public int ListGroupsCalls;
 
@@ -44,6 +48,10 @@ public sealed class KafkaMetricsCollectorTests
 
         public Task<Result> AlterBrokerConfigsAsync(int brokerId, IReadOnlyDictionary<string, string> configs, CancellationToken ct)
             => Task.FromResult(Result.Failed(new ApplicationException("n/a")));
+
+        // Reassignment : коллектор подач не делает — заглушка интерфейса.
+        public Task<Result> AlterReassignmentsAsync(IReadOnlyList<ReassignMove> moves, CancellationToken ct)
+            => Task.FromResult(Result.Success());
 
         public Task<Result<IReadOnlyDictionary<string, string>>> DescribeTopicConfigsAsync(string topic, CancellationToken ct)
             => FailDict();
@@ -94,7 +102,7 @@ public sealed class KafkaMetricsCollectorTests
                     watermarks.GetValueOrDefault((p.Topic, p.Partition), 0))).ToList()));
         }
 
-        // ACL (t03): коллектору не нужны — заглушки-успехи без действия.
+        // ACL : коллектору не нужны — заглушки-успехи без действия.
         public Task<Result<IReadOnlyList<KafkaAclBinding>>> DescribeAclsAsync(CancellationToken ct)
             => Task.FromResult(Result<IReadOnlyList<KafkaAclBinding>>.Success([]));
 
@@ -130,7 +138,7 @@ public sealed class KafkaMetricsCollectorTests
 
     private static KafkaClusterSnapshot Snapshot(
         string cluster, string? state = null, string? endpoints = "kafka:9092",
-        string? user = "app", string? password = "secret")
+        string? user = "app", string? password = TestPassword)
         => new(
             cluster,
             new KafkaClusterConfig(3, 3, 2, 6, 604800000, null, state),
@@ -165,14 +173,14 @@ public sealed class KafkaMetricsCollectorTests
         // Act
         await collector.CollectOnceAsync(TestContext.Current.CancellationToken);
 
-        // Assert: лаг по (c1, g1, t1) = (20-5) + max(0, 10-10) = 15
+        // Assert: лаг по (c1, g1) = (20-5) + max(0, 10-10) = 15
         state.DebugSnapshot().Lag[("c1", "g1", "t1")].Should().Be(15);
     }
 
     [Fact]
     public async Task Collect_UnderReplicated_IssrSubsetOfReplicas()
     {
-        // Arrange: топик t1 — 2 партиции: p0 ISR(2)<replicas(3) → USR; p1 ISR=3 → нет
+        // Arrange: топик — 2 партиции: p0 ISR(2)<replicas(3) → USR; p1 ISR=3 → нет
         var admin = new FakeAdmin
         {
             Topics =
@@ -307,7 +315,7 @@ public sealed class KafkaMetricsCollectorTests
         state.DebugSnapshot().LastSuccess.Should().NotBeNull("skip — not a tick failure");
     }
 
-    // AAA: недоступный кластер — ListGroups не зовётся вовсе (t05 pre-gate:
+    // AAA: недоступный кластер — ListGroups не зовётся вовсе (pre-gate:
     // ListConsumerGroups на лежащем bootstrap роняет процесс нативно —
     // double-free librdkafka на error-path; DescribeCluster — безопасен).
     [Fact]

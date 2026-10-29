@@ -4,7 +4,7 @@ using PgWorker.Etcd.Parsing;
 
 namespace PgWorker.UnitTests.Backups;
 
-// Чистые решения планировщика полных бэкапов (arch/19 §2, t02): due по
+// Чистые решения планировщика полных бэкапов (arch/19 §2): due по
 // возрасту последнего COMPLETED, бэкофф min(Base·2^(n−1), Max), инвариант
 // одного активного, суффикс коллизии id.
 public class BackupPlannerTests
@@ -144,7 +144,7 @@ public class BackupPlannerTests
         BackupPlanner.IsDue(fulls, fullMaxAgeSec: 86400, nowUnix: Unix(Now)).Should().BeFalse();
     }
 
-    // AAA: wal-ключа нет, но свежий валидный COMPLETED есть — НЕ due (t27):
+    // AAA: wal-ключа нет, но свежий валидный COMPLETED есть — НЕ due :
     // приёмник выгружает только ЗАКРЫТЫЕ сегменты, поэтому на шарде без
     // нагрузки ключ wal появляется позже первого полного; пересъём в этом
     // окне бессмыслен (серия полных подряд ничего не добавляет) — цепочку
@@ -222,6 +222,37 @@ public class BackupPlannerTests
         BackupPlanner.BackoffPassed(fulls, 300, 3600, Unix(Now)).Should().BeTrue();
     }
 
+    // AAA: антишторм (arch/19 §2) — НЕпокрывший COMPLETED (wal_start ниже
+    // границы разрыва) считается попыткой бэкоффа: пока redo/restart-точка
+    // источника не перешла границу, повторный полный снимается с той же позиции
+    // — без пользы (шторм «полный каждые 10 с»); предикат caller'а учитывает
+    // только непокрывшие, покрывший COMPLETED попыткой НЕ является
+    [Fact]
+    public void Backoff_UncoveredCompleted_CountsAsAttempt()
+    {
+        // Arrange — старый валидный COMPLETED + свежий COMPLETED с wal_start
+        // ниже границы (последняя попытка 100 c назад), граница «1/001»
+        var uncoveredFull = Full("20260910025820Z", FullBackupStatus.Completed, Unix(Now) - 100, Unix(Now) - 90)
+            with { WalStartSegment = "000000020000000100000000" };
+        var fulls = new FullBackupState[]
+        {
+            Full("20260908030000Z", FullBackupStatus.Completed, Unix(Now.AddDays(-2)), Unix(Now.AddDays(-2).AddMinutes(5))),
+            uncoveredFull,
+        };
+
+        // Act / Assert — без предиката: шторм (попыток нет, пропуск немедленный);
+        // с предикатом: 100 < 300 — держит; сквозь 300 c — отпускает.
+        BackupPlanner.BackoffPassed(fulls, 300, 3600, Unix(Now)).Should().BeTrue(
+            "without the uncovered predicate a covered-in-name COMPLETED storms the retake");
+        var uncovered = new Func<FullBackupState, bool>(f =>
+            f.State == FullBackupStatus.Completed
+            && f.WalStartSegment is { Length: > 0 } ws
+            && string.CompareOrdinal(ws, "000000020000000100000001") < 0);
+        BackupPlanner.BackoffPassed(fulls, 300, 3600, Unix(Now), uncovered).Should().BeFalse(
+            "an uncovered COMPLETED below the gap boundary is a backoff attempt");
+        BackupPlanner.BackoffPassed(fulls, 300, 3600, Unix(Now) + 201, uncovered).Should().BeTrue();
+    }
+
     // AAA: инвариант — максимум один активный (PLANNED/RUNNING/UPLOADING)
     [Theory]
     [InlineData(FullBackupStatus.Planned, true)]
@@ -236,11 +267,11 @@ public class BackupPlannerTests
         BackupPlanner.HasActive([Full("id", state, Unix(Now))]).Should().Be(expected);
     }
 
-    // AAA: BROKEN-цепочка → due безусловно, даже при свежем валидном полном (AC1)
+    // AAA: WAL_CHAIN_ERROR-цепочка → due безусловно, даже при свежем валидном полном (AC1)
     [Fact]
     public void IsDue_WalChainBroken_DueUnconditionally()
     {
-        // Arrange — свежий валидный COMPLETED (час назад, окно 86400), но wal=BROKEN
+        // Arrange — свежий валидный COMPLETED (час назад, окно 86400), но wal=WAL_CHAIN_ERROR
         var fresh = Unix(Now.AddHours(-1).AddMinutes(-5));
         var fulls = new[]
         {
@@ -272,6 +303,43 @@ public class BackupPlannerTests
             .Should().BeFalse("DEGRADED due to lag/silence — transient, no reshoot is triggered");
     }
 
+    // AAA (AC3): живой непокрытый tli-gap → due безусловно, даже при свежем
+    // валидном полном (пересъём — единственное лечение RPO-зазора)
+    [Fact]
+    public void IsDue_WalGapUncovered_True()
+    {
+        // Arrange — свежий валидный COMPLETED (час назад, окно 86400), gap не покрыт
+        var fresh = Unix(Now.AddHours(-1).AddMinutes(-5));
+        var fulls = new[]
+        {
+            Full("20260911110000Z", FullBackupStatus.Completed, fresh, Unix(Now.AddHours(-1)),
+                verify: new BackupVerify(BackupVerifyStatus.Ok, Unix(Now.AddHours(-1)))),
+        };
+
+        // Act / Assert
+        BackupPlanner.IsDue(fulls, 86400, Unix(Now),
+                walGapUncovered: true)
+            .Should().BeTrue("an uncovered tli-gap is only cured by re-shooting the full");
+    }
+
+    // AAA : покрытие отключает сигнал — свежий валидный полный при
+    // walGapUncovered=false — не due (шторма пересъёмов нет)
+    [Fact]
+    public void IsDue_WalGapCovered_FreshFull_NotDue()
+    {
+        // Arrange — свежий валидный COMPLETED, gap покрыт (walGapUncovered=false)
+        var fresh = Unix(Now.AddHours(-1).AddMinutes(-5));
+        var fulls = new[]
+        {
+            Full("20260911110100Z", FullBackupStatus.Completed, fresh, Unix(Now.AddHours(-1))),
+        };
+
+        // Act / Assert
+        BackupPlanner.IsDue(fulls, 86400, Unix(Now),
+                walGapUncovered: false)
+            .Should().BeFalse("a covered gap switches the signal off — no reshoot storm");
+    }
+
     // AAA: id — YYYYMMDDHHMMSSZ UTC; коллизия в пределах шарда → суффикс
     [Fact]
     public void NextId_Collision_SuffixIncrement()
@@ -300,7 +368,7 @@ public class BackupPlannerTests
         next.Should().Be("20260910030000Z");
     }
 
-    // AAA: t14 — unix последнего валидного: COMPLETED с verify FAILED не считается,
+    // AAA: — unix последнего валидного: COMPLETED с verify FAILED не считается,
     // finished_unix приоритетен, толерантность started_unix как в IsDue
     [Fact]
     public void LastValidUnix_LastValid_finished_Or_started()
@@ -319,7 +387,7 @@ public class BackupPlannerTests
         BackupPlanner.LastValidUnix(fulls).Should().Be(validFinished);
     }
 
-    // AAA: t14 — валидного нет вовсе (только FAILED-статусы/verify) → null
+    // AAA: — валидного нет вовсе (только FAILED-статусы/verify) → null
     [Fact]
     public void LastValidUnix_NoValidOnes_Null()
     {
@@ -335,7 +403,7 @@ public class BackupPlannerTests
         BackupPlanner.LastValidUnix(fulls).Should().BeNull();
     }
 
-    // AAA: t14 — finished_unix отсутствует → толерантно started_unix (образец IsDue)
+    // AAA: — finished_unix отсутствует → толерантно started_unix (образец IsDue)
     [Fact]
     public void LastValidUnix_WithoutFinished_TakesStarted()
     {

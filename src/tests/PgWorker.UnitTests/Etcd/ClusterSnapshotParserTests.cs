@@ -8,6 +8,13 @@ namespace PgWorker.UnitTests.Etcd;
 // Парсер /clusters/ и /service/ в доменную модель PgWorker (задача 11, spec §4.1).
 public class ClusterSnapshotParserTests
 {
+    // Ожидаемые креды из сид-фикстур (не секреты): env с заведомо фейковым фолбэком —
+    // значения совпадают с EtcdFixtures/clusters-app-secret.json.
+    private static string SeededAppPassword =>
+        Environment.GetEnvironmentVariable("PW_TEST_SEEDED_APP_PASSWORD") ?? "unit-test-seeded-app-pw-00000000";
+    private static string SeededRestPassword =>
+        Environment.GetEnvironmentVariable("PW_TEST_SEEDED_REST_PASSWORD") ?? "unit-test-seeded-rest-pw-0000000";
+
     [Fact]
     public void ParseClusters_PanelSeed_NotInitializedCluster()
     {
@@ -117,7 +124,7 @@ public class ClusterSnapshotParserTests
     [Fact]
     public void ParseClusters_ShardStateToRemove_SetsToRemoveTrue()
     {
-        // Arrange — Active-кластер с маркером демонтажа шарда (t06 §4.2)
+        // Arrange — Active-кластер с маркером демонтажа шарда (§4.2)
         var kvs = new List<Kv>
         {
             new("/clusters/shop/config", """{"buckets":2,"dbname":"shop"}""", 1),
@@ -218,9 +225,9 @@ public class ClusterSnapshotParserTests
         var snap = result.Value.Should().ContainSingle().Subject;
         snap.App.Should().NotBeNull();
         snap.App!.User.Should().Be("app");
-        snap.App.Password.Should().Be("Kj9mP2qR7sT3vW5xYz1aBc4dEf6Gh8Jk");
-        // rest_password (t22, basic-auth Patroni REST) — ключ кластера в снапшоте
-        snap.RestPassword.Should().Be("Rest0Pass0000000000000000000000A");
+        snap.App.Password.Should().Be(SeededAppPassword);
+        // rest_password (basic-auth Patroni REST) — ключ кластера в снапшоте
+        snap.RestPassword.Should().Be(SeededRestPassword);
         // bucket_admin-поля config не задеты (механизм сохраняется)
         snap.Config.BucketAdminUser.Should().BeNull();
         snap.Config.BucketAdminPassword.Should().BeNull();
@@ -260,7 +267,7 @@ public class ClusterSnapshotParserTests
     [Fact]
     public void ParseClusters_PerClusterSecretKeys_FilledIntoSnapshot()
     {
-        // Arrange — per-cluster креды mover/bucket_admin (t02 §3.1, arch/14 §3.3)
+        // Arrange — per-cluster креды mover/bucket_admin (§3.1, arch/14 §3.3)
         var kvs = new List<Kv>
         {
             new("/clusters/shop/mover_password", "Mv1password32charsaaaaaaaaaaaaa", 1),
@@ -283,7 +290,7 @@ public class ClusterSnapshotParserTests
     [Fact]
     public void ParseClusters_NoPerClusterSecretKeys_FieldsAreNull()
     {
-        // Arrange — кластер без новых ключей (до первого ensure t02)
+        // Arrange — кластер без новых ключей (до первого ensure)
         var kvs = EtcdFixtures.LoadKv("clusters-provisioning.json");
 
         // Act
@@ -362,12 +369,12 @@ public class ClusterSnapshotParserTests
         nodes.Single(n => n.Name == "shard1c").AppParams.Should().BeNull();
     }
 
-    // Хелпер t06: парс одного config-ключа кластера (механика kvs-сида файла).
+    // Хелпер : парс одного config-ключа кластера (механика kvs-сида файла).
     private static ClusterSnapshot ParseSingleClusterConfig(string raw)
         => ClusterSnapshotParser.ParseClusters(
             [new Kv("/clusters/shop/config", raw, 1)], out _).Value.Single();
 
-    // AAA (t06, spec §6.1): config-поле synchronous_mode_strict — true/false
+    // AAA (spec §6.1): config-поле synchronous_mode_strict — true/false
     // читается; отсутствие поля и не-bool значение = true (durability-first).
     [Theory]
     [InlineData("""{"buckets":2,"dbname":"shop","synchronous_mode_strict":true}""", true)]

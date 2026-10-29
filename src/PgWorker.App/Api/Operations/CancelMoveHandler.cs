@@ -6,7 +6,7 @@ using PgWorker.Core.Writing;
 namespace PgWorker.App.Api.Operations;
 
 // Отмена стоящей заявки: DELETE /api/clusters/{cluster}/moves/{bucket}
-// (t07, arch/02 §9.7.5). Удаление НЕ останавливает взятую в работу заявку —
+// (arch/02 §9.7.5). Удаление НЕ останавливает взятую в работу заявку —
 // процесс ведёт фазы по статус-ключу и доедет до конца; остановка начатого —
 // только abort. State кластера не проверяется (TO_REMOVE: заявки чистит D2 —
 // ручная отмена безвредна). Идемпотентностью не обладает (повтор → 404).
@@ -26,7 +26,7 @@ public sealed partial class CancelMoveHandler(IEtcdGateway gateway, string[] end
 
         // 2) Чтение ключа напрямую одним get: нет → 404 «заявки нет».
         var key = $"/pgworker/moves/{cluster}/{bucket}";
-        var existing = await EtcdFailover.CallAsync(endpoints,
+        var existing = await EtcdEndpointFailover.CallAsync(endpoints,
             endpoint => gateway.GetAsync(endpoint, key, ct));
         if (!existing.IsSuccess)
             return Result.Failed(existing.Error!);
@@ -34,7 +34,7 @@ public sealed partial class CancelMoveHandler(IEtcdGateway gateway, string[] end
             return Result.Failed(new MoveTicketNotFoundException(cluster, bucket));
 
         // 3) del ключа → успех (204 ставит маршрут).
-        var deleted = await EtcdFailover.CallAsync(endpoints,
+        var deleted = await EtcdEndpointFailover.CallAsync(endpoints,
             endpoint => gateway.DeleteAsync(endpoint, key, prefix: false, ct));
         return deleted.IsSuccess ? Result.Success() : Result.Failed(deleted.Error!);
     }

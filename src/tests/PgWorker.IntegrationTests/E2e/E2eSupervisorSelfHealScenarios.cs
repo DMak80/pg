@@ -11,12 +11,12 @@ using Xunit;
 namespace PgWorker.IntegrationTests.E2e;
 
 
-// E2E самолечения wal-цепочки (t24/ревизия 8 — разбиение E2eSupervisorScenarios
+// E2E самолечения wal-цепочки (/ревизия 8 — разбиение E2eSupervisorScenarios
 // на однофактные; хелперы — копии, прецедент :385-386): ChainBroken.
 // E2eEnvironment (своя сеть/etcd/ownS3, динамические порты, полный teardown
 // в DisposeAsync — docs/e2e-isolation.md; телеметрия — docs/e2e-launch.md).
 // Два сценария AC10: (1) ChainBroken_SelfHeals — дыра ВНУТРИ цепочки живого
-// кластера → wal=BROKEN → планировщик переснимает полный → цепь непрерывна от
+// кластера → wal=WAL_CHAIN_ERROR → планировщик переснимает полный → цепь непрерывна от
 // нового wal_start → ACTIVE, агент жив; (2) OrphanRegistry_TtlDelete —
 // чужой префикс без владельца → реестр /pgworker/backups/orphans (OBSERVED) →
 // сжатый TTL → объекты удалены, запись погашена.
@@ -24,7 +24,7 @@ public class E2eSupervisorSelfHealScenarios
 {
     private const string Bucket = "pgworker-backups";
 
-    // t36: пул E2E (однонодовый — ownS3-ноды окружения; etcd у каждого Fact'а свой).
+    // пул E2E (однонодовый — ownS3-ноды окружения; etcd у каждого Fact'а свой).
     private const string Pool = "bkpool";
 
     // Окружение Fact'а (своя сеть/etcd/ownS3); создаётся в начале сценария.
@@ -35,13 +35,13 @@ public class E2eSupervisorSelfHealScenarios
     private EtcdGateway G => Fx.Gateway;
 
 
-    // цепочки) → контроль → wal=BROKEN → планировщик переснимает полный → цепь
+    // цепочки) → контроль → wal=WAL_CHAIN_ERROR → планировщик переснимает полный → цепь
     // непрерывна от нового wal_start → wal=ACTIVE, агент жив
     [Fact]
     public async Task Backup_ChainBroken_SelfHeals()
     {
         // Arrange 1 — окружение bk-spr (withS3Node), кластер bkspr<тег>, policy
-        //   full_max_age_sec=3600 (НЕ из-за возраста — триггер только BROKEN),
+        //   full_max_age_sec=3600 (НЕ из-за возраста — триггер только WAL_CHAIN_ERROR),
         //   verify on_create=false (не мешает), Wal VerifyIntervalSec=5,
         //   Supervisor IntervalSec=60; воркер
         DockerTrait.SkipIfUnavailable();
@@ -145,7 +145,7 @@ public class E2eSupervisorSelfHealScenarios
         // Предусловие пересъёма (spec §3.2): полный стартует с позиции источника
         // (реплики) — она обязана быть ВЫШЕ дыры, иначе ratchet (arch/19 §3:
         // «полные ниже границы игнорируются») честно не заживит разрыв. Гейт
-        // отделяет здоровье репликации среды от логики t07: обе ноды шарда
+        // отделяет здоровье репликации среды от логики : обе ноды шарда
         // (primary по current_wal_lsn, реплика по last_wal_replay_lsn) — не
         // ниже начала сегмента, следующего за дырой.
         var replayTarget = LsnOf(PgWorker.Backups.WalFileName.TryParse(hole!)!.Value.Next().Name);
@@ -178,20 +178,20 @@ public class E2eSupervisorSelfHealScenarios
         }, TimeSpan.FromSeconds(300), ct);
         replicasPast.Should().BeTrue(
             $"the shard1 replicas must catch up with the gap {hole} (LSN {replayTarget}) — " +
-            "otherwise the environment is unhealthy (a stuck replica) and the t07 logic is not exercised");
-        // Останавливаем ВСЕ агенты шарда до порчи (их по два, t07): живой агент
-        // переснимает сегмент раньше контрольного тика (5 c) — дыра заживает до
-        // BROKEN (прогон 2026-10-15: цепь осталась непрерывной). Пересъём —
-        // часть механики self-heal: супервизор на BROKEN пересоздаёт агентов.
-        var selfHealAgents = await Fx.RunDockerAsync(
-            ["ps", "--format", "{{.Names}}", "--filter", $"name=pgw-backup-wal-{cluster}-shard1"], ct);
-        foreach (var agentName in selfHealAgents.Split('\n', StringSplitOptions.RemoveEmptyEntries)
-                     .Select(n => n.Trim()))
-            await Fx.RunDockerAsync(["stop", agentName], ct);
-        // Act 1 — порча + ожидание BROKEN (контроль 1 c). Окно дыры мало:
+            "otherwise the environment is unhealthy (a stuck replica) and the supervisor logic is not exercised");
+        // Останавливаем walreceiver ВСЕХ нод шарда до порчи (: приёмник —
+        // supervisord-программа ноды; admin-stop): живой приёмник переснимает
+        // сегмент раньше контрольного тика (5 c) — дыра заживает до WAL_CHAIN_ERROR.
+        // Пересъём — часть механики self-heal: на WAL_CHAIN_ERROR воркер переснимает полный,
+        // приёмники замирают по WAL_CHAIN_ERROR-гейту и возобновляются после ACTIVE.
+        var nodeNames = await Fx.ShardNodeContainerNamesAsync(cluster, "shard1", ct);
+        nodeNames.Should().NotBeEmpty("the shard1 nodes are provisioned — a stop precondition");
+        foreach (var nodeName in nodeNames)
+            await Fx.RunDockerAsync(["exec", nodeName, "supervisorctl", "stop", "walreceiver"], ct);
+        // Act 1 — порча + ожидание WAL_CHAIN_ERROR (контроль 1 c). Окно дыры мало:
         // супервизор пересоздаёт остановленных агентов за ScanInterval (1 c) и
         // пересъём заживает дыру за секунды — если первый заход не дошёл до
-        // BROKEN (пересъём выиграл), повторяем: перечитываем окно и портим
+        // WAL_CHAIN_ERROR (пересъём выиграл), повторяем: перечитываем окно и портим
         // новую середину (прогон 2026-10-15: две попытки — норма).
         var brokenRaw = default(Kv?);
         var broken = false;
@@ -250,17 +250,17 @@ public class E2eSupervisorSelfHealScenarios
             broken = await WaitPhaseAsync($"wal-broken-{attempt}", async () =>
             {
                 brokenRaw = await GetOrNullAsync($"/pgworker/backups/{cluster}/shard1/wal");
-                return brokenRaw?.Value.Contains("BROKEN") == true;
+                return brokenRaw?.Value.Contains("WAL_CHAIN_ERROR") == true;
             }, TimeSpan.FromSeconds(60), ct);
         }
         if (!broken)
             throw new ApplicationException(
-                $"the wal key did not reach BROKEN: [{brokenRaw?.Value ?? "no key"}]");
+                $"the wal key did not reach WAL_CHAIN_ERROR: [{brokenRaw?.Value ?? "no key"}]");
 
         // Assert 1 — error содержит границы дыры: GapError называет отсутствующий
         // сегмент («дыра WAL-цепочки: ожидался <hole>, найден …»)
         var brokenDoc = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(brokenRaw!.Value)!;
-        brokenDoc["state"].GetString().Should().Be("BROKEN");
+        brokenDoc["state"].GetString().Should().Be("WAL_CHAIN_ERROR");
         // GapError называет ПЕРВУЮ невосстановленную границу — при серийной порче
         // пересъём мог восстановить начало серии (дыра в середине) до контрольного
         // тика: границей может стать любой хвост серии.
@@ -268,7 +268,12 @@ public class E2eSupervisorSelfHealScenarios
             doomed.Select(d => d.Canon).ToArray(), "GapError names the gap boundary");
         brokenDoc["chain_start_segment"].GetString().Should().NotBeNullOrEmpty("the gap boundary in chain_start");
 
-        // Act 2 — новый полный с id ≠ старого (планировщик реагирует на BROKEN),
+        // приёмники возвращаются (программа ноды); по WAL_CHAIN_ERROR-гейту они стоят
+        // в paused — пересъём идёт воркером, приёмники возобновятся после ACTIVE.
+        foreach (var nodeName in nodeNames)
+            await Fx.RunDockerAsync(["exec", nodeName, "supervisorctl", "start", "walreceiver"], ct);
+
+        // Act 2 — новый полный с id ≠ старого (планировщик реагирует на WAL_CHAIN_ERROR),
         // затем COMPLETED (pg_basebackup со spread-чекпоинтом)
         var newFull = default(string);
         var planned = await WaitPhaseAsync("replan-full", async () =>
@@ -282,7 +287,7 @@ public class E2eSupervisorSelfHealScenarios
                 newFull = fresh.Key.Split('/').Last();
             return newFull is not null;
         }, TimeSpan.FromSeconds(300), ct);
-        planned.Should().BeTrue("BROKEN is healed by retaking — the scheduler must create a new full");
+        planned.Should().BeTrue("WAL_CHAIN_ERROR is healed by retaking — the scheduler must create a new full");
         var completed = await WaitPhaseAsync("refull-completed", async () =>
         {
             var fulls = await FullKeysAsync(cluster, "shard1");
@@ -321,10 +326,14 @@ public class E2eSupervisorSelfHealScenarios
         // 24-hex имя при ordinal-сравнении = порядок (TLI, log, seg) — ratchet
         string.CompareOrdinal(chainStart, newWalStart).Should()
             .BeGreaterThanOrEqualTo(0, "verify starts from a point not below the wal_start of the new full");
-        var agent = await RunDockerAsync(
-            ["ps", "--filter", $"name=pgw-backup-wal-{cluster}-shard1", "--format", "{{.Names}} {{.Status}}"]);
-        agent.Should().Contain($"pgw-backup-wal-{cluster}-shard1").And.Contain("Up",
-            "the agent is raised by the healing tick (BROKEN lifted)");
+        // Assert 2b — приёмники нод снова стримят (гейт WAL_CHAIN_ERROR снят ACTIVE-ключом,
+        // paused → streaming без docker-операций воркера)
+        var receiversBack = await E2eFixture.WaitForAsync(async () =>
+        {
+            var facts = await Fx.ReadWalAgentFactsAsync(cluster, "shard1", ct);
+            return facts.Count(f => f.State == "streaming") >= 1;
+        }, TimeSpan.FromSeconds(120), ct);
+        receiversBack.Should().BeTrue("receivers resume streaming after WAL_CHAIN_ERROR lifts (waiting → streaming)");
         }, ct);
     }
 
@@ -386,16 +395,14 @@ public class E2eSupervisorSelfHealScenarios
 
     // Воркер самолечения: S3 на ownS3-ноду, ускоренный бэкофф, ретенция
     // выключена (IntervalSec большой — чистка не мешает сценарию), Wal-контроль
-    // каждые 5 c (скорость BROKEN), сверка супервизора раз в 60 c.
+    // каждые 5 c (скорость WAL_CHAIN_ERROR), сверка супервизора раз в 60 c.
     private Task<HostInstance> StartSupervisorHostAsync(string name, CancellationToken ct)
         => Fx.StartHostAsync(name, extraEnv: new Dictionary<string, string>
         {
             ["PgWorker__Backups__Enabled"] = "true",
             ["PgWorker__Backups__S3__Bucket"] = Bucket,
-            // t36: креды пула — env-профиль (arch/19 §7); пул — policy.s3, адреса
+            // креды пула — env-профиль (arch/19 §7); пул — policy.s3, адреса
             // резолвит воркер из /s3/ (advertised host.docker.internal, extra_hosts).
-            ["PgWorker__Backups__Job__Image"] = E2eEnvironment.JobImage,
-            ["PgWorker__Backups__Wal__AgentImage"] = E2eEnvironment.WalImage,
             ["PgWorker__Backups__Retry__BaseSec"] = "2",
             ["PgWorker__Backups__Retry__MaxSec"] = "4",
             ["PgWorker__Backups__Policy__FullMaxAgeSec"] = "3600",
@@ -472,14 +479,14 @@ public class E2eSupervisorSelfHealScenarios
                 """{"state":"NOT_INITIALIZED"}""", null, ct);
         }
 
-        // t36: пул сидится до старта воркера; policy кластера кладёт факт строкой
+        // пул сидится до старта воркера; policy кластера кладёт факт строкой
         // ниже (с секцией s3 — без неё подсистема кластера молчит).
         await Fx.SeedS3PoolAsync(Pool, ct);
     }
 
     // Published pg-порт мастера шарда из portalloc (копия MasterPgAsync —
     // резолв фактического primary по пробам Patroni /primary).
-    // t22: Patroni REST нод — https (цепочка к per-contour CA, без hostname)
+    // Patroni REST нод — https (цепочка к per-contour CA, без hostname)
     private HttpClient PatroniHttp => Fx.NewPatroniHttpClient();
 
     private async Task<(string Host, int Port)> MasterPgAsync(string cluster, string shard, CancellationToken ct)

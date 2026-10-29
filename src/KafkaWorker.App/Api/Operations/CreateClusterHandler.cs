@@ -4,7 +4,7 @@ using Shared.Etcd.Client;
 using KafkaWorker.Core.Writing;
 namespace KafkaWorker.App.Api.Operations;
 
-// Ответ 201 POST /api/kafka/clusters (arch/03 §7.2; DTO панельный 1:1 — дубль осознан, t08).
+// Ответ 201 POST /api/kafka/clusters (arch/03 §7.2; DTO панельный 1:1 — дубль осознан).
 public sealed record KafkaClusterCreatedDto(
     string Name,
     string State,

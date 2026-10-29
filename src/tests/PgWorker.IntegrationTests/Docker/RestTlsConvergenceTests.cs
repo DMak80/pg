@@ -16,7 +16,7 @@ using ISqlExecutor = PgWorker.Provisioning.Sql.ISqlExecutor;
 
 namespace PgWorker.IntegrationTests.Docker;
 
-// Общий контур docker-серии REST-TLS (t22): живой etcd фикстуры + РЕАЛЬНЫЙ
+// Общий контур docker-серии REST-TLS : живой etcd фикстуры + РЕАЛЬНЫЙ
 // PlainClusterDriver (unix-сокет; alpine-заглушки нод — НЕ spilo, имитация
 // легаси-подъёма) + процессы напрямую (NodeSupervisor/ClusterSecretRotator).
 // Окружение per-guid (e2e-isolation §1): контейнеры/volume/сеть/etcd-префиксы
@@ -106,7 +106,7 @@ internal static class RestTlsDockerRig
         var gateway = fixture.Gateway;
 
         // Заглушка-контейнер легаси-ноды: alpine (НЕ spilo), env урезан —
-        // имитация контейнера, поднятого до t22; volume с data-маркером.
+        // имитация контейнера, поднятого до ремонта; volume с data-маркером.
         await E2eFixture.RunDockerAsync(["volume", "create", volumeA], ct);
         await E2eFixture.RunDockerAsync(["run", "-d", "--name", containerA,
             "-v", $"{volumeA}:/home/postgres/pgdata",
@@ -214,7 +214,7 @@ internal static class RestTlsDockerRig
     }
 }
 
-// REST-TLS-конвергенция живого контейнера (t22, arch/14 §5 C): легаси-нода
+// REST-TLS-конвергенция живого контейнера (arch/14 §5 C): легаси-нода
 // пересоздаётся шагом надзора с REST-TLS env; volume/маркер на месте;
 // rest_password появился ensure'м; повторный тик no-op; окно миграции без
 // rebuild/UNREACHABLE (спека §5.5). Гейт PGW_TEST_DOCKER=1.

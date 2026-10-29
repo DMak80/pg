@@ -4,7 +4,7 @@ using PgWorker.UnitTests.Templates;
 
 namespace PgWorker.UnitTests.App;
 
-// Опции REST-TLS нод (t22, arch/14 §8): полнота пары PEM|PATH и
+// Опции REST-TLS нод (arch/14 §8): полнота пары PEM|PATH и
 // разбираемость PEM — предикаты fail-fast валидации старта воркера.
 public class RestTlsOptionsTests
 {

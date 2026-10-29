@@ -24,7 +24,7 @@ public sealed class ConfigConverger(
     {
         var cluster = snap.Cluster;
 
-        // Active-ветка: endpoints + admin-кред + ca_pem (TLS-транспорт t06) обязательны.
+        // Active-ветка: endpoints + admin-кред + ca_pem (TLS-транспорт) обязательны.
         if (snap.Endpoints is null || snap.AdminUser is null || snap.AdminPassword is null || snap.CaPem is null)
             return Result.Failed(new ApplicationException(
                 $"converge {cluster}: no endpoints/admin credentials/ca_pem — converge impossible"));

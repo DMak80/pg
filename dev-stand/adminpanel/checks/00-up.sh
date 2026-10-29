@@ -77,15 +77,28 @@ dotnet publish "$ROOT/src/Metrics.SdGenerator/Metrics.SdGenerator.csproj" \
   || { echo "❌ SdGenerator publish failed"; exit 1; }
 echo ">>> [PHASE] SdGenerator publish ready ($(date +%H:%M:%S))"
 
-# WAL-агент (t41): publish НА ХОСТЕ → образ publish-COPY (канон E2E-образов;
-# сборка не «тихая» — [PHASE] и тайминг).
-echo ">>> [PHASE] publish PgWorker.WalReceiver ($(date +%H:%M:%S))"
+# Образ PG-ноды с приёмником WAL и служебной CLI (t25, arch/19 §3 + arch/14 §2.1):
+# publish НА ХОСТЕ self-contained (RID хоста сборки, без trimming) → docker
+# build пакует выводы (канон «publish на хосте, в контейнер — артефакты»;
+# сборка не «тихая» — [PHASE] и тайминг; оба процесса живут ВНУТРИ контейнера).
+case "$(uname -m)" in
+  arm64|aarch64) NODE_RID=linux-arm64 ;;
+  *)             NODE_RID=linux-x64 ;;
+esac
+echo ">>> [PHASE] publish PgWorker.WalReceiver self-contained $NODE_RID ($(date +%H:%M:%S))"
 dotnet publish "$ROOT/src/PgWorker.WalReceiver/PgWorker.WalReceiver.csproj" \
-  -c Release -o "$ROOT/artifacts/wal/publish" --nologo \
+  -c Release -r "$NODE_RID" --self-contained -o "$ROOT/artifacts/node-wal" --nologo \
   || { echo "❌ WalReceiver publish failed"; exit 1; }
-docker build -q -f "$ROOT/docker/PgWorker.Wal.Dockerfile" -t pgworker-wal:dev "$ROOT/artifacts/wal/publish" \
-  || { echo "❌ image pgworker-wal:dev build failed"; exit 1; }
-echo "  image pgworker-wal:dev ready"
+echo ">>> [PHASE] publish PgWorker.NodeTools self-contained $NODE_RID ($(date +%H:%M:%S))"
+dotnet publish "$ROOT/src/PgWorker.NodeTools/PgWorker.NodeTools.csproj" \
+  -c Release -r "$NODE_RID" --self-contained -o "$ROOT/artifacts/node-tools" --nologo \
+  || { echo "❌ NodeTools publish failed"; exit 1; }
+echo ">>> [PHASE] pgworker-node:dev build (WAL_PUBLISH_DIR=artifacts/node-wal, NODE_TOOLS_PUBLISH_DIR=artifacts/node-tools) ($(date +%H:%M:%S))"
+docker build -q -f "$ROOT/docker/node/Dockerfile" \
+  --build-arg "WAL_PUBLISH_DIR=artifacts/node-wal" \
+  --build-arg "NODE_TOOLS_PUBLISH_DIR=artifacts/node-tools" -t pgworker-node:dev "$ROOT" \
+  || { echo "❌ image pgworker-node:dev build failed"; exit 1; }
+echo "  image pgworker-node:dev ready (walreceiver + pgwnodetool inside)"
 
 # S3Worker (arch/24): publish НА ХОСТЕ → образ publish-COPY (канон
 # E2E-образов; сборка не «тихая» — [PHASE] и тайминг).
@@ -186,12 +199,6 @@ for i in $(seq 1 100); do ect_ok && break; sleep 1; done
 ect_ok || { echo "  ❌ as-etcd-1/2/3 quorum not formed within 100 s (docker compose logs etcd1 etcd2 etcd3)"; exit 1; }
 echo "  etcd contour ready (3/3 started)"
 
-# 1a-2) Образ джоба бэкапов (t02): собирается рядом с pgworker:dev — тег
-#       PgWorker:Backups:Job:Image (дефолт pgworker-backup:dev). Прямой docker
-#       build (а не compose build) — без env-зависимостей deploy/.env.
-docker build -q -f "$ROOT/docker/PgWorker.Backup.Dockerfile" -t pgworker-backup:dev "$ROOT" \
-  || { echo "❌ image pgworker-backup build failed (docker/PgWorker.Backup.Dockerfile)"; exit 1; }
-echo "  image pgworker-backup:dev ready"
 
 # 1b) PgWorker готовность (стенд = полная система; контур ВСЕГДА один —
 #     etcd-кластер стенда): воркеры (2 инстанса, t07) из deploy/docker-compose.yml

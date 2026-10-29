@@ -9,7 +9,7 @@ using Xunit;
 
 namespace AdminPanel.IntegrationTests;
 
-// Детали шарда (AC9, t08 spec §7.9): etcd-статусы (full state/verify, wal-статус,
+// Детали шарда (AC9, spec §7.9): etcd-статусы (full state/verify, wal-статус,
 // активный restore state/phase) джойнятся с S3-фактами; сверка per-full
 // (Ok/S3Only/InProgress); 404 шарда, которого нет ни в etcd, ни в S3-дереве.
 [Collection("backups")]
@@ -110,7 +110,7 @@ public class BackupsShardDetailsApiTests(
     public async ValueTask DisposeAsync() => await _factory.DisposeAsync();
 }
 
-// Сироты (AC5-инт, t08 spec §7.5): блок сирот сводки слит — панельная сверка
+// Сироты (AC5-инт, spec §7.5): блок сирот сводки слит — панельная сверка
 // с джойном на реестр воркера (OBSERVED + TTL) и «панель видит, в реестре нет».
 [Collection("backups")]
 public class BackupsOrphansApiTests(

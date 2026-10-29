@@ -6,7 +6,7 @@ using Xunit;
 
 namespace AdminPanel.UnitTests;
 
-// backup-storage-quota (t06, spec §3.6/AC6): нет ключа/OK — молчим;
+// backup-storage-quota (spec §3.6/AC6): нет ключа/OK — молчим;
 // WARN → warning, CRIT → critical; Message несёт used/percent.
 public class BackupStorageQuotaRuleTests
 {

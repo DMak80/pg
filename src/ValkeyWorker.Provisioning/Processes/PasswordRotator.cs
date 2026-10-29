@@ -26,7 +26,7 @@ namespace ValkeyWorker.Provisioning.Processes;
 /// фазе e2-committed даже без заявки (краш между E2 и E3 — без стейта OLD
 /// остался бы валидным навсегда). Ротация admin не трогает app и наоборот.
 /// Битая заявка — мусор: del с journal.
-/// <para>t10: кластер не поднят (нет endpoints/admin-креда/ca_pem) при живой
+/// <para>: кластер не поднят (нет endpoints/admin-креда/ca_pem) при живой
 /// заявке БЕЗ стейта — waiting-cluster + Success (тик кластера не фейлится,
 /// миграция T доведёт кластер); в этой точке заявка старее порога снимается
 /// (kind=password-&lt;role&gt;) под тройным гвардом §3.1 — по построению точки:
@@ -49,7 +49,7 @@ public sealed class PasswordRotator(
     private const string PhaseE1 = "e1-added";
     private const string PhaseE2 = "e2-committed";
 
-    // t10: экспирация не-начатых заявок + исходы финалов.
+    // экспирация не-начатых заявок + исходы финалов.
     private readonly TicketExpirator _tickets = new(gateway, endpoints);
     private readonly int _timeoutSec = rotationTicketTimeoutSec;
 
@@ -92,7 +92,7 @@ public sealed class PasswordRotator(
                 return Result.Success();
 
             // Кластер не поднят при ОТСУТСТВУЮЩЕМ стейте — заявка не начата:
-            // waiting-cluster + Success (t10: тик кластера не фейлится, миграция
+            // waiting-cluster + Success (: тик кластера не фейлится, миграция
             // T доведёт кластер, ротация исполнится после; стейт жив — ротация
             // НАЧАТА, доигрывание ниже). Тройной гвард §3.1 по построению точки:
             // заявка жива (предикат 1); окно CA закрыто — при открытом окне
@@ -268,12 +268,12 @@ public sealed class PasswordRotator(
         if (!e3.IsSuccess)
             return e3.Error!;
 
-        // Стейт исчерпан (доигрывание завершено) + исход done (t10) + journal done.
+        // Стейт исчерпан (доигрывание завершено) + исход done + journal done.
         var cleared = await DeleteStateAsync(cluster, ct);
         if (!cleared.IsSuccess)
             return cleared.Error!;
 
-        // Исход финала (t10): done гасит expired-алерт панели перезаписью.
+        // Исход финала : done гасит expired-алерт панели перезаписью.
         // Аудит — из payload заявки в стейте; рестарт-хвост без стейта — фактическое время.
         var audit = state.Request is { } payload ? TicketOutcomes.ParseAudit(payload) : null;
         var outcomeDone = await _tickets.WriteDoneAsync(

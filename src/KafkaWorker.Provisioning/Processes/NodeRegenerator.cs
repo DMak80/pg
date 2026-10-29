@@ -9,7 +9,7 @@ using Shared.Etcd.Client;
 
 namespace KafkaWorker.Provisioning.Processes;
 
-// Прогресс /kafkaworker/regens/<C> (t06, arch/15 §4): live-ключ — живёт
+// Прогресс /kafkaworker/regens/<C> (arch/15 §4): live-ключ — живёт
 // только во время операции (put при старте первого пересоздания, del по
 // сходимости; отсутствие ключа = операции нет — фантомы запрещены).
 internal sealed record KafkaRegenProgressJson(
@@ -21,7 +21,7 @@ internal sealed record KafkaRegenProgressJson(
     [property: JsonPropertyName("last_error")] string? LastError = null);
 
 /// <summary>
-/// NodeRegenerator (arch/16 §5 J, t06): автоконверге лимитов контейнера к
+/// NodeRegenerator (arch/16 §5 J): автоконверге лимитов контейнера к
 /// декларации brokers/&lt;b&gt;/resources. Триггер — ТОЛЬКО расхождение cpu/mem
 /// (inspect vs декларация — NodeRegenPlanner, арифметика записи; env
 /// пересобирается попутно, disk не сверяется). Один брокер за тик:
@@ -60,7 +60,7 @@ public sealed class NodeRegenerator(
         var rotation = await GetAsync($"/kafkaworker/rotations/{cluster}", ct);
         if (!rotation.IsSuccess)
             return Fail(cluster, rotation.Error!, "reading-rotation");
-        // J0a' (t07): живая CA-ротация (K) — rolling-ы не смешиваются.
+        // J0a' : живая CA-ротация (K) — rolling-ы не смешиваются.
         var caRotation = await GetAsync($"/kafkaworker/ca_rotations/{cluster}", ct);
         if (!caRotation.IsSuccess)
             return Fail(cluster, caRotation.Error!, "reading-ca-rotation");

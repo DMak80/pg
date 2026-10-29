@@ -17,27 +17,27 @@ public sealed record KafkaRotationsParseResult(
     IReadOnlyList<KafkaRotationTicket> Tickets,
     IReadOnlyList<KeyParseError> Errors);
 
-// Результат разбора заявок ребалансировки /kafkaworker/rebalances/ (t02).
+// Результат разбора заявок ребалансировки /kafkaworker/rebalances/.
 public sealed record KafkaRebalancesParseResult(
     IReadOnlyList<KafkaRebalanceTicket> Tickets,
     IReadOnlyList<KeyParseError> Errors);
 
-// Результат разбора прогресса reassignment /kafkaworker/reassignments/ (t02).
+// Результат разбора прогресса reassignment /kafkaworker/reassignments/.
 public sealed record KafkaReassignmentsParseResult(
     IReadOnlyList<KafkaReassignmentProgress> Progress,
     IReadOnlyList<KeyParseError> Errors);
 
-// Результат разбора live-прогресса регенерации /kafkaworker/regens/ (t06).
+// Результат разбора live-прогресса регенерации /kafkaworker/regens/.
 public sealed record KafkaRegensParseResult(
     IReadOnlyList<KafkaRegenProgress> Progress,
     IReadOnlyList<KeyParseError> Errors);
 
-// Результат разбора очереди CA-ротаций /kafkaworker/ca_rotations/ (t10).
+// Результат разбора очереди CA-ротаций /kafkaworker/ca_rotations/.
 public sealed record KafkaCaRotationsParseResult(
     IReadOnlyList<KafkaCaRotationTicket> Tickets,
     IReadOnlyList<KeyParseError> Errors);
 
-// Результат разбора исходов заявок /kafkaworker/ticket_outcomes/ (t10).
+// Результат разбора исходов заявок /kafkaworker/ticket_outcomes/.
 public sealed record KafkaTicketOutcomesParseResult(
     IReadOnlyList<KafkaTicketOutcome> Tickets,
     IReadOnlyList<KeyParseError> Errors);
@@ -94,7 +94,7 @@ public static class KafkaParser
 
                 // Креды SASL: панель читает их для проб через refresher (B6), в модель
                 // кластера не выносит (arch/02 §10.1) — expected-skip без счётчика.
-                // t03: admin-креды и per-cluster CA читаются internal-стором, ca_key
+                // admin-креды и per-cluster CA читаются internal-стором, ca_key
                 // панель не читает вовсе (arch/02 §10.1).
                 case "app_user" or "app_password"
                     or "admin_user" or "admin_password" or "ca_pem" or "ca_key"
@@ -184,7 +184,7 @@ public static class KafkaParser
         return new(tickets, errors);
     }
 
-    // Заявка ротации admin-пароля /kafkaworker/admin_rotations/<C> (arch/15 §4, t03):
+    // Заявка ротации admin-пароля /kafkaworker/admin_rotations/<C> (arch/15 §4):
     // формат заявки идентичен ротациям app — requested_unix обязателен.
     public static KafkaRotationsParseResult ParseAdminRotations(IReadOnlyList<Kv> kvs)
     {
@@ -223,7 +223,7 @@ public static class KafkaParser
         return new(tickets, errors);
     }
 
-    // Заявка CA-ротации /kafkaworker/ca_rotations/<C> (t10, arch/15 §4):
+    // Заявка CA-ротации /kafkaworker/ca_rotations/<C> (arch/15 §4):
     // формат ротаций app/admin — requested_unix обязателен (порт ParseAdminRotations).
     public static KafkaCaRotationsParseResult ParseCaRotations(IReadOnlyList<Kv> kvs)
     {
@@ -262,7 +262,7 @@ public static class KafkaParser
         return new(tickets, errors);
     }
 
-    // Исходы заявок /kafkaworker/ticket_outcomes/<C> (t10, arch/15 §4):
+    // Исходы заявок /kafkaworker/ticket_outcomes/<C> (arch/15 §4):
     // обязательны kind/outcome/requested_unix/finished_unix (outcome —
     // толерантно-строковый, без enum); reason/requested_by опциональны.
     public static KafkaTicketOutcomesParseResult ParseTicketOutcomes(IReadOnlyList<Kv> kvs)
@@ -309,7 +309,7 @@ public static class KafkaParser
         return new(tickets, errors);
     }
 
-    // Заявки ребалансировки: формат ротаций (requested_unix обязателен, t02 §4).
+    // Заявки ребалансировки: формат ротаций (requested_unix обязателен, §4).
     public static KafkaRebalancesParseResult ParseRebalances(IReadOnlyList<Kv> kvs)
     {
         var tickets = new List<KafkaRebalanceTicket>();
@@ -348,7 +348,7 @@ public static class KafkaParser
     }
 
     // Прогресс reassignment: обязательны mode/partitions_remaining/updated_unix
-    // (t02 §4); остальное — опционально (drain_broker/last_error).
+    // (§4); остальное — опционально (drain_broker/last_error).
     public static KafkaReassignmentsParseResult ParseReassignments(IReadOnlyList<Kv> kvs)
     {
         var progress = new List<KafkaReassignmentProgress>();
@@ -394,7 +394,7 @@ public static class KafkaParser
         return new(progress, errors);
     }
 
-    // /kafkaworker/regens/<C> (t06, arch/15 §4): live-прогресс регенерации.
+    // /kafkaworker/regens/<C> (arch/15 §4): live-прогресс регенерации.
     public static KafkaRegensParseResult ParseRegens(IReadOnlyList<Kv> kvs)
     {
         var progress = new List<KafkaRegenProgress>();

@@ -22,7 +22,7 @@ internal sealed record ClusterGuardData(
     public static async Task<Result<ClusterGuardData>> ReadAsync(
         IEtcdGateway gateway, string[] endpoints, string cluster, CancellationToken ct)
     {
-        var range = await EtcdFailover.CallAsync(endpoints,
+        var range = await EtcdEndpointFailover.CallAsync(endpoints,
             endpoint => gateway.RangeAsync(endpoint, $"/clusters/{cluster}/", ct));
         if (!range.IsSuccess)
             return Result<ClusterGuardData>.Failed(range.Error!);
@@ -85,7 +85,7 @@ internal sealed record ClusterGuardData(
     }
 
     // Статус бакета (arch/02 §2.1): state + owner/target переезда + updated_unix
-    // (возраст для пред-проверки свежести abort, t07 §5.3: поле отсутствует/битое →
+    // (возраст для пред-проверки свежести abort, §5.3: поле отсутствует/битое →
     // null — проверка пропускается, авторитетно решит процесс); битый JSON —
     // как у панели: поля отсутствуют → guard'ы трактуют бакет консервативно.
     private static (string? State, string? Owner, string? Target, long? UpdatedUnix) ParseStatus(string raw)

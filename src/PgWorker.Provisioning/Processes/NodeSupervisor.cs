@@ -56,15 +56,26 @@ public sealed class NodeSupervisor(
     {
         var cluster = snap.Config.Cluster;
 
-        // t05 §3.4 гвард-множество: шарды с активной restore-заявкой
+        //  §3.4 гвард-множество: шарды с активной restore-заявкой
         // (PLANNED/RUNNING/REJOINING) — надзор их НЕ трогает (шард демонтируется
         // restore-процессом; пробы/rebuild/TO_RECREATE/deadShards-кандидат — мимо).
-        var restoring = new HashSet<string>();
+        var restoringSnapshot = new HashSet<string>();
         if (backups?.FirstOrDefault(b => b.Cluster == cluster) is { } mineBackups)
             foreach (var (restoreShard, sb) in mineBackups.Shards)
                 if (sb.Restores.Any(r => r.State
                         is RestoreStatus.Planned or RestoreStatus.Running or RestoreStatus.Rejoining))
-                    restoring.Add(restoreShard);
+                    restoringSnapshot.Add(restoreShard);
+        // Свежее чтение объединяется со снапшот-множеством (arch/19 §3.5
+        // «Гвард исключения»): снапшот тика отстаёт от записи заявки, и долгий
+        // тик надзора со старым множеством исполнял мутации посреди
+        // демонтажа/REJOINING. Для «не трогать»-гварда консервативен union:
+        // шард пропускается, если restore видит ЛЮБОЙ из источников. etcd
+        // недоступен — снапшот-множество (transient: следующий тик перепроверит).
+        var freshRestoring = await ReadRestoringShardsAsync(cluster, ct);
+        var restoring = freshRestoring is null
+            ? restoringSnapshot
+            : new HashSet<string>(freshRestoring, StringComparer.Ordinal);
+        restoring.UnionWith(restoringSnapshot);
 
         // Мутации — только держателем живого клэйма (инвариант spec §4.3).
         if (!claims.IsMine(cluster))
@@ -78,7 +89,7 @@ public sealed class NodeSupervisor(
             return Fail(supervision.Error!);
         var track = new Dictionary<string, long>(supervision.Value.Unreachable);
         var haFacts = HaFactState.FromStored(supervision.Value.LastFailover, supervision.Value.LastRebuild);
-        // Ensure per-cluster кредов + эффективная REST-пара тика (t22, arch/14
+        // Ensure per-cluster кредов + эффективная REST-пара тика (arch/14
         // §5 I): ensure идемпотентен (put-if-absent) — легаси-кластер без
         // rest_password получает ключ ДО любого EnsureNode-пути тика; пара —
         // pending окна ротации ?? ensure-результат (НЕ снапшот тика: он читан
@@ -96,7 +107,7 @@ public sealed class NodeSupervisor(
 
         // 1) Сверка декларации: каждой плановой ноде — контейнер/сервис по имени;
         //    снесённый руками пересоздаётся (декларативное самовосстановление).
-        //    t05: шарды в restore исключены (EnsureNode поднял бы снесённое обратно).
+        //    шарды в restore исключены (EnsureNode поднял бы снесённое обратно).
         var declaredSnap = restoring.Count == 0
             ? snap
             : snap with { Shards = snap.Shards.Where(s => !restoring.Contains(s.Name)).ToList() };
@@ -120,7 +131,7 @@ public sealed class NodeSupervisor(
                 return Fail(migrated.Error!);
         }
 
-        // 1.7) Общий шаг пересоздания нод REST-TLS (t22, arch/14 §5 C): вход
+        // 1.7) Общий шаг пересоздания нод REST-TLS (arch/14 §5 C): вход
         // «конвергенция» (легаси-контейнеры без SSL_RESTAPI_*) и вход «ротация»
         // (hash env != hash(pending) журнала) — единая механика, ≤1 пересоздание
         // на тик кластера, volume сохраняется. Ветви лидера (spec §5.5):
@@ -140,13 +151,13 @@ public sealed class NodeSupervisor(
 
         foreach (var shard in snap.Shards)
         {
-            // Границы надзора (t06 §5.4): шард без dsn — домен AddShardProcess;
+            // Границы надзора (§5.4): шард без dsn — домен AddShardProcess;
             // пробы/UNREACHABLE-переходы не трогаем (state нод — вход A1-гварда
             // add: ожидаемы только NOT_INITIALIZED/PROVISIONING).
             if (shard.Dsn is null)
                 continue;
 
-            // t05 §3.4: шард в restore — не пробы/не rebuild/не deadShards-кандидат
+            //  §3.4: шард в restore — не пробы/не rebuild/не deadShards-кандидат
             // (не «считает ShardDeadSec» — демонтажём владеет restore-процесс).
             if (restoring.Contains(shard.Name))
                 continue;
@@ -167,7 +178,7 @@ public sealed class NodeSupervisor(
             var allDead = shard.Nodes is { Count: > 0 }
                 && shard.Nodes.All(n => track.ContainsKey($"{shard.Name}/{n.Name}"));
 
-            // Кандидат эвакуации (t06 §5.4): только зарегистрированный шард (dsn
+            // Кандидат эвакуации (§5.4): только зарегистрированный шард (dsn
             // есть — add завершён) И с бакетами по routing (эвакуация пустого
             // шарда бессмысленна и карантинила бы ноды, блокируя демонтаж по G6).
             // Шард с TO_REMOVE-маркером кандидатом БЫТЬ МОЖЕТ — эвакуация
@@ -228,9 +239,9 @@ public sealed class NodeSupervisor(
                 return Fail(keys.Error!);
         }
 
-        // 4) Конвергенция DCS-конфига (arch/14 §5 C, t09): активный динамический
+        // 4) Конвергенция DCS-конфига (arch/14 §5 C): активный динамический
         // конфиг кластера сверяется с каноном PatroniTimings + pg-параметры
-        // merge(PGTune ∪ канон) от актуальных заявок (t11), расхождение
+        // merge(PGTune ∪ канон) от актуальных заявок, расхождение
         // патчится до канона — нода, подтянувшаяся к кластеру с отсутствующим/
         // чужим/дефолтным конфигом, приводится к канону без пересоздания
         // («старое с плохими параметрами» не живёт параллельно канону). Шаг —
@@ -241,7 +252,7 @@ public sealed class NodeSupervisor(
             if (shard.Dsn is null)
                 continue;
             if (restoring.Contains(shard.Name))
-                continue; // t05 §3.4: конфиг DCS восстановит свежеподнятая нода
+                continue; //  §3.4: конфиг DCS восстановит свежеподнятая нода
             var converged = await ConvergeDcsConfigAsync(cluster, shard, addresses.Value,
                 snap.Config.SyncStrict, track, haFacts, restPassword, supervision.Value.RestPending, ct);
             if (!converged.IsSuccess)
@@ -256,12 +267,31 @@ public sealed class NodeSupervisor(
     private static Result<SuperviseOutcome> Fail(Exception error)
         => Result<SuperviseOutcome>.Failed(error);
 
+    // Живая сверка клэйма перед критической мутацией (arch/17 S5): IsMine на входе
+    // тика не защищает длинный тик от takeover. false — ключа нет/чужой/etcd
+    // недоступен: мутация не начинается (P9), журнал несёт claim-lost/<фазу>.
+    private async Task<bool> ClaimAliveAsync(string cluster, string phase, CancellationToken ct)
+    {
+        var alive = await claims.EnsureClaimAliveAsync(cluster, ct);
+        if (alive is { IsSuccess: true, Value: true })
+            return true;
+
+        await journal.WritePhaseAsync(cluster, "supervise", $"claim-lost/{phase}", claims.InstanceId,
+            alive.IsSuccess ? "claim key is gone or foreign" : alive.Error!.Message, ct);
+        return false;
+    }
+
     // Сверка декларации: EnsureNode плановых нод без docker-объекта.
     private async Task<Result> EnsureDeclaredNodesAsync(
         string cluster, ClusterSnapshot snap,
         IReadOnlyDictionary<string, NodeAddress> addresses,
         Dictionary<string, long> track, HaFactState haFacts, string restPassword, CancellationToken ct)
     {
+        // Живая сверка клэйма перед фазой пересозданий (arch/17 S5).
+        if (!await ClaimAliveAsync(cluster, "declared-nodes", ct))
+            return Fail(new ApplicationException(
+                $"supervise {cluster}: claim lost before declared-nodes step"));
+
         var objects = await driver.ListNodeObjectsAsync(cluster, ct);
         if (!objects.IsSuccess)
             return objects;
@@ -269,7 +299,7 @@ public sealed class NodeSupervisor(
 
         foreach (var shard in snap.Shards)
         {
-            // Границы надзора (t06 §5.4): шард без dsn — домен AddShardProcess;
+            // Границы надзора (§5.4): шард без dsn — домен AddShardProcess;
             // TO_REMOVE — домен RemoveShardProcess (не пересоздавать демонтируемое).
             if (shard.Dsn is null || shard.ToRemove)
                 continue;
@@ -277,6 +307,14 @@ public sealed class NodeSupervisor(
             var topology = TopologyOf(cluster, snap, shard.Name, addresses);
             if (topology.Nodes.Count == 0)
                 continue; // нет закреплённых адресов (внешний кластер) — не наш объект
+
+            // Свежая сверка restore-гварда на шаге мутации (arch/19 §3.5):
+            // шард с активной restore-заявкой — ни ускорения failover, ни
+            // recreate (снапшот тика отстаёт от записи заявки); etcd недоступен
+            // — null → действует снапшот-множество тика.
+            var freshRestoring = await ReadRestoringShardsAsync(cluster, ct);
+            if (freshRestoring?.Contains(shard.Name) == true)
+                continue;
 
             // Заявка ресурсов читается лениво: только если ноду правда recreate'им;
             // тюнинг — один расчёт на шард, сразу после загрузки заявки
@@ -353,8 +391,8 @@ public sealed class NodeSupervisor(
         return Result.Success();
     }
 
-    // Конвергенция динамического DCS-конфига (arch/14 §5 C; t09 — тайминги,
-    // t11 — pg-параметры, t06 — strict): GET /config первого канонического
+    // Конвергенция динамического DCS-конфига (arch/14 §5 C; — тайминги,
+    //  — pg-параметры, — strict): GET /config первого канонического
     // Patroni-узла
     // шарда → сверка с каноном (PatroniTimings + synchronous_mode_strict из
     // config кластера — per-cluster ожидание, НЕ константа; динамический
@@ -371,7 +409,7 @@ public sealed class NodeSupervisor(
     // размер ноды по остаточному ресурсу нельзя — решение 2026-09-14), тайминги
     // конвергируются как раньше. Прочие исключения pgtune.Create (неполнота уже
     // отсечена) — фейл фазы тика, транзиент-ретрай (как в EnsureNode-путях).
-    // Транзиент-толерантно (t09): недоступность GET/PATCH — skip этого тика,
+    // Транзиент-толерантно : недоступность GET/PATCH — skip этого тика,
     // патч повторится следующим. Фазовая запись журнала при патче несёт трек
     // недоступности текущего тика.
     private async Task<Result> ConvergeDcsConfigAsync(
@@ -411,7 +449,7 @@ public sealed class NodeSupervisor(
             desired = PgParametersCanon.Desired(tuning, pgtuneSettings.ExcludeParams);
         }
 
-        // Гвард окна REST-ротации (t22, arch/14 §5 I): до txn-коммита воркер не
+        // Гвард окна REST-ротации (arch/14 §5 I): до txn-коммита воркер не
         // инициирует PATCH /config кластера по REST — транзиент-skip тика,
         // конвергенция повторится после закрытия окна.
         if (restPending is not null)
@@ -424,6 +462,10 @@ public sealed class NodeSupervisor(
         var divergence = DcsConfigConvergence.Analyze(config.Value, syncStrict, desired);
         if (divergence.Patch is null)
             return Result.Success(); // конвергентно — мутаций нет
+
+        // Живая сверка клэйма перед PATCH /config (arch/17 S5).
+        if (!await ClaimAliveAsync(cluster, $"dcs-converge/{shard.Name}", ct))
+            return Result.Success(); // транзиент-подобный отказ тика: конвергенция повторится
 
         var applied = await probe.PatchConfigAsync(probeNode, divergence.Patch, restPassword, ct);
         if (!applied.IsSuccess)
@@ -442,7 +484,7 @@ public sealed class NodeSupervisor(
         return Result.Success();
     }
 
-    // Ускорение failover при доказанно мёртвом лидере (t09, arch/14 §5 C —
+    // Ускорение failover при доказанно мёртвом лидере (arch/14 §5 C —
     // положительное свидетельство смерти процесса, флапа нет: docker-объект
     // ОТсутствует, ИЛИ контейнер есть, но не running — оба варианта означают,
     // что лидер не обслуживает, а его лидер-ключ держал бы lease до истечения
@@ -457,6 +499,15 @@ public sealed class NodeSupervisor(
         string cluster, ShardSpec shard, string missing,
         IReadOnlyDictionary<string, NodeAddress> addresses, CancellationToken ct)
     {
+        // Свежая сверка restore-гварда перед мутацией DCS (arch/19 §3.5):
+        // маркер, положенный ускорением шарда в restore, переживает чистку
+        // HA-scope демонтажём и для Patroni новой жизни — «accelerated
+        // failover» на неинициализированного кандидата (лидерство
+        // недостижимо). NotLeader — «не событие» у наблюдателей.
+        var restoring = await ReadRestoringShardsAsync(cluster, ct);
+        if (restoring?.Contains(shard.Name) == true)
+            return Result<FailoverAcceleration>.Success(FailoverAcceleration.NotLeader);
+
         var scope = $"{cluster}-{shard.Name}";
         var scopeKvs = await RangeAsync($"/service/{scope}/", ct);
         if (!scopeKvs.IsSuccess)
@@ -485,6 +536,12 @@ public sealed class NodeSupervisor(
         if (candidate is null)
             return Result<FailoverAcceleration>.Success(FailoverAcceleration.NoCandidate);
 
+        // Живая сверка клэйма перед мутацией DCS (failover-ключ + снятие
+        // лидер-ключа — самые опасные гонки двух инстансов, arch/17 S5).
+        if (!await ClaimAliveAsync(cluster, $"failover/{shard.Name}/{missing}", ct))
+            return Result<FailoverAcceleration>.Failed(new ApplicationException(
+                $"supervise {cluster}: claim lost before failover acceleration of {shard.Name}/{missing}"));
+
         var scheduled = clock.GetUtcNow().UtcDateTime.ToString("o");
         var marked = await PutAsync($"/service/{scope}/failover",
             $$"""{"leader":"{{missing}}","member":"{{candidate}}","scheduled_at":"{{scheduled}}"}""", ct);
@@ -497,7 +554,7 @@ public sealed class NodeSupervisor(
             : Result<FailoverAcceleration>.Failed(deleted.Error!);
     }
 
-    // Общий шаг пересоздания нод REST-TLS (t22, arch/14 §5 C/§5 I): ДВА входа —
+    // Общий шаг пересоздания нод REST-TLS (arch/14 §5 C/§5 I): ДВА входа —
     // (а) конвергенция живых канонических нод, созданных до TLS (нет
     // SSL_RESTAPI_CERTIFICATE в env); (б) rolling-ротация REST-пары (hash env !=
     // hash(pending) журнала). Единая механика: инспекция env контейнера, ≤1
@@ -520,6 +577,11 @@ public sealed class NodeSupervisor(
     {
         if (!driver.SupportsRunningInspection)
             return Result.Success(); // Swarm: инспекция env — заглушка, шаг no-op
+
+        // Живая сверка клэйма перед фазой пересозданий REST-TLS (arch/17 S5).
+        if (!await ClaimAliveAsync(cluster, "rest-tls", ct))
+            return Fail(new ApplicationException(
+                $"supervise {cluster}: claim lost before rest-tls step"));
 
         foreach (var shard in snap.Shards.Where(s => s.Dsn is not null && !s.ToRemove))
         {
@@ -601,14 +663,15 @@ public sealed class NodeSupervisor(
                 }
 
                 // Пересоздание с сохранением volume: stop + rm force движка
-                // (паттерн port-mismatch-ветки EnsureNodeAsync; RemoveNodeAsync
-                // снёс бы data-volume). Движок хоста ноды; null — transient.
+                // (stop → kill (spilo, arch/14 §6); паттерн port-mismatch-ветки
+                // EnsureNodeAsync; RemoveNodeAsync снёс бы data-volume).
+                // Движок хоста ноды; null — transient.
                 var engine = driver.EngineFor(addr.Host);
                 if (engine is null)
                     return Result.Failed(new ApplicationException(
                         $"supervise {cluster}: docker host {addr.Host} is unknown (rest-tls step)"));
                 var containerName = $"pgw-{cluster}-{shard.Name}-{node.Name}";
-                var stopped = await engine.StopContainerAsync(containerName, timeoutSec: 10, ct);
+                var stopped = await engine.KillContainerAsync(containerName, ct);
                 if (!stopped.IsSuccess)
                     return stopped;
                 var removed = await engine.RemoveContainerAsync(containerName, force: true, ct);
@@ -637,7 +700,7 @@ public sealed class NodeSupervisor(
         return Result.Success();
     }
 
-    // DCS-свидетель жёсткого сноса лидера (t22, spec §5.5 рев.3): реплика scope,
+    // DCS-свидетель жёсткого сноса лидера (spec §5.5 рев.3): реплика scope,
     // живая по ЧЛЕНСТВУ — /service/<scope>/members/<n> со state running.
     // Heartbeat Patroni ходит через etcd (мимо REST), поэтому свидетель жив
     // даже в легаси-http контуре, где REST-проба воркера не работает. Пробелы
@@ -711,7 +774,7 @@ public sealed class NodeSupervisor(
                 // тиком, когда нода уже не лидер (снапшот тика устареет сам собой).
                 if (alive && mode != "hard")
                 {
-                    // Гвард окна REST-ротации (t22, §5.5): switchover через REST до
+                    // Гвард окна REST-ротации (§5.5): switchover через REST до
                     // txn-коммита подавлен — skip тика (журнал), мутация
                     // ретрается после закрытия окна.
                     if (restPending is not null)
@@ -746,6 +809,11 @@ public sealed class NodeSupervisor(
             {
                 continue; // не лидер, но и источника basebackup нет — ждём
             }
+
+            // Живая сверка клэйма перед сносом/пересозданием ноды (arch/17 S5).
+            if (!await ClaimAliveAsync(cluster, $"recreate/{shard.Name}/{node.Name}", ct))
+                return Fail(new ApplicationException(
+                    $"supervise {cluster}: claim lost before recreate of {shard.Name}/{node.Name}"));
 
             var removed = await driver.RemoveNodeAsync(cluster, shard.Name, node.Name, ct);
             if (!removed.IsSuccess)
@@ -836,7 +904,7 @@ public sealed class NodeSupervisor(
             // QUARANTINED ставится эвакуатором и держится до разбора runbook'ом
             // (возврат обрабатывает эвакуатор), REMOVING — RemoveShardProcess/
             // Deprovisioning. Проба мёртвой карантинной ноды затирала бы state
-            // на UNREACHABLE — на инварианте строятся guard'ы G6/Д6 (t06).
+            // на UNREACHABLE — на инварианте строятся guard'ы G6/Д6.
             if (node.State is NodeState.Quarantined or NodeState.Removing)
                 continue;
             if (!addresses.TryGetValue($"{shard.Name}/{node.Name}", out var addr))
@@ -868,7 +936,7 @@ public sealed class NodeSupervisor(
             var trackKey = $"{shard.Name}/{name}";
             track.TryAdd(trackKey, Now());
 
-            // Лидер недоступен → ускоряем failover (t09, arch/14 §5 C): если
+            // Лидер недоступен → ускоряем failover (arch/14 §5 C): если
             // его контейнер не running (положительное свидетельство смерти —
             // транспортный флап контейнер не останавливает), удаляем
             // лидер-ключ (lease держал бы до ttl≥20 — мимо бюджета ≤5с) и
@@ -906,10 +974,10 @@ public sealed class NodeSupervisor(
                         cluster, shard, name, addresses, ct);
                     if (!accelerated.IsSuccess)
                         return accelerated;
-                    // В этой ветке NotLeader невозможен (isLeader по свежему
-                    // leader-ключу тика): Applied → accelerated, NoCandidate →
-                    // elections (spec §3.1).
-                    if (!shard.ToRemove)
+                    // Applied → accelerated, NoCandidate → elections (spec §3.1);
+                    // NotLeader — шард в restore (свежая сверка гварда внутри
+                    // ускорения, arch/19 §3.5) — факта нет, маркер не ставился.
+                    if (!shard.ToRemove && accelerated.Value is not FailoverAcceleration.NotLeader)
                         haFacts.FailoverDetected(shard.Name, name,
                             accelerated.Value == FailoverAcceleration.Applied ? "accelerated" : "elections",
                             track[trackKey]);
@@ -928,6 +996,16 @@ public sealed class NodeSupervisor(
                 // пересоздать с тем же адресом; Patroni сделает pg_basebackup.
                 if (addr is null)
                     continue;
+                // Свежая сверка restore-гварда перед сносом volume (arch/19
+                // §3.5): снос — невозвратная мутация, гвард снапшота тика
+                // отстаёт от записи заявки.
+                var rebuildingShard = await ReadRestoringShardsAsync(cluster, ct);
+                if (rebuildingShard?.Contains(shard.Name) == true)
+                    continue;
+                // Живая сверка клэйма перед сносом/пересозданием ноды (arch/17 S5).
+                if (!await ClaimAliveAsync(cluster, $"rebuild/{shard.Name}/{name}", ct))
+                    return Fail(new ApplicationException(
+                        $"supervise {cluster}: claim lost before rebuild of {shard.Name}/{name}"));
                 var removed = await driver.RemoveNodeAsync(cluster, shard.Name, name, ct);
                 if (!removed.IsSuccess)
                     return removed;
@@ -1029,61 +1107,44 @@ public sealed class NodeSupervisor(
 
     private long Now() => clock.GetUtcNow().ToUnixTimeSeconds();
 
-    // Failover-обёртки: первый успешный endpoint выигрывает.
-    private async Task<Result<Kv?>> GetAsync(string key, CancellationToken ct)
-    {
-        Result<Kv?> last = default;
-        foreach (var endpoint in endpoints)
-        {
-            var result = await etcd.GetAsync(endpoint, key, ct);
-            if (result.IsSuccess)
-                return result;
-            last = result;
-        }
+    // Failover-обёртки: первый успешный endpoint выигрывает (общий хелпер).
+    private Task<Result<Kv?>> GetAsync(string key, CancellationToken ct)
+        => EtcdEndpointFailover.CallAsync(endpoints, (endpoint, token) => etcd.GetAsync(endpoint, key, token), ct);
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
-    }
-
-    private async Task<Result> PutAsync(string key, string value, CancellationToken ct)
-    {
-        Result last = default;
-        foreach (var endpoint in endpoints)
-        {
-            var result = await etcd.PutAsync(endpoint, key, value, null, ct);
-            if (result.IsSuccess)
-                return result;
-            last = result;
-        }
-
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
-    }
+    private Task<Result> PutAsync(string key, string value, CancellationToken ct)
+        => EtcdEndpointFailover.CallAsync(endpoints, (endpoint, token) => etcd.PutAsync(endpoint, key, value, null, token), ct);
 
     // Failover-обёртка удаления ключа (маркер режима recreate).
-    private async Task<Result> DeleteAsync(string key, CancellationToken ct)
+    private Task<Result> DeleteAsync(string key, CancellationToken ct)
+        => EtcdEndpointFailover.CallAsync(endpoints, (endpoint, token) => etcd.DeleteAsync(endpoint, key, prefix: false, token), ct);
+
+    private Task<Result<IReadOnlyList<Kv>>> RangeAsync(string prefix, CancellationToken ct)
+        => EtcdEndpointFailover.CallAsync(endpoints, (endpoint, token) => etcd.RangeAsync(endpoint, prefix, token), ct);
+
+    // Свежее чтение restore-гварда (arch/19 §3.5 «Гвард исключения»): множество
+    // шардов с активной (PLANNED/RUNNING/REJOINING) restore-заявкой — из etcd,
+    // НЕ из снапшота тика: снапшот отстаёт от записи заявки, и долгий тик
+    // надзора со старым множеством исполнял мутации посреди демонтажа/REJOINING
+    // (ускорение failover клало residual failover-маркер в чистый HA-scope,
+    // recreate — пустую ноду поверх восстанавливаемой). null — etcd/парсинг
+    // недоступны: вызывающий откатывается к снапшот-множеству тика (transient —
+    // следующий тик перепроверит).
+    private async Task<HashSet<string>?> ReadRestoringShardsAsync(string cluster, CancellationToken ct)
     {
-        Result last = default;
-        foreach (var endpoint in endpoints)
-        {
-            var result = await etcd.DeleteAsync(endpoint, key, prefix: false, ct);
-            if (result.IsSuccess)
-                return result;
-            last = result;
-        }
-
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
-    }
-
-    private async Task<Result<IReadOnlyList<Kv>>> RangeAsync(string prefix, CancellationToken ct)
-    {
-        Result<IReadOnlyList<Kv>> last = default;
-        foreach (var endpoint in endpoints)
-        {
-            var result = await etcd.RangeAsync(endpoint, prefix, ct);
-            if (result.IsSuccess)
-                return result;
-            last = result;
-        }
-
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
+        var kvs = await RangeAsync($"/pgworker/backups/{cluster}/", ct);
+        if (!kvs.IsSuccess)
+            return null;
+        var parsed = BackupsParser.Parse(kvs.Value, out _);
+        if (!parsed.IsSuccess)
+            return null;
+        var mine = parsed.Value.FirstOrDefault(b => b.Cluster == cluster);
+        var restoring = new HashSet<string>();
+        if (mine is null)
+            return restoring;
+        foreach (var (shard, sb) in mine.Shards)
+            if (sb.Restores.Any(r => r.State
+                    is RestoreStatus.Planned or RestoreStatus.Running or RestoreStatus.Rejoining))
+                restoring.Add(shard);
+        return restoring;
     }
 }

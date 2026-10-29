@@ -5,7 +5,7 @@ using Shared.Etcd.Client;
 namespace AdminPanel.Etcd;
 
 // Сборка EtcdSnapshot из частей одного тика: чистая функция (spec §6.5).
-// Alerts/Probes пусты в t03 (наполняют AlertEngine t04 и пробы t06).
+// Alerts/Probes пусты в (наполняют AlertEngine и пробы).
 public static class SnapshotBuilder
 {
     public static EtcdSnapshot Build(
@@ -45,9 +45,9 @@ public static class SnapshotBuilder
                 .. etcdWorkerEndpoints?.Errors ?? [],
                 .. WorkerCertParser.ErrorsOf(etcdWorkerCert ?? new WorkerCertParseResult(null, null))],
             clusters.UnknownKeyCount + service.UnknownKeyCount,
-            backups.Storage, // /pgworker/backups/storage (t06)
-            backups.Orphans, // /pgworker/backups/orphans (t07)
-            null, // S3Storage вносит SnapshotRefresher из стора (t08)
+            backups.Storage, // /pgworker/backups/storage 
+            backups.Orphans, // /pgworker/backups/orphans 
+            null, // S3Storage вносит SnapshotRefresher из стора 
             workerCert?.Cert, // /workers/api_tls/pgworker (adminpanel/02 §9.9)
             etcdSnapshots?.Info, // /etcdworker/snapshots (adminpanel/02 §2.3.5)
             etcdDomain?.Domain, // /etcd/config + /etcd/nodes/ (02 §2.3.5)

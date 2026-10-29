@@ -4,7 +4,7 @@ using Shared.Core.DI;
 
 namespace AdminPanel.Api.Operations;
 
-// Тело PUT /api/clusters/{cluster}/config (t06, 02 §9.10): уходит в API
+// Тело PUT /api/clusters/{cluster}/config (02 §9.10): уходит в API
 // PgWorker как есть; панель не валидирует — источник истины воркер.
 public sealed record UpdateClusterConfigRequest(bool? SynchronousModeStrict);
 

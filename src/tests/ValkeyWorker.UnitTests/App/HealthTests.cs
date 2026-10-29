@@ -9,7 +9,7 @@ using Xunit;
 
 namespace ValkeyWorker.UnitTests.App;
 
-// Catch-all проб и чека (t09; arch/21 §7): сетевое исключение шлюза → Result.Failed
+// Catch-all проб и чека ( arch/21 §7): сетевое исключение шлюза → Result.Failed
 // (Degraded с секциями), чек никогда не падает исключением.
 public class HealthTests
 {
@@ -67,7 +67,7 @@ public class HealthTests
         hosts.Should().BeEmpty();
     }
 
-    // Фабрика docker-клиентов, бросающая при создании (t09): пер-хостовая
+    // Фабрика docker-клиентов, бросающая при создании : пер-хостовая
     // проба оборачивает исключение в Failed — структура, не бросок.
     private sealed class ThrowingFactory : DockerEngineFactory
     {

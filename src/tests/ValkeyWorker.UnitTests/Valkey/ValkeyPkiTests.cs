@@ -15,7 +15,7 @@ public sealed class ValkeyPkiTests
         // Act
         var (pem1, _) = ValkeyPki.GenerateCa("c1");
         var (pem2, _) = ValkeyPki.GenerateCa("c1");
-        // Assert — subject уникален (отпечаток ключа; фикс t07 kafka)
+        // Assert — subject уникален (отпечаток ключа; фикс kafka)
         Assert.NotEqual(ExtractSubject(pem1), ExtractSubject(pem2));
         Assert.StartsWith("CN=vwk-c1-ca-", ExtractSubject(pem1));
     }

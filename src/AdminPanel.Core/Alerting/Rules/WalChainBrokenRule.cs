@@ -3,11 +3,11 @@ using Shared.Core.DI;
 
 namespace AdminPanel.Core.Alerting.Rules;
 
-// wal-chain-broken (critical, t03, arch/19 §3/§8): DEGRADED WAL-поток шарда живого
+// wal-chain-broken (critical, arch/19 §3/§8): DEGRADED WAL-поток шарда живого
 // Active-кластера — дыра цепочки/инвалидация слота; текст — error статуса.
 // transient-деградации (lag/тишина) тоже DEGRADED у воркера — различает текст
 // error статуса (дыра/слот vs отставание/тишина); правило едино для DEGRADED,
-// критичность оправдана: восстановление только новым полным (t02/t07) либо
+// критичность оправдана: восстановление только новым полным (/) либо
 // самооздоровлением потока (transient) — оператор смотрит error.
 [InjectAsSingleton(typeof(IAlertRule))]
 public sealed class WalChainBrokenRule : IAlertRule
@@ -44,9 +44,9 @@ public sealed class WalChainBrokenRule : IAlertRule
                     ["error"] = wal.Error ?? "",
                 },
                 null,
-                "investigate the status error: chain gap/slot — take a new full backup (PgWorker, runbook arch/19 §3: a full backup with wal_start_segment above the gap is required); lag/silence — check the pgw-backup-wal-<C>-<X> container and S3 availability (transient, the worker retries)",
+                "investigate the status error: chain gap/slot — take a new full backup (PgWorker, runbook arch/19 §3: a full backup with wal_start_segment above the gap is required); lag/silence — check the receivers' status keys /pgworker/backups/<C>/<X>/agent/<N> in etcd and the walreceiver log inside the node containers (transient, the receiver retries)",
                 AlertRemedy.WorkerAuto,
-                "gap/slot: WAL agent stopped by the worker, recovery is a new full backup (t02)/reconcile (t07); lag/silence: self-healing by ticks");
+                "gap/slot: receivers pause themselves by the STOPPED/WAL_CHAIN_ERROR gate (etcd), recovery is a new full backup reconcile; lag/silence: self-healing by the receiver retry loop");
         }
     }
 }

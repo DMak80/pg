@@ -36,7 +36,7 @@ public sealed class InventoryMismatchRule : IAlertRule
                .Where(b => b.State is BucketState.Syncing or BucketState.Frozen or BucketState.Aborting)
                .Select(b => $"bucket_{b.Id}")
                .ToHashSet();
-            // Окно rollback ЗАВЕРШЁННОГО переезда (t01): до finalize/rollback на старом
+            // Окно rollback ЗАВЕРШЁННОГО переезда : до finalize/rollback на старом
             // шарде намеренно остаются замороженная схема и подписка sub_<bucket>_rb —
             // это управляемое состояние, а не рассинхрон (аномалия без подписки — сигнал).
             var rollbackWindow = runtime.Subscriptions

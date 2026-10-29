@@ -5,7 +5,7 @@ using Shared.Etcd.Client;
 
 namespace PgWorker.Etcd.S3;
 
-/// <summary>Чтение домена /s3/ (t36): интерфейс для резолвера/фабрики —
+/// <summary>Чтение домена /s3/ : интерфейс для резолвера/фабрики —
 /// тестовые фейки не тянут etcd-транспорт.</summary>
 public interface IS3PoolStore
 {
@@ -15,7 +15,7 @@ public interface IS3PoolStore
 }
 
 /// <summary>
-/// Чтение домена /s3/ воркером (t36, arch/23 §7): PgWorker — ЧИТАТЕЛЬ,
+/// Чтение домена /s3/ воркером (arch/23 §7): PgWorker — ЧИТАТЕЛЬ,
 /// участником контракта не становится. ReadAsync собирает пул из config,
 /// ключей заявки нод (nodes/&lt;I&gt;/state|placement — ИСТОЧНИК ИМЁН),
 /// placed_on и portalloc (ИСТОЧНИК АДРЕСОВ); Failover — локальный цикл по

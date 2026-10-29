@@ -40,14 +40,14 @@ public sealed record HaSupervisionFact(
 public sealed record HaSupervisionFacts(HaSupervisionFact? LastFailover, HaSupervisionFact? LastRebuild);
 
 /// <summary>Состояние надзора из work-ключа одним чтением: трек + факты +
-/// окно REST-ротации (rest_pending, t22 arch/14 §5 I).</summary>
+/// окно REST-ротации (rest_pending, arch/14 §5 I).</summary>
 public sealed record SupervisionState(
     IReadOnlyDictionary<string, long> Unreachable,
     HaSupervisionFact? LastFailover,
     HaSupervisionFact? LastRebuild,
     string? RestPending = null);
 
-// Обёртка над {prefix}/work/<C> (t09: общий журнал Pg/Kfw, префикс — параметр ctor):
+// Обёртка над {prefix}/work/<C> (: общий журнал Pg/Kfw, префикс — параметр ctor):
 // чистая etcd-запись фаз процессов (крах оставляет самодокументирующийся след;
 // takeover продолжает фазу).
 public sealed class WorkJournal(string keyPrefix, IEtcdGateway gateway, string[] endpoints)
@@ -84,10 +84,10 @@ public sealed class WorkJournal(string keyPrefix, IEtcdGateway gateway, string[]
 
     // {prefix}/work/<C>: {"op","phase","instance","updated_unix","last_error"} + поля серии
     // ретраев (fail_count/fail_first_unix/retry_not_before_unix — null опускается).
-    // unreachable — трек недоступности надзора (t09: фазовые записи в тике
+    // unreachable — трек недоступности надзора (: фазовые записи в тике
     // надзора — конвергенция DCS/брокеров — обязаны его сохранять, иначе
     // пороги сбрасываются каждой фазовой записью).
-    // restPending — пара REST-ротации «в полёте» (t22, arch/14 §5 I): не задан
+    // restPending — пара REST-ротации «в полёте» (arch/14 §5 I): не задан
     // и не dropRestPending — carry-forward (как unreachable/facts); сброс —
     // фазовой записью done ротатора (dropRestPending=true).
     public async Task<Result> WritePhaseAsync(
@@ -95,9 +95,9 @@ public sealed class WorkJournal(string keyPrefix, IEtcdGateway gateway, string[]
         RetrySeries? series = null, IReadOnlyDictionary<string, long>? unreachable = null,
         HaSupervisionFacts? facts = null, string? restPending = null, bool dropRestPending = false)
     {
-        // t09 (унификация с Pg, фикс AC6): фазовая запись БЕЗ явного трека
+        //  (унификация с Pg, фикс AC6): фазовая запись БЕЗ явного трека
         // сохраняет существующий (fix сброса порогов NodeDead/BrokerDead;
-        // унификация t09). Владелец unreachable-трека — supervise (полная
+        // унификация). Владелец unreachable-трека — supervise (полная
         // перезапись актуальным множеством — только WriteSupervisionAsync);
         // прочие процессы пишут фазы в тот же ключ {prefix}/work/<C> каждый тик
         // и раньше стирали трек → supervise перечитывал пустоту и пороги не
@@ -154,7 +154,7 @@ public sealed class WorkJournal(string keyPrefix, IEtcdGateway gateway, string[]
     // facts — HA-факты тика (arch/14 §3.3: facts=null → поля опускаются —
     // kfw/vwk-ключи фактов не несут; Pg-надзор передаёт всегда, в т.ч.
     // null-полями внутри = сброс/флап).
-    // rest_pending (t22): carry-forward — супервизионная запись НЕ затирает
+    // rest_pending : carry-forward — супервизионная запись НЕ затирает
     // окно REST-ротации (pending между тиками ротатора жив).
     // ВНИМАНИЕ: стационарная запись надзора событие PhaseWritten НЕ эмитит —
     // supervise подавлен в фазовых сериях (arch/18 §2.2, решение ревью Ф4-2).

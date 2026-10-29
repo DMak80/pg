@@ -4,7 +4,7 @@ using Microsoft.Extensions.Options;
 
 namespace AdminPanel.Core.Alerting.Rules;
 
-// backup-full-stale (critical, t02): возраст последнего COMPLETED полного
+// backup-full-stale (critical): возраст последнего COMPLETED полного
 // шарда > full_max_age_sec политики кластера (нет policy — панельный дефолт);
 // COMPLETED нет вовсе — «полного никогда не было»; пустой префикс кластера
 // (подсистема не включена) — молчим (arch/19 §4). Воркер алерты не пишет.

@@ -2,7 +2,7 @@ using System.Text.Json;
 using Shared.Core;
 using Shared.Etcd.Client;
 using ValkeyWorker.Core.Model;
-// t07: NodeLimits здесь — доменная запись; docker-факт движка (Shared.Docker)
+// NodeLimits здесь — доменная запись; docker-факт движка (Shared.Docker)
 // конвертируется драйвером — Shared-имя сюда не пробрасывается.
 using NodeLimits = ValkeyWorker.Core.Model.NodeLimits;
 using ValkeyWorker.Core.Valkey;
@@ -50,7 +50,7 @@ public sealed class NodeSupervisor(
             return claimed;
 
         // Креды/декларация: без них args не собрать — пересоздания невозможны;
-        // ca_pem/ca_key (t06) обязательны — пробы по TLS, пересоздание без сертов
+        // ca_pem/ca_key обязательны — пробы по TLS, пересоздание без сертов
         // не создаётся (миграция T доиграет — warning надзора).
         if (snap.AdminPassword is null || snap.AppPassword is null || snap.CaPem is null || snap.CaKey is null)
         {
@@ -170,7 +170,7 @@ public sealed class NodeSupervisor(
                 allEnvModel = false; // foreign PROVISIONING — модель ноды не проверена
             }
 
-            // PING-проба admin-кредом по advertised-адресу (не published), по TLS (t06).
+            // PING-проба admin-кредом по advertised-адресу (не published), по TLS.
             var ping = await valkey.PingAsync(
                 new ValkeyEndpoint(
                     options.AdvertisedClientHost ?? address.Value.Host, address.Value.ClientPort,
@@ -396,17 +396,6 @@ public sealed class NodeSupervisor(
     private Task<Result<Kv?>> GetAsync(string key, CancellationToken ct)
         => ProvisioningProcess.GetWithFailoverAsync(gateway, endpoints, key, ct);
 
-    private async Task<Result<TxnResult>> TxnAsync(TxnRequest req, CancellationToken ct)
-    {
-        Result<TxnResult> last = default;
-        foreach (var endpoint in endpoints)
-        {
-            var result = await gateway.TxnAsync(endpoint, req, ct);
-            if (result.IsSuccess)
-                return result;
-            last = result;
-        }
-
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
-    }
+    private Task<Result<TxnResult>> TxnAsync(TxnRequest req, CancellationToken ct)
+        => EtcdEndpointFailover.CallAsync(endpoints, (endpoint, token) => gateway.TxnAsync(endpoint, req, token), ct);
 }

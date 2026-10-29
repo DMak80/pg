@@ -11,7 +11,7 @@ using Xunit;
 
 namespace KafkaWorker.UnitTests.App;
 
-// Живой-Ф7 (t09; spec §3.1): StatusError = «последний тик» — провальный тик
+// Живой-Ф7 ( spec §3.1): StatusError = «последний тик» — провальный тик
 // зажигает ошибку healthz, успешный гасит. Липкая ошибка = вечный 503
 // «<Loop> service has error» при живых тиках — дефект наблюдаемости 2026-08-31.
 public class LoopsHealthResetTests

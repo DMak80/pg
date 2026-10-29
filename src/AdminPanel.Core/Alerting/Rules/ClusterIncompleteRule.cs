@@ -3,7 +3,7 @@ using Shared.Core.DI;
 
 namespace AdminPanel.Core.Alerting.Rules;
 
-// cluster-incomplete (warning): префикс /clusters/<C> без config (arch/03 §4; Incomplete — t03 §3.6).
+// cluster-incomplete (warning): префикс /clusters/<C> без config (arch/03 §4; Incomplete — §3.6).
 [InjectAsSingleton(typeof(IAlertRule))]
 public sealed class ClusterIncompleteRule : IAlertRule
 {

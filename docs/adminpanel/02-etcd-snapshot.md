@@ -47,13 +47,13 @@ Sticky+failover: активный endpoint держится, отказ → сл
   etcd ломает UI, а отказ etcd — панель (инвариант arch/01 §1).
 - **Числа int64 из gateway — decimal-строки** (`mod_revision`, `dbSize`, `raftTerm`,
   lease-ID): DTO читаются `System.Text.Json` с `JsonNumberHandling.
-  AllowReadingFromString|WriteAsString` (t03 §3.17); lease-ID — десятичная строка
+  AllowReadingFromString|WriteAsString`); lease-ID — десятичная строка
   (урок rolecheck pg (этот монорепозиторий)).
 - **«Тесты недоступности»**: `http://localhost:1` даёт мгновенный connection refused —
-  сценарий отказа не флакает по таймауту (t03).
+  сценарий отказа не флакает по таймауту.
 - **Мутации сида в тестах** — только в классе со **своим** контейнером
   (`EtcdRoutingMutationTests`): перевладение routing в общем контейнере меняет
-  ACTIVE-раскладку и ломает ожидания инвентаря соседних тестов класса (t90,
-  «лишний bucket_0»).
+  ACTIVE-раскладку и ломает ожидания инвентаря соседних тестов класса
+  («лишний bucket_0»).
 - **Пустые `Endpoints`** — не падение: снапшот пуст, панель и healthz живы (норма
   для старта без ENV).

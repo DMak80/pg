@@ -28,14 +28,42 @@ public class NodeConfigBuildersTests
     private static readonly HashSet<string> DefaultExclude =
         new(["io_method", "io_workers"], StringComparer.Ordinal);
 
-    // Фабрика тестового REST-TLS-материала ноды (t22): PEM-заглушки + пара.
+    // Фабрика тестового REST-TLS-материала ноды : PEM-заглушки + пара.
     // Реальная генерация серта — RestCertificateCache (драйвер, задача 17).
-    public static NodeRestTls TestRestTls(string password = "Rest0Pass0000000000000000000000A")
+    // Пароль генерируется в рантайме: секрет не зашивается в исходник; поле
+    // переиспользуется всеми обращениями.
+    private static readonly string RestPassword = GenerateTestPassword();
+
+    private static string GenerateTestPassword()
+    {
+        // Криптостойкий генератор: 24 символа букв/цифр (безопасно для env/YAML).
+        const string alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+        var bytes = System.Security.Cryptography.RandomNumberGenerator.GetBytes(24);
+        return new string(bytes.Select(b => alphabet[b % alphabet.Length]).ToArray());
+    }
+
+    public static NodeRestTls TestRestTls(string? password = null)
         => new(
             "-----BEGIN CERTIFICATE-----\nMIIBtest-node\n-----END CERTIFICATE-----\n",
             "-----BEGIN PRIVATE KEY-----\nMIIBtest-key\n-----END PRIVATE KEY-----\n",
             "-----BEGIN CERTIFICATE-----\nMIIBtest-ca\n-----END CERTIFICATE-----\n",
-            password);
+            password ?? RestPassword);
+
+    [Fact]
+    public void SpiloEnv_CarriesReceiverIdentityEnv()
+    {
+        // Arrange: топология шарда из 2 нод и адреса etcd.
+
+        // Act: генерируем env контейнера ноды.
+        var env = SpiloEnvBuilder.Build(Topology, Etcd, Secrets, syncStrict: false, "shard1a", TestRestTls());
+
+        // Assert: идентичность приёмника WAL (arch/19 §3/§14 §2.1) — СТРОГО
+        // всегда, независимо от Backups:Enabled (гейтится etcd-стоп-ключами):
+        // координаты из topology/nodeName.
+        env["PGW_BACKUP_CLUSTER"].Should().Be(Topology.Cluster);
+        env["PGW_BACKUP_SHARD"].Should().Be(Topology.Shard);
+        env["PGW_BACKUP_NODE"].Should().Be("shard1a");
+    }
 
     [Fact]
     public void SpiloEnv_ContainsPatroniAndPgParameters()
@@ -45,7 +73,7 @@ public class NodeConfigBuildersTests
         // Act: генерируем env контейнера ноды.
         var env = SpiloEnvBuilder.Build(Topology, Etcd, Secrets, syncStrict: false, "shard1a", TestRestTls());
 
-        // Assert: SPILO_CONFIGURATION несёт канон таймингов (t09: полы Patroni
+        // Assert: SPILO_CONFIGURATION несёт канон таймингов (: полы Patroni
         // 4.x — ttl=20/loop_wait=1/retry_timeout=3), P3 (wal_level),
         // P15 (max_connections) и callback мастер-ключа.
         var spilo = env["SPILO_CONFIGURATION"];
@@ -68,7 +96,7 @@ public class NodeConfigBuildersTests
         var env = SpiloEnvBuilder.Build(Topology, Etcd, Secrets, syncStrict: false, "shard1a", rest);
 
         // Assert: значения SSL_RESTAPI_* равны входным PEM байт-в-байт
-        // (Spilo пишет значение в файл буквально — факт §2 п.2 спеки t22).
+        // (Spilo пишет значение в файл буквально — факт §2 п.2 спеки).
         env["SSL_RESTAPI_CERTIFICATE"].Should().Be(rest.CertPem);
         env["SSL_RESTAPI_PRIVATE_KEY"].Should().Be(rest.KeyPem);
         env["SSL_RESTAPI_CA"].Should().Be(rest.CaPem);
@@ -79,13 +107,15 @@ public class NodeConfigBuildersTests
     [Fact]
     public void SpiloEnv_RestPasswordHashIsSha256Hex()
     {
-        // Arrange: пара rest (эффективная) — "Rest0Pass…".
+        // Arrange: пара rest (эффективная) — пароль фикстуры (рантайм-генерация).
+        var rest = TestRestTls();
+
         // Act: сборка env.
-        var env = SpiloEnvBuilder.Build(Topology, Etcd, Secrets, syncStrict: false, "shard1a", TestRestTls());
+        var env = SpiloEnvBuilder.Build(Topology, Etcd, Secrets, syncStrict: false, "shard1a", rest);
 
         // Assert: PGW_REST_PASSWORD_HASH = короткий sha256-hex пары (hex-lower) —
         // факт «контейнер несёт эту пару» для инспекции rolling-ротации.
-        env["PGW_REST_PASSWORD_HASH"].Should().Be(RestRotation.PasswordHash("Rest0Pass0000000000000000000000A"));
+        env["PGW_REST_PASSWORD_HASH"].Should().Be(RestRotation.PasswordHash(rest.RestPassword));
         env["PGW_REST_PASSWORD_HASH"].Should().MatchRegex("^[0-9a-f]{64}$");
     }
 
@@ -93,22 +123,36 @@ public class NodeConfigBuildersTests
     public void SpiloEnv_SpiloConfigurationContainsRestapiSection()
     {
         // Arrange: материал + имя ноды shard1a (cluster=shop, shard=shard1).
+        var rest = TestRestTls();
+
         // Act: сборка env.
         var spilo = SpiloEnvBuilder.Build(
-            Topology, Etcd, Secrets, syncStrict: false, "shard1a", TestRestTls())["SPILO_CONFIGURATION"];
+            Topology, Etcd, Secrets, syncStrict: false, "shard1a", rest)["SPILO_CONFIGURATION"];
 
         // Assert: секция restapi верхнего уровня — connect_address DNS-именем
         // ноды (SAN серта; перекрывает шаблонный IP), authentication — пара
-        // per-cluster; listen НЕ переопределён (шаблонный :8008 корректен).
+        // per-cluster (пароль в двойных кавычках — YAML-safe);
+        // listen НЕ переопределён (шаблонный :8008 корректен).
         spilo.Should().Contain("restapi:");
         spilo.Should().Contain("connect_address: \"pgw-shop-shard1-shard1a:8008\"");
         spilo.Should().Contain("authentication:");
         spilo.Should().Contain("username: patroni");
-        spilo.Should().Contain("password: \"Rest0Pass0000000000000000000000A\"");
+        spilo.Should().Contain($"password: \"{rest.RestPassword}\"");
         spilo.Should().NotContain("listen");
         // bootstrap-секция не изменена (restapi — дополнение, не замена)
         spilo.Should().Contain("bootstrap:");
-        spilo.Should().Contain("on_role_change: /home/postgres/master-lease.py");
+        // callbacks — в ЛОКАЛЬНОЙ postgresql-секции (Patroni мержит локальную
+        // postgresql поверх динамической ключ-за-ключом: Spilo-дефолт callbacks
+        // из шаблона целиком заменяет DCS-свой — в bootstrap.dcs наш скрипт
+        // молча не работает); локальная секция идёт ДО bootstrap.
+        var callbacksIdx = spilo.IndexOf("postgresql:", StringComparison.Ordinal);
+        var bootstrapIdx = spilo.IndexOf("bootstrap:", StringComparison.Ordinal);
+        callbacksIdx.Should().BePositive("the local postgresql section must exist");
+        callbacksIdx.Should().BeLessThan(bootstrapIdx, "callbacks live in the LOCAL postgresql section, not bootstrap.dcs");
+        spilo.Should().Contain("on_start: /opt/pgw-tools/pgwnodetool master-lease --env-file /home/postgres/pgw-node.env");
+        spilo.Should().Contain("on_role_change: /opt/pgw-tools/pgwnodetool master-lease --env-file /home/postgres/pgw-node.env");
+        spilo.Should().NotContain("dcs.postgresql.callbacks",
+            "callbacks must not be under bootstrap.dcs (Spilo default overrides it)");
     }
 
     [Fact]
@@ -300,7 +344,7 @@ public class NodeConfigBuildersTests
         spilo.Should().Contain("# P15: 55 pg_doorman + 2 admin/mover + 3 reserved");
     }
 
-    // AAA (t06, spec §3.4/§6.3): strict из параметра попадает в bootstrap.dcs
+    // AAA (spec §3.4/§6.3): strict из параметра попадает в bootstrap.dcs
     // SPILO_CONFIGURATION рядом с synchronous_mode; false сохраняет прежний текст.
     [Theory]
     [InlineData(true, "synchronous_mode_strict: true")]
