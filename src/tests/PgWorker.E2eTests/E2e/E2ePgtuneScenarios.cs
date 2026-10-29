@@ -31,7 +31,10 @@ public sealed class E2ePgtuneScenarios(E2ePgtuneScenariosFx Ctx) : IClassFixture
     [Fact]
     public async Task Pgtune_Provision_EnvCarriesMergedParamsAndSyncedDoorman()
     {
-        var ct = TestContext.Current.CancellationToken;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
+        var ct = cts.Token;
         // Уникальное имя кластера на прогон (own-only teardown по тегу прогона).
         var cluster = $"pshop{Fx.ClusterTag}";
 
@@ -45,7 +48,7 @@ public sealed class E2ePgtuneScenarios(E2ePgtuneScenariosFx Ctx) : IClassFixture
 
         // Act: provisioning до Active.
         var provisioned = await E2eFixture.WaitForAsync(
-            E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(360), ct);
+            E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(90), ct);
         provisioned.Should().BeTrue("provisioning of the cluster must reach Active; " +
                                     $"work={await WorkDumpAsync(cluster, ct)}");
 
@@ -89,7 +92,10 @@ public sealed class E2ePgtuneScenarios(E2ePgtuneScenariosFx Ctx) : IClassFixture
     [Fact]
     public async Task Pgtune_Recreate_Node_RecomputedFromActualRequests()
     {
-        var ct = TestContext.Current.CancellationToken;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
+        var ct = cts.Token;
         var cluster = $"rshop{Fx.ClusterTag}";
         var node = $"pgw-{cluster}-shard1-shard1b";
 
@@ -97,7 +103,7 @@ public sealed class E2ePgtuneScenarios(E2ePgtuneScenariosFx Ctx) : IClassFixture
         await SeedClusterAsync(cluster, requestMem: "4Gi", ct);
         await using var host = await Fx.StartHostAsync("s1", ct: ct);
         var provisioned = await E2eFixture.WaitForAsync(
-            E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(360), ct);
+            E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(90), ct);
         provisioned.Should().BeTrue("provisioning of the cluster must reach Active; " +
                                     $"work={await WorkDumpAsync(cluster, ct)}");
 
@@ -127,7 +133,7 @@ public sealed class E2ePgtuneScenarios(E2ePgtuneScenariosFx Ctx) : IClassFixture
             {
                 return false; // контейнера ещё нет — надзор пересоздаст следующим тиком
             }
-        }, TimeSpan.FromSeconds(120), ct);
+        }, TimeSpan.FromSeconds(90), ct);
         recreated.Should().BeTrue($"the recreated node must get env from the 8Gi request; " +
                                   $"work={await WorkDumpAsync(cluster, ct)}");
 
@@ -152,7 +158,10 @@ public sealed class E2ePgtuneScenarios(E2ePgtuneScenariosFx Ctx) : IClassFixture
     [Fact]
     public async Task Pgtune_ClaimsRequired_ProvisioningFailsUntilClaimSeeded()
     {
-        var ct = TestContext.Current.CancellationToken;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
+        var ct = cts.Token;
         var cluster = $"dshop{Fx.ClusterTag}";
 
         // Arrange: сид БЕЗ заявок request_* (SeedClusterAsync сеет их только при
@@ -164,7 +173,7 @@ public sealed class E2ePgtuneScenarios(E2ePgtuneScenariosFx Ctx) : IClassFixture
         // содержит request_mem; FailAsync пишет error.Message в /pgworker/work).
         var journaled = await E2eFixture.WaitForAsync(async () =>
             (await WorkDumpAsync(cluster, ct)).Contains("request_mem", StringComparison.Ordinal),
-            TimeSpan.FromSeconds(180), ct);
+            TimeSpan.FromSeconds(90), ct);
 
         // Assert: без обязательной заявки кластер НЕ поднялся — конфиг всё ещё
         // со state=NOT_INITIALIZED (Active снимает state-ключ).
@@ -184,7 +193,7 @@ public sealed class E2ePgtuneScenarios(E2ePgtuneScenariosFx Ctx) : IClassFixture
         }
 
         var provisioned = await E2eFixture.WaitForAsync(
-            E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(360), ct);
+            E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(90), ct);
         provisioned.Should().BeTrue("after seeding the mandatory requests provisioning must reach Active; " +
                                     $"work={await WorkDumpAsync(cluster, ct)}");
 
@@ -214,7 +223,10 @@ public sealed class E2ePgtuneScenarios(E2ePgtuneScenariosFx Ctx) : IClassFixture
     [Fact]
     public async Task Pgtune_Convergence_RequestMemChanged_DcsPatchedLivePgReloaded()
     {
-        var ct = TestContext.Current.CancellationToken;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
+        var ct = cts.Token;
         var cluster = $"cshop{Fx.ClusterTag}";
         var scope = $"{cluster}-shard1";
 
@@ -223,7 +235,7 @@ public sealed class E2ePgtuneScenarios(E2ePgtuneScenariosFx Ctx) : IClassFixture
         await SeedClusterAsync(cluster, requestMem: "8Gi", ct);
         await using var host = await Fx.StartHostAsync("s1", ct: ct);
         var provisioned = await E2eFixture.WaitForAsync(
-            E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(360), ct);
+            E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(90), ct);
         provisioned.Should().BeTrue("provisioning of the cluster must reach Active; " +
                                     $"work={await WorkDumpAsync(cluster, ct)}");
 
@@ -249,7 +261,7 @@ public sealed class E2ePgtuneScenarios(E2ePgtuneScenariosFx Ctx) : IClassFixture
         var configUpdated = await E2eFixture.WaitForAsync(async () =>
             await GetPatroniParameterAsync(master.Patroni, "shared_buffers", ct) == "4GB"
             && await GetPatroniParameterAsync(master.Patroni, "effective_cache_size", ct) == "12GB",
-            TimeSpan.FromSeconds(120), ct);
+            TimeSpan.FromSeconds(90), ct);
         configUpdated.Should().BeTrue("the supervision tick must patch the DCS config from the new request; " +
                                       $"work={await WorkDumpAsync(cluster, ct)}");
 
@@ -293,7 +305,7 @@ public sealed class E2ePgtuneScenarios(E2ePgtuneScenariosFx Ctx) : IClassFixture
         var rolledBack = await E2eFixture.WaitForAsync(async () =>
             await GetPatroniParameterAsync(master.Patroni, "shared_buffers", ct) == "2GB"
             && await GetPatroniParameterAsync(master.Patroni, "effective_cache_size", ct) == "6GB",
-            TimeSpan.FromSeconds(120), ct);
+            TimeSpan.FromSeconds(90), ct);
         rolledBack.Should().BeTrue("decreasing values also converge (a downward patch); " +
                                    $"work={await WorkDumpAsync(cluster, ct)}");
     }

@@ -30,7 +30,10 @@ public sealed class E2ePatroniRestTlsScenarios(E2ePatroniRestTlsScenariosFx Ctx)
     [Fact]
     public async Task E2ePatroniRestTls_HttpsOnlyAuthAndP11()
     {
-        var ct = TestContext.Current.CancellationToken;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
+        var ct = cts.Token;
         var cluster = $"rtls{Fx.ClusterTag}";
         try
         {
@@ -48,7 +51,7 @@ public sealed class E2ePatroniRestTlsScenarios(E2ePatroniRestTlsScenariosFx Ctx)
             await using (var p1 = await Fx.StartHostAsync("rtls-p1", extraEnv: extraEnv, ct: ct))
             {
                 var provisioned = await E2ePhase.WaitAsync(Fx, "rtls-provisioning",
-                    E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ActiveAsync(cluster), shards: ["shard1"]), TimeSpan.FromSeconds(360), ct);
+                    E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ActiveAsync(cluster), shards: ["shard1"]), TimeSpan.FromSeconds(90), ct);
                 provisioned.Should().BeTrue($"provisioning must reach Active; work={await WorkDumpAsync(cluster, ct)}");
 
                 var addresses = await PortallocAsync(cluster);
@@ -163,7 +166,7 @@ public sealed class E2ePatroniRestTlsScenarios(E2ePatroniRestTlsScenariosFx Ctx)
                             ["inspect", "-f", "{{range .Config.Env}}{{println .}}{{end}}", legacy], ct);
                         return env.Contains("SSL_RESTAPI_CERTIFICATE");
                     },
-                    TimeSpan.FromSeconds(120), ct);
+                    TimeSpan.FromSeconds(90), ct);
                 migrated.Should().BeTrue("the convergence step must bring the legacy node to a live node with TLS env");
 
                 // Volume пережил пересоздание (маркер на месте).
@@ -173,7 +176,7 @@ public sealed class E2ePatroniRestTlsScenarios(E2ePatroniRestTlsScenariosFx Ctx)
 
                 // Кластер снова Active после миграции.
                 var activeAgain = await E2ePhase.WaitAsync(Fx, "rtls-active-again",
-                    E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ActiveAsync(cluster), shards: ["shard1"]), TimeSpan.FromSeconds(360), ct);
+                    E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ActiveAsync(cluster), shards: ["shard1"]), TimeSpan.FromSeconds(90), ct);
                 activeAgain.Should().BeTrue($"the cluster is Active after the migration; work={await WorkDumpAsync(cluster, ct)}");
             }
         }

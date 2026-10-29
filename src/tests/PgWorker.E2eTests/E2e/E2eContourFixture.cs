@@ -29,9 +29,21 @@ public abstract class E2eContourFixture : IAsyncLifetime
 
     public async ValueTask DisposeAsync()
     {
-        if (Fx is not null)
+        // Слот Guard'а освобождается ПРИ ЛЮБОМ исходе teardown'а (канон §3.9):
+        // исключение DisposeAsync окружения (ассерт чистоты и пр.) не должно
+        // утекать слот — иначе серия исчерпывает Guard и навечно висит в
+        // Acquire последующих классов. Исход teardown'а — наружу.
+        if (Fx is null)
+            return; // провал подъёма: слот Release'нут в catch InitializeAsync —
+                    // второй Release здесь переполняет Gate (SemaphoreFullException)
+        try
+        {
             await Fx.DisposeAsync();
-        E2eParallelismGuard.Release(Slug);
+        }
+        finally
+        {
+            E2eParallelismGuard.Release(Slug);
+        }
     }
 
     /// <summary>Пометка упавшего сценария (stop-режим teardown'а).</summary>

@@ -41,7 +41,10 @@ public sealed class E2eWalStreamTliScenarios(E2eWalStreamTliScenariosFx Ctx) : I
     public async Task WalStream_TliBackfill_ClosesGap_NoRpoLoss()
     {
         // Arrange — окружение, оба агента running, база цепочки TLI 1
-        var ct = TestContext.Current.CancellationToken;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
+        var ct = cts.Token;
         var (fx, app, cluster, adminDsn, masterNode) = await StartWalScenarioAsync("wal-t24a", "shopt24a", ct);
         await using var appOwner = app;
         var hostEndpoint = Fx.S3Endpoint;
@@ -52,7 +55,7 @@ public sealed class E2eWalStreamTliScenarios(E2eWalStreamTliScenariosFx Ctx) : I
             // t25: факты приёмников — статус-ключи agent/<N> (state=streaming)
             var facts = await Fx.ReadWalAgentFactsAsync(cluster, "shard1", ct);
             return facts.Count(f => f.State == "streaming") >= 2;
-        }, TimeSpan.FromSeconds(300), ct);
+        }, TimeSpan.FromSeconds(90), ct);
         bothStreaming.Should().BeTrue("both receivers streaming before the failover");
         await GenerateWalAsync(adminDsn, ct); // база цепочки TLI 1
 
@@ -68,7 +71,7 @@ public sealed class E2eWalStreamTliScenarios(E2eWalStreamTliScenariosFx Ctx) : I
             if (tli1.Count < 2) return false;
             tailBefore = tli1[^1];
             return true;
-        }, TimeSpan.FromSeconds(300), ct);
+        }, TimeSpan.FromSeconds(90), ct);
         anchored.Should().BeTrue("the TLI 1 chain is anchored by closed segments before the outage");
         tailBefore.Should().NotBeNull();
 
@@ -125,7 +128,7 @@ public sealed class E2eWalStreamTliScenarios(E2eWalStreamTliScenariosFx Ctx) : I
                 return listed.IsSuccess && listed.Value.Select(o => o.Name)
                     .Any(n => n.Length == 24 && n.StartsWith("00000001", StringComparison.Ordinal)
                         && string.CompareOrdinal(n, tailBefore) > 0);
-            }, TimeSpan.FromSeconds(300), ct, progress: walListingProgress);
+            }, TimeSpan.FromSeconds(90), ct, progress: walListingProgress);
             backfilled.Should().BeTrue("old-timeline segments above the tail are backfilled (AC1)");
 
             // (б) .history нового TLI в S3
@@ -133,7 +136,7 @@ public sealed class E2eWalStreamTliScenarios(E2eWalStreamTliScenariosFx Ctx) : I
             {
                 var listed = await backupS3.ListWalAsync(cluster, "shard1", ct: ct);
                 return listed.IsSuccess && listed.Value.Any(o => o.Name == $"{tli:x8}.history");
-            }, TimeSpan.FromSeconds(300), ct, progress: walListingProgress);
+            }, TimeSpan.FromSeconds(90), ct, progress: walListingProgress);
             history.Should().BeTrue($"wal/{tli:x8}.history is uploaded by the receiver (AC1)");
 
             // (в) ключ ACTIVE, цепочка непрерывна (CheckWithRestart)
@@ -150,7 +153,7 @@ public sealed class E2eWalStreamTliScenarios(E2eWalStreamTliScenariosFx Ctx) : I
                     chainStart.Value, listed.Value.Select(o => o.Name));
                 return chain.IsContinuous
                     && read.Value.State == WalStreamStatus.Active;
-            }, TimeSpan.FromSeconds(300), ct, progress: walListingProgress);
+            }, TimeSpan.FromSeconds(90), ct, progress: walListingProgress);
             glueOk.Should().BeTrue("the CheckWithRestart chain is continuous, the key ACTIVE (AC1)");
 
             // Итоговые ассерты — ключ зазора НЕТ, ошибки tli-gap НЕТ, WAL_CHAIN_ERROR НЕТ
@@ -195,7 +198,10 @@ public sealed class E2eWalStreamTliScenarios(E2eWalStreamTliScenariosFx Ctx) : I
     public async Task WalStream_TliJump_GapMarked_FullRetaken()
     {
         // Arrange — окружение, оба агента running, база цепочки TLI 1
-        var ct = TestContext.Current.CancellationToken;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
+        var ct = cts.Token;
         var (fx, app, cluster, adminDsn, masterNode) = await StartWalScenarioAsync("wal-t24b", "shopt24b", ct);
         await using var appOwner = app;
         var hostEndpoint = Fx.S3Endpoint;
@@ -206,7 +212,7 @@ public sealed class E2eWalStreamTliScenarios(E2eWalStreamTliScenariosFx Ctx) : I
             // t25: факты приёмников — статус-ключи agent/<N> (state=streaming)
             var facts = await Fx.ReadWalAgentFactsAsync(cluster, "shard1", ct);
             return facts.Count(f => f.State == "streaming") >= 2;
-        }, TimeSpan.FromSeconds(300), ct);
+        }, TimeSpan.FromSeconds(90), ct);
         bothStreaming.Should().BeTrue("both receivers streaming before the failover");
         await GenerateWalAsync(adminDsn, ct); // база цепочки TLI 1
 
@@ -220,7 +226,7 @@ public sealed class E2eWalStreamTliScenarios(E2eWalStreamTliScenariosFx Ctx) : I
             var listed = await backupS3.ListWalAsync(cluster, "shard1", ct: ct);
             return listed.IsSuccess && listed.Value.Count(o =>
                 o.Name.Length == 24 && o.Name.StartsWith("00000001", StringComparison.Ordinal)) >= 2;
-        }, TimeSpan.FromSeconds(300), ct);
+        }, TimeSpan.FromSeconds(90), ct);
         anchored.Should().BeTrue("the TLI 1 chain must be anchored in S3 before the outage");
 
         using var load = new CancellationTokenSource();
@@ -372,7 +378,7 @@ public sealed class E2eWalStreamTliScenarios(E2eWalStreamTliScenariosFx Ctx) : I
                 var control = PgWorker.Backups.WalFileName.FromLsn(
                     checkTli, controlLsn!);
                 return string.CompareOrdinal(chainLastSegment, control.Name) >= 0;
-            }, TimeSpan.FromSeconds(900), ct, progress: ConvergenceProgressAsync);
+            }, TimeSpan.FromSeconds(90), ct, progress: ConvergenceProgressAsync);
 
             // Жёсткие ассерты по факту сходимости (детали — в debug-дампе фазы).
             // Сначала общий факт сходимости: при несходимости тест падает с
@@ -493,7 +499,7 @@ public sealed class E2eWalStreamTliScenarios(E2eWalStreamTliScenariosFx Ctx) : I
                 try
                 {
                     using var response = await PatroniHttp.GetAsync(
-                        $"https://localhost:{addr.GetProperty("Patroni").GetInt32()}/cluster", ct);
+                        $"https://localhost:{addr.GetProperty("patroni").GetInt32()}/cluster", ct);
                     if (!response.IsSuccessStatusCode) continue;
                     using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
                     foreach (var member in doc.RootElement.GetProperty("members").EnumerateArray())
@@ -515,7 +521,7 @@ public sealed class E2eWalStreamTliScenarios(E2eWalStreamTliScenariosFx Ctx) : I
             }
 
             return tli >= 2;
-        }, TimeSpan.FromSeconds(120), ct,
+        }, TimeSpan.FromSeconds(90), ct,
             progress: () => Task.FromResult($"tli={tli}"));
         return tli;
     }
@@ -623,7 +629,7 @@ public sealed class E2eWalStreamTliScenarios(E2eWalStreamTliScenariosFx Ctx) : I
                 try
                 {
                     using var response = await PatroniHttp.GetAsync(
-                        $"https://localhost:{addr.GetProperty("Patroni").GetInt32()}/cluster", ct);
+                        $"https://localhost:{addr.GetProperty("patroni").GetInt32()}/cluster", ct);
                     if (!response.IsSuccessStatusCode) continue;
                     var body = await response.Content.ReadAsStringAsync(ct);
                     return $"[{key}] " + body[..Math.Min(700, body.Length)];
@@ -655,7 +661,7 @@ public sealed class E2eWalStreamTliScenarios(E2eWalStreamTliScenariosFx Ctx) : I
         await SeedClusterAsync(cluster);
         var app = await StartWalHostAsync(slug, ct);
         var provisioned = await E2ePhase.WaitAsync(Fx, "wal-provisioning",
-            E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(360), ct);
+            E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(90), ct);
         provisioned.Should().BeTrue("provisioning must reach DONE before the WAL load");
         Console.WriteLine($"[PHASE] {slug}: provisioning DONE in " +
             (DateTimeOffset.UtcNow.ToUnixTimeSeconds() - phaseStart) + " s from start");
@@ -775,7 +781,7 @@ public sealed class E2eWalStreamTliScenarios(E2eWalStreamTliScenariosFx Ctx) : I
                 try
                 {
                     using var response = await PatroniHttp.GetAsync(
-                        $"https://localhost:{addr.GetProperty("Patroni").GetInt32()}/primary", ct);
+                        $"https://localhost:{addr.GetProperty("patroni").GetInt32()}/primary", ct);
                     if (response.IsSuccessStatusCode)
                     {
                         primary = key.Split('/')[1];
@@ -789,10 +795,10 @@ public sealed class E2eWalStreamTliScenarios(E2eWalStreamTliScenariosFx Ctx) : I
             }
 
             return false;
-        }, TimeSpan.FromSeconds(120), ct);
+        }, TimeSpan.FromSeconds(90), ct);
         resolved.Should().BeTrue("the shard primary must be resolved by Patroni probes");
         var entry = entries[$"{shard}/{primary}"];
-        return ("localhost", entry.GetProperty("Pg").GetInt32(),
+        return ("localhost", entry.GetProperty("pg").GetInt32(),
             primary!);
     }
 

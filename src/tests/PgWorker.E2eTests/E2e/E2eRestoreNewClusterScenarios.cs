@@ -43,7 +43,10 @@ public sealed class E2eRestoreNewClusterScenarios(E2eRestoreNewClusterScenariosF
     [Fact]
     public async Task Restore_NewCluster_FromSourcePrefix()
     {
-        var ct = TestContext.Current.CancellationToken;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
+        var ct = cts.Token;
         await RunScenarioAsync(async fx =>
         {
             // Arrange 1 — окружение + кластер rdr<тег>, данные, полный COMPLETED
@@ -52,7 +55,7 @@ public sealed class E2eRestoreNewClusterScenarios(E2eRestoreNewClusterScenariosF
             await using var app = await StartRestoreHostAsync("rsdr", ct);
 
             var provisioned = await WaitPhaseAsync(
-                "provisioning", E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(360), ct);
+                "provisioning", E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(90), ct);
             provisioned.Should().BeTrue("provisioning must reach DONE before the backups");
             var (pgHost, pgPort) = await MasterPgAsync(cluster, "shard1", ct);
             var adminDsn = DatabaseProvisioner.BuildAdminDsn(pgHost, pgPort, cluster,
@@ -62,7 +65,7 @@ public sealed class E2eRestoreNewClusterScenarios(E2eRestoreNewClusterScenariosF
                 "INSERT INTO dr_probe SELECT g, 'keeper' FROM generate_series(1, 7) g", ct);
             var completed = await WaitPhaseAsync(
                 "full-completed", async () => (await FullKeysAsync(cluster, "shard1")).Any(f => f.Value.Contains("COMPLETED")),
-                TimeSpan.FromSeconds(300), ct);
+                TimeSpan.FromSeconds(90), ct);
             completed.Should().BeTrue("the full must reach COMPLETED before the deprovision");
 
             // Act 1 — deprovision: state=TO_REMOVE → контур A пуст (D2-ассерт: и
@@ -82,7 +85,7 @@ public sealed class E2eRestoreNewClusterScenarios(E2eRestoreNewClusterScenariosF
                 if (!clusterPrefix.IsSuccess || !backupsPrefix.IsSuccess)
                     return false;
                 return clusterPrefix.Value.Count == 0 && backupsPrefix.Value.Count == 0;
-            }, TimeSpan.FromSeconds(300), ct);
+            }, TimeSpan.FromSeconds(90), ct);
             deprovisioned.Should().BeTrue("the deprovision must clean up the cluster contour (incl. restore/full/wal)");
             await using var backupS3 = HostS3Client();
             var fullsInS3 = await backupS3.ListFullsAsync(cluster, "shard1", ct: ct);
@@ -93,7 +96,7 @@ public sealed class E2eRestoreNewClusterScenarios(E2eRestoreNewClusterScenariosF
             // (source-override; ретрай на гонку t03 — дыры цепочки source-префикса)
             await SeedClusterAsync(cluster);
             var reprovisioned = await WaitPhaseAsync(
-                "reprovisioning", E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(360), ct);
+                "reprovisioning", E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(90), ct);
             reprovisioned.Should().BeTrue("the cluster must come up anew (empty shards)");
             var drDone = await RestoreWithRetryAsync(cluster, "shard1",
                 target: "latest", source: $"{cluster}/shard1", ct: ct);
@@ -122,7 +125,7 @@ public sealed class E2eRestoreNewClusterScenarios(E2eRestoreNewClusterScenariosF
                 {
                     return false; // рестарт-окно — поллинг повторит
                 }
-            }, TimeSpan.FromSeconds(120), ct);
+            }, TimeSpan.FromSeconds(90), ct);
             masterReady.Should().BeTrue(
                 "the master must accept SQL before the final read (t10 gate): "
                 + await DumpDiagnosticsAsync(cluster, "shard1"));
@@ -308,7 +311,7 @@ public sealed class E2eRestoreNewClusterScenarios(E2eRestoreNewClusterScenariosF
             try
             {
                 var status = await WaitRestoreAsync(cluster, shard, restoreId,
-                    TimeSpan.FromSeconds(300), ct);
+                    TimeSpan.FromSeconds(90), ct);
                 return status!;
             }
             catch (ChainGapException) when (attempt < attempts)
@@ -512,7 +515,7 @@ public sealed class E2eRestoreNewClusterScenarios(E2eRestoreNewClusterScenariosF
         {
             var names = await ListWalNamesAsync(cluster, shard);
             return names.Select(WalPosOf).DefaultIfEmpty(-1).Max() >= targetPos;
-        }, TimeSpan.FromSeconds(180), ct);
+        }, TimeSpan.FromSeconds(90), ct);
 
     private async Task<Kv?> GetOrNullAsync(string key)
         => (await G.GetAsync(Endpoint, key, TestContext.Current.CancellationToken)).Value;
@@ -559,7 +562,7 @@ public sealed class E2eRestoreNewClusterScenarios(E2eRestoreNewClusterScenariosF
                 try
                 {
                     using var response = await PatroniHttp.GetAsync(
-                        $"https://localhost:{addr.GetProperty("Patroni").GetInt32()}/primary", ct);
+                        $"https://localhost:{addr.GetProperty("patroni").GetInt32()}/primary", ct);
                     if (response.IsSuccessStatusCode)
                     {
                         primary = key.Split('/')[1];
@@ -573,10 +576,10 @@ public sealed class E2eRestoreNewClusterScenarios(E2eRestoreNewClusterScenariosF
             }
 
             return false;
-        }, TimeSpan.FromSeconds(120), ct);
+        }, TimeSpan.FromSeconds(90), ct);
         resolved.Should().BeTrue("the shard primary must be resolved by Patroni probes");
         var entry = entries[$"{shard}/{primary}"];
-        return ("localhost", entries[$"{shard}/{primary}"].GetProperty("Pg").GetInt32());
+        return ("localhost", entries[$"{shard}/{primary}"].GetProperty("pg").GetInt32());
     }
 
     // Условие готовности provisioning: config без state + dsn + нода RUNNING.

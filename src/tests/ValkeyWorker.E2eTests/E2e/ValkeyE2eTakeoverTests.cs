@@ -38,7 +38,10 @@ public class ValkeyE2eTakeoverTests
         await using var fx = await ValkeyE2eEnvironment.StartTwoAsync("vwk-takeover");
         var cluster = $"tvw{fx.ClusterTag}";
         using var api1 = fx.CreateApiHttpClient(fx.Api1BaseUrl);
-        var ct = TestContext.Current.CancellationToken;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
+        var ct = cts.Token;
 
         try
         {
@@ -47,7 +50,7 @@ public class ValkeyE2eTakeoverTests
             var bothUp = await ValkeyE2ePhase.WaitAsync(fx, "takeover-instances-up", async () =>
                 (await RangeAsync(fx, "/valkeyworker/api/", ct)).Count == 2
                 && (await RangeAsync(fx, "/valkeyworker/instances/", ct)).Count == 2,
-                TimeSpan.FromSeconds(100), ct,
+                TimeSpan.FromSeconds(90), ct,
                 progress: async () =>
                 {
                     var api = (await RangeAsync(fx, "/valkeyworker/api/", ct)).Count;
@@ -88,7 +91,7 @@ public class ValkeyE2eTakeoverTests
             {
                 var kv = await GetOrNullAsync(fx, $"/valkey/clusters/{cluster}/nodes/node1/state", ct);
                 return kv == "RUNNING" && await fx.ContainerAliveAsync($"vwk-{cluster}-node1");
-            }, TimeSpan.FromSeconds(100), ct,
+            }, TimeSpan.FromSeconds(90), ct,
                 progress: async () =>
                     $"state={await GetOrNullAsync(fx, $"/valkey/clusters/{cluster}/nodes/node1/state", ct) ?? "none"}");
             provisioned.Should().BeTrue("cluster provisioning must reach RUNNING within 100 s");

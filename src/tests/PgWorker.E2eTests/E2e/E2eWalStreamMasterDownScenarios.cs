@@ -38,7 +38,10 @@ public sealed class E2eWalStreamMasterDownScenarios(E2eWalStreamMasterDownScenar
     public async Task WalStream_MasterDown_ReplicaAgentContinues()
     {
         // Arrange — окружение, оба агента живы, нагрузка фоном
-        var ct = TestContext.Current.CancellationToken;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
+        var ct = cts.Token;
         var (fx, app, cluster, adminDsn, masterNode) = await StartWalScenarioAsync("wal-ac4", "shopac4", ct);
         await using var appOwner = app;
         var hostEndpoint = Fx.S3Endpoint;
@@ -49,7 +52,7 @@ public sealed class E2eWalStreamMasterDownScenarios(E2eWalStreamMasterDownScenar
             // t25: факты приёмников — статус-ключи agent/<N> (state=streaming)
             var facts = await Fx.ReadWalAgentFactsAsync(cluster, "shard1", ct);
             return facts.Count(f => f.State == "streaming") >= 2;
-        }, TimeSpan.FromSeconds(300), ct);
+        }, TimeSpan.FromSeconds(90), ct);
         bothStreaming.Should().BeTrue("both receivers streaming before the master dies");
         using var load = new CancellationTokenSource();
         var loader = BackgroundWalLoadAsync(adminDsn, load.Token);
@@ -94,7 +97,7 @@ public sealed class E2eWalStreamMasterDownScenarios(E2eWalStreamMasterDownScenar
                 window++;
                 await Task.Delay(TimeSpan.FromSeconds(30), ct); // 30-с окно проверки — дословно, полл не учащается
                 return false;
-            }, TimeSpan.FromSeconds(600), ct,
+            }, TimeSpan.FromSeconds(90), ct,
                 progress: () => Task.FromResult($"unreachable={(stillUnreachable ? "yes" : "no")}, window {window}"));
             TestContext.Current.TestOutputHelper?.WriteLine(
                 $"[PHASE] wal-ac4: repair phase finished/lifted (repaired={repaired}) — key measurements");
@@ -105,7 +108,7 @@ public sealed class E2eWalStreamMasterDownScenarios(E2eWalStreamMasterDownScenar
             {
                 var list = await backupS3.ListWalAsync(cluster, "shard1", ct: ct);
                 return list.IsSuccess && list.Value.Count > beforeList.Value.Count;
-            }, TimeSpan.FromSeconds(300), ct,
+            }, TimeSpan.FromSeconds(90), ct,
                 // Динамика листинга wal/-префикса по тикам (t29 §3.9): растёт ли
                 // число сегментов; S3-листинг не чаще интервала тиков (5 с).
                 progress: async () =>
@@ -144,7 +147,7 @@ public sealed class E2eWalStreamMasterDownScenarios(E2eWalStreamMasterDownScenar
             {
                 var facts = await Fx.ReadWalAgentFactsAsync(cluster, "shard1", ct);
                 return facts.Any(f => f.Node == newMasterNode && f.State == "streaming");
-            }, TimeSpan.FromSeconds(300), ct);
+            }, TimeSpan.FromSeconds(90), ct);
             newReceiver.Should().BeTrue($"the receiver of the new master node {newMasterNode} streams");
         }
         catch (Exception ex)
@@ -228,7 +231,7 @@ public sealed class E2eWalStreamMasterDownScenarios(E2eWalStreamMasterDownScenar
                 try
                 {
                     using var response = await PatroniHttp.GetAsync(
-                        $"https://localhost:{addr.GetProperty("Patroni").GetInt32()}/cluster", ct);
+                        $"https://localhost:{addr.GetProperty("patroni").GetInt32()}/cluster", ct);
                     if (!response.IsSuccessStatusCode) continue;
                     using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
                     foreach (var member in doc.RootElement.GetProperty("members").EnumerateArray())
@@ -250,7 +253,7 @@ public sealed class E2eWalStreamMasterDownScenarios(E2eWalStreamMasterDownScenar
             }
 
             return tli >= 2;
-        }, TimeSpan.FromSeconds(120), ct,
+        }, TimeSpan.FromSeconds(90), ct,
             progress: () => Task.FromResult($"tli={tli}"));
         return tli;
     }
@@ -343,7 +346,7 @@ public sealed class E2eWalStreamMasterDownScenarios(E2eWalStreamMasterDownScenar
                 try
                 {
                     using var response = await PatroniHttp.GetAsync(
-                        $"https://localhost:{addr.GetProperty("Patroni").GetInt32()}/cluster", ct);
+                        $"https://localhost:{addr.GetProperty("patroni").GetInt32()}/cluster", ct);
                     if (!response.IsSuccessStatusCode) continue;
                     var body = await response.Content.ReadAsStringAsync(ct);
                     return $"[{key}] " + body[..Math.Min(700, body.Length)];
@@ -377,7 +380,7 @@ public sealed class E2eWalStreamMasterDownScenarios(E2eWalStreamMasterDownScenar
         await SeedClusterAsync(cluster);
         var app = await StartWalHostAsync(slug, ct);
         var provisioned = await E2ePhase.WaitAsync(Fx, "wal-ac4-provisioning",
-            E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(360), ct);
+            E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(90), ct);
         provisioned.Should().BeTrue("provisioning must reach DONE before the WAL load");
         Console.WriteLine($"[PHASE] {slug}: provisioning DONE in " +
             (DateTimeOffset.UtcNow.ToUnixTimeSeconds() - phaseStart) + " s from start");
@@ -480,7 +483,7 @@ public sealed class E2eWalStreamMasterDownScenarios(E2eWalStreamMasterDownScenar
                 try
                 {
                     using var response = await PatroniHttp.GetAsync(
-                        $"https://localhost:{addr.GetProperty("Patroni").GetInt32()}/primary", ct);
+                        $"https://localhost:{addr.GetProperty("patroni").GetInt32()}/primary", ct);
                     if (response.IsSuccessStatusCode)
                     {
                         primary = key.Split('/')[1];
@@ -494,10 +497,10 @@ public sealed class E2eWalStreamMasterDownScenarios(E2eWalStreamMasterDownScenar
             }
 
             return false;
-        }, TimeSpan.FromSeconds(120), ct);
+        }, TimeSpan.FromSeconds(90), ct);
         resolved.Should().BeTrue("the shard primary must be resolved by Patroni probes");
         var entry = entries[$"{shard}/{primary}"];
-        return ("localhost", entry.GetProperty("Pg").GetInt32(),
+        return ("localhost", entry.GetProperty("pg").GetInt32(),
             primary!);
 
     }

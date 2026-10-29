@@ -31,7 +31,10 @@ public sealed class E2eScenarios(E2eScenariosFx Ctx, ITestOutputHelper output) :
     [Fact]
     public async Task Acceptance_Scenario_Ac2_To_Ac7()
     {
-        var ct = TestContext.Current.CancellationToken;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
+        var ct = cts.Token;
         try
         {
             await RunAc2ToAc7Async(ct);
@@ -52,7 +55,7 @@ public sealed class E2eScenarios(E2eScenariosFx Ctx, ITestOutputHelper output) :
         await using var p1 = await Fx.StartHostAsync("p1", ct: ct);
 
         var provisioned = await E2ePhase.WaitAsync(Fx,
-            "ac2-provisioning", E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, Cluster, () => ProvisionedAsync(Cluster)), TimeSpan.FromSeconds(360), ct);
+            "ac2-provisioning", E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, Cluster, () => ProvisionedAsync(Cluster)), TimeSpan.FromSeconds(90), ct);
         provisioned.Should().BeTrue("provisioning must reach DONE (dsn/RUNNING/no status/state)");
 
         await AssertProvisioningResultAsync(Cluster, ct);
@@ -60,14 +63,14 @@ public sealed class E2eScenarios(E2eScenariosFx Ctx, ITestOutputHelper output) :
         // ---------- AC3: takeover (kill посреди provisioning) ----------
         await SeedClusterAsync(Cluster2);
         var started = await E2ePhase.WaitAsync(Fx,
-            "ac3-takeover-started", () => DockerHasAsync($"pgw-{Cluster2}-"), TimeSpan.FromSeconds(120), ct);
+            "ac3-takeover-started", () => DockerHasAsync($"pgw-{Cluster2}-"), TimeSpan.FromSeconds(90), ct);
         started.Should().BeTrue($"the first instance must start provisioning {Cluster2}");
 
         p1.Kill(); // смерть контроллера посреди работы (клэйм истечёт ≤15 с)
         await using var p2 = await Fx.StartHostAsync("p2", ct: ct);
 
         var taken = await E2ePhase.WaitAsync(Fx,
-            "ac3-takeover-done", E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, Cluster2, () => ProvisionedAsync(Cluster2)), TimeSpan.FromSeconds(360), ct);
+            "ac3-takeover-done", E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, Cluster2, () => ProvisionedAsync(Cluster2)), TimeSpan.FromSeconds(90), ct);
         taken.Should().BeTrue($"the second instance must carry {Cluster2} to DONE (takeover)");
 
         var shop2Containers = await ListContainerNamesAsync($"pgw-{Cluster2}-");
@@ -77,7 +80,7 @@ public sealed class E2eScenarios(E2eScenariosFx Ctx, ITestOutputHelper output) :
         await SetToRemoveAsync(Cluster2);
 
         var deprovisioned = await E2ePhase.WaitAsync(Fx,
-            "ac4-deprovisioning", () => DeprovisionedAsync(Cluster2), TimeSpan.FromSeconds(180), ct);
+            "ac4-deprovisioning", () => DeprovisionedAsync(Cluster2), TimeSpan.FromSeconds(90), ct);
         deprovisioned.Should().BeTrue("deprovisioning must remove containers/volume/keys and release the claim");
 
         // ---------- AC5: failover/rebuild ----------
@@ -344,7 +347,7 @@ public sealed class E2eScenarios(E2eScenariosFx Ctx, ITestOutputHelper output) :
         {
             var state = await GetOrNullAsync($"/clusters/{cluster}/shards/{shard}/nodes/{masterBefore.Node}/state");
             return state?.Value == "RUNNING" && state.ModRevision > revAtStop;
-        }, TimeSpan.FromSeconds(300), ct);
+        }, TimeSpan.FromSeconds(90), ct);
         if (!rebuilt)
         {
             var current = await GetOrNullAsync($"/clusters/{cluster}/shards/{shard}/nodes/{masterBefore.Node}/state");
@@ -380,7 +383,7 @@ public sealed class E2eScenarios(E2eScenariosFx Ctx, ITestOutputHelper output) :
             {
                 return false; // нода рестартует (rebuild/патрони) — повторим
             }
-        }, TimeSpan.FromSeconds(120), ct);
+        }, TimeSpan.FromSeconds(90), ct);
         stable.Should().BeTrue("exactly one node of the shard is the master, the other is in recovery (the replica caught up)");
     }
 
@@ -400,7 +403,7 @@ public sealed class E2eScenarios(E2eScenariosFx Ctx, ITestOutputHelper output) :
                 return false;
             var state = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(journal.Value) ?? [];
             return state.TryGetValue("state", out var s) && s.GetString() == "DONE";
-        }, TimeSpan.FromSeconds(120), ct);
+        }, TimeSpan.FromSeconds(90), ct);
         evacuated.Should().BeTrue("the evacuation must finish after ShardDeadSec");
 
         var routing = (await RangeAsync($"/clusters/{cluster}/buckets/routing/"))
@@ -438,7 +441,7 @@ public sealed class E2eScenarios(E2eScenariosFx Ctx, ITestOutputHelper output) :
             var state = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(journal.Value) ?? [];
             return state.TryGetValue("state", out var s) && s.GetString() == "QUARANTINED"
                 && state.ContainsKey("returned_unix");
-        }, TimeSpan.FromSeconds(120), ct);
+        }, TimeSpan.FromSeconds(90), ct);
         if (!quarantined)
         {
             var current = await GetOrNullAsync($"/pgworker/evacuations/{cluster}/{deadShard}");
@@ -514,7 +517,7 @@ public sealed class E2eScenarios(E2eScenariosFx Ctx, ITestOutputHelper output) :
                     .Select(i => Directory.GetFiles(i.SnapshotsDir, "snapshot-*.db").Length).ToArray();
                 return after.Select((n, i) => n > before[i]).Count(g => g) == 1;
             },
-            TimeSpan.FromSeconds(240), ct);
+            TimeSpan.FromSeconds(90), ct);
         singleGrower.Should().BeTrue(
             "a non-leader does not take snapshots (§11.7): exactly one directory grows per the snapshot window");
 
@@ -543,7 +546,7 @@ public sealed class E2eScenarios(E2eScenariosFx Ctx, ITestOutputHelper output) :
 
                 return seenNow.Count == 1;
             },
-            TimeSpan.FromSeconds(120), ct);
+            TimeSpan.FromSeconds(90), ct);
         stableInstance.Should().BeTrue(
             $"the cluster {cluster} is served by only one instance (D2 claims; the re-election window after killing the previous one is respected)");
     }

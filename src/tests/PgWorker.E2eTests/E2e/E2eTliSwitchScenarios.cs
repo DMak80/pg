@@ -115,7 +115,7 @@ public sealed class TliSwitchContext : IAsyncLifetime
         await SeedClusterAsync(Cluster);
         await StartTliSwitchHostAsync("tlsw", ct);
         var provisioned = await WaitPhaseAsync(
-            "provisioning", E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, Cluster, () => ProvisionedAsync(Cluster)), TimeSpan.FromSeconds(360), ct);
+            "provisioning", E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, Cluster, () => ProvisionedAsync(Cluster)), TimeSpan.FromSeconds(90), ct);
         provisioned.Should().BeTrue("provisioning must reach DONE before the backups: "
             + await DumpDiagnosticsAsync(Cluster, "shard1"));
 
@@ -453,7 +453,7 @@ public sealed class TliSwitchContext : IAsyncLifetime
             {
                 return false; // рестарт-окно — поллинг повторит
             }
-        }, TimeSpan.FromSeconds(120), ct);
+        }, TimeSpan.FromSeconds(90), ct);
         ready.Should().BeTrue("the master must accept SQL before reading data (t10 gate): "
             + await DumpDiagnosticsAsync(Cluster, "shard1"));
         var (h, p, _) = await MasterPgAsync(Cluster, "shard1", ct);
@@ -504,7 +504,7 @@ public sealed class TliSwitchContext : IAsyncLifetime
                    && names.Any(n => PgWorker.Backups.WalFileName.TryParse(n) is { } w
                        && w.Tli == Tli2
                        && (long)w.Log * 256 + w.Seg > tli1Max);
-        }, TimeSpan.FromSeconds(300), ct);
+        }, TimeSpan.FromSeconds(90), ct);
         tailDelivered.Should().BeTrue(
             $"wal/{Tli2:x8}.history and TLI2-segments above the switch point must be delivered (the replica agent continues from the tail): "
             + await DumpDiagnosticsAsync(Cluster, "shard1"));
@@ -557,7 +557,7 @@ public sealed class TliSwitchContext : IAsyncLifetime
         await SwitchWalsAsync(dsn, 4, ct);
         var completed = await WaitPhaseAsync("full-completed", async () =>
             (await FullKeysAsync(Cluster, "shard1")).Any(f => f.Value.Contains("COMPLETED")),
-            TimeSpan.FromSeconds(300), ct);
+            TimeSpan.FromSeconds(90), ct);
         if (!completed)
             throw new ApplicationException("the full did not reach COMPLETED: " +
                 await DumpDiagnosticsAsync(Cluster, "shard1"));
@@ -578,7 +578,7 @@ public sealed class TliSwitchContext : IAsyncLifetime
         await ExecAsync(dsn,
             "INSERT INTO tli_switch_probe SELECT g, 'pre-wal' FROM generate_series(6, 10) g", ct);
         var chainSw = Stopwatch.StartNew();
-        var chainDeadline = DateTime.UtcNow + TimeSpan.FromSeconds(180);
+        var chainDeadline = DateTime.UtcNow + TimeSpan.FromSeconds(90);
         var chainOk = false;
         while (!chainOk && DateTime.UtcNow < chainDeadline)
         {
@@ -724,7 +724,7 @@ public sealed class TliSwitchContext : IAsyncLifetime
             try
             {
                 var status = await WaitRestoreAsync(cluster, shard, restoreId,
-                    TimeSpan.FromSeconds(300), ct);
+                    TimeSpan.FromSeconds(90), ct);
                 return status!;
             }
             catch (ChainGapException) when (attempt < 3)
@@ -899,7 +899,7 @@ public sealed class TliSwitchContext : IAsyncLifetime
         {
             var names = await ListWalNamesAsync(cluster, shard);
             return names.Select(WalPosOf).DefaultIfEmpty(-1).Max() >= targetPos;
-        }, TimeSpan.FromSeconds(180), ct);
+        }, TimeSpan.FromSeconds(90), ct);
 
     public async Task<Kv?> GetOrNullAsync(string key)
         => (await G.GetAsync(Endpoint, key, TestContext.Current.CancellationToken)).Value;
@@ -942,7 +942,7 @@ public sealed class TliSwitchContext : IAsyncLifetime
                 try
                 {
                     using var response = await PatroniHttp.GetAsync(
-                        $"https://localhost:{addr.GetProperty("Patroni").GetInt32()}/primary", ct);
+                        $"https://localhost:{addr.GetProperty("patroni").GetInt32()}/primary", ct);
                     if (response.IsSuccessStatusCode)
                     {
                         primary = key.Split('/')[1];
@@ -956,9 +956,9 @@ public sealed class TliSwitchContext : IAsyncLifetime
             }
 
             return false;
-        }, TimeSpan.FromSeconds(120), ct);
+        }, TimeSpan.FromSeconds(90), ct);
         resolved.Should().BeTrue("the shard primary must be resolved by Patroni probes");
-        return ("localhost", entries[$"{shard}/{primary}"].GetProperty("Pg").GetInt32(),
+        return ("localhost", entries[$"{shard}/{primary}"].GetProperty("pg").GetInt32(),
             primary!);
 
     }
@@ -981,7 +981,7 @@ public sealed class TliSwitchContext : IAsyncLifetime
                 try
                 {
                     using var response = await PatroniHttp.GetAsync(
-                        $"https://localhost:{addr.GetProperty("Patroni").GetInt32()}/cluster", ct);
+                        $"https://localhost:{addr.GetProperty("patroni").GetInt32()}/cluster", ct);
                     if (!response.IsSuccessStatusCode) continue;
                     using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
                     foreach (var member in doc.RootElement.GetProperty("members").EnumerateArray())
@@ -1003,7 +1003,7 @@ public sealed class TliSwitchContext : IAsyncLifetime
             }
 
             return tli >= 2;
-        }, TimeSpan.FromSeconds(120), ct);
+        }, TimeSpan.FromSeconds(90), ct);
         return tli;
     }
 
@@ -1093,7 +1093,10 @@ public sealed class E2eTliSwitchScenarios(TliSwitchContext Ctx) : IClassFixture<
     public async Task Restore_LatestThroughTliSwitch_PicksUpWholeTail()
     {
         Ctx.SkipIfPrepareSkipped();
-        var ct = TestContext.Current.CancellationToken;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
+        var ct = cts.Token;
         try
         {
             // Act — заявка latest по исходному полному (ретраи ≤ 3 на гонки
@@ -1151,7 +1154,7 @@ public sealed class E2eTliSwitchScenarios(TliSwitchContext Ctx) : IClassFixture<
                 // t25: приёмники вернулись — статус-ключи agent/<N> живы (lease)
                 var facts = await Ctx.Fx.ReadWalAgentFactsAsync(Ctx.Cluster, "shard1", ct);
                 return facts.Count > 0;
-            }, TimeSpan.FromSeconds(300), ct);
+            }, TimeSpan.FromSeconds(90), ct);
             reinited.Should().BeTrue("the post-restore invariant (wal-reinit): "
                 + await Ctx.DumpDiagnosticsAsync(Ctx.Cluster, "shard1"));
         }
@@ -1172,7 +1175,10 @@ public sealed class E2eTliSwitchScenarios(TliSwitchContext Ctx) : IClassFixture<
     public async Task Restore_TargetTimeThroughTliSwitch_StopsAtGoal()
     {
         Ctx.SkipIfPrepareSkipped();
-        var ct = TestContext.Current.CancellationToken;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
+        var ct = cts.Token;
         try
         {
             // Act — заявка PITR на T_cut по СТАРОМУ полному (валидация от

@@ -29,7 +29,10 @@ public class S3E2eLifecycleTests
         await using var fx = await S3E2eEnvironment.StartAsync("provision");
         var cluster = $"e2e{fx.ClusterTag}";
         using var api = fx.CreateApiHttpClient();
-        var ct = TestContext.Current.CancellationToken;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
+        var ct = cts.Token;
 
         try
         {
@@ -176,7 +179,10 @@ public class S3E2eLifecycleTests
         await using var fx = await S3E2eEnvironment.StartAsync("idempotent");
         var cluster = $"e2e{fx.ClusterTag}";
         using var api = fx.CreateApiHttpClient();
-        var ct = TestContext.Current.CancellationToken;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
+        var ct = cts.Token;
 
         try
         {
@@ -240,7 +246,10 @@ public class S3E2eLifecycleTests
         await using var fx = await S3E2eEnvironment.StartAsync("addnode");
         var cluster = $"e2e{fx.ClusterTag}";
         using var api = fx.CreateApiHttpClient();
-        var ct = TestContext.Current.CancellationToken;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
+        var ct = cts.Token;
 
         try
         {

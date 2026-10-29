@@ -38,7 +38,10 @@ public sealed class E2eWalStreamPromoteScenarios(E2eWalStreamPromoteScenariosFx 
     public async Task WalStream_Promote_TliHistory_ChainGlued()
     {
         // Arrange — окружение, оба агента, нагрузка, смерть мастера → promote
-        var ct = TestContext.Current.CancellationToken;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
+        var ct = cts.Token;
         var (fx, app, cluster, adminDsn, masterNode) = await StartWalScenarioAsync("wal-ac5", "shopac5", ct);
         await using var appOwner = app;
         var hostEndpoint = Fx.S3Endpoint;
@@ -49,7 +52,7 @@ public sealed class E2eWalStreamPromoteScenarios(E2eWalStreamPromoteScenariosFx 
             // t25: факты приёмников — статус-ключи agent/<N> (state=streaming)
             var facts = await Fx.ReadWalAgentFactsAsync(cluster, "shard1", ct);
             return facts.Count(f => f.State == "streaming") >= 2;
-        }, TimeSpan.FromSeconds(300), ct);
+        }, TimeSpan.FromSeconds(90), ct);
         bothStreaming.Should().BeTrue("both receivers streaming before the promote");
         using var load = new CancellationTokenSource();
         var loader = BackgroundWalLoadAsync(adminDsn, load.Token);
@@ -92,7 +95,7 @@ public sealed class E2eWalStreamPromoteScenarios(E2eWalStreamPromoteScenariosFx 
             {
                 var listed = await backupS3.ListWalAsync(cluster, "shard1", ct: ct);
                 return listed.IsSuccess && listed.Value.Any(o => o.Name == $"{tli:x8}.history");
-            }, TimeSpan.FromSeconds(300), ct, progress: walListingProgress);
+            }, TimeSpan.FromSeconds(90), ct, progress: walListingProgress);
             history.Should().BeTrue($"wal/{tli:x8}.history is uploaded by the receiver (AC5)");
 
             // Цепочка склеена через TLI-переход; ключ ACTIVE
@@ -109,7 +112,7 @@ public sealed class E2eWalStreamPromoteScenarios(E2eWalStreamPromoteScenariosFx 
                     chainStart.Value, listed.Value.Select(o => o.Name));
                 return chain.IsContinuous
                     && read.Value.State == PgWorker.Etcd.Parsing.WalStreamStatus.Active;
-            }, TimeSpan.FromSeconds(300), ct, progress: walListingProgress);
+            }, TimeSpan.FromSeconds(90), ct, progress: walListingProgress);
             glueOk.Should().BeTrue("the CheckWithRestart chain is continuous, the key ACTIVE (AC5)");
         }
         catch (Exception ex)
@@ -161,7 +164,7 @@ public sealed class E2eWalStreamPromoteScenarios(E2eWalStreamPromoteScenariosFx 
                 try
                 {
                     using var response = await PatroniHttp.GetAsync(
-                        $"https://localhost:{addr.GetProperty("Patroni").GetInt32()}/cluster", ct);
+                        $"https://localhost:{addr.GetProperty("patroni").GetInt32()}/cluster", ct);
                     if (!response.IsSuccessStatusCode) continue;
                     using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
                     foreach (var member in doc.RootElement.GetProperty("members").EnumerateArray())
@@ -183,7 +186,7 @@ public sealed class E2eWalStreamPromoteScenarios(E2eWalStreamPromoteScenariosFx 
             }
 
             return tli >= 2;
-        }, TimeSpan.FromSeconds(120), ct,
+        }, TimeSpan.FromSeconds(90), ct,
             progress: () => Task.FromResult($"tli={tli}"));
         return tli;
     }
@@ -276,7 +279,7 @@ public sealed class E2eWalStreamPromoteScenarios(E2eWalStreamPromoteScenariosFx 
                 try
                 {
                     using var response = await PatroniHttp.GetAsync(
-                        $"https://localhost:{addr.GetProperty("Patroni").GetInt32()}/cluster", ct);
+                        $"https://localhost:{addr.GetProperty("patroni").GetInt32()}/cluster", ct);
                     if (!response.IsSuccessStatusCode) continue;
                     var body = await response.Content.ReadAsStringAsync(ct);
                     return $"[{key}] " + body[..Math.Min(700, body.Length)];
@@ -310,7 +313,7 @@ public sealed class E2eWalStreamPromoteScenarios(E2eWalStreamPromoteScenariosFx 
         await SeedClusterAsync(cluster);
         var app = await StartWalHostAsync(slug, ct);
         var provisioned = await E2ePhase.WaitAsync(Fx, "wal-provisioning",
-            E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(360), ct);
+            E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(90), ct);
         provisioned.Should().BeTrue("provisioning must reach DONE before the WAL load");
         Console.WriteLine($"[PHASE] {slug}: provisioning DONE in " +
             (DateTimeOffset.UtcNow.ToUnixTimeSeconds() - phaseStart) + " s from start");
@@ -413,7 +416,7 @@ public sealed class E2eWalStreamPromoteScenarios(E2eWalStreamPromoteScenariosFx 
                 try
                 {
                     using var response = await PatroniHttp.GetAsync(
-                        $"https://localhost:{addr.GetProperty("Patroni").GetInt32()}/primary", ct);
+                        $"https://localhost:{addr.GetProperty("patroni").GetInt32()}/primary", ct);
                     if (response.IsSuccessStatusCode)
                     {
                         primary = key.Split('/')[1];
@@ -427,10 +430,10 @@ public sealed class E2eWalStreamPromoteScenarios(E2eWalStreamPromoteScenariosFx 
             }
 
             return false;
-        }, TimeSpan.FromSeconds(120), ct);
+        }, TimeSpan.FromSeconds(90), ct);
         resolved.Should().BeTrue("the shard primary must be resolved by Patroni probes");
         var entry = entries[$"{shard}/{primary}"];
-        return ("localhost", entry.GetProperty("Pg").GetInt32(),
+        return ("localhost", entry.GetProperty("pg").GetInt32(),
             primary!);
 
     }

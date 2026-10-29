@@ -22,7 +22,10 @@ public sealed class E2eHaEtcdScenarios(E2eHaEtcdScenariosFx Ctx) : IClassFixture
     [Fact]
     public async Task HaEtcd_KillNodeMidAddShard_SupervisionAndMasterLeaseSurvive()
     {
-        var ct = TestContext.Current.CancellationToken;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
+        var ct = cts.Token;
         var cluster = $"haetcd{Fx.ClusterTag}";
         try
         {
@@ -31,7 +34,7 @@ public sealed class E2eHaEtcdScenarios(E2eHaEtcdScenariosFx Ctx) : IClassFixture
             await SeedClusterAsync(cluster);
             await using var h1 = await Fx.StartHostAsync("ha1", ct: ct);
             var provisioned = await E2ePhase.WaitAsync(Fx, "haetcd-provisioning",
-                E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(360), ct);
+                E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(90), ct);
             provisioned.Should().BeTrue("provisioning must reach Active on the 3-node contour");
             Fx.EtcdEndpoints.Should().HaveCount(3);
             (await Fx.EtcdctlAsync("member", "list")).Split('\n', StringSplitOptions.RemoveEmptyEntries)
@@ -63,7 +66,7 @@ public sealed class E2eHaEtcdScenarios(E2eHaEtcdScenariosFx Ctx) : IClassFixture
             }
 
             var added = await E2ePhase.WaitAsync(Fx, "haetcd-shard3-registered",
-                () => ShardRegisteredAsync(cluster, "shard3"), TimeSpan.FromSeconds(360), ct,
+                () => ShardRegisteredAsync(cluster, "shard3"), TimeSpan.FromSeconds(90), ct,
                 // Прогресс: state-ключи нод shard3 + work-ключ (обрезан до ~120
                 // симв., чтобы тик читался одной строкой).
                 progress: async () =>

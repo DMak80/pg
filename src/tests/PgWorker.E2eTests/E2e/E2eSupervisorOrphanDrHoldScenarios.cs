@@ -39,7 +39,10 @@ public sealed class E2eSupervisorOrphanDrHoldScenarios(E2eSupervisorOrphanDrHold
     {
         // Arrange 1 — окружение bk-drh (withS3Node), воркер с OrphanTtlSec=120,
         //   Supervisor IntervalSec=60 (StartOrphanHostAsync — сжатое время)
-        var ct = TestContext.Current.CancellationToken;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
+        var ct = cts.Token;
         await RunScenarioAsync(async fx =>
         {
         var cluster = $"bkdrh{Fx.ClusterTag}";
@@ -50,7 +53,7 @@ public sealed class E2eSupervisorOrphanDrHoldScenarios(E2eSupervisorOrphanDrHold
         // Arrange 2 — provisioning DONE; посев СИРОТЫ С ВАЛИДНЫМ ПОЛНЫМ:
         //   manifest — критерий DR-выбора (arch/19 §3.5/§5)
         var provisioned = await WaitPhaseAsync("provisioning",
-            E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(360), ct);
+            E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(90), ct);
         provisioned.Should().BeTrue("provisioning must reach DONE");
         await McCpAsync($"{ghost}/shard1/full/20260911110000Z/base.tar", "dr-data");
         await McCpAsync($"{ghost}/shard1/full/20260911110000Z/backup_manifest", "manifest");
@@ -61,7 +64,7 @@ public sealed class E2eSupervisorOrphanDrHoldScenarios(E2eSupervisorOrphanDrHold
             var raw = await GetOrNullAsync("/pgworker/backups/orphans");
             return raw?.Value.Contains($"{ghost}/shard1") == true
                    && raw.Value.Contains("\"has_valid_full\":true");
-        }, TimeSpan.FromSeconds(180), ct);
+        }, TimeSpan.FromSeconds(90), ct);
         observed.Should().BeTrue(
             $"the orphan must land in the registry with has_valid_full=true: [{(await GetOrNullAsync("/pgworker/backups/orphans"))?.Value}]");
 
@@ -80,7 +83,7 @@ public sealed class E2eSupervisorOrphanDrHoldScenarios(E2eSupervisorOrphanDrHold
                 .Single(o => o.GetProperty("prefix").GetString() == $"{ghost}/shard1")
                 .GetProperty("first_seen_unix").GetInt64();
             return DateTimeOffset.UtcNow.ToUnixTimeSeconds() >= firstSeen + 120 + 60;
-        }, TimeSpan.FromSeconds(360), ct);
+        }, TimeSpan.FromSeconds(90), ct);
         window.Should().BeTrue("the expired TTL window plus one pass must arrive");
 
         // Assert 1 — объекты ЖИВЫ, запись OBSERVED с has_valid_full (AC1)
@@ -107,7 +110,7 @@ public sealed class E2eSupervisorOrphanDrHoldScenarios(E2eSupervisorOrphanDrHold
             return listed.Count == 0
                    && (raw is null || !raw.Value.Contains($"{ghost}/shard1"))
                    && req is null;
-        }, TimeSpan.FromSeconds(300), ct);
+        }, TimeSpan.FromSeconds(90), ct);
         swept.Should().BeTrue("the request removes the protected orphan; the record and the request are retired together");
         }, ct);
     }
@@ -138,7 +141,7 @@ public sealed class E2eSupervisorOrphanDrHoldScenarios(E2eSupervisorOrphanDrHold
     {
         var completed = await WaitPhaseAsync("first-full-completed",
             async () => (await FullKeysAsync(cluster, "shard1")).Any(f => f.Value.Contains("COMPLETED")),
-            TimeSpan.FromSeconds(300), TestContext.Current.CancellationToken);
+            TimeSpan.FromSeconds(90), TestContext.Current.CancellationToken);
         completed.Should().BeTrue("the real full must reach COMPLETED");
         var done = (await FullKeysAsync(cluster, "shard1")).Single(f => f.Value.Contains("COMPLETED"));
         return done.Key.Split('/').Last();
@@ -286,7 +289,7 @@ public sealed class E2eSupervisorOrphanDrHoldScenarios(E2eSupervisorOrphanDrHold
                 try
                 {
                     using var response = await PatroniHttp.GetAsync(
-                        $"https://localhost:{addr.GetProperty("Patroni").GetInt32()}/primary", ct);
+                        $"https://localhost:{addr.GetProperty("patroni").GetInt32()}/primary", ct);
                     if (response.IsSuccessStatusCode)
                     {
                         primary = key.Split('/')[1];
@@ -300,10 +303,10 @@ public sealed class E2eSupervisorOrphanDrHoldScenarios(E2eSupervisorOrphanDrHold
             }
 
             return false;
-        }, TimeSpan.FromSeconds(120), ct);
+        }, TimeSpan.FromSeconds(90), ct);
         resolved.Should().BeTrue("the shard primary must be resolved by Patroni probes");
         var entry = entries[$"{shard}/{primary}"];
-        return ("localhost", entries[$"{shard}/{primary}"].GetProperty("Pg").GetInt32());
+        return ("localhost", entries[$"{shard}/{primary}"].GetProperty("pg").GetInt32());
     }
 
     // Закрытие count сегментов WAL. ВАЖНО (инцидент прогона 2026-09-13):

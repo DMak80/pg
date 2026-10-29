@@ -37,7 +37,10 @@ public sealed class E2eStrictScenarios(E2eStrictScenariosFx Ctx) : IClassFixture
     public async Task Strict_BootstrapCarriesStrict_MutationConvergesWithoutRestarts()
     {
         // Arrange — окружение + strict-кластер (replicas=2) + воркер-хост.
-        var ct = TestContext.Current.CancellationToken;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
+        var ct = cts.Token;
         try
         {
             await SeedClusterAsync(Cluster, strict: true, shard2Replicas: 2);
@@ -45,7 +48,7 @@ public sealed class E2eStrictScenarios(E2eStrictScenariosFx Ctx) : IClassFixture
             var provisioned = await E2ePhase.WaitAsync(Fx, "strict-provisioning", async () =>
                 await GetOrNullAsync($"/clusters/{Cluster}/shards/shard1/dsn") is not null
                 && await GetOrNullAsync($"/clusters/{Cluster}/shards/shard2/dsn") is not null,
-                TimeSpan.FromSeconds(360), ct,
+                TimeSpan.FromSeconds(90), ct,
                 progress: ProvisioningProgressAsync);
             provisioned.Should().BeTrue("the cluster came up");
 
@@ -92,7 +95,7 @@ public sealed class E2eStrictScenarios(E2eStrictScenariosFx Ctx) : IClassFixture
             // фазы (т29 §3.10: в тиках — etcd-чтения, гигиена нагрузки).
             var converged = await E2ePhase.WaitAsync(Fx, "strict-dcs-converged", async () =>
                 await PatroniSyncStrictAsync($"pgw-{Cluster}-shard1-shard1a", ct) == false,
-                TimeSpan.FromSeconds(360), ct,
+                TimeSpan.FromSeconds(90), ct,
                 progress: async () =>
                 {
                     var work = (await GetOrNullAsync($"/pgworker/work/{Cluster}"))?.Value;
@@ -147,7 +150,10 @@ public sealed class E2eStrictScenarios(E2eStrictScenariosFx Ctx) : IClassFixture
         // Arrange — окружение + кластер strict=false, shard2 replicas=1;
         // суффикс имени кластера факта (окружение общее с фактом 1).
         _clusterSuffix = "strictb";
-        var ct = TestContext.Current.CancellationToken;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
+        var ct = cts.Token;
         try
         {
             await SeedClusterAsync(Cluster, strict: false, shard2Replicas: 1);
@@ -155,7 +161,7 @@ public sealed class E2eStrictScenarios(E2eStrictScenariosFx Ctx) : IClassFixture
             var provisioned = await E2ePhase.WaitAsync(Fx, "strict-provisioning", async () =>
                 await GetOrNullAsync($"/clusters/{Cluster}/shards/shard1/dsn") is not null
                 && await GetOrNullAsync($"/clusters/{Cluster}/shards/shard2/dsn") is not null,
-                TimeSpan.FromSeconds(360), ct,
+                TimeSpan.FromSeconds(90), ct,
                 progress: ProvisioningProgressAsync);
             provisioned.Should().BeTrue("the cluster came up (incl. the single-replica shard2)");
 

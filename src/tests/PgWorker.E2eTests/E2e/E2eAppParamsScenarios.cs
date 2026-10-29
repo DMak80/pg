@@ -24,7 +24,10 @@ public sealed class E2eAppParamsScenarios(E2eAppParamsScenariosFx Ctx) : IClassF
     public async Task AppParams_Provisioning_AllNodesGetDefaultAndStable()
     {
         // Arrange — сид NOT_INITIALIZED без app_params-ключей (генерирует PgWorker)
-        var ct = TestContext.Current.CancellationToken;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
+        var ct = cts.Token;
         await SeedClusterAsync(Cluster);
         await using var app = await Fx.StartHostAsync("appparams", ct: ct);
 
@@ -32,7 +35,7 @@ public sealed class E2eAppParamsScenarios(E2eAppParamsScenariosFx Ctx) : IClassF
         var provisioned = await E2eFixture.WaitForAsync(async () =>
             await GetOrNullAsync($"/clusters/{Cluster}/shards/shard1/dsn") is not null
             && await GetOrNullAsync($"/clusters/{Cluster}/shards/shard2/dsn") is not null,
-            TimeSpan.FromSeconds(360), ct);
+            TimeSpan.FromSeconds(90), ct);
 
         // Assert 1 (критерий 2): у КАЖДОЙ ноды обоих шардов app_params = дефолт
         // конфига ("sslmode=require"), без user/password в значении.

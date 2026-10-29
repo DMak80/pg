@@ -39,7 +39,10 @@ public sealed class E2eSupervisorOrphanRegistryScenarios(E2eSupervisorOrphanRegi
     {
         // Arrange 1 — окружение bk-orf (withS3Node), кластер bkorf<тег>, воркер с
         //   Supervisor { IntervalSec=60, OrphanTtlSec=120 } (сжатое время)
-        var ct = TestContext.Current.CancellationToken;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
+        var ct = cts.Token;
         await RunScenarioAsync(async fx =>
         {
         var cluster = $"bkorf{Fx.ClusterTag}";
@@ -51,7 +54,7 @@ public sealed class E2eSupervisorOrphanRegistryScenarios(E2eSupervisorOrphanRegi
         //   mc-посев сиротского префикса ghost<тег>/shard1/full/20260901.../x
         //   (кластера ghost<тег> нет в /clusters/)
         var provisioned = await WaitPhaseAsync("provisioning",
-            E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(360), ct);
+            E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(90), ct);
         provisioned.Should().BeTrue("provisioning must reach DONE (the worker leader)");
         await McCpAsync($"{ghost}/shard1/full/20260911110000Z/base.tar", "orphan-seed");
 
@@ -62,7 +65,7 @@ public sealed class E2eSupervisorOrphanRegistryScenarios(E2eSupervisorOrphanRegi
             orphansRaw = await GetOrNullAsync("/pgworker/backups/orphans");
             return orphansRaw?.Value.Contains($"{ghost}/shard1") == true
                    && orphansRaw.Value.Contains("OBSERVED");
-        }, TimeSpan.FromSeconds(180), ct);
+        }, TimeSpan.FromSeconds(90), ct);
         if (!observed)
             throw new ApplicationException(
                 $"the orphan did not land in the registry: [{orphansRaw?.Value ?? "no key"}]");
@@ -76,7 +79,7 @@ public sealed class E2eSupervisorOrphanRegistryScenarios(E2eSupervisorOrphanRegi
                    && (raw is null
                        || !(raw.Value.Contains($"{ghost}/shard1")
                             && raw.Value.Contains("OBSERVED")));
-        }, TimeSpan.FromSeconds(420), ct);
+        }, TimeSpan.FromSeconds(90), ct);
         if (!swept)
             throw new ApplicationException(
                 $"the orphan was not removed by the TTL: [{(await GetOrNullAsync("/pgworker/backups/orphans"))?.Value}] " +
@@ -120,7 +123,7 @@ public sealed class E2eSupervisorOrphanRegistryScenarios(E2eSupervisorOrphanRegi
     {
         var completed = await WaitPhaseAsync("first-full-completed",
             async () => (await FullKeysAsync(cluster, "shard1")).Any(f => f.Value.Contains("COMPLETED")),
-            TimeSpan.FromSeconds(300), TestContext.Current.CancellationToken);
+            TimeSpan.FromSeconds(90), TestContext.Current.CancellationToken);
         completed.Should().BeTrue("the real full must reach COMPLETED");
         var done = (await FullKeysAsync(cluster, "shard1")).Single(f => f.Value.Contains("COMPLETED"));
         return done.Key.Split('/').Last();
@@ -268,7 +271,7 @@ public sealed class E2eSupervisorOrphanRegistryScenarios(E2eSupervisorOrphanRegi
                 try
                 {
                     using var response = await PatroniHttp.GetAsync(
-                        $"https://localhost:{addr.GetProperty("Patroni").GetInt32()}/primary", ct);
+                        $"https://localhost:{addr.GetProperty("patroni").GetInt32()}/primary", ct);
                     if (response.IsSuccessStatusCode)
                     {
                         primary = key.Split('/')[1];
@@ -282,10 +285,10 @@ public sealed class E2eSupervisorOrphanRegistryScenarios(E2eSupervisorOrphanRegi
             }
 
             return false;
-        }, TimeSpan.FromSeconds(120), ct);
+        }, TimeSpan.FromSeconds(90), ct);
         resolved.Should().BeTrue("the shard primary must be resolved by Patroni probes");
         var entry = entries[$"{shard}/{primary}"];
-        return ("localhost", entries[$"{shard}/{primary}"].GetProperty("Pg").GetInt32());
+        return ("localhost", entries[$"{shard}/{primary}"].GetProperty("pg").GetInt32());
     }
 
     // Закрытие count сегментов WAL. ВАЖНО (инцидент прогона 2026-09-13):

@@ -36,7 +36,10 @@ public sealed class E2eRetentionScenarios(E2eRetentionScenariosFx Ctx) : IClassF
     public async Task Retention_TrimsToGfs()
     {
         // Arrange 1 — окружение + кластер bkret<тег прогона> + policy 1/0/0 + воркер
-        var ct = TestContext.Current.CancellationToken;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
+        var ct = cts.Token;
         // Уникальное имя кластера на прогон: движковые контейнеры/тома (pgw-<C>-*,
         // pgw-backup-*-<C>-*) опознаются teardown'ом окружения по своему тегу.
         var cluster = $"bkret{Fx.ClusterTag}";
@@ -64,7 +67,7 @@ public sealed class E2eRetentionScenarios(E2eRetentionScenariosFx Ctx) : IClassF
 
         // Arrange 2 — provisioning DONE
         var provisioned = await E2eFixture.WaitForAsync(
-            E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(360), ct);
+            E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(90), ct);
         provisioned.Should().BeTrue("provisioning must reach DONE before the backups");
 
         // Arrange 3 — генерация WAL ДО первого полного: позиция wal_start
@@ -102,7 +105,7 @@ public sealed class E2eRetentionScenarios(E2eRetentionScenariosFx Ctx) : IClassF
         // старого полного (один кандидат — один проход) + WAL-чистка ниже cutoff
         var trimmed = await E2eFixture.WaitForAsync(
             async () => await GetOrNullAsync(PgWorker.Backups.BackupNames.FullKey(cluster, "shard1", oldId)) is null,
-            TimeSpan.FromSeconds(240), ct);
+            TimeSpan.FromSeconds(90), ct);
         if (!trimmed)
         {
             // диагностика: журнал воркера + ключи полных + ключ storage
@@ -138,7 +141,7 @@ public sealed class E2eRetentionScenarios(E2eRetentionScenariosFx Ctx) : IClassF
                 return false;
             var keys = listed.Value.Select(o => o.Key).ToList();
             return seededWal.All(s => !keys.Contains($"{cluster}/shard1/wal/{s}"));
-        }, TimeSpan.FromSeconds(300), ct);
+        }, TimeSpan.FromSeconds(90), ct);
         seedsGone.Should().BeTrue("the seed segments strictly below the cutoff are removed");
         var walListed = await backupS3.ListPrefixAsync($"{cluster}/shard1/wal/", ct: ct);
         walListed.Value.Should().NotBeNull();
@@ -171,7 +174,7 @@ public sealed class E2eRetentionScenarios(E2eRetentionScenariosFx Ctx) : IClassF
         {
             var completed = await E2eFixture.WaitForAsync(
                 async () => (await FullKeysAsync(cluster, "shard1")).Any(f => f.Value.Contains("COMPLETED")),
-                TimeSpan.FromSeconds(300), ct);
+                TimeSpan.FromSeconds(90), ct);
             completed.Should().BeTrue("the real full must reach COMPLETED");
             var done = (await FullKeysAsync(cluster, "shard1")).Single(f => f.Value.Contains("COMPLETED"));
             var status = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(done.Value)!;
@@ -272,7 +275,7 @@ public sealed class E2eRetentionScenarios(E2eRetentionScenariosFx Ctx) : IClassF
                 try
                 {
                     using var response = await PatroniHttp.GetAsync(
-                        $"https://localhost:{addr.GetProperty("Patroni").GetInt32()}/primary", ct);
+                        $"https://localhost:{addr.GetProperty("patroni").GetInt32()}/primary", ct);
                     if (response.IsSuccessStatusCode)
                     {
                         primary = key.Split('/')[1];
@@ -286,10 +289,10 @@ public sealed class E2eRetentionScenarios(E2eRetentionScenariosFx Ctx) : IClassF
             }
 
             return false;
-        }, TimeSpan.FromSeconds(120), ct);
+        }, TimeSpan.FromSeconds(90), ct);
         resolved.Should().BeTrue("the shard primary must be resolved by Patroni probes");
         var entry = entries[$"{shard}/{primary}"];
-        return ("localhost", entries[$"{shard}/{primary}"].GetProperty("Pg").GetInt32());
+        return ("localhost", entries[$"{shard}/{primary}"].GetProperty("pg").GetInt32());
     }
 
     // pg_switch_wal × n (superuser-only): форсированное закрытие пустых

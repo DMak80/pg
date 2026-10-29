@@ -51,14 +51,17 @@ public class ValkeyE2eLifecycleTests
         created.StatusCode.Should().Be(HttpStatusCode.Created, createdBody);
 
         // [PHASE] wait-provision: state=RUNNING в etcd + контейнер жив (≤ 100 с).
-        var ct = TestContext.Current.CancellationToken;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
+        var ct = cts.Token;
         await fx.WaitPhaseAsync("wait-provision", async () =>
         {
             var kv = await fx.Gateway.GetAsync(fx.EtcdEndpoint,
                 $"/valkey/clusters/{cluster}/nodes/node1/state", ct);
             return kv.Value?.Value == "RUNNING"
                 && await fx.ContainerAliveAsync($"vwk-{cluster}-node1");
-        }, TimeSpan.FromSeconds(100), ct);
+        }, TimeSpan.FromSeconds(90), ct);
 
         // Act 2: PING admin-кредом по TLS (endpoints из etcd — host-порт
         // фактический, литералов :17xxx нет; ca_pem — дискавери t06).
@@ -126,7 +129,10 @@ public class ValkeyE2eLifecycleTests
         await using var fx = await ValkeyE2eEnvironment.StartAsync("tls-lifecycle");
         var cluster = $"e2e{fx.ClusterTag}";
         using var api = fx.CreateApiHttpClient();
-        var ct = TestContext.Current.CancellationToken;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
+        var ct = cts.Token;
 
         try
         {
@@ -164,7 +170,7 @@ public class ValkeyE2eLifecycleTests
                     $"/valkey/clusters/{cluster}/nodes/node1/state", ct);
                 return kv.Value?.Value == "RUNNING"
                     && await fx.ContainerAliveAsync($"vwk-{cluster}-node1");
-            }, TimeSpan.FromSeconds(100), ct);
+            }, TimeSpan.FromSeconds(90), ct);
 
             // Assert 1: args ноды — cmd-обёртка env-TLS (docker inspect .Args:
             // ["sh","-c","<раскатка>; exec valkey-server <экранированные args>"]).
@@ -249,7 +255,10 @@ public class ValkeyE2eLifecycleTests
         await using var fx = await ValkeyE2eEnvironment.StartAsync("carot");
         var cluster = $"e2e{fx.ClusterTag}";
         using var api = fx.CreateApiHttpClient();
-        var ct = TestContext.Current.CancellationToken;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
+        var ct = cts.Token;
 
         try
         {
@@ -287,7 +296,7 @@ public class ValkeyE2eLifecycleTests
                     $"/valkey/clusters/{cluster}/nodes/node1/state", ct);
                 return kv.Value?.Value == "RUNNING"
                     && await fx.ContainerAliveAsync($"vwk-{cluster}-node1");
-            }, TimeSpan.FromSeconds(100), ct);
+            }, TimeSpan.FromSeconds(90), ct);
 
             // Baseline: PING по OLD-CA (дискавери из etcd; проба по advertised-
             // хосту из endpoints — SAN серта = advertised, литералов портов нет).
@@ -315,7 +324,7 @@ public class ValkeyE2eLifecycleTests
                 (await fx.Gateway.GetAsync(fx.EtcdEndpoint,
                     $"/valkeyworker/work/{cluster}", ct)).Value?.Value
                     is { } w && w.Contains("rotate-ca") && w.Contains("done"),
-                TimeSpan.FromSeconds(100), ct);
+                TimeSpan.FromSeconds(90), ct);
 
             // Assert 1: ca_pem/ca_key = NEW (не bundle), staging нет, заявки нет.
             var newCaPem = (await fx.Gateway.GetAsync(fx.EtcdEndpoint,

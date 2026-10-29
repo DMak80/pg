@@ -26,13 +26,16 @@ public sealed class E2eRotateScenarios(E2eRotateScenariosFx Ctx) : IClassFixture
     public async Task Rotate_TicketRotatesPerClusterSecretsOnAllShards()
     {
         // Arrange — рабочий кластер (provisioning завершён), известны старые креды
-        var ct = TestContext.Current.CancellationToken;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
+        var ct = cts.Token;
         await SeedClusterAsync(Cluster);
         await using var app = await Fx.StartHostAsync("rotate", ct: ct);
         var provisioned = await E2eFixture.WaitForAsync(async () =>
             await GetOrNullAsync($"/clusters/{Cluster}/shards/shard1/dsn") is not null
             && await GetOrNullAsync($"/clusters/{Cluster}/shards/shard2/dsn") is not null,
-            TimeSpan.FromSeconds(360), ct);
+            TimeSpan.FromSeconds(90), ct);
         provisioned.Should().BeTrue("the cluster came up");
         var oldPassword = await Fx.GetAppPasswordAsync(Cluster, ct);
         var oldMover = (await GetOrNullAsync($"/clusters/{Cluster}/mover_password"))!.Value;
@@ -69,7 +72,7 @@ public sealed class E2eRotateScenarios(E2eRotateScenariosFx Ctx) : IClassFixture
             var password = await Fx.GetAppPasswordAsync(Cluster, ct);
             return password != oldPassword
                 && await GetOrNullAsync($"/pgworker/rotations/{Cluster}") is null;
-        }, TimeSpan.FromSeconds(120), ct);
+        }, TimeSpan.FromSeconds(90), ct);
         rotated.Should().BeTrue("the request is executed: the password changed, the request key is removed");
         var newPassword = await Fx.GetAppPasswordAsync(Cluster, ct);
         Regex.IsMatch(newPassword, "^[A-Za-z0-9]{32}$").Should().BeTrue();

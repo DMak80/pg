@@ -41,7 +41,10 @@ public sealed class E2eRestoreScenarios(E2eRestoreScenariosFx Ctx) : IClassFixtu
     [Fact]
     public async Task Restore_Latest_RebuildsDestroyedShard()
     {
-        var ct = TestContext.Current.CancellationToken;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
+        var ct = cts.Token;
         await RunScenarioAsync(async fx =>
         {
             // Arrange 1 — окружение + кластер rst<тег> + воркер с бэкап-комплектом
@@ -50,7 +53,7 @@ public sealed class E2eRestoreScenarios(E2eRestoreScenariosFx Ctx) : IClassFixtu
             await using var app = await StartRestoreHostAsync("rslatest", ct);
 
             var provisioned = await WaitPhaseAsync(
-                "provisioning", E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(360), ct);
+                "provisioning", E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(90), ct);
             provisioned.Should().BeTrue("provisioning must reach DONE before the backups");
 
             // Arrange 2 — контрольные данные ДО полного (RPO-полный)
@@ -66,7 +69,7 @@ public sealed class E2eRestoreScenarios(E2eRestoreScenariosFx Ctx) : IClassFixtu
             // Arrange 3 — реальный COMPLETED полный + послебэкапные данные в архиве
             var completed = await WaitPhaseAsync(
                 "full-completed", async () => (await FullKeysAsync(cluster, "shard1")).Any(f => f.Value.Contains("COMPLETED")),
-                TimeSpan.FromSeconds(300), ct);
+                TimeSpan.FromSeconds(90), ct);
             if (!completed)
                 throw new ApplicationException("the full did not reach COMPLETED: " +
                     await DumpDiagnosticsAsync(cluster, "shard1"));
@@ -91,7 +94,7 @@ public sealed class E2eRestoreScenarios(E2eRestoreScenariosFx Ctx) : IClassFixtu
             // (pg_basebackup в конце сам делает switch): emit+switch по одному,
             // пока WalChain не сойдётся (флейк гейта: слепой бёрст из 8 switch
             // оставлял дыру на wal_start, инцидент E2E-гейта t05).
-            var chainDeadline = DateTime.UtcNow + TimeSpan.FromSeconds(180);
+            var chainDeadline = DateTime.UtcNow + TimeSpan.FromSeconds(90);
             var chainOk = false;
             while (!chainOk && DateTime.UtcNow < chainDeadline)
             {
@@ -173,7 +176,7 @@ public sealed class E2eRestoreScenarios(E2eRestoreScenariosFx Ctx) : IClassFixtu
                 // t25: приёмники вернулись — статус-ключи agent/<N> живы (lease)
                 var facts = await fx.ReadWalAgentFactsAsync(cluster, "shard1", ct);
                 return facts.Count > 0;
-            }, TimeSpan.FromSeconds(300), ct);
+            }, TimeSpan.FromSeconds(90), ct);
             if (!reinited)
                 throw new ApplicationException(
                     "the AC4 invariant did not converge: " + await DumpDiagnosticsAsync(cluster, "shard1"));
@@ -188,7 +191,10 @@ public sealed class E2eRestoreScenarios(E2eRestoreScenariosFx Ctx) : IClassFixtu
     [Fact]
     public async Task Restore_TargetTime_PitrRollback()
     {
-        var ct = TestContext.Current.CancellationToken;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
+        var ct = cts.Token;
         await RunScenarioAsync(async fx =>
         {
             // Arrange 1 — окружение + кластер rtp<тег>
@@ -197,7 +203,7 @@ public sealed class E2eRestoreScenarios(E2eRestoreScenariosFx Ctx) : IClassFixtu
             await using var app = await StartRestoreHostAsync("rstime", ct);
 
             var provisioned = await WaitPhaseAsync(
-                "provisioning", E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(360), ct);
+                "provisioning", E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(90), ct);
             provisioned.Should().BeTrue("provisioning must reach DONE before the backups");
 
             // Arrange 2 — данные T0 → полный COMPLETED
@@ -210,7 +216,7 @@ public sealed class E2eRestoreScenarios(E2eRestoreScenariosFx Ctx) : IClassFixtu
             await SwitchWalsAsync(adminDsn, 4, ct);
             var completed = await WaitPhaseAsync(
                 "full-completed", async () => (await FullKeysAsync(cluster, "shard1")).Any(f => f.Value.Contains("COMPLETED")),
-                TimeSpan.FromSeconds(300), ct);
+                TimeSpan.FromSeconds(90), ct);
             completed.Should().BeTrue("the full must reach COMPLETED");
 
             // Arrange 3 — данные T1; ещё сегменты; фиксация цели. Позиции — от
@@ -303,7 +309,7 @@ public sealed class E2eRestoreScenarios(E2eRestoreScenariosFx Ctx) : IClassFixtu
             {
                 var walKv = await GetOrNullAsync($"/pgworker/backups/{cluster}/shard1/wal");
                 return walKv is not null && walKv.Value.Contains("ACTIVE");
-            }, TimeSpan.FromSeconds(300), ct);
+            }, TimeSpan.FromSeconds(90), ct);
             reinited.Should().BeTrue("after PITR the chain is started anew (§3.5 invariant)");
         }, ct);
     }
@@ -463,7 +469,7 @@ public sealed class E2eRestoreScenarios(E2eRestoreScenariosFx Ctx) : IClassFixtu
             try
             {
                 var status = await WaitRestoreAsync(cluster, shard, restoreId,
-                    TimeSpan.FromSeconds(300), ct);
+                    TimeSpan.FromSeconds(90), ct);
                 return status!;
             }
             catch (ChainGapException) when (attempt < attempts)
@@ -667,7 +673,7 @@ public sealed class E2eRestoreScenarios(E2eRestoreScenariosFx Ctx) : IClassFixtu
         {
             var names = await ListWalNamesAsync(cluster, shard);
             return names.Select(WalPosOf).DefaultIfEmpty(-1).Max() >= targetPos;
-        }, TimeSpan.FromSeconds(180), ct);
+        }, TimeSpan.FromSeconds(90), ct);
 
     private async Task<Kv?> GetOrNullAsync(string key)
         => (await G.GetAsync(Endpoint, key, TestContext.Current.CancellationToken)).Value;
@@ -714,7 +720,7 @@ public sealed class E2eRestoreScenarios(E2eRestoreScenariosFx Ctx) : IClassFixtu
                 try
                 {
                     using var response = await PatroniHttp.GetAsync(
-                        $"https://localhost:{addr.GetProperty("Patroni").GetInt32()}/primary", ct);
+                        $"https://localhost:{addr.GetProperty("patroni").GetInt32()}/primary", ct);
                     if (response.IsSuccessStatusCode)
                     {
                         primary = key.Split('/')[1];
@@ -728,10 +734,10 @@ public sealed class E2eRestoreScenarios(E2eRestoreScenariosFx Ctx) : IClassFixtu
             }
 
             return false;
-        }, TimeSpan.FromSeconds(120), ct);
+        }, TimeSpan.FromSeconds(90), ct);
         resolved.Should().BeTrue("the shard primary must be resolved by Patroni probes");
         var entry = entries[$"{shard}/{primary}"];
-        return ("localhost", entries[$"{shard}/{primary}"].GetProperty("Pg").GetInt32());
+        return ("localhost", entries[$"{shard}/{primary}"].GetProperty("pg").GetInt32());
     }
 
     // Условие готовности provisioning: config без state + dsn + нода RUNNING.

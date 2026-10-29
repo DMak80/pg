@@ -42,13 +42,16 @@ public sealed class E2eWalStreamScenarios(E2eWalStreamScenariosFx Ctx) : IClassF
     public async Task WalStream_UploadsSegmentsContinuously()
     {
         // Arrange — гейт docker (общий образ pgworker-node собирается фазой E2ePrepare)
-        var ct = TestContext.Current.CancellationToken;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
+        var ct = cts.Token;
         var cluster = $"shopb{Fx.ClusterTag}";
         await SeedClusterAsync(cluster);
         await using var app = await StartWalHostAsync("walstream", ct);
 
         var provisioned = await E2eFixture.WaitForAsync(
-            E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(360), ct);
+            E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(90), ct);
         provisioned.Should().BeTrue("provisioning must reach DONE before the WAL load");
 
         // Мастер shard1 (published pg-порт) + admin/superuser-DSN: нагрузка и
@@ -76,7 +79,7 @@ public sealed class E2eWalStreamScenarios(E2eWalStreamScenariosFx Ctx) : IClassF
                 return false;
             listed = [.. list.Value];
             return listed.Count >= 2;
-        }, TimeSpan.FromSeconds(120), ct);
+        }, TimeSpan.FromSeconds(90), ct);
         if (!uploaded)
         {
             // диагностика провала доставки: журнал воркера, ключ wal, агенты, креды
@@ -113,7 +116,7 @@ public sealed class E2eWalStreamScenarios(E2eWalStreamScenariosFx Ctx) : IClassF
                 return false;
             listed = [.. list.Value];
             return listed.Select(o => o.Name).Contains(wal.LastUploadedSegment);
-        }, TimeSpan.FromSeconds(120), ct);
+        }, TimeSpan.FromSeconds(90), ct);
         consistent.Should().BeTrue("the wal key must become ACTIVE (AC2) and match the S3 fact");
         wal.Slot.Should().Be($"pgw_bkp_{cluster}_shard1");
         wal.MasterNode.Should().NotBeEmpty();
@@ -133,7 +136,7 @@ public sealed class E2eWalStreamScenarios(E2eWalStreamScenariosFx Ctx) : IClassF
             listed = [.. list.Value];
             var check = PgWorker.Backups.WalChain.Check(chainStart, listed.Select(o => o.Name));
             return check.IsContinuous;
-        }, TimeSpan.FromSeconds(120), ct);
+        }, TimeSpan.FromSeconds(90), ct);
         continuous.Should().BeTrue("the chain from chain_start must become continuous");
 
         // Assert 4 — running-агент МАСТЕРА (per-node имя t27) + слот на мастере (AC1)
@@ -183,7 +186,10 @@ public sealed class E2eWalStreamScenarios(E2eWalStreamScenariosFx Ctx) : IClassF
     public async Task WalStream_SanitarySweepLegacyContainer_StreamContinues()
     {
         // Arrange — окружение, кластер, воркер, фоновая нагрузка ≥ 2 мин
-        var ct = TestContext.Current.CancellationToken;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
+        var ct = cts.Token;
         var (fx, app, cluster, adminDsn, masterNode) = await StartWalScenarioAsync("wal-ac2", "shopac2", ct);
         await using var appOwner = app;
         using var load = new CancellationTokenSource();
@@ -203,7 +209,7 @@ public sealed class E2eWalStreamScenarios(E2eWalStreamScenariosFx Ctx) : IClassF
                     return false;
                 firstListCount = list.Value.Count;
                 return true;
-            }, TimeSpan.FromSeconds(180), ct);
+            }, TimeSpan.FromSeconds(90), ct);
             if (!firstList)
             {
                 // Диагностика провала первой доставки (канон e2e-launch: «что
@@ -288,7 +294,7 @@ public sealed class E2eWalStreamScenarios(E2eWalStreamScenariosFx Ctx) : IClassF
                 var ids = await Fx.RunDockerAsync(
                     ["ps", "-a", "--format", "{{.ID}}", "--filter", $"name=^{legacyName}$"], ct);
                 return ids.Split('\n', StringSplitOptions.RemoveEmptyEntries).Length == 0;
-            }, TimeSpan.FromSeconds(120), ct);
+            }, TimeSpan.FromSeconds(90), ct);
             swept.Should().BeTrue("the sanitary sweep removes the legacy wal container at tick start");
 
             // ≥1 новый сегмент после сноса — приёмник не пострадал (legacy-контейнер
@@ -297,7 +303,7 @@ public sealed class E2eWalStreamScenarios(E2eWalStreamScenariosFx Ctx) : IClassF
             {
                 var list = await backupS3.ListWalAsync(cluster, "shard1", ct: ct);
                 return list.IsSuccess && list.Value.Count > firstListCount;
-            }, TimeSpan.FromSeconds(120), ct);
+            }, TimeSpan.FromSeconds(90), ct);
             grew.Should().BeTrue("the receiver keeps streaming after the sweep — delivery continues");
 
             // Ключ: WAL_CHAIN_ERROR НЕ возникал весь сценарий (поллинг срезом); финал ACTIVE
@@ -311,7 +317,7 @@ public sealed class E2eWalStreamScenarios(E2eWalStreamScenariosFx Ctx) : IClassF
                 if (sawStatus == PgWorker.Etcd.Parsing.WalStreamStatus.WalChainError)
                     return true; // немедленный фейл ниже
                 return sawStatus == PgWorker.Etcd.Parsing.WalStreamStatus.Active;
-            }, TimeSpan.FromSeconds(120), ct);
+            }, TimeSpan.FromSeconds(90), ct);
             sawStatus.Should().NotBe(
                 PgWorker.Etcd.Parsing.WalStreamStatus.WalChainError,
                 "delivery from the S3 tail rules out a gap — WAL_CHAIN_ERROR is forbidden (AC2)");
@@ -354,7 +360,10 @@ public sealed class E2eWalStreamScenarios(E2eWalStreamScenariosFx Ctx) : IClassF
     public async Task WalStream_DualArchiving_TwoAgents_OnePrefix()
     {
         // Arrange
-        var ct = TestContext.Current.CancellationToken;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
+        var ct = cts.Token;
         var (fx, app, cluster, adminDsn, masterNode) = await StartWalScenarioAsync("wal-ac3", "shopac3", ct);
         await using var appOwner = app;
         var hostEndpoint = Fx.S3Endpoint;
@@ -375,7 +384,7 @@ public sealed class E2eWalStreamScenarios(E2eWalStreamScenariosFx Ctx) : IClassF
         {
             var facts = await Fx.ReadWalAgentFactsAsync(cluster, "shard1", ct);
             return facts.Count(f => f.State == "streaming") >= 2;
-        }, TimeSpan.FromSeconds(300), ct);
+        }, TimeSpan.FromSeconds(90), ct);
         if (!bothStreaming)
         {
             var facts = await Fx.ReadWalAgentFactsAsync(cluster, "shard1", ct);
@@ -407,7 +416,7 @@ public sealed class E2eWalStreamScenarios(E2eWalStreamScenariosFx Ctx) : IClassF
                 .Where(a => a.State == PgWorker.Etcd.Parsing.WalAgentPresence.Running)
                 .Select(a => a.Node).ToHashSet();
             return nodes is { Count: >= 2 };
-        }, TimeSpan.FromSeconds(180), ct);
+        }, TimeSpan.FromSeconds(90), ct);
         delivered.Should().BeTrue("key ACTIVE + agents of both nodes (AC3)");
 
         // Цепочка непрерывна от chain_start (union одного префикса)
@@ -491,13 +500,16 @@ public sealed class E2eWalStreamScenarios(E2eWalStreamScenariosFx Ctx) : IClassF
     {
         // Arrange — окружение, кластер с одним 3-репликовым шардом, воркер;
         // нагрузка: sync выбирается Patroni при живом потоке репликации
-        var ct = TestContext.Current.CancellationToken;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
+        var ct = cts.Token;
         var cluster = $"shop3r{Fx.ClusterTag}";
         await SeedThreeReplicaShardAsync(cluster);
         await using var appOwner = await StartWalHostAsync("wal-3r", ct);
         var provisioned = await E2eFixture.WaitForAsync(
             E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)),
-            TimeSpan.FromSeconds(600), ct);
+            TimeSpan.FromSeconds(90), ct);
         provisioned.Should().BeTrue("provisioning must reach DONE (3-replica shard)");
         var (pgHost, pgPort, masterNode) = await MasterPgAsync(cluster, "shard1", ct);
         var adminDsn = DatabaseProvisioner.BuildAdminDsn(pgHost, pgPort, cluster,
@@ -514,7 +526,7 @@ public sealed class E2eWalStreamScenarios(E2eWalStreamScenariosFx Ctx) : IClassF
                 return facts.Count >= 3
                        && facts.Count(f => f.State == "streaming") >= 2
                        && facts.Any(f => f.State == "waiting_role");
-            }, TimeSpan.FromSeconds(300), ct);
+            }, TimeSpan.FromSeconds(90), ct);
             rolesSet.Should().BeTrue(
                 "master+sync receivers stream, the async replica waits in waiting_role");
 
@@ -578,7 +590,10 @@ public sealed class E2eWalStreamScenarios(E2eWalStreamScenariosFx Ctx) : IClassF
     public async Task WalStream_BackupsDisabled_ReceiversPause_EnableResumes()
     {
         // Arrange — контур с воркером Enabled=true; приёмники стримят
-        var ct = TestContext.Current.CancellationToken;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
+        var ct = cts.Token;
         var (fx, app, cluster, adminDsn, _) = await StartWalScenarioAsync("wal-dis", "shopdis", ct);
         await using var appOwner = app;
         var writer = new PgWorker.Backups.WalStatusWriter(G, [Endpoint]);
@@ -586,7 +601,7 @@ public sealed class E2eWalStreamScenarios(E2eWalStreamScenariosFx Ctx) : IClassF
         {
             var facts = await Fx.ReadWalAgentFactsAsync(cluster, "shard1", ct);
             return facts.Count(f => f.State == "streaming") >= 1;
-        }, TimeSpan.FromSeconds(300), ct);
+        }, TimeSpan.FromSeconds(90), ct);
         streaming.Should().BeTrue("receivers stream before the disabled switch");
         (await G.GetAsync(Endpoint, PgWorker.Backups.BackupsDisabledGate.Key, ct)).Value.Should().BeNull(
             "the disabled key is deleted at startup with Enabled=true");
@@ -610,7 +625,7 @@ public sealed class E2eWalStreamScenarios(E2eWalStreamScenariosFx Ctx) : IClassF
         {
             var facts = await Fx.ReadWalAgentFactsAsync(cluster, "shard1", ct);
             return facts.Count > 0 && facts.All(f => f.State == "waiting_disabled");
-        }, TimeSpan.FromSeconds(120), ct);
+        }, TimeSpan.FromSeconds(90), ct);
         paused.Should().BeTrue("receivers pause by the etcd gate (waiting_disabled, no docker calls)");
 
         // Act 2 — воркер ВНИЗ, воркер с Enabled=true: старт делает del ключа
@@ -626,7 +641,7 @@ public sealed class E2eWalStreamScenarios(E2eWalStreamScenariosFx Ctx) : IClassF
         {
             var facts = await Fx.ReadWalAgentFactsAsync(cluster, "shard1", ct);
             return facts.Any(f => f.State == "streaming");
-        }, TimeSpan.FromSeconds(180), ct);
+        }, TimeSpan.FromSeconds(90), ct);
         resumed.Should().BeTrue("receivers resume streaming after enable (waiting_disabled → streaming)");
     }
 
@@ -641,7 +656,10 @@ public sealed class E2eWalStreamScenarios(E2eWalStreamScenariosFx Ctx) : IClassF
     public async Task WalStream_SlotLostAutoRecreate_NoBroken()
     {
         // Arrange — двухнодовый шард (двойная архивация), оба приёмника стримят
-        var ct = TestContext.Current.CancellationToken;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
+        var ct = cts.Token;
         var (fx, app, cluster, adminDsn, masterNode) = await StartWalScenarioAsync("wal-t19", "shopt19", ct);
         await using var appOwner = app; // kill воркера ниже — dispose идемпотентен
         var slot = $"pgw_bkp_{cluster}_shard1";
@@ -658,7 +676,7 @@ public sealed class E2eWalStreamScenarios(E2eWalStreamScenariosFx Ctx) : IClassF
             {
                 var facts = await Fx.ReadWalAgentFactsAsync(cluster, "shard1", ct);
                 return facts.Count(f => f.State == "streaming") >= 2;
-            }, TimeSpan.FromSeconds(300), ct);
+            }, TimeSpan.FromSeconds(90), ct);
             bothStreaming.Should().BeTrue("dual archiving — both receivers must stream");
 
             // Малый потолок WAL под слотом на мастере (динамика reload — без рестарта)
@@ -678,7 +696,7 @@ public sealed class E2eWalStreamScenarios(E2eWalStreamScenariosFx Ctx) : IClassF
                 var read = await writer.ReadAsync(cluster, "shard1", ct);
                 return read.IsSuccess
                        && read.Value is { State: PgWorker.Etcd.Parsing.WalStreamStatus.Active };
-            }, TimeSpan.FromSeconds(120), ct);
+            }, TimeSpan.FromSeconds(90), ct);
             before.Should().BeTrue("before the loss — key ACTIVE");
             var beforeWal = (await writer.ReadAsync(cluster, "shard1", ct)).Value!;
 
@@ -712,7 +730,7 @@ public sealed class E2eWalStreamScenarios(E2eWalStreamScenariosFx Ctx) : IClassF
                     await checkpoint.ExecuteNonQueryAsync(ct);
                 }
                 return await SlotWalStatusAsync(cluster, "shard1", masterNode, ct) == "lost";
-            }, TimeSpan.FromSeconds(180), ct);
+            }, TimeSpan.FromSeconds(90), ct);
             Console.WriteLine($"[PHASE] wal-t19: master slot lost={lost} (budget 180 s)");
             lost.Should().BeTrue("64 MiB WAL at a 16 MiB ceiling + a checkpoint must cut the master slot");
 
@@ -729,13 +747,13 @@ public sealed class E2eWalStreamScenarios(E2eWalStreamScenariosFx Ctx) : IClassF
             {
                 var workKv = await GetOrNullAsync($"/pgworker/work/{cluster}");
                 return workKv?.Value?.Contains("slot-recreate/shard1") == true;
-            }, TimeSpan.FromSeconds(120), ct);
+            }, TimeSpan.FromSeconds(90), ct);
             journaled.Should().BeTrue("the worker must record the slot-recreate phase (spec §3.2)");
 
             // Assert 2 — слот мастера жив (не lost)
             var healed = await E2eFixture.WaitForAsync(
                 async () => await SlotWalStatusAsync(cluster, "shard1", masterNode, ct) is not ("lost" or null),
-                TimeSpan.FromSeconds(120), ct);
+                TimeSpan.FromSeconds(90), ct);
             healed.Should().BeTrue("recreate returns a live slot");
 
             // Assert 3 — приёмник мастера снова streaming (супервизор ноды перезапустил
@@ -744,7 +762,7 @@ public sealed class E2eWalStreamScenarios(E2eWalStreamScenariosFx Ctx) : IClassF
             {
                 var facts = await Fx.ReadWalAgentFactsAsync(cluster, "shard1", ct);
                 return facts.Any(f => f.Node == masterNode && f.State == "streaming");
-            }, TimeSpan.FromSeconds(120), ct);
+            }, TimeSpan.FromSeconds(90), ct);
             receiverBack.Should().BeTrue("the master receiver streams again after the slot recreate");
 
             // Assert 4 — ключ wal: WAL_CHAIN_ERROR не возникал (поллинг срезом), финал ACTIVE;
@@ -759,7 +777,7 @@ public sealed class E2eWalStreamScenarios(E2eWalStreamScenariosFx Ctx) : IClassF
                 if (sawStatus == PgWorker.Etcd.Parsing.WalStreamStatus.WalChainError)
                     return true; // немедленный фейл ниже
                 return sawStatus == PgWorker.Etcd.Parsing.WalStreamStatus.Active;
-            }, TimeSpan.FromSeconds(180), ct);
+            }, TimeSpan.FromSeconds(90), ct);
             sawStatus.Should().NotBe(PgWorker.Etcd.Parsing.WalStreamStatus.WalChainError,
                 "lost on one source while the other is alive — WAL_CHAIN_ERROR is forbidden (criterion 5)");
             recovered.Should().BeTrue("the key must return to ACTIVE");
@@ -843,7 +861,7 @@ public sealed class E2eWalStreamScenarios(E2eWalStreamScenariosFx Ctx) : IClassF
                 try
                 {
                     using var response = await PatroniHttp.GetAsync(
-                        $"https://localhost:{addr.GetProperty("Patroni").GetInt32()}/cluster", ct);
+                        $"https://localhost:{addr.GetProperty("patroni").GetInt32()}/cluster", ct);
                     if (!response.IsSuccessStatusCode) continue;
                     using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
                     foreach (var member in doc.RootElement.GetProperty("members").EnumerateArray())
@@ -865,7 +883,7 @@ public sealed class E2eWalStreamScenarios(E2eWalStreamScenariosFx Ctx) : IClassF
             }
 
             return tli >= 2;
-        }, TimeSpan.FromSeconds(120), ct);
+        }, TimeSpan.FromSeconds(90), ct);
         return tli;
     }
 
@@ -954,7 +972,7 @@ public sealed class E2eWalStreamScenarios(E2eWalStreamScenariosFx Ctx) : IClassF
                 try
                 {
                     using var response = await PatroniHttp.GetAsync(
-                        $"https://localhost:{addr.GetProperty("Patroni").GetInt32()}/cluster", ct);
+                        $"https://localhost:{addr.GetProperty("patroni").GetInt32()}/cluster", ct);
                     if (!response.IsSuccessStatusCode) continue;
                     var body = await response.Content.ReadAsStringAsync(ct);
                     return $"[{key}] " + body[..Math.Min(700, body.Length)];
@@ -991,7 +1009,7 @@ public sealed class E2eWalStreamScenarios(E2eWalStreamScenariosFx Ctx) : IClassF
         // 7–8 попыток (ноды живы, но readiness-пробы patroni прогреваются дольше
         // бюджета); зелёный путь не меняется — опрос выходит по факту DONE.
         var provisioned = await E2eFixture.WaitForAsync(
-            E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(600), ct);
+            E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(90), ct);
         provisioned.Should().BeTrue("provisioning must reach DONE before the WAL load");
         Console.WriteLine($"[PHASE] {slug}: provisioning DONE in " +
             (DateTimeOffset.UtcNow.ToUnixTimeSeconds() - phaseStart) + " s from start");
@@ -1104,7 +1122,7 @@ public sealed class E2eWalStreamScenarios(E2eWalStreamScenariosFx Ctx) : IClassF
                 try
                 {
                     using var response = await PatroniHttp.GetAsync(
-                        $"https://localhost:{addr.GetProperty("Patroni").GetInt32()}/primary", ct);
+                        $"https://localhost:{addr.GetProperty("patroni").GetInt32()}/primary", ct);
                     if (response.IsSuccessStatusCode)
                     {
                         primary = key.Split('/')[1];
@@ -1118,10 +1136,10 @@ public sealed class E2eWalStreamScenarios(E2eWalStreamScenariosFx Ctx) : IClassF
             }
 
             return false;
-        }, TimeSpan.FromSeconds(120), ct);
+        }, TimeSpan.FromSeconds(90), ct);
         resolved.Should().BeTrue("the shard primary must be resolved by Patroni probes");
         var entry = entries[$"{shard}/{primary}"];
-        return ("localhost", entry.GetProperty("Pg").GetInt32(),
+        return ("localhost", entry.GetProperty("pg").GetInt32(),
             primary!);
 
     }

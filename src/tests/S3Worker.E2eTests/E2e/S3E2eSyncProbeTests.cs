@@ -23,7 +23,10 @@ public class S3E2eSyncProbeTests
         await using var fx = await S3E2eEnvironment.StartAsync("sync-basic");
         var cluster = $"sync{fx.ClusterTag}";
         using var api = fx.CreateApiHttpClient();
-        var ct = TestContext.Current.CancellationToken;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
+        var ct = cts.Token;
 
         try
         {
@@ -118,7 +121,10 @@ public class S3E2eSyncProbeTests
         await using var fx = await S3E2eEnvironment.StartAsync("sync-command");
         var cluster = $"cmd{fx.ClusterTag}";
         using var api = fx.CreateApiHttpClient();
-        var ct = TestContext.Current.CancellationToken;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
+        var ct = cts.Token;
 
         try
         {
@@ -170,7 +176,10 @@ public class S3E2eSyncProbeTests
         await using var fx = await S3E2eEnvironment.StartAsync("sync-dead");
         var cluster = $"dead{fx.ClusterTag}";
         using var api = fx.CreateApiHttpClient();
-        var ct = TestContext.Current.CancellationToken;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
+        var ct = cts.Token;
 
         try
         {
@@ -238,7 +247,7 @@ public class S3E2eSyncProbeTests
             // прогон 3: firstSeen 6741/6781, три ветки к исчерпанию 150 c).
             await fx.WaitPhaseAsync("unreachable", async () =>
                 await S3E2eScaleTests.GetOrNullAsync(fx, $"/s3/clusters/{cluster}/nodes/east2/state", ct) == "UNREACHABLE",
-                TimeSpan.FromSeconds(300), ct);
+                TimeSpan.FromSeconds(90), ct);
             (await PostSyncProbeAsync(api, cluster, "e2e", ct)).Should().Be(HttpStatusCode.Accepted);
 
             // Assert 2: UNREACHABLE не опрашивается — состав матрицы тот же
@@ -274,7 +283,10 @@ public class S3E2eSyncProbeTests
         await using var fx = await S3E2eEnvironment.StartAsync("sync-lag");
         var cluster = $"lag{fx.ClusterTag}";
         using var api = fx.CreateApiHttpClient();
-        var ct = TestContext.Current.CancellationToken;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
+        var ct = cts.Token;
 
         try
         {
@@ -385,7 +397,10 @@ public class S3E2eSyncProbeTests
         await using var fx = await S3E2eEnvironment.StartAsync("sync-deny");
         var cluster = $"deny{fx.ClusterTag}";
         using var api = fx.CreateApiHttpClient();
-        var ct = TestContext.Current.CancellationToken;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
+        var ct = cts.Token;
 
         try
         {

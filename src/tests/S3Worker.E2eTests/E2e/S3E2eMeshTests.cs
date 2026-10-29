@@ -24,7 +24,10 @@ public class S3E2eMeshTests
         await using var fx = await S3E2eEnvironment.StartAsync("mesh-basic");
         var cluster = $"mesh{fx.ClusterTag}";
         using var api = fx.CreateApiHttpClient();
-        var ct = TestContext.Current.CancellationToken;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
+        var ct = cts.Token;
 
         try
         {
@@ -105,7 +108,10 @@ public class S3E2eMeshTests
         await using var fx = await S3E2eEnvironment.StartAsync("mesh-move");
         var cluster = $"move{fx.ClusterTag}";
         using var api = fx.CreateApiHttpClient();
-        var ct = TestContext.Current.CancellationToken;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
+        var ct = cts.Token;
 
         try
         {
@@ -173,7 +179,10 @@ public class S3E2eMeshTests
         await using var fx = await S3E2eEnvironment.StartAsync("mesh-deny");
         var cluster = $"deny{fx.ClusterTag}";
         using var api = fx.CreateApiHttpClient();
-        var ct = TestContext.Current.CancellationToken;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
+        var ct = cts.Token;
 
         try
         {
@@ -245,7 +254,10 @@ public class S3E2eMeshTests
         await using var fx = await S3E2eEnvironment.StartAsync("mesh-partial");
         var cluster = $"part{fx.ClusterTag}";
         using var api = fx.CreateApiHttpClient();
-        var ct = TestContext.Current.CancellationToken;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
+        var ct = cts.Token;
 
         try
         {
@@ -292,7 +304,10 @@ public class S3E2eMeshTests
         await using var fx = await S3E2eEnvironment.StartAsync("mesh-empty");
         var cluster = $"empt{fx.ClusterTag}";
         using var api = fx.CreateApiHttpClient();
-        var ct = TestContext.Current.CancellationToken;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
+        var ct = cts.Token;
 
         try
         {

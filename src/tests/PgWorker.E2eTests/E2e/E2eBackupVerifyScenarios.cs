@@ -39,7 +39,10 @@ public sealed class E2eBackupVerifyScenarios(E2eBackupVerifyScenariosFx Ctx) : I
     public async Task Backup_Verify_Ok_OnCreate()
     {
         // Arrange — окружение с ownS3-нодой; кластер bkvrfy<тег прогона>; policy on_create=true
-        var ct = TestContext.Current.CancellationToken;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
+        var ct = cts.Token;
         var cluster = $"bkvrfy{Fx.ClusterTag}";
         await SeedClusterAsync(cluster);
         // t36: пул + policy с секцией s3.
@@ -54,13 +57,13 @@ public sealed class E2eBackupVerifyScenarios(E2eBackupVerifyScenariosFx Ctx) : I
         var sawPending = await E2eFixture.WaitForAsync(async () =>
             (await FullKeysAsync(cluster, "shard1"))
                 .Any(f => f.Value.Contains(""""verify":{"state":"PENDING"""")),
-            TimeSpan.FromSeconds(180), ct);
+            TimeSpan.FromSeconds(90), ct);
         sawPending.Should().BeTrue("on_create: verify must start (PENDING in the key)");
 
         // Act 2 — ждём verify.state=OK (бюджет 300 c: полный ~минуты + verify-скачивание)
         var verified = await E2eFixture.WaitForAsync(async () =>
             (await FullKeysAsync(cluster, "shard1")).Any(f => f.Value.Contains(""""verify":{"state":"OK"""")),
-            TimeSpan.FromSeconds(300), ct);
+            TimeSpan.FromSeconds(90), ct);
 
         // Assert 1 — OK + checked_unix (фаза PENDING зафиксирована Act 1)
         verified.Should().BeTrue("on_create: verify must reach OK (AC1)");
@@ -88,7 +91,10 @@ public sealed class E2eBackupVerifyScenarios(E2eBackupVerifyScenariosFx Ctx) : I
     public async Task Backup_Verify_Corruption_Fails()
     {
         // Arrange — окружение + кластер; interval_sec=5 форсирует перепроверку
-        var ct = TestContext.Current.CancellationToken;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
+        var ct = cts.Token;
         var cluster = $"bkcrpt{Fx.ClusterTag}";
         await SeedClusterAsync(cluster);
         // t36: пул + policy с секцией s3.
@@ -100,7 +106,7 @@ public sealed class E2eBackupVerifyScenarios(E2eBackupVerifyScenariosFx Ctx) : I
         // Assert 1 — первый verify OK (как в маркере)
         var firstOk = await E2eFixture.WaitForAsync(async () =>
             (await FullKeysAsync(cluster, "shard1")).Any(f => f.Value.Contains(""""verify":{"state":"OK"""")),
-            TimeSpan.FromSeconds(300), ct);
+            TimeSpan.FromSeconds(90), ct);
         firstOk.Should().BeTrue("the original set is valid");
         var done = (await FullKeysAsync(cluster, "shard1")).Single(f => f.Value.Contains("COMPLETED"));
         var id = done.Key.Split('/').Last();
@@ -115,7 +121,7 @@ public sealed class E2eBackupVerifyScenarios(E2eBackupVerifyScenariosFx Ctx) : I
         // interval 5 c + тик + джоб со скачиванием)
         var failed = await E2eFixture.WaitForAsync(async () =>
             (await FullKeysAsync(cluster, "shard1")).Any(f => f.Value.Contains(""""verify":{"state":"FAILED"""")),
-            TimeSpan.FromSeconds(180), ct);
+            TimeSpan.FromSeconds(90), ct);
         failed.Should().BeTrue("corrupting the set must yield verify FAILED (AC2)");
         var corrupted = (await FullKeysAsync(cluster, "shard1")).Single(f => f.Value.Contains("FAILED"));
         var corruptedStatus = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(corrupted.Value)!;

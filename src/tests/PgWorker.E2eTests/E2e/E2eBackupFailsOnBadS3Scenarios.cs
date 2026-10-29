@@ -40,7 +40,10 @@ public sealed class E2eBackupFailsOnBadS3Scenarios(E2eBackupFailsOnBadS3Scenario
     {
         // Arrange — S3-endpoint на заведомо закрытом порт 1 (tcpmux; НЕ тестовый
         // хардкод: фиксированный протокольный «всегда закрыт»)
-        var ct = TestContext.Current.CancellationToken;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
+        var ct = cts.Token;
         var cluster = $"bkbads3{Fx.ClusterTag}";
         await SeedClusterAsync(cluster);
         // t36: «недоступный S3» = пул из одной ноды на заведомо закрытом порту 1
@@ -56,7 +59,7 @@ public sealed class E2eBackupFailsOnBadS3Scenarios(E2eBackupFailsOnBadS3Scenario
         // mc не ретраит). 300 c на загруженном хосте не хватает (факт t04-гейта).
         var failed = await E2eFixture.WaitForAsync(
             async () => (await FullKeysAsync(cluster, "shard1")).Any(f => f.Value.Contains("FAILED")),
-            TimeSpan.FromSeconds(480), ct);
+            TimeSpan.FromSeconds(90), ct);
         failed.Should().BeTrue("an attempt with an unavailable S3 must fail into FAILED");
         var failedKv = (await FullKeysAsync(cluster, "shard1")).Single(f => f.Value.Contains("FAILED"));
         var status = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(failedKv.Value)!;
@@ -65,7 +68,7 @@ public sealed class E2eBackupFailsOnBadS3Scenarios(E2eBackupFailsOnBadS3Scenario
         // Assert 2 — переснятие: вторая попытка с ДРУГИМ id (Retry BaseSec=2)
         var retried = await E2eFixture.WaitForAsync(
             async () => (await FullKeysAsync(cluster, "shard1")).Count >= 2,
-            TimeSpan.FromSeconds(240), ct);
+            TimeSpan.FromSeconds(90), ct);
         retried.Should().BeTrue("the 2 s backoff must trigger a retake with a new id");
     }
 

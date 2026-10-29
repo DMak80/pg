@@ -40,7 +40,10 @@ public sealed class E2eDrillScenarios(E2eDrillScenariosFx Ctx) : IClassFixture<E
     public async Task Drill_Succeeds_CleansUp()
     {
         // Arrange — кластер bkdrll<тег> + policy (verify off, drill включён) + воркер.
-        var ct = TestContext.Current.CancellationToken;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
+        var ct = cts.Token;
         var cluster = $"bkdrll{Fx.ClusterTag}";
         await SeedClusterAsync(cluster);
         await G.PutAsync(Endpoint, $"/pgworker/backups/{cluster}/policy",
@@ -50,7 +53,7 @@ public sealed class E2eDrillScenarios(E2eDrillScenariosFx Ctx) : IClassFixture<E
         // Act 1 — COMPLETED-полный (бюджет 300 c)
         var completed = await E2eFixture.WaitForAsync(
             async () => (await FullKeysAsync(cluster, "shard1")).Any(f => f.Value.Contains("COMPLETED")),
-            TimeSpan.FromSeconds(300), ct);
+            TimeSpan.FromSeconds(90), ct);
         completed.Should().BeTrue("the full must be taken");
 
         // Act 2 — дрилл дошёл до SUCCEEDED и довёл снос (чистый итог: phase снят)
@@ -61,7 +64,7 @@ public sealed class E2eDrillScenarios(E2eDrillScenariosFx Ctx) : IClassFixture<E
             var kv = await G.GetAsync(Endpoint, $"/pgworker/backups/{cluster}/shard1/drill", ct);
             return kv.Value?.Value.Contains("\"SUCCEEDED\"") == true
                    && !kv.Value.Value.Contains("phase");
-        }, TimeSpan.FromSeconds(600), ct);
+        }, TimeSpan.FromSeconds(90), ct);
         if (!succeeded)
         {
             // Телеметрия упавшего дрилла: дамп до teardown (канон e2e-launch)
@@ -129,7 +132,10 @@ public sealed class E2eDrillScenarios(E2eDrillScenariosFx Ctx) : IClassFixture<E
     public async Task Drill_Failed_OnCorruptedWal()
     {
         // Arrange — кластер bkdrfl<тег>; дрилы выключены глобально (env IntervalDays=0).
-        var ct = TestContext.Current.CancellationToken;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
+        var ct = cts.Token;
         var cluster = $"bkdrfl{Fx.ClusterTag}";
         await SeedClusterAsync(cluster);
         await G.PutAsync(Endpoint, $"/pgworker/backups/{cluster}/policy",
@@ -143,7 +149,7 @@ public sealed class E2eDrillScenarios(E2eDrillScenariosFx Ctx) : IClassFixture<E
         // Arrange — COMPLETED-полный снялся; дрилов нет (выключены env-ом).
         var completed = await E2eFixture.WaitForAsync(
             async () => (await FullKeysAsync(cluster, "shard1")).Any(f => f.Value.Contains("COMPLETED")),
-            TimeSpan.FromSeconds(300), ct);
+            TimeSpan.FromSeconds(90), ct);
         completed.Should().BeTrue("the full must be taken");
         var before = await G.GetAsync(Endpoint, $"/pgworker/backups/{cluster}/shard1/drill", ct);
         before.Value.Should().BeNull("IntervalDays=0 — no runs");
@@ -212,7 +218,7 @@ public sealed class E2eDrillScenarios(E2eDrillScenariosFx Ctx) : IClassFixture<E
                 return false;
             victim = positions[^2];
             return true;
-        }, TimeSpan.FromSeconds(300), ct);
+        }, TimeSpan.FromSeconds(90), ct);
         if (!victimReady)
         {
             // диагностика провала доставки жертвы (без перезапуска)
@@ -422,7 +428,7 @@ public sealed class E2eDrillScenarios(E2eDrillScenariosFx Ctx) : IClassFixture<E
                 try
                 {
                     using var response = await PatroniHttp.GetAsync(
-                        $"https://localhost:{addr.GetProperty("Patroni").GetInt32()}/primary", ct);
+                        $"https://localhost:{addr.GetProperty("patroni").GetInt32()}/primary", ct);
                     if (response.IsSuccessStatusCode)
                     {
                         primary = key.Split('/')[1];
@@ -436,10 +442,10 @@ public sealed class E2eDrillScenarios(E2eDrillScenariosFx Ctx) : IClassFixture<E
             }
 
             return false;
-        }, TimeSpan.FromSeconds(120), ct);
+        }, TimeSpan.FromSeconds(90), ct);
         resolved.Should().BeTrue("the shard primary must be resolved by Patroni probes");
         var entry = entries[$"{shard}/{primary}"];
-        return ("localhost", entry.GetProperty("Pg").GetInt32(),
+        return ("localhost", entry.GetProperty("pg").GetInt32(),
             primary!);
 
     }

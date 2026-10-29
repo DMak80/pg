@@ -25,7 +25,10 @@ public class S3E2eRotationTests
         await using var fx = await S3E2eEnvironment.StartAsync("rotate");
         var cluster = $"e2e{fx.ClusterTag}";
         using var api = fx.CreateApiHttpClient();
-        var ct = TestContext.Current.CancellationToken;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
+        var ct = cts.Token;
 
         try
         {
@@ -106,7 +109,10 @@ public class S3E2eRotationTests
         await using var fx = await S3E2eEnvironment.StartAsync("syncprobe");
         var cluster = $"e2e{fx.ClusterTag}";
         using var api = fx.CreateApiHttpClient();
-        var ct = TestContext.Current.CancellationToken;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
+        var ct = cts.Token;
 
         try
         {

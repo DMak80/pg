@@ -38,10 +38,25 @@ public static class E2eFixture
     // (CollectDiagnosticsAsync); для живых хост-прогонов дублируются в stderr.
     private static readonly ConcurrentQueue<string> TimingQueue = new();
 
+    // Синхронный per-process файл меток: очередь докачивается в артефакты
+    // только штатной телеметрией — убитый/упавший testhost терял всё (прогоны
+    // №1/№5). Файл переживает любой исход, отчёт «куда уходит время» собирается
+    // даже по насильственно остановленной серии.
+    public static string TimingLogPath
+        => $"/tmp/pgw-e2e-timing-{ProcessLogSuffix}.log";
+
     public static void Timing(string line)
     {
         Console.Error.WriteLine(line);
         TimingQueue.Enqueue(line);
+        try
+        {
+            File.AppendAllText(TimingLogPath, line + Environment.NewLine);
+        }
+        catch
+        {
+            // файловая телеметрия — «лучшими усилиями», не роняет факт
+        }
     }
 
     /// <summary>Забрать накопленные метки (докачка в timing.log телеметрии).</summary>

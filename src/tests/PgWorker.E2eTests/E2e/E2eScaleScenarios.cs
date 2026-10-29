@@ -27,7 +27,10 @@ public sealed class E2eScaleScenarios(E2eScaleScenariosFx Ctx) : IClassFixture<E
     [Fact]
     public async Task Scale_AddEmptyShard_BlockedRemoveThenAutoDismantle_NameReused()
     {
-        var ct = TestContext.Current.CancellationToken;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
+        var ct = cts.Token;
 
         // Уникальное имя кластера на прогон: движковые контейнеры/тома (pgw-<C>-*)
         // опознаются teardown'ом окружения по своему тегу (OwnName) и снимаются им.
@@ -41,7 +44,7 @@ public sealed class E2eScaleScenarios(E2eScaleScenariosFx Ctx) : IClassFixture<E
             await using var p1 = await Fx.StartHostAsync("s1", ct: ct);
 
             var provisioned = await E2eFixture.WaitForAsync(
-                E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(360), ct);
+                E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(90), ct);
             provisioned.Should().BeTrue("provisioning of the cluster must reach Active (dsn/RUNNING/no status)");
 
             // DDL-сид: bucket_0 у shard1 и bucket_1/bucket_3 у shard2 (INSERT-пробы
@@ -62,7 +65,7 @@ public sealed class E2eScaleScenarios(E2eScaleScenariosFx Ctx) : IClassFixture<E
 
             // Assert: шард поднят и зарегистрирован; контейнеры живы.
             var added = await E2eFixture.WaitForAsync(() => ShardRegisteredAsync(cluster, "shard3"),
-                TimeSpan.FromSeconds(360), ct);
+                TimeSpan.FromSeconds(90), ct);
             added.Should().BeTrue($"AddShardProcess must raise shard3 (dsn/RUNNING); work={await WorkDumpAsync(cluster, ct)}");
 
             var containers = await ListContainerNamesAsync($"pgw-{cluster}-shard3-");
@@ -86,7 +89,7 @@ public sealed class E2eScaleScenarios(E2eScaleScenariosFx Ctx) : IClassFixture<E
             await PutMoveRequestAsync(cluster, "bucket_1",
                 $$"""{"op":"move","to":"shard3","requested_unix":{{NowUnix()}}}""", ct);
             var moved = await E2eFixture.WaitForAsync(
-                () => RoutingIsAsync(cluster, "bucket_1", "shard3", ct), TimeSpan.FromSeconds(120), ct);
+                () => RoutingIsAsync(cluster, "bucket_1", "shard3", ct), TimeSpan.FromSeconds(90), ct);
             moved.Should().BeTrue($"move bucket_1 → shard3 must finish; work={await WorkDumpAsync(cluster, ct)}");
 
             // Act: маркер демонтажа на shard1 (на нём ещё 3 бакета: 0, 2, 4).
@@ -130,7 +133,7 @@ public sealed class E2eScaleScenarios(E2eScaleScenariosFx Ctx) : IClassFixture<E
                 await RoutingIsAsync(cluster, "bucket_0", "shard3", ct)
                 && await RoutingIsAsync(cluster, "bucket_2", "shard2", ct)
                 && await RoutingIsAsync(cluster, "bucket_4", "shard2", ct),
-                TimeSpan.FromSeconds(240), ct);
+                TimeSpan.FromSeconds(90), ct);
             allMoved.Should().BeTrue($"all buckets of shard1 must move away; work={await WorkDumpAsync(cluster, ct)}, " +
                                      $"requests={await MovesDumpAsync(cluster, ct)}");
 
@@ -139,14 +142,14 @@ public sealed class E2eScaleScenarios(E2eScaleScenariosFx Ctx) : IClassFixture<E
                     $$"""{"op":"finalize","old_shard":"shard1","requested_unix":{{NowUnix()}}}""", ct);
 
             var finalized = await E2eFixture.WaitForAsync(
-                () => MovesEmptyAsync(cluster, ct), TimeSpan.FromSeconds(240), ct);
+                () => MovesEmptyAsync(cluster, ct), TimeSpan.FromSeconds(90), ct);
             finalized.Should().BeTrue($"the finalize requests must be processed; requests={await MovesDumpAsync(cluster, ct)}, " +
                                       $"work={await WorkDumpAsync(cluster, ct)}");
 
             // Assert: демонтаж дошёл сам (маркер не повторяли): контейнеры/volumes
             // удалены, ключи/порталы вычищены, кластер продолжает обслуживать запись.
             var dismantled = await E2eFixture.WaitForAsync(
-                () => ShardDismantledAsync(cluster, "shard1", ct), TimeSpan.FromSeconds(180), ct);
+                () => ShardDismantledAsync(cluster, "shard1", ct), TimeSpan.FromSeconds(90), ct);
             dismantled.Should().BeTrue($"after the last bucket leaves, the dismantling completes on its own; " +
                                        $"work={await WorkDumpAsync(cluster, ct)}, containers={string.Join(",", await ListContainerNamesAsync($"pgw-{cluster}-shard1-", all: true))}");
 
@@ -168,7 +171,7 @@ public sealed class E2eScaleScenarios(E2eScaleScenariosFx Ctx) : IClassFixture<E
 
             // Assert: AddShardProcess принял освобождённое имя (клэйм-инвариант §4.2).
             var reused = await E2eFixture.WaitForAsync(() => ShardRegisteredAsync(cluster, "shard1"),
-                TimeSpan.FromSeconds(360), ct);
+                TimeSpan.FromSeconds(90), ct);
             reused.Should().BeTrue($"the shard1 name is freed by the dismantling and accepted anew; work={await WorkDumpAsync(cluster, ct)}");
         }
         catch
@@ -183,7 +186,10 @@ public sealed class E2eScaleScenarios(E2eScaleScenariosFx Ctx) : IClassFixture<E
     [Fact]
     public async Task Scale_TakeoverMidAdd_SecondInstanceFinishesNoDuplicates()
     {
-        var ct = TestContext.Current.CancellationToken;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
+        var ct = cts.Token;
 
         // Уникальное имя кластера на прогон (см. scale-add).
         var cluster = $"stshop{Fx.ClusterTag}";
@@ -197,12 +203,12 @@ public sealed class E2eScaleScenarios(E2eScaleScenariosFx Ctx) : IClassFixture<E
             await using var s2 = await Fx.StartHostAsync("s2", ct: ct);
 
             var provisioned = await E2eFixture.WaitForAsync(
-                E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(360), ct);
+                E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(90), ct);
             provisioned.Should().BeTrue("provisioning of the cluster must reach Active before add starts");
 
             await SeedAddDeclarationAsync(cluster, "shard3", ct);
             var a3Started = await E2eFixture.WaitForAsync(
-                () => DockerHasAsync($"pgw-{cluster}-shard3-"), TimeSpan.FromSeconds(120), ct);
+                () => DockerHasAsync($"pgw-{cluster}-shard3-"), TimeSpan.FromSeconds(90), ct);
             a3Started.Should().BeTrue("the first instance must start A3 (the shard3 container appeared)");
 
             // Act: docker-kill PgWorker посреди A3 → второй инстанс доносит шард.
@@ -212,7 +218,7 @@ public sealed class E2eScaleScenarios(E2eScaleScenariosFx Ctx) : IClassFixture<E
 
             // Assert: шард донесён (клэйм истёк ≤15 с), дублей контейнеров нет.
             var finished = await E2eFixture.WaitForAsync(() => ShardRegisteredAsync(cluster, "shard3"),
-                TimeSpan.FromSeconds(360), ct);
+                TimeSpan.FromSeconds(90), ct);
             finished.Should().BeTrue($"the second instance must carry shard3 after the takeover; work={await WorkDumpAsync(cluster, ct)}");
 
             var containers = await ListContainerNamesAsync($"pgw-{cluster}-shard3-", all: true);

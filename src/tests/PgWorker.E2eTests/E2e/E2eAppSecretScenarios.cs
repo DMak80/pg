@@ -29,14 +29,17 @@ public sealed class E2eAppSecretScenarios(E2eAppSecretScenariosFx Ctx) : IClassF
     {
         // Arrange — сид кластера в стиле панели (config NOT_INITIALIZED с
         // bucket_admin-кредами фикстуры; app-ключи НЕ сеём — генерирует PgWorker)
-        var ct = TestContext.Current.CancellationToken;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
+        var ct = cts.Token;
         await SeedClusterAsync(Cluster);
         await using var app = await Fx.StartHostAsync("appsecret", ct: ct);
 
         // Act — ждать provisioning до dsn-ключа шарда (SQL-фаза прошла)
         var provisioned = await E2eFixture.WaitForAsync(
             async () => await GetOrNullAsync($"/clusters/{Cluster}/shards/shard1/dsn") is not null,
-            TimeSpan.FromSeconds(360), ct);
+            TimeSpan.FromSeconds(90), ct);
         provisioned.Should().BeTrue("provisioning must reach the SQL phase (the dsn is written)");
 
         // Assert 1 (критерий 1): /clusters/<C>/app_user = "app"; app_password —

@@ -42,7 +42,10 @@ public sealed class E2eBackupJobsScenarios(E2eBackupJobsScenariosFx Ctx) : IClas
     public async Task Backup_FullDaily_Completes()
     {
         // Arrange — кластер bkshop<тег прогона> + policy (verify on_create) + воркер
-        var ct = TestContext.Current.CancellationToken;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
+        var ct = cts.Token;
         var cluster = $"bkshop{Fx.ClusterTag}";
         await SeedClusterAsync(cluster);
         // t36: пул + policy с секцией s3 (без неё подсистема кластера молчит).
@@ -54,7 +57,7 @@ public sealed class E2eBackupJobsScenarios(E2eBackupJobsScenariosFx Ctx) : IClas
         // Act/Assert 1 — COMPLETED на shard1 за ≤ 300 c
         var completed = await E2eFixture.WaitForAsync(
             async () => (await FullKeysAsync(cluster, "shard1")).Any(f => f.Value.Contains("COMPLETED")),
-            TimeSpan.FromSeconds(300), ct);
+            TimeSpan.FromSeconds(90), ct);
         completed.Should().BeTrue("the full backup must reach COMPLETED");
 
         var done = (await FullKeysAsync(cluster, "shard1")).Single(f => f.Value.Contains("COMPLETED"));
@@ -99,7 +102,10 @@ public sealed class E2eBackupJobsScenarios(E2eBackupJobsScenariosFx Ctx) : IClas
     public async Task Backup_Deprovision_CleansPrefix()
     {
         // Arrange — кластер bkclean; ждём появления первой попытки (джоб жив)
-        var ct = TestContext.Current.CancellationToken;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
+        var ct = cts.Token;
         var cluster = $"bkclean{Fx.ClusterTag}";
         await SeedClusterAsync(cluster);
         // t36: policy с секцией s3 — планирование полных стартует только с пулом.
@@ -120,7 +126,7 @@ public sealed class E2eBackupJobsScenarios(E2eBackupJobsScenariosFx Ctx) : IClas
             {
                 return false; // транзиент чтения — попытка повторится поллом
             }
-        }, TimeSpan.FromSeconds(300), ct);
+        }, TimeSpan.FromSeconds(90), ct);
         started.Should().BeTrue("the subsystem must start the first attempt");
 
         // Act — state=TO_REMOVE (панель-семантика §4.2)
@@ -144,7 +150,7 @@ public sealed class E2eBackupJobsScenarios(E2eBackupJobsScenariosFx Ctx) : IClas
             var volumes = await Fx.RunDockerAsync(
             ["volume", "ls", "-q", "--filter", $"name=pgw-backup-{cluster}-"], ct);
             return volumes.Length == 0;
-        }, TimeSpan.FromSeconds(180), ct);
+        }, TimeSpan.FromSeconds(90), ct);
         cleaned.Should().BeTrue("deprovisioning must remove the jobs, volumes and the backup prefix");
     }
 
@@ -154,7 +160,10 @@ public sealed class E2eBackupJobsScenarios(E2eBackupJobsScenariosFx Ctx) : IClas
     public async Task Backup_Rotator_IncludesBackupExec()
     {
         // Arrange — кластер bkrot с завершённым полным; OLD backup_password
-        var ct = TestContext.Current.CancellationToken;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
+        var ct = cts.Token;
         var cluster = $"bkrot{Fx.ClusterTag}";
         await SeedClusterAsync(cluster);
         // t36: policy с секцией s3 — полный (до ротации) пишется только с пулом.
@@ -164,7 +173,7 @@ public sealed class E2eBackupJobsScenarios(E2eBackupJobsScenariosFx Ctx) : IClas
         await using var app = await StartBackupHostAsync("bkrot", ct);
         var completed = await E2eFixture.WaitForAsync(
             async () => (await FullKeysAsync(cluster, "shard1")).Any(f => f.Value.Contains("COMPLETED")),
-            TimeSpan.FromSeconds(300), ct);
+            TimeSpan.FromSeconds(90), ct);
         completed.Should().BeTrue("before the rotation there must be a completed full (G2 alive on every tick)");
 
         var oldPassword = (await G.GetAsync(Endpoint, $"/clusters/{cluster}/backup_password", ct)).Value!.Value;
@@ -180,7 +189,7 @@ public sealed class E2eBackupJobsScenarios(E2eBackupJobsScenariosFx Ctx) : IClas
             var current = await G.GetAsync(Endpoint, $"/clusters/{cluster}/backup_password", ct);
             return current.Value is { } kv && kv.Value != oldPassword
                 && await GetOrNullAsync($"/pgworker/rotations/{cluster}") is null;
-        }, TimeSpan.FromSeconds(240), ct); // t03: фон тяжелее (WAL-агенты) — 120 c тесно
+        }, TimeSpan.FromSeconds(90), ct); // t03: фон тяжелее (WAL-агенты) — 120 c тесно
         if (!rotated)
         {
             // диагностика: журнал ротации (last_error) + живая заявка + пароль

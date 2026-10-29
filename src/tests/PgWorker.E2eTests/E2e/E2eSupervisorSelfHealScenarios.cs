@@ -43,7 +43,10 @@ public sealed class E2eSupervisorSelfHealScenarios(E2eSupervisorSelfHealScenario
         //   full_max_age_sec=3600 (НЕ из-за возраста — триггер только WAL_CHAIN_ERROR),
         //   verify on_create=false (не мешает), Wal VerifyIntervalSec=5,
         //   Supervisor IntervalSec=60; воркер
-        var ct = TestContext.Current.CancellationToken;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
+        var ct = cts.Token;
         await RunScenarioAsync(async fx =>
         {
         var cluster = $"bkspr{Fx.ClusterTag}";
@@ -56,7 +59,7 @@ public sealed class E2eSupervisorSelfHealScenarios(E2eSupervisorSelfHealScenario
         // Arrange 2 — provisioning DONE; генерация WAL ДО полного (цепочка длиннее
         // одного сегмента), реальный COMPLETED полный; wal-ключ ACTIVE
         var provisioned = await WaitPhaseAsync("provisioning",
-            E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(360), ct);
+            E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(90), ct);
         provisioned.Should().BeTrue("provisioning must reach DONE before the backups");
         var (pgHost, pgPort) = await MasterPgAsync(cluster, "shard1", ct);
         var adminDsn = DatabaseProvisioner.BuildAdminDsn(pgHost, pgPort, cluster,
@@ -66,7 +69,7 @@ public sealed class E2eSupervisorSelfHealScenarios(E2eSupervisorSelfHealScenario
         var walActive = await WaitPhaseAsync("wal-active",
             async () => (await GetOrNullAsync($"/pgworker/backups/{cluster}/shard1/wal"))
                 ?.Value.Contains("ACTIVE") == true,
-            TimeSpan.FromSeconds(120), ct);
+            TimeSpan.FromSeconds(90), ct);
         walActive.Should().BeTrue("the wal key must become ACTIVE after the first full");
         // Догон цепи за старт первого полного (инцидент прогона 2026-09-13:
         // окно [chain_start..last_uploaded] не росло — причина найдена: голый
@@ -135,7 +138,7 @@ public sealed class E2eSupervisorSelfHealScenarios(E2eSupervisorSelfHealScenario
             // Переснятый полный обязан стартовать ВЫШЕ дыры: ждём ≥2 сегментов
             // после неё (дыра глубоко в истории — инвариант плана «не последний»)
             return candidates.Count(x => string.CompareOrdinal(x.Canon, hole) > 0) >= 2;
-        }, TimeSpan.FromSeconds(120), ct);
+        }, TimeSpan.FromSeconds(90), ct);
         enough.Should().BeTrue(
             $"the gap must be gone into the chain history: chain_start={chainStartBefore}, " +
             $"gap={hole}, window=[{string.Join(",", inChain)}]");
@@ -172,7 +175,7 @@ public sealed class E2eSupervisorSelfHealScenarios(E2eSupervisorSelfHealScenario
                 }
             }
             return true;
-        }, TimeSpan.FromSeconds(300), ct);
+        }, TimeSpan.FromSeconds(90), ct);
         replicasPast.Should().BeTrue(
             $"the shard1 replicas must catch up with the gap {hole} (LSN {replayTarget}) — " +
             "otherwise the environment is unhealthy (a stuck replica) and the t07 logic is not exercised");
@@ -228,7 +231,7 @@ public sealed class E2eSupervisorSelfHealScenarios(E2eSupervisorSelfHealScenario
                     holeRaw = candidates2[candidates2.Count / 2].Raw;
                     hole = candidates2[candidates2.Count / 2].Canon;
                     return true;
-                }, TimeSpan.FromSeconds(120), ct);
+                }, TimeSpan.FromSeconds(90), ct);
                 if (!again)
                     break;
                 // Гейт реплик не повторяется: реплики у кончика цепи (проверено
@@ -283,7 +286,7 @@ public sealed class E2eSupervisorSelfHealScenarios(E2eSupervisorSelfHealScenario
             if (fresh is not null)
                 newFull = fresh.Key.Split('/').Last();
             return newFull is not null;
-        }, TimeSpan.FromSeconds(300), ct);
+        }, TimeSpan.FromSeconds(90), ct);
         planned.Should().BeTrue("WAL_CHAIN_ERROR is healed by retaking — the scheduler must create a new full");
         var completed = await WaitPhaseAsync("refull-completed", async () =>
         {
@@ -291,14 +294,14 @@ public sealed class E2eSupervisorSelfHealScenarios(E2eSupervisorSelfHealScenario
             var done = fulls.FirstOrDefault(f =>
                 f.Key.Split('/').Last() == newFull && f.Value.Contains("COMPLETED"));
             return done is not null;
-        }, TimeSpan.FromSeconds(600), ct);
+        }, TimeSpan.FromSeconds(90), ct);
         completed.Should().BeTrue($"the retaken full {newFull} must reach COMPLETED");
 
         // Act 3 — wal.state=ACTIVE (заживление одним тиком после COMPLETED)
         var healed = await WaitPhaseAsync("wal-healed",
             async () => (await GetOrNullAsync($"/pgworker/backups/{cluster}/shard1/wal"))
                 ?.Value.Contains("ACTIVE") == true,
-            TimeSpan.FromSeconds(120), ct);
+            TimeSpan.FromSeconds(90), ct);
         if (!healed)
         {
             // Диагностика без перезапуска (docs/e2e-launch.md): все статусы
@@ -329,7 +332,7 @@ public sealed class E2eSupervisorSelfHealScenarios(E2eSupervisorSelfHealScenario
         {
             var facts = await Fx.ReadWalAgentFactsAsync(cluster, "shard1", ct);
             return facts.Count(f => f.State == "streaming") >= 1;
-        }, TimeSpan.FromSeconds(120), ct);
+        }, TimeSpan.FromSeconds(90), ct);
         receiversBack.Should().BeTrue("receivers resume streaming after WAL_CHAIN_ERROR lifts (waiting → streaming)");
         }, ct);
     }
@@ -362,7 +365,7 @@ public sealed class E2eSupervisorSelfHealScenarios(E2eSupervisorSelfHealScenario
     {
         var completed = await WaitPhaseAsync("first-full-completed",
             async () => (await FullKeysAsync(cluster, "shard1")).Any(f => f.Value.Contains("COMPLETED")),
-            TimeSpan.FromSeconds(300), TestContext.Current.CancellationToken);
+            TimeSpan.FromSeconds(90), TestContext.Current.CancellationToken);
         completed.Should().BeTrue("the real full must reach COMPLETED");
         var done = (await FullKeysAsync(cluster, "shard1")).Single(f => f.Value.Contains("COMPLETED"));
         return done.Key.Split('/').Last();
@@ -495,7 +498,7 @@ public sealed class E2eSupervisorSelfHealScenarios(E2eSupervisorSelfHealScenario
                 try
                 {
                     using var response = await PatroniHttp.GetAsync(
-                        $"https://localhost:{addr.GetProperty("Patroni").GetInt32()}/primary", ct);
+                        $"https://localhost:{addr.GetProperty("patroni").GetInt32()}/primary", ct);
                     if (response.IsSuccessStatusCode)
                     {
                         primary = key.Split('/')[1];
@@ -509,10 +512,10 @@ public sealed class E2eSupervisorSelfHealScenarios(E2eSupervisorSelfHealScenario
             }
 
             return false;
-        }, TimeSpan.FromSeconds(120), ct);
+        }, TimeSpan.FromSeconds(90), ct);
         resolved.Should().BeTrue("the shard primary must be resolved by Patroni probes");
         var entry = entries[$"{shard}/{primary}"];
-        return ("localhost", entries[$"{shard}/{primary}"].GetProperty("Pg").GetInt32());
+        return ("localhost", entries[$"{shard}/{primary}"].GetProperty("pg").GetInt32());
     }
 
     // Закрытие count сегментов WAL. ВАЖНО (инцидент прогона 2026-09-13):

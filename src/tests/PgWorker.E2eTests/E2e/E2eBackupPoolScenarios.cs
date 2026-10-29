@@ -64,6 +64,13 @@ public abstract class E2eBackupPoolScenarios
         return (response.StatusCode, await response.Content.ReadAsStringAsync(ct));
     }
 
+    // Внутрисетевые адреса ownS3-нод для mc-вызовов из контейнера pgw-em
+    // (docker exec): alias сети окружения. Хост-публикации localhost из
+    // контейнера не видны (localhost = сам контейнер) — только alias.
+    protected const string S3Node1Mc = "e2e-owns3:9000";
+
+    protected static string S3Node2Mc(string alias) => $"{alias}:9000";
+
     protected static string HostPort(string endpoint)
         => endpoint.Replace("http://", "", StringComparison.Ordinal).TrimEnd('/');
 
@@ -152,7 +159,7 @@ public abstract class E2eBackupPoolScenarios
         {
             done = (await FullKeysAsync(cluster, "shard1")).FirstOrDefault(f => f.Value.Contains("COMPLETED"));
             return done is not null;
-        }, TimeSpan.FromSeconds(300), ct);
+        }, TimeSpan.FromSeconds(90), ct);
         completed.Should().BeTrue("the full must reach COMPLETED");
         return done!;
     }
@@ -164,7 +171,7 @@ public abstract class E2eBackupPoolScenarios
         {
             var keys = await McKeysOnNodeAsync(hostPort, $"{cluster}/shard1/wal/");
             return keys.Count > 0;
-        }, TimeSpan.FromSeconds(480), ct);
+        }, TimeSpan.FromSeconds(90), ct);
 
     // t25: «оба агента живы» = статус-ключи agent/<N> обеих нод шарда с
     // state=streaming (lease жив = приёмник жив; docker-контейнеров агентов нет).
@@ -173,7 +180,7 @@ public abstract class E2eBackupPoolScenarios
         {
             var facts = await Fx.ReadWalAgentFactsAsync(cluster, "shard1", ct);
             return facts.Count(f => f.State == "streaming") >= 2;
-        }, TimeSpan.FromSeconds(480), ct);
+        }, TimeSpan.FromSeconds(90), ct);
 
     protected Task<bool> WaitProvisionedAsync(string cluster, CancellationToken ct)
         // Fail-fast застрявшего провижининга — общий хелпер (E2eFixture):
@@ -270,7 +277,7 @@ public abstract class E2eBackupPoolScenarios
                 try
                 {
                     using var response = await PatroniHttp.GetAsync(
-                        $"https://localhost:{addr.GetProperty("Patroni").GetInt32()}/primary", ct);
+                        $"https://localhost:{addr.GetProperty("patroni").GetInt32()}/primary", ct);
                     if (response.IsSuccessStatusCode)
                     {
                         primary = node;
@@ -287,9 +294,9 @@ public abstract class E2eBackupPoolScenarios
 
             probeSummary = $"attempt {probeAttempt}: [{string.Join("; ", lines)}]";
             return false;
-        }, TimeSpan.FromSeconds(240), ct);
+        }, TimeSpan.FromSeconds(90), ct);
         resolved.Should().BeTrue($"the shard primary must be resolved by Patroni probes (:8008); {probeSummary}");
-        return ("localhost", entries[$"{shard}/{primary}"].GetProperty("Pg").GetInt32(), primary!);
+        return ("localhost", entries[$"{shard}/{primary}"].GetProperty("pg").GetInt32(), primary!);
     }
 
     // PUT PLANNED-заявки restore прямым ключом (прецедент E2eRestoreScenarios).
@@ -331,7 +338,7 @@ public abstract class E2eBackupPoolScenarios
         string cluster, string shard, CancellationToken ct)
     {
         var id = await PutRestorePlannedAsync(cluster, shard, "latest", ct: ct);
-        return await WaitRestoreAsync(cluster, shard, id, TimeSpan.FromSeconds(420), ct);
+        return await WaitRestoreAsync(cluster, shard, id, TimeSpan.FromSeconds(90), ct);
     }
 }
 
@@ -349,9 +356,12 @@ public sealed class PoolNotSelectedScenarios(PoolNotSelectedScenariosFx Ctx) : E
     [Fact]
     public async Task Pool_NotSelected_Silent_ThenPolicy_Completes()
     {
-        var ct = TestContext.Current.CancellationToken;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
+        var ct = cts.Token;
         var cluster = $"pac1{Fx.ClusterTag}";
-        var ep1 = HostPort(Fx.S3Endpoint);
+        var ep1 = S3Node1Mc; // mc из контейнера — внутрисетевой alias
         try
         {
             // Arrange — пул сидится, policy БЕЗ секции s3; воркер живёт.
@@ -410,15 +420,19 @@ public sealed class PoolMasterReplicaSplitScenarios(PoolMasterReplicaSplitScenar
     [Fact]
     public async Task Pool_MasterReplicaSplit_ObjectsOnTheirNodes()
     {
-        var ct = TestContext.Current.CancellationToken;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
+        var ct = cts.Token;
         var cluster = $"pac2{Fx.ClusterTag}";
-        var ep1 = HostPort(Fx.S3Endpoint);
+        var ep1 = S3Node1Mc; // mc из контейнера — внутрисетевой alias
         try
         {
             // Arrange — вторая нода пула + двухнодовые списки.
-            var ep2 = HostPort(await Fx.StartExtraS3NodeAsync(Node2Alias, ct));
+            await Fx.StartExtraS3NodeAsync(Node2Alias, ct);
+            var ep2 = S3Node2Mc(Node2Alias); // mc из контейнера — alias ноды
             await TimedAsync("ac2 seed-pool-2nodes",
-                () => Fx.SeedS3PoolAsync(Pool, ct, [Fx.S3Endpoint, ep2]));
+                () => Fx.SeedS3PoolAsync(Pool, ct, [Fx.S3EndpointForContainers, ep2]));
             await TimedAsync("ac2 seed-cluster", () => SeedClusterAsync(cluster));
             await TimedAsync("ac2 policy-split", () => PutPolicyAsync(cluster, ["node1"], ["node2"]));
             await using var app = await StartPoolHostAsync("pac2", ct);
@@ -483,7 +497,10 @@ public sealed class PoolSingleNodeScenarios(PoolSingleNodeScenariosFx Ctx) : E2e
     [Fact]
     public async Task Pool_SingleNode_BothStreams_RestoreOk()
     {
-        var ct = TestContext.Current.CancellationToken;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
+        var ct = cts.Token;
         var cluster = $"pac3{Fx.ClusterTag}";
         try
         {
@@ -504,7 +521,7 @@ public sealed class PoolSingleNodeScenarios(PoolSingleNodeScenariosFx Ctx) : E2e
             var bothAgents = await TimedAsync(
                 "ac3 both-wal-agents", () => WaitBothWalAgentsAsync(cluster, ct));
             bothAgents.Should().BeTrue("both agents are raised");
-            var ep1 = HostPort(Fx.S3Endpoint);
+            var ep1 = S3Node1Mc; // mc из контейнера — внутрисетевой alias
             var uploaded = await TimedAsync(
                 "ac3 wal-uploaded", () => WaitWalUploadedAsync(cluster, ep1, ct));
             uploaded.Should().BeTrue("both streams deliver segments to the single node");
@@ -542,14 +559,18 @@ public sealed class PoolFailoverExhaustionScenarios(PoolFailoverExhaustionScenar
     [Fact]
     public async Task Pool_FailoverList_And_Exhaustion_SelfHeal()
     {
-        var ct = TestContext.Current.CancellationToken;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
+        var ct = cts.Token;
         var cluster = $"pac4{Fx.ClusterTag}";
         var writer = new WalStatusWriter(G, [Endpoint]);
         try
         {
             // Arrange — двухнодовый пул, список записи с перебором; поток жив.
-            var ep2 = HostPort(await Fx.StartExtraS3NodeAsync(Node2Alias, ct));
-            await Fx.SeedS3PoolAsync(Pool, ct, [Fx.S3Endpoint, ep2]);
+            await Fx.StartExtraS3NodeAsync(Node2Alias, ct);
+            var ep2 = S3Node2Mc(Node2Alias); // mc из контейнера — alias ноды
+            await Fx.SeedS3PoolAsync(Pool, ct, [Fx.S3EndpointForContainers, ep2]);
             await SeedClusterAsync(cluster);
             await PutPolicyAsync(cluster, ["node1", "node2"], ["node2", "node1"]);
             var app = await StartPoolHostAsync("pac4", ct);
@@ -560,7 +581,7 @@ public sealed class PoolFailoverExhaustionScenarios(PoolFailoverExhaustionScenar
             using var load = new CancellationTokenSource();
             var loader = BackgroundWalLoadAsync(adminDsn, load.Token);
             (await WaitBothWalAgentsAsync(cluster, ct)).Should().BeTrue("agents before the node failure");
-            var ep1 = HostPort(Fx.S3Endpoint);
+            var ep1 = S3Node1Mc; // mc из контейнера — внутрисетевой alias
             (await WaitWalUploadedAsync(cluster, ep1, ct)).Should().BeTrue(
                 "segments are delivered to node1 before the failure injection");
 
@@ -576,7 +597,7 @@ public sealed class PoolFailoverExhaustionScenarios(PoolFailoverExhaustionScenar
                 // Свежие сегменты обязаны появиться на ВЫЖИВШЕЙ ноде (node2).
                 var onNode2 = await McKeysOnNodeAsync(ep2, $"{cluster}/shard1/wal/");
                 return onNode2.Count > 0;
-            }, TimeSpan.FromSeconds(300), ct);
+            }, TimeSpan.FromSeconds(90), ct);
             survived.Should().BeTrue(
                 "the stream continued on node2 (walking the write list, RPO: the slot is confirmed after the put)");
             await Fx.RunDockerAsync(["start", Fx.S3NodeContainerName], ct);
@@ -600,7 +621,7 @@ public sealed class PoolFailoverExhaustionScenarios(PoolFailoverExhaustionScenar
             {
                 var facts = await Fx.ReadWalAgentFactsAsync(cluster, "shard1", ct);
                 return facts.Count >= 2 && facts.All(f => f.State == "waiting_disabled");
-            }, TimeSpan.FromSeconds(120), ct);
+            }, TimeSpan.FromSeconds(90), ct);
             paused.Should().BeTrue("receivers paused by the backups-disabled gate");
             await G.DeleteAsync(Endpoint, PgWorker.Backups.BackupsDisabledGate.Key, prefix: false, ct);
             var app2 = await StartPoolHostAsync("pac4b", ct);
@@ -609,7 +630,7 @@ public sealed class PoolFailoverExhaustionScenarios(PoolFailoverExhaustionScenar
             {
                 var facts = await Fx.ReadWalAgentFactsAsync(cluster, "shard1", ct);
                 return facts.Count >= 2 && facts.All(f => f.State == "streaming");
-            }, TimeSpan.FromSeconds(120), ct);
+            }, TimeSpan.FromSeconds(90), ct);
             reconnected.Should().BeTrue("receivers opened new sessions with the [node1] write list");
             await Fx.RunDockerAsync(["stop", Fx.S3NodeContainerName], ct);
             var degraded = await E2eFixture.WaitForAsync(async () =>
@@ -617,14 +638,14 @@ public sealed class PoolFailoverExhaustionScenarios(PoolFailoverExhaustionScenar
                 var read = await writer.ReadAsync(cluster, "shard1", ct);
                 return read is { IsSuccess: true } && read.Value is { State: WalStreamStatus.Degraded }
                     && read.Value.Error?.Contains("s3-pool-exhausted", StringComparison.Ordinal) == true;
-            }, TimeSpan.FromSeconds(300), ct);
+            }, TimeSpan.FromSeconds(90), ct);
             degraded.Should().BeTrue("list exhaustion — DEGRADED with the s3-pool-exhausted marker");
             await Fx.RunDockerAsync(["start", Fx.S3NodeContainerName], ct);
             var healed = await E2eFixture.WaitForAsync(async () =>
             {
                 var read = await writer.ReadAsync(cluster, "shard1", ct);
                 return read is { IsSuccess: true } && read.Value is { State: WalStreamStatus.Active };
-            }, TimeSpan.FromSeconds(300), ct);
+            }, TimeSpan.FromSeconds(90), ct);
             healed.Should().BeTrue("raising the node — self-healing back to ACTIVE (retry loop)");
             await load.CancelAsync();
             try { await loader; } catch { /* фон остановлен */ }
@@ -652,14 +673,18 @@ public sealed class PoolRoleSwitchScenarios(PoolRoleSwitchScenariosFx Ctx) : E2e
     [Fact]
     public async Task Pool_RoleSwitch_AgentRecreatedWithMasterList()
     {
-        var ct = TestContext.Current.CancellationToken;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
+        var ct = cts.Token;
         var cluster = $"pac5{Fx.ClusterTag}";
         var writer = new WalStatusWriter(G, [Endpoint]);
-        var ep1 = HostPort(Fx.S3Endpoint);
+        var ep1 = S3Node1Mc; // mc из контейнера — внутрисетевой alias
         try
         {
-            var ep2 = HostPort(await Fx.StartExtraS3NodeAsync(Node2Alias, ct));
-            await Fx.SeedS3PoolAsync(Pool, ct, [Fx.S3Endpoint, ep2]);
+            await Fx.StartExtraS3NodeAsync(Node2Alias, ct);
+            var ep2 = S3Node2Mc(Node2Alias); // mc из контейнера — alias ноды
+            await Fx.SeedS3PoolAsync(Pool, ct, [Fx.S3EndpointForContainers, ep2]);
             await SeedClusterAsync(cluster);
             await PutPolicyAsync(cluster, ["node1"], ["node2"]);
             await using var app = await StartPoolHostAsync("pac5", ct);
@@ -693,7 +718,7 @@ public sealed class PoolRoleSwitchScenarios(PoolRoleSwitchScenariosFx Ctx) : E2e
                 {
                     return false;
                 }
-            }, TimeSpan.FromSeconds(120), ct)).Should().BeTrue("the new master left recovery — the switch is done");
+            }, TimeSpan.FromSeconds(90), ct)).Should().BeTrue("the new master left recovery — the switch is done");
 
             // Assert — новый мастер пишет на ноду master-списка: .history и/или
             // свежие сегменты TLI 2 появляются на node1; цепочка ACTIVE непрерывна.
@@ -714,7 +739,7 @@ public sealed class PoolRoleSwitchScenarios(PoolRoleSwitchScenariosFx Ctx) : E2e
                 var names = listed.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
                     .Select(l => l[(l.LastIndexOf(' ') + 1)..]).ToList();
                 return WalChain.CheckWithRestart(chainStart.Value, names).IsContinuous;
-            }, TimeSpan.FromSeconds(300), ct);
+            }, TimeSpan.FromSeconds(90), ct);
             switched.Should().BeTrue(
                 "the agent of the new role writes to the master-list node (node1), .history in S3, the chain is continuous");
             // Двойная архивация (arch/19 §3): .history нового TLI доставляют ОБА
@@ -749,12 +774,16 @@ public sealed class PoolReadAnyNodeScenarios(PoolReadAnyNodeScenariosFx Ctx) : E
     [Fact]
     public async Task Pool_ReadAnyNode_RestoreAfterNodeStop()
     {
-        var ct = TestContext.Current.CancellationToken;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
+        var ct = cts.Token;
         var cluster = $"pac6{Fx.ClusterTag}";
         try
         {
-            var ep2 = HostPort(await Fx.StartExtraS3NodeAsync(Node2Alias, ct));
-            await Fx.SeedS3PoolAsync(Pool, ct, [Fx.S3Endpoint, ep2]);
+            await Fx.StartExtraS3NodeAsync(Node2Alias, ct);
+            var ep2 = S3Node2Mc(Node2Alias); // mc из контейнера — alias ноды
+            await Fx.SeedS3PoolAsync(Pool, ct, [Fx.S3EndpointForContainers, ep2]);
             await SeedClusterAsync(cluster);
             // Пишем всё на node1 (оба списка — node1).
             await PutPolicyAsync(cluster, ["node1"], ["node1"]);
@@ -857,17 +886,20 @@ public sealed class PoolSnapshotsOwnPairScenarios(PoolSnapshotsOwnPairScenariosF
     [Fact]
     public async Task Snapshots_OwnPair_BucketAndFailFast()
     {
-        var ct = TestContext.Current.CancellationToken;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
+        var ct = cts.Token;
         try
         {
             // Arrange — bucket слепков на ownS3-ноды окружения (свой, не пуловый).
-            var ep1 = HostPort(Fx.S3Endpoint);
+            var ep1 = S3Node1Mc; // mc из контейнера — внутрисетевой alias
             await Fx.RunMcAsync(
                 $"mc alias set t http://{ep1} {E2eEnvironment.S3RootUser} {E2eEnvironment.S3RootPassword} >/dev/null"
                 + $" && mc mb --ignore-existing t/{SnapshotBucket}", ct);
 
             // Act 1 — воркер со слепочной парой (localhost-вид: sink из процесса).
-            var s3Endpoint = Fx.S3Endpoint;
+            var s3Endpoint = Fx.S3EndpointForContainers; // env воркера — внутрисетевой alias
             await using var app = await Fx.StartHostAsync("pac7", extraEnv: new Dictionary<string, string>
             {
                 ["PgWorker__Snapshots__Export__Enabled"] = "true",
@@ -882,7 +914,7 @@ public sealed class PoolSnapshotsOwnPairScenarios(PoolSnapshotsOwnPairScenariosF
             var ok = await E2eFixture.WaitForAsync(async () =>
                 (await G.GetAsync(Endpoint, "/pgworker/etcd-snapshots", ct)).Value?.Value
                     .Contains("\"state\":\"OK\"") == true,
-                TimeSpan.FromSeconds(120), ct);
+                TimeSpan.FromSeconds(90), ct);
             ok.Should().BeTrue("the snapshot pair serves the export");
             var listing = await Fx.RunMcAsync(
                 $"mc alias set t http://{ep1} {E2eEnvironment.S3RootUser} {E2eEnvironment.S3RootPassword} >/dev/null"
@@ -923,12 +955,16 @@ public sealed class PoolPolicyValidationScenarios(PoolPolicyValidationScenariosF
     [Fact]
     public async Task PolicyValidation_400_ByField_And_SourcePool_Restore()
     {
-        var ct = TestContext.Current.CancellationToken;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
+        var ct = cts.Token;
         var cluster = $"pac8{Fx.ClusterTag}";
         try
         {
-            var ep2 = HostPort(await Fx.StartExtraS3NodeAsync(Node2Alias, ct));
-            await Fx.SeedS3PoolAsync(Pool, ct, [Fx.S3Endpoint, ep2]);
+            await Fx.StartExtraS3NodeAsync(Node2Alias, ct);
+            var ep2 = S3Node2Mc(Node2Alias); // mc из контейнера — alias ноды
+            await Fx.SeedS3PoolAsync(Pool, ct, [Fx.S3EndpointForContainers, ep2]);
             // Пул в состоянии TO_REMOVE + пул с Заявленной нодой без portalloc.
             await G.PutAsync(Endpoint, "/s3/clusters/toremove/config",
                 """{"platform":"owns3","nodes":1,"created_unix":1760000000,"state":"TO_REMOVE"}""",
@@ -988,7 +1024,7 @@ public sealed class PoolPolicyValidationScenarios(PoolPolicyValidationScenariosF
             {
                 var left = await G.RangeAsync(Endpoint, $"/clusters/{cluster}/", ct);
                 return left.IsSuccess && left.Value.Count == 0;
-            }, TimeSpan.FromSeconds(300), ct);
+            }, TimeSpan.FromSeconds(90), ct);
             deprovisioned.Should().BeTrue("contour A is torn down — data only in S3");
             await SeedClusterAsync(cluster);
             (await WaitProvisionedAsync(cluster, ct)).Should().BeTrue("the cluster is raised anew (empty shards)");
@@ -1001,7 +1037,7 @@ public sealed class PoolPolicyValidationScenarios(PoolPolicyValidationScenariosF
             await G.PutAsync(Endpoint, PgWorker.Backups.BackupNames.RestoreKey(cluster, "shard1", restoreId),
                 PgWorker.Backups.Restore.RestoreStatusJson.Serialize(op), null, ct);
             var restore = await WaitRestoreAsync(cluster, "shard1", restoreId,
-                TimeSpan.FromSeconds(420), ct);
+                TimeSpan.FromSeconds(90), ct);
             restore["state"].GetString().Should().Be("COMPLETED",
                 "the DR-restore reads from source_pool (a foreign prefix — another pool)");
         }

@@ -108,8 +108,9 @@ public sealed class E2eEnvironment : IAsyncDisposable
     private readonly IContainer? _s3Node;                         // только фаза 1
 
     // Фактический динамический хост-порт ownS3-ноды (0 — ноды нет); тестовые
-    // S3-клиенты ходят http://localhost:{_s3HostPort}, внутрисетевые потребители
-    // (SeedS3PoolAsync: env воркера/portalloc) — host.docker.internal:{порт}.
+    // S3-клиенты ходят http://localhost:{_s3HostPort}, контейнерные потребители —
+    // по внутрисетевому alias'у (S3EndpointForContainers: e2e-owns3:9000 —
+    // сеть окружения одна, alias'ы резолвятся напрямую).
     private readonly int _s3HostPort;
 
     // Политика телеметрии E2E (docs/e2e-launch.md): упавший сценарий (exit≠0
@@ -306,12 +307,22 @@ public sealed class E2eEnvironment : IAsyncDisposable
     /// командами из artifacts/README-cleanup.txt. Вызывается в catch сценария.</summary>
     public void MarkFailed() => _failed = true;
 
-    /// <summary>etcd окружения: внутрисетевой URL первого узла (алиас сети).</summary>
+    /// <summary>etcd окружения: URL первого узла для ТЕСТ-ПРОЦЕССА (хост,
+    /// localhost-публикация). Контейнерные потребители — EtcdEndpointForContainers
+    /// (внутрисетевой alias).</summary>
     public string EtcdEndpoint { get; }
 
-    /// <summary>Все клиентские URL контура окружения (внутрисетевые, по алиасам);
-    /// при haEtcd=false — один (прежняя семантика).</summary>
+    /// <summary>etcd окружения для КОНТЕЙНЕРОВ: внутрисетевые alias'ы
+    /// (e2e-etcdN:2379, сеть окружения одна) — env воркеров/агентов.</summary>
+    public string EtcdEndpointForContainers { get; }
+
+    /// <summary>Все клиентские URL контура окружения (хост-доступные, для
+    /// тест-процесса); при haEtcd=false — один (прежняя семантика).</summary>
     public IReadOnlyList<string> EtcdEndpoints { get; }
+
+    /// <summary>Все etcd-URL по ВНУТРИСЕТЕНЫМ alias'ам — env воркеров/агентов
+    /// (advertised: агенты нод резолвят alias'ы в той же сети).</summary>
+    public IReadOnlyList<string> EtcdEndpointsForContainers { get; }
 
     /// <summary>Имя docker-сети окружения (уникально на прогон) — удаляется в
     /// teardown'е, отсутствие проверяется ассертом.</summary>
@@ -394,9 +405,14 @@ public sealed class E2eEnvironment : IAsyncDisposable
         return [.. entries.Select(node => $"pgw-{cluster}-{shard}-{node}")];
     }
 
-    /// <summary>S3-endpoint окружения: внутрисетевой URL ownS3 (алиас сети).
-    /// Пустая строка, если окружение поднято без ownS3.</summary>
+    /// <summary>S3-endpoint окружения для ТЕСТ-ПРОЦЕССА (хост,
+    /// localhost-публикация). Пустая строка, если окружение поднято без ownS3.
+    /// Контейнерные потребители — S3EndpointForContainers (alias e2e-owns3:9000).</summary>
     public string S3Endpoint { get; }
+
+    /// <summary>S3-endpoint для КОНТЕЙНЕРОВ: внутрисетевой alias ownS3
+    /// (e2e-owns3:9000). Пустая строка — окружение без ownS3.</summary>
+    public string S3EndpointForContainers { get; }
 
     /// <summary>Имя ПЕРВОЙ etcd-ноды окружения (pgw-ee1-{runId}) для docker cp/exec
     /// etcdctl в restore-verify сценариях (t08). Ноды именуются pgw-ee{i+1}-{runId}
@@ -469,12 +485,17 @@ public sealed class E2eEnvironment : IAsyncDisposable
         _s3Node = s3Node;
         _s3HostPort = s3HostPort;
         Gateway = new EtcdGateway(_gatewayHttp);
-        // Динамические публикации (docs/e2e-isolation.md §2): тестовый Gateway
-        // ходит по localhost:{фактический порт}; контейнеры-потребители (воркер,
-        // Patroni-ноды) — по host.docker.internal:{фактический порт} (env).
+        // Динамические публикации (docs/e2e-isolation.md §2): тестовый процесс
+        // ходит по localhost:{фактический порт}. Контейнерные потребители
+        // (воркеры, агенты, джобы) — по ВНУТРИСЕТЕНЫМ alias'ам сети окружения
+        // (e2e-etcdN:2379, e2e-owns3:9000): сеть одна, alias'ы резолвятся
+        // напрямую, без обхода хост-публикаций.
         EtcdEndpoint = $"http://localhost:{etcdHostPorts[0]}";
         EtcdEndpoints = etcdHostPorts.Select(p => $"http://host.docker.internal:{p}").ToList();
+        EtcdEndpointForContainers = $"http://{etcdAliases[0]}:2379";
+        EtcdEndpointsForContainers = etcdAliases.Select(a => $"http://{a}:2379").ToList();
         S3Endpoint = s3HostPort == 0 ? "" : $"http://localhost:{s3HostPort}";
+        S3EndpointForContainers = s3HostPort == 0 ? "" : $"http://{s3Alias}:9000";
         PatroniHttp = CreatePatroniHttpsClientOnly();
         HealthHttp = CreateMtlsHttpClient();
     }
@@ -1035,8 +1056,8 @@ public sealed class E2eEnvironment : IAsyncDisposable
         // (Patroni-ноды и master-lease живут в той же сети контура).
         for (var i = 0; i < EtcdEndpoints.Count; i++)
         {
-            env[$"PgWorker__Etcd__Endpoints__{i}"] = EtcdEndpoints[i];
-            env[$"PgWorker__Etcd__AdvertisedEndpoints__{i}"] = EtcdEndpoints[i];
+            env[$"PgWorker__Etcd__Endpoints__{i}"] = EtcdEndpointsForContainers[i];
+            env[$"PgWorker__Etcd__AdvertisedEndpoints__{i}"] = EtcdEndpointsForContainers[i];
         }
 
         foreach (var (key, value) in extraEnv ?? new Dictionary<string, string>())
@@ -1218,7 +1239,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
         // Внутрисетевая форма endpoint'ов (потребители — s3worker-ноды и джобы
         // в сети окружения): host.docker.internal:{динамический порт}.
         var list = (endpoints is { Count: > 0 } ? endpoints
-                : [$"host.docker.internal:{_s3HostPort}"])
+                : [S3EndpointForContainers])
             .Select(e => e.Replace("http://", "", StringComparison.Ordinal).TrimEnd('/'))
             .ToArray();
         var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();

@@ -27,9 +27,18 @@ public sealed class E2eMoveScenarios(E2eMoveScenariosFx Ctx, ITestOutputHelper o
     private HostInstance? Host { get; set; }
     private static readonly JsonSerializerOptions Json = new() { PropertyNameCaseInsensitive = true };
 
+    // Потолок Move-факта 3 мин: токен создаётся в факте и расходится по этапам
+    // E1–E5 и хелперам цепочки (неверное ожидание не может длиться дольше —
+    // приказ владельца).
+    private CancellationToken _moveBudgetCt;
+
     [Fact]
     public async Task Move_Lifecycle_Chain()
     {
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин
+        _moveBudgetCt = cts.Token;
         try
         {
             await E1_Provisioning();
@@ -60,14 +69,14 @@ public sealed class E2eMoveScenarios(E2eMoveScenariosFx Ctx, ITestOutputHelper o
 
     private async Task E1_Provisioning()
     {
-        var ct = TestContext.Current.CancellationToken;
+        var ct = _moveBudgetCt;
         output.WriteLine("E1: seeding cluster + starting host...");
 
         await SeedClusterAsync();
         Host = await Fx.StartHostAsync("m1", ct: ct);
 
         var provisioned = await E2ePhase.WaitAsync(Fx, "move-provisioning",
-            E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, Cluster, () => ProvisionedAsync()), TimeSpan.FromSeconds(360), ct,
+            E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, Cluster, () => ProvisionedAsync()), TimeSpan.FromSeconds(90), ct,
             // Прогресс-снапшот provisioning: state-ключи нод + dsn-ключи из etcd
             // (дешёвые чтения, тик 5 с) — какая нода в каком состоянии.
             progress: async () =>
@@ -100,7 +109,7 @@ public sealed class E2eMoveScenarios(E2eMoveScenariosFx Ctx, ITestOutputHelper o
 
     private async Task E2_MoveUnderLoad()
     {
-        var ct = TestContext.Current.CancellationToken;
+        var ct = _moveBudgetCt;
         output.WriteLine("E2: move bucket_0 → shard2 under load...");
 
         var shard1 = await MasterInfoAsync("shard1", ct);
@@ -118,7 +127,7 @@ public sealed class E2eMoveScenarios(E2eMoveScenariosFx Ctx, ITestOutputHelper o
             $$"""{"op":"move","to":"shard2","requested_unix":{{NowUnix()}}}""", ct);
 
         var moved = await E2ePhase.WaitAsync(Fx, "move-routing-flip",
-            () => RoutingIsAsync("bucket_0", "shard2", ct), TimeSpan.FromSeconds(120), ct);
+            () => RoutingIsAsync("bucket_0", "shard2", ct), TimeSpan.FromSeconds(90), ct);
         moved.Should().BeTrue($"the move must finish; routing={await RoutingAsync("bucket_0", ct)}, " +
                               $"status={await StatusAsync("bucket_0", ct) ?? "absent"}, work={await WorkDumpAsync(ct)}");
 
@@ -204,7 +213,7 @@ public sealed class E2eMoveScenarios(E2eMoveScenariosFx Ctx, ITestOutputHelper o
 
     private async Task E3_AutoFinalize()
     {
-        var ct = TestContext.Current.CancellationToken;
+        var ct = _moveBudgetCt;
         output.WriteLine("E3: starting host for auto-finalize...");
 
         (await RoutingAsync("bucket_0", ct)).Should().Be("shard2", "E2 moved bucket_0 to shard2");
@@ -213,7 +222,7 @@ public sealed class E2eMoveScenarios(E2eMoveScenariosFx Ctx, ITestOutputHelper o
 
         var autoFin = await E2ePhase.WaitAsync(Fx, "move-auto-finalize",
             () => ArtifactsCleanAsync("shard1", "bucket_0", schemaMustBeAbsent: true, ct),
-            TimeSpan.FromSeconds(120), ct);
+            TimeSpan.FromSeconds(90), ct);
         autoFin.Should().BeTrue($"auto-finalize must clean up shard1; " +
                                 $"artifacts={await ArtifactsDumpAsync("shard1", "bucket_0", ct)}, work={await WorkDumpAsync(ct)}");
         (await ArtifactsCleanAsync("shard2", "bucket_0", schemaMustBeAbsent: false, ct))
@@ -226,7 +235,7 @@ public sealed class E2eMoveScenarios(E2eMoveScenariosFx Ctx, ITestOutputHelper o
 
     private async Task E4_AbortTakeover()
     {
-        var ct = TestContext.Current.CancellationToken;
+        var ct = _moveBudgetCt;
         output.WriteLine("E4: abort bucket_1 mid-SYNCING + kill + takeover...");
 
         await PutMoveRequestAsync("bucket_1",
@@ -243,7 +252,7 @@ public sealed class E2eMoveScenarios(E2eMoveScenariosFx Ctx, ITestOutputHelper o
         Host = await Fx.StartHostAsync("m3", ct: ct);
 
         var aborted = await E2ePhase.WaitAsync(Fx, "move-abort-done",
-            async () => await StatusAsync("bucket_1", ct) is null, TimeSpan.FromSeconds(180), ct);
+            async () => await StatusAsync("bucket_1", ct) is null, TimeSpan.FromSeconds(90), ct);
         aborted.Should().BeTrue($"the abort must be carried out by the new controller (takeover); " +
                                 $"status={await StatusAsync("bucket_1", ct) ?? "absent"}, work={await WorkDumpAsync(ct)}");
 
@@ -263,7 +272,7 @@ public sealed class E2eMoveScenarios(E2eMoveScenariosFx Ctx, ITestOutputHelper o
 
     private async Task E5_Deprovisioning()
     {
-        var ct = TestContext.Current.CancellationToken;
+        var ct = _moveBudgetCt;
         output.WriteLine("E5: deprovisioning with pending move request...");
 
         await PutMoveRequestAsync("bucket_2",
@@ -271,7 +280,7 @@ public sealed class E2eMoveScenarios(E2eMoveScenariosFx Ctx, ITestOutputHelper o
         await SetToRemoveAsync();
 
         var deprovisioned = await E2ePhase.WaitAsync(Fx, "move-deprovisioning",
-            () => DeprovisionedAsync(), TimeSpan.FromSeconds(180), ct);
+            () => DeprovisionedAsync(), TimeSpan.FromSeconds(90), ct);
         deprovisioned.Should().BeTrue("deprovisioning must remove the cluster entirely");
 
         (await RangeAsync(MoveNames.MovesPrefix(Cluster)))
@@ -318,7 +327,7 @@ public sealed class E2eMoveScenarios(E2eMoveScenariosFx Ctx, ITestOutputHelper o
 
     private async Task SeedClusterAsync()
     {
-        var ct = TestContext.Current.CancellationToken;
+        var ct = _moveBudgetCt;
         var config = $$"""
             {"buckets":6,"dbname":"{{Cluster}}","created_unix":1755800000,"state":"NOT_INITIALIZED","bucket_admin_password":"{{E2eFixture.BucketAdminPassword}}"}
             """;
@@ -378,7 +387,7 @@ public sealed class E2eMoveScenarios(E2eMoveScenariosFx Ctx, ITestOutputHelper o
 
     private async Task SetToRemoveAsync()
     {
-        var ct = TestContext.Current.CancellationToken;
+        var ct = _moveBudgetCt;
         var current = await GetOrNullAsync($"/clusters/{Cluster}/config");
         current.Should().NotBeNull("the cluster config must exist before TO_REMOVE");
         var doc = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(current!.Value!)!;

@@ -23,7 +23,10 @@ public class S3E2eTakeoverTests
         await using var fx = await S3E2eEnvironment.StartTwoAsync("takeover");
         var cluster = $"e2e{fx.ClusterTag}";
         using var api1 = fx.CreateApiHttpClient(fx.Api1BaseUrl);
-        var ct = TestContext.Current.CancellationToken;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
+        var ct = cts.Token;
 
         try
         {
@@ -31,7 +34,7 @@ public class S3E2eTakeoverTests
             await fx.WaitPhaseAsync("takeover-instances-up", async () =>
                 (await RangeAsync(fx, "/s3worker/api/", ct)).Count == 2
                 && (await RangeAsync(fx, "/s3worker/instances/", ct)).Count == 2,
-                TimeSpan.FromSeconds(100), ct);
+                TimeSpan.FromSeconds(90), ct);
 
             // A2: API ew1 готов; заявка N=2 через Api1.
             await fx.WaitPhaseAsync("takeover-wait-worker", async () =>

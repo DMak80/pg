@@ -24,7 +24,10 @@ public sealed class E2eSecondInstanceScenarios(E2eSecondInstanceScenariosFx Ctx)
     [Fact]
     public async Task SecondInstance_ContainerKillMidAdd_SurvivorFinishesNoDuplicates()
     {
-        var ct = TestContext.Current.CancellationToken;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
+        var ct = cts.Token;
 
         // Идентификаторы прогона: имена контейнеров содержат тег кластера —
         // teardown окружения опознаёт их как СВОИ (OwnName) и удаляет.
@@ -58,7 +61,7 @@ public sealed class E2eSecondInstanceScenarios(E2eSecondInstanceScenariosFx Ctx)
             var bothUp = await E2ePhase.WaitAsync(Fx, "si2-instances-up", async () =>
                 (await RangeAsync("/pgworker/api/")).Count == 2
                 && (await RangeAsync("/pgworker/instances/")).Count == 2,
-                TimeSpan.FromSeconds(100), ct,
+                TimeSpan.FromSeconds(90), ct,
                 progress: async () =>
                 {
                     var api = (await RangeAsync("/pgworker/api/")).Count;
@@ -70,12 +73,12 @@ public sealed class E2eSecondInstanceScenarios(E2eSecondInstanceScenariosFx Ctx)
             // ---------- Arrange: живой кластер + add-декларация shard3 ----------
             await SeedClusterAsync(cluster);
             var provisioned = await E2ePhase.WaitAsync(Fx, "si2-provisioning",
-                E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(360), ct);
+                E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(90), ct);
             provisioned.Should().BeTrue("provisioning of the cluster must reach Active before add starts");
 
             await SeedAddDeclarationAsync(cluster, "shard3", ct);
             var a3Started = await E2ePhase.WaitAsync(Fx, "si2-a3-started",
-                () => DockerHasAsync($"pgw-{cluster}-shard3-"), TimeSpan.FromSeconds(120), ct);
+                () => DockerHasAsync($"pgw-{cluster}-shard3-"), TimeSpan.FromSeconds(90), ct);
             a3Started.Should().BeTrue("the first instance must start A3 (the shard3 container appeared)");
 
             // ---------- Act: docker kill ПЕРВОГО контейнера воркера ----------
@@ -84,7 +87,7 @@ public sealed class E2eSecondInstanceScenarios(E2eSecondInstanceScenariosFx Ctx)
 
             // ---------- Assert: выживший донёс, дублей нет, клэйм у него ----------
             var finished = await E2ePhase.WaitAsync(Fx, "si2-takeover-done",
-                () => ShardRegisteredAsync(cluster, "shard3"), TimeSpan.FromSeconds(360), ct,
+                () => ShardRegisteredAsync(cluster, "shard3"), TimeSpan.FromSeconds(90), ct,
                 // Прогресс state-ключей shard3 (по образцу HaEtcd, t29 §3.5).
                 progress: async () =>
                 {

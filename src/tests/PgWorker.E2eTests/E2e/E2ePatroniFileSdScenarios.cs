@@ -33,7 +33,10 @@ public sealed class E2ePatroniFileSdScenarios(E2ePatroniFileSdScenariosFx Ctx) :
     [Fact]
     public async Task E2ePatroniFileSd_ClusterTargetsUpSeriesDismantle()
     {
-        var ct = TestContext.Current.CancellationToken;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
+        var ct = cts.Token;
         // Уникальное имя кластера на прогон: движковые контейнеры/тома (pgw-<C>-*)
         // опознаются teardown'ом окружения по своему тегу.
         var cluster = $"pfsd{Fx.ClusterTag}";
@@ -130,7 +133,7 @@ public sealed class E2ePatroniFileSdScenarios(E2ePatroniFileSdScenariosFx Ctx) :
             });
 
             var provisioned = await E2eFixture.WaitForAsync(
-                E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(360), ct);
+                E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(90), ct);
             provisioned.Should().BeTrue("provisioning of the cluster must reach Active (dsn/RUNNING/no status)");
 
             // ---------- сетевая идентичность (Д1-контур в E2E) ----------
@@ -151,7 +154,7 @@ public sealed class E2ePatroniFileSdScenarios(E2ePatroniFileSdScenariosFx Ctx) :
             Console.WriteLine($"[PHASE] e2e[{Fx.Slug}]: waiting for the patroni-nodes up targets…");
             var targetsUp = await E2eFixture.WaitForAsync(
                 () => PatroniTargetsUpAsync(promHttp, promUrl, aliases),
-                TimeSpan.FromSeconds(120), ct);
+                TimeSpan.FromSeconds(90), ct);
             targetsUp.Should().BeTrue("the patroni-nodes targets must appear and be up");
 
             // Канон ревизии 3: ни один scrapeUrl (обе джобы: patroni-nodes и
@@ -201,7 +204,7 @@ public sealed class E2ePatroniFileSdScenarios(E2ePatroniFileSdScenariosFx Ctx) :
             await SetToRemoveAsync(cluster);
             var gone = await E2eFixture.WaitForAsync(
                 () => DismantledAsync(cluster, promHttp, promUrl),
-                TimeSpan.FromSeconds(240), ct);
+                TimeSpan.FromSeconds(90), ct);
             gone.Should().BeTrue("after the dismantling the portalloc key is gone and the patroni-nodes targets = 0");
         }
         catch

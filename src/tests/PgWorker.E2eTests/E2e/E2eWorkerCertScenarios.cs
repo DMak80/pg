@@ -31,7 +31,10 @@ public sealed class E2eWorkerCertScenarios(E2eWorkerCertScenariosFx Ctx) : IClas
     [Fact]
     public async Task WorkerCert_Lifecycle_AppliedPendingRestartEnvFallback()
     {
-        var ct = TestContext.Current.CancellationToken;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
+        var ct = cts.Token;
         var fx = Ctx.Fx;
         var p1San = WorkerAlias("cert-p1"); // SAN сертов управляемого ключа = алиас воркера
         try
@@ -146,7 +149,10 @@ public sealed class E2eWorkerCertScenarios(E2eWorkerCertScenariosFx Ctx) : IClas
     [Fact]
     public async Task WorkerCert_BrokenKey_StartFails()
     {
-        var ct = TestContext.Current.CancellationToken;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
+        var ct = cts.Token;
         var fx = Ctx.Fx;
         var brokenSan = WorkerAlias("cert-broken");
         try

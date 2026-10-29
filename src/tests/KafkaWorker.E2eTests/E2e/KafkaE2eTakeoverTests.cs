@@ -24,7 +24,10 @@ public class KafkaE2eTakeoverTests
         // Arrange A1: двухинстансный контур (сеть + etcd + ew1/ew2 + общий TLS).
         await using var fx = await KafkaE2eEnvironment.StartAsync("kfw-takeover");
         var cluster = $"tkw{fx.ClusterTag}";
-        var ct = TestContext.Current.CancellationToken;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
+        var ct = cts.Token;
 
         try
         {
@@ -33,7 +36,7 @@ public class KafkaE2eTakeoverTests
             var bothUp = await KafkaE2ePhase.WaitAsync(fx, "ktake-instances-up", async () =>
                 (await fx.RangeAsync("/kafkaworker/api/", ct)).Count == 2
                 && (await fx.RangeAsync("/kafkaworker/instances/", ct)).Count == 2,
-                TimeSpan.FromSeconds(100), ct,
+                TimeSpan.FromSeconds(90), ct,
                 progress: async () =>
                 {
                     var api = (await fx.RangeAsync("/kafkaworker/api/", ct)).Count;
@@ -63,7 +66,7 @@ public class KafkaE2eTakeoverTests
                 && await fx.GetOrNullAsync($"/kafka/clusters/{cluster}/config", ct) is { } config
                     && config.Contains("state")
                 && await fx.GetOrNullAsync($"/kafkaworker/claims/{cluster}", ct) is not null,
-                TimeSpan.FromSeconds(120), ct,
+                TimeSpan.FromSeconds(90), ct,
                 progress: async () =>
                 {
                     var work = await fx.GetOrNullAsync($"/kafkaworker/work/{cluster}", ct);
@@ -105,7 +108,7 @@ public class KafkaE2eTakeoverTests
                 var work = await fx.GetOrNullAsync($"/kafkaworker/work/{cluster}", ct);
                 return config is not null && !config.Contains("state")
                     && work is not null && work.Contains("provision") && work.Contains("done");
-            }, TimeSpan.FromSeconds(360), ct,
+            }, TimeSpan.FromSeconds(90), ct,
                 progress: async () =>
                 {
                     var config = await fx.GetOrNullAsync($"/kafka/clusters/{cluster}/config", ct);
