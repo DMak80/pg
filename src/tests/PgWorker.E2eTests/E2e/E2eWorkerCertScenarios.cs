@@ -280,7 +280,10 @@ public sealed class E2eWorkerCertScenarios(E2eWorkerCertScenariosFx Ctx) : IClas
             progress: async () =>
                 $"alive={await host.IsRunningAsync(ct)}, api-keys={await CountApiKeysAsync(fx, ct)}");
         found.Should().BeTrue("the discovery key with cert_thumbprint must appear");
-        return (url!, actualThumb!);
+        // Хостовая модель: advertise воркера — внутрисетевой alias, с хоста не
+        // резолвится; тест ходит по host-публикации (HostInstance.ApiUrl),
+        // SAN серта включает localhost.
+        return (host.ApiUrl, actualThumb!);
     }
 
     // Лёгкий range-подсчёт api-ключей (etcd-чтение, без docker) для прогресс-тиков.

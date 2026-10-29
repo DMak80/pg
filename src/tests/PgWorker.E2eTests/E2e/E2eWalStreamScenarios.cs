@@ -1150,7 +1150,9 @@ public sealed class E2eWalStreamScenarios(E2eWalStreamScenariosFx Ctx) : IClassF
         var kv = await G.GetAsync(Endpoint, $"/pgworker/portalloc/{cluster}", ct);
         kv.Value.Should().NotBeNull("portalloc is written at provisioning");
         var entries = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(kv.Value!.Value)!;
-        var dsn = DatabaseProvisioner.BuildAdminDsn($"pgw-{cluster}-{shard}-{node}", 5432,
+        // Хостовая модель: DSN — localhost:{pg-порт из portalloc}
+        var dsn = DatabaseProvisioner.BuildAdminDsn("localhost",
+            entries[$"{shard}/{node}"].GetProperty("pg").GetInt32(),
             cluster, new InstallSecrets(E2eFixture.SuPassword, "", "", ""));
         await using var conn = new NpgsqlConnection(dsn);
         await conn.OpenAsync(ct);

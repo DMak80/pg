@@ -427,7 +427,8 @@ public sealed class TliSwitchContext : IAsyncLifetime
             if (key.Split('/')[1] == master)
                 continue; // сам мастер — не проверяется
             var replay = ParseLsn(await ScalarAsync(
-                AdminDsn($"pgw-{Cluster}-shard1-{key.Split('/')[1]}", 5432),
+                // Хостовая модель: DSN реплики — localhost:{pg из portalloc}
+                AdminDsn("localhost", addr.GetProperty("pg").GetInt32()),
                 "SELECT pg_last_wal_replay_lsn()", ct));
             if (replay < masterPos)
                 return false;

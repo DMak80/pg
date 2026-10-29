@@ -156,7 +156,8 @@ public sealed class E2eSupervisorSelfHealScenarios(E2eSupervisorSelfHealScenario
                 try
                 {
                     await using var conn = new NpgsqlConnection(
-                        DatabaseProvisioner.BuildAdminDsn($"pgw-{cluster}-shard1-{node}", port, cluster,
+                        // Хостовая модель: DSN — localhost:{pg-порт из portalloc}
+                        DatabaseProvisioner.BuildAdminDsn("localhost", port, cluster,
                             new InstallSecrets(E2eFixture.SuPassword, "", "", "")));
                     await conn.OpenAsync(ct);
                     // ВАЖНО (прогон 2026-09-13, c344501d): параметр-строка без каста

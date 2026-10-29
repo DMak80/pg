@@ -183,16 +183,18 @@ public sealed class E2eSupervisorOrphanDrHoldScenarios(E2eSupervisorOrphanDrHold
         }, ct: ct);
 
     // Воркер сценария сирот: реестр+TTL в сжатом времени; verify off.
+    // TTL 30 с + проход 10 с — очистка ≤40 с: укладывается в бюджет ожидания
+    // и 3-минутный потолок теста (TTL 120/проход 60 не успевали).
     private Task<HostInstance> StartOrphanHostAsync(string name, CancellationToken ct)
         => Fx.StartHostAsync(name, extraEnv: new Dictionary<string, string>
         {
             ["PgWorker__Backups__Enabled"] = "true",
             ["PgWorker__Backups__S3__Bucket"] = Bucket,
             // t36: креды пула — env-профиль (arch/19 §7); пул — policy.s3, адреса
-            // резолвит воркер из /s3/ (advertised host.docker.internal, extra_hosts).
+            // резолвит воркер из /s3/ (внутрисетевые alias'ы, сеть одна).
             ["PgWorker__Backups__Policy__VerifyOnCreate"] = "false",
-            ["PgWorker__Backups__Supervisor__IntervalSec"] = "60",
-            ["PgWorker__Backups__Supervisor__OrphanTtlSec"] = "120",
+            ["PgWorker__Backups__Supervisor__IntervalSec"] = "10",
+            ["PgWorker__Backups__Supervisor__OrphanTtlSec"] = "30",
         }, ct: ct);
 
     private async Task<IReadOnlyList<Kv>> FullKeysAsync(string cluster, string shard)
