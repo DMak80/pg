@@ -6,6 +6,7 @@ using DotNet.Testcontainers.Containers;
 using DotNet.Testcontainers.Networks;
 using FluentAssertions;
 using Shared.Etcd.Client;
+using Shared.TestInfra;
 using Xunit;
 
 namespace PgWorker.IntegrationTests.E2e;
@@ -42,65 +43,15 @@ public sealed class E2eEnvironment : IAsyncDisposable
 
     private const string EtcdImage = "quay.io/coreos/etcd:v3.5.21";
 
-    // ===== Теги pg-собираемых e2e-образов: per-worktree =====
+    // ===== Теги pg-собираемых e2e-образов: PER-BRANCH (docs/e2e-isolation.md §9) =====
 
-    // Суффикс тега (ветка + хэш пути worktree): параллельные агенты одного
-    // docker-хоста не перезаписывают образы друг друга между prepare и
-    // прогоном — фиксированный общий тег отдавал раннеру ЧУЖИЕ бинари (стеки
-    // упавшего прогона указывали на чужой worktree при своём исходе).
-    // Слои docker-кэша контентно-адресные и общие — пересборка тега соседнего
-    // worktree инкрементальна.
-    private const string TagSuffixEnv = "PGW_E2E_TAG";
-
-    internal static readonly string ImageTagSuffix = ComputeImageTagSuffix();
-
-    private static string ComputeImageTagSuffix()
-    {
-        // Раннер: суффикс выдал хост-оркестратор env'ом (FindRoot в контейнере
-        // невозможен — docker/node/Dockerfile туда не копируется).
-        if (IsInnerRunner)
-            return Environment.GetEnvironmentVariable(TagSuffixEnv)
-                ?? throw new ApplicationException(
-                    $"{TagSuffixEnv} is not set — e2e image tags cannot be resolved");
-        var root = E2eFixture.FindRoot(AppContext.BaseDirectory);
-        var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
-            Encoding.UTF8.GetBytes(root))).ToLowerInvariant()[..8];
-        var branch = TryGitBranch(root);
-        return branch.Length == 0 ? hash : $"{branch}-{hash}";
-    }
-
-    // Ветка worktree — читаемость тега в `docker images`; git недоступен или
-    // репозитория нет — пустая строка (уникальность держит хэш пути).
-    private static string TryGitBranch(string root)
-    {
-        try
-        {
-            var psi = new System.Diagnostics.ProcessStartInfo("git")
-            {
-                UseShellExecute = false,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                CreateNoWindow = true,
-                WorkingDirectory = root,
-            };
-            psi.ArgumentList.Add("rev-parse");
-            psi.ArgumentList.Add("--abbrev-ref");
-            psi.ArgumentList.Add("HEAD");
-            using var process = new System.Diagnostics.Process { StartInfo = psi };
-            process.Start();
-            if (!process.WaitForExit(5000) || process.ExitCode != 0)
-                return "";
-            var chars = process.StandardOutput.ReadToEnd().Trim().ToLowerInvariant()
-                .Select(c => char.IsAsciiLetterOrDigit(c) || c is '.' or '-' or '_' ? c : '-')
-                .ToArray();
-            var branch = new string(chars).TrimEnd('-');
-            return branch.Length > 32 ? branch[..32].TrimEnd('-') : branch;
-        }
-        catch
-        {
-            return "";
-        }
-    }
+    // Суффикс — ТОЛЬКО имя ветки (одна ветка — один набор образов; git-инвариант
+    // «одна ветка — один checkout»); git недоступен / HEAD detached — fallback
+    // {хэш8} пути worktree (Shared.TestInfra.E2eImageTags). Хэш пути из суффикса
+    // УДАЛЁН; механизм передачи тега раннеру (PGW_E2E_TAG) упраздняется вместе
+    // с раннером — резолв всегда локальный.
+    internal static readonly string ImageTagSuffix =
+        E2eImageTags.SuffixFor(E2eFixture.FindRoot(AppContext.BaseDirectory));
 
     /// <summary>Образ SUT-воркера (контур «Вариант A»): publish PgWorker.App НА
     /// ХОСТЕ → образ publish-COPY (docker/PgWorker.E2E.Dockerfile); локальная
@@ -1815,29 +1766,64 @@ public sealed class E2eEnvironment : IAsyncDisposable
     /// <summary>Фаза подготовки статических ассетов — ОТДЕЛЬНЫЙ запуск ДО
     /// тестов (PgWorker.E2ePrepare): publish-выводы и docker-образы собирает
     /// один процесс; тестовые процессы статику НЕ строят — параллельные
-    /// dotnet publish/docker build в общие каталоги ломают друг друга
-    /// (конфликт статик-фаз трёх параллельных серий). По успеху пишет штамп
+    /// dotnet publish/docker build в общие каталоги ломают друг друга.
+    /// Запись статики взаимоисключается локом подготовки
+    /// artifacts/e2e/.prepare.lock (НЕ глобальный лок запуска серий —
+    /// тестируемые процессы лок не берут). По успеху пишет штамп
     /// artifacts/e2e/.prepared — тесты сверяют его со свежестью исходников
     /// (устаревший бинарь маскирует регрессии).</summary>
     public static async Task PrepareStaticAssetsAsync(CancellationToken ct)
     {
         Environment.SetEnvironmentVariable(PrepareModeEnv, "1");
+        FileStream? prepareLock = null;
         try
         {
+            var root = E2eFixture.FindRoot(AppContext.BaseDirectory);
+            var lockPath = Path.Combine(root, "artifacts", "e2e", ".prepare.lock");
+            try
+            {
+                prepareLock = await E2ePrepareLock.AcquireAsync(lockPath, ct);
+            }
+            catch (IOException e)
+            {
+                string holder;
+                try { holder = File.ReadAllText(lockPath).Trim(); }
+                catch { holder = "<unreadable>"; }
+                throw new ApplicationException(
+                    "another preparation holds the lock for over "
+                    + $"{(int)E2ePrepareLock.TotalBudget.TotalMinutes} min (holder: {holder})", e);
+            }
+
             await EnsureStaticAsync(ct);
             await EnsureOwnS3ImageAsync(ct);
             await EnsureSdImageAsync(ct);
-            var root = E2eFixture.FindRoot(AppContext.BaseDirectory);
-            await File.WriteAllTextAsync(
+            WriteStampAtomic(
                 Path.Combine(root, "artifacts", "e2e", ".prepared"),
-                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
-                    .ToString(CultureInfo.InvariantCulture), ct);
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
             E2eFixture.StaticPhase("e2e-prepare: readiness stamp written — tests may run");
+            await E2eTagCleanup.CleanupAsync(
+                ["pgworker", "pgworker-node", "sdgenerator"],
+                $"e2e-{ImageTagSuffix}",
+                (file, args, token) => E2eFixture.RunProcessAsync(file, args, token),
+                ct);
         }
         finally
         {
+            prepareLock?.Dispose();
             Environment.SetEnvironmentVariable(PrepareModeEnv, null);
         }
+    }
+
+    /// <summary>Атомарная запись штампа готовности: JSON {"stampMs"} через
+    /// временный файл (уникальный НА ВЫЗОВ — конкурентные записи не разбирают
+    /// tmp друг у друга) + File.Move(overwrite: true) в тот же каталог —
+    /// конкурентная подготовка не оставляет полузаписанный штамп.</summary>
+    internal static void WriteStampAtomic(string stampPath, long stampMs)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(stampPath)!);
+        var tmp = $"{stampPath}.{Guid.NewGuid():N}.tmp";
+        File.WriteAllText(tmp, $"{{\"stampMs\":{stampMs.ToString(CultureInfo.InvariantCulture)}}}");
+        File.Move(tmp, stampPath, overwrite: true);
     }
 
     // Готовность статики для теста: штамп фазы подготовки существует и новее
@@ -1852,9 +1838,11 @@ public sealed class E2eEnvironment : IAsyncDisposable
         long stampMs;
         try
         {
-            stampMs = long.Parse(File.ReadAllText(stampPath).Trim(), CultureInfo.InvariantCulture);
+            using var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(stampPath));
+            stampMs = doc.RootElement.GetProperty("stampMs").GetInt64();
         }
-        catch (FormatException e)
+        catch (Exception e) when (e is System.Text.Json.JsonException
+            or KeyNotFoundException or InvalidOperationException or FormatException)
         {
             throw new ApplicationException($"the E2E preparation stamp is corrupted ({stampPath}). {PrepareHint}", e);
         }
@@ -1974,7 +1962,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
             [
                 "build", "-f", $"{_root}/docker/PgWorker.E2E.Dockerfile", "-t", WorkerImage, AppPublishDir,
             ], ct, timeout: TimeSpan.FromMinutes(10),
-                logFile: "/tmp/pgw-e2e-static-process-worker-e2e.log");
+                logFile: E2eFixture.StaticProcessLogPath("worker-e2e"));
             E2eFixture.StaticPhase($"e2e-image {WorkerImage}: ready in {sw.Elapsed.TotalSeconds:F0} s");
 
             // publish тестовой сборки → образ раннера (фаза 2).
@@ -2020,14 +2008,14 @@ public sealed class E2eEnvironment : IAsyncDisposable
                 "publish", $"{_root}/src/PgWorker.WalReceiver/PgWorker.WalReceiver.csproj",
                 "-c", "Release", "-r", nodeRid, "--self-contained", "-o", walDir, "--nologo",
             ], ct, timeout: TimeSpan.FromMinutes(10), env: E2eFixture.NoMsBuildReuseEnv,
-                logFile: "/tmp/pgw-e2e-static-process-node-wal-publish.log");
+                logFile: E2eFixture.StaticProcessLogPath("node-wal-publish"));
             E2eFixture.StaticPhase($"e2e-image {NodeImage}: dotnet publish NodeTools self-contained {nodeRid} (host)…");
             await E2eFixture.RunProcessAsync("dotnet",
             [
                 "publish", $"{_root}/src/PgWorker.NodeTools/PgWorker.NodeTools.csproj",
                 "-c", "Release", "-r", nodeRid, "--self-contained", "-o", toolsDir, "--nologo",
             ], ct, timeout: TimeSpan.FromMinutes(10), env: E2eFixture.NoMsBuildReuseEnv,
-                logFile: "/tmp/pgw-e2e-static-process-node-tools-publish.log");
+                logFile: E2eFixture.StaticProcessLogPath("node-tools-publish"));
             E2eFixture.StaticPhase($"e2e-image {NodeImage}: publish ready in {sw.Elapsed.TotalSeconds:F0} s — docker build (context root)…");
             await E2eFixture.RunProcessAsync("docker",
             [
@@ -2035,7 +2023,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
                 "--build-arg", "WAL_PUBLISH_DIR=artifacts/e2e/node-wal",
                 "--build-arg", "NODE_TOOLS_PUBLISH_DIR=artifacts/e2e/node-tools", "-t", NodeImage, _root,
             ], ct, timeout: TimeSpan.FromMinutes(10),
-                logFile: "/tmp/pgw-e2e-static-process-node-e2e.log");
+                logFile: E2eFixture.StaticProcessLogPath("node-e2e"));
             E2eFixture.StaticPhase($"e2e-image {NodeImage}: ready in {sw.Elapsed.TotalSeconds:F0} s (walreceiver and pgwnodetool inside)");
 
             _staticReady = true;
@@ -2107,13 +2095,13 @@ public sealed class E2eEnvironment : IAsyncDisposable
                 "publish", $"{_root}/src/Metrics.SdGenerator/Metrics.SdGenerator.csproj",
                 "-c", "Release", "-o", outDir, "--nologo",
             ], ct, timeout: TimeSpan.FromMinutes(10), env: E2eFixture.NoMsBuildReuseEnv,
-                logFile: "/tmp/pgw-e2e-static-process-sd-e2e-publish.log");
+                logFile: E2eFixture.StaticProcessLogPath("sd-e2e-publish"));
             E2eFixture.StaticPhase($"e2e-image {SdImage}: publish ready in {sw.Elapsed.TotalSeconds:F0} s — docker build (context artifacts/e2e/sdgenerator)…");
             await E2eFixture.RunProcessAsync("docker",
             [
                 "build", "-f", $"{_root}/docker/Metrics.SdGenerator.Dockerfile", "-t", SdImage, outDir,
             ], ct, timeout: TimeSpan.FromMinutes(10),
-                logFile: "/tmp/pgw-e2e-static-process-sd-e2e-build.log");
+                logFile: E2eFixture.StaticProcessLogPath("sd-e2e-build"));
             E2eFixture.StaticPhase($"e2e-image {SdImage}: ready in {sw.Elapsed.TotalSeconds:F0} s (publish+build)");
             _sdImageReady = true;
         }

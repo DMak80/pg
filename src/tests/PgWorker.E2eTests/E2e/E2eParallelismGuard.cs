@@ -51,7 +51,7 @@ internal static class E2eParallelismGuard
             Console.Error.WriteLine(line);
             try
             {
-                File.AppendAllText("/tmp/pgw-e2e-static-phase.log", line + Environment.NewLine);
+                File.AppendAllText(E2eFixture.StaticPhaseLogPath, line + Environment.NewLine);
             }
             catch
             {

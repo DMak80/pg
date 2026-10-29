@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using Shared.TestInfra;
 
 namespace PgWorker.IntegrationTests.E2e;
 
@@ -276,7 +277,7 @@ public static class E2eFixture
         [
             "publish", projectPath, "-c", "Release", "-o", outDir, "--nologo",
         ], ct, timeout: TimeSpan.FromMinutes(10), env: NoMsBuildReuseEnv,
-            logFile: $"/tmp/pgw-e2e-static-process-{tag}-publish.log");
+            logFile: StaticProcessLogPath($"{tag}-publish"));
         StaticPhase($"e2e-publish {tag}: ready in {sw.Elapsed.TotalSeconds:F0} s");
     }
 
@@ -296,15 +297,39 @@ public static class E2eFixture
     }
 
     // [PHASE]-метка статических фаз подготовки: Console (в лог факта) + ФАЙЛ
-    // /tmp/pgw-e2e-static-phase.log — xUnit буферизует Console до конца факта,
+    // per-process (ниже) — xUnit буферизует Console до конца факта,
     // файл виден наблюдателю во время «тихих» фаз (канон e2e-launch).
+
+    // ===== Per-process журналы статических фаз (docs/e2e-launch.md §0) =====
+
+    // Суффикс {ветка|fallback}-{pid} вычисляется ОДИН раз на процесс; соседние
+    // процессы (любые ветки) пишут в разные файлы.
+    public static readonly string ProcessLogSuffix = ComputeProcessLogSuffix();
+
+    public static string StaticPhaseLogPath
+        => $"/tmp/pgw-e2e-static-phase-{ProcessLogSuffix}.log";
+
+    public static string StaticProcessLogPath(string step)
+        => $"/tmp/pgw-e2e-static-process-{ProcessLogSuffix}-{step}.log";
+
+    private static string ComputeProcessLogSuffix()
+    {
+        string root;
+        try { root = FindRoot(AppContext.BaseDirectory); }
+        catch { root = AppContext.BaseDirectory; }
+        var branch = E2eImageTags.BranchFor(root);
+        if (branch.Length == 0)
+            branch = "fallback";
+        return $"{branch}-{Environment.ProcessId}";
+    }
+
     public static void StaticPhase(string message)
     {
         var line = $"{DateTime.UtcNow:HH:mm:ss} [PHASE] e2e-static: {message}";
         Console.WriteLine(line);
         try
         {
-            File.AppendAllText("/tmp/pgw-e2e-static-phase.log", line + Environment.NewLine);
+            File.AppendAllText(StaticPhaseLogPath, line + Environment.NewLine);
         }
         catch
         {
