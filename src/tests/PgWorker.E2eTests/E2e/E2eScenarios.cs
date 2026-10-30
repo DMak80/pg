@@ -622,7 +622,9 @@ public sealed class E2eScenarios(E2eScenariosFx Ctx, ITestOutputHelper output) :
 
     // Клиентский вход — ТОЛЬКО через пулер :6432 (arch/14 §8): SELECT 1
     // app-ролью per-cluster секрета по опубликованному doorman-порту мастера;
-    // TLS require без верификации цепочки (P17), SCRAM passthrough к бэкенду.
+    // TLS require без верификации цепочки (P17); допуск — per-pool auth_query
+    // (SCRAM по verifier'у из pg_shadow, к бэкенду — переиспользование
+    // клиентского доказательства) — функциональная проверка допуска.
     // Пулер стартует вместе с контейнером (supervisord startsecs=5) — ретраи.
     private async Task AssertDoormanClientEntryAsync(string cluster, string shard, CancellationToken ct)
     {

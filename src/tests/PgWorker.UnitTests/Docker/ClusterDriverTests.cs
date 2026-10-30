@@ -605,6 +605,11 @@ public class ClusterDriverTests
         spec.Env!["ETCD3_HOSTS"].Should().Be("etcd:2379"); // Patroni: host:port без scheme
         spec.Env!["PGW_NODE_HOST"].Should().Be("h1");
         spec.Env!["DOORMAN_CONFIG"].Should().Contain("pool_mode: \"transaction\"");
+        spec.Env!["DOORMAN_CONFIG"].Should().Contain("admin_username: \"pgwd_admin\"");
+        spec.Env!["DOORMAN_CONFIG"].Should().Contain("admin_password: \"pgwd_admin_password\"");
+        spec.Env!["DOORMAN_CONFIG"].Should().Contain("auth_query:");
+        spec.Env!["DOORMAN_CONFIG"].Should().Contain("user: \"postgres\"");
+        spec.Env!["DOORMAN_CONFIG"].Should().Contain("password: \"su\"");
         spec.Env!["DOORMAN_CONFIG"].Should().Contain("max_db_connections: 55");
         spec.Env!["PGW_DOORMAN_PORT"].Should().Be("16432");
         // HAPROXY_CONFIG не передаётся: PG и HAProxy конфликтуют на :5432 (Д4).
@@ -644,6 +649,11 @@ public class ClusterDriverTests
         spec.Env!["SPILO_CONFIGURATION"].Should().Contain("wal_level: logical");
         spec.Env!["SPILO_CONFIGURATION"].Should().NotContain("io_method");
         spec.Env!["DOORMAN_CONFIG"].Should().Contain("max_db_connections: 55");
+        spec.Env!["DOORMAN_CONFIG"].Should().Contain("admin_username: \"pgwd_admin\"");
+        spec.Env!["DOORMAN_CONFIG"].Should().Contain("admin_password: \"pgwd_admin_password\"");
+        spec.Env!["DOORMAN_CONFIG"].Should().Contain("auth_query:");
+        spec.Env!["DOORMAN_CONFIG"].Should().Contain("user: \"postgres\"");
+        spec.Env!["DOORMAN_CONFIG"].Should().Contain("password: \"su\"");
     }
 
     [Fact]

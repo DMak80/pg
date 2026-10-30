@@ -594,7 +594,7 @@ public sealed class PlainClusterDriver(
         // max(10, max_connections − 5); tuning null (изолированные пути) —
         // прежний литерал 55.
         var serverConnections = tuning is null ? 55 : DoormanConfigBuilder.ServerConnections(tuning);
-        env["DOORMAN_CONFIG"] = DoormanConfigBuilder.Build(topology.Cluster, serverConnections);
+        env["DOORMAN_CONFIG"] = DoormanConfigBuilder.Build(topology.Cluster, serverConnections, secrets.SuPassword);
         env["PGW_DOORMAN_PORT"] = addr.Ports.Doorman.ToString();
 
         // HAProxy в топологии нет (arch/14 §2.1): write-вход — прямой

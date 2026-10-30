@@ -12,8 +12,12 @@ public sealed record ShardTopology(string Cluster, string Shard, string Scope,
 
 /// <summary>
 /// Секреты установки (Д7, spec §10): per-install из env PgWorker, в etcd не
-/// пишутся. Прокидываются в контейнер ноды; НИКОГДА не попадают в конфиги
-/// doorman/haproxy (текстовые файлы томов).
+/// пишутся. Прокидываются в контейнер ноды. SuPassword дополнительно входит
+/// в DOORMAN_CONFIG (auth_query.password пула pg_doorman,
+/// DoormanConfigBuilder): класс экспозиции НЕ расширяется — секрет уже в
+/// env того же контейнера (PGPASSWORD_SUPERUSER Spilo-env, тот же docker
+/// inspect); в файлы volume'ов секреты не попадают (конфиг живёт в env,
+/// файл — внутри контейнера).
 /// </summary>
 public sealed record InstallSecrets(string SuPassword, string StandbyPassword,
     string BucketAdminPassword, string MoverPassword,
@@ -256,20 +260,25 @@ public static class SpiloEnvBuilder
 /// от рассчитанного PGTune max_connections (P15: serverConnections =
 /// max(10, max_connections − 5); 60 = 55 + 2 админ/mover + 3 reserved).
 /// Клиентский вход — :6432 c TLS (sslmode=require, P17 — серты генерирует
-/// entrypoint ноды); секции users/auth_query не задаются — passthrough-режим
-/// по умолчанию (SCRAM-доказательство клиента переиспользуется к бэкенду,
-/// паролей в конфиге нет). admin_username/admin_password — обязательные
-/// поля general фактического v3.11.0 (без них отказ парса, exit 78);
-/// админ-консоль пулера продуктом не потребляется — литералы детерминированы
-/// (конфиг обязан быть стабильным между reconcile'ами, иначе пересоздание
-/// контейнеров) и границей секьюрити не являются.
+/// entrypoint ноды). Допуск клиентов — per-pool auth_query (единственный
+/// работающий механизм v3.11.0: без объявленных пользователей пулер
+/// отклоняет каждого клиента): пулер верифицирует клиентский SCRAM по
+/// verifier'у из pg_shadow и переиспользует клиентское доказательство к
+/// бэкенду — пароли клиентов в конфиге не хранятся. Роль исполнения
+/// auth_query — существующий superuser postgres (per-install SuPassword;
+/// алфавит DSN-safe [A-Za-z0-9._-] по InstallSecretsGuard — вставка в
+/// YAML-строку в двойных кавычках безопасна). admin_username/admin_password —
+/// обязательные поля general фактического v3.11.0 (без них отказ парса,
+/// exit 78); админ-консоль пулера продуктом не потребляется — литералы
+/// детерминированы (конфиг обязан быть стабильным между reconcile'ами,
+/// иначе вечное пересоздание контейнеров) и границей секьюрити не являются.
 /// </summary>
 public static class DoormanConfigBuilder
 {
-    public static string Build(string dbname, int serverConnections) =>
+    public static string Build(string dbname, int serverConnections, string suPassword) =>
         $"""
         # pg_doorman: single pool {dbname} per node (P13/P14/P15/P17).
-        # Clients connect on :6432 with sslmode=require (P17); SCRAM passthrough к PG.
+        # Clients connect on :6432 with sslmode=require (P17); admission — auth_query.
         general:
           host: "0.0.0.0"
           port: 6432
@@ -285,6 +294,10 @@ public static class DoormanConfigBuilder
             server_database: {dbname}
             pool_mode: "transaction"
             max_db_connections: {serverConnections}
+            auth_query:
+              query: "SELECT passwd FROM pg_shadow WHERE usename = $1"
+              user: "postgres"
+              password: "{suPassword}"
         """;
 
     /// <summary>

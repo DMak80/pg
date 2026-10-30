@@ -171,18 +171,21 @@ public class NodeConfigBuildersTests
     }
 
     [Fact]
-    public void Secrets_AreInEnv_ButNeverInDoorman()
+    public void Doorman_ConfigCarriesSuPassword_OtherSecretsNeverLeak()
     {
         // Arrange: секреты установки (Д7).
 
         // Act: генерируем оба конфига.
         var env = SpiloEnvBuilder.Build(Topology, Etcd, Secrets, syncStrict: false, "shard1a", TestRestTls());
-        var doorman = DoormanConfigBuilder.Build("shop", 55);
+        var doorman = DoormanConfigBuilder.Build("shop", 55, "su-secret");
 
-        // Assert: секреты прокинуты в env контейнера (Spilo/bootstrap),
-        // но не попадают в текст doorman (его читают volume-маунты).
+        // Assert: секреты прокинуты в env контейнера (Spilo/bootstrap);
+        // su-secret ЛЕГИТИМНО входит в doorman — auth_query.password пула
+        // (допуск клиентов; экспозиция не расширяется: секрет уже в env
+        // того же контейнера); прочие секреты в конфиг пулера не попадают.
         env.Values.Should().Contain(new[] { "su-secret", "standby-secret", "admin-secret", "mover-secret" });
-        doorman.Should().NotContainAny("su-secret", "standby-secret", "admin-secret", "mover-secret");
+        doorman.Should().Contain("password: \"su-secret\"");
+        doorman.Should().NotContainAny("standby-secret", "admin-secret", "mover-secret");
     }
 
     [Fact]
@@ -212,13 +215,15 @@ public class NodeConfigBuildersTests
         // Arrange: dbname = имя кластера, бюджет 55 серверных соединений.
 
         // Act: генерируем конфиг пулера.
-        var config = DoormanConfigBuilder.Build("shop", 55);
+        var config = DoormanConfigBuilder.Build("shop", 55, "su-secret");
 
         // Assert: единственный пул shop → 127.0.0.1:5432, transaction-режим,
         // бюджет 55 серверных соединений (P13/P14/P15); YAML фактического
         // pg_doorman (general/pools).
         config.Should().Contain("pool_mode: \"transaction\"");
         config.Should().Contain("max_db_connections: 55");
+        config.Should().Contain("auth_query:");
+        config.Should().Contain("user: \"postgres\"");
         config.Should().Contain("pools:");
         config.Should().Contain("  shop:");
         config.Should().Contain("server_host: \"127.0.0.1\"");
@@ -331,7 +336,7 @@ public class NodeConfigBuildersTests
         atFloor.Should().Be(10);
 
         // Assert: конфиг пулера несёт вычисленный бюджет.
-        DoormanConfigBuilder.Build("shop", 35).Should().Contain("max_db_connections: 35");
+        DoormanConfigBuilder.Build("shop", 35, "su-secret").Should().Contain("max_db_connections: 35");
     }
 
     [Fact]
