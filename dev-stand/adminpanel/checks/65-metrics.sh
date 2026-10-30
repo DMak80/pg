@@ -4,13 +4,13 @@
 # ServiceDown (down kafkaworker → up==0 ≤2мин → ServiceDown firing → восстановление).
 set -euo pipefail
 cd "$(dirname "$0")/.."
-# t03: воркеры живут за mTLS — healthz/metrics только с клиентской парой
-# healthcheck (dev-конвенция чеков; панель/прометеус — свои серты).
+# Воркеры: /healthz и /metrics — открытая https-грань без клиентского серта
+# (arch/18 §5.2); панель — http.
 ROOT="$(cd ../.. && pwd)"
 # Хост-порт публикации pgworker: env-оверрайд → .env (пишет 00-up.sh) → 8080.
 PGW_API_HOST_PORT="${PGW_API_HOST_PORT:-$(awk -F= '$1=="PGW_API_HOST_PORT"{print $2}' "$ROOT/deploy/.env" 2>/dev/null)}"
 PGW_API_HOST_PORT="${PGW_API_HOST_PORT:-8080}"
-MTLS="curl -fsS -m 3 --cacert $ROOT/deploy/tls/ca.pem --cert $ROOT/deploy/tls/healthcheck.crt --key $ROOT/deploy/tls/healthcheck.key"
+HEALTH="curl -fsS -m 3 --cacert $ROOT/deploy/tls/ca.pem"
 PROM="http://localhost:${METRICS_PROMETHEUS_PORT:-9090}"
 GRAFANA="http://localhost:${METRICS_GRAFANA_PORT:-3000}"
 AM="http://localhost:${METRICS_ALERTMANAGER_PORT:-9093}"
@@ -22,40 +22,40 @@ echo ">>> check 65: monitoring (metrics profile)"
 # t07: оба инстанса kafkaworker (50-й останавливает обоих; таргет kafkaworker-2
 # обязан быть жив к шагу «все scrape-джобы up»)
 docker start as-kafkaworker as-kafkaworker-2 >/dev/null 2>&1 || true
-for i in $(seq 1 60); do $MTLS https://localhost:8082/healthz >/dev/null 2>&1 && break; sleep 1; done
-$MTLS https://localhost:8082/healthz >/dev/null \
-  || { echo "❌ kafkaworker did not come alive within 60 s on :8082 (mTLS; docker compose logs kafkaworker)"; exit 1; }
-for i in $(seq 1 60); do $MTLS https://localhost:${PGW_API_HOST_PORT:-8080}/healthz >/dev/null 2>&1 && break; sleep 1; done
-$MTLS https://localhost:${PGW_API_HOST_PORT:-8080}/healthz >/dev/null \
-  || { echo "❌ pgworker not alive on :8080 (mTLS) — bring up the stand: checks/00-up.sh (deploy-pgworker-1, docker logs deploy-pgworker-1)"; exit 1; }
+for i in $(seq 1 60); do $HEALTH https://localhost:8082/healthz >/dev/null 2>&1 && break; sleep 1; done
+$HEALTH https://localhost:8082/healthz >/dev/null \
+  || { echo "❌ kafkaworker did not come alive within 60 s on :8082 (https; docker compose logs kafkaworker)"; exit 1; }
+for i in $(seq 1 60); do $HEALTH https://localhost:${PGW_API_HOST_PORT:-8080}/healthz >/dev/null 2>&1 && break; sleep 1; done
+$HEALTH https://localhost:${PGW_API_HOST_PORT:-8080}/healthz >/dev/null \
+  || { echo "❌ pgworker not alive on :8080 (https) — bring up the stand: checks/00-up.sh (deploy-pgworker-1, docker logs deploy-pgworker-1)"; exit 1; }
 # 0.1) гарантия живости valkeyworker (t05): up -d создаёт/стартует (частичная
-#      предыстория), healthz — mTLS-парой healthcheck ИЗНУТРИ контейнера.
+#      предыстория), healthz — https без серта ИЗНУТРИ контейнера.
 docker compose --profile valkey up -d valkeyworker valkeyworker-2 >/dev/null 2>&1 || true
 for i in $(seq 1 60); do
   docker compose exec -T valkeyworker curl -fsS -m 3 \
-    --cacert /tls/ca.pem --cert /tls/healthcheck.crt --key /tls/healthcheck.key \
+    --cacert /tls/ca.pem \
     https://localhost:8080/healthz >/dev/null 2>&1 && break; sleep 1
 done
 docker compose exec -T valkeyworker curl -fsS -m 3 \
-  --cacert /tls/ca.pem --cert /tls/healthcheck.crt --key /tls/healthcheck.key \
+  --cacert /tls/ca.pem \
   https://localhost:8080/healthz >/dev/null \
-  || { echo "❌ valkeyworker did not come alive within 60 s (:8080/healthz mTLS from inside; docker compose logs valkeyworker)"; exit 1; }
+  || { echo "❌ valkeyworker did not come alive within 60 s (:8080/healthz https from inside; docker compose logs valkeyworker)"; exit 1; }
 for i in $(seq 1 60); do
   docker compose exec -T valkeyworker-2 curl -fsS -m 3 \
-    --cacert /tls/ca.pem --cert /tls/healthcheck.crt --key /tls/healthcheck.key \
+    --cacert /tls/ca.pem \
     https://localhost:8080/healthz >/dev/null 2>&1 && break; sleep 1
 done
 docker compose exec -T valkeyworker-2 curl -fsS -m 3 \
-  --cacert /tls/ca.pem --cert /tls/healthcheck.crt --key /tls/healthcheck.key \
+  --cacert /tls/ca.pem \
   https://localhost:8080/healthz >/dev/null \
-  || { echo "❌ valkeyworker-2 did not come alive within 60 s (:8080/healthz mTLS from inside; docker compose logs valkeyworker-2)"; exit 1; }
+  || { echo "❌ valkeyworker-2 did not come alive within 60 s (:8080/healthz https from inside; docker compose logs valkeyworker-2)"; exit 1; }
 echo "  workers alive (pgworker :8080, kafkaworker :8082, valkeyworker in-compose)"
 
 # 1) /metrics трёх сервисов (хост-публикации: deploy 8080, стенд 8082/5050).
 #    Подстрока вместо «echo | grep -q»: под pipefail большой экспорт панели
 #    (>64КБ буфера pipe) убивает echo SIGPIPE'ом раньше выхода grep — ложный ❌.
-# t03: /metrics воркеров — только за mTLS (клиентская пара healthcheck); панель — http.
-for u in "$MTLS https://localhost:${PGW_API_HOST_PORT:-8080}/metrics" "$MTLS https://localhost:8082/metrics" "curl -fsS -m 10 http://localhost:5050/metrics"; do
+# /metrics воркеров — открытая https-грань без клиентского серта; панель — http.
+for u in "$HEALTH https://localhost:${PGW_API_HOST_PORT:-8080}/metrics" "$HEALTH https://localhost:8082/metrics" "curl -fsS -m 10 http://localhost:5050/metrics"; do
   body="$($u)" || { echo "  ❌ $u unavailable"; exit 1; }
   [[ "$body" == *"# HELP"* ]] || { echo "  ❌ $u did not return text-format"; exit 1; }
 done

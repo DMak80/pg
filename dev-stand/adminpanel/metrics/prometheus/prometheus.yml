@@ -10,27 +10,21 @@ scrape_configs:
   # Таргеты — сетевые адреса deploy-воркеров (aliases pgworker/pgworker-2 в
   # единой стендовой сети контура adminpanel-stand-net, arch/18 §5.2) — файл
   # file_sd пишет 00-up.sh; host-публикации API остаются для advertise/чеков/панели.
-  - job_name: pgworker            # deploy-compose (mTLS, t03)
+  - job_name: pgworker            # deploy-compose (открытая https-грань без клиентского серта, arch/18 §5.2)
     scheme: https
     tls_config:
       ca_file: /tls/ca.pem
-      cert_file: /tls/prometheus.crt
-      key_file: /tls/prometheus.key
     file_sd_configs:
       - files: ["/etc/prometheus/pgworker-targets.json"]
-  - job_name: kafkaworker         # сеть стенда (профиль kafka; mTLS — чинит t03-gap)
+  - job_name: kafkaworker         # сеть стенда (профиль kafka; открытая https-грань без клиентского серта, arch/18 §5.2)
     scheme: https
     tls_config:
       ca_file: /tls/ca.pem
-      cert_file: /tls/prometheus.crt
-      key_file: /tls/prometheus.key
     static_configs: [{targets: ["kafkaworker:8080", "kafkaworker-2:8080"]}]
-  - job_name: valkeyworker         # сеть стенда (профиль valkey; mTLS — общий tls_config, t05)
+  - job_name: valkeyworker         # сеть стенда (профиль valkey; открытая https-грань без клиентского серта, arch/18 §5.2)
     scheme: https
     tls_config:
       ca_file: /tls/ca.pem
-      cert_file: /tls/prometheus.crt
-      key_file: /tls/prometheus.key
     static_configs: [{targets: ["valkeyworker:8080", "valkeyworker-2:8080"]}]
   - job_name: adminpanel          # сеть стенда
     static_configs: [{targets: ["adminpanel:8080"]}]

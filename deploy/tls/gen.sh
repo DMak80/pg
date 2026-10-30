@@ -2,7 +2,7 @@
 # Per-install API TLS-пакет (t03, arch/14 §1.1 / arch/16 §1.1 / arch/21 §1.1):
 # ЕДИНАЯ CA kfw-install-ca на воркеров. Серверные серты: server (kafkaworker +
 # valkeyworker — один серт, SAN покрывает обоих), pgserver (pgworker); клиентские:
-# panel, seed, prometheus, healthcheck. Идемпотентен: при существующем ca.pem не
+# panel, seed. Идемпотентен: при существующем ca.pem не
 # делает ничего, КРОМЕ перегенерации server-серта старых пакетов без DNS:valkeyworker
 # (t03). Ротация CA — вручную: rm ca.* и перезапуск. Файлы в git не попадают
 # (deploy/tls/.gitignore).
@@ -67,7 +67,10 @@ fi
 # клиентские (различимость в журналах сервера, независимый отзыв)
 [ -f panel.crt ]      || issue panel      panel      clientAuth ""
 [ -f seed.crt ]       || issue seed       seed       clientAuth ""
-[ -f prometheus.crt ] || issue prometheus prometheus clientAuth ""
-[ -f healthcheck.crt ] || issue healthcheck healthcheck clientAuth ""
+# Клиентские серты prometheus/healthcheck упразднены каноном открытой грани
+# /healthz и /metrics (arch/14 §1.1 / arch/18 §5.2): скрейп и HEALTHCHECK
+# ходят без клиентского серта. Удаляются и наследие живых стендов — gen.sh
+# идемпотентен и вызывается каждым 00-up.sh.
+rm -f prometheus.crt prometheus.key healthcheck.crt healthcheck.key
 chmod 600 ca.key ./*.key
-echo "✓ kfw-install-ca TLS package: ca.pem, server.* (kafkaworker+valkeyworker+s3worker), pgserver.*, hc.*, panel.*, seed.*, prometheus.*, healthcheck.*, owns3.*"
+echo "✓ kfw-install-ca TLS package: ca.pem, server.* (kafkaworker+valkeyworker+s3worker), pgserver.*, hc.*, panel.*, seed.*, owns3.*"
