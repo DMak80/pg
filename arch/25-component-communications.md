@@ -20,7 +20,7 @@ Kafka-протокол, RESP, S3 API, etcd-протокол. Контракт д
 для локальной диагностики и тестовой телеметрии; продуктовая автоматика не
 читает и не парсит вывод другого контейнера. Штатный образец джобового канала
 — KafkaWorker: фазы и результаты джобов пишутся в etcd-журнал
-(`/pgworker/work/<C>`, WorkJournal) и читаются оттуда же, а не из stdout.
+(`/kafkaworker/work/<C>`, WorkJournal) и читаются оттуда же, а не из stdout.
 
 ## 2. Граница оркестрации
 
@@ -76,7 +76,7 @@ docker-логи и inspect — [docs/e2e-launch.md](../docs/e2e-launch.md)) и
 | 11 | WalReceiver → PostgreSQL | протокол репликации (`START_REPLICATION PHYSICAL`, слоты; источник — `127.0.0.1:5432` своей ноды, приёмник живёт в её контейнере, arch/19 §3) | канон |
 | 12 | WalReceiver → S3-пул | S3 API | канон |
 | 14 | KafkaWorker → Kafka | Kafka-протокол | канон |
-| 15 | KafkaWorker-джобы → KafkaWorker | etcd-журнал (`/pgworker/work/<C>`, WorkJournal) | канон |
+| 15 | KafkaWorker-джобы → KafkaWorker | etcd-журнал (`/kafkaworker/work/<C>`, WorkJournal) | канон |
 | 16 | S3Worker → ownS3-инстансы | S3 API (mesh, бакеты, deny-list) | канон |
 | 17 | ValkeyWorker → Valkey-ноды | RESP | канон |
 | 18 | Prometheus → панель, воркеры, шлюзы, приёмники WAL (внутри PG-нод) | HTTP scrape `/metrics` (воркеры — Kestrel `:8080`; приёмники — `:8080` внутри контейнера ноды, arch/18 §2.8) | канон |
