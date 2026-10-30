@@ -22,6 +22,7 @@
     </ItemGroup>
 
     <ItemGroup>
+        <ProjectReference Include="..\Shared.TestInfra\Shared.TestInfra.csproj"/>
         <ProjectReference Include="..\..\ValkeyWorker.Core\ValkeyWorker.Core.csproj"/>
         <ProjectReference Include="..\..\ValkeyWorker.Etcd\ValkeyWorker.Etcd.csproj"/>
         <ProjectReference Include="..\..\ValkeyWorker.Docker\ValkeyWorker.Docker.csproj"/>

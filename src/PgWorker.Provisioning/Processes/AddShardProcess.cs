@@ -174,10 +174,15 @@ public sealed partial class AddShardProcess(
     }
 
     // A1: полное объявление шарда (панель доустанила ключи? ждём — waiting-keys).
+    // Running тоже «полное»: supervise-цикл (NodeSupervisor) помечает живые ноды
+    // RUNNING раньше, чем add доводит dsn (takeover mid-add: держатель клэйма
+    // умер после подъёма нод) — waiting-keys на таком шарде вечен, dsn не пишется
+    // никогда; полноту объявления гвардит count==replicas независимо от state.
     private static bool IsFullyDeclared(ShardSpec shard) =>
         shard.Replicas > 0
         && shard.Nodes.Count == shard.Replicas
-        && shard.Nodes.All(n => n.State is NodeState.NotInitialized or NodeState.Provisioning);
+        && shard.Nodes.All(n => n.State is NodeState.NotInitialized
+            or NodeState.Provisioning or NodeState.Running);
 
     // R6: перечитывание config — NOT_INITIALIZED/TO_REMOVE безопасно прекращает add
     // (provisioning поднимет декларацию как обычный шард / deprovisioning снесёт).

@@ -1,4 +1,3 @@
-# syntax=docker/dockerfile:1
 
 # Образ сервиса ValkeyWorker (arch/21 §8; порт KafkaWorker.Dockerfile):
 # multi-stage publish → aspnet-runtime. Env-секретов per-install нет (arch/21 §4).

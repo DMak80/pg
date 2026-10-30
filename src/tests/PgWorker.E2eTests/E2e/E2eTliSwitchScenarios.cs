@@ -1,0 +1,1236 @@
+using System.Diagnostics;
+using System.Text.Json;
+using Amazon.Runtime;
+using Amazon.S3;
+using Amazon.S3.Model;
+using Npgsql;
+using PgWorker.Backups.Restore;
+using PgWorker.Core.Templates;
+using Shared.Etcd.Client;
+using PgWorker.Etcd.Parsing;
+using PgWorker.Provisioning.Sql;
+using Xunit;
+using Xunit.v3;
+using RestoreStatus = PgWorker.Etcd.Parsing.RestoreStatus;
+
+namespace PgWorker.IntegrationTests.E2e;
+
+// E2E восстанавливаемости через точку TLI-переключения (t28, arch/19 §10):
+// полный бэкап на TLI1 → docker stop мастера (Patroni failover, TLI ≥ 2) →
+// контрольные данные на новом TLI → строгий гейт смешанности (точка
+// переключения ВНУТРИ сегмента, объект wal/ с байтами обеих таймлайнов
+// доставлен) → ДВЕ restore-заявки на ОДНОЙ цепочке и ОДНОМ контуре класса
+// (граница изоляции — сценарный класс, docs/e2e-isolation.md §1): (a) latest —
+// полный хвост через точку; (b) PITR target_time — остановка в цели ПОСЛЕ
+// переключения. Окружение целиком своё (сеть/etcd/ownS3 по guid, динамические
+// порты, teardown при любом исходе с ассертом чистоты); телеметрия —
+// docs/e2e-launch.md ([PHASE]-строки, MarkFailed-режим оставляет контейнеры).
+public sealed class TliSwitchContext : IAsyncLifetime
+{
+    private const string Bucket = "pgworker-backups";
+
+    // t36: пул E2E (однонодовый — ownS3-ноды окружения; etcd у каждого Fact'а свой).
+    private const string Pool = "bkpool";
+
+    // Поля контура (spec §3.1): заполняются InitializeAsync, читаются Fact'ами.
+    public E2eEnvironment Fx = null!;
+    public string Cluster = null!;
+    public string DsnBefore = null!;       // dsn-ключ до любых действий (AC2)
+    public string OldBackupId = null!;     // исходный COMPLETED-полный на TLI1
+    public string WalStartSegment = null!; // wal_start_segment исходного полного
+    public uint Tli2;                      // таймлайн после failover (≥ 2)
+    public DateTime TCut;                  // цель PITR: после post-switch, до after-cut
+    public long AfterCutPos;               // позиция доставки after-cut (log*256+seg)
+
+    private string Endpoint => Fx.EtcdEndpoint;
+
+    private EtcdGateway G => Fx.Gateway;
+
+    // Предусловие смешанности не наступило (см. AssertMixedSwitchAsync):
+    // непустая строка — факты скипаются (штатный исход прогона).
+    private string _prepareSkip = string.Empty;
+
+    /// <summary>Гвардия предусловия фактов: если подготовка зафиксировала
+    /// «профиль не смешанный» (промоут лёг ровно на границу сегмента) — факт
+    /// скипается: проверяемого состояния нет, красный была бы гонкой
+    /// подготовки, а не дефектом.</summary>
+    public void SkipIfPrepareSkipped()
+    {
+        if (_prepareSkip.Length > 0)
+            Assert.Skip(_prepareSkip);
+    }
+
+    public async ValueTask InitializeAsync()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        E2eParallelismGuard.Acquire("tlsw", ct);
+        try
+        {
+            // Класс — своё окружение (docs/e2e-isolation.md §1): полный контур
+            // (сеть/etcd/ownS3/CA/окно портов) + подготовка TLI-профиля.
+            Fx = await E2eEnvironment.StartAsync("tlsw", withS3Node: true, ct: ct);
+            await PrepareAsync(ct);
+        }
+        catch
+        {
+            Fx?.MarkFailed(); // Fx может быть ещё null (падение StartAsync) —
+                              // гвард от NRE, маскирующего исходную причину
+            E2eParallelismGuard.Release("tlsw");
+            throw;            // оба Fact'а падают ошибкой фикстуры (spec §3.2 шаг 6)
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (Fx is null)
+            return; // контур не поднимался (провал до StartAsync — слот Release'нут)
+        // Teardown окружения при любом исходе: kill воркеров → dispose
+        // etcd/ownS3 → rm своих контейнеров/томов/сети → АССЕРТ ЧИСТОТЫ;
+        // MarkFailed-режим останавливает, не удаляя (разбор по артефактам
+        // /tmp/pgw-e2e-artifacts-<guid>/ + README-cleanup.txt).
+        try
+        {
+            await Fx.DisposeAsync();
+        }
+        finally
+        {
+            E2eParallelismGuard.Release("tlsw");
+        }
+    }
+
+    // Пометка «контур упал» для teardown окружения (e2e-launch): остановить,
+    // не удалять. Fx может быть ещё null (падение StartAsync) — гвард.
+    // Fact'ы зовут именно этот метод (не Fx.MarkFailed напрямую).
+    public void MarkFailed() => Fx?.MarkFailed();
+
+    // Вся подготовка контура (шаги 1–6 spec §3.2).
+    private async Task PrepareAsync(CancellationToken ct)
+    {
+        // Шаг 1 — контур: окружение (сеть/etcd/ownS3 по guid, динамические
+        // порты), сид кластера tlsw<тег> (2 шарда × 2 реплики — как образцы),
+        // воркер с ОБЪЕДИНЁННЫМ бэкап-комплектом (полные + WAL-агенты +
+        // restore одновременно — spec §3.1); provisioning DONE ≤ 360 с.
+        Fx = await E2eEnvironment.StartAsync("tlsw", withS3Node: true, ct: ct);
+        Cluster = $"tlsw{Fx.ClusterTag}";
+        await SeedClusterAsync(Cluster);
+        await StartTliSwitchHostAsync("tlsw", ct);
+        var provisioned = await WaitPhaseAsync(
+            "provisioning", E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, Cluster, () => ProvisionedAsync(Cluster)), TimeSpan.FromSeconds(90), ct);
+        provisioned.Should().BeTrue("provisioning must reach DONE before the backups: "
+            + await DumpDiagnosticsAsync(Cluster, "shard1"));
+
+        // Эталон dsn-ключа ДО любых действий: эталон для ассерта «restore не
+        // трогает portalloc/dsn» (AC2, Fact 1; образец rs-latest).
+        DsnBefore = (await GetOrNullAsync($"/clusters/{Cluster}/shards/shard1/dsn"))!.Value!;
+        DsnBefore.Should().NotBeNullOrEmpty("the dsn is written at provisioning");
+
+        // Шаг 2 — полный на TLI1 + pre-wal (TLI1-хвост после точки полного).
+        await SeedFullBackupAsync(ct);
+
+        // Гейт синхронизации реплик до failover (spec §3.2 шаг 3, ОБЯЗАТЕЛЕН):
+        // точка промоута определяется ПОЗИЦИЕЙ РЕПЛИКИ (replay_lsn), а не
+        // мастера — отставшая реплика промоутнется ВНУТРИ уже закрытого
+        // мастером сегмента (точка выйдет из открытого S — профиль не
+        // смешанный). Ждём replay_lsn каждой реплики ≥ позиции мастера
+        // (последняя запись — emit «t28» в SeedFullBackupAsync, строго внутри
+        // ОТКРЫТОГО сегмента): тогда promote-точка внутри открытого S —
+        // единственный носитель позиции S: смешанный объект под именем
+        // родителя (§3.3, AC1).
+        var synced = await WaitPhaseAsync("replica-sync", () => ReplicasSyncedAsync(ct),
+            TimeSpan.FromSeconds(60), ct);
+        synced.Should().BeTrue("the replicas must catch up with the master position before the failover: "
+            + await DumpDiagnosticsAsync(Cluster, "shard1"));
+
+        // Шаги 3–5 — failover + данные нового TLI.
+        await FailoverAsync(ct);
+        await SeedNewTimelineAsync(ct);
+
+        // Шаг 6 — строгий гейт смешанности: контур готов к заявкам.
+        await AssertMixedSwitchAsync(ct);
+        if (_prepareSkip.Length > 0)
+            return; // предусловие не наступило — факты скипнутся, TCut не нужен
+        Console.WriteLine($"[PHASE] tlsw-ready: contour ready (OldBackupId={OldBackupId}, " +
+            $"Tli2={Tli2}, T_cut={TCut:yyyy-MM-ddTHH:mm:ssZ})");
+    }
+
+    // Скачивание и разбор wal/<tli>.history (host-клиент GetObjectAsync +
+    // WalHistory.Parse — строгий парсер t04). Последняя запись файла
+    // описывает сам <tli>: родитель и точка переключения switchWALLSN.
+    private async Task<PgWorker.Backups.WalHistoryEntry> HistoryEntryAsync(
+        string cluster, string shard, uint tli, CancellationToken ct)
+    {
+        await using var s3 = HostS3Client();
+        var got = await s3.GetObjectAsync(cluster, shard, $"wal/{tli:x8}.history", ct);
+        got.IsSuccess.Should().BeTrue(
+            $"the history object wal/{tli:x8}.history is available: {got.Error?.Message}");
+        var entries = PgWorker.Backups.WalHistory.Parse(got.Value!);
+        entries.Should().NotBeNull(
+            $"the history file wal/{tli:x8}.history parses strictly: [{got.Value}]");
+        return entries![^1];
+    }
+
+    // LSN «X/Y» → число (обе половины hex).
+    private static ulong ParseLsn(string lsn)
+    {
+        var parts = lsn.Split('/');
+        return (ulong.Parse(parts[0], System.Globalization.NumberStyles.HexNumber) << 32)
+               | ulong.Parse(parts[1], System.Globalization.NumberStyles.HexNumber);
+    }
+
+    // Предусловие смешанности не наступило: точка переключения ровно на
+    // границе сегмента — смешанного объекта нет (гейт §3.3 п.1).
+    private sealed class BoundarySwitchException(string message)
+        : ApplicationException(message);
+
+    // Байтовое чтение объекта сегмента + проход page-заголовков (spec §3.1):
+    // XLogPageHeaderData (C-выравнивание): xlp_tli = LeU32 @ +4,
+    // xlp_pageaddr = LeU64 @ +8; шаг страницы 8192 (XLOG_BLCKSZ) — карта
+    // pageaddr→tli для побайтового ассерта §3.3 п.3. GET — прямым
+    // AmazonS3Client с теми же endpoint/кредами/path-style, что HostS3Client:
+    // IBackupS3.GetObjectAsync читает объект StreamReader'ом UTF8 (текстовые
+    // .history) и бинарный сегмент исказил бы; продуктовый код не трогаем
+    // (spec §5). BitConverter — little-endian, как и формат WAL.
+    private async Task<List<(ulong PageAddr, uint Tli)>> SegmentPageTlisAsync(
+        string cluster, string shard, string segmentName, CancellationToken ct)
+    {
+        using var client = new AmazonS3Client(
+            new BasicAWSCredentials(E2eEnvironment.S3RootUser, E2eEnvironment.S3RootPassword),
+            new AmazonS3Config
+            {
+                ServiceURL = Fx.S3Endpoint,
+                ForcePathStyle = true,
+            });
+        var response = await client.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = Bucket,
+            Key = $"{cluster}/{shard}/wal/{segmentName}",
+        }, ct);
+        await using var stream = response.ResponseStream;
+        using var ms = new MemoryStream();
+        await stream.CopyToAsync(ms, ct);
+        var bytes = ms.ToArray();
+        const int pageSize = 8192;
+        var pages = new List<(ulong PageAddr, uint Tli)>();
+        for (var off = 0; off + 12 <= bytes.Length; off += pageSize)
+            pages.Add((BitConverter.ToUInt64(bytes, off + 8), BitConverter.ToUInt32(bytes, off + 4)));
+        return pages;
+    }
+
+    // Шаг 6 — СТРОГИЙ гейт смешанности (spec §3.3, AC1; решение user-review):
+    // (1) switchWALLsn ВНУТРИ сегмента S (не на границе 16 МиБ — «на границе»
+    //     покрытием t28 не считается: накат шёл бы по стыку сегментов);
+    // (2) сегмент S доставлен РОВНО один раз — под именем TLI родителя
+    //     (приёмник именует по page header границы; иных имён S нет);
+    // (3) ПОБАЙТОВО: page-заголовки объекта S по обе стороны switchWALLSN
+    //     показывают TLI1/TLI2 (переходная страница не ассертится);
+    // (4) первый TLI2-именованный объект = Next(S), TLI1-именованных выше S
+    //     нет — профиль в точности эвристика TLI-перехода валидатора restore;
+    // (5) WalChain.Check(wal_start, list) непрерывен — тем же валидатором,
+    //     которым restore-заявка пройдёт валидацию.
+    // Пункт (1) «точка на границе» — редкий тайминг-исход ПОДГОТОВКИ (мастер
+    // в shutdown-окне останавливает стрим — TLI1-хвост не успевает к реплике
+    // до промоута; ретрай промоута невозможен без мульти-таймлайн-профиля):
+    // проверяемого состояния нет — факты скипаются штатно (_prepareSkip),
+    // контур чистится обычным teardown'ом. Провал ЛЮБОГО ДРУГОГО пункта —
+    // диагностическое исключение с дампом (history-содержимое, карта
+    // pageaddr→tli объекта S, list wal/, ключи full/wal, Patroni /cluster),
+    // НЕ ретрай: профиль прогона зафиксирован и контур честно красный с
+    // точной причиной.
+    private async Task AssertMixedSwitchAsync(CancellationToken ct)
+    {
+        try
+        {
+            await AssertMixedSwitchCoreAsync(ct);
+        }
+        catch (BoundarySwitchException bex)
+        {
+            _prepareSkip = bex.Message;
+            Console.WriteLine(
+                $"[PHASE] tlsw-mixedness-precondition: facts skipped — {bex.Message}");
+            return;
+        }
+        catch (Exception ex)
+        {
+            // Дамп провала: history-содержимое повторным чтением (лучшие
+            // усилия — недоступность объекта могла быть самой причиной) +
+            // DumpDiagnosticsAsync (list wal/, ключи full/wal, Patroni-scope,
+            // журнал воркера, docker-объекты). Inner сохранён — стек ассерта
+            // не теряется.
+            var history = "";
+            try
+            {
+                await using var s3 = HostS3Client();
+                var got = await s3.GetObjectAsync(Cluster, "shard1", $"wal/{Tli2:x8}.history", ct);
+                history = got.IsSuccess ? got.Value! : $"<unavailable: {got.Error?.Message}>";
+            }
+            catch (Exception he)
+            {
+                history = $"<read failure: {he.Message}>";
+            }
+
+            // Карта pageaddr→tli объекта S (лучшими усилиями — входит в дамп
+            // провала по букве §3.3): имя родителя — из последней записи history.
+            var pageMap = "";
+            try
+            {
+                if (PgWorker.Backups.WalHistory.Parse(history) is { Count: > 0 } es)
+                {
+                    var seg = PgWorker.Backups.WalFileName.FromLsn(0, es[^1].SwitchLsn);
+                    var mapPages = await SegmentPageTlisAsync(Cluster, "shard1",
+                        $"{es[^1].ParentTli:x8}{seg.Log:x8}{seg.Seg:x8}", ct);
+                    pageMap = "pageMap=[" + string.Join("; ",
+                        mapPages.Select(p => $"0x{p.PageAddr:x}:tli{p.Tli}")) + "]";
+                }
+            }
+            catch (Exception pe)
+            {
+                pageMap = $"<map unavailable: {pe.Message}>";
+            }
+
+            throw new ApplicationException(
+                $"the mixedness gate failed: {ex.Message}\nhistory=[{history}]\n{pageMap}\n"
+                + await DumpDiagnosticsAsync(Cluster, "shard1"), ex);
+        }
+    }
+
+    // Ассерты гейта (без обёртки диагностики) — редакция spec §3.3 «имя
+    // родителя + побайтовость»: TLI имени закрываемого сегмента приёмник
+    // берёт из long page header его ГРАНИЦЫ (SegmentAssembler.Close), а
+    // границу S открывал мастер TLI1 — смешанный объект архивируется под
+    // именем РОДИТЕЛЯ 00000001…S; TLI2-поток продолжается с Next(S).
+    private async Task AssertMixedSwitchCoreAsync(CancellationToken ct)
+    {
+        var entry = await HistoryEntryAsync(Cluster, "shard1", Tli2, ct);
+        entry.ParentTli.Should().Be(1u,
+            $"the last record of {Tli2:x8}.history — TLI2 itself from the parent TLI1: parent={entry.ParentTli}");
+        var switchValue = ParseLsn(entry.SwitchLsn);
+        var switchSeg = PgWorker.Backups.WalFileName.FromLsn(0, entry.SwitchLsn);
+
+        // (1) точка переключения СТРОГО внутри сегмента S («на границе»
+        // покрытием t28 не считается: накат шёл бы по стыку сегментов).
+        // На границе — НЕ красный ассерт, а предусловие: смешанного объекта
+        // не существует, фактам нечего проверять (промоут-тайминг, см. гейт).
+        if (switchValue % (ulong)PgWorker.Backups.WalFileName.SegmentBytes == 0UL)
+            throw new BoundarySwitchException(
+                $"the switch point {entry.SwitchLsn} landed EXACTLY on the 16 MiB boundary "
+                + $"of segment {switchSeg.Name} — the promoting replica did not replay the "
+                + "TLI1 tail before the promote; no mixed object exists");
+
+        var names = await ListWalNamesAsync(Cluster, "shard1");
+        var parentName = $"{entry.ParentTli:x8}{switchSeg.Log:x8}{switchSeg.Seg:x8}";
+
+        // (2) сегмент S доставлен РОВНО один раз — под именем TLI родителя;
+        // иных имён S (в частности 00000002…S) в архиве нет.
+        var sNames = names
+            .Select(n => PgWorker.Backups.WalFileName.TryParse(n))
+            .Where(w => w is not null
+                && w!.Value.Log == switchSeg.Log && w.Value.Seg == switchSeg.Seg)
+            .Select(w => w!.Value.Name)
+            .ToList();
+        sNames.Should().BeEquivalentTo([parentName],
+            $"segment S is delivered EXACTLY once, under the parent TLI name {parentName} "
+            + "(SegmentAssembler.Close names by the page header boundary); other S names are invalid");
+
+        // (3) ПОБАЙТОВОЕ подтверждение смешанности: page-заголовки объекта S
+        // по разные стороны switchWALLSN показывают TLI родителя / TLI нового.
+        var pages = await SegmentPageTlisAsync(Cluster, "shard1", parentName, ct);
+        pages.Should().NotBeEmpty("object S must contain page headers");
+        var segStart = (ulong)((long)switchSeg.Log * 256 + switchSeg.Seg)
+            * (ulong)PgWorker.Backups.WalFileName.SegmentBytes;
+        pages[0].PageAddr.Should().Be(segStart, "page 0 — the S segment boundary");
+        pages[0].Tli.Should().Be(entry.ParentTli,
+            "page 0 — the long header of the boundary (written by the TLI1 master): the source of the object name; "
+            + "the TLI1 side of the mixedness (spec §3.3 item 3 \"including page 0\" — the point may lie "
+            + "in the first page: replica-sync pins it to the position of the only master record in S)");
+        // Валидные страницы — внутри границ сегмента S: нулевой хвост недописанного
+        // сегмента (pageaddr=0/tli=0 — незаполненные байты) заголовками не является
+        // и побайтовому ассерту не подлежит.
+        var segEnd = segStart + (ulong)PgWorker.Backups.WalFileName.SegmentBytes;
+        var validPages = pages
+            .Where(p => p.PageAddr >= segStart && p.PageAddr < segEnd)
+            .ToList();
+        // Предусловие (как пункт (1),BoundarySwitchException): TLI2-байтов в S
+        // может не оказаться — промоут-реплика при пограничном тайминге начинает
+        // писать С Next(S), S остаётся чисто TLI1 (тайминг-исход: в S только
+        // page 0, хвост нулевой). Смешанного объекта нет — проверяемого
+        // состояния нет: штатный скип фактов (_prepareSkip), контур чистится
+        // teardown'ом; провал дальше — только при НАЛИЧИИ TLI2-байтов.
+        if (!validPages.Any(p => p.PageAddr > switchValue && p.Tli == Tli2))
+            throw new BoundarySwitchException(
+                $"segment S {parentName} carries no TLI2 bytes (valid pages: " +
+                string.Join(", ", validPages.Select(p => $"0x{p.PageAddr:x}:tli{p.Tli}")) + ") — " +
+                "the promoting replica started writing at the segment boundary; no mixed object exists");
+        const int pageSize = 8192;
+        foreach (var (pageAddr, tli) in validPages)
+        {
+            if (pageAddr + pageSize <= switchValue)
+                tli.Should().Be(entry.ParentTli,
+                    $"page 0x{pageAddr:x} is entirely below switchWALLSN — TLI1 bytes in object {parentName}");
+            else if (pageAddr > switchValue)
+                tli.Should().Be(Tli2,
+                    $"page 0x{pageAddr:x} is entirely above switchWALLSN — TLI2 bytes in object {parentName}");
+            // страница, СОДЕРЖАЩАЯ switchWALLSN (pageaddr ≤ точка < pageaddr+8192),
+            // — переходная: её заголовок создан до переключения, жёстко НЕ
+            // ассертится (spec §3.3 п.3)
+        }
+        validPages.Should().Contain(p => p.PageAddr > switchValue && p.Tli == Tli2,
+            "the object contains TLI2 pages above the point — the tail of new timeline bytes");
+
+        // (4) TLI2-поток продолжается со следующего сегмента: первый
+        // TLI2-именованный объект = Next(S); TLI1-именованных выше S нет.
+        // Профиль S (имя TLI1) → Next(S) (имя TLI2) + history-объект — в
+        // точности эвристика TLI-перехода валидатора restore.
+        var next = switchSeg.Next();
+        var tli2Segments = names
+            .Select(n => PgWorker.Backups.WalFileName.TryParse(n))
+            .Where(w => w is { Tli: var t } && t == Tli2)
+            .Select(w => w!.Value)
+            .OrderBy(w => (long)w.Log * 256 + w.Seg)
+            .ToList();
+        tli2Segments.Should().NotBeEmpty("TLI2-named segments are delivered (gate of step 4)");
+        (tli2Segments[0].Log, tli2Segments[0].Seg).Should().Be((next.Log, next.Seg),
+            $"the first TLI2-named object = Next(S) = {next.Name}");
+        var switchPos = (long)switchSeg.Log * 256 + switchSeg.Seg;
+        names.Where(n => PgWorker.Backups.WalFileName.TryParse(n) is { } w
+                && w.Tli == entry.ParentTli
+                && (long)w.Log * 256 + w.Seg > switchPos)
+            .Should().BeEmpty("no TLI1-named objects above S");
+
+        // (5) WalChain.Check — тем же валидатором, которым restore-заявка
+        // пройдёт валидацию (S под именем TLI1 → Next(S) под TLI2 + history).
+        var start = PgWorker.Backups.WalFileName.TryParse(WalStartSegment)!.Value;
+        var check = PgWorker.Backups.WalChain.Check(start, names);
+        check.IsContinuous.Should().BeTrue(check.GapError ??
+            $"WalChain.Check from {WalStartSegment} is continuous — the same validator a restore request will pass");
+    }
+
+    // Шаг 3 (spec §3.2): жёсткая потеря мастера — docker stop (БЕЗ
+    // switchover): Patroni сам промоутит выжившую sync-реплику (образец AC4
+    // t27). Ожидание: новый primary (узел ≠ остановленному) + TLI ≥ 2 ≤ 120 с.
+    private async Task FailoverAsync(CancellationToken ct)
+    {
+        var (_, _, master) = await MasterPgAsync(Cluster, "shard1", ct);
+        Console.WriteLine($"[PHASE] tlsw-failover: docker stop pgw-{Cluster}-shard1-{master}");
+        await Fx.RunDockerAsync(["stop", $"pgw-{Cluster}-shard1-{master}"], ct);
+        var (host, port, newMaster) = await MasterPgAsync(Cluster, "shard1", ct);
+        newMaster.Should().NotBe(master, "after the master dies the primary is the surviving replica");
+        Console.WriteLine($"[PHASE] tlsw-failover: new primary {newMaster}");
+        Tli2 = await PrimaryTimelineAsync(Cluster, "shard1", ct);
+        Tli2.Should().BeGreaterThanOrEqualTo(2u, "failover opens a new timeline");
+        _newMasterDsn = AdminDsn(host, port);
+    }
+
+    private string _newMasterDsn = null!;
+
+    // Синхронизация реплик шарда: replay_lsn КАЖДОЙ реплики ≥ текущей позиции
+    // записи мастера (pg_current_wal_lsn). Гейт профиля смешанности: мастер
+    // держит сегмент S открытым, догнавшая реплика промоутнется внутри S.
+    private async Task<bool> ReplicasSyncedAsync(CancellationToken ct)
+    {
+        var (mHost, mPort, master) = await MasterPgAsync(Cluster, "shard1", ct);
+        var masterPos = ParseLsn(await ScalarAsync(
+            AdminDsn(mHost, mPort), "SELECT pg_current_wal_lsn()", ct));
+        var kv = await G.GetAsync(Endpoint, $"/pgworker/portalloc/{Cluster}", ct);
+        var entries = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(kv.Value!.Value)!;
+        foreach (var (key, addr) in entries
+                     .Where(p => p.Key.StartsWith("shard1/", StringComparison.Ordinal)))
+        {
+            if (key.Split('/')[1] == master)
+                continue; // сам мастер — не проверяется
+            var replay = ParseLsn(await ScalarAsync(
+                // Хостовая модель: DSN реплики — localhost:{pg из portalloc}
+                AdminDsn("localhost", addr.GetProperty("pg").GetInt32()),
+                "SELECT pg_last_wal_replay_lsn()", ct));
+            if (replay < masterPos)
+                return false;
+        }
+
+        return true;
+    }
+
+    // Гейт мастера (t10) + DSN чтения: COMPLETED restore не гарантирует
+    // закрытия рестарт-окна postmaster — SQL-проба SELECT 1 до возврата DSN
+    // (эталон rs-dr; бюджет 120 с согласован с PatroniBootSec хоста).
+    public async Task<string> MasterReadyDsnAsync(CancellationToken ct)
+    {
+        var ready = await WaitPhaseAsync("master-ready", async () =>
+        {
+            try
+            {
+                var (host, port, _) = await MasterPgAsync(Cluster, "shard1", ct);
+                await ScalarAsync(AdminDsn(host, port), "SELECT 1", ct);
+                return true;
+            }
+            catch (NpgsqlException)
+            {
+                return false; // рестарт-окно — поллинг повторит
+            }
+        }, TimeSpan.FromSeconds(90), ct);
+        ready.Should().BeTrue("the master must accept SQL before reading data (t10 gate): "
+            + await DumpDiagnosticsAsync(Cluster, "shard1"));
+        var (h, p, _) = await MasterPgAsync(Cluster, "shard1", ct);
+        return AdminDsn(h, p);
+    }
+
+    // Финальное чтение с ретраями (эталон rs-latest): Patroni доводит конфиг
+    // мастера после COMPLETED — рестарт рвёт соединения, переходное окно.
+    public async Task<string> ScalarRetryAsync(string dsn, string sql, CancellationToken ct)
+    {
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                return await ScalarAsync(dsn, sql, ct);
+            }
+            catch (NpgsqlException) when (attempt < 5)
+            {
+                await Task.Delay(8000, ct);
+            }
+        }
+    }
+
+    // Шаги 4–5 (spec §3.2): post-switch на новом TLI; доставка .history +
+    // TLI2-хвоста по list-S3 (истина §2; repair-контур остановленной ноды НЕ
+    // ждём — гвардом restore владеет заявка); фиксация T_cut (+ пауза 2 с —
+    // разделение коммитов, rs-time-паттерн); after-cut ОБЯЗАНЫ лежать в
+    // архиве (иначе их отсутствие в restore тривиально).
+    private async Task SeedNewTimelineAsync(CancellationToken ct)
+    {
+        // Шаг 4 — данные на новом TLI + доставка TLI2-хвоста. Условие
+        // усилено позицией: TLI2-именованный сегмент не ниже Next(последнего
+        // доставленного TLI1-именованного; после доставки смешанного объекта
+        // под именем родителя это Next(S)). Строгое «первый TLI2-именованный
+        // = Next(S)» ассертит гейт §3.3 п.4 (позиция S — из .history).
+        await ExecAsync(_newMasterDsn,
+            "INSERT INTO tli_switch_probe SELECT g, 'post-switch' FROM generate_series(11, 15) g", ct);
+        await SwitchWalsAsync(_newMasterDsn, 3, ct);
+        var tailDelivered = await WaitPhaseAsync("tli2-tail", async () =>
+        {
+            var names = await ListWalNamesAsync(Cluster, "shard1");
+            var tli1Max = names
+                .Select(n => PgWorker.Backups.WalFileName.TryParse(n))
+                .Where(w => w is { Tli: 1 })
+                .Select(w => (long)w!.Value.Log * 256 + w!.Value.Seg)
+                .DefaultIfEmpty(-1).Max();
+            return names.Contains($"{Tli2:x8}.history")
+                   && names.Any(n => PgWorker.Backups.WalFileName.TryParse(n) is { } w
+                       && w.Tli == Tli2
+                       && (long)w.Log * 256 + w.Seg > tli1Max);
+        }, TimeSpan.FromSeconds(90), ct);
+        tailDelivered.Should().BeTrue(
+            $"wal/{Tli2:x8}.history and TLI2-segments above the switch point must be delivered (the replica agent continues from the tail): "
+            + await DumpDiagnosticsAsync(Cluster, "shard1"));
+
+        // Шаг 4 (конец) — фиксация цели PITR: T_cut строго между post-switch
+        // и after-cut (пауза 2 с разделяет коммиты — неоднозначность цели
+        // исключена, риск-таблица §7).
+        TCut = DateTime.UtcNow;
+        await Task.Delay(2000, ct);
+
+        // Шаг 5 — after-cut: закрываем сегменты и ждём доставки позиции.
+        // Цель = max(list) до INSERT + 3: switch ×3 закрывает сегмент с
+        // after-cut и два следующих — доставка до posBefore+3 гарантирует,
+        // что сегмент с after-cut записями доставлен.
+        var posBefore = (await ListWalNamesAsync(Cluster, "shard1"))
+            .Select(WalPosOf).DefaultIfEmpty(-1).Max();
+        await ExecAsync(_newMasterDsn,
+            "INSERT INTO tli_switch_probe SELECT g, 'after-cut' FROM generate_series(16, 18) g", ct);
+        await SwitchWalsAsync(_newMasterDsn, 3, ct);
+        AfterCutPos = posBefore + 3;
+        // [PHASE]-телеметрия вокруг гейта доставки (семантика WaitPhaseAsync;
+        // сам WalArchivedAsync — дословная копия образца, не трогаем):
+        // строка в журнал всегда, фаза > 60 с — docker-логи в артефакты
+        // (spec §3.6/AC4: ВСЕ ожидания — с [PHASE]-строками).
+        var afterSw = Stopwatch.StartNew();
+        var afterArchived = await WalArchivedAsync(Cluster, "shard1", AfterCutPos, ct);
+        afterSw.Stop();
+        Console.WriteLine($"[PHASE] after-cut-archived: ok={afterArchived}, elapsed={afterSw.Elapsed.TotalSeconds:F1}s");
+        if (afterSw.Elapsed > TimeSpan.FromSeconds(60))
+            await Fx.CollectDiagnosticsAsync($"slow-phase-after-cut-archived-{(int)afterSw.Elapsed.TotalSeconds}s");
+        afterArchived.Should().BeTrue("segments with after-cut must land in the archive: "
+            + await DumpDiagnosticsAsync(Cluster, "shard1"));
+    }
+
+    // Шаг 2 (spec §3.2): контрольная таблица + pre (уходят в полный) →
+    // COMPLETED-полный с фиксацией OldBackupId/wal_start → pre-wal (должны
+    // накатиться TLI1-хвостом через смешанный сегмент) → закрытие сегментов
+    // по одному до непрерывности WalChain.Check от wal_start (паттерн
+    // rs-latest против дыры на валидации) → последняя запись TLI1 в ОТКРЫТЫЙ
+    // сегмент S (после этого НИ ОДНОГО pg_switch_wal до failover — точка
+    // переключения окажется внутри S, «запись мастера живёт в открытом
+    // сегменте S»).
+    private async Task SeedFullBackupAsync(CancellationToken ct)
+    {
+        var (host, port, _) = await MasterPgAsync(Cluster, "shard1", ct);
+        var dsn = AdminDsn(host, port);
+        await ExecAsync(dsn, "CREATE TABLE tli_switch_probe(id int, note text)", ct);
+        await ExecAsync(dsn,
+            "INSERT INTO tli_switch_probe SELECT g, 'pre' FROM generate_series(1, 5) g", ct);
+        await SwitchWalsAsync(dsn, 4, ct);
+        var completed = await WaitPhaseAsync("full-completed", async () =>
+            (await FullKeysAsync(Cluster, "shard1")).Any(f => f.Value.Contains("COMPLETED")),
+            TimeSpan.FromSeconds(90), ct);
+        if (!completed)
+            throw new ApplicationException("the full did not reach COMPLETED: " +
+                await DumpDiagnosticsAsync(Cluster, "shard1"));
+        var completedFull = (await FullKeysAsync(Cluster, "shard1"))
+            .Single(f => f.Value.Contains("COMPLETED"));
+        OldBackupId = completedFull.Key.Split('/').Last();
+        WalStartSegment = JsonSerializer
+            .Deserialize<Dictionary<string, JsonElement>>(completedFull.Value)!
+            ["wal_start_segment"].GetString()!;
+        WalStartSegment.Should().NotBeNullOrEmpty("wal_start_segment is filled from UPLOADING");
+
+        // pre-wal: сегменты закрываются по одному, пока WalChain.Check от
+        // wal_start не станет непрерывен (доставка — по list-S3, истина §2).
+        // [PHASE]-телеметрия вручную (семантика WaitPhaseAsync): условие
+        // сходится pg_switch_wal'ами — side-effect в поллинге WaitPhaseAsync
+        // недопустим (switch каждые 500 мс), поэтому строка и slow-collect
+        // вокруг цикла (spec §3.6/AC4: ВСЕ ожидания — с [PHASE]-строками).
+        await ExecAsync(dsn,
+            "INSERT INTO tli_switch_probe SELECT g, 'pre-wal' FROM generate_series(6, 10) g", ct);
+        var chainSw = Stopwatch.StartNew();
+        var chainDeadline = DateTime.UtcNow + TimeSpan.FromSeconds(90);
+        var chainOk = false;
+        while (!chainOk && DateTime.UtcNow < chainDeadline)
+        {
+            await SwitchWalsAsync(dsn, 1, ct);
+            chainOk = await WalChainContinuousAsync(Cluster, "shard1", WalStartSegment!, ct);
+        }
+        chainSw.Stop();
+        Console.WriteLine($"[PHASE] pre-wal-chain: ok={chainOk}, elapsed={chainSw.Elapsed.TotalSeconds:F1}s");
+        if (chainSw.Elapsed > TimeSpan.FromSeconds(60))
+            await Fx.CollectDiagnosticsAsync($"slow-phase-pre-wal-chain-{(int)chainSw.Elapsed.TotalSeconds}s");
+        chainOk.Should().BeTrue("the chain from wal_start must converge before the failover: "
+            + await DumpDiagnosticsAsync(Cluster, "shard1"));
+
+        // Реальная запись TLI1 в открытом сегменте S — гарантия профиля
+        // смешанности (риск-таблица spec §7: «записи после последнего switch
+        // есть всегда» — делаем явно). БЕЗ pg_switch_wal: сегмент S остаётся
+        // открытым до failover.
+        await ExecAsync(dsn,
+            "SELECT pg_logical_emit_message(false, 't28', repeat('x', 128))", ct);
+    }
+
+    // Admin-DSN по host:port мастера (креды su e2e-установки).
+    private string AdminDsn(string host, int port)
+        => DatabaseProvisioner.BuildAdminDsn(host, port, Cluster,
+            new InstallSecrets(E2eFixture.SuPassword, "", "", ""));
+
+    // Воркер t28: ОБЪЕДИНЁННЫЙ бэкап-комплект (spec §3.1): в образцах комплект
+    // StartWalHostAsync не задаёт Restore:RecoveryTimeoutSec; t28 нужны и
+    // полные, и WAL-агент, и restore ОДНОВРЕМЕННО. S3 — один пул из policy.s3,
+    // креды в env-профиле, адреса нод воркер резолвит из /s3/ как advertised
+    // host.docker.internal (БЕЗ замены на localhost — паттерн
+    // StartRestoreHostAsync единственного зелёного контура «полные + WAL +
+    // restore», spec §3.1): полный бэкап снимает приёмник ноды — upload
+    // .NET-клиентом по write-списку пула ИЗНУТРИ контура (алиасы per-ноды
+    // пула) — localhost там недостижим; WAL-агент получает те же ноды
+    // списками S3_ENDPOINTS/S3_READ_ENDPOINTS, restore — операция WalReceiver ноды
+    // тем же ReadAll-списком в POST-команде.
+    // Замена host.docker.internal → localhost — ТОЛЬКО в host-клиентах
+    // сценария (HostS3Client): воркер-процесс на хосте резолвит
+    // host.docker.internal.
+    private Task<HostInstance> StartTliSwitchHostAsync(string name, CancellationToken ct)
+        => Fx.StartHostAsync(name, extraEnv: new Dictionary<string, string>
+        {
+            ["PgWorker__Backups__Enabled"] = "true",
+            ["PgWorker__Backups__S3__Bucket"] = Bucket,
+            // t36: креды пула — env-профиль (arch/19 §7); пул — policy.s3.
+            ["PgWorker__Backups__Retry__BaseSec"] = "2",
+            ["PgWorker__Backups__Retry__MaxSec"] = "4",
+            ["PgWorker__Backups__Wal__VerifyIntervalSec"] = "2",
+            ["PgWorker__Backups__Wal__StaleSec"] = "600",
+            ["PgWorker__Backups__Wal__LagMaxSegments"] = "100000",
+            ["PgWorker__Backups__Restore__RecoveryTimeoutSec"] = "600",
+            ["PgWorker__Thresholds__PatroniBootSec"] = "120",
+        }, ct: ct);
+
+    // ===== Хелперы (копии E2eRestoreScenarios/E2eBackupScenarios — файлы
+    // сценариев независимы, паттерн репо; в общие утилиты не выносятся) =====
+
+    // Ожидание фазы с телеметрией (docs/e2e-launch.md): [PHASE]-строка в
+    // журнал всегда; фаза дольше 60 с — docker-логи окружения в артефакты.
+    public async Task<bool> WaitPhaseAsync(
+        string phase, Func<Task<bool>> condition, TimeSpan timeout, CancellationToken ct)
+    {
+        var sw = Stopwatch.StartNew();
+        var ok = await E2eFixture.WaitForAsync(condition, timeout, ct);
+        sw.Stop();
+        Console.WriteLine($"[PHASE] {phase}: ok={ok}, elapsed={sw.Elapsed.TotalSeconds:F1}s");
+        if (sw.Elapsed > TimeSpan.FromSeconds(60))
+            await Fx.CollectDiagnosticsAsync($"slow-phase-{phase}-{(int)sw.Elapsed.TotalSeconds}s");
+        return ok;
+    }
+
+    // Host-клиент BackupS3 (published порт): ассерты и гейты по list-S3.
+    // Замена host.docker.internal → localhost — ТОЛЬКО здесь (воркер-процесс
+    // на хосте; джобы/агенты её НЕ получают — см. StartTliSwitchHostAsync).
+    public PgWorker.Backups.BackupS3 HostS3Client()
+        => new(new PgWorker.Backups.S3ClientOptions(
+            Fx.S3Endpoint,
+            Bucket, E2eEnvironment.S3RootUser, E2eEnvironment.S3RootPassword));
+
+    // PUT PLANNED-заявки restore прямым ключом (принятое отступление образцов:
+    // API-путь покрыт RestoreApiTests). backupId ОБЯЗАТЕЛЕН (инвариант t28):
+    // после первой заявки новейший COMPLETED — уже TLI3-полный, а валидация
+    // обязана идти от СТАРОГО полного через точку переключения.
+    private async Task<string> PutRestorePlannedAsync(
+        string cluster, string shard, string target, string backupId, CancellationToken ct)
+    {
+        var id = $"{DateTimeOffset.UtcNow:yyyyMMddHHmmss}Z-{shard}";
+        var op = new RestoreOperationState(id, RestoreStatus.Planned, backupId,
+            $"{cluster}/{shard}", target, $"{shard}a",
+            DateTimeOffset.UtcNow.ToUnixTimeSeconds(), "e2e");
+        await G.PutAsync(Endpoint, PgWorker.Backups.BackupNames.RestoreKey(cluster, shard, id),
+            RestoreStatusJson.Serialize(op), null, ct);
+        return id;
+    }
+
+    // Поллинг restore-ключа до терминального статуса. FAILED «дыра WAL-цепочки»
+    // — внешняя гонка доставки: сигнал РЕТРАЯ новой заявкой (ChainGapException).
+    private sealed class ChainGapException(string message) : ApplicationException(message);
+
+    private async Task<Dictionary<string, JsonElement>?> WaitRestoreAsync(
+        string cluster, string shard, string id, TimeSpan budget, CancellationToken ct)
+    {
+        Dictionary<string, JsonElement>? status = null;
+        var sw = Stopwatch.StartNew();
+        var done = await E2eFixture.WaitForAsync(async () =>
+        {
+            var raw = await GetOrNullAsync(PgWorker.Backups.BackupNames.RestoreKey(cluster, shard, id));
+            if (raw is null)
+                return false;
+            status = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(raw.Value);
+            return status is not null && (status["state"].GetString() is "COMPLETED" or "FAILED");
+        }, budget, ct);
+        sw.Stop();
+        Console.WriteLine(
+            $"[PHASE] restore {cluster}/{shard}/{id}: state={status?["state"].GetString()}, elapsed={sw.Elapsed.TotalSeconds:F1}s");
+        if (sw.Elapsed > TimeSpan.FromSeconds(60))
+            await Fx.CollectDiagnosticsAsync($"slow-restore-{cluster}-{shard}-{(int)sw.Elapsed.TotalSeconds}s");
+        if (!done || status!["state"].GetString() == "FAILED")
+        {
+            var error = status?.TryGetValue("error", out var err) == true ? err.GetString() : null;
+            if (error is not null && error.Contains("WAL chain gap", StringComparison.Ordinal))
+                throw new ChainGapException($"restore {cluster}/{shard}/{id}: {error}");
+            throw new ApplicationException(
+                $"restore {cluster}/{shard}/{id} did not reach COMPLETED: "
+                + (status is null ? "no key" : status["state"].GetString())
+                + (error is null ? "" : $", error={error}")
+                + "; " + await DumpDiagnosticsAsync(cluster, shard));
+        }
+
+        return done ? status : null;
+    }
+
+    // Заявка restore с ретраем ≤ 3 на внешние гонки доставки (образец
+    // rs-latest): FAILED «дыра» → новая заявка (демонтаж идемпотентен,
+    // повторная заявка сама проводит демонтаж/джоб/rejoin). Бюджет 300 с.
+    public async Task<Dictionary<string, JsonElement>> RestoreWithRetryAsync(
+        string cluster, string shard, string target, string backupId, CancellationToken ct)
+    {
+        for (var attempt = 1; ; attempt++)
+        {
+            var restoreId = await PutRestorePlannedAsync(cluster, shard, target, backupId, ct);
+            try
+            {
+                var status = await WaitRestoreAsync(cluster, shard, restoreId,
+                    TimeSpan.FromSeconds(90), ct);
+                return status!;
+            }
+            catch (ChainGapException) when (attempt < 3)
+            {
+                Console.Error.WriteLine(
+                    $"e2e[restore]: {cluster}/{shard} attempt {attempt} — chain gap (delivery race), retrying the request");
+                await Task.Delay(3000, ct);
+            }
+        }
+    }
+
+    // Непрерывность цепочки от wal_start полного (WalChain.Check — ТОТ ЖЕ
+    // валидатор, что в restore-заявке): заявку ставим только на
+    // консистентной цепочке.
+    private async Task<bool> WalChainContinuousAsync(
+        string cluster, string shard, string walStartSegment, CancellationToken ct)
+        => await E2eFixture.WaitForAsync(async () =>
+        {
+            var chainStart = PgWorker.Backups.WalFileName.TryParse(walStartSegment);
+            if (chainStart is null)
+                return true; // битый wal_start — не цепочечная проблема валидатора
+            var names = await ListWalNamesAsync(cluster, shard);
+            return PgWorker.Backups.WalChain.Check(chainStart.Value, names).IsContinuous;
+        }, TimeSpan.FromSeconds(90), ct);
+
+    // Диагностика провала: журнал воркера + restore-ключи/полные шарда + docker-объекты
+    // кластера (фильтр по ТЕГУ кластера — substring ловит и восстановленные ноды).
+    public async Task<string> DumpDiagnosticsAsync(string cluster, string shard)
+    {
+        var workKv = await GetOrNullAsync($"/pgworker/work/{cluster}");
+        var restoreKvs = await G.RangeAsync(
+            Endpoint, $"/pgworker/backups/{cluster}/{shard}/restore/",
+            TestContext.Current.CancellationToken);
+        var fullKvs = await FullKeysAsync(cluster, shard);
+        var walKv = await GetOrNullAsync($"/pgworker/backups/{cluster}/{shard}/wal");
+        var walNames = await ListWalNamesAsync(cluster, shard);
+        // Patroni-scope шарда целиком: рудименты прошлой жизни кластера
+        // (initialize/status с чужим system-id) — прямой кандидат в причины
+        // «контейнеры Up, а Patroni API молчит».
+        var scopeKvs = await G.RangeAsync(
+            Endpoint, $"/service/{cluster}-{shard}/", TestContext.Current.CancellationToken);
+        var scopeDump = scopeKvs.IsSuccess
+            ? string.Join(";", (scopeKvs.Value ?? []).Select(
+                k => $"{k.Key.Replace($"/service/{cluster}-{shard}/", "")}={k.Value[..Math.Min(200, k.Value.Length)]}"))
+            : $"range failed: {scopeKvs.Error?.Message}";
+        // Состояния нод шарда: PROVISIONING-метка выдаёт EnsureDeclaredNodes
+        // (супервиз) как создателя контейнера в гонке rejoin'а.
+        var nodeStates = await G.RangeAsync(
+            Endpoint, $"/clusters/{cluster}/shards/{shard}/nodes/", TestContext.Current.CancellationToken);
+        var nodeDump = nodeStates.IsSuccess
+            ? string.Join(";", (nodeStates.Value ?? []).Select(k =>
+                $"{k.Key.Replace($"/clusters/{cluster}/shards/{shard}/nodes/", "")}={k.Value}"))
+            : $"range failed: {nodeStates.Error?.Message}";
+        string jobs;
+        try
+        {
+            jobs = await Fx.RunDockerAsync(
+            ["ps", "-a", "--format", "{{.ID}} {{.Names}} {{.Status}}",
+                "--filter", $"name={cluster}"],
+            TestContext.Current.CancellationToken);
+            jobs += " | volumes=" + await Fx.RunDockerAsync(
+            ["volume", "ls", "--format", "{{.Name}}", "--filter", $"name={cluster}"],
+            TestContext.Current.CancellationToken);
+        }
+        catch (Exception e)
+        {
+            jobs = $"docker ps failed: {e.Message}";
+        }
+
+        // Журнал воркера целиком (политика телеметрии: без обрезок — по нему
+        // отвечают «почему фаза не уложилась»; объёмы в e2e — единицы КБ).
+        var journal = workKv?.Value ?? "<absent>";
+        // PG-лог restore-джоба (/tmp/restore-pg.log в контейнере): какие сегменты
+        // запрашивал restore_command, где сорвалось (t27-разбор: mc-404 существующего).
+        var pgLog = "";
+        try
+        {
+            var psJobs = await Fx.RunDockerAsync(
+            ["ps", "-a", "--format", "{{.Names}}", "--filter", $"name=pgw-{cluster}-"],
+            TestContext.Current.CancellationToken);
+            foreach (var line in psJobs.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+            {
+                var name = line.Trim().Split(' ')[0];
+                var copied = Path.Combine(Path.GetTempPath(), $"pgw-restore-pg-{cluster}.log");
+                try
+                {
+                    await E2eFixture.RunProcessAsync("docker", ["cp", $"{name}:/tmp/restore-pg.log", copied],
+                        TestContext.Current.CancellationToken);
+                    var text = File.ReadAllText(copied);
+                    pgLog += $"\n== {name}:\n{text[..Math.Min(4000, text.Length)]}";
+                }
+                catch (Exception cp)
+                {
+                    pgLog += $"\n== {name}: log unavailable ({cp.Message})";
+                }
+
+                // Видимость сегментов ИЗ ЖИВОГО джоба (тот же mc/alias/сеть):
+                // t27-разбор — restore_command получил 404 на сегмент, который в S3 есть.
+                try
+                {
+                    var live = await E2eFixture.RunProcessAsync("docker", ["exec", name, "bash", "-c",
+                        "ls /tmp/.mc 2>/dev/null | head -3; for s in 000000010000000000000009 00000001000000000000000a 00000001000000000000000b; do " +
+                        "mc stat \"pgwbkp/$S3_BUCKET/$SRC_PREFIX/wal/$s\" 2>&1 | head -2; done"],
+                        TestContext.Current.CancellationToken);
+                    pgLog += $"\n== {name} MC-STAT(alive):\n{live[..Math.Min(1500, live.Length)]}";
+                }
+                catch (Exception ex)
+                {
+                    pgLog += $"\n== {name} MC-STAT: unavailable ({ex.Message})";
+                }
+            }
+        }
+        catch (Exception e)
+        {
+            pgLog = $"\npg-log failed: {e.Message}";
+        }
+
+        return $"journal=[{journal}] " +
+               $"restores=[{string.Join(";", (restoreKvs.Value ?? []).Select(k => k.Value))}] " +
+               $"fulls=[{string.Join(";", fullKvs.Select(k => k.Value))}] " +
+               $"walKey=[{walKv?.Value ?? "<absent>"}] " +
+               $"wal=[{string.Join(",", walNames.OrderBy(n => n, StringComparer.Ordinal))}] " +
+               $"patroniScope=[{scopeDump}] " +
+               $"nodes=[{nodeDump}] " +
+               $"jobs=[{jobs}]" +
+               $"RESTORE.PG.LOG:{pgLog}";
+    }
+
+    // Range Failed → пустой список (поллинг повторит; null-краш в LINQ недопустим).
+    public async Task<IReadOnlyList<Kv>> FullKeysAsync(string cluster, string shard)
+        => (await G.RangeAsync(Endpoint, $"/pgworker/backups/{cluster}/{shard}/full/",
+            TestContext.Current.CancellationToken)).Value ?? [];
+
+    // Имена заархивированных объектов wal/ (host-клиент; истина доставки — S3).
+    public async Task<List<string>> ListWalNamesAsync(string cluster, string shard)
+    {
+        await using var s3 = HostS3Client();
+        var listed = await s3.ListWalAsync(cluster, shard, ct: TestContext.Current.CancellationToken);
+        if (!listed.IsSuccess)
+            Console.Error.WriteLine($"e2e[archive]: LIST FAILED {listed.Error?.Message}");
+        return listed.IsSuccess ? [.. listed.Value.Select(o => o.Name)] : [];
+    }
+
+    // pg_logical_emit_message + pg_switch_wal × count: idle-база не
+    // материализует пустые switch — перед каждым пишем реальную WAL-запись.
+    private static async Task SwitchWalsAsync(string adminDsn, int count, CancellationToken ct)
+    {
+        await using var conn = new NpgsqlConnection(adminDsn);
+        await conn.OpenAsync(ct);
+        for (var i = 0; i < count; i++)
+        {
+            await using var emit = new NpgsqlCommand(
+                "SELECT pg_logical_emit_message(false, 'e2e', repeat('x', 128))", conn);
+            await emit.ExecuteScalarAsync(ct);
+            await using var switchWal = new NpgsqlCommand("SELECT pg_switch_wal()", conn);
+            await switchWal.ExecuteScalarAsync(ct);
+        }
+    }
+
+    // Позиция сегмента (лог×256 + смещение) — канон WalFileName.
+    private static long WalPosOf(string segment)
+    {
+        var parsed = PgWorker.Backups.WalFileName.TryParse(segment);
+        return parsed is { } w ? (long)w.Log * 256 + w.Seg : -1;
+    }
+
+    // ДОСТАВКА до позиции: последний закрытый сегмент обязан появиться в
+    // wal/-префиксе (бюджет 180 с).
+    private async Task<bool> WalArchivedAsync(
+        string cluster, string shard, long targetPos, CancellationToken ct)
+        => await E2eFixture.WaitForAsync(async () =>
+        {
+            var names = await ListWalNamesAsync(cluster, shard);
+            return names.Select(WalPosOf).DefaultIfEmpty(-1).Max() >= targetPos;
+        }, TimeSpan.FromSeconds(90), ct);
+
+    public async Task<Kv?> GetOrNullAsync(string key)
+        => (await G.GetAsync(Endpoint, key, TestContext.Current.CancellationToken)).Value;
+
+    private static async Task ExecAsync(string dsn, string sql, CancellationToken ct)
+    {
+        await using var conn = new NpgsqlConnection(dsn);
+        await conn.OpenAsync(ct);
+        await using var cmd = new NpgsqlCommand(sql, conn);
+        await cmd.ExecuteNonQueryAsync(ct);
+    }
+
+    private static async Task<string> ScalarAsync(string dsn, string sql, CancellationToken ct)
+    {
+        await using var conn = new NpgsqlConnection(dsn);
+        await conn.OpenAsync(ct);
+        await using var cmd = new NpgsqlCommand(sql, conn);
+        return Convert.ToString(await cmd.ExecuteScalarAsync(ct)) ?? "";
+    }
+
+    // t22: Patroni REST нод — https (цепочка к per-contour CA, без hostname)
+    private HttpClient PatroniHttp => Fx.NewPatroniHttpClient();
+
+    // Published pg-порт мастера шарда из portalloc (host-клиент: localhost).
+    // Резолв фактического primary — по пробам Patroni /primary (t02-подход
+    // WaitForMasterAsync: master-ключ host:0 при EnableDoorman=false
+    // недискриминантен); primary появляется после dsn/RUNNING — ждём.
+    public async Task<(string Host, int Port, string Node)> MasterPgAsync(string cluster, string shard, CancellationToken ct)
+    {
+        var kv = await G.GetAsync(Endpoint, $"/pgworker/portalloc/{cluster}", ct);
+        kv.Value.Should().NotBeNull("portalloc is written at provisioning");
+        var entries = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(kv.Value!.Value)!;
+        string? primary = null;
+        var resolved = await E2eFixture.WaitForAsync(async () =>
+        {
+            foreach (var (key, addr) in entries
+                         .Where(p => p.Key.StartsWith($"{shard}/", StringComparison.Ordinal))
+                         .OrderBy(p => p.Key, StringComparer.Ordinal))
+            {
+                try
+                {
+                    using var response = await PatroniHttp.GetAsync(
+                        $"https://localhost:{addr.GetProperty("patroni").GetInt32()}/primary", ct);
+                    if (response.IsSuccessStatusCode)
+                    {
+                        primary = key.Split('/')[1];
+                        return true;
+                    }
+                }
+                catch (Exception)
+                {
+                    // проба (рестарт/ещё не готова) — следующая нода
+                }
+            }
+
+            return false;
+        }, TimeSpan.FromSeconds(90), ct);
+        resolved.Should().BeTrue("the shard primary must be resolved by Patroni probes");
+        return ("localhost", entries[$"{shard}/{primary}"].GetProperty("pg").GetInt32(),
+            primary!);
+
+    }
+
+    // TLI текущего primary шарда: Patroni GET /cluster ноды (timeline члена-лидера).
+    private async Task<uint> PrimaryTimelineAsync(string cluster, string shard, CancellationToken ct)
+    {
+        var kv = await G.GetAsync(Endpoint, $"/pgworker/portalloc/{cluster}", ct);
+        kv.Value.Should().NotBeNull("portalloc is written at provisioning");
+        var entries = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(kv.Value!.Value)!
+            .Where(p => p.Key.StartsWith($"{shard}/", StringComparison.Ordinal)).ToList();
+        // Опрос ВСЕХ нод (после docker stop мастер-ноды её patroni-порт закрыт);
+        // ждём именно TLI ≥ 2: promote мог случиться только-что — /cluster члена
+        // показывает его timeline не мгновенно (длительность failover-процесса).
+        uint tli = 0;
+        await E2eFixture.WaitForAsync(async () =>
+        {
+            foreach (var (key, addr) in entries)
+            {
+                try
+                {
+                    using var response = await PatroniHttp.GetAsync(
+                        $"https://localhost:{addr.GetProperty("patroni").GetInt32()}/cluster", ct);
+                    if (!response.IsSuccessStatusCode) continue;
+                    using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
+                    foreach (var member in doc.RootElement.GetProperty("members").EnumerateArray())
+                    {
+                        var role = member.GetProperty("role").GetString();
+                        if (role is "master" or "leader" or "primary"
+                            && member.TryGetProperty("timeline", out var t)
+                            && t.TryGetUInt32(out var value)
+                            && value > tli)
+                        {
+                            tli = value;
+                        }
+                    }
+                }
+                catch (Exception)
+                {
+                    // нода ещё не готова — следующая
+                }
+            }
+
+            return tli >= 2;
+        }, TimeSpan.FromSeconds(90), ct);
+        return tli;
+    }
+
+    // Условие готовности provisioning: config без state + dsn + нода RUNNING.
+    private async Task<bool> ProvisionedAsync(string cluster)
+    {
+        var config = await GetOrNullAsync($"/clusters/{cluster}/config");
+        if (config is null)
+            return false;
+        if (JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(config.Value)!.ContainsKey("state"))
+            return false;
+        var dsn = await GetOrNullAsync($"/clusters/{cluster}/shards/shard1/dsn");
+        var node = await GetOrNullAsync($"/clusters/{cluster}/shards/shard1/nodes/shard1a/state");
+        return dsn is not null && node is { Value: "RUNNING" };
+    }
+
+    // Сид кластера в стиле панели (копия E2eRestoreScenarios.SeedClusterAsync).
+    private async Task SeedClusterAsync(string cluster)
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var config = $$"""
+            {"buckets":2,"dbname":"{{cluster}}","created_unix":1755800000,"state":"NOT_INITIALIZED","bucket_admin_password":"{{E2eFixture.BucketAdminPassword}}"}
+            """;
+        await G.PutAsync(Endpoint, $"/clusters/{cluster}/config", config, null, ct);
+        foreach (var shard in new[] { "shard1", "shard2" })
+        {
+            await G.PutAsync(Endpoint, $"/clusters/{cluster}/shards/{shard}/replicas", "2", null, ct);
+            await G.PutAsync(Endpoint, $"/clusters/{cluster}/shards/{shard}/nodes/{shard}a/state", "NOT_INITIALIZED", null, ct);
+            await G.PutAsync(Endpoint, $"/clusters/{cluster}/shards/{shard}/nodes/{shard}b/state", "NOT_INITIALIZED", null, ct);
+            await G.PutAsync(Endpoint, $"/service/{cluster}-{shard}/request_cpu", "2", null, ct);
+            await G.PutAsync(Endpoint, $"/service/{cluster}-{shard}/request_mem", "2Gi", null, ct);
+        }
+
+        for (var i = 0; i < 2; i++)
+        {
+            await G.PutAsync(Endpoint, $"/clusters/{cluster}/buckets/routing/bucket_{i}", $"shard{i + 1}", null, ct);
+            await G.PutAsync(Endpoint, $"/clusters/{cluster}/buckets/status/bucket_{i}",
+                """{"state":"NOT_INITIALIZED"}""", null, ct);
+        }
+
+        // t36: пул + policy с секцией s3 — без неё подсистема кластера молчит.
+        await Fx.SeedS3PoolAsync(Pool, ct);
+        await G.PutAsync(Endpoint, $"/pgworker/backups/{cluster}/policy",
+            $"{{\"full_max_age_sec\":3600,{E2eEnvironment.PoolS3(Pool)}}}", null, ct);
+    }
+}
+
+// Порядок Fact'ов (инвариант spec §3.3): latest ОБЯЗАН идти первым — после
+// target_time-restore новый TLI-поток пишет с позиций T_cut (ниже after-cut
+// сегментов TLI2) и делает latest-валидацию по исходной цепочке невозможной.
+public sealed class TliSwitchFactOrderer : ITestCaseOrderer
+{
+    private static readonly string[] Order =
+    [
+        "Restore_LatestThroughTliSwitch_PicksUpWholeTail",
+        "Restore_TargetTimeThroughTliSwitch_StopsAtGoal",
+    ];
+
+    // Сигнатура xunit.v3 3.2.2: ограничение notnull + Xunit.Sdk.ITestCase;
+    // имя метода доступно напрямую — ITestCase наследует
+    // ITestCaseMetadata.TestMethodName (каст не нужен).
+    public IReadOnlyCollection<TTestCase> OrderTestCases<TTestCase>(
+        IReadOnlyCollection<TTestCase> tests)
+        where TTestCase : notnull, Xunit.Sdk.ITestCase
+        // явный список имён; неизвестные имена — в конец (стабильная сортировка)
+        => [.. tests.OrderBy(t =>
+        {
+            var idx = Array.IndexOf(Order, t.TestMethodName);
+            return idx < 0 ? int.MaxValue : idx;
+        })];
+}
+
+// Два Fact'а на ОДНОМ контуре класса (решение user-review): latest первым,
+// target_time вторым — детерминированный порядок задаёт orderer (Task 4,
+// инвариант §3.3). Падение подготовки → оба Fact'а красные ошибкой фикстуры.
+[TestCaseOrderer(typeof(TliSwitchFactOrderer))]
+public sealed class E2eTliSwitchScenarios(TliSwitchContext Ctx) : IClassFixture<TliSwitchContext>
+{
+    // AAA (AC2 — полный хвост через точку): контур фикстуры (полный на TLI1 +
+    // failover + гейт смешанности) → заявка latest по ЯВНОМУ OldBackupId →
+    // COMPLETED с restored_to_lsn; 18 строк = 5 pre (полный) + 5 pre-wal
+    // (TLI1-хвост в смешанном сегменте) + 5 post-switch (TLI2 после
+    // END_OF_RECOVERY) + 3 after-cut (хвост за целью PITR) — накат прошёл
+    // ВСЁ, включая хвост за целью; ноды RUNNING, dsn не изменился; wal-ключ
+    // заведён заново, полный переснят, wal-агент running (инвариант §3.5).
+    [Fact]
+    public async Task Restore_LatestThroughTliSwitch_PicksUpWholeTail()
+    {
+        Ctx.SkipIfPrepareSkipped();
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
+        var ct = cts.Token;
+        try
+        {
+            // Act — заявка latest по исходному полному (ретраи ≤ 3 на гонки
+            // доставки; валидация идёт по «чистому» list-S3 исходной цепочки).
+            var done = await Ctx.RestoreWithRetryAsync(
+                Ctx.Cluster, "shard1", "latest", Ctx.OldBackupId, ct);
+
+            // Assert 1 — COMPLETED с restored_to_lsn.
+            done["state"].GetString().Should().Be("COMPLETED");
+            done["restored_to_lsn"].GetString().Should().NotBeNullOrEmpty();
+
+            // Assert 2 — полный хвост через точку (гейт мастера t10 + ретраи
+            // чтения: переходное окно рестарта postmaster).
+            var dsn = await Ctx.MasterReadyDsnAsync(ct);
+            var rows = await Ctx.ScalarRetryAsync(dsn,
+                "SELECT count(*) || '|' || count(*) FILTER (WHERE note = 'pre-wal')" +
+                " || '|' || count(*) FILTER (WHERE note = 'post-switch')" +
+                " || '|' || count(*) FILTER (WHERE note = 'after-cut')" +
+                " FROM tli_switch_probe", ct);
+            var parts = rows.Split('|');
+            parts[0].Should().Be("18",
+                "all control rows are restored, including after-cut (the tail beyond the PITR target)");
+            parts[1].Should().Be("5",
+                "the TLI1 tail after the full rolled forward through the mixed segment (TLI1 bytes in the prefix of S)");
+            parts[2].Should().Be("5",
+                "TLI2 data after END_OF_RECOVERY rolled forward");
+            parts[3].Should().Be("3",
+                "after-cut rows are restored — restore reached the end of the TLI2 chain");
+
+            // Assert 3 — контур: ноды RUNNING, dsn-ключ не изменился
+            // (эталон DsnBefore фиксации шага 1; образец rs-latest).
+            var nodeA = await Ctx.GetOrNullAsync(
+                $"/clusters/{Ctx.Cluster}/shards/shard1/nodes/shard1a/state");
+            var nodeB = await Ctx.GetOrNullAsync(
+                $"/clusters/{Ctx.Cluster}/shards/shard1/nodes/shard1b/state");
+            nodeA!.Value.Should().Be("RUNNING");
+            nodeB!.Value.Should().Be("RUNNING");
+            var dsnAfter = await Ctx.GetOrNullAsync(
+                $"/clusters/{Ctx.Cluster}/shards/shard1/dsn");
+            dsnAfter!.Value.Should().Be(Ctx.DsnBefore, "restore does not touch portalloc/dsn (AC2)");
+
+            // Assert 4 (инвариант §3.5 после restore) — wal-ключ сброшен и
+            // заведён заново (ACTIVE), новый COMPLETED-полный ≠ OldBackupId,
+            // wal-агент running (rs-latest-паттерн AC4, ≤ 300 с).
+            var reinited = await Ctx.WaitPhaseAsync("wal-reinit", async () =>
+            {
+                var walKv = await Ctx.GetOrNullAsync(
+                    $"/pgworker/backups/{Ctx.Cluster}/shard1/wal");
+                if (walKv is null || !walKv.Value.Contains("ACTIVE"))
+                    return false;
+                var fulls = await Ctx.FullKeysAsync(Ctx.Cluster, "shard1");
+                if (!fulls.Any(f => f.Value.Contains("COMPLETED")
+                        && f.Key.Split('/').Last() != Ctx.OldBackupId))
+                    return false;
+                // t25: приёмники вернулись — статус-ключи agent/<N> живы (lease)
+                var facts = await Ctx.Fx.ReadWalAgentFactsAsync(Ctx.Cluster, "shard1", ct);
+                return facts.Count > 0;
+            }, TimeSpan.FromSeconds(90), ct);
+            reinited.Should().BeTrue("the post-restore invariant (wal-reinit): "
+                + await Ctx.DumpDiagnosticsAsync(Ctx.Cluster, "shard1"));
+        }
+        catch
+        {
+            Ctx.MarkFailed(); // контейнеры остаются для разбора (e2e-launch)
+            throw;
+        }
+    }
+
+    // AAA (AC3 — остановка в цели): контур после Fact 1 (latest прошёл,
+    // TLI3-хвост выше конца TLI2) → заявка time:T_cut по ТОМУ ЖЕ OldBackupId
+    // (явный backup_id обязателен: новейший COMPLETED — уже TLI3-полный) →
+    // COMPLETED; 15 строк = pre + pre-wal + post-switch, after-cut = 0 —
+    // цель ПОСЛЕ точки переключения соблюдена; вместе с Fact 1 (18 строк на
+    // той же цепочке) — демонстрация PITR через TLI-границу. Ноды RUNNING.
+    [Fact]
+    public async Task Restore_TargetTimeThroughTliSwitch_StopsAtGoal()
+    {
+        Ctx.SkipIfPrepareSkipped();
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
+        var ct = cts.Token;
+        try
+        {
+            // Act — заявка PITR на T_cut по СТАРОМУ полному (валидация от
+            // wal_start старого полного проходит: TLI3-хвост выше конца TLI2,
+            // переход TLI2→TLI3 легитимен; recovery остановится на T_cut).
+            var done = await Ctx.RestoreWithRetryAsync(Ctx.Cluster, "shard1",
+                $"time:{Ctx.TCut:yyyy-MM-ddTHH:mm:ssZ}", Ctx.OldBackupId, ct);
+
+            // Assert 1 — COMPLETED; LSN остановки не дальше доставки after-cut.
+            done["state"].GetString().Should().Be("COMPLETED");
+            var lsn = done["restored_to_lsn"].GetString();
+            lsn.Should().NotBeNullOrEmpty();
+            var restoredSeg = PgWorker.Backups.WalFileName.FromLsn(0, lsn!);
+            var restoredPos = (long)restoredSeg.Log * 256 + restoredSeg.Seg;
+            restoredPos.Should().BeLessThanOrEqualTo(Ctx.AfterCutPos,
+                "the target is earlier than the end of the chain — recovery did not go past after-cut");
+
+            // Assert 2 — остановка в цели: 15 строк, after-cut нет.
+            var dsn = await Ctx.MasterReadyDsnAsync(ct);
+            var rows = await Ctx.ScalarRetryAsync(dsn,
+                "SELECT count(*) || '|' || count(*) FILTER (WHERE note = 'after-cut')" +
+                " FROM tli_switch_probe", ct);
+            var parts = rows.Split('|');
+            parts[0].Should().Be("15",
+                "pre + pre-wal + post-switch are restored — both sides of the TLI boundary through the mixed segment");
+            parts[1].Should().Be("0", "commits after T_cut did not roll forward — PITR stops at the target");
+
+            // Assert 3 — контур: ноды RUNNING (rejoin второй заявки — тот же
+            // RestoreProcess), dsn жив.
+            var nodeA = await Ctx.GetOrNullAsync(
+                $"/clusters/{Ctx.Cluster}/shards/shard1/nodes/shard1a/state");
+            var nodeB = await Ctx.GetOrNullAsync(
+                $"/clusters/{Ctx.Cluster}/shards/shard1/nodes/shard1b/state");
+            nodeA!.Value.Should().Be("RUNNING");
+            nodeB!.Value.Should().Be("RUNNING");
+        }
+        catch
+        {
+            Ctx.MarkFailed();
+            throw;
+        }
+    }
+}

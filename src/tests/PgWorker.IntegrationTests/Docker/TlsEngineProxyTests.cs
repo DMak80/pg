@@ -19,7 +19,6 @@ public class TlsEngineProxyTests
     {
         // Arrange: per-install docker-CA + серверный (SAN localhost/127.0.0.1) +
         // клиентский серты; nginx.conf stream-прокси; порт — случайный хост-порт.
-        DockerTrait.SkipIfUnavailable();
         var (caPem, caKeyPem) = GenerateCa();
         var (serverCertPem, serverKeyPem) = Issue(caPem, caKeyPem, "docker-host", ["localhost"], IPAddress.Loopback);
         var (clientCertPem, clientKeyPem) = Issue(caPem, caKeyPem, "pgworker", ["pgworker"], null);

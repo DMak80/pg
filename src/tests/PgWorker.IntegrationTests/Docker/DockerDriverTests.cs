@@ -6,7 +6,7 @@ using Xunit;
 namespace PgWorker.IntegrationTests.Docker;
 
 // Драйвер на живом docker (задача 16, spec §11.1 docker-серия): create/start/stop/rm,
-// идемпотентность EnsureNode/RemoveNode/StopNode, BusyPorts. Гейт: PGW_TEST_DOCKER=1.
+// идемпотентность EnsureNode/RemoveNode/StopNode, BusyPorts.
 [Collection(NonE2eCollection.Name)]
 public class DockerDriverTests
 {
@@ -80,7 +80,6 @@ public class DockerDriverTests
     [Fact]
     public async Task CreateAndStart_AlpineSleepWithPublishPort_Listed()
     {
-        DockerTrait.SkipIfUnavailable();
         await ImageReady.Value;
 
         // Arrange — живой контейнер движком напрямую (Cmd — только у alpine-теста)
@@ -114,7 +113,6 @@ public class DockerDriverTests
     [Fact]
     public async Task EnsureNode_SecondCall_NoErrorSingleContainer()
     {
-        DockerTrait.SkipIfUnavailable();
         await ImageReady.Value;
 
         // Arrange
@@ -140,7 +138,6 @@ public class DockerDriverTests
     [Fact]
     public async Task RemoveNode_ContainerAndVolumeGone_RepeatSucceeds()
     {
-        DockerTrait.SkipIfUnavailable();
         await ImageReady.Value;
 
         // Arrange
@@ -167,7 +164,6 @@ public class DockerDriverTests
     [Fact]
     public async Task StopNode_ContainerExited_RepeatSucceeds()
     {
-        DockerTrait.SkipIfUnavailable();
         await ImageReady.Value;
 
         // Arrange — живой контейнер (sleep) с корректным именем ноды; volume bind
@@ -208,7 +204,6 @@ public class DockerDriverTests
     [Fact]
     public async Task BusyPorts_ReflectsPublishedPort()
     {
-        DockerTrait.SkipIfUnavailable();
         await ImageReady.Value;
 
         // Arrange — живой контейнер с publish-портом

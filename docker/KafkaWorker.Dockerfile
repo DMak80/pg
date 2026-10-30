@@ -1,4 +1,3 @@
-# syntax=docker/dockerfile:1
 
 # Образ сервиса KafkaWorker (arch/16 §2.1/§8/Dockerfile):
 # multi-stage publish → aspnet-runtime. Env-секретов per-install нет (arch/16 §4).

@@ -3,6 +3,7 @@
     <ItemGroup>
         <InternalsVisibleTo Include="S3Worker.UnitTests"/>
         <InternalsVisibleTo Include="S3Worker.IntegrationTests"/>
+        <InternalsVisibleTo Include="S3Worker.E2eTests"/>
     </ItemGroup>
 
     <ItemGroup>

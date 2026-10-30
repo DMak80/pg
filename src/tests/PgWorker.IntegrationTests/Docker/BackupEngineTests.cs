@@ -13,7 +13,6 @@ public class BackupEngineTests
     public async Task Logs_And_RuntimeInspect_OfExitedContainer()
     {
         // Arrange — контейнер без портов: печатает маркер и падает с кодом 7.
-        DockerTrait.SkipIfUnavailable();
         var ct = TestContext.Current.CancellationToken;
         await using var container = new ContainerBuilder("alpine:3.20")
             .WithCommand("sh", "-c", "echo pgw-marker; exit 7")
@@ -50,7 +49,6 @@ public class BackupEngineTests
     public async Task Create_WithTmpfsAndExtraHosts_Applied()
     {
         // Arrange / Act — контейнер с tmpfs-квотой и host-gateway-записью.
-        DockerTrait.SkipIfUnavailable();
         var ct = TestContext.Current.CancellationToken;
         const string name = "pgw-backup-engine-test";
         var spec = new ContainerSpec(

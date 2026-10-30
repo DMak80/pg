@@ -20,9 +20,11 @@ namespace PgWorker.IntegrationTests.Backups;
 //    (автозапуски не повторяются — состояние FATAL/EXITED стабильно).
 public class NodeWalReceiverTests
 {
-    // Per-worktree тег (канон E2eEnvironment): чужой/устаревший образ другой
-    // ветки в серию не попадает; свежесть гарантирует сборка на прогон (ниже).
-    private static readonly string NodeImage = $"pgworker-node:sanity-{E2eEnvironment.ImageTagSuffix}";
+    // Per-branch тег (канон Shared.TestInfra.E2eImageTags): чужой/устаревший
+    // образ другой ветки в серию не попадает; свежесть гарантирует сборка на
+    // прогон (ниже).
+    private static readonly string NodeImage =
+        $"pgworker-node:sanity-{Shared.TestInfra.E2eImageTags.SuffixFor(E2eFixture.FindRoot(AppContext.BaseDirectory))}";
     private const string EtcdImage = "quay.io/coreos/etcd:v3.5.21";
     private static readonly TimeSpan Budget = TimeSpan.FromSeconds(90);
 
@@ -120,7 +122,6 @@ public class NodeWalReceiverTests
     public async Task ReceiverRuns_StatusKeyAndMetrics_LeaseRecoversAfterKill()
     {
         // Arrange — своё окружение: сеть + etcd (alias) + нода pgworker-node:dev
-        DockerTrait.SkipIfUnavailable();
         var ct = TestContext.Current.CancellationToken;
         await EnsureNodeImageAsync(ct);
         var runId = Guid.NewGuid().ToString("N");
@@ -252,7 +253,6 @@ public class NodeWalReceiverTests
     public async Task SupervisorStop_AgentKeyGoesOutWithinTtl_StartBringsItBack()
     {
         // Arrange — окружение первого кейса: сеть + etcd + нода с приёмником
-        DockerTrait.SkipIfUnavailable();
         var ct = TestContext.Current.CancellationToken;
         await EnsureNodeImageAsync(ct);
         var runId = Guid.NewGuid().ToString("N");
@@ -359,7 +359,6 @@ public class NodeWalReceiverTests
     public async Task NoIdentityEnv_StartFails_NoRestartLoop()
     {
         // Arrange — нода без env идентичности (PGW_BACKUP_CLUSTER отсутствует)
-        DockerTrait.SkipIfUnavailable();
         var ct = TestContext.Current.CancellationToken;
         await EnsureNodeImageAsync(ct);
         var runId = Guid.NewGuid().ToString("N");

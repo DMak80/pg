@@ -1,0 +1,57 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <!-- Канон параллелизма E2E (t24, решение гейта конфигурации Фазы 6):
+         единственный источник потолка — xunit.runner.json
+         (maxParallelThreads=5 — канон приёмки t24 фазы 4; xunit.v3 читает конфиг ТОЛЬКО из output —
+         копирование обязательно). Каждый E2E-класс — класс-фикстура со СВОИМ
+         окружением (docs/e2e-isolation.md §1) — классы параллельны; факты
+         внутри класса последовательны. Правила соседней нагрузки —
+         docs/e2e-launch.md §5. -->
+    <ItemGroup>
+        <None Update="xunit.runner.json" CopyToOutputDirectory="PreserveNewest"/>
+    </ItemGroup>
+
+    <ItemGroup>
+        <Using Include="FluentAssertions"/>
+        <Using Include="Xunit"/>
+    </ItemGroup>
+
+    <ItemGroup>
+        <PackageReference Include="coverlet.collector">
+            <PrivateAssets>all</PrivateAssets>
+            <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+        </PackageReference>
+        <PackageReference Include="FluentAssertions"/>
+        <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing"/>
+        <PackageReference Include="Microsoft.NET.Test.Sdk"/>
+        <PackageReference Include="Npgsql"/>
+        <PackageReference Include="Testcontainers"/>
+        <PackageReference Include="xunit.runner.visualstudio">
+            <PrivateAssets>all</PrivateAssets>
+            <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+        </PackageReference>
+        <PackageReference Include="xunit.v3"/>
+    </ItemGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\Shared.TestInfra\Shared.TestInfra.csproj"/>
+        <ProjectReference Include="..\..\PgWorker.Core\PgWorker.Core.csproj"/>
+        <ProjectReference Include="..\..\PgWorker.Etcd\PgWorker.Etcd.csproj"/>
+        <ProjectReference Include="..\..\PgWorker.Docker\PgWorker.Docker.csproj"/>
+        <ProjectReference Include="..\..\PgWorker.Provisioning\PgWorker.Provisioning.csproj"/>
+        <ProjectReference Include="..\..\PgWorker.Moves\PgWorker.Moves.csproj"/>
+        <ProjectReference Include="..\..\PgWorker.Backups\PgWorker.Backups.csproj"/>
+        <ProjectReference Include="..\..\PgWorker.WalReceiver\PgWorker.WalReceiver.csproj"/>
+        <ProjectReference Include="..\..\PgWorker.App\PgWorker.App.csproj"/>
+        <!-- t04: E2E-ассерт «панельный парсер читает без parseErrors» (Assert 3 маркера). -->
+        <ProjectReference Include="..\..\AdminPanel.Etcd\AdminPanel.Etcd.csproj"/>
+    </ItemGroup>
+
+    <ItemGroup>
+        <Using Include="Shared.Core"/>
+        <Using Include="Shared.Core.Planning"/>
+        <Using Include="Shared.Docker"/>
+        <Using Include="Shared.Etcd.Coordination"/>
+    </ItemGroup>
+
+</Project>
