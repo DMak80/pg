@@ -171,20 +171,18 @@ public class NodeConfigBuildersTests
     }
 
     [Fact]
-    public void Secrets_AreInEnv_ButNeverInDoormanOrHaproxy()
+    public void Secrets_AreInEnv_ButNeverInDoorman()
     {
         // Arrange: секреты установки (Д7).
 
-        // Act: генерируем все три конфига.
+        // Act: генерируем оба конфига.
         var env = SpiloEnvBuilder.Build(Topology, Etcd, Secrets, syncStrict: false, "shard1a", TestRestTls());
         var doorman = DoormanConfigBuilder.Build("shop", 55);
-        var haproxy = HaproxyConfigBuilder.Build(Topology);
 
         // Assert: секреты прокинуты в env контейнера (Spilo/bootstrap),
-        // но не попадают в тексты doorman/haproxy (их читаютvolume-маунты).
+        // но не попадают в текст doorman (его читают volume-маунты).
         env.Values.Should().Contain(new[] { "su-secret", "standby-secret", "admin-secret", "mover-secret" });
         doorman.Should().NotContainAny("su-secret", "standby-secret", "admin-secret", "mover-secret");
-        haproxy.Should().NotContainAny("su-secret", "standby-secret", "admin-secret", "mover-secret");
     }
 
     [Fact]
@@ -357,22 +355,5 @@ public class NodeConfigBuildersTests
 
         // Assert
         spilo.Should().Contain(expected).And.Contain("synchronous_mode: true");
-    }
-
-    [Fact]
-    public void Haproxy_WriteFrontendWithAllNodesAndPatroniChecks()
-    {
-        // Arrange: шард из 2 нод на разных хостах с выделенными портами.
-
-        // Act: генерируем конфиг HAProxy.
-        var config = HaproxyConfigBuilder.Build(Topology);
-
-        // Assert: write-фронтенд :5432, health-check Patroni /primary (P2),
-        // все ноды шарда в бэкенде с check-port Patroni.
-        config.Should().Contain("bind *:5432");
-        config.Should().Contain("option httpchk GET /primary");
-        config.Should().Contain("http-check expect status 200");
-        config.Should().Contain("server shard1a h1:15432 check port 18008");
-        config.Should().Contain("server shard1b h2:15433 check port 18009");
     }
 }

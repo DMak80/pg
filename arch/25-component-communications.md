@@ -72,7 +72,6 @@ docker-логи и inspect — [docs/e2e-launch.md](../docs/e2e-launch.md)) и
 | 7 | PgWorker → Patroni | HTTP REST `:8008` (PATCH sync-mode, `GET /cluster`) | канон |
 | 8 | Patroni → etcd | etcd DCS | канон |
 | 9 | Patroni → PostgreSQL | streaming-репликация | канон |
-| 10 | HAProxy → Patroni | HTTP-пробы `:8008` | канон |
 | 11 | WalReceiver → PostgreSQL | протокол репликации (`START_REPLICATION PHYSICAL`, слоты; источник — `127.0.0.1:5432` своей ноды, приёмник живёт в её контейнере, arch/19 §3) | канон |
 | 12 | WalReceiver → S3-пул | S3 API | канон |
 | 14 | KafkaWorker → Kafka | Kafka-протокол | канон |

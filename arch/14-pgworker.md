@@ -68,8 +68,8 @@ AdminPanel (UI) PgWorker (оркестратор) docker-хосты
 мутации (создание, ──► HTTP API воркера (§1.1) контейнеры/
 удаление, шарды, ──пишет──► /clusters/…/config.state= сервисы узлов
 переезды, ротация, NOT_INITIALIZED/TO_REMOVE, … pgworker-node
-recreate, сид) ──читает──► декларации (Spilo+doorman
- ──создаёт/удаёт──► +haproxy)
+recreate, сид) ──читает──► декларации (Spilo+doorman)
+ ──создаёт/удаёт──►
  dsn, nodes/<n>/state,
  снятие status-ключей, Patroni-ноды
  снятие state пишут /service/<scope>/,
@@ -315,10 +315,12 @@ rebuild — пересоздание контейнера пишет и новы
 
 Решения фазы исполнения (дока синхронизирована с кодом):
 
-- **HAProxy в образе не поднимается**: его write-фронтенд `:5432` конфликтует
- с PostgreSQL в одном netns (Д4 — один контейнер на ноду). Write-вход MVP —
- прямой pg-порт master-ноды (portalloc, multi-host DSN); конфиг-генератор
- (`HaproxyConfigBuilder`) остаётся в Core для отдельного фронтенд-слоя (roadmap).
+- **HAProxy в топологии нет**: в образе ноды он не поднимается — его
+ write-фронтенд `:5432` конфликтует с PostgreSQL в одном netns (Д4 — один
+ контейнер на ноду), отдельным контейнером воркер его не строит. Write-вход —
+ прямой pg-порт master-ноды (portalloc, multi-host DSN,
+ `target_session_attrs=read-write` — писателя находит libpq); подписки
+ переездов — тот же multi-host DSN ([11](11-bucket-sharding.md) §4).
 - **Patroni DCS — etcd v3 API** (env `ETCD3_HOSTS`, формат `host:port` БЕЗ
  scheme; v2-клиент Spilo с etcd 3.5 несовместим). Адреса etcd для нод —
  отдельная настройка `PgWorker:Etcd:AdvertisedEndpoints` (ноды ходят в etcd
@@ -391,7 +393,7 @@ rebuild — пересоздание контейнера пишет и новы
 
 Наружу (хост) публикуются порты: `pg` (5432→выделенный), `patroni`
 (8008→выделенный), `doorman` (6432→выделенный) — тройка из порт-аллокатора
-(§2.4). Конфиги (env Spilo, doorman.ini, haproxy.cfg) генерирует PgWorker при
+(§2.4). Конфиги (env Spilo, doorman.ini) генерирует PgWorker при
 создании ноды (§6.5 решения в коде; параметры — §4 [11](11-bucket-sharding.md)).
 
 Volume: `pgw-<C>-<X>-<n>-data` → `/home/postgres/pgdata` (дефолтный
@@ -533,8 +535,7 @@ authz-плагины вне скоупа, граница зафиксирова�
  требует. Касается всех точек довыделения: provision P1, add-shard,
  adoption-реплан (§5 A/G/J).
 3. Итог — план размещения (node → host + порты); он же вход для генерации
- конфигов (DSN multi-host по нодам шарда; HAProxy-конфиг — генератор
- остаётся в Core, в контейнере не поднимается — см. §2.1).
+ конфигов (DSN multi-host по нодам шарда — см. §2.1).
 4. Заявки ресурсов `/service/<scope>/request_{cpu,mem}` — ОБЯЗАТЕЛЬНАЯ
  информация о ноде (панель пишет при создании шарда, arch/adminpanel/02
  §9.5). Лимиты контейнера: plain — `HostConfig.NanoCPUs` (cores × 10⁹) /
@@ -871,8 +872,8 @@ P2 на каждый шард X:
  sync_replication_slots + max_slot_wal_keep_size, walsenders/slots=10);
  doorman-бюджет P15 от рассчитанного max_connections —
  max(10, max_connections − 5) (§2.1, §8), callback on_role_change →
- lease-скрипт мастер-ключа; doorman: пул <dbname>, TLS require;
- haproxy: бэкенды всех Patroni-нод шарда), env-секреты (§4);
+ lease-скрипт мастер-ключа; doorman: пул <dbname>, TLS require),
+ env-секреты (§4);
  дополнительно REST-TLS-материал (§2.1): `SSL_RESTAPI_*` PEM +
  секция `restapi` SPILO_CONFIGURATION с `connect_address`/
  `authentication` из per-cluster `rest_password`;

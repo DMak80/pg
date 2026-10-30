@@ -2,8 +2,8 @@
 
 **Бакет** = схема (schema) в PostgreSQL. Все бакеты имеют одинаковую структуру:
 это «виртуальный шард» поверх физического. **Шард** = отдельный HA-кластер
-из доков [01](01-architecture.md)–[10](10-four-nodes.md) (Spilo + Patroni + etcd +
-HAProxy). На одном шарде живёт несколько бакетов; любой бакет можно **онлайн**
+из доков [01](01-architecture.md)–[10](10-four-nodes.md) (Spilo + Patroni + etcd).
+На одном шарде живёт несколько бакетов; любой бакет можно **онлайн**
 перевезти на другой шард — запись в бакет при этом доступна всё время, кроме
 финального cutover (пауза записи на секунды, что согласовано и допустимо).
 
@@ -20,8 +20,8 @@ HAProxy). На одном шарде живёт несколько бакето�
 - JOIN между бакетами не нужны → бакеты на разных шардах друг про друга не знают.
 
 > Решения P1–P8 из реестра рисков [12-bucket-pitfalls.md](12-bucket-pitfalls.md)
-> внесены в этот runbook: заморозка `REVOKE` (§5, шаг 4), подписки через HAProxy
-> (§4, §6), failover slots (§4, §7, §10), контроль WAL (§4, §5, §7, §9),
+> внесены в этот runbook: заморозка `REVOKE` (§5, шаг 4), подписки по
+> multi-host dsn (§4, §6), failover slots (§4, §7, §10), контроль WAL (§4, §5, §7, §9),
 > технический DDL-мораторий (§5, §8), синхронизация sequence→sequence (§5, шаг 4,
 > §8), отмена незавершённых переездов `abort-move.sh` (§5 «Автоматизация», §7; P7),
 > `synchronous_commit=remote_apply` подписок + сверка строк перед flip (§4, §5
@@ -53,11 +53,11 @@ HAProxy). На одном шарде живёт несколько бакето�
 
 Каждый шард — HA-кластер из [01-architecture.md](01-architecture.md)–[10](10-four-nodes.md):
 failover делает Patroni. Отличие от базовой топологии: **приложение не ходит
-через HAProxy шарда** — роутер берёт из etcd адрес мастер-ноды
+через общий балансировщик** — роутер берёт из etcd адрес мастер-ноды
 (`/clusters/<C>/shards/X/master`, его пишет Patroni-callback) и подключается к её
-**pg_doorman :6432** (per-node sidecar, бэкенд `127.0.0.1:5432`). HAProxy остаётся
-точкой входа только репликационного трафика переездов (P2). Раскладка сервисов
-на ноде — §4.
+**pg_doorman :6432** (per-node sidecar, бэкенд `127.0.0.1:5432`). Репликационный
+трафик переездов идёт напрямую в ноды — multi-host conninfo (P2, плашка §4).
+Раскладка сервисов на ноде — §4.
 
 > Почему не Citus / pgEdge: Citus 12+ умеет schema-based шардирование и онлайн-ребалансинг
 > из коробки, но требует перейти на топологию «координатор + воркеры» вместо N независимых
@@ -121,8 +121,9 @@ failover невозможны, кэш не протухает; не может �
 - **config** — константы создания: N (число бакетов) и имя БД. Одна БД на
  кластер, имя фиксируется при init и хранится здесь (в статическом конфиге
  приложений его нет). N — навсегда (P18).
-- **shards/X/dsn** — статическая multi-host строка подключения к write-эндпоинту
- шарда (HAProxy любой ноды ведёт на текущего мастера, P2): для подписок
+- **shards/X/dsn** — статическая multi-host строка подключения к нодам
+ шарда (libpq с `target_session_attrs=read-write` находит текущего мастера, P2):
+ для подписок
  переездов, mover'а и админки. У кластеров под PgWorker несёт per-cluster
  креды bucket_admin (`password=`, из config кластера). App-секрет в DSN
  не попадает никогда. В etcd хранятся: per-cluster app-пара
@@ -230,10 +231,9 @@ failover невозможны, кэш не протухает; не может �
 
 | Сервис | Слушает | Роль |
 |---|---|---|
-| PostgreSQL | `:5432` (локально) | принимает только pg_doorman, подписки переездов (через HAProxy) и админку |
-| **Patroni** (агент) | REST `:8008` | управляет **локальным** PG; кластер агентов выбирает лидера через etcd; callback `on_role_change` делает lease-put `/clusters/<C>/shards/X/master` — единственный авторитет «кто мастер». REST `/primary` потребляет health-check HAProxy |
+| PostgreSQL | `:5432` (локально) | принимает только pg_doorman, подписки переездов (multi-host conninfo, плашка ниже) и админку |
+| **Patroni** (агент) | REST `:8008` | управляет **локальным** PG; кластер агентов выбирает лидера через etcd; callback `on_role_change` делает lease-put `/clusters/<C>/shards/X/master` — единственный авторитет «кто мастер» |
 | **pg_doorman** (sidecar) | `:6432` | пулер приложений, бэкенд **только** `127.0.0.1:5432` этой ноды; конфиг одинаков на всех нодах (ЕДИНСТВЕННЫЙ пул `<dbname>` = имя кластера → localhost; бакеты — схемы в этой БД, не отдельные БД/пулы), переезды бакетов его не трогают |
-| **HAProxy** | `:5432` | **не клиентский**: вход репликационного трафика переездов (P2); health-check `GET /primary` у Patroni всех нод кластера → ведёт на текущего мастера. Per-node или пара выделенных LB на шард — HAProxy **любой** ноды кластера эквивалентен, подписке дают multi-host conninfo (плашка ниже) |
 
 etcd на нодах кластера **не живёт** — внешний инфраструктурный слой (§2;
 в отличие от паттерна co-location в [10](10-four-nodes.md), который для
@@ -242,9 +242,7 @@ etcd на нодах кластера **не живёт** — внешний и�
 `--etcd` в init/add-shard (§4.5), `dcs.etcd.hosts` Patroni, `ETCD_ENDPOINTS`
 приложений.
 
-Пишет в etcd Patroni-callback; читают — роутеры приложений (watch), mover
-и, при динамических адресах нод, HAProxy-синкеры (runtime API, паттерн
-`hasync` со [стенда](stand/README.md) — с валидацией идентичности ноды).
+Пишет в etcd Patroni-callback; читают — роутеры приложений (watch) и mover.
 
 ### Параметры и роли
 
@@ -259,22 +257,22 @@ etcd на нодах кластера **не живёт** — внешний и�
 | `max_wal_senders` с запасом | источник | walsender на каждую подписку |
 | `max_logical_replication_workers`, `max_sync_workers_per_subscription` | шард-приёмник | apply-воркеры; по воркеру на активную подписку + на таблицу при initial copy |
 | `synchronous_standby_names` + живая реплика у мастера | оба шарда | P8: подписки переездов с `synchronous_commit=remote_apply` — коммит применённой транзакции ждёт replay на standby ПРИЁМНИКА; без sync-standby защита тихо вырождается в асинхронную → preflight move проверяет и отказывает |
-| Роль `bucket_mover` с атрибутом `REPLICATION` и `GRANT SELECT ON ALL TABLES IN SCHEMA` | источник | подключение подписки (через HAProxy :5432!) + initial COPY. НЕ трогаем при заморозке `REVOKE` (P1) — обратная репликация пишет через неё |
+| Роль `bucket_mover` с атрибутом `REPLICATION` и `GRANT SELECT ON ALL TABLES IN SCHEMA` | источник | подключение подписки (напрямую к pg-портам нод источника) + initial COPY. НЕ трогаем при заморозке `REVOKE` (P1) — обратная репликация пишет через неё |
 | App-роль приложения (≠ owner схемы): `GRANT INSERT, UPDATE, DELETE, TRUNCATE ON ALL TABLES`, `GRANT USAGE, UPDATE ON ALL SEQUENCES` | оба шарда | write-доступ, который срезается `REVOKE` при заморозке (P1); на sequences обе привилегии — `nextval` даёт И `USAGE`, И `UPDATE`, заморозка обязана отобрать обе (проверено на стенде). Различимость сессий бакета в `pg_stat_activity`. Owner пишет вопреки REVOKE — поэтому app ≠ owner. Логин+пароль — per-cluster ключи `/clusters/<C>/app_user\|app_password` (генерирует PgWorker), приложение берёт адрес из `shards/X/master` (doorman :6432) |
 | Миграционная роль-владелец схем бакетов | оба шарда | единственная, кто выполняет DDL (P5); в окне переезда — процедурный мораторий (правами владельца не остановить → страховка сверками) |
-| Правило в `pg_hba.conf` для `bucket_mover` с IP HAProxy **своего** шарда (per-node HAProxy — со всех нод кластера) | источник | подписка подключается через HAProxy источника → источник видит IP этого HAProxy (не приёмника) |
+| Правило в `pg_hba.conf` для `bucket_mover` с адресов нод шарда-**приёмника** | источник | подписка подключается напрямую в pg-порт ноды источника → источник видит IP нод приёмника |
 | `max_db_connections = 55` (pg_doorman, единственный пул `<C>` на ноду — кап пула = бюджет ноды); на нодах PG: `max_connections = 60`, `max_wal_senders = max_replication_slots = 10` | все ноды | бюджет соединений (P15 из [12](12-bucket-pitfalls.md)): doorman → PG ≤ 55 серверных соединений на ноду (60 = 55 + 2 админ/mover + 3 reserved; walsender'ы с PG 13 вне max_connections — свои пулы); подписки переездов ≤ 10 слотов/walsender'ов → до 3 параллельных переездов с одного источника (префлайт ограничивает). Клиентский вход :6432 — лимит 1000 при наличии параметра, иначе без ограничений (бюджетом PG не является) |
 | `pool_mode: "transaction"` (pg_doorman, единственный пул `<C>`; пер-юзер override в `"session"` — для исключений) | все ноды | режим пулинга (P13 из [12](12-bucket-pitfalls.md)): бэкенд держится на время транзакции — 55 серверных соединений обслуживают тысячи клиентов; работают prepared statements (вкл. анонимные), COPY, `SET LOCAL`; сессионное состояние (`SET` вне транзакции, кросс-транзакционные advisory locks, `WITH HOLD`, temp tables) — запрещено гайдлайнами pool-aware. Адресация бакета — схема: `bucket_N.table` или `SET LOCAL search_path` (P14) |
 | TLS `sslmode=require` на входе `:6432` + SCRAM passthrough doorman↔PG (pg_hba `scram-sha-256` на loopback, не trust) | все ноды | сетевая модель (P17 из [12](12-bucket-pitfalls.md), полная firewall-матрица — [13](13-network-security.md)): клиентский трафик и креды шифруются; верификация серверного сертификата не требуется (адрес ноды — из etcd, доверие обеспечивает аутентификация etcd-канала); доступ — логин/пароль единственной app-роли (per-bucket роли отклонены: ломают P14/P15), plaintext-пароля в конфиге doorman нет |
 
-> ⚠️ **Строка подключения подписки — всегда через write-эндпоинт HAProxy шарда-источника**
-> (порт 5432), не в конкретную ноду. Иначе failover источника рвёт репликацию намертво.
-> Отказоустойчивость самого входа — **multi-host conninfo** (`host=node1,node2,node3`):
-> libpq перебирает адреса, а HAProxy любой ноды кластера ведёт к текущему мастеру —
-> подписка переживает и failover источника, и смерть ноды, на чьём HAProxy сидела.
-> Обратная подписка — через HAProxy **нового владельца** (§6). HAProxy именно поэтому
-> остаётся в инфраструктуре каждого шарда: он выведен из data path приложений,
-> но остаётся точкой входа репликационного трафика переездов (P2).
+> ⚠️ **Строка подключения подписки — multi-host conninfo по всем нодам шарда-источника**
+> (`host=node1,node2,node3 port=5432 … target_session_attrs=read-write`), не в конкретную ноду.
+> Иначе failover источника рвёт репликацию намертво. libpq перебирает адреса и
+> `target_session_attrs=read-write` выбирает текущего писателя — подписка переживает
+> и failover источника, и смерть ноды, с которой стартовало соединение; после failover
+> apply-worker переподключается и снова находит писателя. Обратная подписка — multi-host
+> по нодам **нового владельца** (§6). Креды — роль `bucket_mover` (SCRAM), шифрование —
+> `sslmode=require`; источник адресов — dsn-ключ шарда `shards/X/dsn` (§2).
 
 Шард регистрируется в кластере командами жизненного цикла (следующий
 раздел); адрес шарда в etcd — `/clusters/<C>/shards/X/dsn` (multi-host,
@@ -286,7 +284,7 @@ etcd на нодах кластера **не живёт** — внешний и�
 
 Кластер (шардированная система) создаётся **один раз** с константами, дальше
 масштабируется только по шардам. Сами кластеры-шарды поднимаются отдельно по
-докам [05](05-deploy-postgres.md)–[06](06-deploy-haproxy.md) с параметрами §4
+докам [05](05-deploy-postgres.md), [07](07-identify-master.md) с параметрами §4
 и конфигурятся на внешний etcd-слой (§2; [04](04-deploy-etcd.md),
 `dcs.etcd.hosts`) — команды ниже лишь регистрируют их в контрол-плейне.
 Автоматизация — §5.
@@ -420,8 +418,8 @@ etcdctl put /clusters/<C>/buckets/status/bucket_42 \
 ### Шаг 1. Перенести DDL (без данных) на шард2
 ```bash
 pg_dump --schema-only --schema=bucket_42 --no-owner --no-privileges \
- "host=<haproxy_shard1> port=5432 dbname=shop user=..." \
-| psql "host=<haproxy_shard2> port=5432 dbname=shop user=..."
+ "host=<shard1_n1>,<shard1_n2>,<shard1_n3> port=5432 dbname=shop user=... target_session_attrs=read-write" \
+| psql "host=<shard2_n1>,<shard2_n2>,<shard2_n3> port=5432 dbname=shop user=... target_session_attrs=read-write"
 ```
 Схемы, таблицы, индексы, последовательности, ограничения — всё кроме данных.
 
@@ -432,9 +430,10 @@ CREATE PUBLICATION pub_b42 FOR TABLES IN SCHEMA bucket_42;
 
 -- шард2:
 CREATE SUBSCRIPTION sub_b42
- -- multi-host: HAProxy любой ноды шарда1 ведёт к мастеру (§4), libpq
- -- перебирает адреса — подписка переживает и failover, и смерть ноды
- CONNECTION 'host=<hap1_node1>,<hap1_node2>,<hap1_node3> port=5432 dbname=shop user=bucket_mover password=...'
+ -- multi-host по нодам шарда1 (§4): libpq перебирает адреса и
+ -- target_session_attrs=read-write находит писателя — подписка
+ -- переживает и failover, и смерть ноды
+ CONNECTION 'host=<shard1_n1>,<shard1_n2>,<shard1_n3> port=5432 dbname=shop user=bucket_mover password=... sslmode=require target_session_attrs=read-write'
  PUBLICATION pub_b42
  WITH (copy_data = true, failover = true, -- failover=true: слот синхронизируется
  synchronous_commit = remote_apply); -- на реплики источника (P3);
@@ -637,7 +636,7 @@ etcd-контрол-плейна (`buckets/routing/N` — владелец, `buc
 1. На шард2: `CREATE PUBLICATION pub_b42_back FOR TABLES IN SCHEMA bucket_42;`
 2. На шард1: `CREATE SUBSCRIPTION sub_b42_back ... PUBLICATION pub_b42_back
  WITH (copy_data = false, failover = true, synchronous_commit = remote_apply)` —
- conninfo через HAProxy **шард2** (P2: write-эндпоинт :5432 нового владельца);
+ conninfo — multi-host по нодам **шард2** (P2: libpq находит нового владельца);
  (схема на источнике ещё на месте со своими данными — copy_data не нужен,
  изменения догонятся инкрементально);
 3. Вернуть бакет — зеркальный cutover с механикой P1/P6/P8: FROZEN → `REVOKE` DML
@@ -655,8 +654,8 @@ etcd-контрол-плейна (`buckets/routing/N` — владелец, `buc
 | Что случилось | Что происходит | Что делать |
 |---|---|---|
 | Mover умер посреди переезда (SYNCING/FROZEN) | Артефакты pubs/subs/slots/схема в промежуточном состоянии; статус-ключ висит в etcd; следующий move откажет | `abort-move.sh list` → `abort-move.sh abort <bucket>` (P7): журнал ABORTING в etcd до манипуляций, идемпотентная уборка БД (подписки → слоты → публикации → re-GRANT на владельце → схемы не-владельцев), удаление статус-ключа = ACTIVE. Недоступный шард — `phase=blocked`, повторить после его возврата |
-| Failover источника (шард1) во время SYNCING | Подписка ходит через HAProxy (P2) → переподключается к новому мастеру. Слот переживает failover: failover slots PG17+ (`sync_replication_slots` + `hot_standby_feedback`, P3) синхронизировали его на реплики | Обычно ничего. Слот на новом мастере отстаёт на лаг репликации → повторная доставка; replication origin подписчика пропускает уже применённое. Обязательные стенд-проверки — раздел 10, п. 7. Fallback: на шард2 `DROP SUBSCRIPTION`; `DROP SCHEMA bucket_42 CASCADE`; повторить с шага 1. Источник не пострадал |
-| Failover приёмника (шард2) во время SYNCING | Подписка — объект каталога PG, физическая репликация перенесёт её на нового мастера; соединение переустановится (conninfo ведёт на HAProxy шард1). `synchronous_commit=remote_apply` (P8) держит feedback за физрепликацией приёмника → срез изменений **пересылается**, а не пропускается | Обычно ничего: mover транзиенто-толерантен (бюджет недоступности), initial copy рестартует новым tablesync-слотом (сирот добьёт finalize). Если защита не действовала (переезд запущен без sync-standby) — сверка строк перед flip поймает дефект: abort (P7) + повторный move |
+| Failover источника (шард1) во время SYNCING | Подписка ходит по multi-host conninfo (P2) → libpq переподключается к новому мастеру. Слот переживает failover: failover slots PG17+ (`sync_replication_slots` + `hot_standby_feedback`, P3) синхронизировали его на реплики | Обычно ничего. Слот на новом мастере отстаёт на лаг репликации → повторная доставка; replication origin подписчика пропускает уже применённое. Обязательные стенд-проверки — раздел 10, п. 7. Fallback: на шард2 `DROP SUBSCRIPTION`; `DROP SCHEMA bucket_42 CASCADE`; повторить с шага 1. Источник не пострадал |
+| Failover приёмника (шард2) во время SYNCING | Подписка — объект каталога PG, физическая репликация перенесёт её на нового мастера; соединение переустановится (conninfo — multi-host по нодам шард1). `synchronous_commit=remote_apply` (P8) держит feedback за физрепликацией приёмника → срез изменений **пересылается**, а не пропускается | Обычно ничего: mover транзиенто-толерантен (бюджет недоступности), initial copy рестартует новым tablesync-слотом (сирот добьёт finalize). Если защита не действовала (переезд запущен без sync-standby) — сверка строк перед flip поймает дефект: abort (P7) + повторный move |
 | Слот инвалидирован: `wal_status = 'lost'` | Initial copy долгий, `max_slot_wal_keep_size` (P4) превышен — PG срезал слот: **умирает переезд, а не шард**; бакет на источнике ACTIVE и консистентен, теряется только время | Детекция до порога: алерт по `safe_wal_size` (§9). Лечение: `move-bucket.sh rollback` (срезает артефакты, WAL освобождается) → понять, почему просчитался префлайт → повторить |
 | Переполнение диска WAL на источнике (слот ещё жив) | Слот держит WAL, initial copy долгий | Алерт на lag/размер `pg_wal` (раздел 9). Аварийно: `DROP SUBSCRIPTION` на шард2 (срежет слот, WAL освободится), повторить переезд позже |
 | Сбой приложения-роутера при FROZEN | Записи в бакет отбиваются retryable-ошибкой | Клиенты повторяют; фроз рассчитан на секунды |
@@ -739,8 +738,8 @@ etcd-контрол-плейна (`buckets/routing/N` — владелец, `buc
  срез пересылается, mover доезжает до атомарного flip (`arch/stand/checks/70-p8-receiver-failover.sh`).
 
 > Пункты 6–9 и решения P1–P8 **прогнаны практически** на docker-стенде
-> (PostgreSQL 18.4): два «шарда» — мастер+реплика с эмуляцией Patroni REST API
-> и HAProxy, приёмник; скрипты-проверки и найденные нюансы — `arch/stand/`
+> (PostgreSQL 18.4): два «шарда» — мастер+реплика с эмуляцией Patroni REST API,
+> приёмник; скрипты-проверки и найденные нюансы — `arch/stand/`
 > (карта «тест → риск → результат» в его README). Главное, что изменило доку:
 > REVOKE — не барьер (барьер `LOCK TABLE ... ACCESS EXCLUSIVE`); на sequences
 > отбираются USAGE и UPDATE; у подписки `failover = true` + окно досинка слота

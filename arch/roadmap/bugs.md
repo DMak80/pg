@@ -25,3 +25,5 @@
   `docs/superpowers/`.
 
 ## Задачи
+
+- **t01-adminpanel-integration-wwwroot** — серия `AdminPanel.IntegrationTests` падает пачкой (157 failed / 27 passed) на absent-среде: collection fixture `AuthWebFactory` бросает `System.IO.DirectoryNotFoundException: …/src/AdminPanel.Api/wwwroot/` (StaticWebAssets требует SPA-статику; на хосте `wwwroot` не существует — SPA собирается только внутри docker-образа панели). Ожидание: интеграционные тесты панели поднимаются без собранного SPA; факт: ни один тест серии не стартует. Команда: `DOTNET_CLI_UI_LANGUAGE=en dotnet test src/PgWorker.slnx -c Release --no-build --nologo`; серия юнит-прогона 2026-10-30, ветка `main`, коммит `7d40f613` (worktree с правками A2 — фейл с правкой не связан, правки только в PgWorker.* и arch). Логи: `arch/roadmap/bugs/t01-adminpanel-integration-wwwroot/` (units-full.log, units-summary.txt). Гипотеза: тестовый хост в Development включает StaticWebAssets — фикстуре нужно отключать статику (или собирать SPA перед серией). Направление: `AuthWebFactory` — `UseStaticWebAssets(false)`/`UseContentRoot` на тестовый контент.

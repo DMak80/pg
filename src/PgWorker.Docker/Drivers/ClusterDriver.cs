@@ -600,14 +600,12 @@ public sealed class PlainClusterDriver(
             env["PGW_DOORMAN_PORT"] = addr.Ports.Doorman.ToString();
         }
 
-        // HAProxy-фронтенд НЕ поднимаем: PG и HAProxy конфликтуют на :5432 в
-        // одном netns (Д4 — один контейнер на ноду). Write-вход MVP — прямой
-        // pg-порт master-ноды (portalloc, multi-host DSN); конфиг остаётся в
-        // Core (HaproxyConfigBuilder) для отдельного фронтенд-слоя (roadmap).
+        // HAProxy в топологии нет (arch/14 §2.1): write-вход — прямой
+        // pg-порт ноды (portalloc, multi-host DSN, P2).
 
         var ports = new List<PortMap>
         {
-            new(5432, addr.Ports.Pg), // pg: межшард-подписки + HAProxy-вход (P2)
+            new(5432, addr.Ports.Pg), // pg: межшард-подписки + админка (P2)
             new(8008, addr.Ports.Patroni), // Patroni REST (пробы/сверка P11)
         };
         if (enableDoorman)
