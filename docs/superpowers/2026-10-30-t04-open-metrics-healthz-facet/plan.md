@@ -15,8 +15,12 @@
 доступ.
 
 **Архитектура:** общий middleware `Shared.Tls.ClientCertAuthMiddleware`
-(401-политика на `/api`) + `ClientCertificateMode.AllowCertificate` без
-`ClientCertificateValidation` в Kestrel четырёх воркеров; потребители сертов
+(401-политика на `/api`) + в Kestrel четырёх воркеров пара
+`ClientCertificateMode.AllowCertificate` + `AllowAnyClientCertificate()` —
+штатный механизм ASP.NET Core, отключающий валидацию клиентского серта на
+хендшейке (буквальное удаление `ClientCertificateValidation` запрещено: при
+null-калбэке Kestrel применяет дефолтную системную валидацию цепочки и рвёт
+хендшейк для per-install сертов — spec §3.1.2/§6 п.1). Потребители сертов
 `healthcheck`/`prometheus` (HEALTHCHECK Dockerfile, Prometheus, чеки стенда)
 переводятся на `curl --cacert`/`tls_config {ca_file}` без клиентской пары;
 `/api`-вызовы чеков — на пару `seed.crt/key`.
@@ -47,6 +51,10 @@
   ValkeyWorker=arch/21, S3Worker=arch/24.
 - Режим `AllowInsecureHttp=true` (WAF-тесты) — pass-through без 401 (spec §2,
   §6 п.3).
+- TLS-механика открытой грани — ТОЛЬКО пара `AllowCertificate` +
+  `AllowAnyClientCertificate()` (spec §6 п.1); удаление присваивания
+  `ClientCertificateValidation` в изоляции — дефект (дефолтная системная
+  валидация Kestrel рвёт хендшейк).
 
 ## Review Focus (классы входов, покрываемые дополнительно к ассертам spec)
 
@@ -116,11 +124,12 @@ X509Certificate2? ClientCa)`, конструктор
 
   // 401-политика клиентского серта на HTTPS-грани воркеров (arch/14 §1.1 —
   // канон всех четырёх воркеров: PgWorker/KafkaWorker/ValkeyWorker/S3Worker):
-  // хендшейк серт не требует (ClientCertificateMode.AllowCertificate), здесь —
-  // точечная авторизация. Валидный клиентский серт per-install API-CA обязателен
-  // ТОЛЬКО на префиксе /api: без серта или с невалидным сертом — HTTP 401 (НЕ
-  // разрыв TLS). /healthz и /metrics — открытая грань доверенной docker-сети:
-  // присланный серт игнорируется. Enabled=false — pass-through (режим
+  // хендшейк серт не требует (ClientCertificateMode.AllowCertificate +
+  // AllowAnyClientCertificate в Kestrel), здесь — точечная авторизация.
+  // Валидный клиентский серт per-install API-CA обязателен ТОЛЬКО на префиксе
+  // /api: без серта или с невалидным сертом — HTTP 401 (НЕ разрыв TLS).
+  // /healthz и /metrics — открытая грань доверенной docker-сети: присланный
+  // серт игнорируется. Enabled=false — pass-through (режим
   // AllowInsecureHttp, только in-memory WAF-тесты).
   public sealed record ClientCertAuthOptions(bool Enabled, X509Certificate2? ClientCa);
 
@@ -165,13 +174,17 @@ X509Certificate2? ClientCa)`, конструктор
   }
   ```
 
-### Шаг A2: четыре `TlsEndpoints`/`ApiTlsEndpoints` — AllowCertificate, без ClientCertificateValidation, регистрация опции middleware
+### Шаг A2: четыре `TlsEndpoints`/`ApiTlsEndpoints` — AllowCertificate + AllowAnyClientCertificate(), регистрация опции middleware
 
 **Вход:** шаг A1 завершён (middleware и опция существуют).
 
 **Действие (кодер):** выполняет подпункты A2.1–A2.4 (правки идентичны по
 механике в четырёх файлах), затем ревьюит каждый файл целиком: в TLS-ветке
-нет `RequireCertificate` и `ClientCertificateValidation`; в обеих ветках
+нет `RequireCertificate` и явного присваивания `ClientCertificateValidation`;
+присутствует пара `ClientCertificateMode.AllowCertificate` +
+`httpsOptions.AllowAnyClientCertificate()` (штатное отключение валидации
+клиентского серта на хендшейке; `AllowAnyClientCertificate` — `void`,
+мутирует объект, вызывается ДО `ConfigureKestrel`); в обеих ветках
 зарегистрирован `ClientCertAuthOptions`; шапки-комментарии соответствуют
 канону «HTTPS-грань; серт опционален, mTLS только на /api». Исправления после
 ревью — сам.
@@ -181,7 +194,8 @@ X509Certificate2? ClientCa)`, конструктор
 
 **Проверка:** по завершении фазы A — шаг A4.
 
-**Связь со spec:** §3.1.2, §6 п.1/п.3/п.5.
+**Связь со spec:** §3.1.2 (механизм AllowCertificate + AllowAnyClientCertificate),
+§6 п.1/п.3/п.5.
 
 **Подпункты (слабая модель):**
 
@@ -242,14 +256,18 @@ X509Certificate2? ClientCa)`, конструктор
           var port = ResolvePort(builder.Configuration);
           // Явный Listen подавляет default-URL — только HTTPS-грань. Серт
           // запрашивается, но НЕ требуется (AllowCertificate) и НЕ валидируется
-          // на хендшейке: валидация — в ClientCertAuthMiddleware (401 только на
-          // /api; /healthz и /metrics — открытая грань доверенной docker-сети).
-          builder.WebHost.ConfigureKestrel(o => o.ListenAnyIP(port, listenOptions => listenOptions.UseHttps(
-              new HttpsConnectionAdapterOptions
-              {
-                  ServerCertificate = serverCert,
-                  ClientCertificateMode = ClientCertificateMode.AllowCertificate,
-              })));
+          // на хендшейке: без AllowAnyClientCertificate Kestrel применяет
+          // дефолтную системную валидацию цепочки и рвёт хендшейк. Валидация —
+          // в ClientCertAuthMiddleware (401 только на /api; /healthz и /metrics
+          // — открытая грань доверенной docker-сети).
+          // AllowAnyClientCertificate — void (мутирует объект), поэтому до ConfigureKestrel.
+          var httpsOptions = new HttpsConnectionAdapterOptions
+          {
+              ServerCertificate = serverCert,
+              ClientCertificateMode = ClientCertificateMode.AllowCertificate,
+          };
+          httpsOptions.AllowAnyClientCertificate();
+          builder.WebHost.ConfigureKestrel(o => o.ListenAnyIP(port, listenOptions => listenOptions.UseHttps(httpsOptions)));
   ```
 
 - **A2.2.** Файл `/Users/demakaev/ZCodeProject/worktrees/feat-t04-open-metrics-healthz-facet/src/KafkaWorker.App/Api/TlsEndpoints.cs`.
@@ -308,14 +326,18 @@ X509Certificate2? ClientCa)`, конструктор
 
           // Явный Listen подавляет default-URL (ASPNETCORE_HTTP_PORTS) — только
           // HTTPS-грань. Серт запрашивается, но НЕ требуется (AllowCertificate) и
-          // НЕ валидируется на хендшейке: валидация — в ClientCertAuthMiddleware
-          // (401 только на /api; /healthz и /metrics — открытая грань).
-          builder.WebHost.ConfigureKestrel(o => o.ListenAnyIP(port, listenOptions => listenOptions.UseHttps(
-              new HttpsConnectionAdapterOptions
-              {
-                  ServerCertificate = serverCert,
-                  ClientCertificateMode = ClientCertificateMode.AllowCertificate,
-              })));
+          // НЕ валидируется на хендшейке: без AllowAnyClientCertificate Kestrel
+          // применяет дефолтную системную валидацию и рвёт хендшейк. Валидация —
+          // в ClientCertAuthMiddleware (401 только на /api; /healthz и /metrics —
+          // открытая грань).
+          // AllowAnyClientCertificate — void (мутирует объект), поэтому до ConfigureKestrel.
+          var httpsOptions = new HttpsConnectionAdapterOptions
+          {
+              ServerCertificate = serverCert,
+              ClientCertificateMode = ClientCertificateMode.AllowCertificate,
+          };
+          httpsOptions.AllowAnyClientCertificate();
+          builder.WebHost.ConfigureKestrel(o => o.ListenAnyIP(port, listenOptions => listenOptions.UseHttps(httpsOptions)));
   ```
 
 - **A2.3.** Файл `/Users/demakaev/ZCodeProject/worktrees/feat-t04-open-metrics-healthz-facet/src/ValkeyWorker.App/Api/TlsEndpoints.cs`.
@@ -374,14 +396,18 @@ X509Certificate2? ClientCa)`, конструктор
 
           // Явный Listen подавляет default-URL (ASPNETCORE_HTTP_PORTS) — только
           // HTTPS-грань. Серт запрашивается, но НЕ требуется (AllowCertificate) и
-          // НЕ валидируется на хендшейке: валидация — в ClientCertAuthMiddleware
-          // (401 только на /api; /healthz и /metrics — открытая грань).
-          builder.WebHost.ConfigureKestrel(o => o.ListenAnyIP(port, listenOptions => listenOptions.UseHttps(
-              new HttpsConnectionAdapterOptions
-              {
-                  ServerCertificate = serverCert,
-                  ClientCertificateMode = ClientCertificateMode.AllowCertificate,
-              })));
+          // НЕ валидируется на хендшейке: без AllowAnyClientCertificate Kestrel
+          // применяет дефолтную системную валидацию и рвёт хендшейк. Валидация —
+          // в ClientCertAuthMiddleware (401 только на /api; /healthz и /metrics —
+          // открытая грань).
+          // AllowAnyClientCertificate — void (мутирует объект), поэтому до ConfigureKestrel.
+          var httpsOptions = new HttpsConnectionAdapterOptions
+          {
+              ServerCertificate = serverCert,
+              ClientCertificateMode = ClientCertificateMode.AllowCertificate,
+          };
+          httpsOptions.AllowAnyClientCertificate();
+          builder.WebHost.ConfigureKestrel(o => o.ListenAnyIP(port, listenOptions => listenOptions.UseHttps(httpsOptions)));
   ```
 
 - **A2.4.** Файл `/Users/demakaev/ZCodeProject/worktrees/feat-t04-open-metrics-healthz-facet/src/S3Worker.App/Api/TlsEndpoints.cs`.
@@ -440,14 +466,18 @@ X509Certificate2? ClientCa)`, конструктор
 
           // Явный Listen подавляет default-URL (ASPNETCORE_HTTP_PORTS) — только
           // HTTPS-грань. Серт запрашивается, но НЕ требуется (AllowCertificate) и
-          // НЕ валидируется на хендшейке: валидация — в ClientCertAuthMiddleware
-          // (401 только на /api; /healthz и /metrics — открытая грань).
-          builder.WebHost.ConfigureKestrel(o => o.ListenAnyIP(port, listenOptions => listenOptions.UseHttps(
-              new HttpsConnectionAdapterOptions
-              {
-                  ServerCertificate = serverCert,
-                  ClientCertificateMode = ClientCertificateMode.AllowCertificate,
-              })));
+          // НЕ валидируется на хендшейке: без AllowAnyClientCertificate Kestrel
+          // применяет дефолтную системную валидацию и рвёт хендшейк. Валидация —
+          // в ClientCertAuthMiddleware (401 только на /api; /healthz и /metrics —
+          // открытая грань).
+          // AllowAnyClientCertificate — void (мутирует объект), поэтому до ConfigureKestrel.
+          var httpsOptions = new HttpsConnectionAdapterOptions
+          {
+              ServerCertificate = serverCert,
+              ClientCertificateMode = ClientCertificateMode.AllowCertificate,
+          };
+          httpsOptions.AllowAnyClientCertificate();
+          builder.WebHost.ConfigureKestrel(o => o.ListenAnyIP(port, listenOptions => listenOptions.UseHttps(httpsOptions)));
   ```
 
 ### Шаг A3: четыре `Program.cs` + `KafkaWorker.App/Options.cs` + `S3StartupChecks.cs` — подключение middleware и комментарии
@@ -697,7 +727,10 @@ X509Certificate2? ClientCa)`, конструктор
 middleware подключается сам — там правок не нужно); (б) маршрут-заглушка
 `/metrics` добавлен; (в) AAA-комментарии на месте; (г) вторая CA для
 невалидного серта не совпадает с CA сервера; (д) PFX round-trip и TLS 1.2
-сохранены у ВСЕХ клиентов; (е) имена/using соответствуют файлу.
+сохранены у ВСЕХ клиентов; (е) имена/using соответствуют файлу; (ж) ассерт 5
+(невалидный серт → 401, не TLS-разрыв) — регрессионный к дефолтной системной
+валидации Kestrel: он закрепляет, что пара AllowCertificate +
+AllowAnyClientCertificate() действительно не рвёт хендшейк (spec §6 п.12).
 
 **Выход:** четыре тест-файла проверяют: `/api` без серта = 401; `/api` с
 невалидным сертом = 401 (хендшейк не рвётся); `/healthz` и `/metrics` без
@@ -816,7 +849,9 @@ middleware подключается сам — там правок не нужн
           (await host.Client.GetAsync("/api/ping", ct)).StatusCode.Should().Be(HttpStatusCode.OK);
 
           // Act 5 / Assert 5: /api с НЕВАЛИДНЫМ сертом — 401, хендшейк НЕ рвётся
-          // (сервер принял соединение, middleware отверг путь).
+          // (сервер принял соединение, middleware отверг путь; регрессия к
+          // дефолтной системной валидации Kestrel — пара AllowCertificate +
+          // AllowAnyClientCertificate обязана не рвать хендшейк).
           (await invalidClient.GetAsync("/api/ping", ct)).StatusCode.Should().Be(HttpStatusCode.Unauthorized);
 
           // Act 6 / Assert 6: /healthz с невалидным сертом — 200 (серт игнорируется
@@ -939,7 +974,9 @@ middleware подключается сам — там правок не нужн
           (await host.Client.GetAsync("/api/ping", ct)).StatusCode.Should().Be(HttpStatusCode.OK);
 
           // Act 5 / Assert 5: /api с НЕВАЛИДНЫМ сертом — 401, хендшейк НЕ рвётся
-          // (сервер принял соединение, middleware отверг путь).
+          // (сервер принял соединение, middleware отверг путь; регрессия к
+          // дефолтной системной валидации Kestrel — пара AllowCertificate +
+          // AllowAnyClientCertificate обязана не рвать хендшейк).
           (await invalidClient.GetAsync("/api/ping", ct)).StatusCode.Should().Be(HttpStatusCode.Unauthorized);
 
           // Act 6 / Assert 6: /healthz с невалидным сертом — 200 (серт игнорируется
@@ -1058,7 +1095,9 @@ middleware подключается сам — там правок не нужн
           (await host.Client.GetAsync("/api/ping", ct)).StatusCode.Should().Be(HttpStatusCode.OK);
 
           // Act 5 / Assert 5: /api с НЕВАЛИДНЫМ сертом — 401, хендшейк НЕ рвётся
-          // (сервер принял соединение, middleware отверг путь).
+          // (сервер принял соединение, middleware отверг путь; регрессия к
+          // дефолтной системной валидации Kestrel — пара AllowCertificate +
+          // AllowAnyClientCertificate обязана не рвать хендшейк).
           (await invalidClient.GetAsync("/api/ping", ct)).StatusCode.Should().Be(HttpStatusCode.Unauthorized);
 
           // Act 6 / Assert 6: /healthz с невалидным сертом — 200 (серт игнорируется
@@ -1175,7 +1214,9 @@ middleware подключается сам — там правок не нужн
           (await host.Client.GetAsync("/api/ping", ct)).StatusCode.Should().Be(HttpStatusCode.OK);
 
           // Act 5 / Assert 5: /api с НЕВАЛИДНЫМ сертом — 401, хендшейк НЕ рвётся
-          // (сервер принял соединение, middleware отверг путь).
+          // (сервер принял соединение, middleware отверг путь; регрессия к
+          // дефолтной системной валидации Kestrel — пара AllowCertificate +
+          // AllowAnyClientCertificate обязана не рвать хендшейк).
           (await invalidClient.GetAsync("/api/ping", ct)).StatusCode.Should().Be(HttpStatusCode.Unauthorized);
 
           // Act 6 / Assert 6: /healthz с невалидным сертом — 200 (серт игнорируется
@@ -1613,13 +1654,18 @@ spec §7 («в volume `deploy_pgw-api-tls` нет `healthcheck.*`»): volume н�
 `/api/…/sync-probe`) — с парой `seed.crt/seed.key` (конвенция «чек =
 стендовый сид», spec §6 п.7: у kafka/valkey bind-маунт всего `deploy/tls` в
 `/tls` — `/tls/seed.*` доступен внутри контейнера; у 75-s3worker пробы идут
-с хоста из `$ROOT/deploy/tls`).
+с хоста из `$ROOT/deploy/tls`). В 75-s3worker отдельно проверяет, что имена
+переменных НЕ конфликтуют: URL-скаляр (`BASE`) и curl-массивы (`HEALTH`,
+`CURL`) — разные имена; одно имя для скаляра и массива недопустимо (для
+массива `$имя` раскрывается в первый элемент и ломает все URL).
 
 **Выход:** восемь чеков не используют `healthcheck.*`; `/api`-вызовы — на
-seed-паре.
+seed-паре; в 75-s3worker нет конфликта имён скаляра/массива.
 
 **Проверка:** `grep -rn "healthcheck\." dev-stand/adminpanel/checks/` — пусто;
-`bash -n` каждого из восьми файлов — без ошибок.
+`bash -n` каждого из восьми файлов — без ошибок; в 75-s3worker
+`grep -n '\$API' checks/75-s3worker.sh` — пусто (переменная `API` не
+используется: только `BASE`/`HEALTH`/`CURL`).
 
 **Связь со spec:** §3.3.5, §6 п.7.
 
@@ -1643,6 +1689,9 @@ seed-паре.
     HEALTH="curl -fsS -m 3 --cacert $ROOT/deploy/tls/ca.pem"
     API="curl -fsS -m 3 --cacert $ROOT/deploy/tls/ca.pem --cert $ROOT/deploy/tls/seed.crt --key $ROOT/deploy/tls/seed.key"
   ```
+
+     (в ЭТОМ файле конфликта имён нет: скаляра-URL с именем `API` здесь не
+     существует, `API` — единственная переменная curl для мутаций).
 
   2) Две строки healthz-поллинга: `$MTLS https://localhost:8082/healthz` замени
      на `$HEALTH https://localhost:8082/healthz`; в сообщении об ошибке
@@ -1871,38 +1920,60 @@ seed-паре.
      замени ОБА `$MTLS` на `$HEALTH`.
 
 - **C5.8.** Файл `/Users/demakaev/ZCodeProject/worktrees/feat-t04-open-metrics-healthz-facet/dev-stand/adminpanel/checks/75-s3worker.sh`.
-  Правки:
+  ЦЕЛЬ: разделить пробы — `/healthz` и `/metrics` без клиентского серта,
+  мутации `/api` с парой `seed.crt/key` — при этом НЕ допускать конфликта имён:
+  URL-скаляр и curl-массивы обязаны иметь РАЗНЫЕ имена (`BASE` — URL-скаляр,
+  `HEALTH` — безсертный curl-массив, `CURL` — curl-массив с seed-парой).
+  Одно и то же имя для скаляра и массива — дефект: в bash `$имя` для массива
+  раскрывается в первый элемент («curl»), и все URL вида `"$имя/healthz"`
+  превращаются в «curl/healthz».
 
-  1) В шапке (строка 3) фрагмент
-     `воркера (s3worker из deploy-контура, mTLS healthcheck-парой): демо-кластер`
-     замени на
-     `воркера (s3worker из deploy-контура: /healthz и /metrics — https без клиентского серта, /api — пара seed): демо-кластер`.
-
-  2) Строку
-
-  ```bash
-  MTLS=(curl -s -m 10 --cacert "$ROOT/deploy/tls/ca.pem" --cert "$ROOT/deploy/tls/healthcheck.crt" --key "$ROOT/deploy/tls/healthcheck.key")
-  ```
-
-     замени на две строки
+  В текущей версии файла блок переменных (после строки `S3W_PORT="${S3W_PORT:-8086}"`)
+  выглядит так:
 
   ```bash
+  API="https://localhost:${S3W_PORT}"
   HEALTH=(curl -s -m 10 --cacert "$ROOT/deploy/tls/ca.pem")
   API=(curl -s -m 10 --cacert "$ROOT/deploy/tls/ca.pem" --cert "$ROOT/deploy/tls/seed.crt" --key "$ROOT/deploy/tls/seed.key")
   ```
 
-  3) Healthz-пробы: комментарий `# healthz живого s3worker (mTLS) —Arrange.` замени на
+  — имя `API` используется и как URL-скаляр, и как curl-массив: дефект.
+  (Если файл ещё в до-миграционном виде — строка `MTLS=(curl -s -m 10 --cacert "$ROOT/deploy/tls/ca.pem" --cert "$ROOT/deploy/tls/healthcheck.crt" --key "$ROOT/deploy/tls/healthcheck.key")`
+  и скаляр `API="https://localhost:${S3W_PORT}"` — примени те же целевые
+  имена из правки 1.)
+
+  Правки:
+
+  1) Приведи блок переменных к виду:
+
+  ```bash
+  BASE="https://localhost:${S3W_PORT}"
+  HEALTH=(curl -s -m 10 --cacert "$ROOT/deploy/tls/ca.pem")
+  CURL=(curl -s -m 10 --cacert "$ROOT/deploy/tls/ca.pem" --cert "$ROOT/deploy/tls/seed.crt" --key "$ROOT/deploy/tls/seed.key")
+  ```
+
+  2) Во всём файле замени каждое `"$API/` на `"$BASE/`
+     (использования URL: `"$API/healthz"` ×2, `"$API/api/s3/clusters"`,
+     `"$API/api/s3/clusters/$TAG/sync-probe"`, `"$API/api/s3/clusters/$TAG"`,
+     `"$API/metrics"`).
+
+  3) Во всём файле замени каждое `"${API[@]}"` на `"${CURL[@]}"`
+     (5 мест: create 201, валидация 400, валидация 422, sync-probe, delete).
+
+  4) Шапку файла (строка 3) — фрагмент
+     `воркера (s3worker из deploy-контура, mTLS healthcheck-парой): демо-кластер`
+     (или уже мигрированный вариант про «пару seed») приведи к виду:
+     `воркера (s3worker из deploy-контура: /healthz и /metrics — https без клиентского серта, /api — пара seed): демо-кластер`.
+
+  5) Комментарий healthz-пробы — `# healthz живого s3worker (открытая грань) — Arrange.`
+     (или до-миграционный `# healthz живого s3worker (mTLS) —Arrange.`) приведи к виду:
      `# healthz живого s3worker (открытая грань) — Arrange.`;
-     обе строки `"${MTLS[@]}" -o /dev/null "$API/healthz"` (поллинг и проверка)
-     замени на `"${HEALTH[@]}" -o /dev/null "$API/healthz"`;
-     echo `echo "  s3worker alive: /healthz via mTLS"` замени на
-     `echo "  s3worker alive: /healthz via https"`.
+     echo-строку — к виду `echo "  s3worker alive: /healthz via https"`.
+     Безсертные пробы остаются на `"${HEALTH[@]}"` (`$BASE/healthz`,
+     `$BASE/metrics`), сертные мутации — на `"${CURL[@]}"`.
 
-  4) Мутации `/api` (5 мест: create 201, валидация 400, валидация 422,
-     sync-probe, delete): каждое `"${MTLS[@]}"` замени на `"${API[@]}"`.
-
-  5) Пробу `/metrics`: `"${MTLS[@]}" "$API/metrics"` замени на
-     `"${HEALTH[@]}" "$API/metrics"`.
+  6) После правок в файле НЕ должно остаться переменной с именем `API`
+     (ни скаляра, ни массива).
 
 ### Шаг C6: `dev-stand/adminpanel/README.md` + `deploy/docker-compose.yml` — документация
 
@@ -2047,16 +2118,36 @@ seed-паре.
    в `deploy/tls/gen.sh`; вхождения в `arch/roadmap/pgworker.md` исчезнут
    после шага D4 — сверку по этому файлу повторить после D4;
 2) `grep -rn "ClientCertificateMode.RequireCertificate" src/ --include="*.cs"` — пусто;
-3) `grep -rn "mTLS-only\|вся грань mTLS" src/ deploy/ dev-stand/ docker/` — пусто;
-4) `ls deploy/tls/ | grep -E "prometheus|healthcheck"` — пусто;
-5) `docker run --rm -v deploy_pgw-api-tls:/tls:ro alpine:3.20 ls /tls` — нет `healthcheck.*`;
-6) `docker inspect deploy-pgworker-1 | grep -A3 -i health` — HEALTHCHECK без `--cert`.
+3) **позитивная сверка (spec §7 п.5)**: пара обязана присутствовать в
+   HTTP-грани воркеров —
+   `grep -rn "AllowAnyClientCertificate()" src/ --include="*.cs"` — ровно 4
+   вхождения (`PgWorker.App/Api/ApiTlsEndpoints.cs` +
+   `KafkaWorker/ValkeyWorker/S3Worker.App/Api/TlsEndpoints.cs`);
+   `grep -rn "ClientCertificateMode.AllowCertificate" src/ --include="*.cs"` —
+   ровно те же 4 файла;
+4) `grep -rn "mTLS-only\|вся грань mTLS" src/ deploy/ dev-stand/ docker/` —
+   **осознанное исключение**: единственный допустимый остаток —
+   `src/tests/AdminPanel.UnitTests/Workers/WorkerApiGatewayTests.cs`
+   (комментарий «(контракт t03-pg: mTLS-only у обоих воркеров)» у метода
+   мутации через шлюз): семантика теста верна (шлюз по-прежнему шлёт
+   `panel.crt` на `/api`), устарела только формулировка; AdminPanel-тесты —
+   граница spec §3.4, в этой ветке НЕ правятся. Все прочие вхождения —
+   пусто. Исполнитель по этому исключению заводит пункт в
+   `arch/roadmap/bugs.md` (трек bugs): «чистка устаревших формулировок
+   mTLS-only в AdminPanel-тестах (WorkerApiGatewayTests и прочие, если
+   найдутся)» с точным файлом/строкой и пометкой «вне области t04» —
+   чинить в этой ветке запрещено (spec §5);
+5) `ls deploy/tls/ | grep -E "prometheus|healthcheck"` — пусто;
+6) `docker run --rm -v deploy_pgw-api-tls:/tls:ro alpine:3.20 ls /tls` — нет `healthcheck.*`;
+7) `docker inspect deploy-pgworker-1 | grep -A3 -i health` — HEALTHCHECK без `--cert`.
 
-**Выход:** все сверки чистые.
+**Выход:** все сверки чистые; фиксировано исключение AdminPanel-тестов; пункт
+в `arch/roadmap/bugs.md` на чистку их формулировок заведён.
 
-**Проверка:** пункты 1–6 выше.
+**Проверка:** пункты 1–7 выше.
 
-**Связь со spec:** критерии приёмки 4, 5.
+**Связь со spec:** критерии приёмки 4, 5 (включая позитивную сверку пары
+`AllowCertificate` + `AllowAnyClientCertificate()`); границы §3.4.
 
 ### Шаг D4: удаление тега задачи из `arch/roadmap/pgworker.md` (мерж-гейт)
 
@@ -2070,7 +2161,8 @@ seed-паре.
 мерж-гейта AGENTS.md: тег слитой задачи удаляется тем же коммитом; без этого
 не проходит канон-сверка критерия 5 — пункт роадмапа упоминает
 `prometheus.crt`/`healthcheck.crt`). Это единственное допустимое изменение
-`arch/` в задаче (обслуживание роадмапа, не канона).
+`arch/` в задаче, кроме пункта bugs.md из шага D3 п.4 (обслуживание роадмапа,
+не канона).
 
 **Выход:** в `arch/roadmap/` нет тега `t04-open-metrics-healthz-facet`.
 
@@ -2085,8 +2177,15 @@ seed-паре.
 
 - Все требования spec §3.1 закрыты шагами A1–A4; §3.2 — B1–B3; §3.3 — C1–C6;
   §7 — D1–D4.
-- Шагов вне scope spec нет (D4 — требование мерж-гейта проекта, без него
-  критерий 5 spec невыполним).
-- Границы §3.4 соблюдаются: AdminPanel, E2E-тесты, etcd-контракт, дискавери,
-  gen-docker.sh, arch/ (кроме тега роадмапа в D4) — не трогаются.
+- TLS-механика открытой грани — только пара `ClientCertificateMode.AllowCertificate`
+  + `AllowAnyClientCertificate()` (spec §3.1.2/§6 п.1); буквальное удаление
+  `ClientCertificateValidation` нигде в плане не предписывается.
+- В 75-s3worker имена переменных не конфликтуют: `BASE` (URL-скаляр),
+  `HEALTH`/`CURL` (curl-массивы) — переменной `API` нет.
+- Шагов вне scope spec нет (D4 и bugs.md-пункт D3 п.4 — требования мерж-гейта
+  проекта и границы §3.4, без них критерии 5 spec невыполнимы/не согласованы).
+- Границы §3.4 соблюдаются: AdminPanel (включая её тесты с устаревшей
+  формулировкой — исключение зафиксировано в D3 п.4), E2E-тесты,
+  etcd-контракт, дискавери, gen-docker.sh, arch/ (кроме тега роадмапа в D4 и
+  bugs.md в D3) — не трогаются.
 - После каждой тестовой серии (B3, D1, D2) — зачистка docker-контейнеров/сетей.

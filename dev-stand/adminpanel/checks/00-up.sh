@@ -265,7 +265,7 @@ for i in $(seq 1 60); do
 done
 [ "${s3w_keys:-0}" -ge 2 ] \
   || { echo "❌ /s3worker/api/ contains ${s3w_keys:-0} keys (<2; docker compose logs s3worker s3worker-2)"; exit 1; }
-echo "  s3worker alive ×2 (:${S3W_API_HOST_PORT:-8086} + :${S3W_API_HOST_PORT2:-8089}/healthz mTLS; /s3worker/api/ keys: ${s3w_keys})"
+echo "  s3worker alive ×2 (:${S3W_API_HOST_PORT:-8086} + :${S3W_API_HOST_PORT2:-8089}/healthz https; /s3worker/api/ keys: ${s3w_keys})"
 
 # 8) панель жива: всегда в докере (AGENTS.md), сервис adminpanel сети стенда,
 #    /api/healthz опубликован на :5050.

@@ -13,9 +13,9 @@ TAG="s75$(date +%s)"
 # Порт API s3worker — из deploy/.env (синхронизация — 00-up.sh).
 S3W_PORT="$(grep -E '^S3W_API_HOST_PORT=' "$ROOT/deploy/.env" 2>/dev/null | tail -1 | cut -d= -f2 || true)"
 S3W_PORT="${S3W_PORT:-8086}"
-API="https://localhost:${S3W_PORT}"
+BASE="https://localhost:${S3W_PORT}"
 HEALTH=(curl -s -m 10 --cacert "$ROOT/deploy/tls/ca.pem")
-API=(curl -s -m 10 --cacert "$ROOT/deploy/tls/ca.pem" --cert "$ROOT/deploy/tls/seed.crt" --key "$ROOT/deploy/tls/seed.key")
+CURL=(curl -s -m 10 --cacert "$ROOT/deploy/tls/ca.pem" --cert "$ROOT/deploy/tls/seed.crt" --key "$ROOT/deploy/tls/seed.key")
 TMP="$(mktemp -d)"
 # Own-only зачистка по TAG текущего прогона: падение между create и delete не
 # оставляет демо-контейнер/том/ключи etcd (уже снесённые ресурсы — не падаем;
@@ -33,16 +33,16 @@ ect()      { docker compose exec -T etcd1 etcdctl --endpoints=http://localhost:2
 
 # healthz живого s3worker (открытая грань) — Arrange.
 for i in $(seq 1 30); do
-  "${HEALTH[@]}" -o /dev/null "$API/healthz" 2>/dev/null && break
+  "${HEALTH[@]}" -o /dev/null "$BASE/healthz" 2>/dev/null && break
   sleep 1
 done
-"${HEALTH[@]}" -o /dev/null "$API/healthz" 2>/dev/null \
+"${HEALTH[@]}" -o /dev/null "$BASE/healthz" 2>/dev/null \
   || { echo "❌ s3worker not responding (:${S3W_PORT}/healthz; did 00-up.sh bring it up?)"; exit 1; }
 echo "  s3worker alive: /healthz via https"
 
 # 1) Демо-кластер через API: 201 → воркер провижинит (RUNNING) ≤ NodeBootSec+запас.
 body="{\"name\":\"$TAG\",\"platform\":\"owns3\",\"instances\":[{\"name\":\"node1\",\"placement\":{\"dockerHost\":\"local\"},\"resources\":{\"cpu\":0.5,\"memGi\":1,\"diskGi\":5}}]}"
-c="$("${API[@]}" -o "$TMP/create.json" -w '%{http_code}' -X POST "$API/api/s3/clusters" -H 'Content-Type: application/json' -d "$body")"
+c="$("${CURL[@]}" -o "$TMP/create.json" -w '%{http_code}' -X POST "$BASE/api/s3/clusters" -H 'Content-Type: application/json' -d "$body")"
 [ "$c" = 201 ] || { echo "❌ create = $c, expected 201"; cat "$TMP/create.json"; exit 1; }
 echo "  create $TAG -> 201 (request accepted)"
 
@@ -67,20 +67,20 @@ docker volume ls -q --filter name="s3w-$TAG-node1-data" | grep -q . || { echo "�
 # 3) Валидации: невалидный name → 400; etcdBackup без env-пары спец-ключа → 422
 #    (стенд: S3W_ETCD_BACKUP_* не заданы — отсутствие пары = неполная, гвард
 #    полноты arch/24 §1.1).
-c="$("${API[@]}" -o /dev/null -w '%{http_code}' -X POST "$API/api/s3/clusters" -H 'Content-Type: application/json' \
+c="$("${CURL[@]}" -o /dev/null -w '%{http_code}' -X POST "$BASE/api/s3/clusters" -H 'Content-Type: application/json' \
   -d "{\"name\":\"Bad-Name\",\"platform\":\"owns3\",\"instances\":[{\"name\":\"node1\",\"placement\":{\"dockerHost\":\"local\"},\"resources\":{\"cpu\":1,\"memGi\":1,\"diskGi\":5}}]}")"
 [ "$c" = 400 ] || { echo "❌ invalid name → $c, expected 400"; exit 1; }
-c="$("${API[@]}" -o /dev/null -w '%{http_code}' -X POST "$API/api/s3/clusters" -H 'Content-Type: application/json' \
+c="$("${CURL[@]}" -o /dev/null -w '%{http_code}' -X POST "$BASE/api/s3/clusters" -H 'Content-Type: application/json' \
   -d "{\"name\":\"${TAG}x\",\"platform\":\"owns3\",\"etcdBackup\":true,\"instances\":[{\"name\":\"node1\",\"placement\":{\"dockerHost\":\"local\"},\"resources\":{\"cpu\":1,\"memGi\":1,\"diskGi\":5}}]}")"
 [ "$c" = 422 ] || { echo "❌ etcdBackup without env key → $c, expected 422"; exit 1; }
 # /metrics домен-счётчики (spec §9): .NET-экспортер выдаёт серию после первого
 # наблюдения — проверка ПОСЛЕ операций API выше (create/400/422).
-"${HEALTH[@]}" "$API/metrics" 2>/dev/null | grep -q '^s3worker_' \
+"${HEALTH[@]}" "$BASE/metrics" 2>/dev/null | grep -q '^s3worker_' \
   || { echo "❌ /metrics contains no s3worker_ metrics"; exit 1; }
 echo "  validations: name → 400, etcdBackup without env key → 422; /metrics contains s3worker_"
 
 # 4) sync-probe: 202 always; ключи connectivity/sync НЕ появляются (заглушка t33).
-c="$("${API[@]}" -o /dev/null -w '%{http_code}' -X POST "$API/api/s3/clusters/$TAG/sync-probe")"
+c="$("${CURL[@]}" -o /dev/null -w '%{http_code}' -X POST "$BASE/api/s3/clusters/$TAG/sync-probe")"
 [ "$c" = 202 ] || { echo "❌ sync-probe → $c, expected 202"; exit 1; }
 sleep 3
 [ -z "$(ect get "/s3/clusters/$TAG/" --prefix --keys-only 2>/dev/null | grep -E 'connectivity|/sync' || true)" ] \
@@ -88,7 +88,7 @@ sleep 3
 echo "  sync-probe: 202, t33 keys do not appear"
 
 # 5) Снос: 202 → X0–X3 воркером → чистота etcd + docker + volume.
-c="$("${API[@]}" -o /dev/null -w '%{http_code}' -X DELETE "$API/api/s3/clusters/$TAG")"
+c="$("${CURL[@]}" -o /dev/null -w '%{http_code}' -X DELETE "$BASE/api/s3/clusters/$TAG")"
 [ "$c" = 202 ] || { echo "❌ delete → $c, expected 202"; exit 1; }
 clean=0
 for i in $(seq 1 60); do

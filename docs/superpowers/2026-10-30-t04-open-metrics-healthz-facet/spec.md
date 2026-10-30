@@ -83,10 +83,30 @@ arch/13 §2, arch/18 §3/§5.2, adminpanel/02 §2.3.1/§2.3.2/§9.9):
   - `ClientCertificateMode = ClientCertificateMode.RequireCertificate` →
     **`ClientCertificateMode.AllowCertificate`** (сервер запрашивает серт,
     но не требует; клиент без серта проходит хендшейк).
-  - **Удалить** присваивание `ClientCertificateValidation` (присланный серт
-    НЕ валидируется на хендшейке — соединение с невалидным сертом не
-    рвётся; валидация переезжает в middleware п.3.1.1, где даёт 401 только
-    на `/api`; на `/healthz`//`/metrics` присланный серт игнорируется).
+  - Отключить валидацию клиентского серта на хендшейке штатным механизмом
+    **`AllowAnyClientCertificate()`** на `HttpsConnectionAdapterOptions`:
+    присланный серт НЕ валидируется на хендшейке — соединение с невалидным
+    сертом не рвётся; валидация переезжает в middleware п.3.1.1, где даёт
+    401 только на `/api`; на `/healthz`//`/metrics` присланный серт
+    игнорируется. Просто удалить присваивание
+    `ClientCertificateValidation` НЕЛЬЗЯ: при null-калбэке Kestrel
+    (`HttpsConnectionMiddleware`) применяет дефолтную системную валидацию
+    цепочки (`sslPolicyErrors != None` → отказ) и рвёт хендшейк для
+    per-install сертов приватной API-CA. `AllowAnyClientCertificate` —
+    `void` (мутирует объект), вызывать до `ConfigureKestrel`. Целевой блок
+    (замена текущего inline-`UseHttps(...)`):
+
+    ```
+    var httpsOptions = new HttpsConnectionAdapterOptions
+    {
+        ServerCertificate = serverCert,
+        ClientCertificateMode = ClientCertificateMode.AllowCertificate,
+    };
+    httpsOptions.AllowAnyClientCertificate();
+    builder.WebHost.ConfigureKestrel(o => o.ListenAnyIP(port,
+        listenOptions => listenOptions.UseHttps(httpsOptions)));
+    ```
+
   - Зарегистрировать опцию middleware:
     `builder.Services.AddSingleton(new ClientCertAuthOptions(Enabled: true, ClientCa: clientCa));`
     (вызов — до `builder.Build()`, `builder.Services` доступен; серт
@@ -255,7 +275,7 @@ arch/13 §2 — клиентские серты панели `panel.crt` и си
   S3Worker.E2eTests): их mTLS-клиенты (`CreateMtlsHttpClient`, E2E-контуры
   со своей CA) продолжают работать — серт опционален, но допустим.
 - **etcd-контракт, дискавери-ключи `/workers/api/<id>`**,
-  `WorkerApiCertReader`, серверные серты (`/workers/api_tls/*`, env-фоллбек)
+  `WorkerApiCertReader`, серверные серты (`/workers/api_tls/*`, env-фоллбэк)
   — без изменений.
 - **`deploy/tls/gen-docker.sh`**, docker-CA — без изменений.
 - **arch/** — без изменений (уже каноничен; при выполнении обнаружится
@@ -286,12 +306,20 @@ arch/13 §2 — клиентские серты панели `panel.crt` и си
 ## 6. Принятые решения (закрытые развилки)
 
 1. **Механизм открытой грани**: `ClientCertificateMode.AllowCertificate` +
-   БЕЗ `ClientCertificateValidation` (хендшейк не рвётся никогда, в т.ч. с
-   невалидным сертом) + middleware `401` на `/api`. Однозначно из roadmap
-   («опциональный клиентский серт на TLS-хендшейке + политика 401 только на
-   /api») и arch/14 §1.1 («запрос /api без валидного клиентского серта —
-   401» — HTTP-статус, не TLS-разрыв). `DelayCertificate`/renegotiation не
-   используем (ненадёжен на macOS/Linux).
+   **`AllowAnyClientCertificate()`** (штатный способ ASP.NET Core отключить
+   валидацию клиентского серта на хендшейке — устанавливает
+   `ClientCertificateValidation`, всегда принимающий присланный серт) +
+   middleware `401` на `/api`. Удалять `ClientCertificateValidation` в
+   изоляции НЕЛЬЗЯ: при null-калбэке Kestrel (`HttpsConnectionMiddleware`)
+   применяет дефолтную системную валидацию цепочки
+   (`sslPolicyErrors != None` → отказ) и рвёт хендшейк для per-install
+   сертов приватной API-CA — цель «хендшейк не рвётся никогда, в т.ч. с
+   невалидным сертом» достигается только парой
+   AllowCertificate + AllowAnyClientCertificate(). Решение однозначно из
+   roadmap («опциональный клиентский серт на TLS-хендшейке + политика 401
+   только на /api») и arch/14 §1.1 («запрос /api без валидного клиентского
+   серта — 401» — HTTP-статус, не TLS-разрыв). `DelayCertificate`/
+   renegotiation не используем (ненадёжен на macOS/Linux).
 2. **Общий middleware в `Shared.Tls`** (+`FrameworkReference`): дедуп-политика
    проекта (прецеденты слияния `TlsChain`/`TlsEnv`); 4 копии в App-проектах
    не плодим.
@@ -323,7 +351,9 @@ arch/13 §2 — клиентские серты панели `panel.crt` и си
     каноне; WAF-тесты проверяют только статус.
 12. **Тест невалидного серта — обязательный кейс** (401, не TLS-разрыв):
     канон «без ВАЛИДНОГО серта — 401» требует обеих ветвей (нет серта /
-    невалидный серт).
+    невалидный серт); ассерт закрепляет, что
+    AllowCertificate + AllowAnyClientCertificate() действительно не рвёт
+    хендшейк (регрессия к дефолтной системной валидации Kestrel).
 
 ## 7. Критерии приёмки (мерж-гейт)
 
@@ -352,5 +382,7 @@ arch/13 §2 — клиентские серты панели `panel.crt` и си
    использований `healthcheck.crt`/`prometheus.crt` (единственное допустимое
    вхождение имён — строка самозачистки `rm -f` в `deploy/tls/gen.sh`) и
    `ClientCertificateMode.RequireCertificate` в HTTP-грани воркеров;
-   формулировки «mTLS-only»/«вся грань mTLS» из комментариев убраны.
+   в HTTP-грани воркеров присутствует пара `AllowCertificate` +
+   `AllowAnyClientCertificate()`; формулировки «mTLS-only»/«вся грань mTLS»
+   из комментариев убраны.
 6. Зачистка docker-контейнеров/сетей после каждой тестовой серии (AGENTS.md).
