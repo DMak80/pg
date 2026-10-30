@@ -152,7 +152,6 @@ public sealed class E2eSecondInstanceScenarios(E2eSecondInstanceScenariosFx Ctx)
             ["PgWorker__Docker__PortRange__From"] = Fx.RemainingPortRange.From.ToString(),
             ["PgWorker__Docker__PortRange__To"] = Fx.RemainingPortRange.To.ToString(),
             ["PgWorker__Docker__Images__Node"] = E2eEnvironment.NodeImage,
-            ["PgWorker__Docker__EnableDoorman"] = "false",
 
             // Ускоренные циклы/пороги e2e (ассерты ждут секунды, не минуты).
             ["PgWorker__Loops__ScanIntervalSec"] = "1",

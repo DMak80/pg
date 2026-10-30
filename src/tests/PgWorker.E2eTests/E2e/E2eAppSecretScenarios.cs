@@ -59,8 +59,8 @@ public sealed class E2eAppSecretScenarios(E2eAppSecretScenariosFx Ctx) : IClassF
 
         // Assert 2 (критерий 2): подключение user=app паролем из etcd выполняет
         // запрос к данным. ПРЯМОЙ pg-порт ноды (пофрагментный проб multi-host DSN,
-        // образец E2eScenarios: стенд без doorman, EnableDoorman=false; канон
-        // деплоя doorman :6432 — spec §3.1/§7.2 — отдельно не проверяется).
+        // образец E2eScenarios); клиентский вход через пулер :6432 — отдельный
+        // ассерт базового сценария E2eScenarios (arch/14 §8).
         var hosts = Regex.Match(dsnKv.Value, "host=([^ ]+)").Groups[1].Value.Split(',');
         var ports = Regex.Match(dsnKv.Value, "port=([^ ]+)").Groups[1].Value.Split(',');
         hosts.Should().HaveCount(2);
