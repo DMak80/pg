@@ -249,33 +249,36 @@ public static class SpiloEnvBuilder
 }
 
 /// <summary>
-/// Конфиг pg_doorman ноды (arch/11 §4): ЕДИНСТВЕННЫЙ пул &lt;dbname&gt; (P14) с
-/// бэкендом 127.0.0.1:5432 этой ноды, transaction-режим (P13), бюджет
-/// серверных соединений — синхронизирован от рассчитанного PGTune
-/// max_connections (P15: serverConnections = max(10, max_connections − 5);
-/// 60 = 55 + 2 админ/mover + 3 reserved). Клиентский вход — :6432 c TLS
-/// (sslmode=require, P17 — требование на стороне клиентских DSN); SCRAM
-/// passthrough к PG. Финальная сверка полей с релизом doorman — при сборке
-/// образа (задача 25).
+/// Конфиг pg_doorman ноды (arch/11 §4; формат фактического pg_doorman
+/// v3.11.0 — YAML general/pools, файл /etc/pg_doorman/pg_doorman.yaml):
+/// ЕДИНСТВЕННЫЙ пул &lt;dbname&gt; (P14) с бэкендом 127.0.0.1:5432 этой ноды,
+/// transaction-режим (P13), бюджет серверных соединений — синхронизирован
+/// от рассчитанного PGTune max_connections (P15: serverConnections =
+/// max(10, max_connections − 5); 60 = 55 + 2 админ/mover + 3 reserved).
+/// Клиентский вход — :6432 c TLS (sslmode=require, P17 — серты генерирует
+/// entrypoint ноды); секции users/auth_query не задаются — passthrough-режим
+/// по умолчанию (SCRAM-доказательство клиента переиспользуется к бэкенду,
+/// паролей в конфиге нет).
 /// </summary>
 public static class DoormanConfigBuilder
 {
     public static string Build(string dbname, int serverConnections) =>
         $"""
         # pg_doorman: single pool {dbname} per node (P13/P14/P15/P17).
-        # Clients connect on :6432 with sslmode=require (P17).
-
-        [pg_doorman]
-        listen = "0.0.0.0:6432"
-        pool_mode = "transaction"
-        max_client_connections = 1000
-        max_db_connections = {serverConnections}
-        default_pool_size = {serverConnections}
-        tls_mode = "require"
-
-        [databases]
-        # P14: dbname = cluster name, buckets are schemas; one pool for the whole node DB.
-        {dbname} = host=127.0.0.1 port=5432 dbname={dbname}
+        # Clients connect on :6432 with sslmode=require (P17); SCRAM passthrough к PG.
+        general:
+          host: "0.0.0.0"
+          port: 6432
+          tls_mode: "require"
+          tls_certificate: "/etc/pg_doorman/tls.crt"
+          tls_private_key: "/etc/pg_doorman/tls.key"
+        pools:
+          {dbname}:
+            server_host: "127.0.0.1"
+            server_port: 5432
+            server_database: {dbname}
+            pool_mode: "transaction"
+            max_db_connections: {serverConnections}
         """;
 
     /// <summary>
