@@ -258,7 +258,11 @@ public static class SpiloEnvBuilder
 /// Клиентский вход — :6432 c TLS (sslmode=require, P17 — серты генерирует
 /// entrypoint ноды); секции users/auth_query не задаются — passthrough-режим
 /// по умолчанию (SCRAM-доказательство клиента переиспользуется к бэкенду,
-/// паролей в конфиге нет).
+/// паролей в конфиге нет). admin_username/admin_password — обязательные
+/// поля general фактического v3.11.0 (без них отказ парса, exit 78);
+/// админ-консоль пулера продуктом не потребляется — литералы детерминированы
+/// (конфиг обязан быть стабильным между reconcile'ами, иначе пересоздание
+/// контейнеров) и границей секьюрити не являются.
 /// </summary>
 public static class DoormanConfigBuilder
 {
@@ -269,6 +273,8 @@ public static class DoormanConfigBuilder
         general:
           host: "0.0.0.0"
           port: 6432
+          admin_username: "pgwd_admin"
+          admin_password: "pgwd_admin_password"
           tls_mode: "require"
           tls_certificate: "/etc/pg_doorman/tls.crt"
           tls_private_key: "/etc/pg_doorman/tls.key"
