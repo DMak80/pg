@@ -117,7 +117,13 @@ public sealed class E2eRestoreScenarios(E2eRestoreScenariosFx Ctx) : IClassFixtu
 
             // Act — «погиб диск»: полный docker-снос нод шарда (контейнеры+тома) +
             // restore-заявка latest (backup_id пуст → валидация возьмёт новейший
-            // COMPLETED из etcd); FAILED «дыра» — ретрай новой заявкой (гонка t03)
+            // COMPLETED из etcd); FAILED «дыра» — ретрай новой заявкой (гонка t03).
+            // Restore-секция — свой 3-мин CTS (мульти-CTS, приказ владельца:
+            // снос + rebuild + restore не умещаются в общий потолок факта).
+            using var ctsRestore = CancellationTokenSource.CreateLinkedTokenSource(
+                TestContext.Current.CancellationToken);
+            ctsRestore.CancelAfter(TimeSpan.FromMinutes(3));
+            ct = ctsRestore.Token;
             Console.WriteLine($"[PITR] {cluster}: archive before request: [" +
                 string.Join(",", await ListWalNamesAsync(cluster, "shard1")) + "]");
             await KillShardAsync(cluster, "shard1", ct);
@@ -267,7 +273,12 @@ public sealed class E2eRestoreScenarios(E2eRestoreScenariosFx Ctx) : IClassFixtu
             dropArchived.Should().BeTrue("the segment with DROP must land in the archive: "
                 + await DumpDiagnosticsAsync(cluster, "shard1"));
 
-            // Act — заявка PITR на T_cut (до порчи); ретрай на гонку t03 (дыра)
+            // Act — заявка PITR на T_cut (до порчи); ретрай на гонку t03 (дыра).
+            // Restore-секция — свой 3-мин CTS (мульти-CTS, приказ владельца).
+            using var ctsPitr = CancellationTokenSource.CreateLinkedTokenSource(
+                TestContext.Current.CancellationToken);
+            ctsPitr.CancelAfter(TimeSpan.FromMinutes(3));
+            ct = ctsPitr.Token;
             Console.WriteLine($"[PITR] {cluster}: archive before request: [" +
                 string.Join(",", await ListWalNamesAsync(cluster, "shard1")) + "]");
             var chainOk2 = await WalChainContinuousAsync(cluster, "shard1", wsSeg!, ct);
@@ -456,9 +467,9 @@ public sealed class E2eRestoreScenarios(E2eRestoreScenariosFx Ctx) : IClassFixtu
     // новая заявка (permanent-FAILED предшественника — история; шард после FAILED
     // остаётся разобранным — повторная заявка сама проводит демонтаж 404=ок,
     // джоб пересоздаёт volume ноды, rejoin поднимает ноды). До 3 попыток.
-    // Бюджет 300 c (воркеровский PatroniBootSec=120 перекрыт в хосте): любую
-    // проваленную фазу воркер превращает в FAILED с причиной — тест её увидит,
-    // а не будет покрывать ожиданием.
+    // Бюджет попытки 150 c (операция ~80-110 c, разбор b01; 90 c не вмещал её
+    // при фактическом успехе): любую проваленную фазу воркер превращает в
+    // FAILED с причиной — тест её увидит, а не будет покрывать ожиданием.
     private async Task<Dictionary<string, JsonElement>> RestoreWithRetryAsync(
         string cluster, string shard, string target, string? source = null,
         int attempts = 3, CancellationToken ct = default)
@@ -468,8 +479,11 @@ public sealed class E2eRestoreScenarios(E2eRestoreScenariosFx Ctx) : IClassFixtu
             var restoreId = await PutRestorePlannedAsync(cluster, shard, target, source, ct);
             try
             {
+                // 150 c (не 90): DR-операция — скачивание набора + recovery + промоут —
+                // ~80-110 c (разбор b01), 90-секундный бюджет не вмещал её при
+                // фактическом успехе.
                 var status = await WaitRestoreAsync(cluster, shard, restoreId,
-                    TimeSpan.FromSeconds(90), ct);
+                    TimeSpan.FromSeconds(150), ct);
                 return status!;
             }
             catch (ChainGapException) when (attempt < attempts)

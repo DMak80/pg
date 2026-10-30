@@ -349,6 +349,17 @@ public sealed class TliSwitchContext : IAsyncLifetime
         var validPages = pages
             .Where(p => p.PageAddr >= segStart && p.PageAddr < segEnd)
             .ToList();
+        // Предусловие (как пункт (1),BoundarySwitchException): TLI2-байтов в S
+        // может не оказаться — промоут-реплика при пограничном тайминге начинает
+        // писать С Next(S), S остаётся чисто TLI1 (разбор серии №20: в S только
+        // page 0, хвост нулевой). Смешанного объекта нет — проверяемого
+        // состояния нет: штатный скип фактов (_prepareSkip), контур чистится
+        // teardown'ом; провал дальше — только при НАЛИЧИИ TLI2-байтов.
+        if (!validPages.Any(p => p.PageAddr > switchValue && p.Tli == Tli2))
+            throw new BoundarySwitchException(
+                $"segment S {parentName} carries no TLI2 bytes (valid pages: " +
+                string.Join(", ", validPages.Select(p => $"0x{p.PageAddr:x}:tli{p.Tli}")) + ") — " +
+                "the promoting replica started writing at the segment boundary; no mixed object exists");
         const int pageSize = 8192;
         foreach (var (pageAddr, tli) in validPages)
         {
