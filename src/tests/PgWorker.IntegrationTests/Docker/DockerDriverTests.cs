@@ -31,7 +31,7 @@ public class DockerDriverTests
     }
 
     private static PlainClusterDriver NewDriver()
-        => new([new HostEndpoint(Host, "unix:///var/run/docker.sock")], Factory, enableDoorman: false,
+        => new([new HostEndpoint(Host, "unix:///var/run/docker.sock")], Factory,
             AlpineImage, restCertificates: RestCertificates);
 
     private static ShardTopology Topology(string cluster, NodeAddress addr) => new(

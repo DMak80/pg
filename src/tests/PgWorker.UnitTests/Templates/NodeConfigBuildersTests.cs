@@ -215,10 +215,15 @@ public class NodeConfigBuildersTests
         var config = DoormanConfigBuilder.Build("shop", 55);
 
         // Assert: единственный пул shop → 127.0.0.1:5432, transaction-режим,
-        // бюджет 55 серверных соединений (P13/P14/P15).
-        config.Should().Contain("pool_mode = \"transaction\"");
-        config.Should().Contain("max_db_connections = 55");
-        config.Should().Contain("shop = host=127.0.0.1 port=5432 dbname=shop");
+        // бюджет 55 серверных соединений (P13/P14/P15); YAML фактического
+        // pg_doorman (general/pools).
+        config.Should().Contain("pool_mode: \"transaction\"");
+        config.Should().Contain("max_db_connections: 55");
+        config.Should().Contain("pools:");
+        config.Should().Contain("  shop:");
+        config.Should().Contain("server_host: \"127.0.0.1\"");
+        config.Should().Contain("server_port: 5432");
+        config.Should().Contain("server_database: shop");
     }
 
     [Fact]
@@ -326,7 +331,7 @@ public class NodeConfigBuildersTests
         atFloor.Should().Be(10);
 
         // Assert: конфиг пулера несёт вычисленный бюджет.
-        DoormanConfigBuilder.Build("shop", 35).Should().Contain("max_db_connections = 35");
+        DoormanConfigBuilder.Build("shop", 35).Should().Contain("max_db_connections: 35");
     }
 
     [Fact]

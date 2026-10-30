@@ -95,13 +95,12 @@ public sealed class MasterKeyReconciler(IEtcdGateway etcd, string[] endpoints, S
     /// (advertised-режим, arch/16): ключ пишут lease-демоны нод с env-хостом
     /// КОНТЕЙНЕРА (PGW_NODE_HOST), а portalloc несёт advertised-имя — писатели
     /// согласны, когда совпадает doorman-порт (уникален per-node, arch/14 §2.4).
-    /// Без doorman (EnableDoorman=false) — точное сравнение (прежняя семантика).
     /// </summary>
     private static bool IsCurrent(string? masterKey, NodeAddress primary)
     {
         if (masterKey == $"{primary.Host}:{primary.Ports.Doorman}")
             return true;
-        if (primary.Ports.Doorman <= 0 || string.IsNullOrEmpty(masterKey))
+        if (string.IsNullOrEmpty(masterKey))
             return false;
         var colon = masterKey.LastIndexOf(':');
         return colon > 0

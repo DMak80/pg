@@ -180,9 +180,6 @@ public sealed class DockerOptions
 
     public DockerImagesOptions Images { get; set; } = new();
 
-    /// <summary>R1: false → узел без pg_doorman (порт 6432 не публикуется).</summary>
-    public bool EnableDoorman { get; set; } = true;
-
     /// <summary>
     /// Advertised-имя docker-хоста в записях etcd (portalloc/dsn): адреса нод
     /// обязаны быть резолвимы КЛИЕНТАМИ записей — панелью (arch/16 advertised-

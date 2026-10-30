@@ -109,7 +109,6 @@ public interface IClusterDriver
 public sealed class PlainClusterDriver(
     IReadOnlyList<HostEndpoint> hosts,
     DockerEngineFactory factory,
-    bool enableDoorman,
     string nodeImage = "pgworker-node:dev",
     string? advertisedHost = null,
     IReadOnlySet<string>? pgtuneExclude = null,
@@ -300,12 +299,13 @@ public sealed class PlainClusterDriver(
     }
 
     // Все ожидаемые public-биндинги контейнера совпадают с планом ноды
-    // (5432→pg, 8008→patroni, 6432→doorman при enableDoorman).
+    // (5432→pg, 8008→patroni, 6432→doorman — тройка всегда, пулер обязателен).
     private bool PortsMatchPlan(IReadOnlyList<PortMap> actual, NodeAddress addr)
     {
-        var expected = new List<PortMap> { new(5432, addr.Ports.Pg), new(8008, addr.Ports.Patroni) };
-        if (enableDoorman)
-            expected.Add(new PortMap(6432, addr.Ports.Doorman));
+        var expected = new List<PortMap>
+        {
+            new(5432, addr.Ports.Pg), new(8008, addr.Ports.Patroni), new(6432, addr.Ports.Doorman),
+        };
         return expected.All(e => actual.Any(p => p.ContainerPort == e.ContainerPort && p.HostPort == e.HostPort));
     }
 
@@ -590,15 +590,12 @@ public sealed class PlainClusterDriver(
                 env["PGW_BACKUP_STAGING_DIR"] = backupEnv.StagingDir;
         }
 
-        if (enableDoorman)
-        {
-            // P15 (решение 2026-09-12): бюджет вычисляемый —
-            // max(10, max_connections − 5); tuning null (изолированные пути) —
-            // прежний литерал 55.
-            var serverConnections = tuning is null ? 55 : DoormanConfigBuilder.ServerConnections(tuning);
-            env["DOORMAN_CONFIG"] = DoormanConfigBuilder.Build(topology.Cluster, serverConnections);
-            env["PGW_DOORMAN_PORT"] = addr.Ports.Doorman.ToString();
-        }
+        // P15 (решение 2026-09-12): бюджет вычисляемый —
+        // max(10, max_connections − 5); tuning null (изолированные пути) —
+        // прежний литерал 55.
+        var serverConnections = tuning is null ? 55 : DoormanConfigBuilder.ServerConnections(tuning);
+        env["DOORMAN_CONFIG"] = DoormanConfigBuilder.Build(topology.Cluster, serverConnections);
+        env["PGW_DOORMAN_PORT"] = addr.Ports.Doorman.ToString();
 
         // HAProxy в топологии нет (arch/14 §2.1): write-вход — прямой
         // pg-порт ноды (portalloc, multi-host DSN, P2).
@@ -607,9 +604,8 @@ public sealed class PlainClusterDriver(
         {
             new(5432, addr.Ports.Pg), // pg: межшард-подписки + админка (P2)
             new(8008, addr.Ports.Patroni), // Patroni REST (пробы/сверка P11)
+            new(6432, addr.Ports.Doorman), // клиентский вход (P13/P14)
         };
-        if (enableDoorman)
-            ports.Add(new PortMap(6432, addr.Ports.Doorman)); // клиентский вход (P13/P14)
 
         return new ContainerSpec(
             nodeImage,
@@ -654,7 +650,6 @@ public sealed class PlainClusterDriver(
 public sealed class SwarmClusterDriver(
     string managerEndpoint,
     DockerEngineFactory factory,
-    bool enableDoorman,
     string nodeImage = "pgworker-node:dev",
     IReadOnlySet<string>? pgtuneExclude = null,
     RestCertificateCache? restCertificates = null,
@@ -709,7 +704,7 @@ public sealed class SwarmClusterDriver(
             // Внутренний plain для BuildSpec — со СВОИМ кешем сертов (: без
             // кеша внутренний BuildSpec упал бы fail-fast'ом REST-TLS).
             var plain = new PlainClusterDriver(
-                [], new DockerEngineFactory(), enableDoorman, nodeImage,
+                [], new DockerEngineFactory(), nodeImage,
                 pgtuneExclude: pgtuneExclude, restCertificates: restCertificates,
                 nodeBackupEnv: nodeBackupEnv);
             var template = plain.BuildSpec(topology, nodeName, addr, secrets, etcd, resources, tuning, syncStrict, restPassword);

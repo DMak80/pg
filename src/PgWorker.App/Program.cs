@@ -328,7 +328,7 @@ builder.Services.AddSingleton<IClusterDriver>(sp =>
     {
         if (string.IsNullOrWhiteSpace(docker.SwarmManager))
             throw new ApplicationException("PgWorker:Docker:Mode=Swarm requires PgWorker:Docker:SwarmManager");
-        return new SwarmClusterDriver(docker.SwarmManager, factory, docker.EnableDoorman, docker.Images.Node,
+        return new SwarmClusterDriver(docker.SwarmManager, factory, docker.Images.Node,
             pgtuneExclude: pgtuneExclude,
             restCertificates: sp.GetRequiredService<RestCertificateCache>(),
             nodeBackupEnv: nodeBackupEnv);
@@ -339,7 +339,7 @@ builder.Services.AddSingleton<IClusterDriver>(sp =>
         .ToList();
     if (hosts.Count == 0)
         throw new ApplicationException("PgWorker:Docker:Mode=Plain requires a non-empty PgWorker:Docker:Hosts list");
-    return new PlainClusterDriver(hosts, factory, docker.EnableDoorman, docker.Images.Node, docker.AdvertisedHost,
+    return new PlainClusterDriver(hosts, factory, docker.Images.Node, docker.AdvertisedHost,
         pgtuneExclude: pgtuneExclude, scrapeNetwork: docker.ScrapeNetwork,
         contourNetwork: docker.ContourNetwork is { Length: > 0 } ? docker.ContourNetwork : null,
         restCertificates: sp.GetRequiredService<RestCertificateCache>(),

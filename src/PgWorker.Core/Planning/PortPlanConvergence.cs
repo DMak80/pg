@@ -67,13 +67,14 @@ public static class PortPlanConvergence
             && (addr.Object is not null
                 || (selfFactByNode.TryGetValue(key, out var own) && MatchesFact(addr, own))));
 
-    // Запись подтверждена фактом: все её НЕнулевые порты публикует контейнер
-    // самой ноды. Нулевые игнорируются: EnableDoorman=false (R1) — запись без
-    // пулера (Doorman=0), порт 0 в факт не попадает никогда (merge тем же тиком
-    // уже нормализовал запись к факту) — иначе режим без пулера дал бы вечный
-    // detach → бесконечный recreate контейнеров.
+    // Запись подтверждена фактом: ВСЕ три её порта публикует контейнер самой
+    // ноды. Нулевой doorman канонической записи невозможен (пулер обязателен,
+    // arch/14 §8): устаревшая запись с doorman=0 (или живой контейнер старого
+    // образа без 6432) — расхождение → detach → recreate (штатная конвергенция;
+    // volume переживает). object-записи в MatchesFact не попадают (у них нет
+    // self-fact) — doorman=0 у усыновлённых легален (arch/14 §2.4 п.5).
     private static bool MatchesFact(NodeAddress addr, IReadOnlySet<(string Host, int Port)> own)
-        => Ports(addr).Where(p => p > 0).All(p => own.Contains((addr.Host, p)));
+        => Ports(addr).All(p => own.Contains((addr.Host, p)));
 
     private static int[] Ports(NodeAddress addr)
         => [addr.Ports.Pg, addr.Ports.Patroni, addr.Ports.Doorman];
