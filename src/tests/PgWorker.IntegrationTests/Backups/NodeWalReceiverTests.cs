@@ -26,6 +26,33 @@ public class NodeWalReceiverTests
     private static readonly string NodeImage =
         $"pgworker-node:sanity-{Shared.TestInfra.E2eImageTags.SuffixFor(E2eFixture.FindRoot(AppContext.BaseDirectory))}";
     private const string EtcdImage = "quay.io/coreos/etcd:v3.5.21";
+
+    // Пин pg_doorman (arch/14 §2.1 R1): пулер — ОБЯЗАТЕЛЬНАЯ часть образа ноды,
+    // docker build без build-arg DOORMAN_IMAGE падает fail-fast. Пин — те же
+    // три точки, что в ранбуке («Обновить пин pg_doorman»): 00-up.sh,
+    // E2eEnvironment.DoormanImage, images.txt.
+    private const string DoormanImage = "ghcr.io/ozontech/pg_doorman:v3.11.0";
+
+    // Пулер обязателен (arch/14 §8): entrypoint ноды без непустого DOORMAN_CONFIG
+    // гасит контейнер (fail-fast ДО supervisord) — контейнерам серии нужен
+    // валидный YAML (формат DoormanConfigBuilder; бэкенда 127.0.0.1:5432 в этих
+    // тестах нет — pg_doorman его не трогает, серия проверяет walreceiver).
+    private const string DoormanConfigYaml =
+        """
+        general:
+          host: "0.0.0.0"
+          port: 6432
+          tls_mode: "require"
+          tls_certificate: "/etc/pg_doorman/tls.crt"
+          tls_private_key: "/etc/pg_doorman/tls.key"
+        pools:
+          stubdb:
+            server_host: "127.0.0.1"
+            server_port: 5432
+            server_database: stubdb
+            pool_mode: "transaction"
+            max_db_connections: 10
+        """;
     private static readonly TimeSpan Budget = TimeSpan.FromSeconds(90);
 
     private readonly ITestOutputHelper _output;
@@ -79,7 +106,8 @@ public class NodeWalReceiverTests
             [
                 "build", "-q", "-f", $"{root}/docker/node/Dockerfile",
                 "--build-arg", "WAL_PUBLISH_DIR=artifacts/node-wal-dev",
-                "--build-arg", "NODE_TOOLS_PUBLISH_DIR=artifacts/node-tools-dev", "-t", NodeImage, root,
+                "--build-arg", "NODE_TOOLS_PUBLISH_DIR=artifacts/node-tools-dev",
+                "--build-arg", $"DOORMAN_IMAGE={DoormanImage}", "-t", NodeImage, root,
             ], ct, timeout: TimeSpan.FromMinutes(10),
                 logFile: "/tmp/pgw-node-wal-dev-docker.log");
             Console.WriteLine($"[PHASE] node-image: {NodeImage} ready in {sw.Elapsed.TotalSeconds:F0} s");
@@ -156,6 +184,7 @@ public class NodeWalReceiverTests
                 ["PGW_BACKUP_NODE"] = "s1a",
                 ["PGW_ETCD"] = "http://etcd-test:2379",
                 ["PGW_BACKUP_S3_BUCKET"] = "backups",
+                ["DOORMAN_CONFIG"] = DoormanConfigYaml,
             })
             .Build();
         await node.StartAsync(ct);
@@ -287,6 +316,7 @@ public class NodeWalReceiverTests
                 ["PGW_BACKUP_NODE"] = "s1a",
                 ["PGW_ETCD"] = "http://etcd-test:2379",
                 ["PGW_BACKUP_S3_BUCKET"] = "backups",
+                ["DOORMAN_CONFIG"] = DoormanConfigYaml,
             })
             .Build();
         await node.StartAsync(ct);
@@ -366,6 +396,9 @@ public class NodeWalReceiverTests
 
         await using var node = new ContainerBuilder(NodeImage)
             .WithName(nodeName)
+            // Идентичности бэкапов нет (суть теста), но entrypoint требует
+            // непустой DOORMAN_CONFIG (пулер обязателен, arch/14 §8).
+            .WithEnvironment("DOORMAN_CONFIG", DoormanConfigYaml)
             .Build();
         await node.StartAsync(ct);
 

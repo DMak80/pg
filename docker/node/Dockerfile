@@ -7,12 +7,18 @@
 #   --build-arg DOORMAN_IMAGE=<мульти-арх образ pg_doorman> — ОБЯЗАТЕЛЕН
 #   (пин: ghcr.io/ozontech/pg_doorman:v3.11.0, arch/14 §2.1 R1); без него
 #   сборка падает fail-fast.
-FROM ghcr.io/zalando/spilo-18:4.1-p2
 
 # Пулер обязателен (arch/14 §2.1 R1): бинарник — COPY --from мульти-арх
 # контейнер-образа pg_doorman (docker выбирает архитектуру под платформу
-# сборки автоматически); отсутствие build-arg — отказ сборки с диагностикой.
+# сборки автоматически); отсутствие build-arg — отказ сборки с диагностикой
+# (guard-RUN в главной стадии). BuildKit не раскрывает ARG в COPY --from —
+# алиас-стадия: пустой build-arg резолвит doorman в alpine (сборка падает
+# по guard'у раньше COPY), непустой — в образ пулера.
 ARG DOORMAN_IMAGE=""
+FROM ${DOORMAN_IMAGE:-alpine:3.20} AS doorman
+
+FROM ghcr.io/zalando/spilo-18:4.1-p2
+ARG DOORMAN_IMAGE
 RUN test -n "$DOORMAN_IMAGE" || { echo "DOORMAN_IMAGE build-arg is required (pg_doorman is mandatory, arch/14 §2.1 R1)"; exit 1; }
 
 RUN apt-get update \
@@ -20,7 +26,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 # Бинарник пулера из официального образа (путь внутри него — /usr/bin/pg_doorman).
-COPY --from=$DOORMAN_IMAGE /usr/bin/pg_doorman /usr/local/bin/pg_doorman
+COPY --from=doorman /usr/bin/pg_doorman /usr/local/bin/pg_doorman
 
 # Приёмник WAL (t25, arch/19 §3 + arch/14 §2.1) и служебная CLI pgwnodetool:
 # self-contained publish НА ХОСТЕ (RID хоста сборки, без trimming — рефлексия
