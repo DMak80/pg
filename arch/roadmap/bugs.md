@@ -25,24 +25,3 @@
   `docs/superpowers/`.
 
 ## Задачи
-- `b01-restore-promote-hang` — E2E `Pool_ReadAnyNode_RestoreAfterNodeStop`
-  (PgWorker.E2eTests, `dotnet test src/tests/PgWorker.E2eTests -c Release
-  --no-build --filter FullyQualifiedName~Pool_ReadAnyNode_RestoreAfterNodeStop`,
-  env `DOTNET_CLI_UI_LANGUAGE=en PGW_TEST_DOCKER=1`): серия №18, 2026-10-30,
-  ветка `fix-t90-e2e-session-isolation`, коммиты 66703562/26efbb4f; падение —
-  `restore pac6…/shard1/20261030121612Z-shard1 did not reach COMPLETED: RUNNING`
-  (WaitRestoreAsync 90 с). Продуктовая зона: restore-операция приёмника ноды при
-  мёртвом первом endpoint'е пула (тест остановил ownS3-ноду 1 — носитель alias
-  `e2e-owns3`): recovery УСПЕШНО завершился (fetch-wal перебор пула работает —
-  node2 отдал сегменты, «redo done», «selected new timeline ID: 2»), но
-  финализация (promote по `recovery_target_action='promote'` → рестарт
-  postmaster → `pg_is_in_recovery()='f'`) молчит 3+ минуты — состояние
-  RUNNING до бюджета; postmaster после «selected timeline» не пишет в
-  restore-pg.log ничего. Ожидание: промоут завершается, операция Succeeded →
-  COMPLETED. Фактически: вечный RUNNING. Логи: `arch/roadmap/bugs/
-  b01-restore-promote-hang/` (restore-pg.log, host-worker.log, owns3-node2.log,
-  README-cleanup). Гипотезы: постмастер-рестарт при промоуте конфликтует с
-  supervisorctl-остановленным spilo ноды (restore исполняется в контейнере
-  ноды с остановленной supervisord-программой — кто забирает/перезапускает
-  postmaster?); либо fetch-wal во время промоут-поиска WAL тянет 45-с
-  транспортные ретраи по мёртвому endpoint'у и растягивает старт.

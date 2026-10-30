@@ -858,7 +858,21 @@ public sealed class PoolReadAnyNodeScenarios(PoolReadAnyNodeScenariosFx Ctx) : E
             await G.DeleteAsync(Endpoint, "/pgworker/backups-disabled", prefix: false, ct);
 
             // Assert — restore из пула при мёртвой node1: COMPLETED (чтение c node2).
-            var restore = await RestoreLatestAsync(cluster, "shard1", ct);
+            // Свой 3-мин CTS на restore-секцию (мульти-CTS, приказ владельца) +
+            // бюджет 150 c (не 90): операция — скачивание набора + recovery +
+            // промоут при мёртвой части пула — ~80-110 c, а тик воркера может
+            // зависнуть на поднимающемся Patroni ноды — COMPLETED появляется с
+            // задержкой; при 90 c тест падал «RUNNING» на 91-й секунде при
+            // ФАКТИЧЕСКИ успешном restore (разбор b01: Succeeded на ~83-й c,
+            // промоут «ready to accept connections» — продукт корректен).
+            using var ctsRestore = CancellationTokenSource.CreateLinkedTokenSource(
+                TestContext.Current.CancellationToken);
+            ctsRestore.CancelAfter(TimeSpan.FromMinutes(3));
+            ct = ctsRestore.Token;
+
+            var restoreId = await PutRestorePlannedAsync(cluster, "shard1", "latest", ct: ct);
+            var restore = await WaitRestoreAsync(cluster, "shard1", restoreId,
+                TimeSpan.FromSeconds(150), ct);
             restore["state"].GetString().Should().Be("COMPLETED",
                 "the ReadAll walkover reaches a live pool node (mesh copy)");
             await Fx.RunDockerAsync(["start", Fx.S3NodeContainerName], ct);
