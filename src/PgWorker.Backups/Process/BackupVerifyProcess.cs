@@ -301,14 +301,29 @@ public sealed class BackupVerifyProcess(
 
                 return; // ждём — проверка в работе
             }
-            case "succeeded" when full.Verify is { State: BackupVerifyStatus.Ok }:
+            case "succeeded" when full.Verify is { State: BackupVerifyStatus.Ok } v:
             {
-                // Терминальный снимок ПРОШЛОЙ джобы (полный уже учтён OK, а
-                // кандидат — периодический due по verify.interval_sec): повторная
-                // перепроверка — повторный POST, идемпотентно (WalReceiver
-                // перезаписывает терминальные снимки в TryBegin). Без этого
-                // воркер поллит завершённую джобу вечно и перепроверка по
-                // расписанию не исполняется никогда.
+                // Различаем снимок НАШЕЙ запущенной перепроверки и терминальный
+                // снимок ПРОШЛОЙ джобы: операция, начатая ПОЗЖЕ последней
+                // учтённой проверки (StartedUnix > checked_unix) — наш итог,
+                // записываем (AC5: checked_unix растёт). Снимок старее/бездатный
+                // — это прошлый терминал при периодическом due: повторный POST,
+                // идемпотентно (WalReceiver перезаписывает терминальные снимки
+                // в TryBegin). Без ветки реланча воркер поллит завершённую
+                // джобу вечно и перепроверка по расписанию (verify.interval_sec)
+                // не исполняется никогда (разбор Verify_Corruption).
+                if (snapshot.StartedUnix is not { } started || started > v.CheckedUnix)
+                {
+                    var updated = full with { Verify = new BackupVerify(BackupVerifyStatus.Ok, nowUnix) };
+                    var put = await PutAsync(BackupNames.FullKey(cluster, shard, full.Id),
+                        BackupStatusJson.Serialize(updated), ct);
+                    if (!put.IsSuccess)
+                        return; // transient — статус не сменился, снимок повторит вердикт
+                    await journal.WritePhaseAsync(cluster, Op, $"verified-ok/{shard}/{id}",
+                        claims.InstanceId, null, ct);
+                    return;
+                }
+
                 var relaunch = await receiver.StartVerifyAsync(receiverUrl, new StartVerifyRequest(
                     id,
                     new S3Context(
