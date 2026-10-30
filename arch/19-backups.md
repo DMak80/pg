@@ -1161,11 +1161,12 @@ s3://<bucket>/<C>/<X>/
  transient-отказ резолва с маркером `s3-pool-exhausted` у процессов,
  ретраи тиком, НЕ краш тика — §4); единого
  `PGW_BACKUP_S3_ENDPOINT/REGION/ACCESS_KEY/SECRET_KEY/ADVERTISED_ENDPOINT`
- больше нет — цели даёт пул per-cluster (§4); (в) **etcd-слепки —
- ОТДЕЛЬНАЯ per-install env-пара** `PgWorker:Snapshots:Export:S3`
- (env `PGW_SNAPSHOTS_S3_ENDPOINT/BUCKET/ACCESS_KEY/SECRET_KEY`) —
- обязательна при `Snapshots:Export:Enabled=true` (fail-fast старта,
- [14-pgworker.md](14-pgworker.md) §8); `PGW_BACKUP_S3_*` для слепков НЕ
+больше нет — цели даёт пул per-cluster (§4); (в) **etcd-слепки —
+ОТДЕЛЬНАЯ per-install env-пара** `PgWorker:Snapshots:Export:S3`
+(env `PGW_SNAPSHOTS_S3_ENDPOINTS/BUCKET/ACCESS_KEY/SECRET_KEY`) —
+обязательна при `Snapshots:Export:Enabled=true` (fail-fast старта,
+[14-pgworker.md](14-pgworker.md) §8); цели — запятая-список URI,
+перебор до первого доступного (§5); `PGW_BACKUP_S3_*` для слепков НЕ
  переиспользуется: источник правды о DR-слепках не живёт в
  восстанавливаемом etcd. Приёмник WAL целей/кредов в env НЕ получает —
  резолвит сам из etcd
