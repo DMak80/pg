@@ -373,8 +373,10 @@ builder.Services.AddSingleton(sp =>
     return opts.Snapshots.Export.Enabled
         ? new EtcdSnapshotSink(
             // цель слепков — ОТДЕЛЬНАЯ пара PgWorker:Snapshots:Export:S3
-            // (env PGW_SNAPSHOTS_S3_*; arch/14 §6/§8 — не креды пулов бэкапов).
-            new BackupS3(EtcdSnapshotSinkFactory.Create(opts)),
+            // (env PGW_SNAPSHOTS_S3_*; arch/14 §6/§8 — не креды пулов бэкапов):
+            // перебор целей до первого доступного — PoolBackupS3 (arch/19 §5),
+            // синглтон на процесс — breaker-стейт переживает попытки выгрузки.
+            EtcdSnapshotSinkFactory.Create(opts),
             sp.GetRequiredService<IEtcdGateway>(),
             opts.Etcd.Endpoints,
             opts.Snapshots.Export.RetentionObjects,
