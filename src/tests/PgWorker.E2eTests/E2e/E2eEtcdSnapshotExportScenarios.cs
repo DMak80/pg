@@ -311,11 +311,15 @@ public sealed class E2eEtcdSnapshotFailoverScenarios(E2eEtcdSnapshotFailoverScen
         try
         {
             // Arrange — вторая ownS3-нода контура + bucket слепков на ОБОИХ нодах
+            // (два ОТДЕЛЬНЫХ exec: каждый скрипт заканчивается exit — склейка «&&»
+            // обрывала бы второй скрипт первым exit'ом; не-нулевой exit mc
+            // бросает исключение — тест падает сразу, не молча)
             await E2eFixture.TimedAsync("snap-fail extra-s3-node",
                 () => Fx.StartExtraS3NodeAsync("e2e-owns3-2", ct));
-            await E2eFixture.TimedAsync("snap-fail snapshot-buckets",
-                () => Fx.RunMcAsync(
-                    McMakeBucketScript("e2e-owns3") + " && " + McMakeBucketScript("e2e-owns3-2"), ct));
+            await E2eFixture.TimedAsync("snap-fail snapshot-bucket-node1",
+                () => Fx.RunMcAsync(McMakeBucketScript("e2e-owns3"), ct));
+            await E2eFixture.TimedAsync("snap-fail snapshot-bucket-node2",
+                () => Fx.RunMcAsync(McMakeBucketScript("e2e-owns3-2"), ct));
 
             // воркер: Endpoints — обе ноды (alias'ы сети контура), интервал 1 мин
             await using var app = await Fx.StartHostAsync("snapfail", snapshotIntervalMin: 1,
