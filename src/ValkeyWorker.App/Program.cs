@@ -15,8 +15,8 @@ using ValkeyWorker.Core.Valkey;
 using ValkeyWorker.Provisioning.Processes;
 using Shared.Etcd.Client;
 
-// Точка входа ValkeyWorker (arch/21 §8): host-builder с mTLS-гранью HTTP API
-// (вкл. /healthz), конфигурация appsettings+env, DI всех слоёв (etcd →
+// Точка входа ValkeyWorker (arch/21 §8): host-builder с HTTPS-гранью HTTP API
+// (mTLS — только /api; /healthz — открытая грань), конфигурация appsettings+env, DI (etcd →
 // координация → циклы). Per-install env-секреты — только TLS HTTP API
 // (arch/21 §4); per-cluster секреты (app/admin) — в etcd.
 // Fail-fast: пустые Etcd:Endpoints, не-https AdvertiseUrl.
@@ -31,8 +31,8 @@ builder.Services.AddSingleton<HealthState>();
 // Прогресс-отметки долгих фаз reconcile в глубину процессов (provisioning).
 builder.Services.AddSingleton<Shared.Core.Hosting.ILoopProgress>(sp => sp.GetRequiredService<HealthState>());
 
-// Метрики (arch/18 §2.2): /metrics на том же mTLS-Kestrel-порту, что /healthz —
-// scrape ходит клиентским сертом per-install пакета. Коллектор доменных метрик
+// Метрики (arch/18 §2.2): /metrics на том же HTTPS-Kestrel-порту, что /healthz —
+// открытая грань скрейпа без клиентского серта (arch/18 §5.2). Коллектор доменных метрик
 // INFO — arch/18 §4.2 (ValkeyMetricsCollector ниже).
 builder.Services.AddAppMetrics("ValkeyWorker", builder.Configuration.GetSection("ValkeyWorker:Metrics"));
 builder.Services.AddSingleton(sp =>
@@ -66,7 +66,7 @@ builder.Services.AddOptions<ValkeyWorkerOptions>()
         "ValkeyWorker:Api:AdvertiseUrl is not set (env VWK_API_ADVERTISE_URL)")
     .Validate(o => o.Api.Tls.AllowInsecureHttp
         || o.Api.AdvertiseUrl.StartsWith("https://", StringComparison.Ordinal),
-        "AdvertiseUrl must be https:// (mTLS-only API, arch/21 §1.1)")
+        "AdvertiseUrl must be https:// (HTTPS-only edge, mTLS on /api only; arch/21 §1.1)")
     .ValidateOnStart();
 
 // Управляемый серт API (arch/21 §1.1): чтение ключа /workers/api_tls/valkeyworker
@@ -74,8 +74,8 @@ builder.Services.AddOptions<ValkeyWorkerOptions>()
 var etcdEndpoints = builder.Configuration.GetSection("ValkeyWorker:Etcd:Endpoints").Get<string[]>() ?? [];
 var managedCert = await WorkerApiCertReader.ReadAsync(etcdEndpoints, "valkeyworker", CancellationToken.None);
 
-// mTLS HTTP API (arch/21 §1.1): env-секреты TLS → конфиг, Kestrel c
-// серверным сертом и требованием клиентского серта per-install API-CA.
+// HTTPS HTTP API (arch/21 §1.1): env-секреты TLS → конфиг, Kestrel c
+// серверным сертом; клиентский серт опционален, mTLS — только /api.
 TlsEndpoints.ApplyEnvOverrides(builder.Configuration);
 var apiTls = TlsEndpoints.ConfigureMtls(builder, port: 8080, managedCert);
 
@@ -330,6 +330,9 @@ if (apiTls.Source is { } certSource)
     app.Logger.LogInformation("ValkeyWorker:Api:Tls: API server certificate — source {Source}", certSource);
 if (apiTls.Warning is { } certWarning)
     app.Logger.LogWarning("ValkeyWorker:Api:Tls: {Warning}", certWarning);
+// Открытая грань (arch/21 §1.1): клиентский серт опционален на хендшейке;
+// 401 без валидного серта — только на /api; /healthz и /metrics — без серта.
+app.UseMiddleware<Shared.Tls.ClientCertAuthMiddleware>();
 app.MapAppMetrics();
 app.MapHealthChecks("/healthz");
 app.MapWorkerApi();
