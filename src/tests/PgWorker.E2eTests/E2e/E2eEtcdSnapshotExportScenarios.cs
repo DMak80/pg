@@ -39,7 +39,7 @@ public sealed class E2eEtcdSnapshotExportScenarios(E2eEtcdSnapshotExportScenario
             ["PgWorker__Snapshots__Export__Enabled"] = "true",
             ["PgWorker__Snapshots__Export__RetryIntervalSec"] = retrySec.ToString(),
             ["PgWorker__Snapshots__Export__RetentionObjects"] = retention.ToString(),
-            ["PgWorker__Snapshots__Export__S3__Endpoint"] = s3Override ?? Fx.S3EndpointForContainers, // env воркера — alias
+            ["PgWorker__Snapshots__Export__S3__Endpoints"] = s3Override ?? Fx.S3EndpointForContainers, // env воркера — alias(ы)
             ["PgWorker__Snapshots__Export__S3__Bucket"] = SnapshotBucket,
             // Креды ownS3-ноды контура (дефолт «minioadmin» ownS3 отвергает
             // ownS3 — выгрузка слепков молча не ехала, полный прогон 2026-10-16:
@@ -257,5 +257,130 @@ public sealed class E2eEtcdSnapshotExportScenarios(E2eEtcdSnapshotExportScenario
 public sealed class E2eEtcdSnapshotExportScenariosFx : E2eContourFixture
 {
     protected override string Slug => "snap-exp";
+    protected override bool WithS3Node => true;
+}
+
+// E2E отказоустойчивости слепочной пары (t33): Endpoints — запятая-список из
+// ДВУХ ownS3-нод контура; docker stop ПЕРВОЙ ноды → следующий плановый слепок
+// (интервал 1 мин) с доводкой (RetryIntervalSec=5) уезжает на ВТОРУЮ ноду:
+// статус-ключ снова OK с новым last_object, свежая пара реально на второй
+// ноде (mc-листинг). Изоляция — своё окружение класса (per-class контур,
+// e2e-isolation §1/§3); teardown при любом исходе — фикстура.
+public sealed class E2eEtcdSnapshotFailoverScenarios(E2eEtcdSnapshotFailoverScenariosFx Ctx)
+    : IClassFixture<E2eEtcdSnapshotFailoverScenariosFx>
+{
+    private E2eEnvironment Fx => Ctx.Fx;
+
+    // bucket слепочной пары (не пуловый pgworker-backups).
+    private const string SnapshotBucket = "pgworker-etcd-snapshots";
+
+    // mc-скрипт: alias t → нода, bucket слепков. Retry-цикл — extra-нода
+    // стартует асинхронно, бакет ждёт готовности S3 (прецедент
+    // E2eEnvironment.EnsureOwnS3BucketAsync).
+    private static string McMakeBucketScript(string alias)
+        => $"for i in $(seq 1 30); do mc alias set t http://{alias}:9000 {E2eEnvironment.S3RootUser}"
+           + $" {E2eEnvironment.S3RootPassword} >/dev/null 2>&1"
+           + $" && mc mb --ignore-existing t/{SnapshotBucket} 2>/dev/null && exit 0; sleep 2; done; exit 1";
+
+    // mc ls --recursive префикса etcd/ на ноде-алиасе (mc в инструментальном
+    // pgw-em контейнера контура — прецедент RunMcAsync).
+    private Task<string> McLsOnNodeAsync(string alias, CancellationToken ct)
+        => Fx.RunMcAsync(
+            $"mc alias set t http://{alias}:9000 {E2eEnvironment.S3RootUser} {E2eEnvironment.S3RootPassword} >/dev/null"
+            + $" && mc ls --recursive t/{SnapshotBucket}/etcd/", ct);
+
+    private async Task<string> StatusValueAsync(CancellationToken ct)
+        => (await Fx.Gateway.GetAsync(Fx.EtcdEndpoint, "/pgworker/etcd-snapshots", ct)).Value!.Value;
+
+    // Имена ключей из mc-листинга (последний токен строки — путь).
+    private static IReadOnlyList<string> McKeys(string listing)
+        => listing.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(l => l[(l.LastIndexOf(' ') + 1)..])
+            .ToList();
+
+    // AAA (t33): отказ первой цели пары не останавливает выкладку слепков —
+    // перебор целей (PoolBackupS3, arch/19 §5) уводит следующий слепок на
+    // вторую ноду: статус OK с новым last_object, пара db+meta на ней.
+    [Fact]
+    public async Task FirstTargetDown_NextSnapshotOkOnSecondNode()
+    {
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
+        var ct = cts.Token;
+        try
+        {
+            // Arrange — вторая ownS3-нода контура + bucket слепков на ОБОИХ нодах
+            await E2eFixture.TimedAsync("snap-fail extra-s3-node",
+                () => Fx.StartExtraS3NodeAsync("e2e-owns3-2", ct));
+            await E2eFixture.TimedAsync("snap-fail snapshot-buckets",
+                () => Fx.RunMcAsync(
+                    McMakeBucketScript("e2e-owns3") + " && " + McMakeBucketScript("e2e-owns3-2"), ct));
+
+            // воркер: Endpoints — обе ноды (alias'ы сети контура), интервал 1 мин
+            await using var app = await Fx.StartHostAsync("snapfail", snapshotIntervalMin: 1,
+                extraEnv: new Dictionary<string, string>
+                {
+                    ["PgWorker__Snapshots__Export__Enabled"] = "true",
+                    ["PgWorker__Snapshots__Export__RetryIntervalSec"] = "5",
+                    ["PgWorker__Snapshots__Export__S3__Endpoints"] =
+                        "http://e2e-owns3:9000,http://e2e-owns3-2:9000",
+                    ["PgWorker__Snapshots__Export__S3__Bucket"] = SnapshotBucket,
+                    ["PgWorker__Snapshots__Export__S3__AccessKey"] = E2eEnvironment.S3RootUser,
+                    ["PgWorker__Snapshots__Export__S3__SecretKey"] = E2eEnvironment.S3RootPassword,
+                }, ct: ct);
+
+            // Wait — первая выгрузка OK (пара уходит на ПЕРВУЮ ноду)
+            var firstOk = await E2eFixture.TimedAsync("snap-fail wait-first-ok",
+                () => E2eFixture.WaitForAsync(async () =>
+                    (await Fx.Gateway.GetAsync(Fx.EtcdEndpoint, "/pgworker/etcd-snapshots", ct))
+                        .Value?.Value.Contains("\"state\":\"OK\"") == true,
+                    TimeSpan.FromSeconds(90), ct));
+            firstOk.Should().BeTrue("the first snapshot uploads to the FIRST node");
+            var firstObject = PgWorker.Backups.EtcdExport.EtcdSnapshotStatusJson.Parse(
+                await StatusValueAsync(ct))!.LastObject;
+
+            // Act — стоп ПЕРВОЙ ноды (контейнер pgw-eo-{runId}, alias e2e-owns3)
+            await E2eFixture.TimedAsync("snap-fail stop-first-node",
+                () => Fx.RunDockerAsync(["stop", Fx.S3NodeContainerName], ct));
+
+            // Wait — следующий слепок/доводка уехали на ВТОРУЮ ноду: снова OK,
+            // last_object свежий (промежуточный FAILED — не помеха поллингу)
+            var nextOk = await E2eFixture.TimedAsync("snap-fail wait-next-ok",
+                () => E2eFixture.WaitForAsync(async () =>
+                {
+                    var raw = (await Fx.Gateway.GetAsync(Fx.EtcdEndpoint, "/pgworker/etcd-snapshots", ct))
+                        .Value?.Value;
+                    if (raw is null)
+                        return false;
+                    var status = PgWorker.Backups.EtcdExport.EtcdSnapshotStatusJson.Parse(raw)!;
+                    return status.State == "OK" && status.LastObject != firstObject;
+                }, TimeSpan.FromSeconds(90), ct));
+            nextOk.Should().BeTrue(
+                "the next snapshot (or CatchUp with RetryIntervalSec=5) lands on the SECOND node");
+
+            // Assert — свежая пара реально на ВТОРОЙ ноде (mc-листинг по alias)
+            var status2 = PgWorker.Backups.EtcdExport.EtcdSnapshotStatusJson.Parse(
+                await StatusValueAsync(ct))!;
+            var dbKey = status2.LastObject!["etcd/".Length..];
+            var metaKey = dbKey[..^".db".Length] + ".meta.json";
+            var keys = McKeys(await E2eFixture.TimedAsync("snap-fail mc-ls-node2",
+                () => McLsOnNodeAsync("e2e-owns3-2", ct)));
+            keys.Should().Contain(dbKey, "the fresh .db is on the SECOND node");
+            keys.Should().Contain(metaKey, "the fresh .meta.json is on the SECOND node");
+        }
+        catch
+        {
+            Fx.MarkFailed(); // teardown остановит контейнеры, но не удалит — разбор по логам
+            throw;
+        }
+    }
+}
+
+/// <summary>Компаньон-фикстура окружения класса (полный контур на класс:
+/// сеть/etcd/ownS3/CA/окно портов; docs/e2e-isolation.md §1).</summary>
+public sealed class E2eEtcdSnapshotFailoverScenariosFx : E2eContourFixture
+{
+    protected override string Slug => "snap-fail";
     protected override bool WithS3Node => true;
 }
