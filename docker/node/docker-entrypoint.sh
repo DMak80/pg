@@ -23,11 +23,26 @@ else
     : > /etc/haproxy/haproxy.cfg
 fi
 
-if [ -n "$DOORMAN_CONFIG" ]; then
-    printf '%s\n' "$DOORMAN_CONFIG" > /etc/pg_doorman/pg_doorman.ini
-else
-    : > /etc/pg_doorman/pg_doorman.ini
+# Пулер pg_doorman обязателен (arch/14 §8): нет бинарника или конфига —
+# отказ старта контейнера (ненулевой exit ДО supervisord; воркер видит
+# exited-контейнер). Молчаливых «not starting» не существует.
+if [ ! -x /usr/local/bin/pg_doorman ]; then
+    echo "pg_doorman: /usr/local/bin/pg_doorman binary is missing - DOORMAN_IMAGE build-arg is required"
+    exit 1
 fi
+if [ -n "$DOORMAN_CONFIG" ]; then
+    printf '%s\n' "$DOORMAN_CONFIG" > /etc/pg_doorman/pg_doorman.yaml
+else
+    echo "pg_doorman: DOORMAN_CONFIG env is empty - cannot start the mandatory pooler"
+    exit 1
+fi
+
+# Self-signed TLS-серт пулера при каждом старте (P17: клиенты ходят
+# sslmode=require без верификации цепочки — серт шифрования не несёт
+# идентичности); файлы вне volume — ключ не переживает рестарт контейнера,
+# это допустимо (минимум движущихся частей).
+openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -subj "/CN=pg_doorman" \
+    -keyout /etc/pg_doorman/tls.key -out /etc/pg_doorman/tls.crt
 
 # ENV lease-скрипта мастер-ключа (P11) — переживает env-фильтр runit.
 {
