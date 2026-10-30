@@ -6,8 +6,9 @@ using Xunit;
 namespace PgWorker.IntegrationTests.Api;
 
 // Интеграционные тесты /metrics PgWorker (arch/18 §3): scrape-грань на том же
-// mTLS-Kestrel-порту, что /healthz; защита API транспортная (mTLS — MtlsApiTests),
-// здесь проверяем экспозицию Prometheus-формата и живые серии циклов.
+// HTTPS-Kestrel-порту, что /healthz; защита API — транспортная (mTLS: 401 без
+// валидного серта на /api покрывает MtlsApiTests); /metrics — открытая грань
+// (arch/18 §3). Здесь проверяем экспозицию Prometheus-формата и живые серии.
 [Collection(NonE2eCollection.Name)]
 public sealed class MetricsTests(PgMetricsFixture fx)
 {
