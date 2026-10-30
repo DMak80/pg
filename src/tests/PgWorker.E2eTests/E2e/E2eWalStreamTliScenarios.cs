@@ -47,8 +47,6 @@ public sealed class E2eWalStreamTliScenarios(E2eWalStreamTliScenariosFx Ctx) : I
         var ct = cts.Token;
         var (fx, app, cluster, adminDsn, masterNode) = await StartWalScenarioAsync("wal-t24a", "shopt24a", ct);
         await using var appOwner = app;
-        var hostEndpoint = Fx.S3Endpoint;
-        await using var backupS3 = new PgWorker.Backups.BackupS3(new PgWorker.Backups.S3ClientOptions(hostEndpoint, Bucket, E2eEnvironment.S3RootUser, E2eEnvironment.S3RootPassword));
         var writer = new PgWorker.Backups.WalStatusWriter(G, [Endpoint]);
         var bothStreaming = await E2ePhase.WaitAsync(Fx, "wal-receivers-up", async () =>
         {
@@ -63,9 +61,7 @@ public sealed class E2eWalStreamTliScenarios(E2eWalStreamTliScenariosFx Ctx) : I
         string? tailBefore = null;
         var anchored = await E2ePhase.WaitAsync(Fx, "wal-tail-anchored", async () =>
         {
-            var listed = await backupS3.ListWalAsync(cluster, "shard1", ct: ct);
-            if (!listed.IsSuccess) return false;
-            var tli1 = listed.Value.Select(o => o.Name)
+            var tli1 = (await ListWalNamesAsync(cluster, "shard1", ct))
                 .Where(n => n.Length == 24 && n.StartsWith("00000001", StringComparison.Ordinal))
                 .OrderBy(n => n, StringComparer.Ordinal).ToList();
             if (tli1.Count < 2) return false;
@@ -109,10 +105,9 @@ public sealed class E2eWalStreamTliScenarios(E2eWalStreamTliScenariosFx Ctx) : I
             // Прогресс листинга S3 (t29 §3.4): размер, max-TLI сегментов, наличие .history
             Func<Task<string>> walListingProgress = async () =>
             {
-                var listed = await backupS3.ListWalAsync(cluster, "shard1", ct: ct);
-                if (!listed.IsSuccess || listed.Value.Count == 0)
+                var names = (await ListWalNamesAsync(cluster, "shard1", ct)).ToList();
+                if (names.Count == 0)
                     return "listing=empty";
-                var names = listed.Value.Select(o => o.Name).ToList();
                 var maxTli = names.Where(n => !n.EndsWith(".history", StringComparison.Ordinal))
                     .Select(n => Convert.ToUInt32(n[..8], 16)).DefaultIfEmpty(0u).Max();
                 return $"objects={names.Count}, maxTli=0x{maxTli:x}, history={(names.Any(n => n.EndsWith(".history", StringComparison.Ordinal)) ? "present" : "absent")}";
@@ -124,18 +119,17 @@ public sealed class E2eWalStreamTliScenarios(E2eWalStreamTliScenariosFx Ctx) : I
             // маркеры остаются в логах агентов артефактов как телеметрия.
             var backfilled = await E2ePhase.WaitAsync(Fx, "wal-tli-backfill-delivered", async () =>
             {
-                var listed = await backupS3.ListWalAsync(cluster, "shard1", ct: ct);
-                return listed.IsSuccess && listed.Value.Select(o => o.Name)
-                    .Any(n => n.Length == 24 && n.StartsWith("00000001", StringComparison.Ordinal)
-                        && string.CompareOrdinal(n, tailBefore) > 0);
+                var names = await ListWalNamesAsync(cluster, "shard1", ct);
+                return names.Any(n => n.Length == 24 && n.StartsWith("00000001", StringComparison.Ordinal)
+                    && string.CompareOrdinal(n, tailBefore) > 0);
             }, TimeSpan.FromSeconds(90), ct, progress: walListingProgress);
             backfilled.Should().BeTrue("old-timeline segments above the tail are backfilled (AC1)");
 
             // (б) .history нового TLI в S3
             var history = await E2ePhase.WaitAsync(Fx, "wal-history-present", async () =>
             {
-                var listed = await backupS3.ListWalAsync(cluster, "shard1", ct: ct);
-                return listed.IsSuccess && listed.Value.Any(o => o.Name == $"{tli:x8}.history");
+                var names = await ListWalNamesAsync(cluster, "shard1", ct);
+                return names.Any(n => n == $"{tli:x8}.history");
             }, TimeSpan.FromSeconds(90), ct, progress: walListingProgress);
             history.Should().BeTrue($"wal/{tli:x8}.history is uploaded by the receiver (AC1)");
 
@@ -144,13 +138,13 @@ public sealed class E2eWalStreamTliScenarios(E2eWalStreamTliScenariosFx Ctx) : I
             {
                 var read = await writer.ReadAsync(cluster, "shard1", ct);
                 if (!read.IsSuccess || read.Value is null) return false;
-                var listed = await backupS3.ListWalAsync(cluster, "shard1", ct: ct);
-                if (!listed.IsSuccess || listed.Value.Count == 0) return false;
+                var names = await ListWalNamesAsync(cluster, "shard1", ct);
+                if (names.Count == 0) return false;
                 var chainStart = PgWorker.Backups.WalFileName.TryParse(
                     read.Value.ChainStartSegment);
                 if (chainStart is null) return false;
                 var chain = PgWorker.Backups.WalChain.CheckWithRestart(
-                    chainStart.Value, listed.Value.Select(o => o.Name));
+                    chainStart.Value, names);
                 return chain.IsContinuous
                     && read.Value.State == WalStreamStatus.Active;
             }, TimeSpan.FromSeconds(90), ct, progress: walListingProgress);
@@ -204,8 +198,6 @@ public sealed class E2eWalStreamTliScenarios(E2eWalStreamTliScenariosFx Ctx) : I
         var ct = cts.Token;
         var (fx, app, cluster, adminDsn, masterNode) = await StartWalScenarioAsync("wal-t24b", "shopt24b", ct);
         await using var appOwner = app;
-        var hostEndpoint = Fx.S3Endpoint;
-        await using var backupS3 = new PgWorker.Backups.BackupS3(new PgWorker.Backups.S3ClientOptions(hostEndpoint, Bucket, E2eEnvironment.S3RootUser, E2eEnvironment.S3RootPassword));
         var writer = new PgWorker.Backups.WalStatusWriter(G, [Endpoint]);
         var bothStreaming = await E2ePhase.WaitAsync(Fx, "wal-receivers-up", async () =>
         {
@@ -222,11 +214,9 @@ public sealed class E2eWalStreamTliScenarios(E2eWalStreamTliScenariosFx Ctx) : I
         // возникает; якорь делает факт tli_jump в agent-ключе (ассерт ниже)
         // детерминированным (канон входа — wal-t24a «wal-tail-anchored»).
         var anchored = await E2ePhase.WaitAsync(Fx, "wal-tail-anchored", async () =>
-        {
-            var listed = await backupS3.ListWalAsync(cluster, "shard1", ct: ct);
-            return listed.IsSuccess && listed.Value.Count(o =>
-                o.Name.Length == 24 && o.Name.StartsWith("00000001", StringComparison.Ordinal)) >= 2;
-        }, TimeSpan.FromSeconds(90), ct);
+            (await ListWalNamesAsync(cluster, "shard1", ct)).Count(n =>
+                n.Length == 24 && n.StartsWith("00000001", StringComparison.Ordinal)) >= 2,
+            TimeSpan.FromSeconds(90), ct);
                 anchored.Should().BeTrue("the TLI 1 chain must be anchored in S3 before the outage");
 
         // Секция outage+jump — свой бюджет 3 мин (приказ владельца: длинный
@@ -323,10 +313,8 @@ public sealed class E2eWalStreamTliScenarios(E2eWalStreamTliScenariosFx Ctx) : I
             // Прогресс-делегат: листинг S3 + ключ wal + ключи full (t29 §3.4)
             async Task<string> ConvergenceProgressAsync()
             {
-                var listed = await backupS3.ListWalAsync(cluster, "shard1", ct: ct);
-                var listing = !listed.IsSuccess || listed.Value.Count == 0
-                    ? "listing=empty"
-                    : $"objects={listed.Value.Count}";
+                var names = (await ListWalNamesAsync(cluster, "shard1", ct)).ToList();
+                var listing = names.Count == 0 ? "listing=empty" : $"objects={names.Count}";
                 var wal = await writer.ReadAsync(cluster, "shard1", ct);
                 var walState = wal is { IsSuccess: true, Value: { } w }
                     ? $"{w.State}{(w.Gap is null ? "" : "+gap")}"
@@ -366,10 +354,10 @@ public sealed class E2eWalStreamTliScenarios(E2eWalStreamTliScenariosFx Ctx) : I
                     || wal.Error is { } we && we.Contains("tli-gap", StringComparison.Ordinal))
                     return false;
 
-                var listed = await backupS3.ListWalAsync(cluster, "shard1", ct: ct);
-                if (!listed.IsSuccess || listed.Value.Count == 0)
+                var listed = await ListWalNamesAsync(cluster, "shard1", ct);
+                if (listed.Count == 0)
                     return false;
-                var names = listed.Value.Select(o => o.Name).ToList();
+                var names = listed.ToList();
                 var chainStart = PgWorker.Backups.WalFileName.TryParse(wal.ChainStartSegment);
                 if (chainStart is null)
                     return false;
@@ -742,6 +730,41 @@ public sealed class E2eWalStreamTliScenarios(E2eWalStreamTliScenariosFx Ctx) : I
     private async Task<IReadOnlyList<Kv>> FullKeysAsync(string cluster, string shard)
         => (await G.RangeAsync(Endpoint, $"/pgworker/backups/{cluster}/{shard}/full/",
             TestContext.Current.CancellationToken)).Value;
+
+    // Листинг wal-префикса в ownS3 ИЗ СЕТИ контура (docker run mc, alias
+    // e2e-owns3:9000 — «сеть одна»): хост-публикация ownS3 после stop/start
+    // ноды не восстанавливается (mac userland-proxy, разбор №17 — ни один
+    // хост-запрос не дошёл до сервера), контейнерные клиенты работают всё
+    // время. Возвращает ИМЕНА объектов (сегменты, *.history) префикса
+    // wal/{cluster}/{shard}/.
+    private async Task<IReadOnlyList<string>> ListWalNamesAsync(string cluster, string shard, CancellationToken ct)
+    {
+        var output = await Fx.RunDockerAsync(
+            ["run", "--rm", "--network", Fx.NetName, "--entrypoint", "/bin/sh", E2eEnvironment.McImage,
+                "-c", $"mc alias set t {Fx.S3EndpointForContainers} {E2eEnvironment.S3RootUser} {E2eEnvironment.S3RootPassword} >/dev/null"
+                      // || true: пустой префикс (раннее окно сценария) — mc ls
+                      // возвращает код 1 «Object does not exist», это не сбой
+                      + $" && mc ls --recursive --json t/{Bucket}/{cluster}/{shard}/wal/ || true"], ct);
+        var names = new List<string>();
+        foreach (var line in output.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(line);
+                if (doc.RootElement.TryGetProperty("key", out var key) && key.GetString() is { } k)
+                {
+                    var i = k.LastIndexOf('/');
+                    names.Add(i < 0 ? k : k[(i + 1)..]);
+                }
+            }
+            catch (JsonException)
+            {
+                // строка не JSON (прогресс mc) — следующая
+            }
+        }
+
+        return names;
+    }
 
     private async Task<Kv?> GetOrNullAsync(string key)
         => (await G.GetAsync(Endpoint, key, TestContext.Current.CancellationToken)).Value;

@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using DotNet.Testcontainers.Builders;
 using DotNet.Testcontainers.Configurations;
@@ -46,7 +47,11 @@ public sealed class E2ePatroniFileSdScenarios(E2ePatroniFileSdScenariosFx Ctx) :
         var sdVolName = $"pgw-sd-{Fx.ClusterTag}";
         var sdGenName = $"pgw-sdgen-{Fx.ClusterTag}";
         var promName = $"pgw-prom-{Fx.ClusterTag}";
-        var promUrl = $"http://{promName}:9090"; // внутрисетевой, без публикаций
+        // API опрашивает ТЕСТ — хостовый потребитель: динамическая публикация
+        // (localhost:{фактический порт}, docs/e2e-isolation.md §2; внутрисетевое
+        // имя с хоста не резолвится — разбор №17). Скрейп нод при этом целиком
+        // внутрисетевой (<alias>:8008, host-форвардинга в контуре нет).
+        var promUrl = "";
         // Bind-пути резолвит демон хоста: артефакты окружения — ArtifactsDir.
         var hostArtifactsDir = Fx.ArtifactsDir;
         try
@@ -104,6 +109,7 @@ public sealed class E2ePatroniFileSdScenarios(E2ePatroniFileSdScenariosFx Ctx) :
             {
                 "run", "-d", "--name", promName,
                 "--network", Fx.NetName,
+                "-p", "9090", // динамическая публикация API (опрос из теста)
                 "-v", $"{sdVolName}:/etc/prometheus/sd:ro",
                 // Bind — ХОСТОВЫЕ пути факта (раннер: hostArtifacts ↔ /artifacts,
                 // файлы факта — в подкаталоге <runId>; bind несуществующего
@@ -119,6 +125,10 @@ public sealed class E2ePatroniFileSdScenarios(E2ePatroniFileSdScenariosFx Ctx) :
             Console.WriteLine($"[PHASE] e2e[{Fx.Slug}]: starting contour containers (sd-generator + prometheus)…");
             await Fx.RunDockerAsync([.. sdGenArgs], ct);
             await Fx.RunDockerAsync([.. promArgs], ct);
+            // Фактический опубликованный порт API прометея (docker port).
+            var promPortOut = await Fx.RunDockerAsync(["port", promName, "9090/tcp"], ct);
+            var promHostPort = int.Parse(promPortOut.Split(':').Last().Trim(), CultureInfo.InvariantCulture);
+            promUrl = $"http://localhost:{promHostPort}";
             using var promHttp = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
 
             // ---------- кластер ----------

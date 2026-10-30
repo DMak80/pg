@@ -37,8 +37,9 @@ public sealed class E2eSupervisorOrphanDrHoldScenarios(E2eSupervisorOrphanDrHold
     [Fact]
     public async Task BackupOrphanDrHoldFullSurvivesTtlRequestCleansUp()
     {
-        // Arrange 1 — окружение bk-drh (withS3Node), воркер с OrphanTtlSec=120,
-        //   Supervisor IntervalSec=60 (StartOrphanHostAsync — сжатое время)
+        // Arrange 1 — окружение bk-drh (withS3Node), воркер сирот в сжатом
+        //   времени (StartOrphanHostAsync: OrphanTtlSec=30, IntervalSec=10 —
+        //   TTL 120/проход 60 не умещались в 3-минутный потолок теста)
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(
             TestContext.Current.CancellationToken);
         cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
@@ -69,9 +70,10 @@ public sealed class E2eSupervisorOrphanDrHoldScenarios(E2eSupervisorOrphanDrHold
             $"the orphan must land in the registry with has_valid_full=true: [{(await GetOrNullAsync("/pgworker/backups/orphans"))?.Value}]");
 
         // Act 2 — окно выживания: WaitFor, пока с момента first_seen записи
-        // прошло ≥ TTL (120 c) + один проход (60 c) = 180 c — к этому моменту
-        // sweeper УЖЕ обязан был удалить незащищённую (поллинг по часам хоста;
-        // сна >30 c в тесте нет — условие опрашивается тиками WaitFor)
+        // прошло ≥ TTL (30 c) + один проход (10 c) = 40 c (параметры
+        // StartOrphanHostAsync) — к этому моменту sweeper УЖЕ обязан был
+        // удалить незащищённую (поллинг по часам хоста; сна >30 c в тесте
+        // нет — условие опрашивается тиками WaitFor)
         long firstSeen = 0;
         var window = await WaitPhaseAsync("dr-ttl-window", async () =>
         {
@@ -82,7 +84,7 @@ public sealed class E2eSupervisorOrphanDrHoldScenarios(E2eSupervisorOrphanDrHold
             firstSeen = doc.RootElement.GetProperty("orphans").EnumerateArray()
                 .Single(o => o.GetProperty("prefix").GetString() == $"{ghost}/shard1")
                 .GetProperty("first_seen_unix").GetInt64();
-            return DateTimeOffset.UtcNow.ToUnixTimeSeconds() >= firstSeen + 120 + 60;
+            return DateTimeOffset.UtcNow.ToUnixTimeSeconds() >= firstSeen + 30 + 10;
         }, TimeSpan.FromSeconds(90), ct);
         window.Should().BeTrue("the expired TTL window plus one pass must arrive");
 

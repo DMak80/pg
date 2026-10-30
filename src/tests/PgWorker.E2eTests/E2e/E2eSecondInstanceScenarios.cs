@@ -143,11 +143,6 @@ public sealed class E2eSecondInstanceScenarios(E2eSecondInstanceScenariosFx Ctx)
             ["PGW_PG_STANDBY_PASSWORD"] = E2eFixture.StandbyPassword,
             ["PGW_BUCKET_ADMIN_PASSWORD"] = E2eFixture.BucketAdminPassword,
             ["PGW_BUCKET_MOVER_PASSWORD"] = E2eFixture.MoverPassword,
-
-            // etcd окружения: воркер в сети контура — внутрисетевой алиас;
-            // Advertised — тот же (Patroni-ноды в той же сети).
-            ["PgWorker__Etcd__Endpoints__0"] = Endpoint,
-            ["PgWorker__Etcd__AdvertisedEndpoints__0"] = Endpoint,
             ["PgWorker__Docker__Mode"] = "Plain",
             ["PgWorker__Docker__ContourNetwork"] = Fx.NetName,
             ["PgWorker__Docker__Hosts__0__Name"] = "host.docker.internal",
@@ -187,6 +182,16 @@ public sealed class E2eSecondInstanceScenarios(E2eSecondInstanceScenariosFx Ctx)
             ["ASPNETCORE_URLS"] = "https://+:8443",
             ["DOTNET_ENVIRONMENT"] = "Production",
         };
+
+        // etcd окружения: воркер в сети контура — ВНУТРИСЕТEВОЙ алиас
+        // (e2e-etcdN:2379, «сеть одна»; хостовый localhost из контейнера
+        // не резолвится — разбор №17: оба инстанса api=0, Connection
+        // refused); Advertised — тот же (Patroni-ноды в той же сети).
+        for (var i = 0; i < Fx.EtcdEndpointsForContainers.Count; i++)
+        {
+            env[$"PgWorker__Etcd__Endpoints__{i}"] = Fx.EtcdEndpointsForContainers[i];
+            env[$"PgWorker__Etcd__AdvertisedEndpoints__{i}"] = Fx.EtcdEndpointsForContainers[i];
+        }
 
         var args = new List<string>
         {
