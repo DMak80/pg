@@ -631,7 +631,11 @@ public sealed class E2eEnvironment : IAsyncDisposable
                 return;
             }
             catch (ApplicationException e) when (attempt < 30
-                && e.Message.Contains("no such object", StringComparison.OrdinalIgnoreCase))
+                && (e.Message.Contains("no such object", StringComparison.OrdinalIgnoreCase)
+                    // docker отдаёт «network <name> not found» — шаг 6 teardown
+                    // (per-cluster own-only сети) уже снёс pgw-en-{runId}:
+                    // повторное rm — успех, не ретрай и не фейл cleanup'а
+                    || e.Message.Contains("not found", StringComparison.OrdinalIgnoreCase)))
             {
                 return; // уже удалена — успех
             }

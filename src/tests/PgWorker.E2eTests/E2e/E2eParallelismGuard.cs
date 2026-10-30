@@ -15,7 +15,6 @@ internal static class E2eParallelismGuard
     private static readonly SemaphoreSlim Gate = new(MaxLiveEnvironments, MaxLiveEnvironments);
 
     private static int _live;
-    private static int _warned;
 
     private static int ParseMax()
     {
@@ -25,9 +24,14 @@ internal static class E2eParallelismGuard
 
     /// <summary>Захват слота контура (ждёт освобождения; отмена — по токену).
     /// Парный вызов — <see cref="Release"/> (в DisposeAsync окружения либо в
-    /// catch провалившегося подъёма).</summary>
+    /// catch провалившегося подъёма). Захват = «живой контур»: счётчик
+    /// инкрементируется здесь, а не по факту подъёма — иначе Release при
+    /// провале подъёма уводит баланс в минус (slot imbalance в каждой серии).</summary>
     public static void Acquire(string slug, CancellationToken ct)
-        => Gate.Wait(ct);
+    {
+        Gate.Wait(ct);
+        Interlocked.Increment(ref _live);
+    }
 
     /// <summary>Освобождение слота контура (DisposeAsync / провал подъёма).</summary>
     public static void Release(string slug)
@@ -37,29 +41,4 @@ internal static class E2eParallelismGuard
         if (live < 0)
             Console.Error.WriteLine($"e2e[{slug}]: [E2E-PARALLELISM] Release without Acquire — slot imbalance");
     }
-
-    /// <summary>Регистрация живого контура (после успешного подъёма):
-    /// при превышении дефолта — громкая пометка вне стабильного канона.</summary>
-    public static void OnEnvironmentStarted(string slug)
-    {
-        var live = Interlocked.Increment(ref _live);
-        if (live > MaxLiveEnvironments && Interlocked.Exchange(ref _warned, 1) == 0)
-        {
-            var line = $"{DateTime.UtcNow:HH:mm:ss} [E2E-PARALLELISM] e2e[{slug}]: live E2E contours {live} > canon"
-                + $" {MaxLiveEnvironments} (PGW_E2E_MAX_CONTOURS / docs/e2e-launch.md §5)"
-                + " — the run is outside the stable canon: the results require this marking.";
-            Console.Error.WriteLine(line);
-            try
-            {
-                File.AppendAllText(E2eFixture.StaticPhaseLogPath, line + Environment.NewLine);
-            }
-            catch
-            {
-                // файловая телеметрия — «лучшими усилиями», не роняет серию
-            }
-        }
-    }
-
-    /// <summary>Освобождение контура (DisposeAsync окружения, host-ветка).</summary>
-    public static void OnEnvironmentDisposed() => Release(string.Empty);
 }

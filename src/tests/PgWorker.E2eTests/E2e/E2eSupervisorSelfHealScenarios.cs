@@ -71,6 +71,15 @@ public sealed class E2eSupervisorSelfHealScenarios(E2eSupervisorSelfHealScenario
                 ?.Value.Contains("ACTIVE") == true,
             TimeSpan.FromSeconds(90), ct);
         walActive.Should().BeTrue("the wal key must become ACTIVE after the first full");
+
+        // Секция «догон цепи + инъекция дыры» — свой бюджет 3 мин (приказ
+        // владельца: длинный тест — переприсвоение ct по секциям, каждая
+        // секция ≤3 мин; сценарий целиком в один потолок не умещается).
+        using var ctsChain = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        ctsChain.CancelAfter(TimeSpan.FromMinutes(3));
+        ct = ctsChain.Token;
+
         // Догон цепи за старт первого полного (инцидент прогона 2026-09-13:
         // окно [chain_start..last_uploaded] не росло — причина найдена: голый
         // pg_switch_wal на пустой базе no-op, см. SwitchWalsAsync). Дыра по
@@ -180,6 +189,13 @@ public sealed class E2eSupervisorSelfHealScenarios(E2eSupervisorSelfHealScenario
         replicasPast.Should().BeTrue(
             $"the shard1 replicas must catch up with the gap {hole} (LSN {replayTarget}) — " +
             "otherwise the environment is unhealthy (a stuck replica) and the t07 logic is not exercised");
+        // Секция «порча + самолечение» (WAL_CHAIN_ERROR → пересъём → ACTIVE) —
+        // свой бюджет 3 мин (мульти-CTS, приказ владельца).
+        using var ctsHeal = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        ctsHeal.CancelAfter(TimeSpan.FromMinutes(3));
+        ct = ctsHeal.Token;
+
         // Останавливаем walreceiver ВСЕХ нод шарда до порчи (t25: приёмник —
         // supervisord-программа ноды; admin-stop): живой приёмник переснимает
         // сегмент раньше контрольного тика (5 c) — дыра заживает до WAL_CHAIN_ERROR.
@@ -553,9 +569,11 @@ public sealed class E2eSupervisorSelfHealScenarios(E2eSupervisorSelfHealScenario
     }
 
     // Внутрисетевые адреса ОБОИХ нод шарда1: СПИСОК нод — из portalloc, а
-    // порт — контейнерный 5432 (контур Варианта A без host-публикаций:
-    // portalloc-pg из раннера не слушается — connection rejected на каждой
-    // пробе; ср. MasterPgAsync — тоже внутрисетевой 5432).
+    // pg-порты ОБЕИХ нод shard1 из portalloc на localhost (хост-модель:
+    // portalloc-pg публикуется хосту — те же порты, что в MasterPgAsync;
+    // комментарий «контейнерный 5432 без публикаций» — наследие раннер-эпохи:
+    // localhost:5432 с хоста не слушается ничем, проба вечно
+    // connection-refused → фейл «replicas-past-hole» (разбор 18b)).
     private async Task<List<(string Node, int Port)>> Shard1PortsAsync(string cluster)
     {
         var kv = await G.GetAsync(Endpoint, $"/pgworker/portalloc/{cluster}",
@@ -564,7 +582,7 @@ public sealed class E2eSupervisorSelfHealScenarios(E2eSupervisorSelfHealScenario
         var entries = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(kv.Value!.Value)!;
         return entries
             .Where(p => p.Key.StartsWith("shard1/", StringComparison.Ordinal))
-            .Select(p => (p.Key.Split('/')[1], 5432))
+            .Select(p => (p.Key.Split('/')[1], p.Value.GetProperty("pg").GetInt32()))
             .ToList();
     }
 
