@@ -94,14 +94,18 @@ public static class ApiTlsEndpoints
         var port = ResolvePort(builder.Configuration);
         // Явный Listen подавляет default-URL — только HTTPS-грань. Серт
         // запрашивается, но НЕ требуется (AllowCertificate) и НЕ валидируется
-        // на хендшейке: валидация — в ClientCertAuthMiddleware (401 только на
-        // /api; /healthz и /metrics — открытая грань доверенной docker-сети).
-        builder.WebHost.ConfigureKestrel(o => o.ListenAnyIP(port, listenOptions => listenOptions.UseHttps(
-            new HttpsConnectionAdapterOptions
-            {
-                ServerCertificate = serverCert,
-                ClientCertificateMode = ClientCertificateMode.AllowCertificate,
-            })));
+        // на хендшейке: без AllowAnyClientCertificate Kestrel применяет
+        // дефолтную системную валидацию цепочки и рвёт хендшейк. Валидация —
+        // в ClientCertAuthMiddleware (401 только на /api; /healthz и /metrics
+        // — открытая грань доверенной docker-сети).
+        // AllowAnyClientCertificate — void (мутирует объект), поэтому до ConfigureKestrel.
+        var httpsOptions = new HttpsConnectionAdapterOptions
+        {
+            ServerCertificate = serverCert,
+            ClientCertificateMode = ClientCertificateMode.AllowCertificate,
+        };
+        httpsOptions.AllowAnyClientCertificate();
+        builder.WebHost.ConfigureKestrel(o => o.ListenAnyIP(port, listenOptions => listenOptions.UseHttps(httpsOptions)));
         return new ApiTlsSetup(serverCert, source, warning);
     }
 

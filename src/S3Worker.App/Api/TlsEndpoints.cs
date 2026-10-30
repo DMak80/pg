@@ -77,14 +77,18 @@ public static class TlsEndpoints
 
         // Явный Listen подавляет default-URL (ASPNETCORE_HTTP_PORTS) — только
         // HTTPS-грань. Серт запрашивается, но НЕ требуется (AllowCertificate) и
-        // НЕ валидируется на хендшейке: валидация — в ClientCertAuthMiddleware
-        // (401 только на /api; /healthz и /metrics — открытая грань).
-        builder.WebHost.ConfigureKestrel(o => o.ListenAnyIP(port, listenOptions => listenOptions.UseHttps(
-            new HttpsConnectionAdapterOptions
-            {
-                ServerCertificate = serverCert,
-                ClientCertificateMode = ClientCertificateMode.AllowCertificate,
-            })));
+        // НЕ валидируется на хендшейке: без AllowAnyClientCertificate Kestrel
+        // применяет дефолтную системную валидацию и рвёт хендшейк. Валидация —
+        // в ClientCertAuthMiddleware (401 только на /api; /healthz и /metrics —
+        // открытая грань).
+        // AllowAnyClientCertificate — void (мутирует объект), поэтому до ConfigureKestrel.
+        var httpsOptions = new HttpsConnectionAdapterOptions
+        {
+            ServerCertificate = serverCert,
+            ClientCertificateMode = ClientCertificateMode.AllowCertificate,
+        };
+        httpsOptions.AllowAnyClientCertificate();
+        builder.WebHost.ConfigureKestrel(o => o.ListenAnyIP(port, listenOptions => listenOptions.UseHttps(httpsOptions)));
         return new ApiTlsSetup(serverCert, source, warning);
     }
 
