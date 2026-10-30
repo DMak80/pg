@@ -121,7 +121,7 @@ Scope = `<C>-<X>`, глобально уникален. Связь со шард
 | `/pgworker/portalloc/<C>` | JSON `{"<shard>/<node>":{"host":"h1","pg":15432,"patroni":18008,"doorman":16432}}` | адреса Patroni-проб (`arch/14` §2.4) | канонический `host:patroni-порт` члена HA (источник — DSN шарда); в UI не отображается |
 | `/pgworker/work/<C>` | JSON `{"op":"provision\|…","phase":"…","updated_unix":…,"instance":"…","last_error"?,"fail_count"?,"fail_first_unix"?,"retry_not_before_unix"?,"unreachable"?,"last_failover"?,"last_rebuild"?}` (канон — arch/14 §3.3) | `WorkJournalInfo` (§3) | журнал фаз процесса воркера; `last_error` + `fail_first_unix` кормят алерт `provision-stuck` (03 §4) — панель видит, ЧТО именно фейлится у неинициализирующегося кластера; битый JSON — parseError-запись, ключ не трогаем (домен воркера); в UI отображается через алерты |
 | `/pgworker/moves/<C>/<bucket>` | JSON-заявка `{"op":"move"\|"rollback"\|"finalize"\|"abort","to"?,"old_shard"?,"skip_reverse"?,"resume"?,"force"?,"requested_unix":<unix>,"requested_by"?}` | `MoveTicket` (§3) | очередь заявок на переезды: панель читает (вкладка «Переезды»); **пишет PgWorker** по команде мутации §9.7 (пришла через API воркера); после успеха/перманентного отказа заявку УДАЛЯЕТ PgWorker — исчезновение из очереди без изменения routing/status = отвергнутая заявка |
-| `/pgworker/api/<id>` | lease TTL 15 c, JSON `{"url":"https://<host>:<port>","instance":"<id>","since_unix":…,"cert_thumbprint"?:"<sha256-hex>"}` | `WorkerEndpoint[]` (§3) | **дискавери API PgWorker** (arch/14 §1.1): ставит сам воркер; ключ жив = инстанс жив и URL валиден. URL — `https://`: API PgWorker обслуживается только по mTLS — панель аутентифицируется клиентским сертификатом per-install API-CA (единая пакета с KafkaWorker, §2.3.2: `AdminPanel:Workers:WorkerTls`, env `WORKERS_PANEL_TLS_*`); `X-Api-Key`/`PGW_API_KEY` удалён. `cert_thumbprint` — SHA-256 серта, фактически применённого на грани (из `/workers/api_tls/pgworker` §9.9 или env-фоллбека): панель сверяет с целевым сертом → статус applied/pending-restart на грани «Воркеры» (03 §3); поле опционально (старые инстансы не пишут — «неизвестно»). Панель кеширует в снапшоте и зовёт любой живой при мутациях §9; по этим же URL отдельный тик опрашивает `/healthz` (результат — `WorkerHealth[]`, алерт `worker-unhealthy` 03 §4) |
+| `/pgworker/api/<id>` | lease TTL 15 c, JSON `{"url":"https://<host>:<port>","instance":"<id>","since_unix":…,"cert_thumbprint"?:"<sha256-hex>"}` | `WorkerEndpoint[]` (§3) | **дискавери API PgWorker** (arch/14 §1.1): ставит сам воркер; ключ жив = инстанс жив и URL валиден. URL — `https://`: префикс `/api` PgWorker обслуживается только по mTLS — панель аутентифицируется клиентским сертификатом per-install API-CA (единая пакета с KafkaWorker, §2.3.2: `AdminPanel:Workers:WorkerTls`, env `WORKERS_PANEL_TLS_*`); `/healthz`/`/metrics` на том же URL — открытая https-грань без клиентского серта (arch/14 §1.1); `X-Api-Key`/`PGW_API_KEY` удалён. `cert_thumbprint` — SHA-256 серта, фактически применённого на грани (из `/workers/api_tls/pgworker` §9.9 или env-фоллбека): панель сверяет с целевым сертом → статус applied/pending-restart на грани «Воркеры» (03 §3); поле опционально (старые инстансы не пишут — «неизвестно»). Панель кеширует в снапшоте и зовёт любой живой при мутациях §9; по этим же URL отдельный тик опрашивает `/healthz` (результат — `WorkerHealth[]`, алерт `worker-unhealthy` 03 §4) |
 | `/pgworker/backups/<C>/…` | JSON-статусы полных/WAL (канон — [19-backups.md](../19-backups.md) §4) | `BackupsInfo` (§3) | подсистема бэкапов (arch/19): панель ЧИТАЕТ статусы полных и WAL-цепочек; суточный алерт `backup-full-stale` per-shard (возраст последнего ВАЛИДНОГО COMPLETED-полного — `verify ≠ FAILED`, > `full_max_age_sec` политики кластера, дефолт 86400), WAL-алерты («разрыв/отставание цепочки»), ретенционные алерты `backup-storage-quota` (WARN/CRIT по `state` ключа `/pgworker/backups/storage`) и `backup-deleting-stuck` (warning: `DELETING` старше порога `Alerts:Backups:DeletingStaleSec`, дефолт 21600), алерт `backup-verify-failed` (critical, провал verify полного — `verify.error`); поле `gap` wal-ключа (RPO-зазор tli-прыжка приёмника, arch/19 §3/§4) читается толерантно (отсутствует/битое — null, parseError не пишется) и кормит алерт `backup-wal-tli-gap`; UI-грань бэкапов (статусы полных/WAL/restore джойнятся с S3-инвентарём в сверке грани); пишет префикс ТОЛЬКО PgWorker |
 | `/pgworker/backups/storage` | JSON `{"used_bytes":<n>,"quota_bytes"?<n>,"used_percent"?<n>,"state":"OK"\|"WARN"\|"CRIT","updated_unix":<unix>}` (канон — arch/19 §4) | `BackupsInfo.Storage` | занятость bucket бэкапов установки: пишет ретенционный проход PgWorker (ключ глобальный — вне per-cluster префиксов); панель читает в снапшот префикса `/pgworker/backups/` и зажигает `backup-storage-quota` по `state` (алерт уровня каталога 03 §4); отображается в грани "Хранилище бэкапов" (карточка «Место» — used/quota/вердикт воркера + штамп live-инвентаря) |
 | `/pgworker/backups/orphan-holds/<C>/<X>` | JSON `{"set_unix":<unix>,"set_by":"operator"\|"panel"}` (канон — arch/19 §4) | `BackupOrphansInfo.Holds` (§3) | hold-флаги сирот (DR-hold): панель читает для индикации (бейдж «hold», текст алерта `backup-orphan`) и ставит/снимает через мутации §9.10 — API PgWorker, панель в etcd не пишет; sweeper воркера гасит ключи несирот (воскрес/исчез) |
@@ -133,7 +133,7 @@ Scope = `<C>-<X>`, глобально уникален. Связь со шард
 
 Симметрично §2.3.1: lease-ключи `/kafkaworker/api/<id>` (ставит сам воркер,
 arch/16 §1.1) читаются kafka-refresher'ом в `KafkaSnapshot.WorkerEndpoints`
-— источник URL для kafka-мутаций §10.2. URL — `https://`: API
+— источник URL для kafka-мутаций §10.2. URL — `https://`: префикс `/api`
 KafkaWorker обслуживается только по mTLS — панель аутентифицируется
 клиентским сертификатом per-install API-CA (ЕДИНАЯ пакета на оба
 воркера — один CA `kfw-install-ca` подписывает серверные серты обоих API и
@@ -141,7 +141,9 @@ KafkaWorker обслуживается только по mTLS — панель �
 `AdminPanel:Workers:WorkerTls { ClientCertPem|ClientCertPath,
 ClientKeyPem|ClientKeyPath, ServerCaPem|ServerCaPath }`; env
 `WORKERS_PANEL_TLS_*` — переименованы из `KFW_PANEL_TLS_*` тем же релизом),
-`X-Api-Key` удалён для ОБОИХ воркеров (PgWorker — mTLS, §2.3.1).
+`X-Api-Key` удалён для ОБОИХ воркеров (PgWorker — mTLS на `/api`, §2.3.1);
+`/healthz`/`/metrics` на том же URL — открытая https-грань без клиентского
+серта (arch/16 §1.1).
 Значение — `{"url","instance","since_unix","cert_thumbprint"?}`
 (thumbprint — фактически применённый серт, симметрично §2.3.1; статус — на
 грани «Воркеры» 03 §3). Отсутствие живых ключей → 503
@@ -833,8 +835,9 @@ dsn-ключей шардов с новым bucket_admin-паролем, del з�
 
 ### 9.9. Серверные серты API воркеров (создание/замена/удаление + перезапуск)
 
-Управление серверными сертами входящих mTLS-граней воркеров
-(`pgworker`, `kafkaworker`, `valkeyworker`, `s3worker`) и перезапуск инстансов.
+Управление серверными сертами входящих HTTPS-граней воркеров
+(`pgworker`, `kafkaworker`, `valkeyworker`, `s3worker`; mTLS обязателен
+только на `/api` — arch/14 §1.1) и перезапуск инстансов.
 В отличие от §9.1–§9.8, запись идёт **напрямую в etcd** (не через API
 воркера): воркер не может «принять» серт без перезапуска, а панель должна
 уметь положить серт ДО первого запуска воркера. Воркеры ключи только читают

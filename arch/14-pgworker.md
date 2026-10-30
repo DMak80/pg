@@ -121,19 +121,23 @@ restart); поле опционально (инстансы до введени�
 (при ошибке соединения — следующий; все умерли — 503 + critical-алерт
 `worker-api-unreachable`, arch/adminpanel/03 §4.1).
 
-**Аутентификация — mTLS**: вся HTTP-грань воркера (вкл. `/healthz` и
-`/metrics`) обслуживается только по TLS; клиенты (панель, стендовый сид,
-скрейп Prometheus, docker-HEALTHCHECK) аутентифицируются клиентским
+**Аутентификация — mTLS на `/api`**: грань — один HTTPS-порт `:8080`
+(серверный серт — ниже); клиентский сертификат на TLS-хендшейке
+опционален. Клиентский сертификат (mTLS) ОБЯЗАТЕЛЕН только для префикса
+`/api` — мутации (панель, стендовый сид) аутентифицируются клиентским
 сертификатом, подписанным per-install API-CA (единая пакета с KafkaWorker —
 arch/16 §1.1: CA `kfw-install-ca`, отдельные клиентские серты панели
-`panel.crt` и сида `seed.crt`). Клиент без валидного серта — 401
-(TLS-хендшейк-отказ).
+`panel.crt` и сида `seed.crt`); запрос `/api` без валидного клиентского
+серта — 401. `/healthz` и `/metrics` — открытая грань доверенной
+docker-сети, без клиентского серта (паттерн Patroni REST `:8008` —
+arch/13 §4, verify_client нет): скрейп Prometheus — `https` + `ca_file`
+без `cert_file`/`key_file` (arch/18 §5.2), docker-HEALTHCHECK — без
+клиентского серта.
 `X-Api-Key`/`PGW_API_KEY` удалён; отдельные креды панели и сида — разные
 клиентские серты одной клиентской CA (различимы в журналах сервера,
 отзываются независимо). Отключение TLS
 (`PgWorker:Api:Tls:AllowInsecureHttp`, default `false`) — только для
-in-memory WAF-тестов; в deploy/стенде всегда mTLS. Скрейп Prometheus —
-по mTLS (tls_config, arch/18 §5.2).
+in-memory WAF-тестов; в deploy/стенде грань всегда HTTPS.
 
 **Серверный серт API — источник etcd (перезапуск применяет)**: воркер при
 СТАРТЕ читает ключ `/workers/api_tls/pgworker` (JSON
@@ -1689,7 +1693,7 @@ PgWorker:Pgtune { DbVersion=18, DbType="oltp", HdType="ssd", DbSize="mid_ram",
  # etcd-канала переопределения нет, параметры не фиксируются
 PgWorker:Api { AdvertiseUrl, EnableSeedEndpoint=false,
  Tls {ServerCertPem|Path, ServerKeyPem|Path, ClientCaPem|Path,
- AllowInsecureHttp=false} } # §1.1: mTLS-only грань;
+ AllowInsecureHttp=false} } # §1.1: HTTPS-грань, mTLS обязателен только на /api;
  # URL API (достижимый панелью) в /pgworker/api/<id> — https://;
  # демо-сид-эндпоинт за флагом; AllowInsecureHttp — только WAF-тесты
 # секреты — env PGW_* (§4): per-install пароли + PGW_API_TLS_* / PGW_DOCKER_TLS_* /

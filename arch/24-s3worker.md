@@ -79,20 +79,24 @@ docker-объектов домена не создаёт.
 
 ### 1.1. HTTP API воркера (мутации панели, сиды)
 
-Та же HTTP-грань, что `/healthz` и `/metrics`. mTLS по общему паттерну
-воркеров ([14-pgworker.md](14-pgworker.md) §1.1): клиенты (панель)
+Та же HTTP-грань, что `/healthz` и `/metrics`. Канон воркеров
+([14-pgworker.md](14-pgworker.md) §1.1) — HTTPS-грань, клиентский
+сертификат (mTLS) обязателен только на `/api`: клиенты (панель)
 аутентифицируются клиентским сертификатом, подписанным единой per-install
 API-CA `kfw-install-ca` (единая пакета воркеров установки — отдельные
-клиентские серты панели); клиент без валидного серта — отказ на
-TLS-хендшейке. Префикс `/api` — приёмник ВСЕХ мутаций S3-домена (панель в
-etcd домена не пишет ничего).
+клиентские серты панели); запрос `/api` без валидного серта — 401.
+`/healthz` и `/metrics` — открытая грань доверенной docker-сети, без
+клиентского серта (паттерн Patroni REST `:8008` — arch/13 §4; скрейп
+Prometheus — `https` + `ca_file`, arch/18 §5.2). Префикс `/api` —
+приёмник ВСЕХ мутаций S3-домена (панель в etcd домена не пишет ничего).
 
 **Серверный серт API** — ключ `/workers/api_tls/s3worker` (канон ключа и
 протокол — [adminpanel/02-etcd-contract.md](adminpanel/02-etcd-contract.md)
 §9.9; пишет ТОЛЬКО панель): воркер читает при старте и поднимает
 грань на этом серте; env-секреты `S3W_API_TLS_{CERT,KEY,CLIENT_CA}` —
-бутстрап-фоллбек при отсутствии ключа. `/healthz`, `/metrics` — та же
-mTLS-грань (скрейп Prometheus — по mTLS, arch/18).
+бутстрап-фоллбек при отсутствии ключа. `/healthz`, `/metrics` — открытая
+https-грань без клиентского серта (скрейп Prometheus — `https` +
+`ca_file`, arch/18 §5.2).
 
 **Дискавери API**: ключ `/s3worker/api/<id>` (arch/23 §8) — ставит сам
 инстанс; URL — из `S3Worker:Api:AdvertiseUrl` (достижим панелью);
@@ -473,7 +477,7 @@ S3Worker:OwnS3 { ReplicationReconcileIntervalSec=0 }   # период reconcile 
 S3Worker:Thresholds { NodeBootSec=100, NodeDeadSec=90, HealthIntervalSec=15,
                       SyncIntervalSec=60 }   # SyncIntervalSec — период зонда F (§5 F)
 S3Worker:Parallelism { MaxClusters=4 }
-S3Worker:Api { AdvertiseUrl, EnableSeedEndpoint=false, Tls{...} }   # mTLS-грань, §1.1
+S3Worker:Api { AdvertiseUrl, EnableSeedEndpoint=false, Tls{...} }   # HTTPS-грань, mTLS обязателен только на /api (§1.1)
 # env-секреты S3W_*: S3W_API_TLS_{CERT,KEY,CLIENT_CA}, S3W_DOCKER_TLS_{CA,CERT,KEY},
 #   S3W_DOCKER_SSH_KEY[_PATH], S3W_ETCD_BACKUP_{ACCESSKEY,SECRETKEY} (§4;
 #   полупара — fail-fast старта, пара целиком опциональна — обязательна

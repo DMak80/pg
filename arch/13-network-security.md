@@ -47,7 +47,7 @@
 | мониторинг (doorman/etcd metrics) | doorman metrics, etcd metrics | 6432, 2379 | HTTP scrape | метрики, алерты (P21) |
 | pg_doorman | `127.0.0.1` той же ноды | 5432 | PostgreSQL, **SCRAM** (не trust, §5) | loopback — вне firewall, но под pg_hba |
 | PgWorker | docker-хосты (Engine API) | 2376 | HTTPS **mTLS** (клиентский серт per-install docker-CA; `--tlsverify` на демоне) или SSH-key-туннель :22 → daemon :2376 loopback | provisioning/надзор/rebuild (arch/14 §2.2.1); `:2375` plaintext — запрещён |
-| панель / Prometheus | PgWorker, KafkaWorker | 8080 | HTTPS **mTLS** (клиентские серты per-install API-CA: `panel.crt`, `seed.crt`, `prometheus.crt`) | мутации/healthz/скрейп (arch/14 §1.1, arch/16 §1.1, arch/18 §5.2) |
+| панель / Prometheus | PgWorker, KafkaWorker | 8080 | HTTPS (серверный серт per-install API-CA); mTLS — только `/api` (клиентские серты `panel.crt`, `seed.crt`); `/healthz`/`/metrics` — без клиентского серта | мутации (mTLS)/healthz/скрейп (arch/14 §1.1, arch/16 §1.1, arch/18 §5.2) |
 | панель | Patroni REST :8008 | 8008 | HTTPS (GET /cluster, ca.pem) | live-пробы кластера (arch/adminpanel/02 §6.1) |
 | Prometheus | Patroni :8008 | 8008 | HTTPS scrape (ca.pem), сеть pgw-metrics | метрики Patroni-нод, алерты (arch/18 §5.2) |
 

@@ -68,9 +68,13 @@ URL API — из etcd)        URL воркера (§1.1)
 
 ### 1.1. HTTP API воркера (мутации панели, сиды)
 
-Та же HTTP-грань, что `/healthz` (порт `:8080`); mTLS по канону воркеров
-: клиенты (панель) аутентифицируются клиентским сертификатом
-per-install API-CA; клиенты без валидного серта — отказ на TLS-хендшейке.
+Та же HTTP-грань, что `/healthz` (порт `:8080`); канон воркеров —
+HTTPS-грань, клиентский сертификат (mTLS) обязателен только на `/api`:
+клиенты (панель, стендовый сид) аутентифицируются клиентским сертификатом
+per-install API-CA, запрос `/api` без валидного серта — 401.
+`/healthz` и `/metrics` — открытая грань доверенной docker-сети, без
+клиентского серта (паттерн Patroni REST `:8008` — arch/13 §4; скрейп
+Prometheus — `https` + `ca_file`, arch/18 §5.2).
 Префикс `/api` — приёмник ВСЕХ мутаций valkey-домена (панель в etcd
 домена не пишет ничего). Плюс стендовый сид —
 `POST /api/seed/demo` (демо-кластер; флаг
@@ -203,7 +207,8 @@ env нод для сверок (V3 re-run, надзор C, фаза R ротац
 
 Транспорт и схема ключей — [20-valkey-clusters.md](20-valkey-clusters.md)
 (зеркало §2/§3). Читаемые/пишемые воркером — таблицы ниже. Смежный ключ вне
-префикса — `/workers/api_tls/valkeyworker` (серверный серт mTLS-грани API;
+префикса — `/workers/api_tls/valkeyworker` (серверный серт HTTPS-грани API,
+mTLS обязателен только на `/api`;
 пишет ТОЛЬКО панель, воркер читает при старте — adminpanel/02 §9.9).
 
 
@@ -218,7 +223,7 @@ env нод для сверок (V3 re-run, надзор C, фаза R ротац
 | `/valkey/clusters/<C>/ca_next_key` + `ca_next_pem` | staging НОВОЙ CA в окне ротации (K): подпись серта фазы R, источник bundle; вне ротации ключей нет |
 | `/valkeyworker/rotations/<C>` | заявка ротации креда (`role`: app\|admin) — процесс E |
 | `/valkeyworker/ca_rotations/<C>` | заявка ротации CA/сертов — процесс K |
-| `/workers/api_tls/valkeyworker` | серверный серт mTLS-грани API (§1.1): читает ТОЛЬКО при старте; пишет панель (adminpanel/02 §9.9) |
+| `/workers/api_tls/valkeyworker` | серверный серт HTTPS-грани API (§1.1; mTLS обязателен только на `/api`): читает ТОЛЬКО при старте; пишет панель (adminpanel/02 §9.9) |
 
 ### 3.2. Пишемые ключи
 
@@ -630,7 +635,7 @@ ValkeyWorker:Parallelism { MaxClusters=4 }
 ValkeyWorker:Snapshots { Dir="/snapshots", RetentionFiles=10 }
 ValkeyWorker:AdvertisedClientHost=null   # правило §2; стенды — host.docker.internal
 ValkeyWorker:Api { AdvertiseUrl, EnableSeedEndpoint=false,
-                   Tls { ... } }         # mTLS-грань, паттерн 16 §1.1
+                   Tls { ... } }         # HTTPS-грань, mTLS обязателен только на /api (§1.1)
 # env-секреты: VWK_API_TLS_{CERT,KEY,CLIENT_CA} (§4)
 ```
 

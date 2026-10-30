@@ -171,11 +171,17 @@ Quick-режим: `checks/90-down.sh -v && checks/05-seed.sh` → зелёные
 - панель (докер): логи `docker compose logs adminpanel`, API —
   `curl -b jar $BASE/api/overview`.
 
-## mTLS API воркеров (t03, оба: pgworker + kafkaworker)
+## TLS API воркеров (pgworker + kafkaworker)
 
-HTTP API обоих воркеров (вкл. `/healthz` и `/metrics`) — **только mTLS**
-(arch/14 §1.1 / arch/16 §1.1): ключевая аутентификация X-Api-Key удалена у
-обоих воркеров, грань защищена ЕДИНОЙ per-install API-PKI `kfw-install-ca`.
+HTTP API воркеров — HTTPS-грань ЕДИНОЙ per-install API-PKI
+`kfw-install-ca` (arch/14 §1.1 / arch/16 §1.1): mTLS (клиентский серт)
+обязателен только на `/api`; `/healthz` и `/metrics` — открытая грань
+без клиентского серта (arch/18 §3/§5.2). Ключевая аутентификация
+X-Api-Key удалена у обоих воркеров. До миграции
+t04-open-metrics-healthz-facet (arch/roadmap/pgworker.md) клиентские
+серты `prometheus.crt`/`healthcheck.crt` продолжают выпускаться и
+использоваться скрейпом/чеками — код и конфиги стенда ещё на
+прежней модели.
 
 - **Генерация пакета**: `bash deploy/tls/gen.sh` — создаёт в `deploy/tls/`
   `ca.pem`, серверные `server.crt/key` (kafkaworker) и `pgserver.crt/key`
@@ -190,7 +196,8 @@ HTTP API обоих воркеров (вкл. `/healthz` и `/metrics`) — **т
   `ADMINPANEL__WORKERS__WORKERTLS__*_PATH` (единый клиентский серт panel
   на оба API и доверие ca.pem).
 - **Prometheus**: mount `../../deploy/tls:/tls:ro` + `tls_config`
-  (`prometheus.crt` — отдельный клиентский серт скрейпа, arch/18 §5.2).
+  (канон arch/18 §5.2 — только `ca_file`, без клиентского серта; до
+  миграции t04 в `prometheus.yml` остаётся `prometheus.crt`).
 - **Чеки**: прямые вызовы API воркера (05-seed pg, 20, 65) ходят по
   `https://localhost:8080|8082` с `--cacert ca.pem --cert seed|healthcheck.crt
   --key ...`; остальные — через панель, чей `IWorkerApiGateway` сам

@@ -39,3 +39,30 @@
   PortPlanConvergenceTests (запись без пулера — теперь расхождение).
   Мерж-гейт: docker-E2E PgWorker на свежем Release.
 
+- **`t04-open-metrics-healthz-facet`** — открытая грань `/healthz` +
+  `/metrics` воркеров в коде и конфигах (контракт уже изменён arch-first:
+  arch/14 §1.1, arch/16 §1.1, arch/21 §1.1, arch/24 §1.1, arch/13 §2,
+  arch/18 §3/§5.2/§6, adminpanel/02 §2.3.1/§2.3.2/§9.9): грань — один
+  HTTPS-порт `:8080`, клиентский сертификат (mTLS) обязателен только на
+  `/api`. Код воркеров (паттерн TLS-грани `Shared.Tls`, Program.cs
+  PgWorker/KafkaWorker/ValkeyWorker/S3Worker): клиентский сертификат на
+  TLS-хендшейке — опциональный; требование валидного клиентского серта —
+  middleware/авторизационная политика ТОЛЬКО на префиксе `/api` (без
+  серта — 401); `/healthz` и `/metrics` — отвечают без клиентского серта.
+  Панель без изменений: `IWorkerApiGateway` шлёт `panel.crt` на `/api`
+  (mTLS-проксирование), healthz-тики — те же URL. Стенд/deploy:
+  `deploy/tls/gen.sh` — прекратить выпуск клиентских `prometheus.crt/key`
+  и `healthcheck.crt/key`;
+  `dev-stand/adminpanel/metrics/prometheus/prometheus.yml` — джобы
+  воркеров: `tls_config` только `ca_file`, без `cert_file`/`key_file`;
+  docker-HEALTHCHECK воркеров (deploy-компоуз/Dockerfile) — без
+  клиентского серта; чеки стенда с прямыми пробами `/healthz`//`/metrics`
+  (35-worker-second-instance, 57-kafka-worker-health, 65-metrics) —
+  `curl --cacert ca.pem` без `--cert/--key` на этих пробах (пробы `/api` —
+  с клиентским сертом, как сейчас); `dev-stand/adminpanel/README.md` —
+  снять переходную оговорку про t04. Тесты: интеграционные/WAF — `/api`
+  без клиентского серта = 401, `/metrics` и `/healthz` без серта = 200;
+  Shared.Metrics-интеграция (§6 arch/18) — без авторизации на `/metrics`.
+  Мерж-гейт: docker-E2E PgWorker на свежем Release + чеки стенда
+  65-metrics.sh и 43-etcd-ha.sh.
+
