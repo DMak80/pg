@@ -355,7 +355,7 @@ public class ClusterMutationsApiTests(KafkaApiFixture fixture) : IAsyncLifetime
         noCluster.StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
 
-    // X-Api-Key/KFW_API_KEY удалены — грань API mTLS-only (arch/16 §1.1);
+    // X-Api-Key/KFW_API_KEY удалены — HTTPS-грань, mTLS только на /api (arch/16 §1.1);
     // транспортный отказ/успех проверяет MtlsApiTests на реальном Kestrel-сокете.
 
     // Мутация №16 (adminpanel/02 §10.2-16): заявка ротации admin-пароля —

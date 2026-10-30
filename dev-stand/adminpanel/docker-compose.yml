@@ -211,7 +211,7 @@ services:
       KafkaWorker__Etcd__Endpoints__1: http://etcd2:2379
       KafkaWorker__Etcd__Endpoints__2: http://etcd3:2379
       KafkaWorker__AdvertisedClientHost: host.docker.internal
-      # HTTP API воркера (arch/16 §1.1, t03): mTLS-only, панель ходит по
+      # HTTP API воркера (arch/16 §1.1, t03): HTTPS-грань, mTLS только на /api; панель ходит по
       # compose-DNS с клиентским сертом (lease-ключ /kafkaworker/api/<id> —
       # AdvertiseUrl https://), демо-сид включён (стенд).
       KafkaWorker__Api__AdvertiseUrl: https://kafkaworker:8080

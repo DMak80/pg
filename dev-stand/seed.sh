@@ -12,7 +12,8 @@
 #   ./seed.sh https://localhost:8080 shop2      # ещё один кластер
 set -e
 
-# t03: API воркера mTLS-only — вызов с клиентским сертом seed (отдельные креды сида).
+# Мутации /api — с клиентским сертом seed (конвенция «чек = стендовый сид»);
+# /healthz и /metrics — открытая грань (https без клиентского серта).
 TLS_DIR="$(cd "$(dirname "$0")/../deploy/tls" && pwd)"
 # Хост-порт публикации pgworker (если URL не передан): env → deploy/.env (00-up) → 8080.
 PGW_API_HOST_PORT="${PGW_API_HOST_PORT:-$(awk -F= '$1=="PGW_API_HOST_PORT"{print $2}' "$TLS_DIR/../.env" 2>/dev/null)}"
