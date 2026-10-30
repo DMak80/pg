@@ -13,10 +13,15 @@ public static class EtcdSnapshotSinkFactory
 {
     /// <summary>Per-цельные опции пары (чистая функция для тестов): разбор
     /// запятая-списка → S3ClientOptions на каждую цель; bucket/креды/Region/
-    /// CA — одни на все цели пары (arch/14 §6/§8).</summary>
+    /// CA — одни на все цели пары (arch/14 §6/§8). MaxErrorRetry=0 — клиентские
+    /// ретраи AWSSDK выключены: перебор целей несёт ПУЛ (arch/19 §5,
+    /// «быстрый отказ/успех»), внутренние ретраи клиента на мёртвой цели
+    /// растягивали одну попытку до секунд и съедали бюджет экспорта
+    /// (прецедент MaxErrorRetry — fetch-wal, arch/19 §3.5).</summary>
     internal static S3ClientOptions[] TargetOptions(SnapshotExportS3Options s3)
         => [.. SnapshotExportS3Options.ParseEndpoints(s3.Endpoints).Select(uri => new S3ClientOptions(
-            uri, s3.Bucket, s3.AccessKey, s3.SecretKey, s3.Region, s3.CaBundlePath))];
+            uri, s3.Bucket, s3.AccessKey, s3.SecretKey, s3.Region, s3.CaBundlePath,
+            MaxErrorRetry: 0))];
 
     public static PoolBackupS3 Create(PgWorkerOptions opts)
     {
