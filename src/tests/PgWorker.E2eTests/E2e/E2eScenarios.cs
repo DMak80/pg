@@ -208,9 +208,10 @@ public sealed class E2eScenarios(E2eScenariosFx Ctx, ITestOutputHelper output) :
         var published = System.Text.RegularExpressions.Regex.Matches(ports, @":(\d+)->")
             .Select(m => m.Groups[1].Value)
             .ToList();
-        // IPv4/IPv6-байндинги дублируют каждую пару — уникальных должно быть 8.
-        published.Distinct().Should().HaveCount(8,
-            "2 publish ports (pg+patroni) per node across 4 nodes, all host ports are unique");
+        // IPv4/IPv6-байндинги дублируют каждую пару — уникальных должно быть 12
+        // (тройка портов ноды всегда: пулер обязателен, arch/14 §8).
+        published.Distinct().Should().HaveCount(12,
+            "3 publish ports (pg+patroni+doorman) per node across 4 nodes, all host ports are unique");
 
         // O2 (решение плана №9): probe SELECT 1 по DSN ИЗ КЛЮЧА как записан
         // (multi-host, порты разные, без пароля) + Password из сид-секрета.
