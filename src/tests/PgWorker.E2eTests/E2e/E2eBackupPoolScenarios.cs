@@ -1028,6 +1028,13 @@ public sealed class PoolPolicyValidationScenarios(PoolPolicyValidationScenariosF
             // Act 2 — DR: полный лежит в пуле «bkpool» (node1 жив); чтение DR-источника
             // задаётся source_pool. Сносим контур кластера и поднимаем заново
             // (данные только в S3 — DR), policy кластера больше нет.
+            // DR-секция (снос + повторный подъём + restore) — свой 3-мин CTS
+            // (мульти-CTS, приказ владельца: длинный тест — переприсвоение ct
+            // по секциям; сценарий целиком в один потолок не умещается).
+            using var ctsDr = CancellationTokenSource.CreateLinkedTokenSource(
+                TestContext.Current.CancellationToken);
+            ctsDr.CancelAfter(TimeSpan.FromMinutes(3));
+            ct = ctsDr.Token;
             (await WaitCompletedFullAsync(cluster, ct)).Should().NotBeNull();
             // Снос контура: state=TO_REMOVE → /clusters/<C>/ и /pgworker/backups/<C>/ пусты.
             var config = await G.GetAsync(Endpoint, $"/clusters/{cluster}/config", ct);
@@ -1050,8 +1057,10 @@ public sealed class PoolPolicyValidationScenarios(PoolPolicyValidationScenariosF
                 DateTimeOffset.UtcNow.ToUnixTimeSeconds(), "e2e", SourcePool: Pool);
             await G.PutAsync(Endpoint, PgWorker.Backups.BackupNames.RestoreKey(cluster, "shard1", restoreId),
                 PgWorker.Backups.Restore.RestoreStatusJson.Serialize(op), null, ct);
+            // Бюджет 150 c: DR-операция (скачивание + recovery + промоут) ~80-110 c
+            // (разбор b01) — 90-секундный бюджет не вмещал её при фактическом успехе.
             var restore = await WaitRestoreAsync(cluster, "shard1", restoreId,
-                TimeSpan.FromSeconds(90), ct);
+                TimeSpan.FromSeconds(150), ct);
             restore["state"].GetString().Should().Be("COMPLETED",
                 "the DR-restore reads from source_pool (a foreign prefix — another pool)");
         }
