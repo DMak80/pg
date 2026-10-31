@@ -35,13 +35,16 @@ public class NodeWalReceiverTests
     // ранбука; images.txt — отдельный шаг рутины.
     private const string DoormanImage = "ghcr.io/ozontech/pg_doorman:v3.11.0";
 
-    // Пулер обязателен (arch/14 §8): entrypoint ноды без непустого DOORMAN_CONFIG
+    // Пулер обязателен (arch/14 §8): entrypoint ноды без непустого DOORMAN_CONFIG_TEMPLATE
     // гасит контейнер (fail-fast ДО supervisord) — контейнерам серии нужен YAML,
     // который парсер фактического pg_doorman v3.11.0 принимает: general/pools
     // с обязательными admin_username/admin_password (как в DoormanConfigBuilder;
     // без них отказ парса, exit 78); auth_query не нужен — клиентов через :6432
     // серия не пускает, проверяется pgnode (агент) (бэкенда 127.0.0.1:5432 нет —
     // pg_doorman его не трогает).
+    // TLS disable: серт/конфиг в tmpfs доставляет агент PgNode — у изолированной
+    // серии канала нет, пулер стартуют руками (supervisorctl-механика та же,
+    // arch/14 §2.1/§4).
     private const string DoormanConfigYaml =
         """
         general:
@@ -49,9 +52,7 @@ public class NodeWalReceiverTests
           port: 6432
           admin_username: "pgwd_admin"
           admin_password: "pgwd_admin_password"
-          tls_mode: "require"
-          tls_certificate: "/etc/pg_doorman/tls.crt"
-          tls_private_key: "/etc/pg_doorman/tls.key"
+          tls_mode: "disable"
         pools:
           stubdb:
             server_host: "127.0.0.1"
@@ -191,7 +192,7 @@ public class NodeWalReceiverTests
                 ["PGW_BACKUP_NODE"] = "s1a",
                 ["PGW_ETCD"] = "http://etcd-test:2379",
                 ["PGW_BACKUP_S3_BUCKET"] = "backups",
-                ["DOORMAN_CONFIG"] = DoormanConfigYaml,
+                ["DOORMAN_CONFIG_TEMPLATE"] = DoormanConfigYaml,
             })
             .Build();
         await node.StartAsync(ct);
@@ -207,8 +208,16 @@ public class NodeWalReceiverTests
                 Budget,
                 async () => await SupervisordStatusAsync(node, "pgnode", ct));
 
-            // Assert — пулер тоже жив: DOORMAN_CONFIG-стаб валиден и стартует
-            // не-root (user=postgres) — pg_doorman RUNNING под supervisord'ом.
+            // Assert — пулер стартуется supervisorctl-механикой (та же, что у
+            // агента PgNode: старт — командой после доставки; arch/14 §2.1/§4):
+            // изолированная серия канала не имеет — конфиг кладём руками в
+            // tmpfs и стартуем; pg_doorman RUNNING под supervisord'ом
+            // (user=postgres).
+            await node.ExecAsync(["sh", "-c",
+                "mkdir -p /run/pgw/doorman && cat > /run/pgw/doorman/pg_doorman.yaml <<'YAML'\n"
+                + DoormanConfigYaml + "\nYAML"], ct: ct);
+            (await node.ExecAsync(["supervisorctl", "start", "pg_doorman"], ct: ct))
+                .ExitCode.Should().Be(0, "the pooler starts by command after the config is in place");
             await WaitUntilAsync(
                 async () => (await SupervisordStatusAsync(node, "pg_doorman", ct)).Contains("RUNNING"),
                 Budget,
@@ -330,7 +339,7 @@ public class NodeWalReceiverTests
                 ["PGW_BACKUP_NODE"] = "s1a",
                 ["PGW_ETCD"] = "http://etcd-test:2379",
                 ["PGW_BACKUP_S3_BUCKET"] = "backups",
-                ["DOORMAN_CONFIG"] = DoormanConfigYaml,
+                ["DOORMAN_CONFIG_TEMPLATE"] = DoormanConfigYaml,
             })
             .Build();
         await node.StartAsync(ct);
@@ -412,7 +421,7 @@ public class NodeWalReceiverTests
             .WithName(nodeName)
             // Идентичности бэкапов нет (суть теста), но entrypoint требует
             // непустой DOORMAN_CONFIG (пулер обязателен, arch/14 §8).
-            .WithEnvironment("DOORMAN_CONFIG", DoormanConfigYaml)
+            .WithEnvironment("DOORMAN_CONFIG_TEMPLATE", DoormanConfigYaml)
             .Build();
         await node.StartAsync(ct);
 
