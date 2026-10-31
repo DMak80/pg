@@ -85,7 +85,18 @@ env-флагом; ломает `host.docker.internal`-потребителей) 
 домена не пишет ничего). Плюс стендовый сид —
 `POST /api/seed/demo` (демо-кластер; флаг
 `ValkeyWorker:Api:EnableSeedEndpoint`, default `false`; идемпотентен;
-паттерн [16](16-kafkaworker.md) §1.1).
+паттерн [16](16-kafkaworker.md) §1.1). Плюс (adminpanel/02 §11.2-7/8, u17):
+DELETE-отмена живых заявок ротаций — `DELETE /api/valkey/clusters/{c}/password/
+rotate` (ключ `/valkeyworker/rotations/<C>`, один на обе роли app\|admin;
+гвард «не начата» по `/valkeyworker/work/<C>`: `op=rotate` в переходных фазах
+E1/E2 — PasswordRotator §5 E → 409) и `DELETE /api/valkey/clusters/{c}/ca/
+rotate` (`/valkeyworker/ca_rotations/<C>`; `op=rotate-ca` в P/D/R/C —
+CaRotator §5 K → 409): del ключа воркером (txn compare по значению), заявки
+нет → 404 (порт 02 §9.7.5). Коды: 204 / 404 / 409 / 503. Плюс read-only
+`GET /api/config` (u15, adminpanel/02 §2.3.5): эффективный конфиг установки —
+плоский JSON групп `thresholds`/`loops`/`parallelism` (фактические поля POCO
+Options), пометка `source:"env"` — применяется рестартом воркера; БЕЗ
+секретов/TLS/endpoints; etcd не читается. Коды: 200.
 
 **Дискавери API**: ключ `/valkeyworker/api/<id>` ([20](20-valkey-clusters.md)
 §3) — ставит сам инстанс при старте; URL — из `ValkeyWorker:Api:AdvertiseUrl`
