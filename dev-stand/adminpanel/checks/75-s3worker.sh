@@ -40,6 +40,12 @@ done
   || { echo "❌ s3worker not responding (:${S3W_PORT}/healthz; did 00-up.sh bring it up?)"; exit 1; }
 echo "  s3worker alive: /healthz via https"
 
+# /api без клиентского серта — ровно 401 (mTLS-политика /api, arch/24 §1.1;
+# /healthz выше — открытая грань). GET на существующий маршрут мутации:
+# middleware замыкает 401 до роутинга — состояние не мутируется.
+s3_no_cert_code="$("${HEALTH[@]}" -o /dev/null -w '%{http_code}' "$BASE/api/s3/clusters" 2>/dev/null)"
+[ "$s3_no_cert_code" = 401 ] || { echo "❌ s3worker /api without a client cert = $s3_no_cert_code (expected 401)"; exit 1; }
+
 # 1) Демо-кластер через API: 201 → воркер провижинит (RUNNING) ≤ NodeBootSec+запас.
 body="{\"name\":\"$TAG\",\"platform\":\"owns3\",\"instances\":[{\"name\":\"node1\",\"placement\":{\"dockerHost\":\"local\"},\"resources\":{\"cpu\":0.5,\"memGi\":1,\"diskGi\":5}}]}"
 c="$("${CURL[@]}" -o "$TMP/create.json" -w '%{http_code}' -X POST "$BASE/api/s3/clusters" -H 'Content-Type: application/json' -d "$body")"

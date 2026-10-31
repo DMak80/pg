@@ -46,6 +46,10 @@ api() { curl -s -o /dev/null -w '%{http_code}' -b "$JAR" "$BASE$1"; }
 echo ">>> pgworker: both instances alive (Arrange)"
 $HEALTH https://localhost:${PGW_PORT1}/healthz >/dev/null || { echo "❌ pgworker-1 not alive (:${PGW_PORT1}/healthz https; is the stand up?)"; exit 1; }
 $HEALTH https://localhost:${PGW_PORT2}/healthz >/dev/null || { echo "❌ pgworker-2 not alive (:${PGW_PORT2}/healthz https; did 00-up.sh bring up both?)"; exit 1; }
+# /api без клиентского серта — ровно 401 (mTLS-политика /api, arch/14 §1.1;
+# /healthz выше — открытая грань). Без -f: 401 для curl — не ошибка транспорта.
+pg_no_cert_code="$(curl -s -m 3 -o /dev/null -w '%{http_code}' --cacert "$ROOT/deploy/tls/ca.pem" https://localhost:${PGW_PORT1}/api/clusters)"
+[ "$pg_no_cert_code" = 401 ] || { echo "❌ pgworker-1 /api without a client cert = $pg_no_cert_code (expected 401; :${PGW_PORT1}/api/clusters)"; exit 1; }
 wait_keys /pgworker/api/ 2 30 "Arrange pgworker"
 
 echo ">>> pgworker: docker stop of the first ($PGW1)"

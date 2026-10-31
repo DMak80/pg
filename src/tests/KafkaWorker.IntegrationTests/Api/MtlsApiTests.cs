@@ -25,7 +25,15 @@ public class MtlsApiTests
 {
     private static readonly (string CaPem, string CaKeyPem) ApiCa = ClusterPki.GenerateCa("api-test");
 
-    private sealed record TlsHost(WebApplication App, HttpClient Client, X509Certificate2 ClientCert);
+    private sealed record TlsHost(WebApplication App, HttpClient Client, X509Certificate2 ClientCert)
+        : IAsyncDisposable
+    {
+        public async ValueTask DisposeAsync()
+        {
+            await App.DisposeAsync();
+            Client.Dispose();
+        }
+    }
 
     private static TlsHost StartTlsHost(int port)
     {
@@ -76,9 +84,8 @@ public class MtlsApiTests
     {
         // Arrange: TLS-хост на свободном порту (зонд FreePortWindow — динамический).
         var port = FreePortWindow.Find().From;
-        var host = StartTlsHost(port);
-        using var _ = host.ClientCert; // серт нужен хендшейкам до конца теста
-        using var app = host.App;
+        await using var host = StartTlsHost(port);
+        using var _ = host.ClientCert; // серт нужен хендшейкам до конца теста (App+Client диспоузит хост)
         // Готовность листенера: Start() вернулся, но под параллельным
         // docker-нагрузом прогона первый хендшейк изредка ловил «refused» —
         // ждём фактического приёма TCP, чтобы не маскировать это под TLS-отказ.
@@ -147,5 +154,12 @@ public class MtlsApiTests
         // Act 7 / Assert 7: /apifoo без серта — 404 (не /api: сегмент-префикс
         // точный, прочие пути — открытая грань).
         (await noCertClient.GetAsync("/apifoo", ct)).StatusCode.Should().Be(HttpStatusCode.NotFound);
+
+        // Act 8 / Assert 8: bare /api без серта — 401 (точное "/api" тоже под политикой).
+        (await noCertClient.GetAsync("/api", ct)).StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+
+        // Act 9 / Assert 9: /API/ping без серта — 401 (сравнение префикса
+        // регистронезависимо, OrdinalIgnoreCase).
+        (await noCertClient.GetAsync("/API/ping", ct)).StatusCode.Should().Be(HttpStatusCode.Unauthorized);
     }
 }

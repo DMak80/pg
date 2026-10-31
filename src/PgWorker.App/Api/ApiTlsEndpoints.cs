@@ -98,7 +98,7 @@ public static class ApiTlsEndpoints
         // дефолтную системную валидацию цепочки и рвёт хендшейк. Валидация —
         // в ClientCertAuthMiddleware (401 только на /api; /healthz и /metrics
         // — открытая грань доверенной docker-сети).
-        // AllowAnyClientCertificate — void (мутирует объект), поэтому до ConfigureKestrel.
+        // AllowAnyClientCertificate() мутирует опцию до захвата её listener'ом; вызываем до ConfigureKestrel для определённости.
         var httpsOptions = new HttpsConnectionAdapterOptions
         {
             ServerCertificate = serverCert,

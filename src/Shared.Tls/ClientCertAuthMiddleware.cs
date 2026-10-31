@@ -10,17 +10,33 @@ namespace Shared.Tls;
 // ТОЛЬКО на префиксе /api: без серта или с невалидным сертом — HTTP 401 (НЕ
 // разрыв TLS). /healthz и /metrics — открытая грань доверенной docker-сети:
 // присланный серт игнорируется. Enabled=false — pass-through (режим
-// AllowInsecureHttp, только in-memory WAF-тесты).
+// AllowInsecureHttp, только in-memory WAF-тесты). Инвариант опции:
+// Enabled=true ⇒ ClientCa≠null; нарушение — InvalidOperationException
+// при конфигурировании, не пер-запросный 500.
 public sealed record ClientCertAuthOptions(bool Enabled, X509Certificate2? ClientCa);
 
-public sealed class ClientCertAuthMiddleware(RequestDelegate next, ClientCertAuthOptions options)
+public sealed class ClientCertAuthMiddleware
 {
+    private readonly RequestDelegate _next;
+    private readonly ClientCertAuthOptions _options;
+
+    public ClientCertAuthMiddleware(RequestDelegate next, ClientCertAuthOptions options)
+    {
+        // Guard инварианта опции (spec §3.1.1): без него невалидная пара
+        // дошла бы до TlsChain.ValidateChain(cert, null) и упала 500-м
+        // на каждом /api-запросе при зелёном старте (не fail-fast).
+        if (options.Enabled && options.ClientCa is null)
+            throw new InvalidOperationException("ClientCertAuthOptions: Enabled=true требует ClientCa (инвариант spec §3.1.1)");
+        _next = next;
+        _options = options;
+    }
+
     public async Task InvokeAsync(HttpContext context)
     {
         // 1) WAF-режим (AllowInsecureHttp): без TLS-грани — pass-through.
-        if (!options.Enabled)
+        if (!_options.Enabled)
         {
-            await next(context);
+            await _next(context);
             return;
         }
 
@@ -30,7 +46,7 @@ public sealed class ClientCertAuthMiddleware(RequestDelegate next, ClientCertAut
         if (!path.Equals("/api", StringComparison.OrdinalIgnoreCase)
             && !path.StartsWith("/api/", StringComparison.OrdinalIgnoreCase))
         {
-            await next(context);
+            await _next(context);
             return;
         }
 
@@ -42,13 +58,13 @@ public sealed class ClientCertAuthMiddleware(RequestDelegate next, ClientCertAut
         }
 
         // 4) Серт не проходит цепочку к per-install API-CA — 401.
-        if (!TlsChain.ValidateChain(context.Connection.ClientCertificate, options.ClientCa!))
+        if (!TlsChain.ValidateChain(context.Connection.ClientCertificate, _options.ClientCa!))
         {
             context.Response.StatusCode = StatusCodes.Status401Unauthorized;
             return;
         }
 
         // 5) Валидный серт — пропустить дальше.
-        await next(context);
+        await _next(context);
     }
 }

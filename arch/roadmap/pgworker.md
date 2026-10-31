@@ -39,3 +39,33 @@
   PortPlanConvergenceTests (запись без пулера — теперь расхождение).
   Мерж-гейт: docker-E2E PgWorker на свежем Release.
 
+- **`t04-api-client-cert-eku`** — EKU clientAuth в валидации клиентских
+  сертов /api (сейчас `TlsChain.ValidateChain` EKU не проверяет: серверные
+  серты той же CA годятся как клиентские для /api). `TlsChain.ValidateChain`
+  — общий валидатор (15 вызывателей, валидирует и серверные серты:
+  DockerEngineFactory, PatroniRoleProbe, PgWorker Program.cs, AdminPanel
+  WorkerTlsHandler, RespProbe×2, ValkeyConnection×2, KafkaProtocolClient,
+  MasterLeaseCommand, E2eEnvironment, PatroniRestProbe, FakeBackupDeps) —
+  НЕ трогать; `ClientCertAuthMiddleware` — единственный клиентский путь,
+  нужен ОТДЕЛЬНЫЙ клиентский валидатор (в клиентской ветке добавлять
+  `chain.ChainPolicy.ApplicationPolicy.Add("1.3.6.1.5.5.7.3.2")`). Факты
+  PKI: gen.sh panel/seed — EKU clientAuth уже; тест-хелпер Pg —
+  [serverAuth, clientAuth] (MtlsApiTests.cs:58–59); Kafka/Valkey/S3
+  тест-хелперы — БЕЗ EKU (править в этой задаче); E2E-серты —
+  serverAuth-only (E2eWorkerCertScenarios.cs:212) — правка тянет E2E-PKI
+  (граница §3.4 задачи t04-open-metrics-healthz-facet, потому не сделано
+  в ней).
+
+- **`t05-stand-tls-hardening`** — хардненинг стенда: (1) пофайловые маунты
+  TLS вместо bind всего каталога `deploy/tls` (внутри `ca.key` — приватный
+  ключ per-install CA): `dev-stand/adminpanel/docker-compose.yml:182,204,238,271,301,341`
+  (`../../deploy/tls:/tls(-workers):ro`) — панели/прометеусу/воркерам
+  класть только нужные файлы (`ca.pem`, `server.*`, `panel.*`/`seed.*`)
+  без избыточных приватных ключей; (2) опциональный bind `127.0.0.1`
+  хост-публикаций API воркеров отдельным env-флагом
+  (`deploy/docker-compose.yml:245,264,278,288,296,306,317,327` — сейчас на
+  `0.0.0.0`): сужение границы доверия открытой грани (`/healthz`, `/metrics`)
+  до периметра docker-хоста (arch/18 §5.2); ломает
+  `host.docker.internal`-потребителей (панель) — по умолчанию выключен,
+  включается осознанно.
+

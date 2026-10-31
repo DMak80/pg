@@ -64,6 +64,9 @@ arch/13 §2, arch/18 §3/§5.2, adminpanel/02 §2.3.1/§2.3.2/§9.9):
   - `public sealed record ClientCertAuthOptions(bool Enabled, X509Certificate2? ClientCa);`
     — DI-синглтон; `Enabled=false` — pass-through (режим
     `AllowInsecureHttp`/WAF), `ClientCa` — валидатор per-install API-CA.
+    Инвариант опции: `Enabled=true ⇒ ClientCa≠null`; нарушение инварианта —
+    guard в конструкторе middleware (`InvalidOperationException`),
+    fail-fast при конфигурировании, не пер-запросный 500.
   - `public sealed class ClientCertAuthMiddleware(RequestDelegate next,
     ClientCertAuthOptions options)`:
     1. `options.Enabled == false` → `await next(context)`.
@@ -92,8 +95,9 @@ arch/13 §2, arch/18 §3/§5.2, adminpanel/02 §2.3.1/§2.3.2/§9.9):
     `ClientCertificateValidation` НЕЛЬЗЯ: при null-калбэке Kestrel
     (`HttpsConnectionMiddleware`) применяет дефолтную системную валидацию
     цепочки (`sslPolicyErrors != None` → отказ) и рвёт хендшейк для
-    per-install сертов приватной API-CA. `AllowAnyClientCertificate` —
-    `void` (мутирует объект), вызывать до `ConfigureKestrel`. Целевой блок
+    per-install сертов приватной API-CA. `AllowAnyClientCertificate()`
+    мутирует опцию до захвата её listener'ом; вызываем до
+    `ConfigureKestrel` для определённости. Целевой блок
     (замена текущего inline-`UseHttps(...)`):
 
     ```

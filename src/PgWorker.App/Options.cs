@@ -128,7 +128,8 @@ public sealed class ApiOptions
     public TlsOptions Tls { get; set; } = new();
 }
 
-/// <summary>mTLS HTTP API (arch/14 §1.1): PEM/PATH-дуализм env-секретов
+/// <summary>HTTPS HTTP API воркера (arch/14 §1.1; mTLS — только /api):
+/// PEM/PATH-дуализм env-секретов
 /// PGW_API_TLS_{CERT,KEY,CLIENT_CA}[_PATH] (env → конфиг — ApiTlsEndpoints).</summary>
 public sealed class TlsOptions
 {

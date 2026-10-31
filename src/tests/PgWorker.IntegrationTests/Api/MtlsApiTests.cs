@@ -74,7 +74,15 @@ public class MtlsApiTests(PgApiFixture fx)
         return port;
     }
 
-    private sealed record TlsHost(WebApplication App, HttpClient Client, X509Certificate2 ClientCert);
+    private sealed record TlsHost(WebApplication App, HttpClient Client, X509Certificate2 ClientCert)
+        : IAsyncDisposable
+    {
+        public async ValueTask DisposeAsync()
+        {
+            await App.DisposeAsync();
+            Client.Dispose();
+        }
+    }
 
     private static TlsHost StartTlsHost(int port)
     {
@@ -126,9 +134,8 @@ public class MtlsApiTests(PgApiFixture fx)
     {
         // Arrange: TLS-хост на свободном порту (зонд FreePort — динамический).
         var port = FreePort();
-        var host = StartTlsHost(port);
-        using var _ = host.ClientCert; // серт нужен хендшейкам до конца теста
-        using var app = host.App;
+        await using var host = StartTlsHost(port);
+        using var _ = host.ClientCert; // серт нужен хендшейкам до конца теста (App+Client диспоузит хост)
         // Готовность листенера: Start() вернулся, но под параллельным
         // docker-нагрузом прогона первый хендшейк изредка ловил «refused» —
         // ждём фактического приёма TCP, чтобы не маскировать это под TLS-отказ.
@@ -196,6 +203,13 @@ public class MtlsApiTests(PgApiFixture fx)
         // Act 7 / Assert 7: /apifoo без серта — 404 (не /api: сегмент-префикс
         // точный, прочие пути — открытая грань).
         (await noCertClient.GetAsync("/apifoo", ct)).StatusCode.Should().Be(HttpStatusCode.NotFound);
+
+        // Act 8 / Assert 8: bare /api без серта — 401 (точное "/api" тоже под политикой).
+        (await noCertClient.GetAsync("/api", ct)).StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+
+        // Act 9 / Assert 9: /API/ping без серта — 401 (сравнение префикса
+        // регистронезависимо, OrdinalIgnoreCase).
+        (await noCertClient.GetAsync("/API/ping", ct)).StatusCode.Should().Be(HttpStatusCode.Unauthorized);
     }
 
     // Оверрайд базовой фабрики: http-advertise при выключенном AllowInsecureHttp.
@@ -215,7 +229,8 @@ public class MtlsApiTests(PgApiFixture fx)
     [Fact]
     public void AdvertiseUrl_HttpWithoutInsecureFlag_HostStartFails()
     {
-        // Arrange: валидный http-advertise + mTLS-канон (AllowInsecureHttp=false).
+        // Arrange: валидный http-advertise + HTTPS-грань (mTLS — только /api;
+        // AllowInsecureHttp=false).
         using var factory = new HttpAdvertiseFactory(fx.Etcd);
 
         // Act / Assert: ValidateOnStart — старт хоста падает fail-fast
