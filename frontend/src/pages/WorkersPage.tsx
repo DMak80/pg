@@ -1,5 +1,7 @@
-// Грань «Воркеры» (arch/adminpanel/03 §3.7): карточки PgWorker/KafkaWorker —
-// инстансы, целевой серт API, статус применения, действия с сертом и рестарт.
+// Грань «Воркеры» (arch/adminpanel/03 §3.7): карточки 4 воркеров
+// (PgWorker/KafkaWorker/ValkeyWorker/S3Worker) — инстансы, целевой серт API,
+// статус применения, действия с сертом и рестарт; координация домена
+// (лидер, «кто держит кластер») и эффективный конфиг (read-only, u14/u15).
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Alert, Badge, Button, Card, Group, Modal, Stack, Table, Text, Title, Tooltip } from '@mantine/core';
 import { useState } from 'react';
@@ -334,14 +336,15 @@ function EffectiveConfigBlock({ worker }: { worker: string }) {
   let content: React.ReactNode;
   if (config.isPending) content = <Text size="sm" c="dimmed">Загрузка…</Text>;
   else if (config.isError) {
+    // 503 не маскируется фиксированной строкой: detail воркера различает
+    // «ключей дискавери нет» и «инстансы есть, но не отвечают» (#24) —
+    // показываем текст как есть.
     const message = config.error instanceof ApiError
       ? (config.error.detail ?? config.error.message)
       : String(config.error);
     content = (
       <Text size="sm" c={config.error instanceof ApiError && config.error.status === 503 ? 'dimmed' : 'red'}>
-        {config.error instanceof ApiError && config.error.status === 503
-          ? 'Живые инстансы не найдены'
-          : message}
+        {message}
       </Text>
     );
   } else {

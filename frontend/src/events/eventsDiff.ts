@@ -41,8 +41,9 @@ export function diffClusters(prev: ClusterSummaryDto[] | undefined, next: Cluste
       });
     }
   }
+  const nextNames = new Set(next.map((x) => x.name));
   for (const c of prev) {
-    if (!next.some((x) => x.name === c.name)) {
+    if (!nextNames.has(c.name)) {
       emit({ tsUnix: now(), domain: 'pg', entityKind: 'cluster', entity: c.name, type: 'gone' });
     }
   }
@@ -79,13 +80,18 @@ export function diffClusterDetails(prev: ClusterDto | undefined, next: ClusterDt
     }
   }
 
-  // Заявки переездов: появление = «поставлена», исчезновение = «исполнена или отвергнута».
-  diffTickets(prev.pendingMoves, next.pendingMoves, (t) => `${t.bucket}`, (t) => t.op, cluster);
+  // Заявки переездов: появление = «поставлена», исчезновение = «исполнена или
+  // отвергнута»; keyOf включает op — повторная заявка на тот же бакет (другой
+  // op) не нема (u11: ключ только по бакету терял смену заявки).
+  const workError = next.work?.lastError ?? undefined;
+  diffTickets(prev.pendingMoves, next.pendingMoves,
+    (t) => `${t.bucket}-${t.op}`, (t) => t.op, cluster, workError);
 }
 
 function diffTickets(
   prev: MoveTicketDto[], next: MoveTicketDto[],
-  keyOf: (t: MoveTicketDto) => string, opOf: (t: MoveTicketDto) => string, cluster: string,
+  keyOf: (t: MoveTicketDto) => string, opOf: (t: MoveTicketDto) => string,
+  cluster: string, workError: string | undefined,
 ): void {
   const prevKeys = new Set(prev.map(keyOf));
   const nextKeys = new Set(next.map(keyOf));
@@ -93,7 +99,10 @@ function diffTickets(
     if (!prevKeys.has(keyOf(t))) {
       emit({
         tsUnix: now(), domain: 'pg', entityKind: 'ticket', entity: `${cluster}/${keyOf(t)}`,
-        type: 'appeared', detail: `заявка ${opOf(t)} поставлена`,
+        type: 'appeared',
+        detail: workError !== undefined
+          ? `заявка ${opOf(t)} поставлена (last_error: ${workError})`
+          : `заявка ${opOf(t)} поставлена`,
       });
     }
   }
@@ -101,7 +110,10 @@ function diffTickets(
     if (!nextKeys.has(keyOf(t))) {
       emit({
         tsUnix: now(), domain: 'pg', entityKind: 'ticket', entity: `${cluster}/${keyOf(t)}`,
-        type: 'gone', detail: `заявка ${opOf(t)} исполнена или отвергнута`,
+        type: 'gone',
+        detail: workError !== undefined
+          ? `заявка ${opOf(t)} исполнена или отвергнута (last_error: ${workError})`
+          : `заявка ${opOf(t)} исполнена или отвергнута`,
       });
     }
   }
@@ -143,8 +155,9 @@ export function diffClusterExtras(
       });
     }
   }
+  const nextEvacShards = new Set(nextEvac.map((x) => x.shard));
   for (const e of prev.evacuations ?? []) {
-    if (!nextEvac.some((x) => x.shard === e.shard)) {
+    if (!nextEvacShards.has(e.shard)) {
       emit({
         tsUnix: now(), domain: 'pg', entityKind: 'evacuation', entity: `${next.name}/${e.shard}`,
         type: 'gone', detail: 'журнал эвакуации исчез (демонтаж шарда)',
@@ -162,11 +175,18 @@ export function diffHa(prev: HaScopeSummaryDto[] | undefined, next: HaScopeSumma
     const before = prevByScope.get(scope.scope);
     if (before === undefined) continue;
     if (before.leaderName !== scope.leaderName) {
+      // entity <C>/<X> (scope <C>-<X> разворачивается — deep-link ведёт на
+      // кластер, а не на несуществующий /clusters/<C>-<X>; arch/03 §3.9 —
+      // события HA адресуются страницей кластера/шарда).
+      const separator = scope.scope.lastIndexOf('-');
+      const entity = separator > 0
+        ? `${scope.scope.slice(0, separator)}/${scope.scope.slice(separator + 1)}`
+        : scope.scope;
       emit({
         tsUnix: now(), domain: 'pg', entityKind: 'cluster',
-        entity: scope.scope, type: 'state-change',
+        entity, type: 'state-change',
         from: before.leaderName ?? 'no leader', to: scope.leaderName ?? 'no leader',
-        detail: 'лидер HA-скопа сменился',
+        detail: `лидер HA-скопа ${scope.scope} сменился`,
       });
     }
   }
@@ -206,26 +226,25 @@ export function diffKafka(
       });
     }
   }
+  const nextTopicNames = new Set(next.topics.map((t) => t.name));
   for (const topic of prev.topics) {
-    if (!next.topics.some((t) => t.name === topic.name)) {
+    if (!nextTopicNames.has(topic.name)) {
       emit({ tsUnix: now(), domain: 'kafka', entityKind: 'topic', entity: `${cluster}/${topic.name}`, type: 'gone' });
     }
   }
 
-  // Заявки: ротации/rebalance — появление/исчезновение.
-  diffTicketLike(prev.rotation !== null, next.rotation !== null, cluster, 'rotation', 'app-пароль', 'kafka');
-  diffTicketLike((prev.adminRotation ?? null) !== null, (next.adminRotation ?? null) !== null, cluster, 'rotation', 'admin-пароль', 'kafka');
-  diffTicketLike(prev.caRotation !== null, next.caRotation !== null, cluster, 'rotation', 'CA', 'kafka');
-  diffTicketLike(prev.rebalance !== null, next.rebalance !== null, cluster, 'ticket', 'rebalance', 'kafka');
+  // Заявки: ротации/rebalance — появление/исчезновение (detail по
+  // work.last_error при наличии — u11: почему заявка исчезла).
+  const workError = next.work?.lastError ?? undefined;
+  diffTicketLike(prev.rotation !== null, next.rotation !== null, cluster, 'rotation', 'app-пароль', 'kafka', workError);
+  diffTicketLike((prev.adminRotation ?? null) !== null, (next.adminRotation ?? null) !== null, cluster, 'rotation', 'admin-пароль', 'kafka', workError);
+  diffTicketLike(prev.caRotation !== null, next.caRotation !== null, cluster, 'rotation', 'CA', 'kafka', workError);
+  diffTicketLike(prev.rebalance !== null, next.rebalance !== null, cluster, 'ticket', 'rebalance', 'kafka', workError);
 
-  // Исход заявки — напрямую (ticket_outcomes).
-  if (prev.ticketOutcome === null && next.ticketOutcome !== null) {
-    emit({
-      tsUnix: now(), domain: 'kafka', entityKind: 'ticket', entity: cluster,
-      type: 'outcome', to: next.ticketOutcome.outcome,
-      detail: `${next.ticketOutcome.kind}: ${next.ticketOutcome.reason ?? ''}`,
-    });
-  }
+  // Исход заявки — напрямую (ticket_outcomes); сравнение СОДЕРЖИМОГО
+  // (kind+outcome): цепочка app→admin→CA даёт событие на каждую смену исхода,
+  // expired→done не молчит (u11: null→non-null терял промежуточные исходы).
+  diffTicketOutcome(prev.ticketOutcome, next.ticketOutcome, cluster, 'kafka');
 }
 
 // ——— valkey: нода/ротации/исходы ———
@@ -243,16 +262,11 @@ export function diffValkey(prev: ValkeyClusterDto | undefined, next: ValkeyClust
     });
   }
 
-  diffTicketLike(prev.rotation !== null, next.rotation !== null, cluster, 'rotation', 'пароль', 'valkey');
-  diffTicketLike(prev.caRotation !== null, next.caRotation !== null, cluster, 'rotation', 'CA', 'valkey');
+  const valkeyError = next.work?.lastError ?? undefined;
+  diffTicketLike(prev.rotation !== null, next.rotation !== null, cluster, 'rotation', 'пароль', 'valkey', valkeyError);
+  diffTicketLike(prev.caRotation !== null, next.caRotation !== null, cluster, 'rotation', 'CA', 'valkey', valkeyError);
 
-  if (prev.ticketOutcome === null && next.ticketOutcome !== null) {
-    emit({
-      tsUnix: now(), domain: 'valkey', entityKind: 'ticket', entity: cluster,
-      type: 'outcome', to: next.ticketOutcome.outcome,
-      detail: `${next.ticketOutcome.kind}: ${next.ticketOutcome.reason ?? ''}`,
-    });
-  }
+  diffTicketOutcome(prev.ticketOutcome, next.ticketOutcome, cluster, 'valkey');
 }
 
 // ——— s3: кластер/ноды/ротация ———
@@ -280,37 +294,62 @@ export function diffS3(prev: S3ClusterDto | undefined, next: S3ClusterDto): void
       });
     }
   }
+  const nextNodeNames = new Set(next.nodesList.map((n) => n.name));
   for (const node of prev.nodesList) {
-    if (!next.nodesList.some((n) => n.name === node.name)) {
+    if (!nextNodeNames.has(node.name)) {
       emit({ tsUnix: now(), domain: 's3', entityKind: 'node', entity: `${cluster}/${node.name}`, type: 'gone' });
     }
   }
 
-  diffTicketLike(prev.rotation !== null, next.rotation !== null, cluster, 'rotation', 'секреты', 's3');
+  diffTicketLike(prev.rotation !== null, next.rotation !== null, cluster, 'rotation', 'секреты', 's3', next.work?.lastError ?? undefined);
+}
+
+// Исход заявки (ticket_outcomes kafka/valkey): любое ИЗМЕНЕНИЕ содержимого
+// (null→значение, значение→другое значение) — событие outcome (u11).
+function diffTicketOutcome(
+  prev: { kind: string; outcome: string; reason?: string | null } | null,
+  next: { kind: string; outcome: string; reason?: string | null } | null,
+  cluster: string, domain: EventItem['domain'],
+): void {
+  const same = prev !== null && next !== null
+    && prev.kind === next.kind && prev.outcome === next.outcome;
+  if (same || next === null) return;
+  emit({
+    tsUnix: now(), domain, entityKind: 'ticket', entity: cluster,
+    type: 'outcome', to: next.outcome,
+    detail: `${next.kind}: ${next.reason ?? ''}`,
+  });
 }
 
 // Заявка-like: появление = «поставлена», исчезновение = «исполнена или
-// отвергнута» (detail по work.lastError при наличии — передаёт вызывающий).
+// отвергнута» (detail по work.lastError при наличии — передаёт вызывающий,
+// u11).
 function diffTicketLike(
   hadBefore: boolean, hasNow: boolean,
   cluster: string, entityKind: 'rotation' | 'ticket', label: string,
-  domain: EventItem['domain'],
+  domain: EventItem['domain'], lastError: string | undefined,
 ): void {
   if (!hadBefore && hasNow) {
     emit({
       tsUnix: now(), domain, entityKind, entity: `${cluster}/${label}`,
-      type: 'appeared', detail: `заявка ${label} поставлена`,
+      type: 'appeared',
+      detail: lastError !== undefined
+        ? `заявка ${label} поставлена (last_error: ${lastError})`
+        : `заявка ${label} поставлена`,
     });
   } else if (hadBefore && !hasNow) {
     emit({
       tsUnix: now(), domain, entityKind, entity: `${cluster}/${label}`,
-      type: 'gone', detail: `заявка ${label} исполнена или отвергнута`,
+      type: 'gone',
+      detail: lastError !== undefined
+        ? `заявка ${label} исполнена или отвергнута (last_error: ${lastError})`
+        : `заявка ${label} исполнена или отвергнута`,
     });
   }
 }
 
-// ——— backups-storage: restore/drill факты шардов + сироты (FINDING 1, u09;
-// arch/03 §3 «События» прямо перечисляет backups-storage среди наблюдаемых
+// ——— backups-storage: restore/drill факты шардов + сироты (u09;
+// arch/03 §3 «События» перечисляет backups-storage среди наблюдаемых
 // ключей). restore: появление state = «заявка поставлена», исчезновение =
 // «исполнена или отвергнута» (gone — исход), смена state = state-change;
 // drill: появление RUNNING = appeared, терминальный исход = outcome;
@@ -343,6 +382,8 @@ export function diffBackupsStorage(
     if (nowFact === undefined) continue; // шард исчез из сводки — не событие шарда
 
     // restore-заявка: активный restore появился / сменил фазу / завершился.
+    // Завершение — outcome (как у drill): restore в ленте имеет исход, а не
+    // безликое «исчезло» (u11/#30j).
     if (was.restoreState === null && nowFact.restoreState !== null) {
       emit({
         tsUnix: now(), domain: 'pg', entityKind: 'restore', entity: key,
@@ -351,7 +392,7 @@ export function diffBackupsStorage(
     } else if (was.restoreState !== null && nowFact.restoreState === null) {
       emit({
         tsUnix: now(), domain: 'pg', entityKind: 'restore', entity: key,
-        type: 'gone', detail: `restore исполнен или отклонён (было ${was.restoreState})`,
+        type: 'outcome', to: 'done', detail: `restore завершён (последняя фаза ${was.restoreState})`,
       });
     } else if (was.restoreState !== null
       && nowFact.restoreState !== null
@@ -394,10 +435,12 @@ export function diffBackupsStorage(
         tsUnix: now(), domain: 'pg', entityKind: 'orphan', entity: prefix,
         type: 'appeared', detail: 'сирота обнаружена (S3-префикс без владельца в etcd)',
       });
-    } else if (prevState !== state && state !== null && prevState !== null) {
+    } else if (prevState !== state && state !== null) {
+      // Вкл. переход null→OBSERVED (сирота вне реестра → замечена воркером,
+      // #30k): from '—' — реестрового state раньше не было.
       emit({
         tsUnix: now(), domain: 'pg', entityKind: 'orphan', entity: prefix,
-        type: 'state-change', from: prevState, to: state,
+        type: 'state-change', from: prevState ?? '—', to: state,
       });
     }
   }

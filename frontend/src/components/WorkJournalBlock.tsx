@@ -1,7 +1,8 @@
 // Блок «Что делает воркер» (u13): work-журнал домена — op/phase/instance/
-// updated/last_error (arch/03 §3.2-вкладка «Журнал»). Журналы воркеров
-// перезаписываются — показывается последняя фаза.
-import { Table, Text } from '@mantine/core';
+// updated/last_error/fail-серия (arch/03 §3.2-вкладка «Журнал»). Журналы
+// воркеров перезаписываются — показывается последняя фаза. fail ≥2 — жёлтая
+// пометка «ретраи»: зациклившийся отказ отличим от разового (u13).
+import { Badge, Group, Table, Text } from '@mantine/core';
 import type { ReactNode } from 'react';
 import { formatUnix } from '../utils/format';
 import type { ClusterWorkDto } from '../api/dto';
@@ -9,16 +10,34 @@ import type { ClusterWorkDto } from '../api/dto';
 export function WorkJournalBlock({ work }: { work: ClusterWorkDto | null | undefined }) {
   if (!work)
     return <Text size="sm" c="dimmed">Журнала нет (воркер ничего не делал или домен не тикал)</Text>;
+  const retrying = typeof work.failCount === 'number' && work.failCount >= 2;
   return (
     <Table highlightOnHover>
       <Table.Tbody>
         <Row label="op"><Text ff="monospace" size="sm">{work.op}</Text></Row>
         <Row label="phase"><Text ff="monospace" size="sm">{work.phase}</Text></Row>
+        <Row label="instance">
+          {work.instance
+            ? <Text ff="monospace" size="sm">{work.instance}</Text>
+            : <Text size="sm" c="dimmed">—</Text>}
+        </Row>
         <Row label="updated">{formatUnix(work.updatedUnix)}</Row>
         <Row label="last_error">
           {work.lastError
             ? <Text size="sm" c="red" ff="monospace">{work.lastError}</Text>
             : <Text size="sm" c="dimmed">—</Text>}
+        </Row>
+        <Row label="fail-серия">
+          {retrying ? (
+            <Group gap={4}>
+              <Badge color="yellow" variant="light" size="xs">ретраи</Badge>
+              <Text size="sm" ff="monospace">
+                count {work.failCount}; с {work.failFirstUnix !== null && work.failFirstUnix !== undefined ? formatUnix(work.failFirstUnix) : '—'}; retry not before {work.retryNotBeforeUnix !== null && work.retryNotBeforeUnix !== undefined ? formatUnix(work.retryNotBeforeUnix) : '—'}
+              </Text>
+            </Group>
+          ) : (
+            <Text size="sm" c="dimmed">—</Text>
+          )}
         </Row>
       </Table.Tbody>
     </Table>

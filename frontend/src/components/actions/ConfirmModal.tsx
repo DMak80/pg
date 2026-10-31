@@ -35,7 +35,7 @@ export function ConfirmModal({
   onConfirm: () => void;
 }) {
   const [typed, setTyped] = useState('');
-  // FINDING 4: сброс ввода при закрытии — повторное открытие не наследует
+  // Сброс ввода при закрытии — повторное открытие не наследует
   // набранный текст (как RestoreBlock).
   useEffect(() => {
     if (!opened) setTyped('');

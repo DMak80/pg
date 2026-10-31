@@ -493,7 +493,6 @@ export function rotateValkeyCa(cluster: string): Promise<ValkeyCaRotatedDto> {
 export const backupsQueryKeys = {
   storage: ['backups-storage'] as const,
   shard: (cluster: string, shard: string) => ['backups-storage', cluster, shard] as const,
-  objects: (prefix: string, token: string | null) => ['backups-storage', 'objects', prefix, token] as const,
   // u16: пулы для формы Policy (02 §12.4).
   pools: ['backups-storage', 's3-pools'] as const,
 };

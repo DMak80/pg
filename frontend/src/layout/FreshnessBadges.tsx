@@ -21,8 +21,14 @@ export function FreshnessBadges() {
   if (isError) return <Badge color="red" variant="light">нет данных</Badge>;
   if (data === undefined || data.freshness === null || data.freshness === undefined) return null;
 
-  // Порог stale — 3×интервал (SnapshotStaleRule.Multiplier); off — без порога.
-  const staleThresholdSec = typeof intervalMs === 'number' ? (intervalMs / 1000) * 3 : null;
+  // Порог stale — 3×СЕРВЕРНЫЙ интервал тика (freshness.intervalSeconds,
+  // синхронно с правилом snapshot-stale; клиентский интервал опроса про
+  // обновление UI, не про свежесть данных). Сервер не ответил интервалом —
+  // порога нет (off — жёлтый не загорается никогда).
+  const serverIntervalSec = data.freshness.intervalSeconds;
+  const staleThresholdSec = typeof serverIntervalSec === 'number' && serverIntervalSec > 0
+    ? serverIntervalSec * 3
+    : null;
   const nowSec = Date.now() / 1000;
 
   return (

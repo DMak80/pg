@@ -31,6 +31,12 @@ export function ClusterDetailsPage() {
     refetchInterval: intervalMs,
   });
 
+  // u04: локальный state активной вкладки + подсветка бакета (клик из «Бакетов»).
+  // Хуки — ДО early return: вызов useState не может зависеть от наличия данных
+  // (инвариант React: одинаковое число хуков на каждом рендере).
+  const [activeTab, setActiveTab] = useState('shards');
+  const [highlightBucket, setHighlightBucket] = useState<number | null>(null);
+
   // Паттерн состояний (t08 spec §4.15): 404 → notFound-контент; 503/прочее при
   // отсутствии данных → ErrorSection; polling-сбой при данных — тихо.
   if (query.data === undefined)
@@ -58,10 +64,6 @@ export function ClusterDetailsPage() {
   const bucketCounts = Object.fromEntries(
     data.shards.map((s) => [s.name, data.buckets.filter((b) => b.owner === s.name).length]),
   );
-
-  // u04: локальный state активной вкладки + подсветка бакета (клик из «Бакетов»).
-  const [activeTab, setActiveTab] = useState('shards');
-  const [highlightBucket, setHighlightBucket] = useState<number | null>(null);
 
   return (
     <Stack gap="md">

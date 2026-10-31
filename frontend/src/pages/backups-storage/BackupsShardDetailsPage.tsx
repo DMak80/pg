@@ -518,7 +518,17 @@ function RestoreBlock({ cluster, shard }: { cluster: string; shard: string }) {
 function AgentsBlock({ agents }: { agents: { node: string; role: string | null; state: string;
   lastDeliveredSegment: number | null; lastDeliveredUnix: number | null; poolExhausted: boolean;
   tliJump: number | null; error: string | null; updatedUnix: number }[] | null }) {
-  if (agents === null || agents.length === 0) return null;
+  // agent/<N> — lease-ключи: смерть приёмников = пустой agents[]. Раздел НЕ
+  // пропадает молча (это единственное место наблюдения агентов) — серая
+  // строка «приёмников нет» (#26).
+  if (agents === null || agents.length === 0) {
+    return (
+      <Card withBorder padding="md" radius="md">
+        <Text fw={600} mb="xs">Приёмники WAL (агенты нод)</Text>
+        <Text c="dimmed" size="sm">Приёмников нет (ключи agent/&lt;N&gt; не живы — приёмники WAL не работают).</Text>
+      </Card>
+    );
+  }
   return (
     <Card withBorder padding="md" radius="md">
       <Text fw={600} mb="xs">Приёмники WAL (агенты нод)</Text>

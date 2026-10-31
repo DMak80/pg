@@ -4,7 +4,7 @@
 // «Пересоздать ноду» soft/hard (перенос с HaScopeDetailsPage) + заявленные
 // ресурсы scope. HA-скоп не найден — блок скрыт с пометкой.
 import { useQuery } from '@tanstack/react-query';
-import { Anchor, Badge, Card, Group, SimpleGrid, Stack, Table, Text, Title, Tooltip } from '@mantine/core';
+import { Anchor, Badge, Button, Card, Group, SimpleGrid, Stack, Table, Text, Title, Tooltip } from '@mantine/core';
 import { Link, useParams } from 'react-router';
 import type { HaMemberDto, ShardRuntimeDto, ShardDto } from '../../api/dto';
 import { fetchClusterDetails, fetchHaScope, queryKeys } from '../../api/queries';
@@ -156,7 +156,14 @@ export function ShardDetailsPage() {
             <RecreateNodeButton scope={haData.scope} members={haData.members} />
           ) : null}
         </Group>
-        {!haAvailable ? (
+        {ha.isError ? (
+          <Stack gap="xs">
+            <Text c="red" size="sm">
+              HA-данные не получены (ошибка запроса, не «скопа нет»): {ha.error instanceof Error ? ha.error.message : String(ha.error)}
+            </Text>
+            <Button size="xs" variant="light" onClick={() => void ha.refetch()}>Повторить</Button>
+          </Stack>
+        ) : !haAvailable ? (
           <Text c="dimmed" size="sm">HA-scope не найден (скоп не matched либо пробы/тик ещё не пришли).</Text>
         ) : (
           <Stack gap="xs">

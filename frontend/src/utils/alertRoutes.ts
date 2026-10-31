@@ -55,9 +55,15 @@ export function alertRoute(kind: string, target: string): string | null {
     return '/backups-storage';
   }
 
-  if (kind === 'provision-stuck' || kind === 'inventory-mismatch'
-    || kind === 'key-malformed') {
+  if (kind === 'provision-stuck' || kind === 'inventory-mismatch') {
     return `/clusters/${cluster}`;
+  }
+
+  if (kind === 'key-malformed') {
+    // target — СЫРОЙ etcd-ключ (с ведущим '/'): первый сегмент пуст → ссылки
+    // нет (deep-link на /clusters/'<' было бы 404; key-malformed — про ключ,
+    // а не про сущность панели).
+    return cluster !== '' ? `/clusters/${cluster}` : null;
   }
 
   if (kind.startsWith('cluster-') || kind.startsWith('shard-')

@@ -126,6 +126,12 @@ export interface ClusterWorkDto {
   phase: string;
   updatedUnix: number;
   lastError: string | null;
+  // u13: instance + fail-серия (зациклившийся отказ отличим от разового);
+  // nullable в хвосте — журналы старого формата дают null.
+  instance?: string | null;
+  failCount?: number | null;
+  failFirstUnix?: number | null;
+  retryNotBeforeUnix?: number | null;
 }
 
 // Строковый канон severity алертов (arch/03 §1).
@@ -207,6 +213,9 @@ export interface OverviewFreshnessDto {
   kafka: { builtAtUnix: number } | null;
   valkey: { builtAtUnix: number } | null;
   s3: { builtAtUnix: number } | null;
+  // Серверный интервал тика pg-домена (сек): порог stale бейджей — 3×ЭТО
+  // значение (синхронно с SnapshotStaleRule), не клиентский интервал опроса.
+  intervalSeconds?: number;
 }
 
 // u10: глобальный стоп бэкапов (/pgworker/backups-disabled).
