@@ -27,6 +27,15 @@ public static class PortPlanConvergence
         {
             if (addr.Object is not null)
                 continue; // усыновлённая (object) — чужой контейнер, не трогаем (R9)
+            if (addr.Ports.Doorman <= 0)
+            {
+                // Каноническая запись с нулевым doorman невозможна (пулер
+                // обязателен, arch/14 §8 — тот же канон, что в MatchesFact):
+                // снимается ВСЕГДА, независимо от занятости — recreate даст
+                // запись с полной тройкой портов.
+                colliding.Add(key);
+                continue;
+            }
             if (selfFactByNode.TryGetValue(key, out var own) && MatchesFact(addr, own))
                 continue; // подтверждено фактом своего живого контейнера (spec §8.10)
             if (Ports(addr).Any(p => busy.Contains((addr.Host, p))))

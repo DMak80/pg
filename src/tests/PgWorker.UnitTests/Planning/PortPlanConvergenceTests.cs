@@ -109,6 +109,30 @@ public class PortPlanConvergenceTests
         existing.Should().NotContainKey("s1/n1");
     }
 
+    // AAA: нулевой doorman канонической записи невозможен (пулер обязателен,
+    // arch/14 §8) — detach ВСЕГДА, независимо от занятости портов: даже без
+    // коллизий запись не может считаться валидной, recreate даст полную
+    // тройку портов (PortAllocator выделит свободные).
+    [Fact]
+    public void DetachColliding_ZeroDoormanPort_NoBusy_StillDetached()
+    {
+        // Arrange: та же легаси-запись doorman=0, но порты pg/patroni нигде
+        // не заняты (пустая занятость, факт контейнера отсутствует).
+        var existing = new Dictionary<string, NodeAddress>
+        {
+            ["s1/n1"] = new("h1", new NodePorts(15000, 15001, 0)),
+        };
+        var selfFactByNode = new Dictionary<string, IReadOnlySet<(string, int)>>();
+        var busy = new HashSet<(string, int)>();
+
+        // Act
+        var changed = PortPlanConvergence.DetachColliding(existing, selfFactByNode, busy);
+
+        // Assert: без занятости запись всё равно снимается.
+        changed.Should().BeTrue();
+        existing.Should().NotContainKey("s1/n1");
+    }
+
     [Fact]
     public void DetachColliding_ObjectRecord_Untouched()
     {
