@@ -32,6 +32,7 @@ public sealed class AdoptionProcess(
     PlacementOptions placementOpts,
     EtcdEndpoints etcdEndpoints,
     PgtuneInputsFactory pgtune,
+    INodeBootstrapDelivery bootstrap,
     Func<CancellationToken, Task<Result>>? snapshot = null,
     string? scrapeNetwork = null)
 {
@@ -427,6 +428,18 @@ public sealed class AdoptionProcess(
                     snap.Config.SyncStrict, ct);
                 if (!ensured.IsSuccess)
                     return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(ensured.Error!);
+
+                // Доставка bootstrap-секретов ноде (t05, spec §3.7.2): Transient —
+                // journal-факт (ретрай тиком; ensures-ветка не проваливается).
+                // Пара — ключ кластера снапшота (окно ротации усыновлением не
+                // расширяется — прежняя семантика ensure-пути).
+                var delivery = await bootstrap.EnsureAsync(
+                    topology, nodeName, addr, secrets, tuning,
+                    snap.Config.SyncStrict, snap.RestPassword ?? "", ct);
+                if (delivery.Transient)
+                    await journal.WritePhaseAsync(cluster, Op,
+                        $"bootstrap-delivery/{shardName}/{nodeName}",
+                        claims.InstanceId, delivery.Detail, ct);
                 recreated = true;
             }
         }

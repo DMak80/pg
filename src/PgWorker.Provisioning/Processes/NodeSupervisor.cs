@@ -40,6 +40,7 @@ public sealed class NodeSupervisor(
     IAppParamsEnsurer appParams,
     PgtuneInputsFactory pgtune,
     PgtuneSettings pgtuneSettings,
+    INodeBootstrapDelivery bootstrap,
     ILogger<NodeSupervisor> log,
     MasterKeyReconciler? masterKeys = null,
     EtcdEndpoints? etcdForNodes = null,
@@ -385,6 +386,16 @@ public sealed class NodeSupervisor(
                     snap.Config.SyncStrict, ct);
                 if (!ensured.IsSuccess)
                     return ensured;
+
+                // Доставка bootstrap-секретов ноде (t05, spec §3.7.2): Transient —
+                // journal-факт (ретрай тиком; ensure-путь не проваливается).
+                var delivery = await bootstrap.EnsureAsync(
+                    topology, node.Name, topology.Nodes[node.Name], secrets, tuning,
+                    snap.Config.SyncStrict, restPassword, ct);
+                if (delivery.Transient)
+                    await journal.WritePhaseAsync(cluster, "supervise",
+                        $"bootstrap-delivery/{shard.Name}/{node.Name}",
+                        claims.InstanceId, delivery.Detail, ct);
             }
         }
 
@@ -688,6 +699,16 @@ public sealed class NodeSupervisor(
                 if (!ensuredNode.IsSuccess)
                     return ensuredNode;
 
+                // Доставка bootstrap-секретов пересозданной ноде (t05, §3.7.2):
+                // Transient — journal-факт (ретрай тиком).
+                var delivery = await bootstrap.EnsureAsync(
+                    topology, node.Name, addr, secrets, tuning,
+                    snap.Config.SyncStrict, restPassword, ct);
+                if (delivery.Transient)
+                    await journal.WritePhaseAsync(cluster, "supervise",
+                        $"bootstrap-delivery/{shard.Name}/{node.Name}",
+                        claims.InstanceId, delivery.Detail, ct);
+
                 // Фазовая запись (трек carry-forward): оператор видит миграцию.
                 var phase = restPending is not null
                     ? $"rest-rotate-rolled/{shard.Name}/{node.Name}"
@@ -830,6 +851,16 @@ public sealed class NodeSupervisor(
                 snap.Config.SyncStrict, ct);
             if (!ensured.IsSuccess)
                 return ensured;
+
+            // Доставка bootstrap-секретов пересозданной ноде (t05, §3.7.2):
+            // Transient — journal-факт (ретрай тиком).
+            var delivery = await bootstrap.EnsureAsync(
+                topology, node.Name, addr, secrets, tuning,
+                snap.Config.SyncStrict, restPassword, ct);
+            if (delivery.Transient)
+                await journal.WritePhaseAsync(cluster, "supervise",
+                    $"bootstrap-delivery/{shard.Name}/{node.Name}",
+                    claims.InstanceId, delivery.Detail, ct);
 
             var rebuilding = await PutAsync(
                 $"/clusters/{cluster}/shards/{shard.Name}/nodes/{node.Name}/state",
@@ -1020,6 +1051,16 @@ public sealed class NodeSupervisor(
                     snap.Config.SyncStrict, ct);
                 if (!ensured.IsSuccess)
                     return ensured;
+
+                // Доставка bootstrap-секретов пересозданной ноде (t05, §3.7.2):
+                // Transient — journal-факт (ретрай тиком).
+                var deliveryAuto = await bootstrap.EnsureAsync(
+                    topology, name, addr, secrets, tuning,
+                    snap.Config.SyncStrict, restPassword, ct);
+                if (deliveryAuto.Transient)
+                    await journal.WritePhaseAsync(cluster, "supervise",
+                        $"bootstrap-delivery/{shard.Name}/{name}",
+                        claims.InstanceId, deliveryAuto.Detail, ct);
                 var rebuilding = await PutAsync(
                     $"/clusters/{cluster}/shards/{shard.Name}/nodes/{name}/state", "REBUILDING", ct);
                 if (!rebuilding.IsSuccess)

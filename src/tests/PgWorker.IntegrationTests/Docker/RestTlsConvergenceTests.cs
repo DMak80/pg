@@ -5,6 +5,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using PgWorker.Core;
 using PgWorker.Core.Model;
 using PgWorker.Core.Templates;
+using PgWorker.Core.Tuning;
 using PgWorker.Docker.Drivers;
 using PgWorker.Etcd.Parsing;
 using PgWorker.IntegrationTests.E2e;
@@ -169,6 +170,7 @@ internal static class RestTlsDockerRig
             new AppParamsEnsurer(gateway, [endpoint], "sslmode=require"),
             new PgtuneInputsFactory(pgtuneSettings, NullLogger<PgtuneInputsFactory>.Instance),
             pgtuneSettings,
+            NoDelivery.Instance,
             NullLogger<NodeSupervisor>.Instance);
         var rotator = new ClusterSecretRotator(
             gateway, [endpoint], new StubSql(), driver, probe, claims, journal,
@@ -289,4 +291,22 @@ public class RestTlsConvergenceTests(Etcd.EtcdFixture fixture)
         return DateTime.Parse(raw, System.Globalization.CultureInfo.InvariantCulture,
             System.Globalization.DateTimeStyles.RoundtripKind);
     }
+}
+
+/// <summary>No-op доставка bootstrap-данных (риг RestTlsConvergence —
+/// механика упраздняется t05; полноценный канал — NodeSecretRig/шаг 11).</summary>
+internal sealed class NoDelivery : PgWorker.Provisioning.Processes.INodeBootstrapDelivery
+{
+    public static readonly NoDelivery Instance = new();
+
+    public Task<PgWorker.Provisioning.Processes.DeliveryOutcome> EnsureAsync(
+        ShardTopology topology, string nodeName, NodeAddress addr, InstallSecrets secrets,
+        PgTuneResult? tuning, bool syncStrict, string restPassword, CancellationToken ct)
+        => Task.FromResult(new PgWorker.Provisioning.Processes.DeliveryOutcome(
+            Delivered: false, Wait: true, Transient: false, null));
+
+    public Task<bool> IsOnRevisionAsync(
+        ShardTopology topology, string nodeName, NodeAddress addr,
+        PgTuneResult? tuning, bool syncStrict, string restPassword, CancellationToken ct)
+        => Task.FromResult(false);
 }

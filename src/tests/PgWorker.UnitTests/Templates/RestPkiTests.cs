@@ -151,6 +151,14 @@ public class RestPkiTests
 // KafkaWorker / E2eTestPki.GenerateCa); срок параметризуется кейсом зажима.
 public static class TestRestCa
 {
+    // Пароль в рантайме (секрет не зашивается в исходник) — для delivery-тестов.
+    public static string GeneratePassword()
+    {
+        const string alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+        var bytes = System.Security.Cryptography.RandomNumberGenerator.GetBytes(24);
+        return new string(bytes.Select(b => alphabet[b % alphabet.Length]).ToArray());
+    }
+
     public static (string CaPem, string CaKeyPem) Generate(
         TimeSpan? validity = null, TimeSpan? notBeforeOffset = null)
     {

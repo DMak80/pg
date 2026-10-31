@@ -86,6 +86,7 @@ public class AdoptionProcessTests
             new PlacementOptions(15000, 15100, PatroniBootSec: 600),
             new EtcdEndpoints([Ep]),
             Fakes.PgtuneFactory(),
+            NoDelivery.Instance,
             snapshot: null);
         return (process, sql, driver);
     }

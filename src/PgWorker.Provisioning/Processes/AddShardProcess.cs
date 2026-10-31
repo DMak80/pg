@@ -39,6 +39,7 @@ public sealed partial class AddShardProcess(
     PortAllocIndex portAlloc,
     PortAllocLock portLock,
     PgtuneInputsFactory pgtune,
+    INodeBootstrapDelivery bootstrap,
     Func<CancellationToken, Task<Result>>? snapshot = null,
     Shared.Core.Hosting.ILoopProgress? progress = null,
     TimeSpan? watchdogWindow = null,
@@ -309,6 +310,18 @@ public sealed partial class AddShardProcess(
                 TimeSpan.FromSeconds(placementOpts.PatroniBootSec), ct);
             if (!ensured.IsSuccess)
                 return ensured;
+
+            // Доставка bootstrap-секретов ноде (t05, spec §3.7.2): put ключа +
+            // хендшейк по статусу; Transient — journal-факт (НЕ провал пути:
+            // фазы WaitPatroni упадут по своим бюджетам при недоставке —
+            // ретрай тиком).
+            var delivery = await bootstrap.EnsureAsync(
+                topology, node.Name, topology.Nodes[node.Name], clusterSecrets, tuning,
+                syncStrict, restPassword, ct);
+            if (delivery.Transient)
+                await journal.WritePhaseAsync(cluster, Op,
+                    $"bootstrap-delivery/{shard.Name}/{node.Name}",
+                    claims.InstanceId, delivery.Detail, ct);
         }
 
         return Result.Success();

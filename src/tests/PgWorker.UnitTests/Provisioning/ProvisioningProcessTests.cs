@@ -160,7 +160,8 @@ public class ProvisioningProcessTests
             opts ?? Opts, Secrets,
             appSecret, new AppParamsEnsurer(etcd, [Ep], "sslmode=require"), EtcdEndp, portAlloc,
             new PortAllocLock("/pgworker", [Ep], etcd, TimeProvider.System, claims.InstanceId),
-            Fakes.PgtuneFactory(), snapshot: null);
+            Fakes.PgtuneFactory(),
+            NoDelivery.Instance, snapshot: null);
         return new Rig(etcd, driver, sql, claims, journal, process, probe);
     }
 
@@ -332,7 +333,8 @@ public class ProvisioningProcessTests
             new AppParamsEnsurer(etcd, [Ep], "sslmode=require"), EtcdEndp,
             new PortAllocIndex(etcd, [Ep], NullLogger<PortAllocIndex>.Instance),
             new PortAllocLock("/pgworker", [Ep], etcd, TimeProvider.System, claims.InstanceId),
-            Fakes.PgtuneFactory(), snapshot: null);
+            Fakes.PgtuneFactory(),
+            NoDelivery.Instance, snapshot: null);
 
         // Act
         var outcome = await process.TickAsync(await Snapshot(etcd), CancellationToken.None);

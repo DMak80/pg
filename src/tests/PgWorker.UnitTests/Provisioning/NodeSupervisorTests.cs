@@ -139,6 +139,7 @@ public class NodeSupervisorTests
             new Fakes.FakeSecretEnsurer(),
             new AppParamsEnsurer(etcd, [Ep], "sslmode=require"),
             Fakes.PgtuneFactory(), Fakes.PgtuneSettings(),
+            NoDelivery.Instance,
             log is not null ? log : NullLogger<NodeSupervisor>.Instance,
             new MasterKeyReconciler(etcd, [Ep], probe));
         return new Rig(etcd, driver, claims, journal, supervisor);
@@ -1297,7 +1298,8 @@ public class NodeSupervisorTests
             claims, journal, Thresholds, TimeProvider.System, Secrets,
             new Fakes.FakeSecretEnsurer(),
             new AppParamsEnsurer(etcd, [Ep], "sslmode=require"),
-            Fakes.PgtuneFactory(), Fakes.PgtuneSettings(), NullLogger<NodeSupervisor>.Instance);
+            Fakes.PgtuneFactory(), Fakes.PgtuneSettings(),
+            NoDelivery.Instance, NullLogger<NodeSupervisor>.Instance);
 
         // Act — параллельные тики двух кластеров одним синглтоном
         var results = await Task.WhenAll(

@@ -159,6 +159,14 @@ builder.Services.AddHttpClient("pgnode-channel", c => c.Timeout = TimeSpan.FromS
 builder.Services.AddSingleton<PgWorker.Provisioning.Probes.INodeChannelClient>(sp =>
     new PgWorker.Provisioning.Probes.NodeChannelClient(
         sp.GetRequiredService<IHttpClientFactory>().CreateClient("pgnode-channel")));
+// Доставка bootstrap-данных нодам (arch/14 §4, spec §3.7.2): put ключа +
+// хендшейк по статусу, Ensure-хвост всех процессов и конвергенция надзора.
+builder.Services.AddSingleton<PgWorker.Provisioning.Processes.INodeBootstrapDelivery>(sp =>
+    new PgWorker.Provisioning.Processes.NodeBootstrapDelivery(
+        sp.GetRequiredService<IEtcdGateway>(),
+        sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
+        sp.GetRequiredService<PgWorker.Provisioning.Probes.INodeChannelClient>(),
+        sp.GetRequiredService<RestCertificateCache>()));
 builder.Services.AddSingleton<PgWorker.Provisioning.Probes.INodeDataProbe>(sp =>
     new WalNodeDataProbe(sp.GetRequiredService<IWalReceiverApiClient>()));
 // Клиент Patroni REST (arch/14 §5 C): https к host:patroni-port portalloc;
@@ -483,6 +491,7 @@ builder.Services.AddSingleton(sp =>
         sp.GetRequiredService<PortAllocIndex>(),
         sp.GetRequiredService<PortAllocLock>(),
         sp.GetRequiredService<PgtuneInputsFactory>(),
+        sp.GetRequiredService<PgWorker.Provisioning.Processes.INodeBootstrapDelivery>(),
         SnapshotDelegate(job),
         sp.GetRequiredService<Shared.Core.Hosting.ILoopProgress>(),
         TimeSpan.FromSeconds(opts.Loops.Watchdog.CheckIntervalSec),
@@ -514,6 +523,7 @@ builder.Services.AddSingleton(sp => new NodeSupervisor(
     sp.GetRequiredService<IAppParamsEnsurer>(),
     sp.GetRequiredService<PgtuneInputsFactory>(),
     sp.GetRequiredService<PgtuneSettings>(),
+    sp.GetRequiredService<PgWorker.Provisioning.Processes.INodeBootstrapDelivery>(),
     sp.GetRequiredService<ILogger<NodeSupervisor>>(),
     new MasterKeyReconciler(
         sp.GetRequiredService<IEtcdGateway>(),
@@ -550,6 +560,7 @@ builder.Services.AddSingleton(sp =>
             opts.Thresholds.ProvisionRetryBaseSec, opts.Thresholds.ProvisionRetryMaxSec),
         sp.GetRequiredService<EtcdEndpoints>(),
         sp.GetRequiredService<PgtuneInputsFactory>(),
+        sp.GetRequiredService<PgWorker.Provisioning.Processes.INodeBootstrapDelivery>(),
         SnapshotDelegate(sp.GetRequiredService<SnapshotJob>()),
         opts.Docker.ScrapeNetwork);
 });
@@ -597,6 +608,7 @@ builder.Services.AddSingleton(sp =>
         sp.GetRequiredService<PortAllocIndex>(),
         sp.GetRequiredService<PortAllocLock>(),
         sp.GetRequiredService<PgtuneInputsFactory>(),
+        sp.GetRequiredService<PgWorker.Provisioning.Processes.INodeBootstrapDelivery>(),
         SnapshotDelegate(sp.GetRequiredService<SnapshotJob>()),
         sp.GetRequiredService<Shared.Core.Hosting.ILoopProgress>(),
         TimeSpan.FromSeconds(opts.Loops.Watchdog.CheckIntervalSec),
