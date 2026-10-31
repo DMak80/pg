@@ -63,8 +63,13 @@ public sealed class E2eEnvironment : IAsyncDisposable
     // dl.min.io метки времени расходятся).
     internal const string McImage = "minio/mc:RELEASE.2025-08-13T08-35-41Z";
 
-    // Образ узла (задача 25): без DOORMAN_URL — узел без пулера, PgWorker
-    // запускается с EnableDoorman=false (Д4, R1).
+    // Пин pg_doorman (arch/14 §2.1 R1): обязательный build-arg DOORMAN_IMAGE
+    // при сборке образа ноды (EnsureStaticAsync); внешний мульти-арх образ —
+    // зеркалируется в локальный registry (images.txt + pull-images.sh).
+    internal const string DoormanImage = "ghcr.io/ozontech/pg_doorman:v3.11.0";
+
+    // Образ узла: несёт ОБЯЗАТЕЛЬНЫЙ пулер (arch/14 §8) — пин DOORMAN_IMAGE
+    // при сборке EnsureStaticAsync (константа DoormanImage ниже).
     public static string NodeImage => $"pgworker-node:e2e-{ImageTagSuffix}";
 
     /// <summary>Образ file_sd-генератора (t15, arch/18 §5.4): собирается ЛЕНИВО —
@@ -1014,7 +1019,6 @@ public sealed class E2eEnvironment : IAsyncDisposable
             ["PgWorker__Docker__PortRange__From"] = _portFrom.ToString(CultureInfo.InvariantCulture),
             ["PgWorker__Docker__PortRange__To"] = _portTo.ToString(CultureInfo.InvariantCulture),
             ["PgWorker__Docker__Images__Node"] = NodeImage,
-            ["PgWorker__Docker__EnableDoorman"] = "false",
 
             // Ускоренные циклы/пороги для e2e (критерии ждут секунды, не минуты).
             ["PgWorker__Loops__ScanIntervalSec"] = "1",
@@ -1932,7 +1936,8 @@ public sealed class E2eEnvironment : IAsyncDisposable
             [
                 "build", "-q", "-f", $"{_root}/docker/node/Dockerfile",
                 "--build-arg", "WAL_PUBLISH_DIR=artifacts/e2e/node-wal",
-                "--build-arg", "NODE_TOOLS_PUBLISH_DIR=artifacts/e2e/node-tools", "-t", NodeImage, _root,
+                "--build-arg", "NODE_TOOLS_PUBLISH_DIR=artifacts/e2e/node-tools",
+                "--build-arg", $"DOORMAN_IMAGE={DoormanImage}", "-t", NodeImage, _root,
             ], ct, timeout: TimeSpan.FromMinutes(10),
                 logFile: E2eFixture.StaticProcessLogPath("node-e2e"));
             E2eFixture.StaticPhase($"e2e-image {NodeImage}: ready in {sw.Elapsed.TotalSeconds:F0} s (walreceiver and pgwnodetool inside)");

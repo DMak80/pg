@@ -396,8 +396,9 @@ public sealed class E2eWalStreamPromoteScenarios(E2eWalStreamPromoteScenariosFx 
 
     // Published pg-порт мастера шарда из portalloc (host-клиент: localhost).
     // Резолв фактического primary — по пробам Patroni /primary (подход
-    // WaitForMasterAsync: master-ключ host:0 при EnableDoorman=false
-    // недискриминантен); primary появляется после dsn/RUNNING — ждём.
+    // WaitForMasterAsync: master-ключ host:<doorman-port> дискриминантен
+    // (S4), но резолв остаётся по пробам /primary — первоисточник, S4);
+    // primary появляется после dsn/RUNNING — ждём.
     // Patroni REST нод — https (цепочка к per-contour CA, без hostname)
     private HttpClient PatroniHttp => Fx.NewPatroniHttpClient();
 

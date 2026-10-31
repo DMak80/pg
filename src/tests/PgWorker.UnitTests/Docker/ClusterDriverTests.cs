@@ -239,7 +239,7 @@ public class ClusterDriverTests
 
     private static PlainClusterDriver NewPlainDriver(FakeEngine engine, string? advertisedHost = null,
         string? scrapeNetwork = null, string? contourNetwork = null, NodeBackupEnv? nodeBackupEnv = null)
-        => new([new HostEndpoint("h1", "fake://h1")], new FakeFactory(engine), enableDoorman: true,
+        => new([new HostEndpoint("h1", "fake://h1")], new FakeFactory(engine),
             advertisedHost: advertisedHost, scrapeNetwork: scrapeNetwork, contourNetwork: contourNetwork,
             restCertificates: RestCache, nodeBackupEnv: nodeBackupEnv);
 
@@ -469,7 +469,7 @@ public class ClusterDriverTests
         var engine = new FakeEngine();
         var factory = new FakeFactory(engine);
         var driver = new PlainClusterDriver(
-            [new HostEndpoint("h1", "fake://h1")], factory, enableDoorman: true,
+            [new HostEndpoint("h1", "fake://h1")], factory,
             advertisedHost: "host.docker.internal", restCertificates: RestCache);
 
         // Act
@@ -546,7 +546,7 @@ public class ClusterDriverTests
             },
         };
         var driver = new PlainClusterDriver(
-            [new HostEndpoint("h1", "fake://h1")], new FakeFactory(engine), enableDoorman: false,
+            [new HostEndpoint("h1", "fake://h1")], new FakeFactory(engine),
             restCertificates: RestCache);
 
         // Act
@@ -604,7 +604,14 @@ public class ClusterDriverTests
         spec.Env!["SCOPE"].Should().Be("shop-shard1");
         spec.Env!["ETCD3_HOSTS"].Should().Be("etcd:2379"); // Patroni: host:port без scheme
         spec.Env!["PGW_NODE_HOST"].Should().Be("h1");
-        spec.Env!["DOORMAN_CONFIG"].Should().Contain("pool_mode = \"transaction\"");
+        spec.Env!["DOORMAN_CONFIG"].Should().Contain("pool_mode: \"transaction\"");
+        spec.Env!["DOORMAN_CONFIG"].Should().Contain("admin_username: \"pgwd_admin\"");
+        spec.Env!["DOORMAN_CONFIG"].Should().Contain("admin_password: \"pgwd_admin_password\"");
+        spec.Env!["DOORMAN_CONFIG"].Should().Contain("auth_query:");
+        spec.Env!["DOORMAN_CONFIG"].Should().Contain("user: \"postgres\"");
+        spec.Env!["DOORMAN_CONFIG"].Should().Contain("password: \"su\"");
+        spec.Env!["DOORMAN_CONFIG"].Should().Contain("max_db_connections: 55");
+        spec.Env!["PGW_DOORMAN_PORT"].Should().Be("16432");
         // HAPROXY_CONFIG не передаётся: PG и HAProxy конфликтуют на :5432 (Д4).
         spec.Env.Should().NotContainKey("HAPROXY_CONFIG");
         spec.Ports.Should().BeEquivalentTo(
@@ -623,7 +630,7 @@ public class ClusterDriverTests
         // exclude — дефолт опций (ди); doorman-бюджет от рассчитанного max_connections (P15).
         var engine = new FakeEngine();
         var driver = new PlainClusterDriver(
-            [new HostEndpoint("h1", "fake://h1")], new FakeFactory(engine), enableDoorman: true,
+            [new HostEndpoint("h1", "fake://h1")], new FakeFactory(engine),
             pgtuneExclude: new HashSet<string>(["io_method", "io_workers"], StringComparer.Ordinal),
             restCertificates: RestCache);
         var tuning = PgTune.Calculate(new PgTuneInput(
@@ -641,28 +648,12 @@ public class ClusterDriverTests
         spec.Env!["SPILO_CONFIGURATION"].Should().Contain("shared_buffers: \"1GB\"");
         spec.Env!["SPILO_CONFIGURATION"].Should().Contain("wal_level: logical");
         spec.Env!["SPILO_CONFIGURATION"].Should().NotContain("io_method");
-        spec.Env!["DOORMAN_CONFIG"].Should().Contain("max_db_connections = 55");
-    }
-
-    [Fact]
-    public async Task EnsureNode_DoormanDisabled_NoDoormanPortAndConfig()
-    {
-        // Arrange — флаг EnableDoorman=false (R1: узел без пулера, компромисс стенда)
-        var engine = new FakeEngine();
-        var driver = new PlainClusterDriver(
-            [new HostEndpoint("h1", "fake://h1")], new FakeFactory(engine), enableDoorman: false,
-            restCertificates: RestCache);
-
-        // Act
-        var result = await driver.EnsureNodeAsync(Topology(Addr), "shard1a", Addr, Secrets, Etcd, resources: null, tuning: null, syncStrict: false, restPassword: RestTestPassword, ct: CancellationToken.None);
-
-        // Assert: порт 6432 не публикуется, DOORMAN_CONFIG не генерируется
-        result.IsSuccess.Should().BeTrue();
-        engine.CreatedSpec.Should().NotBeNull();
-        var spec = engine.CreatedSpec!;
-        spec.Ports.Should().NotContain(p => p.ContainerPort == 6432);
-        spec.Env.Should().NotContainKey("DOORMAN_CONFIG");
-        spec.Env.Should().NotContainKey("PGW_DOORMAN_PORT");
+        spec.Env!["DOORMAN_CONFIG"].Should().Contain("max_db_connections: 55");
+        spec.Env!["DOORMAN_CONFIG"].Should().Contain("admin_username: \"pgwd_admin\"");
+        spec.Env!["DOORMAN_CONFIG"].Should().Contain("admin_password: \"pgwd_admin_password\"");
+        spec.Env!["DOORMAN_CONFIG"].Should().Contain("auth_query:");
+        spec.Env!["DOORMAN_CONFIG"].Should().Contain("user: \"postgres\"");
+        spec.Env!["DOORMAN_CONFIG"].Should().Contain("password: \"su\"");
     }
 
     [Fact]
@@ -1011,7 +1002,7 @@ public class ClusterDriverTests
         {
             Nodes = [new DockerSwarmNode("node-id-1", "h1", "ready", 0)],
         };
-        var driver = new SwarmClusterDriver("fake://manager", new FakeFactory(engine), enableDoorman: true,
+        var driver = new SwarmClusterDriver("fake://manager", new FakeFactory(engine),
             restCertificates: RestCache);
 
         // Act
@@ -1072,7 +1063,7 @@ public class ClusterDriverTests
     {
         // Arrange: драйвер БЕЗ кеша (изолированный путь).
         var driver = new PlainClusterDriver(
-            [new HostEndpoint("h1", "fake://h1")], new FakeFactory(new FakeEngine()), enableDoorman: true);
+            [new HostEndpoint("h1", "fake://h1")], new FakeFactory(new FakeEngine()));
 
         // Act: BuildSpec → fail-fast (HTTP-режима провижининга не существует).
         var act = () => driver.BuildSpec(Topology(Addr), "shard1a", Addr, Secrets, Etcd, null, null, false, RestTestPassword);
@@ -1112,7 +1103,7 @@ public class ClusterDriverTests
                 new DockerSwarmNode("n2", "h2", "down", 1),
             ],
         };
-        var driver = new SwarmClusterDriver("fake://manager", new FakeFactory(engine), enableDoorman: true,
+        var driver = new SwarmClusterDriver("fake://manager", new FakeFactory(engine),
             restCertificates: RestCache);
 
         // Act
@@ -1162,7 +1153,7 @@ public class ClusterDriverTests
                 "pgw-other-shard1-shard1a", // чужой кластер
             ],
         };
-        var driver = new SwarmClusterDriver("fake://manager", new FakeFactory(engine), enableDoorman: true,
+        var driver = new SwarmClusterDriver("fake://manager", new FakeFactory(engine),
             restCertificates: RestCache);
 
         // Act

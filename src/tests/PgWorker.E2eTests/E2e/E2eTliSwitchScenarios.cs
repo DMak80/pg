@@ -937,8 +937,9 @@ public sealed class TliSwitchContext : IAsyncLifetime
 
     // Published pg-порт мастера шарда из portalloc (host-клиент: localhost).
     // Резолв фактического primary — по пробам Patroni /primary (t02-подход
-    // WaitForMasterAsync: master-ключ host:0 при EnableDoorman=false
-    // недискриминантен); primary появляется после dsn/RUNNING — ждём.
+    // WaitForMasterAsync: master-ключ host:<doorman-port> дискриминантен
+    // (S4), но резолв остаётся по пробам /primary — первоисточник, S4);
+    // primary появляется после dsn/RUNNING — ждём.
     public async Task<(string Host, int Port, string Node)> MasterPgAsync(string cluster, string shard, CancellationToken ct)
     {
         var kv = await G.GetAsync(Endpoint, $"/pgworker/portalloc/{cluster}", ct);

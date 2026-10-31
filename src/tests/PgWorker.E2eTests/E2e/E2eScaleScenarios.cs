@@ -407,10 +407,10 @@ public sealed class E2eScaleScenarios(E2eScaleScenariosFx Ctx) : IClassFixture<E
     private HttpClient PatroniHttp => Fx.NewPatroniHttpClient();
 
     // Мастер шарда: резолв по контракту §5 C — проба /primary по patroni-портам
-    // portalloc. Матч master-ключа по doorman-порту при EnableDoorman=false
-    // недискриминантен (ключ host:0 у всех нод, arch/14 §2.4 п.5):
-    // FirstOrDefault по такому матчу отдавал произвольную ноду шарда — seed
-    // уходил на реплику (25006 read-only). Приём E2eMoveScenarios.
+    // portalloc. Матч master-ключа по doorman-порту дискриминантен (S4),
+    // но резолв остаётся по пробам /primary — первоисточник (S4):
+    // FirstOrDefault по ключу на общем хосте отдавал произвольную ноду
+    // шарда — seed уходил на реплику (25006 read-only). Приём E2eMoveScenarios.
     private async Task<MasterInfo> MasterInfoAsync(string cluster, string shard, CancellationToken ct)
     {
         for (var i = 0; i < 60; i++)

@@ -450,10 +450,10 @@ public sealed class E2eMoveScenarios(E2eMoveScenariosFx Ctx, ITestOutputHelper o
     private async Task<MasterInfo> MasterInfoAsync(string shard, CancellationToken ct)
     {
         // Резолв мастера по контракту §5 C: проба /primary по patroni-портам
-        // portalloc. Матч master-ключа по doorman-порту при EnableDoorman=false
-        // недискриминантен (ключ host:0 у всех нод, arch/14 §2.4 п.5):
-        // FirstOrDefault по такому матчу отдавал произвольную ноду шарда —
-        // seed уходил на реплику (25006 read-only).
+        // portalloc. Матч master-ключа по doorman-порту дискриминантен (S4),
+        // но резолв остаётся по пробам /primary — первоисточник (S4):
+        // FirstOrDefault по ключу на общем хосте отдавал произвольную ноду
+        // шарда — seed уходил на реплику (25006 read-only).
         for (var i = 0; i < 60; i++)
         {
             var key = await GetOrNullAsync($"/clusters/{Cluster}/shards/{shard}/master");

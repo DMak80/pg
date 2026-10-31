@@ -92,10 +92,13 @@ echo ">>> [PHASE] publish PgWorker.NodeTools self-contained $NODE_RID ($(date +%
 dotnet publish "$ROOT/src/PgWorker.NodeTools/PgWorker.NodeTools.csproj" \
   -c Release -r "$NODE_RID" --self-contained -o "$ROOT/artifacts/node-tools" --nologo \
   || { echo "❌ NodeTools publish failed"; exit 1; }
-echo ">>> [PHASE] pgworker-node:dev build (WAL_PUBLISH_DIR=artifacts/node-wal, NODE_TOOLS_PUBLISH_DIR=artifacts/node-tools) ($(date +%H:%M:%S))"
+# DOORMAN_IMAGE — пин мульти-арх образа pg_doorman (arch/14 §2.1 R1; пулер
+# обязателен); ретаг канонического имени делает pull-images.sh из registry.
+echo ">>> [PHASE] pgworker-node:dev build (WAL_PUBLISH_DIR=artifacts/node-wal, NODE_TOOLS_PUBLISH_DIR=artifacts/node-tools, DOORMAN_IMAGE=ghcr.io/ozontech/pg_doorman:v3.11.0) ($(date +%H:%M:%S))"
 docker build -q -f "$ROOT/docker/node/Dockerfile" \
   --build-arg "WAL_PUBLISH_DIR=artifacts/node-wal" \
-  --build-arg "NODE_TOOLS_PUBLISH_DIR=artifacts/node-tools" -t pgworker-node:dev "$ROOT" \
+  --build-arg "NODE_TOOLS_PUBLISH_DIR=artifacts/node-tools" \
+  --build-arg "DOORMAN_IMAGE=ghcr.io/ozontech/pg_doorman:v3.11.0" -t pgworker-node:dev "$ROOT" \
   || { echo "❌ image pgworker-node:dev build failed"; exit 1; }
 echo "  image pgworker-node:dev ready (walreceiver + pgwnodetool inside)"
 

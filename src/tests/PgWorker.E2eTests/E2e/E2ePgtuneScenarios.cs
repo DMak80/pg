@@ -41,10 +41,7 @@ public sealed class E2ePgtuneScenarios(E2ePgtuneScenariosFx Ctx) : IClassFixture
         // Arrange: сид с заявками 4Gi/2cpu → расчёт PGTune: shared_buffers 1GB,
         // max_connections 60 (Connections=60 из опций по умолчанию).
         await SeedClusterAsync(cluster, requestMem: "4Gi", ct);
-        // Doorman включаем ТОЛЬКО ради env-ассерта бюджета (образ e2e без
-        // бинарника — обёртка supervisord тихо выходит, узел поднимается).
-        await using var host = await Fx.StartHostAsync("s1",
-            extraEnv: new Dictionary<string, string> { ["PgWorker__Docker__EnableDoorman"] = "true" }, ct: ct);
+        await using var host = await Fx.StartHostAsync("s1", ct: ct);
 
         // Act: provisioning до Active.
         var provisioned = await E2eFixture.WaitForAsync(
@@ -85,8 +82,7 @@ public sealed class E2ePgtuneScenarios(E2ePgtuneScenariosFx Ctx) : IClassFixture
         // Assert: doorman-бюджет синхронизирован от рассчитанного max_connections
         // (P15: 60 − 5 = 55, пол 10).
         var doorman = (await ContainerEnvAsync($"pgw-{cluster}-shard1-shard1a", ct))["DOORMAN_CONFIG"];
-        doorman.Should().Contain("max_db_connections = 55");
-        doorman.Should().Contain("default_pool_size = 55");
+        doorman.Should().Contain("max_db_connections: 55");
     }
 
     [Fact]
@@ -496,7 +492,8 @@ public sealed class E2ePgtuneScenarios(E2ePgtuneScenariosFx Ctx) : IClassFixture
 
     // Мастер шарда: резолв по контракту arch/14 §5 C — проба /primary по
     // patroni-портам portalloc (приём E2eScaleScenarios.MasterInfoAsync:
-    // матч master-ключа по doorman-порту недискриминантен при EnableDoorman=false).
+    // матч master-ключа по doorman-порту дискриминантен (S4), но резолв
+    // остаётся по пробам /primary — первоисточник (S4)).
     private async Task<MasterInfo> MasterInfoAsync(string cluster, string shard, CancellationToken ct)
     {
         for (var i = 0; i < 60; i++)

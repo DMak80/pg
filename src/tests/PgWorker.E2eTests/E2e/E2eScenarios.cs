@@ -60,6 +60,10 @@ public sealed class E2eScenarios(E2eScenariosFx Ctx, ITestOutputHelper output) :
 
         await AssertProvisioningResultAsync(Cluster, ct);
 
+        // Клиентский вход — только через пулер (arch/14 §8): SQL через
+        // опубликованный doorman-порт мастера шарда.
+        await AssertDoormanClientEntryAsync(Cluster, "shard1", ct);
+
         // ---------- AC3: takeover (kill посреди provisioning) ----------
         await SeedClusterAsync(Cluster2);
         var started = await E2ePhase.WaitAsync(Fx,
@@ -204,9 +208,10 @@ public sealed class E2eScenarios(E2eScenariosFx Ctx, ITestOutputHelper output) :
         var published = System.Text.RegularExpressions.Regex.Matches(ports, @":(\d+)->")
             .Select(m => m.Groups[1].Value)
             .ToList();
-        // IPv4/IPv6-байндинги дублируют каждую пару — уникальных должно быть 8.
-        published.Distinct().Should().HaveCount(8,
-            "2 publish ports (pg+patroni) per node across 4 nodes, all host ports are unique");
+        // IPv4/IPv6-байндинги дублируют каждую пару — уникальных должно быть 12
+        // (тройка портов ноды всегда: пулер обязателен, arch/14 §8).
+        published.Distinct().Should().HaveCount(12,
+            "3 publish ports (pg+patroni+doorman) per node across 4 nodes, all host ports are unique");
 
         // O2 (решение плана №9): probe SELECT 1 по DSN ИЗ КЛЮЧА как записан
         // (multi-host, порты разные, без пароля) + Password из сид-секрета.
@@ -320,10 +325,10 @@ public sealed class E2eScenarios(E2eScenariosFx Ctx, ITestOutputHelper output) :
         sw.Elapsed.Should().BeLessThanOrEqualTo(TimeSpan.FromSeconds(5),
             "the leader-switch budget ≤5 s (graceful demote/failover acceleration by the worker)");
 
-        // Master-ключ (P11: callback + reconciler). При EnableDoorman=false
-        // (e2e) portalloc-записи несут doorman:0 (миграция факта инспекции,
-        // arch/14 §2.4 п.5) → ключ вырождается в host:0 и НЕдискриминантен по
-        // ноде; сравнивать «до/после» нельзя — ключ обязан оставаться живым.
+        // Master-ключ (P11: callback + reconciler). Значение
+        // host:<doorman-port> дискриминантно по ноде (S4); резолв мастера —
+        // по пробам Patroni /primary (первоисточник, S4). Живость ключа при
+        // смене лидера обязательна (точное «до/после» не сверяется).
         // До смерти лидера ключ держит lease-демон НОДЫ (callback), после
         // смерти гаснет по TTL 5с; переписывает его callback нового лидера,
         // при его отказе — reconciler воркера (сверка после проб, 3с/нода) —
@@ -615,12 +620,49 @@ public sealed class E2eScenarios(E2eScenariosFx Ctx, ITestOutputHelper output) :
         return null;
     }
 
+    // Клиентский вход — ТОЛЬКО через пулер :6432 (arch/14 §8): SELECT 1
+    // app-ролью per-cluster секрета по опубликованному doorman-порту мастера;
+    // TLS require без верификации цепочки (P17); допуск — per-pool auth_query
+    // (SCRAM по verifier'у из pg_shadow, к бэкенду — переиспользование
+    // клиентского доказательства) — функциональная проверка допуска.
+    // Пулер стартует вместе с контейнером (supervisord startsecs=5) — ретраи.
+    private async Task AssertDoormanClientEntryAsync(string cluster, string shard, CancellationToken ct)
+    {
+        // Arrange: мастер по пробам /primary; креды — per-cluster app-секрет.
+        var master = await WaitForMasterAsync(cluster, shard, ct);
+        var appUser = (await GetOrNullAsync($"/clusters/{cluster}/app_user"))!.Value;
+        var appPassword = (await GetOrNullAsync($"/clusters/{cluster}/app_password"))!.Value;
+
+        // Act: SELECT 1 через doorman-порт (бюджет как у SQL-проб нод).
+        var alive = await E2ePhase.WaitAsync(Fx, "ac2-doorman-sql", async () =>
+        {
+            try
+            {
+                var dsn = $"Host=localhost;Port={master.Doorman};Database={cluster};" +
+                          $"Username={appUser};Password={appPassword};" +
+                          "SSL Mode=Require;Trust Server Certificate=true;Timeout=5";
+                await using var con = new NpgsqlConnection(dsn);
+                await con.OpenAsync(ct);
+                await using var cmd = new NpgsqlCommand("SELECT 1", con);
+                return await cmd.ExecuteScalarAsync(ct) is 1;
+            }
+            catch (NpgsqlException)
+            {
+                return false; // пулер ещё стартует — повторим
+            }
+        }, TimeSpan.FromSeconds(60), ct);
+
+        // Assert: обязательный пулер обслуживает клиентский SQL.
+        alive.Should().BeTrue(
+            $"the mandatory pooler serves client SQL on the published doorman port {master.Doorman}");
+    }
+
     private async Task<MasterAddr> WaitForMasterAsync(string cluster, string shard, CancellationToken ct)
     {
         // Резолв мастера по контракту §5 C: проба /primary по patroni-портам
-        // portalloc. Матч master-ключа по doorman-порту при EnableDoorman=false
-        // недискриминантен (ключ host:0 у всех нод, arch/14 §2.4 п.5):
-        // FirstOrDefault по такому матчу возвращал произвольную ноду шарда.
+        // portalloc. Матч master-ключа по doorman-порту дискриминантен (S4),
+        // но резолв остаётся по пробам /primary — первоисточник (S4):
+        // ключ — согласованный кэш, истина роли — в Patroni.
         for (var i = 0; i < 60; i++)
         {
             var key = await GetOrNullAsync($"/clusters/{cluster}/shards/{shard}/master");

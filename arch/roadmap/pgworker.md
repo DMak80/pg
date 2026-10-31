@@ -13,32 +13,6 @@
   (2026-09-06): etcd остаётся единственным хранилищем per-cluster секретов
   до этой интеграции.
 
-- **`t03-doorman-mandatory`** — doorman в коде: пулер обязателен, режим
-  «нода без пулера» снят (контракт уже изменён arch-first: arch/14 §2.1/§2.4
-  п.5/§8/§9 R1, arch/17 S4). Код PgWorker: удалить `EnableDoorman`
-  (Options/appsettings/Program), ветвления драйвера — env
-  DOORMAN_CONFIG/PGW_DOORMAN_PORT и публикация 6432 ВСЕГДА
-  (`ClusterDriver`: параметр enableDoorman, PortsMatchPlan), ветку
-  `EnableDoorman=false` в `MasterKeyReconciler.IsCurrent`, zero-ignore
-  doorman-порта в `PortPlanConvergence.MatchesFact`, EnableDoorman-мотивацию
-  в комментарии `ClusterSecretRotator.ResolveMasterAsync`. Образ ноды:
-  бинарник pg_doorman — обязательный build-arg `DOORMAN_URL` (пин релиза;
-  проект github.com/ozontech/pg_doorman, есть контейнер-образ
-  ghcr.io/ozontech/pg_doorman): `docker/node/Dockerfile` — fail-fast при
-  пустом DOORMAN_URL (сейчас условный), `docker-entrypoint-doorman.sh` —
-  вместо молчаливого «not starting» отказ старта контейнера, комментарий
-  supervisord. Пин в сборках pgworker-node:dev|e2e: стенд
-  `dev-stand/adminpanel/checks/00-up.sh`, E2E EnsureNodeImage
-  (`E2eEnvironment`), ранбук `docs/runbook.md`. Тесты: снять
-  env-переопределения `PgWorker__Docker__EnableDoorman` (E2eEnvironment и
-  E2eSecondInstanceScenarios — false, E2ePgtuneScenarios — true),
-  переписать комментарии «master-ключ host:0 при EnableDoorman=false» в
-  сценарных файлах E2e (по grep EnableDoorman: Drill/Move/Scale/Scenarios/
-  WalStream*/TliSwitch/Pgtune/AppSecret), юниты: ClusterDriverTests (ветка
-  без пулера), ClusterSecretRotatorTests (деградировавший кейс host:0),
-  PortPlanConvergenceTests (запись без пулера — теперь расхождение).
-  Мерж-гейт: docker-E2E PgWorker на свежем Release.
-
 - **`t04-api-client-cert-eku`** — EKU clientAuth в валидации клиентских
   сертов /api (сейчас `TlsChain.ValidateChain` EKU не проверяет: серверные
   серты той же CA годятся как клиентские для /api). `TlsChain.ValidateChain`
@@ -67,4 +41,40 @@
   до периметра docker-хоста (arch/18 §5.2); ломает
   `host.docker.internal`-потребителей (панель) — по умолчанию выключен,
   включается осознанно.
+
+- **`t05-node-secret-push`** — нода без секретов в env: доставка пушем
+  от воркера через загрузочного агента (дизайн пользователя, arch-first
+  внесён: arch/14 §4 «Планируемое», arch/13 §4). Контейнер ноды
+  создаётся БЕЗ секретов в env (только неконфиденциальное:
+  DOORMAN_CONFIG-шаблон, адреса etcd); supervisord поднимает ТОЛЬКО
+  walreceiver, тот поднимает mTLS-сервер (сёрт ноды — материалы
+  per-install REST-CA, кандидат); PgWorker — инициатор канала: он создал
+  контейнер, знает хост/порты, контролит поднятие (adopt/supervise) и
+  ИНИЦИИРУЕТ на walreceiver проверку и замену (триггер по mTLS-каналу:
+  порт внутри docker-сети кластера, на хост не публикуется); нода про
+  pgWorker ничего не знает и ничего не инициирует. Данные — из etcd,
+  самим walreceiver (доступ к etcd у него уже есть): воркер пишет в
+  etcd серверный серт doorman (серт+ключ; per-cluster секреты —
+  кандидат на тот же путь), walreceiver забирает сам, пишет файлами
+  0600, рендерит конфиги (Patroni-bootstrap, DOORMAN_CONFIG), стартует
+  spilo/pg_doorman; walreceiver — менеджер doorman: ведёт его конфиг и
+  серты, по триггеру проверки/замены перечитывает etcd и выполняет
+  релод/рестарт пулера. Целевая схема серта заменяет
+  entrypoint-генерацию self-signed (текущий канон — до мержа t05).
+  Доступность: restart контейнера — конфиги/серты из writable-слоя
+  (воркер не нужен; перечитывание etcd — по триггеру); recreate делает
+  только воркер — он же тут же инициирует. Развилки на spec: роль
+  агента (walreceiver vs отдельный бинарник), bootstrap PG файлами без
+  PGPASSWORD_SUPERUSER (отход от upstream Spilo), доставка per-install
+  SuPassword при модели «etcd-only» (Д7: per-install в etcd не живут —
+  исключение-ключ / env / данные по триггеру), источник серта
+  (per-install CA c SAN — кандидат) и верификация клиентами, watch
+  etcd-ключа вместо/вместе с триггером, ротация rest_password без
+  rolling-recreate, защита кэша (0600/шифрование).
+  Затронуто: docker/node (entrypoint/supervisord), PgWorker.WalReceiver
+  (агент), ClusterDriver (env без секретов + push-клиент), arch/13 §2
+  (firewall-строка канала). Не зависит от t02-external-secret-manager
+  (то — хранение per-cluster секретов, это — доставка в ноду).
+  Мерж-гейт: docker-E2E PgWorker на свежем Release + негативная
+  проверка «в docker inspect ноды нет секретов».
 

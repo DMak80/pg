@@ -199,7 +199,18 @@ CA-сертификат registry должен быть доверен Docker и 
       --self-contained -o artifacts/node-tools
     docker build -f docker/node/Dockerfile \
       --build-arg WAL_PUBLISH_DIR=artifacts/node-wal \
-      --build-arg NODE_TOOLS_PUBLISH_DIR=artifacts/node-tools -t pgworker-node:dev .
+      --build-arg NODE_TOOLS_PUBLISH_DIR=artifacts/node-tools \
+      --build-arg DOORMAN_IMAGE=ghcr.io/ozontech/pg_doorman:v3.11.0 \
+      -t pgworker-node:dev .
+
+`DOORMAN_IMAGE` — ОБЯЗАТЕЛЬНЫЙ build-arg (пулер pg_doorman — неотъемлемая
+часть образа ноды, arch/14 §2.1 R1): мульти-арх (amd64+arm64) контейнер-образ
+проекта pg_doorman — docker выбирает архитектуру под платформу сборки
+автоматически (целевая платформа x64 — amd64-сборка; arm64 — платформа
+разработки, arch/03 §1). Сборка без build-arg падает fail-fast. Перед
+сборкой на офлайн-хосте — `dev-stand/images/pull-images.sh` (ретаг
+канонического имени из локального registry). Обновление версии пина —
+рутина ниже («Обновить пин pg_doorman»).
 
 Полный стенд собирает образ скриптом `dev-stand/adminpanel/checks/00-up.sh`
 (RID определяется по `uname -m` автоматически).
@@ -223,6 +234,23 @@ CA-сертификат registry должен быть доверен Docker и 
 3. Проверить: `docker manifest inspect --insecure 192.168.0.1:5000/<образ>` —
    в списке `amd64` и `arm64`.
 
+### Обновить пин pg_doorman
+
+1. Изменить пин `ghcr.io/ozontech/pg_doorman:v3.11.0` на новую версию
+   РОВНО в четырёх рабочих точках: `dev-stand/adminpanel/checks/00-up.sh`,
+   `src/tests/PgWorker.E2eTests/E2e/E2eEnvironment.cs` (константа
+   `DoormanImage`),
+   `src/tests/PgWorker.IntegrationTests/Backups/NodeWalReceiverTests.cs`
+   (константа `DoormanImage` — файл сам собирает образ ноды с
+   `--build-arg DOORMAN_IMAGE`), этот раздел (команда сборки + строка
+   каталога ниже).
+2. Обновить строку в `dev-stand/images/images.txt`.
+3. Перемirrorить: `dev-stand/images/mirror-image.sh ghcr.io/ozontech/pg_doorman:<новая версия>`,
+   затем `dev-stand/images/pull-images.sh`.
+4. Контроль полноты: `grep -rn "pg_doorman:v" dev-stand/ src/ docker/ docs/runbook.md`
+   — вхождений старой версии не осталось (grep заодно ловит упоминания пина
+   вне рабочих точек: комментарий в `docker/node/Dockerfile`, этот раздел).
+
 ### Известная особенность: TLS-сертификат registry и Go-клиенты
 
 Сертификат registry (самоподписанный, RSA-4096/SHA-256) отвергается новыми
@@ -237,6 +265,7 @@ Go-1.24-клиентами с ошибкой `x509: certificate is not standards
 |---|---|
 | `alpine:3.20` | тесты PgWorker (Docker/Exec/SshTunnel/TlsEngine), наполнение TLS-volume в `00-up.sh` |
 | `apache/kafka:4.0.0` | KafkaWorker: дефолт образа брокера (`Options`), интеграция-тесты, kafka-e2e чек стенда |
+| `ghcr.io/ozontech/pg_doorman:v3.11.0` | бинарник пулера в образе PG-ноды (обязательный build-arg DOORMAN_IMAGE, COPY --from) |
 | `ghcr.io/zalando/spilo-18:4.1-p2` | база образа PG-ноды `pgworker-node` (`docker/node/Dockerfile`) |
 | `grafana/grafana:13.0.8` | dev-стенд (метрики) |
 | `mcr.microsoft.com/dotnet/sdk:10.0` | build-стадии Dockerfile'ов PgWorker/KafkaWorker/AdminPanel |
