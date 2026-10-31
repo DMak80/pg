@@ -35,12 +35,11 @@ public interface IClusterDriver
     // SPILO_CONFIGURATION (merge(PGTune ∪ канон)) и doorman-бюджет; null →
     // прежний хардкод-набор (изолированные пути). syncStrict — per-cluster
     // опция synchronous_mode_strict из config кластера (arch/14 §3).
-    // restPassword — эффективная per-cluster REST-пара (arch/14 §2.1/§5 I:
-    // pending окна ротации ?? ключ кластера; резолвор RestRotation.EffectivePassword
-    // у вызывающих процессов).
+    // Секреты через драйвер НЕ проходят (t05, arch/14 §4): их несёт
+    // NodeBootstrapDelivery (bootstrap-ключ etcd + mTLS-push).
     Task<Result> EnsureNodeAsync(ShardTopology topology, string nodeName, NodeAddress addr,
-        InstallSecrets secrets, EtcdEndpoints etcd, NodeResources? resources,
-        PgTuneResult? tuning, bool syncStrict, string restPassword, CancellationToken ct);
+        EtcdEndpoints etcd, NodeResources? resources,
+        PgTuneResult? tuning, bool syncStrict, CancellationToken ct);
 
     // Остановить и удалить ноду + volume (404 = успех). swarm: service rm
     // (volume остаётся на ноде таска — manager не управляет volume нод).
@@ -201,8 +200,8 @@ public sealed class PlainClusterDriver(
     }
 
     public async Task<Result> EnsureNodeAsync(ShardTopology topology, string nodeName, NodeAddress addr,
-        InstallSecrets secrets, EtcdEndpoints etcd, NodeResources? resources,
-        PgTuneResult? tuning, bool syncStrict, string restPassword, CancellationToken ct)
+        EtcdEndpoints etcd, NodeResources? resources,
+        PgTuneResult? tuning, bool syncStrict, CancellationToken ct)
     {
         if (!_engines.TryGetValue(addr.Host, out var engine))
         {
@@ -277,7 +276,7 @@ public sealed class PlainClusterDriver(
                     throw removed.Error!;
             }
 
-            var spec = BuildSpec(topology, nodeName, addr, secrets, etcd, resources, tuning, syncStrict, restPassword);
+            var spec = BuildSpec(topology, nodeName, addr, etcd, resources, tuning, syncStrict);
             var created = await engine.CreateContainerAsync(spec, name, ct);
             if (!created.IsSuccess)
                 throw created.Error!;
@@ -546,16 +545,18 @@ public sealed class PlainClusterDriver(
     }
 
 
-    // Сборка ContainerSpec: env Spilo + PGW_NODE_HOST + конфиги doorman/haproxy (Д4).
-    // tuning — рассчитанный per-shard PGTune-вывод: env — merge(PGTune ∪ канон,
-    // минус pgtuneExclude), doorman-бюджет — от рассчитанного max_connections
-    // (P15); tuning == null → прежний хардкод-набор и бюджет 55. syncStrict —
-    // per-cluster опция synchronous_mode_strict из config кластера.
-    // restPassword — эффективная REST-пара; серт ноды выпускается из кеша
-    // restCertificates == null — fail-fast (HTTP-режима не существует).
+    // Сборка ContainerSpec: env Spilo (без секретов, t05) + PGW_NODE_HOST +
+    // шаблон doorman + tmpfs /run/pgw (Д4; spec t05 §3.2).
+    // tuning — рассчитанный per-shard PGTune-вывод: SPILO_CONFIGURATION в
+    // bootstrap-ключе — merge(PGTune ∪ канон), doorman-бюджет — от рассчитанного
+    // max_connections (P15); tuning == null → прежний хардкод-набор и бюджет 55.
+    // syncStrict — per-cluster опция synchronous_mode_strict из config кластера.
+    // Серты нод выпускаются из кеша restCertificates в bootstrap-ключ
+    // (NodeBootstrapDelivery); restCertificates == null — fail-fast
+    // (HTTP-режима не существует).
     internal ContainerSpec BuildSpec(ShardTopology topology, string nodeName, NodeAddress addr,
-        InstallSecrets secrets, EtcdEndpoints etcd, NodeResources? resources, PgTuneResult? tuning,
-        bool syncStrict, string restPassword)
+        EtcdEndpoints etcd, NodeResources? resources, PgTuneResult? tuning,
+        bool syncStrict)
     {
         if (restCertificates is null)
             throw new ApplicationException(
@@ -563,9 +564,8 @@ public sealed class PlainClusterDriver(
                 "is mandatory (HTTP provisioning mode does not exist, arch/14 §2.1)");
         var (certPem, keyPem) = restCertificates.GetOrCreate(topology.Cluster, topology.Shard, nodeName);
         var env = new Dictionary<string, string>(
-            SpiloEnvBuilder.Build(topology, etcd, secrets, syncStrict, nodeName,
-                new NodeRestTls(certPem, keyPem, restCertificates.CaPem, restPassword),
-                tuning, pgtuneExclude))
+            SpiloEnvBuilder.Build(topology, etcd, syncStrict, nodeName,
+                restCertificates.CaPem, tuning, pgtuneExclude))
         {
             // Адрес этой ноды для lease-скрипта мастер-ключа (P11) и сверок.
             ["PGW_NODE_HOST"] = addr.Host,
@@ -594,8 +594,11 @@ public sealed class PlainClusterDriver(
         // max(10, max_connections − 5); tuning null (изолированные пути) —
         // прежний литерал 55.
         var serverConnections = tuning is null ? 55 : DoormanConfigBuilder.ServerConnections(tuning);
-        env["DOORMAN_CONFIG"] = DoormanConfigBuilder.Build(topology.Cluster, serverConnections, secrets.SuPassword);
+        env["DOORMAN_CONFIG_TEMPLATE"] = DoormanConfigBuilder.Build(topology.Cluster, serverConnections);
         env["PGW_DOORMAN_PORT"] = addr.Ports.Doorman.ToString();
+        // Публичный CA верификации клиентских сертов воркера на mTLS-канале
+        // агента :8081 (arch/13 §2, arch/25 №23) — тот же per-install REST-CA.
+        env["PGW_AGENT_CLIENT_CA"] = restCertificates.CaPem;
 
         // HAProxy в топологии нет (arch/14 §2.1): write-вход — прямой
         // pg-порт ноды (portalloc, multi-host DSN, P2).
@@ -614,6 +617,7 @@ public sealed class PlainClusterDriver(
             Env: env,
             VolumeName: VolumeName(topology.Cluster, topology.Shard, nodeName),
             VolumeDest: "/home/postgres/pgdata", // дефолтный PGDATA-корень Spilo (pgroot ломает bootstrap)
+            Tmpfs: new Dictionary<string, string> { ["/run/pgw"] = "rw,noexec,nosuid,size=16m" },
             CpuCores: resources?.CpuCores,
             MemoryBytes: resources?.MemoryBytes,
             LabelKey: LabelKey,
@@ -684,8 +688,8 @@ public sealed class SwarmClusterDriver(
         => _engine.BusyPortsAsync(ct);
 
     public async Task<Result> EnsureNodeAsync(ShardTopology topology, string nodeName, NodeAddress addr,
-        InstallSecrets secrets, EtcdEndpoints etcd, NodeResources? resources,
-        PgTuneResult? tuning, bool syncStrict, string restPassword, CancellationToken ct)
+        EtcdEndpoints etcd, NodeResources? resources,
+        PgTuneResult? tuning, bool syncStrict, CancellationToken ct)
     {
         return await Result.FromAsync(async () =>
         {
@@ -707,7 +711,7 @@ public sealed class SwarmClusterDriver(
                 [], new DockerEngineFactory(), nodeImage,
                 pgtuneExclude: pgtuneExclude, restCertificates: restCertificates,
                 nodeBackupEnv: nodeBackupEnv);
-            var template = plain.BuildSpec(topology, nodeName, addr, secrets, etcd, resources, tuning, syncStrict, restPassword);
+            var template = plain.BuildSpec(topology, nodeName, addr, etcd, resources, tuning, syncStrict);
             var spec = new ServiceSpec(
                 PlainClusterDriver.NodeName(topology.Cluster, topology.Shard, nodeName),
                 template,

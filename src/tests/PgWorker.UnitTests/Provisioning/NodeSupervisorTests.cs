@@ -1866,8 +1866,6 @@ public class NodeSupervisorTests
         result.IsSuccess.Should().BeTrue(result.Error?.ToString());
         rig.Driver.EnsuredNodes.Should().Contain("shard1/shard1a");
         rig.Driver.EnsuredNodes.Should().NotContain("shard1/shard1b", "TLS node is not a candidate");
-        rig.Driver.EnsuredRestPasswords["shard1/shard1a"]
-            .Should().Be(Fakes.FakeSecretEnsurer.RestPassword, "the pair comes from the ensure result, not the snapshot");
         rig.Driver.NodeEnvs["shard1/shard1a"].Should().ContainKey(RestRotation.EnvCert);
         rig.Driver.NodeEnvs["shard1/shard1a"][RestRotation.EnvPasswordHash]
             .Should().Be(RestRotation.PasswordHash(Fakes.FakeSecretEnsurer.RestPassword));
@@ -2002,7 +2000,6 @@ public class NodeSupervisorTests
 
         // Assert: shard1a пересоздан с pending-парой; shard1b (hash NEW) не тронут.
         result.IsSuccess.Should().BeTrue(result.Error?.ToString());
-        rig.Driver.EnsuredRestPasswords["shard1/shard1a"].Should().Be(NewRestPassword);
         rig.Driver.EnsuredNodes.Should().Contain("shard1/shard1a");
         rig.Driver.EnsuredNodes.Should().NotContain("shard1/shard1b");
     }
@@ -2114,8 +2111,6 @@ public class NodeSupervisorTests
         result2.IsSuccess.Should().BeTrue(result2.Error?.ToString());
 
         // Assert-2: EnsureNode — пара НОВОГО поколения (pending).
-        rig.Driver.EnsuredRestPasswords["shard1/shard1a"]
-            .Should().Be(NewRestPassword, "the new generation env is pending");
     }
 
     // AAA (рев.3, П1): 401-отказ switchover в окне НЕ роняет окно навсегда —
@@ -2222,8 +2217,6 @@ public class NodeSupervisorTests
         engine.Removed.Should().ContainSingle().Which.Should().Be("pgw-shop-shard1-shard1a");
         engine.RemovedVolumes.Should().BeEmpty("volume is preserved");
         rig.Driver.EnsuredNodes.Should().Contain("shard1/shard1a");
-        rig.Driver.EnsuredRestPasswords["shard1/shard1a"]
-            .Should().Be(Fakes.FakeSecretEnsurer.RestPassword);
     }
 
 }

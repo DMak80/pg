@@ -479,10 +479,10 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
         public bool SupportsRunningInspection => inner.SupportsRunningInspection;
         public Task<Result<IReadOnlyList<HostInfo>>> GetHostsAsync(CancellationToken ct) => inner.GetHostsAsync(ct);
         public Task<Result<IReadOnlySet<(string Host, int Port)>>> GetBusyPortsAsync(CancellationToken ct) => inner.GetBusyPortsAsync(ct);
-        public Task<Result> EnsureNodeAsync(ShardTopology t, string n, NodeAddress a, InstallSecrets s, EtcdEndpoints e, NodeResources? r, PgTuneResult? tuning, bool syncStrict, string restPassword, CancellationToken ct)
+        public Task<Result> EnsureNodeAsync(ShardTopology t, string n, NodeAddress a, EtcdEndpoints e, NodeResources? r, PgTuneResult? tuning, bool syncStrict, CancellationToken ct)
             => EnsureFails
                 ? Task.FromResult(Result.Failed(new ApplicationException("docker: ensure failed (fake)")))
-                : inner.EnsureNodeAsync(t, n, a, s, e, r, tuning, syncStrict, restPassword, ct);
+                : inner.EnsureNodeAsync(t, n, a, e, r, tuning, syncStrict, ct);
         public Task<Result> RemoveNodeAsync(string c, string sh, string node, CancellationToken ct) => inner.RemoveNodeAsync(c, sh, node, ct);
         public Task<Result> StopNodeAsync(string c, string sh, string node, CancellationToken ct) => inner.StopNodeAsync(c, sh, node, ct);
         public Task<Result<IReadOnlyDictionary<string, DiscoveredNode>>> InspectNodesAsync(string c, IReadOnlyCollection<string> names, CancellationToken ct) => inner.InspectNodesAsync(c, names, ct);
@@ -1248,8 +1248,6 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
         result.Value.Should().Be(ProcessOutcome.InProgress);
         inner.EnsuredNodes.Should().Contain("shard1/shard1a");
         inner.EnsuredNodes.Should().NotContain("shard1/shard1b");
-        // без окна ротации — ключ кластера (эффективная пара restore-пути)
-        inner.EnsuredRestPasswords["shard1/shard1a"].Should().Be(RestPassword);
         (await ReadRestoresAsync("c1", "shard1")).Single(r => r.Id == op.Id)
             .State.Should().Be(RestoreStatus.Rejoining);
     }
@@ -1276,9 +1274,8 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
         // Act
         var result = await process.TickAsync(BuildSnap(), await BackupsFromEtcdAsync("c1"), ct);
 
-        // Assert — драйвер получил pending-пару (не ключ кластера Key0…).
+        // Assert
         result.IsSuccess.Should().BeTrue(result.Error?.ToString());
-        inner.EnsuredRestPasswords["shard1/shard1a"].Should().Be("New0Pass00000000000000000000000B");
         op.Should().NotBeNull();
     }
 

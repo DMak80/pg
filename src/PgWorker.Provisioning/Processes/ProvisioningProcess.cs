@@ -493,8 +493,8 @@ public sealed class ProvisioningProcess(
             var ensured = await LongCallPolling.EnsureAsync(
                 $"create/start of node {node.Name}",
                 token => driver.EnsureNodeAsync(
-                    topology, node.Name, topology.Nodes[node.Name], clusterSecrets, etcdEndpoints, resources,
-                    tuning, syncStrict, restPassword, token),
+                    topology, node.Name, topology.Nodes[node.Name], etcdEndpoints, resources,
+                    tuning, syncStrict, token),
                 progress, logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance,
                 TimeSpan.FromTicks(Math.Max(
                     TimeSpan.TicksPerSecond, (watchdogWindow ?? TimeSpan.FromSeconds(15)).Ticks / 2)),

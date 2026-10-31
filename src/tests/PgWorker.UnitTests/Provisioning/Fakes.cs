@@ -329,9 +329,8 @@ internal sealed class FakeDriver : IClusterDriver
         public readonly List<(string Node, NodeResources? Resources)> EnsuredDetails = [];
         public readonly List<bool> EnsuredSyncStrict = []; // strict из EnsureNode-вызовов
         // env живых контейнеров (ключ "<shard>/<node>" → env-словарь; нет
-        // записи — пустой) + переданный restPassword каждого EnsureNode-вызова.
+        // записи — пустой).
         public readonly Dictionary<string, IReadOnlyDictionary<string, string>> NodeEnvs = new();
-        public readonly Dictionary<string, string> EnsuredRestPasswords = new();
         public readonly List<string> RemovedNodes = [];
         public readonly List<string> StoppedNodes = [];
         public List<string> NodeObjects = [];
@@ -382,21 +381,19 @@ internal sealed class FakeDriver : IClusterDriver
             => Task.FromResult(Result<IReadOnlySet<(string Host, int Port)>>.Success(BusyPorts));
 
         public Task<Result> EnsureNodeAsync(ShardTopology topology, string nodeName, NodeAddress addr,
-            InstallSecrets secrets, EtcdEndpoints etcd, NodeResources? resources, PgTuneResult? tuning,
-            bool syncStrict, string restPassword, CancellationToken ct)
+            EtcdEndpoints etcd, NodeResources? resources, PgTuneResult? tuning,
+            bool syncStrict, CancellationToken ct)
         {
             lock (_gate)
             {
                 EnsuredNodes.Add($"{topology.Shard}/{nodeName}");
                 EnsuredDetails.Add((nodeName, resources));
                 EnsuredSyncStrict.Add(syncStrict); // значение фиксируется для ассертов
-                EnsuredRestPasswords[$"{topology.Shard}/{nodeName}"] = restPassword;
                 // Пересоздание шагом REST-TLS — новый контейнер несёт полный env
                 // (серт + hash фактической пары): тестовая семантика «ensure пишет env».
                 NodeEnvs[$"{topology.Shard}/{nodeName}"] = new Dictionary<string, string>
                 {
                     [RestRotation.EnvCert] = "-----BEGIN CERTIFICATE-----\nunit\n-----END CERTIFICATE-----\n",
-                    [RestRotation.EnvPasswordHash] = RestRotation.PasswordHash(restPassword),
                 };
             }
 

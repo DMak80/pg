@@ -380,9 +380,9 @@ public sealed class NodeSupervisor(
                 }
 
                 var ensured = await driver.EnsureNodeAsync(
-                    topology, node.Name, topology.Nodes[node.Name], secrets,
+                    topology, node.Name, topology.Nodes[node.Name],
                     etcdForNodes ?? new EtcdEndpoints(endpoints), resources, tuning,
-                    snap.Config.SyncStrict, restPassword, ct);
+                    snap.Config.SyncStrict, ct);
                 if (!ensured.IsSuccess)
                     return ensured;
             }
@@ -682,9 +682,9 @@ public sealed class NodeSupervisor(
                 var resources = await ReadShardResourcesAsync(cluster, shard.Name, ct);
                 var tuning = pgtune.Create(resources);
                 var ensuredNode = await driver.EnsureNodeAsync(
-                    topology, node.Name, addr, secrets,
+                    topology, node.Name, addr,
                     etcdForNodes ?? new EtcdEndpoints(endpoints), resources, tuning,
-                    snap.Config.SyncStrict, effective, ct);
+                    snap.Config.SyncStrict, ct);
                 if (!ensuredNode.IsSuccess)
                     return ensuredNode;
 
@@ -825,9 +825,9 @@ public sealed class NodeSupervisor(
             var resources = await ReadShardResourcesAsync(cluster, shard.Name, ct);
             var tuning = pgtune.Create(resources);
             var ensured = await driver.EnsureNodeAsync(
-                topology, node.Name, addr, secrets,
+                topology, node.Name, addr,
                 etcdForNodes ?? new EtcdEndpoints(endpoints), resources, tuning,
-                snap.Config.SyncStrict, restPassword, ct);
+                snap.Config.SyncStrict, ct);
             if (!ensured.IsSuccess)
                 return ensured;
 
@@ -1015,9 +1015,9 @@ public sealed class NodeSupervisor(
                 var resources = await ReadShardResourcesAsync(cluster, shard.Name, ct);
                 var tuning = pgtune.Create(resources);
                 var ensured = await driver.EnsureNodeAsync(
-                    topology, name, addr, secrets,
+                    topology, name, addr,
                     etcdForNodes ?? new EtcdEndpoints(endpoints), resources, tuning,
-                    snap.Config.SyncStrict, restPassword, ct);
+                    snap.Config.SyncStrict, ct);
                 if (!ensured.IsSuccess)
                     return ensured;
                 var rebuilding = await PutAsync(

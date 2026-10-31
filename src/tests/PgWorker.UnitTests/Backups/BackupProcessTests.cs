@@ -148,8 +148,8 @@ public class BackupProcessTests
         public Task<Result<IReadOnlyList<HostInfo>>> GetHostsAsync(CancellationToken ct) => throw NotSupported();
         public Task<Result<IReadOnlySet<(string Host, int Port)>>> GetBusyPortsAsync(CancellationToken ct) => throw NotSupported();
         public Task<Result> EnsureNodeAsync(ShardTopology topology, string nodeName, NodeAddress addr,
-            InstallSecrets secrets, EtcdEndpoints etcd, NodeResources? resources,
-            PgTuneResult? tuning, bool syncStrict, string restPassword, CancellationToken ct) => throw NotSupported();
+            EtcdEndpoints etcd, NodeResources? resources,
+            PgTuneResult? tuning, bool syncStrict, CancellationToken ct) => throw NotSupported();
         public Task<Result> RemoveNodeAsync(string cluster, string shard, string nodeName, CancellationToken ct) => throw NotSupported();
         public Task<Result> StopNodeAsync(string cluster, string shard, string nodeName, CancellationToken ct) => throw NotSupported();
         public Task<Result<IReadOnlyDictionary<string, DiscoveredNode>>> InspectNodesAsync(

@@ -489,25 +489,16 @@ public sealed class RestoreProcess(
         var creds = await appSecret.EnsureAsync(cluster, snap.Config, ct);
         if (!creds.IsSuccess)
             return creds;
-        var clusterSecrets = secrets with
-        {
-            BucketAdminUser = creds.Value.BucketAdmin.User,
-            BucketAdminPassword = creds.Value.BucketAdmin.Password,
-            MoverPassword = creds.Value.MoverPassword,
-        };
         var topology = Topology(cluster, shard.Name, addresses);
         var resources = await ReadShardResourcesAsync(cluster, shard.Name, ct);
         var work = await journal.ReadAsync(cluster, ct);
         if (!work.IsSuccess)
             return work;
-        var restPassword = RestRotation.EffectivePassword(snap.RestPassword, work.Value?.RestPending)
-            ?? throw new ApplicationException(
-                $"restore {cluster}: cluster rest_password is unknown (no key and no pending)");
         return await LongCallPolling.EnsureAsync(
             $"create/start of node {node}",
             token => driver.EnsureNodeAsync(
-                topology, node, addr, clusterSecrets, etcdEndpoints, resources, null,
-                snap.Config.SyncStrict, restPassword, token),
+                topology, node, addr, etcdEndpoints, resources, null,
+                snap.Config.SyncStrict, token),
             progress, logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<RestoreProcess>.Instance,
             TimeSpan.FromTicks(Math.Max(TimeSpan.TicksPerSecond, WatchdogWindow.Ticks / 2)),
             TimeSpan.FromSeconds(thresholds.PatroniBootSec), ct);
@@ -773,12 +764,6 @@ public sealed class RestoreProcess(
         var creds = await appSecret.EnsureAsync(cluster, snap.Config, ct);
         if (!creds.IsSuccess)
             return Result<ProcessOutcome>.Failed(creds.Error!);
-        var clusterSecrets = secrets with
-        {
-            BucketAdminUser = creds.Value.BucketAdmin.User,
-            BucketAdminPassword = creds.Value.BucketAdmin.Password,
-            MoverPassword = creds.Value.MoverPassword,
-        };
 
         // Адреса/топология/заявка ресурсов (portalloc жив — restore его не трогал).
         var addresses = await ReadPortAllocAsync(cluster, ct);
@@ -843,14 +828,11 @@ public sealed class RestoreProcess(
         if (!work.IsSuccess)
             return await TransientAsync(cluster, $"docker-unavailable/{shard.Name}/{op.Id}",
                 work.Error!.Message, ct);
-        var restPassword = RestRotation.EffectivePassword(snap.RestPassword, work.Value?.RestPending)
-            ?? throw new ApplicationException(
-                $"restore {cluster}: cluster rest_password is unknown (no key and no pending)");
         var firstEnsure = await LongCallPolling.EnsureAsync(
             $"create/start of node {first}",
             token => driver.EnsureNodeAsync(
-                topology, first, firstAddr, clusterSecrets, etcdEndpoints, resources, null,
-                snap.Config.SyncStrict, restPassword, token),
+                topology, first, firstAddr, etcdEndpoints, resources, null,
+                snap.Config.SyncStrict, token),
             progress, logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<RestoreProcess>.Instance,
             TimeSpan.FromTicks(Math.Max(TimeSpan.TicksPerSecond, WatchdogWindow.Ticks / 2)),
             TimeSpan.FromSeconds(thresholds.PatroniBootSec), ct);
@@ -885,8 +867,8 @@ public sealed class RestoreProcess(
             var ensured = await LongCallPolling.EnsureAsync(
                 $"create/start of node {node}",
                 token => driver.EnsureNodeAsync(
-                    topology, node, addr, clusterSecrets, etcdEndpoints, resources, null,
-                    snap.Config.SyncStrict, restPassword, token),
+                    topology, node, addr, etcdEndpoints, resources, null,
+                    snap.Config.SyncStrict, token),
                 progress, logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<RestoreProcess>.Instance,
                 TimeSpan.FromTicks(Math.Max(TimeSpan.TicksPerSecond, WatchdogWindow.Ticks / 2)),
                 TimeSpan.FromSeconds(thresholds.PatroniBootSec), ct);
