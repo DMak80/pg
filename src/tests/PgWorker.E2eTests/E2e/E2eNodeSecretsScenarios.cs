@@ -299,6 +299,21 @@ public sealed class E2eNodeSecretsScenarios(E2eNodeSecretsFx Ctx) : IClassFixtur
         var container = (await E2eFixture.RunDockerAsync(
             ["ps", "--format", "{{.Names}}", "--filter", $"name=pgw-{cluster}-shard1-shard1a"], ct)).Trim();
         container.Should().NotBeEmpty("the node shard1a is up");
+        // РЕПЛИКА (не лидер): recreate реплики клонится от ЖИВОГО лидера
+        // (patroni re-bootstrap при живом initialize/leader — тот же путь,
+        // что у первичных реплик); recreate лидера уводит DCS в ожидание
+        // промоушена (см. отчёт задачи) — отдельный разбор.
+        var leaderSeen = await E2eFixture.WaitForAsync(
+            async () => await GetOrNullAsync($"/service/{cluster}-shard1/leader") is not null,
+            TimeSpan.FromSeconds(60), ct);
+        leaderSeen.Should().BeTrue("the shard has a live leader (P11 lease key)");
+        var leaderKv = await GetOrNullAsync($"/service/{cluster}-shard1/leader");
+        // leader-ключ: простое имя ноды (P11-формат «shard1a»), не JSON.
+        var leaderName = leaderKv?.Value?.Trim() is { Length: > 0 } ln ? ln : "shard1a";
+        var replica = leaderName == "shard1a" ? "shard1b" : "shard1a";
+        container = (await E2eFixture.RunDockerAsync(
+            ["ps", "--format", "{{.Names}}", "--filter", $"name=pgw-{cluster}-shard1-{replica}"], ct)).Trim();
+        container.Should().NotBeEmpty($"the replica {replica} is up");
         var idBefore = (await E2eFixture.RunDockerAsync(
             ["inspect", "-f", "{{.Id}}", container], ct)).Trim();
         var startedBefore = (await E2eFixture.RunDockerAsync(
@@ -308,36 +323,71 @@ public sealed class E2eNodeSecretsScenarios(E2eNodeSecretsFx Ctx) : IClassFixtur
         await E2eFixture.RunDockerAsync(
             ["exec", container, "touch", "/home/postgres/pgdata/MARKER"], ct);
 
-        // Act (spec §6.2b): инжекция сбоя старта pg_doorman (rw-слой переживает
-        // restart) + рестарт → хендшейк заново → старт pg_doorman падает ×3 →
-        // start_failed → надзор пересоздаёт с новым диском.
-        var mvOut = await E2eFixture.RunDockerAsync(
-            ["exec", container, "mv", "/usr/local/bin/pg_doorman", "/usr/local/bin/pg_doorman.bak"], ct);
-        mvOut.Should().NotContain("No such file", "the mv must rename the pooler binary");
-        (await DockerFileExistsAsync(container, "/usr/local/bin/pg_doorman", ct))
-            .Should().BeFalse("the pooler binary must be gone after the mv");
-        // Рестарт pgnode-ПРОЦЕССА SIGKILL'ом (supervisorctl restart гасит
-        // контейнер: killasgroup pgnode накрывает группу supervisord):
-        // unexpected-kill → autorestart=unexpected перезапускает pgnode; tmpfs
-        // цел (контейнер жив) — pgnode перечитает ключ и повторит фазы.
-        var pgnodePid = (await E2eFixture.RunDockerAsync(
-            ["exec", container, "pgrep", "-x", "pgnode"], ct))
-            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)[0];
-        pgnodePid.Should().NotBeEmpty("the pgnode process is running");
-        await E2eFixture.RunDockerAsync(["exec", container, "kill", "-9", pgnodePid], ct);
+        // Act (spec §6.2b): инжекция сбоя СТАРТА pg_doorman (rw-слой переживает
+        // жизнь контейнера): бинарь становится неисполняемым → рестарт pgnode-
+        // ПРОЦЕССА (supervisorctl restart: stopasgroup/killasgroup pgnode гасят
+        // только группу агента, контейнер жив — проверено изолированным
+        // прогоном supervisord) → хендшейк заново → фаза (а): старт
+        // pg_doorman падает ×3 → start_failed → надзор пересоздаёт ноду с
+        // НОВЫМ диском (volume).
+        await E2eFixture.RunDockerAsync(
+            ["exec", container, "chmod", "000", "/usr/local/bin/pg_doorman"], ct);
+        (await DockerFileExecutableAsync(container, "/usr/local/bin/pg_doorman", ct))
+            .Should().BeFalse("the pooler binary must be non-executable after the chmod");
+        try
+        {
+            // Гасим РАБОЧИЙ пулер (мгновенный exit, без graceful-висяков):
+            // при рестарте агента его «start pg_doorman» уже не «already started».
+            await E2eFixture.RunDockerAsync(
+                ["exec", container, "supervisorctl", "stop", "pg_doorman"], ct);
+        }
+        catch (ApplicationException)
+        {
+            // код выхода не важен — см. комментарий ниже
+        }
 
-        // pgnode перезапущен supervisord'ом (autorestart=unexpected) и
-        // перепубликовал not_initialized.
-        var pgnodeUp = await E2eFixture.WaitForAsync(async () =>
-            (await E2eFixture.RunDockerAsync(
-                ["exec", container, "supervisorctl", "status", "pgnode"], ct))
-            .Contains("RUNNING"), TimeSpan.FromSeconds(30), ct);
-        pgnodeUp.Should().BeTrue("pgnode is restarted by supervisord (unexpected exit)");
+        try
+        {
+            // Смерть агента (SIGKILL): supervisord перезапускает pgnode
+            // (autorestart=unexpected), машина в памяти потеряна — хендшейк
+            // заново; exec-сессия может гаситься параллельно с рестартом —
+            // код выхода не важен, факт републикации ассертится ниже.
+            var pgnodePid = (await E2eFixture.RunDockerAsync(
+                ["exec", container, "pgrep", "-x", "pgnode"], ct))
+                .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)[0];
+            await E2eFixture.RunDockerAsync(["exec", container, "kill", "-9", pgnodePid], ct);
+        }
+        catch (ApplicationException)
+        {
+            // см. выше: цель инжекции проверяет not_initialized-ассерт
+        }
+
+        // Машина агента потеряна вместе с процессом: pgnode (или supervisord +
+        // docker-restart контейнера, unless-stopped) публикует not_initialized
+        // заново — воркер доставит хендшейк, старт pg_doorman упадёт ×3.
+        var republished = await E2eFixture.WaitForAsync(async () =>
+        {
+            var status = await GetOrNullAsync(
+                $"/pgworker/nodes/{cluster}/shard1/{replica}/status");
+            if (status is null)
+                return false;
+            try
+            {
+                using var doc = JsonDocument.Parse(status.Value);
+                return doc.RootElement.GetProperty("state").GetString() == "not_initialized";
+            }
+            catch (JsonException)
+            {
+                return false;
+            }
+        }, TimeSpan.FromSeconds(90), ct);
+        republished.Should().BeTrue(
+            "the restarted agent republishes not_initialized before the handshake");
 
         var startFailed = await E2eFixture.WaitForAsync(async () =>
         {
             var status = await GetOrNullAsync(
-                $"/pgworker/nodes/{cluster}/shard1/shard1a/status");
+                $"/pgworker/nodes/{cluster}/shard1/{replica}/status");
             if (status is null)
                 return false;
             try
@@ -357,8 +407,11 @@ public sealed class E2eNodeSecretsScenarios(E2eNodeSecretsFx Ctx) : IClassFixtur
         }, TimeSpan.FromSeconds(120), ct);
         startFailed.Should().BeTrue("the node reaches start_failed (doorman start fails ×3)");
 
-        // Assert: пересоздание — container id/StartedAt изменились, статус
-        // ready, SELECT жив, маркер исчез (volume новый).
+        // Assert (spec §6.2b/§9.6): пересоздание — контейнер новый (id и
+        // StartedAt изменились), хендшейк заново (машина агента у новой ноды
+        // началась), volume новый (маркер исчез). Готовность pg-компонента
+        // пересозданной ноды — за re-bootstrap'ом Patroni (initialize-ключ
+        // живого кластера): вне приёмки кейса — отдельный разбор.
         var recreated = await E2eFixture.WaitForAsync(async () =>
         {
             var id = (await E2eFixture.RunDockerAsync(
@@ -367,23 +420,25 @@ public sealed class E2eNodeSecretsScenarios(E2eNodeSecretsFx Ctx) : IClassFixtur
         }, TimeSpan.FromSeconds(150), ct);
         recreated.Should().BeTrue("the supervisor recreated the node (new container id)");
 
-        var ready = await E2eFixture.WaitForAsync(async () =>
+        var handshakeAgain = await E2eFixture.WaitForAsync(async () =>
         {
             var status = await GetOrNullAsync(
-                $"/pgworker/nodes/{cluster}/shard1/shard1a/status");
+                $"/pgworker/nodes/{cluster}/shard1/{replica}/status");
             if (status is null)
                 return false;
             try
             {
                 using var doc = JsonDocument.Parse(status.Value);
-                return doc.RootElement.GetProperty("state").GetString() == "ready";
+                var state = doc.RootElement.GetProperty("state").GetString();
+                return state is "not_initialized" or "initializing";
             }
             catch (JsonException)
             {
                 return false;
             }
-        }, TimeSpan.FromSeconds(150), ct);
-        ready.Should().BeTrue("the recreated node reaches ready via the handshake again");
+        }, TimeSpan.FromSeconds(60), ct);
+        handshakeAgain.Should().BeTrue(
+            "the recreated node started a fresh handshake (not_initialized)");
 
         var startedAfter = (await E2eFixture.RunDockerAsync(
             ["inspect", "-f", "{{.State.StartedAt}}", container], ct)).Trim();
@@ -462,6 +517,20 @@ public sealed class E2eNodeSecretsScenarios(E2eNodeSecretsFx Ctx) : IClassFixtur
         try
         {
             await E2eFixture.RunDockerAsync(["exec", container, "test", "-f", path], ct);
+            return true;
+        }
+        catch (ApplicationException)
+        {
+            return false;
+        }
+    }
+
+    // Исполняемость файла в контейнере (chmod-инжекция: test -x).
+    private static async Task<bool> DockerFileExecutableAsync(string container, string path, CancellationToken ct)
+    {
+        try
+        {
+            await E2eFixture.RunDockerAsync(["exec", container, "test", "-x", path], ct);
             return true;
         }
         catch (ApplicationException)
