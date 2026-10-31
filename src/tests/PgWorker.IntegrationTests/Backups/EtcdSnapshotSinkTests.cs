@@ -362,6 +362,39 @@ public class EtcdSnapshotSinkTests
         EtcdSnapshotStatusJson.Parse(kv.Value)!.State.Should().Be("OK");
     }
 
+    // AAA (t33 + п.5 ревью): обе цели ЖИВЫ → пара уходит ТОЛЬКО на ПЕРВУЮ
+    // (приоритет первой цели — arch/19 §5 «перебор всегда с первой»); листинг
+    // второй живой цели пуст. Ловит и реверс порядка целей, и skip-first —
+    // свойство, которое юниты фабрики до пула не наблюдают.
+    [Fact]
+    public async Task BothTargetsAlive_PairLandsOnlyOnFirst()
+    {
+        // Arrange — своё etcd + ДВЕ живые ownS3-ноды; цели [нода1, нода2]
+        var ct = TestContext.Current.CancellationToken;
+        await using var etcdFx = await OwnEtcd.StartAsync("sink-fo3", ct);
+        await using var s3Node1Fx = await OwnS3.StartAsync("sink-fo3", ct);
+        await using var s3Node2Fx = await OwnS3.StartAsync("sink-fo3", ct);
+        var dir = Directory.CreateTempSubdirectory("sink-first-prio-").FullName;
+        var sink = FactorySink(etcdFx, $"{s3Node1Fx.HostEndpoint},{s3Node2Fx.HostEndpoint}", "inst-A");
+        var job = new SnapshotJob(etcdFx.Gateway, [etcdFx.Endpoint], dir, 10, 60, sink);
+
+        // Act
+        var shot = await job.TakeAsync(ct);
+
+        // Assert — снятие OK; пара db+meta ровно на ПЕРВОЙ цели…
+        shot.IsSuccess.Should().BeTrue();
+        var s3First = new BackupS3(s3Node1Fx.S3());
+        var onFirst = (await s3First.ListPrefixAsync("etcd/", ct: ct)).Value!;
+        onFirst.Should().HaveCount(2)
+            .And.Contain(k => k.Key.EndsWith(".db"))
+            .And.Contain(k => k.Key.EndsWith(".meta.json"));
+        // Assert — …вторая живая цель не тронута (листинг пуст).
+        var s3Second = new BackupS3(s3Node2Fx.S3());
+        var onSecond = (await s3Second.ListPrefixAsync("etcd/", ct: ct)).Value!;
+        onSecond.Should().BeEmpty(
+            "the pair goes ONLY to the FIRST target (arch/19 §5: always from the first)");
+    }
+
     // AAA (t33): перебор целей пары — первая цель закрытый порт (прецедент
     // BadS3Runtime + E2eFixture.FreePort()), вторая — живая ownS3: выгрузка
     // доезжает до второй цели; пара db+meta реально лежит на живой ноде
@@ -410,9 +443,14 @@ public class EtcdSnapshotSinkTests
         var okKv = (await etcdFx.Gateway.GetAsync(etcdFx.Endpoint, EtcdSnapshotStatusJson.Key, ct)).Value!;
         var okStatus = EtcdSnapshotStatusJson.Parse(okKv.Value)!;
 
-        // Act — обе цели закрытые порты: снятие живо, выгрузка FAILED
+        // Act — обе цели закрытые порты: снятие живо, выгрузка FAILED.
+        // bad1/bad2 обязаны различаться (п.2 ревью): FreePort — зонд bind(0)→stop
+        // без удержания, повторный эфемерный порт теоретически возможен —
+        // совпадение после дедупа схлопнуло бы цели в одну и исказило сценарий.
         var bad1 = $"http://localhost:{E2eFixture.FreePort()}";
         var bad2 = $"http://localhost:{E2eFixture.FreePort()}";
+        while (bad2 == bad1)
+            bad2 = $"http://localhost:{E2eFixture.FreePort()}";
         var brokenJob = new SnapshotJob(etcdFx.Gateway, [etcdFx.Endpoint], dir, 10, 60,
             FactorySink(etcdFx, $"{bad1},{bad2}", "inst-A"));
         var shot = await brokenJob.TakeAsync(ct);
