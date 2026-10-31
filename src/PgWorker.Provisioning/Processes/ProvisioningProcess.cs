@@ -719,6 +719,10 @@ public sealed class ProvisioningProcess(
 
         // Выравнивание app-роли паролю из etcd-ключа (идемпотентно; spec §4.1):
         // кластеры, созданные до app-секрета, и rebuild нод получают актуальный пароль.
+        // Диагностика t06 (отпечаток, не секрет): SHA256[..10] значения ALTER'а —
+        // сверяется с отпечатком ensure-put'а (ClusterSecretEnsurer) и pg_authid.
+        Console.WriteLine(
+            $"[t06-diag] provisioning ALTER app fingerprint={SecretFingerprint.Of(creds.App.Password)} cluster={cluster} shard={shard.Name}");
         var alterApp = await db.ExecuteAsync(dbDsn, DatabaseProvisioner.BuildAlterRolePasswordSql(creds.App.User, creds.App.Password), ct);
         if (!alterApp.IsSuccess)
             return alterApp;
@@ -941,4 +945,16 @@ public sealed class ProvisioningProcess(
         // переносится БЕЗ изменения (всегда явленно — отсутствие поля
         // легаси-конфига трактуется читателями как true, значение не меняется).
         [property: JsonPropertyName("synchronous_mode_strict")] bool SyncStrict);
+}
+
+/// <summary>Отпечаток значения секрета для диагностики (t06): SHA256[..10] hex —
+/// значение секрета НЕ попадает в лог, только несекретный отпечаток.</summary>
+internal static class SecretFingerprint
+{
+    public static string Of(string value)
+    {
+        var bytes = System.Security.Cryptography.SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes(value));
+        return Convert.ToHexString(bytes)[..10];
+    }
 }

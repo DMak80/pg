@@ -74,6 +74,18 @@ public sealed partial class ClusterSecretRotator(
             return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
         }
 
+        // Гвард «тихого окна» (arch/14 §5 I): ротация мутит pg_authid (R2
+        // ALTER app на мастере каждого шарда) — клиенты с etcd-кредами (OLD
+        // до R3) наInitializing-нодах теряют вход. Пока ВСЕ канонические ноды
+        // кластера не ready (статусные машины агентов), мутаций нет: тик —
+        // InProgress (заявка жива, R1/R2 повторяются следующим тиком с начала).
+        var addressesGuard = await ReadPortAllocAsync(cluster, ct);
+        if (!addressesGuard.IsSuccess)
+            return await FailAsync(cluster, addressesGuard.Error!, "portalloc", ct);
+        var allReady = await AllNodesReadyAsync(cluster, snap, addressesGuard.Value, ct);
+        if (!allReady)
+            return await Finish(cluster, "waiting-nodes-ready", ProcessOutcome.InProgress, ct);
+
         var started = await journal.WritePhaseAsync(cluster, Op, "started", claims.InstanceId, null, ct);
         if (!started.IsSuccess)
             return Result<ProcessOutcome>.Failed(started.Error!);
@@ -287,6 +299,47 @@ public sealed partial class ClusterSecretRotator(
     private static partial Regex PasswordRegex();
 
     private static string TicketKey(string cluster) => $"/pgworker/rotations/{cluster}";
+
+    // Гвард «тихого окна» (arch/14 §5 I): все канонические ноды кластера
+    // должны иметь статусную машину ready ДО мутаций ротации (R2 ALTER app
+    // меняет pg_authid — Initializing-нода с etcd-кредами теряет вход через
+    // doorman навсегда, пока R3 не закроет окно). Один range статусных ключей
+    // кластера; гварды надзора повторены: QUARANTINED/REMOVING, усыновлённые
+    // (object), ноды без записи portalloc — вне проверки.
+    private async Task<bool> AllNodesReadyAsync(
+        string cluster, ClusterSnapshot snap, IReadOnlyDictionary<string, NodeAddress> addresses, CancellationToken ct)
+    {
+        var range = await RangeAsync($"/pgworker/nodes/{cluster}/", ct);
+        if (!range.IsSuccess)
+            return false; // etcd-сбой — не мутим
+        var statuses = new Dictionary<string, PgNodeStatusFact>();
+        foreach (var kv in range.Value)
+        {
+            var segments = kv.Key.Split('/');
+            if (segments.Length != 7 || segments[6] != "status")
+                continue;
+            var fact = PgNodeStatusFact.Parse(kv.Value);
+            if (fact is not null)
+                statuses[$"{segments[4]}/{segments[5]}"] = fact;
+        }
+
+        foreach (var shard in snap.Shards.Where(s => s.Dsn is not null && !s.ToRemove))
+        {
+            foreach (var node in shard.Nodes)
+            {
+                if (node.State is NodeState.Quarantined or NodeState.Removing)
+                    continue;
+                if (!addresses.TryGetValue($"{shard.Name}/{node.Name}", out var addr)
+                    || addr.Object is not null)
+                    continue;
+                if (!statuses.TryGetValue($"{shard.Name}/{node.Name}", out var status)
+                    || status.State != "ready")
+                    return false; // нода ещё стартует/не готова — окно не открываем
+            }
+        }
+
+        return true;
+    }
 
     private static string PasswordKey(string cluster) => $"/clusters/{cluster}/app_password";
 
