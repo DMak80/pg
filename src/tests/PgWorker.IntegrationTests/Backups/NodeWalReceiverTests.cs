@@ -34,14 +34,19 @@ public class NodeWalReceiverTests
     private const string DoormanImage = "ghcr.io/ozontech/pg_doorman:v3.11.0";
 
     // Пулер обязателен (arch/14 §8): entrypoint ноды без непустого DOORMAN_CONFIG
-    // гасит контейнер (fail-fast ДО supervisord) — контейнерам серии нужен
-    // валидный YAML (формат DoormanConfigBuilder; бэкенда 127.0.0.1:5432 в этих
-    // тестах нет — pg_doorman его не трогает, серия проверяет walreceiver).
+    // гасит контейнер (fail-fast ДО supervisord) — контейнерам серии нужен YAML,
+    // который парсер фактического pg_doorman v3.11.0 принимает: general/pools
+    // с обязательными admin_username/admin_password (как в DoormanConfigBuilder;
+    // без них отказ парса, exit 78); auth_query не нужен — клиентов через :6432
+    // серия не пускает, проверяется walreceiver (бэкенда 127.0.0.1:5432 нет —
+    // pg_doorman его не трогает).
     private const string DoormanConfigYaml =
         """
         general:
           host: "0.0.0.0"
           port: 6432
+          admin_username: "pgwd_admin"
+          admin_password: "pgwd_admin_password"
           tls_mode: "require"
           tls_certificate: "/etc/pg_doorman/tls.crt"
           tls_private_key: "/etc/pg_doorman/tls.key"
