@@ -1415,6 +1415,43 @@ public class NodeSupervisorTests
         etcd.Store["/clusters/shop/shards/shard1/master"].Value.Should().Be("local:16500");
     }
 
+    // S4 (переходное легаси-окно): seed мастер-ключа "<other-host>:0" против
+    // ноды с doorman=0 — ключ недискриминантен (нулевой порт ключа совпадает с
+    // нулевым doorman portalloc-записи), IsCurrent признаёт его текущим —
+    // мутаций нет (фактическое поведение зафиксировано ассертом). Канон S4
+    // восстанавливается MatchesFact-конвергенцией: легаси-запись с doorman=0
+    // снимается, recreate даёт полную тройку портов — после этого нулевой
+    // порт ключа перестаёт совпадать и reconcile переписывает ключ.
+    [Fact]
+    public async Task MasterKeyReconciler_LegacyZeroDoormanKey_HostDiffers_NoMutation()
+    {
+        // Arrange — ключ "other-host:0" (чужой хост, нулевой doorman-порт),
+        // portalloc-запись primary с doorman=0.
+        var etcd = new Fakes.FakeEtcd();
+        etcd.Seed("/clusters/shop/shards/shard1/master", "other-host:0");
+        var addresses = new Dictionary<string, NodeAddress>
+        {
+            ["shard1/shard1a"] = new("host.docker.internal", new NodePorts(15000, 18000, 0)),
+        };
+        var snap = new ClusterSnapshot(
+            new ClusterConfig("shop", 1, "shop", null, ClusterState.Active),
+            [new ShardSpec("shard1", 1, null, "other-host:0",
+            [
+                new NodeSpec("shard1", "shard1a", NodeState.Running),
+            ])],
+            [], RestPassword: RestPassword);
+        var reconciler = new MasterKeyReconciler(etcd, [Ep], Probe(_ => Ok()));
+        var before = etcd.Store["/clusters/shop/shards/shard1/master"].ModRevision;
+
+        // Act
+        var result = await reconciler.ReconcileAsync(snap, addresses, CancellationToken.None);
+
+        // Assert: порт-матч (0 == 0) — ключ признан текущим, ноль мутаций.
+        result.IsSuccess.Should().BeTrue();
+        etcd.Store["/clusters/shop/shards/shard1/master"].ModRevision.Should().Be(before);
+        etcd.Store["/clusters/shop/shards/shard1/master"].Value.Should().Be("other-host:0");
+    }
+
     [Fact]
     public async Task MasterKeyReconciler_HeldLease_RenewedEveryPass()
     {
