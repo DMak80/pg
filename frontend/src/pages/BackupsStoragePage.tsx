@@ -35,7 +35,9 @@ export function BackupsStoragePage() {
   // t36 (arch/adminpanel/03 §3): бейджи пула + модал «Пул бэкапов».
   const [poolModalCluster, setPoolModalCluster] = useState<string | null>(null);
   const poolsQuery = useQuery({
-    queryKey: ['backups', 's3-pools'],
+    // Один queryKey на endpoint (backupsQueryKeys.pools): второй ключ давал
+    // двойной поллинг и мимо инвалидации формы policy.
+    queryKey: backupsQueryKeys.pools,
     queryFn: fetchS3Pools,
     refetchInterval: intervalMs,
   });
