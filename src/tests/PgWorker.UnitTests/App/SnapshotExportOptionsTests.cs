@@ -10,12 +10,16 @@ namespace PgWorker.UnitTests.App;
 // всегда; false — подсистема не активна (нулевое влияние, §2.10).
 public class SnapshotExportOptionsTests
 {
-    private static SnapshotExportS3Options S3(bool full = true) => new()
+    private static SnapshotExportS3Options S3(
+        string endpoints = "http://owns3:9000",
+        string bucket = "pgworker-etcd-snapshots",
+        string accessKey = "k",
+        string secretKey = "s") => new()
     {
-        Endpoint = full ? "http://owns3:9000" : "",
-        Bucket = full ? "pgworker-etcd-snapshots" : "",
-        AccessKey = full ? "k" : "",
-        SecretKey = full ? "s" : "",
+        Endpoints = endpoints,
+        Bucket = bucket,
+        AccessKey = accessKey,
+        SecretKey = secretKey,
     };
 
     // AAA: дефолты — выключено, валидно при пустой паре (нулевое влияние)
@@ -45,7 +49,7 @@ public class SnapshotExportOptionsTests
     public void Enabled_WithoutPair_Invalid()
     {
         // Arrange
-        var options = new SnapshotExportOptions { Enabled = true, S3 = S3(full: false) };
+        var options = new SnapshotExportOptions { Enabled = true, S3 = S3(endpoints: "", bucket: "", accessKey: "", secretKey: "") };
 
         // Act/Assert
         options.IsValid().Should().BeFalse();
@@ -61,6 +65,42 @@ public class SnapshotExportOptionsTests
         // Arrange
         var options = new SnapshotExportOptions
             { Enabled = false, RetentionObjects = retention, RetryIntervalSec = retrySec, TimeoutSec = timeoutSec };
+
+        // Act/Assert
+        options.IsValid().Should().BeFalse();
+    }
+
+    // AAA: Endpoints — запятая-список: валиден список из ≥1 непустого URI.
+    [Fact]
+    public void Enabled_EndpointsList_Valid()
+    {
+        // Arrange
+        var options = new SnapshotExportOptions
+        {
+            Enabled = true,
+            S3 = S3(endpoints: "http://a:9000,http://b:9000"),
+        };
+
+        // Act/Assert
+        options.IsValid().Should().BeTrue();
+    }
+
+    // AAA: Enabled=true при списке, пустом после сплита (пустая строка или
+    // одни разделители/пробелы), — невалиден: fail-fast, не молчаливый
+    // экспорт «в никуда» (реалистичный случай — деплой со старым env-именем:
+    // Endpoints пуст, остальные поля пары заполнены — их имена не менялись).
+    [Theory]
+    [InlineData("")]
+    [InlineData(" , ")]
+    [InlineData(",")]
+    public void Enabled_EndpointsEmptyList_Invalid(string endpoints)
+    {
+        // Arrange — пара полная, кроме списка целей (изоляция проверки).
+        var options = new SnapshotExportOptions
+        {
+            Enabled = true,
+            S3 = S3(endpoints: endpoints),
+        };
 
         // Act/Assert
         options.IsValid().Should().BeFalse();

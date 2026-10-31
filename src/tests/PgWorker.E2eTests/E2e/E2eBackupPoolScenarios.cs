@@ -918,7 +918,7 @@ public sealed class PoolSnapshotsOwnPairScenarios(PoolSnapshotsOwnPairScenariosF
             {
                 ["PgWorker__Snapshots__Export__Enabled"] = "true",
                 ["PgWorker__Snapshots__Export__RetryIntervalSec"] = "5",
-                ["PgWorker__Snapshots__Export__S3__Endpoint"] = s3Endpoint,
+                ["PgWorker__Snapshots__Export__S3__Endpoints"] = s3Endpoint,
                 ["PgWorker__Snapshots__Export__S3__Bucket"] = SnapshotBucket,
                 ["PgWorker__Snapshots__Export__S3__AccessKey"] = E2eEnvironment.S3RootUser,
                 ["PgWorker__Snapshots__Export__S3__SecretKey"] = E2eEnvironment.S3RootPassword,

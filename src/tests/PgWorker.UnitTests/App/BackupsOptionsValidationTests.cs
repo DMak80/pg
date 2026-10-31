@@ -40,14 +40,14 @@ public class BackupsOptionsValidationTests
     [Fact]
     public void Snapshots_EnabledWithoutPair_Invalid()
     {
-        // Arrange — Enabled=true, секция S3 дефолтная (Endpoint пуст).
+        // Arrange — Enabled=true, секция S3 дефолтная (Endpoints пуст).
         var options = new SnapshotExportOptions { Enabled = true };
 
         // Act / Assert
         options.IsValid().Should().BeFalse();
         options.S3 = new SnapshotExportS3Options
         {
-            Endpoint = "http://owns3:9000",
+            Endpoints = "http://owns3:9000",
             Bucket = "pgworker-etcd-snapshots",
             AccessKey = "k",
             SecretKey = "s",

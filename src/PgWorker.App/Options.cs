@@ -424,14 +424,15 @@ public sealed class SnapshotExportOptions
     public int TimeoutSec { get; set; } = 30;
 
     /// <summary>Собственная пара слепков (arch/14 §6/§8; env
-    /// PGW_SNAPSHOTS_S3_ENDPOINT/BUCKET/ACCESS_KEY/SECRET_KEY).</summary>
+    /// PGW_SNAPSHOTS_S3_ENDPOINTS/BUCKET/ACCESS_KEY/SECRET_KEY).</summary>
     public SnapshotExportS3Options S3 { get; set; } = new();
 
     /// <summary>Fail-fast старта (образец BackupsOptions.IsValid): Enabled=true
-    /// требует ПОЛНУЮ собственную пару S3; диапазоны — всегда.</summary>
+    /// требует ПОЛНУЮ собственную пару S3 (Endpoints — ≥1 непустого URI после
+    /// сплита); диапазоны — всегда.</summary>
     public bool IsValid()
         => (!Enabled
-            || (!string.IsNullOrWhiteSpace(S3.Endpoint)
+            || (SnapshotExportS3Options.ParseEndpoints(S3.Endpoints).Length > 0
                 && !string.IsNullOrWhiteSpace(S3.Bucket)
                 && !string.IsNullOrWhiteSpace(S3.AccessKey)
                 && !string.IsNullOrWhiteSpace(S3.SecretKey)))
@@ -444,7 +445,11 @@ public sealed class SnapshotExportOptions
 /// бэкапов (arch/19 §7; CA https — опциональный собственный путь).</summary>
 public sealed class SnapshotExportS3Options
 {
-    public string Endpoint { get; set; } = "";
+    /// <summary>Цели выгрузки — запятая-список ПОЛНЫХ URI
+    /// (http://h1:9000,http://h2:9000; схема обязательна — значение идёт
+    /// в ServiceURL, как сегодня); перебор целей до первого доступного —
+    /// arch/19 §5. Одиночный URI — частный случай.</summary>
+    public string Endpoints { get; set; } = "";
 
     public string Bucket { get; set; } = "";
 
@@ -457,6 +462,18 @@ public sealed class SnapshotExportS3Options
 
     /// <summary>Путь CA-bundle https-endpoint слепков (опц.; пусто — системное доверие).</summary>
     public string? CaBundlePath { get; set; }
+
+    /// <summary>Разбор списка целей (чистая функция для тестов; прецедент —
+    /// FetchWalCommand.ParseEnv): сплит ',' + RemoveEmptyEntries/TrimEntries;
+    /// пустые/пробельные элементы отбрасываются; дубликаты URI схлопываются —
+    /// дедуп с сохранением порядка ПЕРВОГО вхождения (arch/14 §6: дубликат
+    /// семантически безвреден — breaker отсёк бы вторую копию, поэтому
+    /// копипаст-ошибка не крашит сборку словаря per-целей, а сжимает список).</summary>
+    internal static string[] ParseEndpoints(string raw)
+        => (raw ?? string.Empty)
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
 }
 
 /// <summary>Дефолт значения ключа nodes/&lt;n&gt;/app_params (spec §3.1): libpq-строка

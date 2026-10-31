@@ -46,15 +46,16 @@ x-pgworker-env: &pgworker-env
   # Пустой Bucket валиден при Enabled=false (валидация старта воркера).
   PgWorker__Backups__Enabled: ${PGW_BACKUPS_ENABLED:-false}
   PgWorker__Backups__S3__Bucket: ${PGW_BACKUP_S3_BUCKET:-}
-  # Доверие CA https S3-целей (t42, arch/19 §7): путь ca.pem в контейнере
+  # Доверие CA https S3-целей (arch/19 §7): путь ca.pem в контейнере
   # (ro-монтирование TLS-пакета, прод); единый на все цели. Пусто — http.
   PgWorker__Backups__S3__CaBundlePath: ${PGW_BACKUP_S3_CA_BUNDLE_PATH:-}
-  # Экспорт etcd-снапшотов в S3 (t36, arch/14 §6/§8): ОТДЕЛЬНАЯ env-пара
+  # Экспорт etcd-снапшотов в S3 (arch/14 §6/§8): ОТДЕЛЬНАЯ env-пара
   # PgWorker:Snapshots:Export:S3 (свой bucket, префикс etcd/, свои креды —
-  # PGW_SNAPSHOTS_S3_*); обязательна при Enabled=true (fail-fast старта).
+  # PGW_SNAPSHOTS_S3_*; Endpoints — запятая-список URI, перебор до первого
+  # доступного — arch/19 §5); обязательна при Enabled=true (fail-fast старта).
   # false → sink не подключается (поведение прежнее).
   PgWorker__Snapshots__Export__Enabled: ${PGW_SNAPSHOTS_EXPORT_ENABLED:-false}
-  PgWorker__Snapshots__Export__S3__Endpoint: ${PGW_SNAPSHOTS_S3_ENDPOINT:-}
+  PgWorker__Snapshots__Export__S3__Endpoints: ${PGW_SNAPSHOTS_S3_ENDPOINTS:-}
   PgWorker__Snapshots__Export__S3__Bucket: ${PGW_SNAPSHOTS_S3_BUCKET:-}
   PgWorker__Snapshots__Export__S3__AccessKey: ${PGW_SNAPSHOTS_S3_ACCESS_KEY:-}
   PgWorker__Snapshots__Export__S3__SecretKey: ${PGW_SNAPSHOTS_S3_SECRET_KEY:-}
@@ -357,7 +358,7 @@ services:
       OWNS3_ACCESS_KEYS__1__POLICY: ${OWNS3_ACCESS_KEYS__1__POLICY:-}
     volumes:
       - owns3-data:/data
-  # TLS-опция ПРОД-инсталляции (t42, ../OwnS3/arch/owns3/05 §6): раскомментировать —
+  # TLS-опция ПРОД-инсталляции (../OwnS3/arch/owns3/05 §6): раскомментировать —
   # грань станет HTTPS-only на том же порту 9000 (серт owns3 из deploy/tls/gen.sh,
   # PEM-альтернатива — OWNS3_TLS_CERT/KEY). Добавить строку к volumes выше и
   # ключи к environment выше. Стенд живёт HTTP-only — не включать.

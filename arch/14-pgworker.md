@@ -1490,11 +1490,21 @@ MR3 journal op=repair (сколько/какие статусы диспатче
  рецепт (`restore-cluster.sh`), PgWorker только снимает.
 - **Экспорт слепков в S3**: каждый снятый слепок (плановый
  и внеочередной) уезжает в bucket ОТДЕЛЬНОЙ per-install env-пары
- `PgWorker:Snapshots:Export:S3` (env `PGW_SNAPSHOTS_S3_*` — не
- креды/bucket пулов бэкапов: источник правды о DR-слепках не живёт в
- восстанавливаемом etcd; обязательна при `Export:Enabled=true` — fail-fast
- старта) служебным
- префиксом `etcd/` парой `.db`+`.meta.json` (sha256-мета; arch/19 §5) —
+`PgWorker:Snapshots:Export:S3` (env `PGW_SNAPSHOTS_S3_*` — не
+креды/bucket пулов бэкапов: источник правды о DR-слепках не живёт в
+восстанавливаемом etcd; обязательна при `Export:Enabled=true` — fail-fast
+старта). Цель выгрузки — СПИСОК endpoints env-пары
+(`PGW_SNAPSHOTS_S3_ENDPOINTS`, запятая; одиночный адрес — частный
+случай), перебор целей до первого доступного — по канону arch/19 §5
+(per-попыточный таймаут, breaker-окно, «быстрый отказ/успех»);
+bucket, креды, Region, CA — одни на все цели пары; клиентские ретраи
+AWSSDK на per-целях выключены (`MaxErrorRetry=0` — перебор целей несёт
+пул, внутренние ретраи клиента на мёртвой цели съедали бы бюджет
+экспорта); дубликаты URI в списке схлопываются (дедуп с сохранением
+порядка первого вхождения); отказ всех целей —
+transient (FAILED-статус + доводка CatchUp тем же тиком лидера
+`RetryIntervalSec`, как сегодня для любого S3-отказа). Служебный
+префикс `etcd/`, пара `.db`+`.meta.json` (sha256-мета; arch/19 §5) —
  слепок выгружается целиком, статус-ключ покрытия
  `/pgworker/etcd-snapshots` обновляется после каждой выгрузки
  (`last_uploaded_unix` продвигается к метке покрытого слепка; §3).
@@ -1668,7 +1678,7 @@ PgWorker:Snapshots { Dir="/snapshots", RetentionFiles=10,
  MaintenanceIntervalMin=60,
  Export { Enabled=false, RetentionObjects=28,
  RetryIntervalSec=300, TimeoutSec=30,
- S3 { Endpoint, Bucket, AccessKey, SecretKey,
+ S3 { Endpoints, Bucket, AccessKey, SecretKey,
  Region?, CaBundlePath? } } }
  # выгрузка слепков в S3, префикс etcd/ (в СВОЁМ
  # bucket отдельной пары, не bucket бэкапов);
@@ -1677,10 +1687,12 @@ PgWorker:Snapshots { Dir="/snapshots", RetentionFiles=10,
  # источник правды о DR-слепках не живёт в восстанавливаемом
  # etcd и не переиспользует креды пулов бэкапов
  # (Backups:Enabled НЕ требуется — контроль-плейн не зависит от
- # подсистемы бэкапов PG); TimeoutSec — общий бюджет ОДНОЙ
- # попытки экспорта (ExportAsync целиком, не шага);
- # Enabled=true при неполной паре S3 (Endpoint/Bucket/AccessKey/
- # SecretKey пусты) и диапазоны RetentionObjects>=1 /
+ # подсистемы бэкапов PG); Endpoints — запятая-список URI
+ # (перебор до первого доступного, arch/19 §5); TimeoutSec —
+ # общий бюджет ОДНОЙ попытки экспорта (ExportAsync целиком,
+ # не шага); Enabled=true при неполной паре S3 (Endpoints
+ # (после сплита пуст)/Bucket/AccessKey/SecretKey пусты) и
+ # диапазоны RetentionObjects>=1 /
  # RetryIntervalSec>0 / TimeoutSec>0 — fail-fast старта
 PgWorker:AppParams { Default="sslmode=require" } # per-node ключ
  # shards/<X>/nodes/<n>/app_params (P2.5'/A5/C; P17)

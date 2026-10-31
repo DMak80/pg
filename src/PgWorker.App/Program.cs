@@ -324,6 +324,13 @@ builder.Services.AddSingleton<IClusterDriver>(sp =>
         CaPem: BackupCaPem.ReadIfConfigured(opts.Backups.S3.CaBundlePath),
         StagingDir: string.IsNullOrWhiteSpace(opts.Backups.Staging.Dir) ? null : opts.Backups.Staging.Dir);
 
+    // CA слепочной пары DR-слепков (arch/14 §6/§8): симметрия CA пары бэкапов
+    // выше — путь задан конфигом установки, нечитаемый/пустой файл = дефект
+    // инсталляции → fail-fast старта воркера с диагностикой BackupCaPem.
+    // Осознанно НЕ зависит от Snapshots:Export:Enabled (та же связка:
+    // выключенная опция с корректным путём читает файл без последствий).
+    BackupCaPem.ReadIfConfigured(opts.Snapshots.Export.S3.CaBundlePath);
+
     if (string.Equals(docker.Mode, "Swarm", StringComparison.OrdinalIgnoreCase))
     {
         if (string.IsNullOrWhiteSpace(docker.SwarmManager))
@@ -373,8 +380,10 @@ builder.Services.AddSingleton(sp =>
     return opts.Snapshots.Export.Enabled
         ? new EtcdSnapshotSink(
             // цель слепков — ОТДЕЛЬНАЯ пара PgWorker:Snapshots:Export:S3
-            // (env PGW_SNAPSHOTS_S3_*; arch/14 §6/§8 — не креды пулов бэкапов).
-            new BackupS3(EtcdSnapshotSinkFactory.Create(opts)),
+            // (env PGW_SNAPSHOTS_S3_*; arch/14 §6/§8 — не креды пулов бэкапов):
+            // перебор целей до первого доступного — PoolBackupS3 (arch/19 §5),
+            // синглтон на процесс — breaker-стейт переживает попытки выгрузки.
+            EtcdSnapshotSinkFactory.Create(opts),
             sp.GetRequiredService<IEtcdGateway>(),
             opts.Etcd.Endpoints,
             opts.Snapshots.Export.RetentionObjects,
