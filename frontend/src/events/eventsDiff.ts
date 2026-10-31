@@ -416,7 +416,11 @@ export function diffBackupsStorage(
 // (кластеры/HA уже покрыты своими ключами, freshness — шум). ———
 
 export function diffOverview(prev: OverviewDto | undefined, next: OverviewDto): void {
-  const was = prev?.backupsDisabled ?? null;
+  // u09/D8: событие = изменение МЕЖДУ тиками; при первом тике (prev нет —
+  // снапшот открытой вкладки ещё не собран) все диффы молчат — иначе ложное
+  // appeared на уже стоявший стоп при открытии панели.
+  if (prev === undefined) return;
+  const was = prev.backupsDisabled ?? null;
   const isNow = next.backupsDisabled ?? null;
   if (was === null && isNow !== null) {
     emit({

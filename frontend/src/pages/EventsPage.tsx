@@ -110,10 +110,13 @@ function EventsTable({ events }: { events: EventItem[] }) {
                 const fakeKind = e.entityKind === 'restore' ? 'restore-failed'
                   : e.entityKind === 'drill' ? 'backup-drill-failed'
                     : e.entityKind === 'orphan' ? 'backup-orphan'
-                      : e.domain === 'kafka' ? 'kafka-rotation-pending'
-                        : e.domain === 'valkey' ? 'valkey-rotation-pending'
-                          : e.domain === 's3' ? 's3-rotation-pending'
-                            : 'cluster-incomplete';
+                      // глобальный стоп бэкапов → /backups-storage (иначе
+                      // fallback дал бы /clusters/backups-disabled — 404)
+                      : e.entityKind === 'ticket' && e.entity === 'backups-disabled' ? 'backups-disabled'
+                        : e.domain === 'kafka' ? 'kafka-rotation-pending'
+                          : e.domain === 'valkey' ? 'valkey-rotation-pending'
+                            : e.domain === 's3' ? 's3-rotation-pending'
+                              : 'cluster-incomplete';
                 const route = alertRoute(fakeKind, e.entity);
                 const change = e.type === 'state-change' && e.from !== undefined && e.to !== undefined
                   ? `${e.from} → ${e.to}`
