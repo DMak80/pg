@@ -8,11 +8,11 @@
 set -e
 
 # Tool-режим контейнера (spec t26 §3.3): никаких PG-команд при старте —
-# только старт контейнера; WalReceiver — главный процесс (PID-1), весь
+# только старт контейнера; агент PgNode — главный процесс (PID-1), весь
 # жизненный цикл операций — через его HTTP API. Patroni/supervisord и
 # генерация нодовых конфигов не запускаются.
 if [ "$PGW_NODE_TOOL" = "1" ]; then
-    exec /opt/pgw-wal/walreceiver
+    exec /opt/pgw-node/pgnode
 fi
 
 mkdir -p /etc/haproxy /etc/pg_doorman

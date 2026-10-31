@@ -4,8 +4,8 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
-using PgWorker.WalReceiver;
-using PgWorker.WalReceiver.Operations;
+using PgWorker.PgNode;
+using PgWorker.PgNode.Operations;
 using Shared.Core;
 using Shared.Etcd.Client;
 using Xunit;
@@ -21,7 +21,7 @@ namespace PgWorker.IntegrationTests.Backups;
 // полный ops-операцию не блокирует, arch/19 §5). Операции — фейки
 // через DI (интерфейсы фабрик подменяются, шаг 4); hosted-цикл стрима
 // выключен env PGW_WALRECEIVER_NO_STREAM=1. AAA-комментарии.
-[Collection("walreceiver-api")]
+[Collection("pgnode-api")]
 public class BackupApiOperationTests : IDisposable
 {
     private const string Id = "20260101000000Z";
@@ -130,7 +130,7 @@ public class BackupApiOperationTests : IDisposable
         }
     }
 
-    private static (WebApplicationFactory<global::PgWorker.WalReceiver.Program> Factory, HttpClient Client,
+    private static (WebApplicationFactory<global::PgWorker.PgNode.Program> Factory, HttpClient Client,
         OperationRegistry FullRegistry, OpsOperationRegistry OpsRegistry, List<string> Created, FakeEtcd Etcd) Build()
     {
         SetEnv();
@@ -138,7 +138,7 @@ public class BackupApiOperationTests : IDisposable
         var fullRegistry = new OperationRegistry();
         var opsRegistry = new OpsOperationRegistry();
         var created = new List<string>();
-        var factory = new WebApplicationFactory<global::PgWorker.WalReceiver.Program>().WithWebHostBuilder(b =>
+        var factory = new WebApplicationFactory<global::PgWorker.PgNode.Program>().WithWebHostBuilder(b =>
         {
             b.ConfigureTestServices(services =>
             {

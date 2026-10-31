@@ -1,5 +1,5 @@
 using FluentAssertions;
-using PgWorker.WalReceiver;
+using PgWorker.PgNode;
 using Xunit;
 
 namespace PgWorker.UnitTests.Backups;

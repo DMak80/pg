@@ -9,7 +9,7 @@ namespace PgWorker.Backups;
 /// arch/19 §4): node/role/state + факты pool_exhausted/tli_jump/error. Роль и
 /// состояние — строковые значения ключа ("master"/"sync"/"none",
 /// "streaming"/...); парсинг DTO дублируется в Backups толерантно (Backups НЕ
-/// ссылается на PgWorker.WalReceiver): битый JSON/не-объект/нет node или state —
+/// ссылается на PgWorker.PgNode): битый JSON/не-объект/нет node или state —
 /// запись пропускается (null), незнакомые поля игнорируются.</summary>
 public sealed record WalReceiverAgentFacts(
     string Node, string? Role, string? State, bool PoolExhausted,

@@ -2,7 +2,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using FluentAssertions;
 using PgWorker.Backups;
-using PgWorker.WalReceiver;
+using PgWorker.PgNode;
 using Shared.Core;
 using Xunit;
 

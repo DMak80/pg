@@ -1,7 +1,7 @@
 using FluentAssertions;
 using PgWorker.Backups;
 using PgWorker.Etcd.S3;
-using PgWorker.WalReceiver;
+using PgWorker.PgNode;
 using Shared.Core;
 using Shared.Etcd.Client;
 using Xunit;
@@ -318,15 +318,15 @@ public class WalReceiverLoopTests
 
     /// <summary>Ожидание статус-ключа, удовлетворяющего условию (значение из
     /// etcd-фейка — так виден весь контур lease-публикации).</summary>
-    private static async Task<WalReceiverAgentStatus> WaitStatusAsync(
-        FakeEtcd etcd, Func<WalReceiverAgentStatus, bool> match, string debug)
+    private static async Task<PgNodeAgentStatus> WaitStatusAsync(
+        FakeEtcd etcd, Func<PgNodeAgentStatus, bool> match, string debug)
     {
         var deadline = DateTime.UtcNow + Budget;
         while (DateTime.UtcNow < deadline)
         {
             if (etcd.Kvs.TryGetValue(AgentKey, out var raw))
             {
-                var parsed = WalReceiverAgentStatusJson.Parse(raw);
+                var parsed = PgNodeAgentStatusJson.Parse(raw);
                 if (parsed is { } p && match(p.Status))
                     return p.Status;
             }
@@ -807,7 +807,7 @@ public class WalReceiverLoopTests
             // гейты не читаются во время стрима — слот держит WAL, RPO не страдает)
             sources.Count.Should().Be(sessionCount, "the etcd flap must not break the live stream");
             var raw = etcd.Kvs[AgentKey];
-            WalReceiverAgentStatusJson.Parse(raw)!.Value.Status.State
+            PgNodeAgentStatusJson.Parse(raw)!.Value.Status.State
                 .Should().Be(WalReceiverState.Streaming);
         }
         finally

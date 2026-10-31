@@ -468,7 +468,7 @@ public sealed class E2eWalStreamScenarios(E2eWalStreamScenariosFx Ctx) : IClassF
                 .Where(w => w is not null).Select(w => w!.Value)
                 .OrderByDescending(w => (long)w.Log * 256 + w.Seg).First();
             restartLsn.Should().BeLessOrEqualTo(
-                PgWorker.WalReceiver.S3TailResolver.EndLsn(tail),
+                PgWorker.PgNode.S3TailResolver.EndLsn(tail),
                 $"AC1 on node {key}: restart_lsn {restartRaw} ≤ the delivered end {tail.Name}");
         }
         }

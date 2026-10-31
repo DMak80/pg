@@ -189,16 +189,16 @@ CA-сертификат registry должен быть доверен Docker и 
 ### Образ PG-ноды с приёмником WAL (двухшаговая сборка)
 
 Приёмник WAL бэкапов исполняется процессом ВНУТРИ контейнера PG-ноды
-(supervisord-программа `walreceiver`, `/opt/pgw-wal`). Отдельного образа
+(supervisord-программа `pgnode`, `/opt/pgw-node`). Отдельного образа
 `pgworker-wal` и контейнеров `pgw-backup-wal-*` больше нет; сборка ноды —
 двухшаговая (publish на хосте, в контейнер — только артефакты):
 
-    dotnet publish src/PgWorker.WalReceiver -c Release -r <rid> \
+    dotnet publish src/PgWorker.PgNode -c Release -r <rid> \
       --self-contained -o artifacts/node-wal        # rid: linux-arm64 | linux-x64
     dotnet publish src/PgWorker.NodeTools -c Release -r <rid> \
       --self-contained -o artifacts/node-tools
     docker build -f docker/node/Dockerfile \
-      --build-arg WAL_PUBLISH_DIR=artifacts/node-wal \
+      --build-arg PGNODE_PUBLISH_DIR=artifacts/node-wal \
       --build-arg NODE_TOOLS_PUBLISH_DIR=artifacts/node-tools \
       --build-arg DOORMAN_IMAGE=ghcr.io/ozontech/pg_doorman:v3.11.0 \
       -t pgworker-node:dev .
@@ -240,7 +240,7 @@ CA-сертификат registry должен быть доверен Docker и 
    РОВНО в четырёх рабочих точках: `dev-stand/adminpanel/checks/00-up.sh`,
    `src/tests/PgWorker.E2eTests/E2e/E2eEnvironment.cs` (константа
    `DoormanImage`),
-   `src/tests/PgWorker.IntegrationTests/Backups/NodeWalReceiverTests.cs`
+   `src/tests/PgWorker.IntegrationTests/Backups/NodePgNodeTests.cs`
    (константа `DoormanImage` — файл сам собирает образ ноды с
    `--build-arg DOORMAN_IMAGE`), этот раздел (команда сборки + строка
    каталога ниже).

@@ -2,7 +2,7 @@ using FluentAssertions;
 using Npgsql;
 using Npgsql.Replication;
 using NpgsqlTypes;
-using PgWorker.WalReceiver;
+using PgWorker.PgNode;
 using Xunit;
 
 namespace PgWorker.UnitTests.Backups;

@@ -84,23 +84,23 @@ case "$(uname -m)" in
   arm64|aarch64) NODE_RID=linux-arm64 ;;
   *)             NODE_RID=linux-x64 ;;
 esac
-echo ">>> [PHASE] publish PgWorker.WalReceiver self-contained $NODE_RID ($(date +%H:%M:%S))"
-dotnet publish "$ROOT/src/PgWorker.WalReceiver/PgWorker.WalReceiver.csproj" \
+echo ">>> [PHASE] publish PgWorker.PgNode self-contained $NODE_RID ($(date +%H:%M:%S))"
+dotnet publish "$ROOT/src/PgWorker.PgNode/PgWorker.PgNode.csproj" \
   -c Release -r "$NODE_RID" --self-contained -o "$ROOT/artifacts/node-wal" --nologo \
-  || { echo "❌ WalReceiver publish failed"; exit 1; }
+  || { echo "❌ PgNode publish failed"; exit 1; }
 echo ">>> [PHASE] publish PgWorker.NodeTools self-contained $NODE_RID ($(date +%H:%M:%S))"
 dotnet publish "$ROOT/src/PgWorker.NodeTools/PgWorker.NodeTools.csproj" \
   -c Release -r "$NODE_RID" --self-contained -o "$ROOT/artifacts/node-tools" --nologo \
   || { echo "❌ NodeTools publish failed"; exit 1; }
 # DOORMAN_IMAGE — пин мульти-арх образа pg_doorman (arch/14 §2.1 R1; пулер
 # обязателен); ретаг канонического имени делает pull-images.sh из registry.
-echo ">>> [PHASE] pgworker-node:dev build (WAL_PUBLISH_DIR=artifacts/node-wal, NODE_TOOLS_PUBLISH_DIR=artifacts/node-tools, DOORMAN_IMAGE=ghcr.io/ozontech/pg_doorman:v3.11.0) ($(date +%H:%M:%S))"
+echo ">>> [PHASE] pgworker-node:dev build (PGNODE_PUBLISH_DIR=artifacts/node-wal, NODE_TOOLS_PUBLISH_DIR=artifacts/node-tools, DOORMAN_IMAGE=ghcr.io/ozontech/pg_doorman:v3.11.0) ($(date +%H:%M:%S))"
 docker build -q -f "$ROOT/docker/node/Dockerfile" \
-  --build-arg "WAL_PUBLISH_DIR=artifacts/node-wal" \
+  --build-arg "PGNODE_PUBLISH_DIR=artifacts/node-wal" \
   --build-arg "NODE_TOOLS_PUBLISH_DIR=artifacts/node-tools" \
   --build-arg "DOORMAN_IMAGE=ghcr.io/ozontech/pg_doorman:v3.11.0" -t pgworker-node:dev "$ROOT" \
   || { echo "❌ image pgworker-node:dev build failed"; exit 1; }
-echo "  image pgworker-node:dev ready (walreceiver + pgwnodetool inside)"
+echo "  image pgworker-node:dev ready (pgnode + pgwnodetool inside)"
 
 # S3Worker (arch/24): publish НА ХОСТЕ → образ publish-COPY (канон
 # E2E-образов; сборка не «тихая» — [PHASE] и тайминг).

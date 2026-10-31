@@ -28,20 +28,20 @@ RUN apt-get update \
 # Бинарник пулера из официального образа (путь внутри него — /usr/bin/pg_doorman).
 COPY --from=doorman /usr/bin/pg_doorman /usr/local/bin/pg_doorman
 
-# Приёмник WAL (t25, arch/19 §3 + arch/14 §2.1) и служебная CLI pgwnodetool:
+# Агент PgNode (t25/t05, arch/19 §3 + arch/14 §2.1) и служебная CLI pgwnodetool:
 # self-contained publish НА ХОСТЕ (RID хоста сборки, без trimming — рефлексия
 # Npgsql/AWSSDK/OTel), в образ — ТОЛЬКО publish-вывод (канон «publish на
 # хосте, в контейнер — артефакты»):
-#   dotnet publish src/PgWorker.WalReceiver -c Release -r <rid> \
+#   dotnet publish src/PgWorker.PgNode -c Release -r <rid> \
 #     --self-contained -o artifacts/node-wal
 #   dotnet publish src/PgWorker.NodeTools -c Release -r <rid> \
 #     --self-contained -o artifacts/node-tools
 #   docker build -f docker/node/Dockerfile \
-#     --build-arg WAL_PUBLISH_DIR=artifacts/node-wal \
+#     --build-arg PGNODE_PUBLISH_DIR=artifacts/node-wal \
 #     --build-arg NODE_TOOLS_PUBLISH_DIR=artifacts/node-tools -t pgworker-node:dev .
-ARG WAL_PUBLISH_DIR=artifacts/node-wal
-COPY ${WAL_PUBLISH_DIR} /opt/pgw-wal/
-RUN chmod +x /opt/pgw-wal/walreceiver
+ARG PGNODE_PUBLISH_DIR=artifacts/node-wal
+COPY ${PGNODE_PUBLISH_DIR} /opt/pgw-node/
+RUN chmod +x /opt/pgw-node/pgnode
 ARG NODE_TOOLS_PUBLISH_DIR=artifacts/node-tools
 COPY ${NODE_TOOLS_PUBLISH_DIR} /opt/pgw-tools/
 RUN chmod +x /opt/pgw-tools/pgwnodetool
