@@ -554,8 +554,6 @@ public class ClusterSecretRotatorTests
         // Assert: commit-conflict, окно НЕ открыто, креды НЕ изменены нашим
         // txn (app — инъекция, остальные — OLD-сид), заявка жива.
         first.IsSuccess.Should().BeFalse(first.Error?.ToString());
-        foreach (var kv in rig.Etcd.Store.Where(k => k.Key.Contains("/clusters/shop/") && !k.Key.Contains("bootstrap") && !k.Key.Contains("app_params")))
-            File.AppendAllText("/tmp/e1-dump.txt", $"[e1] {kv.Key} = {kv.Value.Value[..Math.Min(30, kv.Value.Value.Length)]} mod={kv.Value.ModRevision}\n");
         var work = await rig.Journal.ReadAsync("shop", CancellationToken.None);
         work.Value!.Phase.Should().Be("commit-conflict");
         work.Value.RestWindowOpen.Should().NotBeTrue("the conflict happens before the window opens");

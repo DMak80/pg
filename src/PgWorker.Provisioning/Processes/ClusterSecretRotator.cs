@@ -276,9 +276,9 @@ public sealed partial class ClusterSecretRotator(
     private static string TicketKey(string cluster) => $"/pgworker/rotations/{cluster}";
 
     // Гвард «тихого окна» (arch/14 §5 I): все канонические ноды кластера
-    // должны иметь статусную машину ready ДО мутаций ротации (R2 ALTER app
-    // меняет pg_authid — Initializing-нода с etcd-кредами теряет вход через
-    // doorman навсегда, пока R4 не закроет окно). Триада исходов: Success(true)
+    // должны иметь статусную машину ready ДО мутаций ротации (R4 ALTER app
+    // меняет pg_authid — initializing-нода с etcd-кредами теряет вход через
+    // doorman навсегда, пока окно не закроется). Триада исходов: Success(true)
     // — все ready, Success(false) — есть неготовые (waiting), Failed — отказ
     // чтения статусных ключей (различим, не маскируется под waiting). Один
     // range статусных ключей кластера; гварды надзора повторены:

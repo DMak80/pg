@@ -883,9 +883,7 @@ public sealed class RestoreProcess(
         // таймаутом короче окна проверки (половина), идемпотентный повтор;
         // бюджет — существующий порог PatroniBootSec. : bootstrap
         // восстановленной ноды несёт strict кластера.
-        // Эффективная REST-пара restore-пути (arch/14 §5 I): окно ротации
-        // не расширяется — EnsureNode любым путём ставит pending-пару (журнал
-        // работы читается тем же резолвором, что и в надзоре).
+        // REST-пара restore-пути — ключ etcd (arch/14 §5 I ETCD-FIRST).
         var work = await journal.ReadAsync(cluster, ct);
         if (!work.IsSuccess)
             return await TransientAsync(cluster, $"docker-unavailable/{shard.Name}/{op.Id}",

@@ -562,6 +562,20 @@ src/tests/PgWorker.IntegrationTests -c Release --no-build --filter
   флага) → PATCH-гвард и RecreateMarked-soft пишут skip-фазы; сид без флага
   (false/отсутствует) → гварды НЕ срабатывают; supervise-запись поверх
   открытого окна → флаг переносится (гварды продолжают действовать).
+  Покрытие ОБЕИХ реакций окна явными парами (файл
+  `src/tests/PgWorker.UnitTests/Provisioning/NodeSupervisorTests.cs`):
+  - PATCH-гвард — реализован кодером: `Tick_RestWindowOpen_DcsConfigPatchSkipped`
+    (:1845) + регресс-пара `Tick_NoRestWindow_DcsConfigPatchApplied` (:1888);
+  - RecreateMarked-soft — ДОПИСАТЬ (ветка NodeSupervisor.cs:758–762 со
+    skip-фазой `recreate-skipped-rest-window` без теста): новый юнит
+    `Tick_RestWindowOpen_RecreateMarkedSoft_SwitchoverSkipped` по образцу
+    PATCH-пары — Arrange: TO_RECREATE-маркер живого лидера (soft), work-сид
+    с `rest_window_open:true`; Act: тик надзора; Assert: switchover НЕ
+    отправлен (журнал фейка probe пуст на SwitchoverAsync), журнал содержит
+    фазу `recreate-skipped-rest-window` с нодой в note, нода сохранена
+    (RemoveNodeAsync не зван); регресс-пара — существующий
+    `Tick_MarkedLeaderSoft_SwitchoverTriggered_NodeKept` (:460): сид без
+    флага → switchover отправляется (прежнее поведение).
   в) PgNodeMachineTests — кейсы окна (если ещё нет): doorman-проба false
   (28P01) в фазе (б) → `initializing` (waiting-повтор, НЕ start_failed),
   после true → `ready`; apply на ready → фоновые рестарты, статус остаётся

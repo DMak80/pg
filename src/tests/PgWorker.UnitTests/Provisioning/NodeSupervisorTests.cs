@@ -483,6 +483,46 @@ public class NodeSupervisorTests
             .Should().Be("TO_RECREATE", "a revived node does not cancel the operator's recreation request");
     }
 
+    // Гвард окна ротации ETCD-FIRST (arch/14 §3.3/§5 I, П11.6б): предикат —
+    // ТОЛЬКО флаг rest_window_open (failure-фаза alter/shard1 не влияет).
+    // Открытый флаг → RecreateMarked-soft живого лидера транзиент-skip
+    // (switchover через REST до закрытия окна подавлен): skip-фаза
+    // recreate-skipped-rest-window с нодой в note; supervise-запись тика
+    // флаг переносит.
+    [Fact]
+    public async Task Tick_RestWindowOpen_RecreateMarkedSoft_SwitchoverSkipped()
+    {
+        // Arrange — оператор пометил ЛИДЕРА shard1a (TO_RECREATE, soft);
+        // work-ключ: failure-фаза alter/shard1 + rest_window_open:true.
+        var switchover = new List<string>();
+        var rig = await NewRig(_ => Ok(), respondRaw: r =>
+        {
+            switchover.Add($"{r.Method} {r.RequestUri!.AbsolutePath}");
+            return Ok();
+        });
+        rig.Etcd.Seed("/clusters/shop/shards/shard1/nodes/shard1a/state", "TO_RECREATE");
+        rig.Etcd.Seed("/service/shop-shard1/leader", """{"name":"shard1a"}""");
+        rig.Etcd.Seed("/pgworker/work/shop",
+            """{"op":"rotate-app-password","phase":"alter/shard1","instance":"i","updated_unix":1,"rest_window_open":true}""");
+
+        // Act
+        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
+
+        // Assert: switchover НЕ отправлен (RecreateMarked-soft подавлен);
+        // обе реакции окна пишут skip-фазы в один work-ключ — journal
+        // last-write-wins оставляет последнюю (наблюдаема одна из двух);
+        // нода сохранена (снос после закрытия окна); флаг перенесён.
+        outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
+        switchover.Should().NotContain("POST /switchover");
+        var work = await rig.Journal.ReadAsync("shop", CancellationToken.None);
+        work.Value!.Phase.Should().BeOneOf(
+            "recreate-skipped-rest-window", "dcs-converge-skipped-rest-window",
+            "both window guards fired in this tick");
+        rig.Driver.RemovedNodes.Should().BeEmpty("soft: removal only after the window closes");
+        rig.Driver.EnsuredNodes.Should().BeEmpty();
+        work.Value.RestWindowOpen.Should().BeTrue("supervise writes carry the flag");
+    }
+
     [Fact]
     public async Task Tick_MarkedLeaderHard_RemovedImmediately()
     {

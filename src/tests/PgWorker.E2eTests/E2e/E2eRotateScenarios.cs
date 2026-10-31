@@ -100,8 +100,19 @@ public sealed class E2eRotateScenarios(E2eRotateScenariosFx Ctx) : IClassFixture
                 $"the container {name} was not recreated by the rotation");
 
         // Assert 2b (критерий «без остановки записи»): writer — DSN-точка
-        // входа bucket_admin — перечитывает креды из etcd на каждую попытку
-        // (поведение клиента по arch/14) и продолжает писать после ротации.
+        // входа bucket_admin — стартует ПОСЛЕ закрытия окна (R4: pg_authid
+        // выровнен с etcd) и продолжает писать. Старт в ОТКРЫТОМ окне —
+        // 28P01 транзиент (pg_authid OLD до R4, arch/14 §5 I); живой клиент
+        // ретраит вставки до перечитывания — writer повторяет попытки тем же
+        // бюджетом (поведение клиента по arch/14).
+        // Ожидание закрытия окна (R4): pg_authid выровнен с etcd — вставки
+        // writer'а проходят сразу (канон §5 I: клиенты ретраят до закрытия).
+        var windowClosed = await E2eFixture.WaitForAsync(async () =>
+        {
+            var work = await GetOrNullAsync($"/pgworker/work/{Cluster}");
+            return work is not null && work.Value.Contains("\"rest_window_open\":false");
+        }, TimeSpan.FromSeconds(120), ct);
+        windowClosed.Should().BeTrue("R4 closes the rotation window (final ALTER)");
         var inserts = 0;
         string? lastError = null;
         var wrote = await E2eFixture.WaitForAsync(async () =>

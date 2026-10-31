@@ -1340,8 +1340,6 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
         // (открытое окно REST-ротации, ETCD-FIRST): EnsureNode-путь restore
         // окно НЕ расширяет — нода поднимается с NEW-парой из etcd
         // (arch/14 §5 I).
-        // REST-ротации): EnsureNode-путь restore окно НЕ расширяет — нода
-        // поднимается с NEW-парой (арх/14 §5 I).
         var ct = TestContext.Current.CancellationToken;
         await SeedAsync("c1");
         var inner = new StubScaleDriver();
