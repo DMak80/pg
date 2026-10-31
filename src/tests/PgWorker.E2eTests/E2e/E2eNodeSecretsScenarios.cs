@@ -265,9 +265,28 @@ public sealed class E2eNodeSecretsScenarios(E2eNodeSecretsFx Ctx) : IClassFixtur
         // Act (spec §6.2b): инжекция сбоя старта pg_doorman (rw-слой переживает
         // restart) + рестарт → хендшейк заново → старт pg_doorman падает ×3 →
         // start_failed → надзор пересоздаёт с новым диском.
-        await E2eFixture.RunDockerAsync(
+        var mvOut = await E2eFixture.RunDockerAsync(
             ["exec", container, "mv", "/usr/local/bin/pg_doorman", "/usr/local/bin/pg_doorman.bak"], ct);
-        await E2eFixture.RunDockerAsync(["restart", container], ct);
+        mvOut.Should().NotContain("No such file", "the mv must rename the pooler binary");
+        (await DockerFileExistsAsync(container, "/usr/local/bin/pg_doorman", ct))
+            .Should().BeFalse("the pooler binary must be gone after the mv");
+        // Рестарт pgnode-ПРОЦЕССА SIGKILL'ом (supervisorctl restart гасит
+        // контейнер: killasgroup pgnode накрывает группу supervisord):
+        // unexpected-kill → autorestart=unexpected перезапускает pgnode; tmpfs
+        // цел (контейнер жив) — pgnode перечитает ключ и повторит фазы.
+        var pgnodePid = (await E2eFixture.RunDockerAsync(
+            ["exec", container, "pgrep", "-x", "pgnode"], ct))
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)[0];
+        pgnodePid.Should().NotBeEmpty("the pgnode process is running");
+        await E2eFixture.RunDockerAsync(["exec", container, "kill", "-9", pgnodePid], ct);
+
+        // pgnode перезапущен supervisord'ом (autorestart=unexpected) и
+        // перепубликовал not_initialized.
+        var pgnodeUp = await E2eFixture.WaitForAsync(async () =>
+            (await E2eFixture.RunDockerAsync(
+                ["exec", container, "supervisorctl", "status", "pgnode"], ct))
+            .Contains("RUNNING"), TimeSpan.FromSeconds(30), ct);
+        pgnodeUp.Should().BeTrue("pgnode is restarted by supervisord (unexpected exit)");
 
         var startFailed = await E2eFixture.WaitForAsync(async () =>
         {
@@ -324,10 +343,8 @@ public sealed class E2eNodeSecretsScenarios(E2eNodeSecretsFx Ctx) : IClassFixtur
             ["inspect", "-f", "{{.State.StartedAt}}", container], ct)).Trim();
         startedAfter.Should().NotBe(startedBefore, "the container was started anew");
 
-        var markerGone = await E2eFixture.RunDockerAsync(
-            ["exec", container, "test", "-f", "/home/postgres/pgdata/MARKER"], ct);
-        int.TryParse(markerGone.Trim(), out var markerCode);
-        markerCode.Should().NotBe(0, "the marker is gone: the volume is new");
+        (await DockerFileExistsAsync(container, "/home/postgres/pgdata/MARKER", ct))
+            .Should().BeFalse("the marker is gone: the volume is new");
     }
 
     // ===== Хелперы (копии паттерна E2eScaleScenarios, scoped на кластер) =====
@@ -391,6 +408,20 @@ public sealed class E2eNodeSecretsScenarios(E2eNodeSecretsFx Ctx) : IClassFixtur
         var hosts = System.Text.RegularExpressions.Regex.Match(dsn, "host=([^ ]+)").Groups[1].Value.Split(',');
         var ports = System.Text.RegularExpressions.Regex.Match(dsn, "port=([^ ]+)").Groups[1].Value.Split(',');
         return hosts.Zip(ports, (h, p) => (h, int.TryParse(p, out var v) ? v : 0)).ToList();
+    }
+
+    // docker exec test → bool: ненулевой exit (RunProcessAsync бросает) = false.
+    private static async Task<bool> DockerFileExistsAsync(string container, string path, CancellationToken ct)
+    {
+        try
+        {
+            await E2eFixture.RunDockerAsync(["exec", container, "test", "-f", path], ct);
+            return true;
+        }
+        catch (ApplicationException)
+        {
+            return false;
+        }
     }
 
     // Контейнер/публикация doorman ноды шарда (из portalloc: host + doorman-порт).
