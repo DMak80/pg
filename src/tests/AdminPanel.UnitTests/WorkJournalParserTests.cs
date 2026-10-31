@@ -138,4 +138,31 @@ public class WorkJournalParserTests
         result.Items.Should().BeEmpty();
         result.Errors.Should().ContainSingle().Which.Key.Should().Be("/pgworker/work/shop");
     }
+
+    // u13: формат доменных журналов kafka/valkey/s3 — только op/phase/instance/
+    // updated_unix/last_error, факт-поля pg отсутствуют (парсер толерантен:
+    // last_failover/last_rebuild = null).
+    [Fact]
+    public void Parse_DomainJournalWithoutFactFields_NullFacts()
+    {
+        // Arrange — доменный формат (arch/15 §4/§20 §3/§23 §8)
+        var kv = WorkKv("events",
+            """{"op":"rotate","phase":"phase-a","instance":"kfw-1","updated_unix":1761900000,"last_error":"node broker3 unreachable"}""");
+
+        // Act
+        var result = WorkJournalParser.Parse([kv]);
+
+        // Assert — журнал разобран без ошибок, факт-поля null
+        result.Errors.Should().BeEmpty();
+        var item = result.Items.Should().ContainSingle().Subject;
+        item.Cluster.Should().Be("events");
+        item.Op.Should().Be("rotate");
+        item.Phase.Should().Be("phase-a");
+        item.Instance.Should().Be("kfw-1");
+        item.UpdatedUnix.Should().Be(1761900000);
+        item.LastError.Should().Be("node broker3 unreachable");
+        item.LastFailover.Should().BeNull("у доменов pg-фактов нет");
+        item.LastRebuild.Should().BeNull();
+        item.FailCount.Should().BeNull();
+    }
 }

@@ -1,3 +1,4 @@
+using AdminPanel.Core;
 using AdminPanel.Core.S3;
 using AdminPanel.Etcd;
 using Shared.Core.CQRS;
@@ -37,7 +38,8 @@ public sealed record S3ClusterDto(
     IReadOnlyList<string> Denylist,
     S3ConnectivityDto? Connectivity,
     S3SyncDto? Sync,
-    S3RotationDto? Rotation);
+    S3RotationDto? Rotation,
+    WorkDto? Work = null); // u13: work-журнал кластера
 
 // Ключ доступа кластера в инспекции: имя + policy; значения AccessKey/SecretKey не попадают.
 public sealed record S3AccessKeyDto(string Name, string Policy);
@@ -116,7 +118,7 @@ public static class S3Mappers
             c.Sync?.State,
             c.Rotation is not null))];
 
-    public static S3ClusterDto MapDetails(S3ClusterInfo cluster) => new(
+    public static S3ClusterDto MapDetails(S3ClusterInfo cluster, WorkJournalInfo? work = null) => new(
         cluster.Name,
         StateName(cluster.State),
         cluster.Platform,
@@ -146,7 +148,8 @@ public static class S3Mappers
                 p.From, p.To, p.Missing, p.Extra, p.LagBytes, p.LagObjects))],
             cluster.Sync.LastError),
         cluster.Rotation is null ? null : new S3RotationDto(
-            cluster.Rotation.RequestedUnix, cluster.Rotation.RequestedBy));
+            cluster.Rotation.RequestedUnix, cluster.Rotation.RequestedBy),
+        work is null ? null : new WorkDto(work.Op, work.Phase, work.UpdatedUnix, work.LastError));
 
     public static string StateName(S3ClusterState state) => state switch
     {
@@ -186,7 +189,9 @@ public sealed class S3ClusterDetailsQueryHandler(IS3SnapshotReader store)
         var cluster = snapshot.Clusters.FirstOrDefault(c => c.Name == query.Cluster);
         return ValueTask.FromResult(cluster is null
             ? Result<S3ClusterDto>.Failed(new S3ClusterNotFound(query.Cluster))
-            : Result<S3ClusterDto>.Success(S3Mappers.MapDetails(cluster)));
+            : Result<S3ClusterDto>.Success(S3Mappers.MapDetails(
+                cluster,
+                (snapshot.WorkJournals ?? []).FirstOrDefault(w => w.Cluster == query.Cluster))));
     }
 }
 

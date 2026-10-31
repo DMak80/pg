@@ -120,7 +120,15 @@ public sealed record BackupShardStorageDto(
     BackupWalDto? Wal,
     BackupRestoreBadgeDto? ActiveRestore, // state/phase/error (без кнопок — arch/19 §3.5)
     string? ReconcileNote,                // сводная пометка (напр. «объекты без ключа: 2»)
-    BackupDrillBadgeDto? Drill = null);   // последний/текущий дрилл (reliability)
+    BackupDrillBadgeDto? Drill = null,    // последний/текущий дрилл (reliability)
+    IReadOnlyList<WalAgentDto>? Agents = null); // u11: приёмники WAL per-node
+
+// Приёмник WAL ноды (u11, arch/19 §4): lease-ключ agent/<N> жив = приёмник жив;
+// state-бейджи UI: streaming=green, waiting_*=yellow, failed_permanent=red.
+public sealed record WalAgentDto(
+    string Node, string? Role, string State,
+    long? LastDeliveredSegment, long? LastDeliveredUnix,
+    bool PoolExhausted, long? TliJump, string? Error, long UpdatedUnix);
 
 // Статус дрилла шарда (reliability, arch/19 §3.6): state/фаза/времена/LSN/error.
 public sealed record BackupDrillBadgeDto(
@@ -338,7 +346,8 @@ private static string WalStateName(WalStreamInfoState state) => state switch
         string cluster, string shard,
         S3ShardNode? s3Shard,
         ClusterBackupsInfo? etcdCluster,
-        BackupReconcileInfo reconcile)
+        BackupReconcileInfo reconcile,
+        IReadOnlyList<WalAgentInfo>? walAgents = null)
     {
         var fulls = reconcile.Fulls
             .Where(f => f.Cluster == cluster && f.Shard == shard)
@@ -389,7 +398,14 @@ private static string WalStateName(WalStreamInfoState state) => state switch
                 ? null
                 : new BackupRestoreBadgeDto(restore.State, restore.Phase, restore.Error),
             notes.Count > 0 ? string.Join("; ", notes) : null,
-            drill);
+            drill,
+            // u11: приёмники WAL шарда (джойн снапшота по кластеру×шарду).
+            [.. (walAgents ?? [])
+                .Where(a => a.Cluster == cluster && a.Shard == shard)
+                .Select(a => new WalAgentDto(
+                    a.Node, a.Role, a.State,
+                    a.LastDeliveredSegment, a.LastDeliveredUnix,
+                    a.PoolExhausted, a.TliJump, a.Error, a.UpdatedUnix))]);
     }
 }
 
@@ -454,7 +470,8 @@ public sealed class BackupShardStorageQueryHandler(ISnapshotReader reader)
                 s3, snapshot.Backups, snapshot.Clusters, snapshot.BackupOrphans);
 
         return ValueTask.FromResult(Result<BackupShardStorageDto>.Success(
-            BackupStorageMappers.MapShard(query.Cluster, query.Shard, s3Shard, etcdCluster, reconcile)));
+            BackupStorageMappers.MapShard(query.Cluster, query.Shard, s3Shard, etcdCluster, reconcile,
+                snapshot.WalAgents)));
     }
 }
 

@@ -86,10 +86,16 @@ public sealed class KafkaSnapshotRefresher(
         var regensKv = await RangeWithFailoverAsync(endpoints, active, Prefixes.Regens, ct);
         var workerApiKv = await RangeWithFailoverAsync(endpoints, active, Prefixes.WorkerApi, ct);
         var certKv = await RangeWithFailoverAsync(endpoints, active, Prefixes.WorkerApiCert, ct);
+        // u13/u14: work-журналы и координация kafka-домена (arch/15 §4).
+        var workKv = await RangeWithFailoverAsync(endpoints, active, Prefixes.Work, ct);
+        var leaderKv = await RangeWithFailoverAsync(endpoints, active, Prefixes.Leader, ct);
+        var claimsKv = await RangeWithFailoverAsync(endpoints, active, Prefixes.Claims, ct);
+        var instancesKv = await RangeWithFailoverAsync(endpoints, active, Prefixes.Instances, ct);
         if (!clustersKv.IsSuccess || !rotationsKv.IsSuccess || !adminRotationsKv.IsSuccess
             || !caRotationsKv.IsSuccess || !ticketOutcomesKv.IsSuccess
             || !rebalancesKv.IsSuccess || !reassignmentsKv.IsSuccess || !regensKv.IsSuccess
-            || !workerApiKv.IsSuccess || !certKv.IsSuccess)
+            || !workerApiKv.IsSuccess || !certKv.IsSuccess
+            || !workKv.IsSuccess || !leaderKv.IsSuccess || !claimsKv.IsSuccess || !instancesKv.IsSuccess)
             return FailTick(previous, now, "etcd KV reads failed");
 
         _activeEndpoint = active;
@@ -106,6 +112,11 @@ public sealed class KafkaSnapshotRefresher(
         var workerApi = WorkerEndpointsParser.Parse(workerApiKv.Value);
         // Префикс-запрос точечный: ровно один ключ /workers/api_tls/kafkaworker.
         var certParsed = WorkerCertParser.Parse(Prefixes.WorkerApiCert, certKv.Value.FirstOrDefault());
+        // u13/u14: журналы и координация (факт-поля pg у домена отсутствуют —
+        // WorkJournalParser толерантен).
+        var workParsed = WorkJournalParser.Parse(workKv.Value);
+        var coordinationParsed = CoordinationParser.Parse(
+            "/kafkaworker", leaderKv.Value.FirstOrDefault(), claimsKv.Value, instancesKv.Value);
 
         // SASL/TLS-креды проб (B6 +): в модель кластера НЕ попадают
         // (arch/02 §10.1) — отдельный internal-словарь стора; securityReady —
@@ -129,12 +140,15 @@ public sealed class KafkaSnapshotRefresher(
             [.. clusters.Errors, .. rotations.Errors, .. adminRotations.Errors, .. caRotations.Errors,
                 .. ticketOutcomes.Errors, .. rebalances.Errors,
                 .. reassignments.Errors, .. regens.Errors, .. workerApi.Errors, .. secretsErrors,
-                .. WorkerCertParser.ErrorsOf(certParsed)],
+                .. WorkerCertParser.ErrorsOf(certParsed),
+                .. workParsed.Errors, .. coordinationParsed.Errors],
             clusters.UnknownKeyCount,
             AdminRotations: adminRotations.Tickets,
             CaRotations: caRotations.Tickets,
             TicketOutcomes: ticketOutcomes.Tickets,
-            WorkerApiCert: certParsed.Cert);
+            WorkerApiCert: certParsed.Cert,
+            WorkJournals: workParsed.Items,
+            Coordination: coordinationParsed.Coordination);
 
         store.Replace(built with { Alerts = alertEngine.Evaluate(built, previous, securityReady) });
         return Result.Success();
@@ -287,5 +301,10 @@ public sealed class KafkaSnapshotRefresher(
         public const string Regens = "/kafkaworker/regens/";
         public const string WorkerApi = "/kafkaworker/api/";
         public const string WorkerApiCert = "/workers/api_tls/kafkaworker";
+        // u13/u14 (arch/15 §4, adminpanel/02 §2.3.2).
+        public const string Work = "/kafkaworker/work/";
+        public const string Leader = "/kafkaworker/leader";
+        public const string Claims = "/kafkaworker/claims/";
+        public const string Instances = "/kafkaworker/instances/";
     }
 }

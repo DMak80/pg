@@ -1,3 +1,4 @@
+using AdminPanel.Core;
 using AdminPanel.Core.Valkey;
 using AdminPanel.Etcd;
 using Shared.Core.CQRS;
@@ -33,7 +34,8 @@ public sealed record ValkeyClusterDto(
     IReadOnlyList<ValkeyNodeDto> NodesList,
     ValkeyRotationDto? Rotation,
     ValkeyCaRotationDto? CaRotation, // живая заявка CA-ротации (бейдж UI)
-    TicketOutcomeDto? TicketOutcome = null); // последний исход заявки
+    TicketOutcomeDto? TicketOutcome = null, // последний исход заявки
+    WorkDto? Work = null); // u13: work-журнал кластера
 
 // Нода node1: state raw + ресурсы + live из PING-пробы (null — проба молчит).
 public sealed record ValkeyNodeDto(
@@ -66,7 +68,10 @@ public static class ValkeyMappers
             c.MaxmemoryBytes,
             c.MaxmemoryPolicy))];
 
-    public static ValkeyClusterDto MapDetails(ValkeyClusterInfo cluster, ValkeyTicketOutcome? ticketOutcome = null)
+    public static ValkeyClusterDto MapDetails(
+        ValkeyClusterInfo cluster,
+        ValkeyTicketOutcome? ticketOutcome = null,
+        WorkJournalInfo? work = null)
         => new(
             cluster.Name,
             StateName(cluster.State),
@@ -85,7 +90,8 @@ public static class ValkeyMappers
                 : new ValkeyCaRotationDto(cluster.CaRotation.RequestedUnix, cluster.CaRotation.RequestedBy),
             ticketOutcome is null ? null : new TicketOutcomeDto(
                 ticketOutcome.Kind, ticketOutcome.Outcome, ticketOutcome.Reason,
-                ticketOutcome.RequestedUnix, ticketOutcome.RequestedBy, ticketOutcome.FinishedUnix));
+                ticketOutcome.RequestedUnix, ticketOutcome.RequestedBy, ticketOutcome.FinishedUnix),
+            work is null ? null : new WorkDto(work.Op, work.Phase, work.UpdatedUnix, work.LastError));
 
     public static string StateName(ValkeyClusterState state) => state switch
     {
@@ -127,7 +133,8 @@ public sealed class ValkeyClusterDetailsQueryHandler(IValkeySnapshotReader store
             ? Result<ValkeyClusterDto>.Failed(new ValkeyClusterNotFound(query.Cluster))
             : Result<ValkeyClusterDto>.Success(ValkeyMappers.MapDetails(
                 cluster,
-                (snapshot.TicketOutcomes ?? []).FirstOrDefault(o => o.Cluster == query.Cluster))));
+                (snapshot.TicketOutcomes ?? []).FirstOrDefault(o => o.Cluster == query.Cluster),
+                (snapshot.WorkJournals ?? []).FirstOrDefault(w => w.Cluster == query.Cluster))));
     }
 }
 

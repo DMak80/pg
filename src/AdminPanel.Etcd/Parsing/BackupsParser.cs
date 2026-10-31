@@ -10,7 +10,9 @@ public sealed record BackupsParseResult(
     // глобальный ключ /pgworker/backups/storage (null — ключа нет/битый).
     BackupStorageInfo? Storage = null,
     // глобальный ключ /pgworker/backups/orphans (null — ключа нет/битый).
-    BackupOrphansInfo? Orphans = null);
+    BackupOrphansInfo? Orphans = null,
+    // приёмники WAL per-node /pgworker/backups/<C>/<X>/agent/<N> (u11, arch/19 §4).
+    IReadOnlyList<WalAgentInfo>? Agents = null);
 
 // Чистая функция: KV префикса /pgworker/backups/ (arch/19 §4, +):
 // policy full_max_age_sec + per-shard последний COMPLETED finished_unix
@@ -49,6 +51,9 @@ public static class BackupsParser
         var holds = new Dictionary<string, OrphanHoldInfo>(StringComparer.Ordinal);
         var deleteRequests = new Dictionary<string, OrphanDeleteRequestInfo>(StringComparer.Ordinal);
         var verifyFailures = new Dictionary<string, Dictionary<string, ShardVerifyFailure>>();
+        // приёмники WAL (u11): agent-ключи — 7 сегментов; раньше ветки full/restore
+        // (иначе падали бы в их лист-ключи).
+        var agents = new List<WalAgentInfo>();
         var errors = new List<KeyParseError>();
         foreach (var kv in kvs)
         {
@@ -348,6 +353,46 @@ public static class BackupsParser
                 continue;
             }
 
+            // agent/<N> — приёмник WAL ноды (u11, arch/19 §4): 7 сегментов;
+            // node/state/updated_unix обязательны, role/last_delivered_* /
+            // pool_exhausted/tli_jump/history_missing_tli/error — по факту;
+            // незнакомое state / нет обязательных — KeyParseError + пропуск.
+            if (segments.Length == 7 && segments[5] == "agent" && segments[4].Length > 0 && segments[6].Length > 0)
+            {
+                try
+                {
+                    using var doc = JsonDocument.Parse(kv.Value);
+                    var root = doc.RootElement;
+                    if (root.ValueKind != JsonValueKind.Object)
+                    {
+                        errors.Add(new(kv.Key, "wal agent status is not a JSON object"));
+                        continue;
+                    }
+
+                    var state = String(root, "state");
+                    var updated = Long(root, "updated_unix");
+                    if (state is null || updated is null)
+                    {
+                        errors.Add(new(kv.Key, "broken wal agent status (state/updated_unix)"));
+                        continue;
+                    }
+
+                    agents.Add(new WalAgentInfo(
+                        cluster, segments[4], segments[6],
+                        String(root, "role"), state,
+                        Long(root, "last_delivered_segment"), Long(root, "last_delivered_unix"),
+                        Bool(root, "pool_exhausted") ?? false,
+                        Long(root, "tli_jump"), Long(root, "history_missing_tli"),
+                        String(root, "error"), updated.Value));
+                }
+                catch (JsonException e)
+                {
+                    errors.Add(new(kv.Key, $"broken wal agent JSON: {e.Message}"));
+                }
+
+                continue;
+            }
+
             // restore/<id> — заявки восстановления (вход правила restore-failed);
             // state/requested_unix обязательны, error/started/finished/phase — по факту;
             // незнакомое state / нет обязательных — KeyParseError + пропуск.
@@ -563,7 +608,11 @@ public static class BackupsParser
             : new BackupOrphansInfo(orphansEntries, orphansUpdated,
                 holds.Count > 0 ? holds : null,
                 deleteRequests.Count > 0 ? deleteRequests : null);
-        return new(clusters, errors, storage, orphans);
+        return new(clusters, errors, storage, orphans,
+            agents.OrderBy(a => a.Cluster, StringComparer.Ordinal)
+                .ThenBy(a => a.Shard, StringComparer.Ordinal)
+                .ThenBy(a => a.Node, StringComparer.Ordinal)
+                .ToList());
     }
 
     private static WalStreamInfoState? StateOf(string? raw) => raw switch

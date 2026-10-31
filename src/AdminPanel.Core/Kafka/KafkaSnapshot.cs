@@ -23,7 +23,9 @@ public sealed record KafkaSnapshot(
     IReadOnlyList<KafkaRotationTicket>? AdminRotations = null, // /kafkaworker/admin_rotations/ (arch/15 §4)
     IReadOnlyList<KafkaCaRotationTicket>? CaRotations = null,  // /kafkaworker/ca_rotations/ (arch/15 §4)
     IReadOnlyList<KafkaTicketOutcome>? TicketOutcomes = null,  // /kafkaworker/ticket_outcomes/ (arch/15 §4)
-    WorkerApiCert? WorkerApiCert = null);        // целевой серт API KafkaWorker (adminpanel/02 §9.9)
+    WorkerApiCert? WorkerApiCert = null,        // целевой серт API KafkaWorker (adminpanel/02 §9.9)
+    IReadOnlyList<WorkJournalInfo>? WorkJournals = null, // /kafkaworker/work/ (u13, arch/15 §4)
+    WorkerCoordination? Coordination = null);  // leader/claims/instances (u14, adminpanel/02 §2.3.2)
 
 // Кластер /kafka/clusters/<C>/ (arch/15 §2): config + state + факт (brokers/topics/endpoints).
 public sealed record KafkaClusterInfo(

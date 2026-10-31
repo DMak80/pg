@@ -77,7 +77,13 @@ public sealed class S3SnapshotRefresher(
         var rotationsKv = await RangeWithFailoverAsync(endpoints, active, Prefixes.Rotations, ct);
         var workerApiKv = await RangeWithFailoverAsync(endpoints, active, Prefixes.WorkerApi, ct);
         var certKv = await RangeWithFailoverAsync(endpoints, active, Prefixes.WorkerApiCert, ct);
-        if (!clustersKv.IsSuccess || !rotationsKv.IsSuccess || !workerApiKv.IsSuccess || !certKv.IsSuccess)
+        // u13/u14: work-журналы и координация s3-домена (arch/23 §8).
+        var workKv = await RangeWithFailoverAsync(endpoints, active, Prefixes.Work, ct);
+        var leaderKv = await RangeWithFailoverAsync(endpoints, active, Prefixes.Leader, ct);
+        var claimsKv = await RangeWithFailoverAsync(endpoints, active, Prefixes.Claims, ct);
+        var instancesKv = await RangeWithFailoverAsync(endpoints, active, Prefixes.Instances, ct);
+        if (!clustersKv.IsSuccess || !rotationsKv.IsSuccess || !workerApiKv.IsSuccess || !certKv.IsSuccess
+            || !workKv.IsSuccess || !leaderKv.IsSuccess || !claimsKv.IsSuccess || !instancesKv.IsSuccess)
             return FailTick(previous, now, "etcd KV reads failed");
 
         _activeEndpoint = active;
@@ -87,6 +93,10 @@ public sealed class S3SnapshotRefresher(
         var workerApi = WorkerEndpointsParser.Parse(workerApiKv.Value);
         // Префикс-запрос точечный: ровно один ключ /workers/api_tls/s3worker.
         var certParsed = WorkerCertParser.Parse(Prefixes.WorkerApiCert, certKv.Value.FirstOrDefault());
+        // u13/u14: журналы и координация (факт-поля pg у домена отсутствуют).
+        var workParsed = WorkJournalParser.Parse(workKv.Value);
+        var coordinationParsed = CoordinationParser.Parse(
+            "/s3worker", leaderKv.Value.FirstOrDefault(), claimsKv.Value, instancesKv.Value);
 
         var rotationsByCluster = rotations.Tickets
             .GroupBy(t => t.Cluster, StringComparer.Ordinal)
@@ -105,9 +115,12 @@ public sealed class S3SnapshotRefresher(
             workerHealthStore.Current ?? [],   // health-проб воркера вносит успешный тик (arch/02 §2.3.4)
             Alerts: [],
             [.. clusters.Errors, .. rotations.Errors,
-                .. workerApi.Errors, .. WorkerCertParser.ErrorsOf(certParsed)],
+                .. workerApi.Errors, .. WorkerCertParser.ErrorsOf(certParsed),
+                .. workParsed.Errors, .. coordinationParsed.Errors],
             clusters.UnknownKeyCount,
-            WorkerApiCert: certParsed.Cert);
+            WorkerApiCert: certParsed.Cert,
+            WorkJournals: workParsed.Items,
+            Coordination: coordinationParsed.Coordination);
 
         store.Replace(built with { Alerts = alertEngine.Evaluate(built, previous) });
         return Result.Success();
@@ -156,5 +169,10 @@ public sealed class S3SnapshotRefresher(
         public const string Rotations = "/s3worker/rotations/";
         public const string WorkerApi = "/s3worker/api/";
         public const string WorkerApiCert = "/workers/api_tls/s3worker";
+        // u13/u14 (arch/23 §8, adminpanel/02 §2.3.4).
+        public const string Work = "/s3worker/work/";
+        public const string Leader = "/s3worker/leader";
+        public const string Claims = "/s3worker/claims/";
+        public const string Instances = "/s3worker/instances/";
     }
 }

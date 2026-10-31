@@ -93,6 +93,14 @@ public sealed class SnapshotRefresher(
         var pgCertTask = WithFailoverAsync(alive, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.WorkerApiCert, t), ct);
         var etcdSnapshotsTask = WithFailoverAsync(alive, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.EtcdSnapshots, t), ct);
         var workTask = WithFailoverAsync(alive, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.PgWorkerWork, t), ct);
+        // u10–u14: стоп бэкапов (точечный range — образец WorkerApiCert),
+        // эвакуации, живые заявки ротаций, координация leader/claims/instances.
+        var backupsDisabledTask = WithFailoverAsync(alive, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.BackupsDisabled, t), ct);
+        var evacuationsTask = WithFailoverAsync(alive, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.Evacuations, t), ct);
+        var pgRotationsTask = WithFailoverAsync(alive, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.PgRotations, t), ct);
+        var leaderTask = WithFailoverAsync(alive, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.Leader, t), ct);
+        var claimsTask = WithFailoverAsync(alive, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.Claims, t), ct);
+        var instancesTask = WithFailoverAsync(alive, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.Instances, t), ct);
         var membersTask = WithFailoverAsync(alive, active, (ep, t) => gateway.MemberListAsync(ep, t), ct);
         var alarmsTask = WithFailoverAsync(alive, active, (ep, t) => gateway.AlarmAsync(ep, t), ct);
 
@@ -114,10 +122,21 @@ public sealed class SnapshotRefresher(
 
         // Частичный KV-провал = неполный снапшот: консервативно отказ тика, данные прежние
         // (уточнение к spec §7.2 п.5: пустой префикс — валидные данные, транспортный отказ — нет).
+        var backupsDisabledKv = await backupsDisabledTask;
+        var evacuationsKv = await evacuationsTask;
+        var pgRotationsKv = await pgRotationsTask;
+        var leaderKv = await leaderTask;
+        var claimsKv = await claimsTask;
+        var instancesKv = await instancesTask;
+
+        // Частичный KV-провал = неполный снапшот: консервативно отказ тика, данные прежние
+        // (уточнение к spec §7.2 п.5: пустой префикс — валидные данные, транспортный отказ — нет).
         if (!clustersKv.IsSuccess || !serviceKv.IsSuccess || !nodesKv.IsSuccess
             || !portAllocKv.IsSuccess || !movesKv.IsSuccess || !backupsKv.IsSuccess
             || !pgApiKv.IsSuccess || !workKv.IsSuccess || !pgCertKv.IsSuccess
-            || !etcdSnapshotsKv.IsSuccess)
+            || !etcdSnapshotsKv.IsSuccess || !backupsDisabledKv.IsSuccess
+            || !evacuationsKv.IsSuccess || !pgRotationsKv.IsSuccess
+            || !leaderKv.IsSuccess || !claimsKv.IsSuccess || !instancesKv.IsSuccess)
             return FailTick(previous, statuses, now, "etcd KV reads failed");
 
         // 4. Парсеры → модель (чистые функции, arch/02 §4 п.3).
@@ -133,6 +152,13 @@ public sealed class SnapshotRefresher(
         // Префикс-запрос точечный: ровно один ключ /pgworker/etcd-snapshots (паттерн WorkerApiCert).
         var etcdSnapshotsParsed = EtcdSnapshotsParser.Parse(etcdSnapshotsKv.Value.FirstOrDefault());
         var workParsed = WorkJournalParser.Parse(workKv.Value);
+        // u10–u14: точечный ключ стопа бэкапов (образец WorkerApiCert),
+        // эвакуации, живые заявки ротаций pg, координация pg-домена.
+        var backupsDisabledParsed = BackupsDisabledParser.Parse(backupsDisabledKv.Value.FirstOrDefault());
+        var evacuationsParsed = EvacuationsParser.Parse(evacuationsKv.Value);
+        var pgRotationsParsed = RotationsParser.Parse(pgRotationsKv.Value);
+        var coordinationParsed = CoordinationParser.Parse(
+            "/pgworker", leaderKv.Value.FirstOrDefault(), claimsKv.Value, instancesKv.Value);
 
         // 5. Кворум-эвристика (spec §3.11) + мягкие метаданные member/alarm (ошибка не роняет тик).
         var quorumSuspected = alive.All(a => a.LeaderMemberId is not > 0 || a.RaftTerm is not > 0)
@@ -166,7 +192,13 @@ public sealed class SnapshotRefresher(
         // алерты + атомарная замена (arch/02 §4 п.4–5; Alerts на обоих путях тика, spec §5; spec §3.1).
         var builtBase = SnapshotBuilder.Build(
             time, clustersParsed, serviceParsed, nodes, movesParsed, backupsParsed, pgApiParsed, workParsed,
-            etcd.Members, etcd.Alarms, etcd, pgCertParsed, etcdSnapshotsParsed);
+            etcd.Members, etcd.Alarms, etcd, pgCertParsed, etcdSnapshotsParsed,
+            backupsDisabledParsed.Info,
+            backupsParsed.Agents ?? [],
+            evacuationsParsed,
+            pgRotationsParsed,
+            coordinationParsed.Coordination,
+            coordinationParsed.Errors);
         var enrichedBase = ProbeEnricher.Apply(builtBase, probeStateStore.Current)
             with
         {
@@ -247,7 +279,12 @@ public sealed class SnapshotRefresher(
             previous?.BackupOrphans, // реестр сирот переживает отказный тик — как storage 
             previous?.S3Storage, // S3-инвентарь переживает отказ etcd (как WorkerHealth)
             null, // WorkerApiCert — прежнее поведение отказного тика (серт не переносится)
-            previous?.EtcdSnapshots); // статус выгрузки etcd-снапшотов переживает отказный тик 
+            previous?.EtcdSnapshots, // статус выгрузки etcd-снапшотов переживает отказный тик
+            previous?.BackupsDisabled, // стоп бэкапов переживает отказный тик (u10)
+            previous?.WalAgents ?? [], // приёмники WAL переживают отказный тик (u11)
+            previous?.Evacuations ?? [], // эвакуации переживают отказный тик (u12)
+            previous?.PgRotations ?? [], // живые заявки ротаций переживают отказный тик (u07)
+            previous?.Coordination); // координация переживает отказный тик (u14)
 
         // Алерты вычисляются и на отказном тике: etcd-unreachable/snapshot-stale
         // живут именно здесь (spec §3.5); data-алерты пересчитываются по прежним данным.
@@ -296,5 +333,14 @@ public sealed class SnapshotRefresher(
         public const string PgWorkerWork = "/pgworker/work/";
         public const string WorkerApiCert = "/workers/api_tls/pgworker";
         public const string EtcdSnapshots = "/pgworker/etcd-snapshots";
+        // u10–u14 (adminpanel/02 §2.3.1): глобальный стоп бэкапов — ТОЧЕЧНЫЙ
+        // range (ключ НЕ входит в /pgworker/backups/ — '-' < '/' байтово);
+        // остальные — обычные range-чтения того же тика.
+        public const string BackupsDisabled = "/pgworker/backups-disabled";
+        public const string Evacuations = "/pgworker/evacuations/";
+        public const string PgRotations = "/pgworker/rotations/";
+        public const string Leader = "/pgworker/leader";
+        public const string Claims = "/pgworker/claims/";
+        public const string Instances = "/pgworker/instances/";
     }
 }

@@ -35,7 +35,20 @@ public sealed record WorkerApiCertDeletedDto(string Worker);
 
 public sealed record WorkersViewDto(IReadOnlyList<WorkerViewDto> Workers);
 
-public sealed record WorkerViewDto(string Worker, IReadOnlyList<WorkerInstanceDto> Instances, WorkerCertDto? TargetCert);
+public sealed record WorkerViewDto(
+    string Worker,
+    IReadOnlyList<WorkerInstanceDto> Instances,
+    WorkerCertDto? TargetCert,
+    WorkerCoordinationDto? Coordination = null); // u14: лидер + claims «кто держит кластер»
+
+// Координация воркера (u14, adminpanel/02 §3.7): leaderInstance null — лидера нет;
+// claims — таблица «Кто держит кластер»; instances — live-инстансы домена.
+public sealed record WorkerCoordinationDto(
+    string? LeaderInstance,
+    IReadOnlyList<WorkerClaimDto> Claims,
+    IReadOnlyList<string> Instances);
+
+public sealed record WorkerClaimDto(string Cluster, string Instance, long? SinceUnix);
 
 public sealed record WorkerInstanceDto(
     string Instance, string Url, long SinceUnix, string? Health, string? CertThumbprint,
