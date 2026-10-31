@@ -616,8 +616,12 @@ public sealed class NodeSupervisor(
 
                     case "not_initialized":
                     {
+                        // Тюнинг — от АКТУАЛЬНЫХ заявок (arch/14 §2.1: пересчёт на
+                        // каждый EnsureNode-путь): null рендерил YAML ключа без
+                        // PGTune-параметров — bootstrap расходился с provisioning.
+                        var resources = await ReadShardResourcesAsync(cluster, shard.Name, ct);
                         var outcome = await bootstrap.EnsureAsync(
-                            topology, node.Name, addr, secrets, null,
+                            topology, node.Name, addr, secrets, pgtune.Create(resources),
                             pgtuneSettings.ExcludeParams, snap.Config.SyncStrict, restPassword, ct);
                         if (outcome.Transient)
                             await journal.WritePhaseAsync(cluster, "supervise",
@@ -639,8 +643,11 @@ public sealed class NodeSupervisor(
                         if (keyRead.Value is null || status.AppliedRevision == (long)keyRead.Value.ModRevision)
                             continue; // ключ ещё не доставлен / нода на ревизии — мутаций нет
 
+                        // Тюнинг — от АКТУАЛЬНЫХ заявок (arch/14 §2.1) — тот же
+                        // рендер, что у provisioning: null расходился бы с ним.
+                        var applyResources = await ReadShardResourcesAsync(cluster, shard.Name, ct);
                         var outcome = await bootstrap.EnsureAsync(
-                            topology, node.Name, addr, secrets, null,
+                            topology, node.Name, addr, secrets, pgtune.Create(applyResources),
                             pgtuneSettings.ExcludeParams, snap.Config.SyncStrict, restPassword, ct);
                         if (outcome.Transient)
                             await journal.WritePhaseAsync(cluster, "supervise",

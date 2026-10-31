@@ -168,34 +168,73 @@ public sealed class E2eNodeSecretsScenarios(E2eNodeSecretsFx Ctx) : IClassFixtur
         var hosts = RegexHosts((await GetOrNullAsync($"/clusters/{cluster}/shards/shard1/dsn"))!.Value);
         var (container, host, doorman) = await NodeEndpointAsync(cluster, "shard1", ct);
 
-        // Act: docker restart ноды → lease-ключ статуса исчез; сервисы стоят
-        // (supervisord autostart только pgnode) — SELECT-проба падает.
-        await E2eFixture.RunDockerAsync(["restart", container], ct);
-        var leaseGone = await E2eFixture.WaitForAsync(async () =>
+        // Оркестрация рестарта (обязательное предусловие): синк-реплика ДОГНАЛА
+        // лидера — members-ключи patroni шарда: лидер primary/running, реплика
+        // streaming (клон завершён, стрим поднят). Рестарт до догнавшей
+        // синк-реплики — нештатный: промоушен отставшего sync-standby корректно
+        // не происходит (кластер ждёт).
+        var caughtUp = await E2eFixture.WaitForAsync(async () =>
+        {
+            foreach (var node in new[] { "shard1a", "shard1b" })
+            {
+                var member = await GetOrNullAsync(
+                    $"/service/{cluster}-shard1/members/{node}");
+                if (member is null)
+                    return false;
+                try
+                {
+                    using var doc = JsonDocument.Parse(member.Value);
+                    // DCS members-ключ несёт СОСТОЯНИЕ PG-процесса (патрони):
+                    // "running" у обеих = клон реплики завершён, PG поднят и
+                    // стримит; роль (primary/replica) в member-ключ не входит.
+                    if (doc.RootElement.GetProperty("state").GetString() != "running")
+                        return false;
+                }
+                catch (JsonException)
+                {
+                    return false;
+                }
+            }
+            return true;
+        }, TimeSpan.FromSeconds(90), ct);
+        caughtUp.Should().BeTrue("the sync replica is streaming before the restart");
+
+        // Act: СМЕРТЬ АГЕНТА (arch/14 §4: «рестарт контейнера/смерть агента:
+        // lease истёк → ключ исчез → новый процесс публикует not_initialized —
+        // хендшейк повторяется»): kill -9 pgnode → supervisord перезапускает
+        // ПРОЦЕСС (unexpected-выход; контейнер и tmpfs живы — pg_doorman/spilo
+        // не гасятся: рестарт процессов — штатная операция, рестарт контейнера
+        // — нет). Машина агента в памяти потеряна → not_initialized заново.
+        var nodeName = container.Split('-')[^1];
+        var startedAtBefore = (await E2eFixture.RunDockerAsync(
+            ["inspect", "-f", "{{.State.StartedAt}}", container], ct)).Trim();
+        var pgnodePid = (await E2eFixture.RunDockerAsync(
+            ["exec", container, "pgrep", "-x", "pgnode"], ct))
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)[0];
+        pgnodePid.Should().NotBeEmpty("the pgnode process is running");
+        await E2eFixture.RunDockerAsync(["exec", container, "kill", "-9", pgnodePid], ct);
+
+        var restarted = await E2eFixture.WaitForAsync(async () =>
         {
             var statuses = (await G.RangeAsync(Endpoint,
                 $"/pgworker/nodes/{cluster}/shard1/", ct)).Value;
-            return !statuses.Any(kv =>
+            var status = statuses.FirstOrDefault(kv =>
                 kv.Key.EndsWith("/status", StringComparison.Ordinal)
-                && kv.Key.Contains($"/{container.Split('-')[^1]}/", StringComparison.Ordinal));
-        }, TimeSpan.FromSeconds(30), ct);
-        leaseGone.Should().BeTrue("the lease-key of the restarted node is gone (~TTL 15 c)");
-        var probeDown = await E2eFixture.WaitForAsync(async () =>
-        {
+                && kv.Key.Contains($"/{nodeName}/", StringComparison.Ordinal));
+            if (status is null)
+                return true; // lease-ключ ушёл — новая публикация ещё не была
             try
             {
-                await using var con = new Npgsql.NpgsqlConnection(
-                    $"Host={host};Port={doorman};Database={cluster};Username=app;" +
-                    $"Password={appPassword};Timeout=3;SSL Mode=Require");
-                await con.OpenAsync(ct);
-                return false; // ещё жив — ждём падения
+                using var doc = JsonDocument.Parse(status.Value);
+                return doc.RootElement.GetProperty("state").GetString() == "not_initialized";
             }
-            catch (Exception e) when (e is not OperationCanceledException)
+            catch (JsonException)
             {
-                return true; // сервисы стоят
+                return false;
             }
         }, TimeSpan.FromSeconds(30), ct);
-        probeDown.Should().BeTrue("the services are down after the restart (autostart only pgnode)");
+        restarted.Should().BeTrue(
+            "the restarted agent republishes the machine (lease gone / not_initialized)");
 
         // Assert: конвергенция тиком — статус снова ready, SELECT жив
         // (хендшейк заново; статус-ключ агента бэкапов жив, §6.7).
@@ -233,6 +272,13 @@ public sealed class E2eNodeSecretsScenarios(E2eNodeSecretsFx Ctx) : IClassFixtur
             }
         }, TimeSpan.FromSeconds(60), ct);
         selectAlive.Should().BeTrue("SELECT through doorman works after the convergence");
+
+        // Рестарт ПРОЦЕССА агента контейнер не пересоздаёт/не рестартует:
+        // StartedAt неизменен (рестарты процессов — штатная операция).
+        var startedAtAfter = (await E2eFixture.RunDockerAsync(
+            ["inspect", "-f", "{{.State.StartedAt}}", container], ct)).Trim();
+        startedAtAfter.Should().Be(startedAtBefore,
+            "the agent restart does not restart the container");
     }
 
     // ===== 4) start_failed → пересоздание с новым диском (spec §6.2b/§9.6) =====

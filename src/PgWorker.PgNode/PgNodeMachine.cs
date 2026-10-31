@@ -81,6 +81,15 @@ public sealed class PgNodeMachine : IDisposable
     internal Task? PhaseTask => _phaseTask;
     private Task? _phaseTask;
 
+    // Фоновая задача применения (apply: рестарты компонентов под токеном
+    // процесса); живая задача — признак «применение в ходу» (повторный
+    // apply — ok без двойного рестарта).
+    private volatile Task? _applyTask;
+
+    // Юнит-seam: фоновая задача применения (тесты ждут её перед ассертами
+    // рестартов — детерминизм без sleep-поллинга).
+    internal Task? ApplyTask => _applyTask;
+
     /// <summary>Серверный серт mTLS-листенера :8081 — из bootstrap-ключа;
     /// null до чтения ключа (handshake отклоняется: канала нет).</summary>
     public X509Certificate2? ServerCertificate => _serverCertificate;
@@ -263,14 +272,25 @@ public sealed class PgNodeMachine : IDisposable
     }
 
     /// <summary>Команда применения (POST /api/bootstrap/apply): только ready;
-    /// перечитать ключ, ревизия изменилась — перерендер + точечные рестарты,
-    /// applied_revision обновляется, машина остаётся ready.</summary>
+    /// перечитать ключ, ревизия изменилась — перерендер (синхронно) + точечные
+    /// рестарты (ФОНОВО, под токеном процесса — не запроса). Прогресс воркер
+    /// видит по статусному ключу (applied_revision, arch/14 §5 I): рестарт
+    /// spilo занимает десятки секунд — дольше HttpClient-таймаута канала
+    /// (10 c, spec §2.7), синхронное применение рвало каждую команду по
+    /// таймауту и зацикливало окно ротации на одной ноде.</summary>
     public async Task<ApplyResult> ApplyAsync(CancellationToken ct)
     {
         if (_state != PgNodeStatus.Ready)
             return new ApplyResult(Ok: false, AppliedRevision: null, NotReady: true, EtcdError: false);
+        // Применение уже в ходу (фоновые рестарты) — команда принята: рендер
+        // применён, рестарты/публикация завершатся фоново; повтор — без
+        // двойного рестарта (spec §3.6-4: повторный пинок — ok без действий).
+        if (_applyTask is { IsCompleted: false })
+            return new ApplyResult(Ok: true, AppliedRevision: _appliedRevision,
+                NotReady: false, EtcdError: false);
         if (!await _commandGate.WaitAsync(0, ct))
-            return new ApplyResult(Ok: false, AppliedRevision: null, NotReady: true, EtcdError: false);
+            return new ApplyResult(Ok: true, AppliedRevision: _appliedRevision,
+                NotReady: false, EtcdError: false); // гонка с рукопожатием — пинок
         try
         {
             var fresh = await ReadBootstrapAsync(ct);
@@ -308,36 +328,14 @@ public sealed class PgNodeMachine : IDisposable
             }
 
             var spiloChanged = _appliedSpiloMaterial != SpiloMaterial(data);
-            var doormanMaterial = doormanConfig + "\n" + data.CertPem + "\n" + data.KeyPem;
-            var doormanChanged = _appliedDoormanConfig != doormanMaterial;
-            try
-            {
-                // Оба → сначала пулер, затем spilo (spec §3.6-4).
-                if (doormanChanged)
-                    await _supervisor.RestartAsync("pg_doorman", ct);
-                if (spiloChanged)
-                    await _supervisor.RestartAsync("spilo", ct);
-            }
-            catch (Exception e)
-            {
-                // Рестарт упал: факт в error; машина остаётся ready (контейнер
-                // жив, компонент поднимет supervisord/следующий apply).
-                await PublishAsync(PgNodeStatus.Ready, mod,
-                    Components(pg: spiloChanged ? "starting" : "ready",
-                        doorman: doormanChanged ? "starting" : "ready"),
-                    FirstLine(e.Message), ct);
-                _appliedSpiloMaterial = SpiloMaterial(data);
-                _appliedDoormanConfig = DoormanMaterialOf(doormanConfig, data);
-                _appliedRevision = (long)mod;
-                return new ApplyResult(Ok: true, AppliedRevision: (long)mod,
-                    NotReady: false, EtcdError: false);
-            }
+            var doormanChanged = _appliedDoormanConfig != DoormanMaterialOf(doormanConfig, data);
 
-            _appliedSpiloMaterial = SpiloMaterial(data);
-            _appliedDoormanConfig = DoormanMaterialOf(doormanConfig, data);
-            _appliedRevision = (long)mod;
-            await PublishAsync(PgNodeStatus.Ready, mod,
-                Components(pg: "ready", doorman: "ready"), null, ct);
+            // Рестарты — фоновая задача ПРОЦЕССА (RequestAborted запроса умирает
+            // по таймауту клиента и рвал рестарт посреди); машина остаётся ready,
+            // факт применения — публикация статусного ключа (arch/14 §5 I).
+            _applyTask = Task.Run(
+                () => ApplyRestartsAsync(data, mod, doormanConfig, spiloChanged, doormanChanged),
+                _loopCts.Token);
             return new ApplyResult(Ok: true, AppliedRevision: (long)mod,
                 NotReady: false, EtcdError: false);
         }
@@ -345,6 +343,42 @@ public sealed class PgNodeMachine : IDisposable
         {
             _commandGate.Release();
         }
+    }
+
+    // Фоновая часть применения: рестарты компонентов (≤ выключения-бюджеты
+    // supervisord'а) → публикация ready с applied_revision=mod. Рестарт упал —
+    // факт в error, машина остаётся ready, ревизия фиксируется (контейнер
+    // жив, компонент поднимет supervisord/следующий apply).
+    private async Task ApplyRestartsAsync(
+        NodeBootstrapData data, ulong mod, string doormanConfig,
+        bool spiloChanged, bool doormanChanged)
+    {
+        var ct = _loopCts.Token;
+        string? error = null;
+        try
+        {
+            // Оба → сначала пулер, затем spilo (spec §3.6-4).
+            if (doormanChanged)
+                await _supervisor.RestartAsync("pg_doorman", ct);
+            if (spiloChanged)
+                await _supervisor.RestartAsync("spilo", ct);
+        }
+        catch (OperationCanceledException)
+        {
+            return; // процесс гасится — публикация недостижима (lease умрёт сам)
+        }
+        catch (Exception e)
+        {
+            error = FirstLine(e.Message);
+        }
+
+        _appliedSpiloMaterial = SpiloMaterial(data);
+        _appliedDoormanConfig = DoormanMaterialOf(doormanConfig, data);
+        _appliedRevision = (long)mod;
+        await PublishAsync(PgNodeStatus.Ready, mod,
+            Components(pg: spiloChanged ? "starting" : "ready",
+                doorman: doormanChanged ? "starting" : "ready"),
+            error, ct);
     }
 
     // ── Фазы initializing (spec §3.6-3) ──

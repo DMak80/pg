@@ -399,6 +399,7 @@ public class PgNodeMachineTests
 
         // Act
         var apply = await rig.Machine.ApplyAsync(CancellationToken.None);
+        await rig.Machine.ApplyTask!; // рестарты — фоновая задача: дождаться её
 
         // Assert: Ok с новой ревизией; рестарт только spilo.
         apply.Ok.Should().BeTrue();
@@ -425,6 +426,7 @@ public class PgNodeMachineTests
 
         // Act
         var apply = await rig.Machine.ApplyAsync(CancellationToken.None);
+        await rig.Machine.ApplyTask!; // рестарты — фоновая задача: дождаться её
 
         // Assert: Ok; рестарт только pg_doorman.
         apply.Ok.Should().BeTrue();
@@ -447,6 +449,7 @@ public class PgNodeMachineTests
 
         // Act
         var apply = await rig.Machine.ApplyAsync(CancellationToken.None);
+        await rig.Machine.ApplyTask!; // рестарты — фоновая задача: дождаться её
 
         // Assert: Ok; оба рестарта, doorman ПЕРВЫЙ (spec §3.6-4).
         apply.Ok.Should().BeTrue();

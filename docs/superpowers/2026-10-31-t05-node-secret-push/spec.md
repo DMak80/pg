@@ -123,11 +123,15 @@ spilo/pg_doorman), а не только работа с WAL.
 
 ```json
 {
-  "spilo_configuration": "<полный YAML SPILO_CONFIGURATION (rest_password внутри)>",
-  "cert_pem": "<серверный серт ноды>",
-  "key_pem": "<ключ серта ноды>"
+  "spilo_configuration": "<string, НЕпустой YAML SPILO_CONFIGURATION (rest_password внутри)>",
+  "cert_pem": "<string, НЕпустой PEM серта ноды>",
+  "key_pem": "<string, НЕпустой PEM ключа>"
 }
 ```
+
+Три поля — других нет; валидность для старта (агент): пара cert/key
+парсится X509-провайдером, YAML непуст; невалидный/битый ключ агент
+перечитывает (воркер перезапишет). Канон — arch/14 §3.2.
 
 - Серт ноды — ОДИН на три серверные роли: REST `:8008` (Spilo),
   pg_doorman `:6432`, mTLS-листенер агента `:8081`. Выпускает воркер из
@@ -178,6 +182,11 @@ spilo/pg_doorman), а не только работа с WAL.
     bootstrap-ключ, при изменении ревизии — перерендер и точечное
     применение (п. 3.6); ответ `200 ok`. На не-`ready` ноде — `409`
     (воркер не шлёт: он различает состояния по статусу).
+- HTTP-коды канала — ЗАКРЫТЫЙ набор (канон arch/25 №23): доставка
+  `200` (принято/`ok`-пинок) | `400` (аргументы неполны/невалидны —
+  статус не меняется) | `503` (etcd недоступен агенту); применение
+  `200` (принято, применение/публикация статуса — фон) | `409` (нода
+  не `ready`) | `503`.
 - Тело запроса с per-install паролями существует только в TLS-канале и
   памяти агента: в логи не пишется (как и значения env — существующий
   паттерн «значения в тексты ошибок не включаются»).
@@ -209,9 +218,31 @@ P15 и формат v3.11.0 — без изменений; InstallSecretsGuard �
 ```json
 {"state":"not_initialized|initializing|ready|start_failed",
  "applied_revision": <mod_revision>|null,
- "components":{"pg":"starting|ready|failed|stopped","doorman":"..."},
- "updated_unix":N, "error"?:"<однострочная диагностика>"}
+ "components":{"pg":"starting|ready|failed|stopped|prepared",
+               "doorman":"starting|ready|failed|stopped|prepared"},
+ "updated_unix":N, "error"?:"<однострочная диагностика без секретов>"}
 ```
+
+Закрытые множества и правила присутствия полей (канон — arch/14 §3.3,
+фактический код `PgNodeStatus`/`PgNodeMachine`):
+
+- `state` — ТОЛЬКО `not_initialized|initializing|ready|start_failed`;
+- `applied_revision` — null в `not_initialized` и `initializing`;
+  = `mod_revision` применённого bootstrap-ключа в `ready`, а также в
+  `start_failed`, когда сбой произошёл после начала применения (рендер,
+  старт компонентов, рестарты применения);
+- `components` — фиксированный набор ключей `pg` и `doorman` (других
+  компонент нет); значение каждой — ТОЛЬКО из
+  `starting|ready|failed|stopped|prepared` (`starting` — фаза
+  старта/ожидания SELECT 1; `ready` — SELECT 1 успешен (не используется
+  в tool-пути); `failed` — исчерпаны 3 попытки старта; `stopped` — не
+  запускался (рендер-ошибка/применение); `prepared` — параметры готовы,
+  запуск за tool-командой (`is_tool_start=true`, обе компоненты)); в
+  `not_initialized` и сразу после txn-перехода в `initializing` —
+  пустой объект `{}`;
+- `error` — null/отсутствует всегда, кроме `start_failed` (причина
+  сбоя) и `ready` после упавшего рестарта применения (факт в `error`,
+  машина остаётся `ready`).
 
 Машина: `not_initialized → initializing → ready | start_failed`
 (решение пользователя, arch/14 §4).
