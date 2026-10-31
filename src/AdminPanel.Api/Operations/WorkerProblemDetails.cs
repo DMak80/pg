@@ -56,6 +56,36 @@ internal static class WorkerProxy
         return Result<T>.Failed(WorkerProblemDetails.From(resp));
     }
 
+    // Тело воркера как есть (u15 effective-config / restore-прокси): ответ
+    // воркера — уже JSON-объект; десериализуем в JsonElement без DTO
+    // (панель отдаёт его клиенту 1:1). 204/пустое тело — не ответ воркера
+    // для этих прокси → отказ (ProblemDetails не строится по пустоте).
+    public static async ValueTask<Result<System.Text.Json.JsonElement>> SendElementAsync(
+        IWorkerApiGateway api, string worker, HttpMethod method, string path,
+        object? body, string? requestedBy, CancellationToken ct)
+    {
+        WorkerApiResult resp;
+        try
+        {
+            resp = await api.SendAsync(worker, method, path, body, requestedBy, ct);
+        }
+        catch (WorkerApiUnavailableException e)
+        {
+            return Result<System.Text.Json.JsonElement>.Failed(e);
+        }
+
+        if (resp.StatusCode is >= 200 and < 300)
+        {
+            if (string.IsNullOrEmpty(resp.Body))
+                return Result<System.Text.Json.JsonElement>.Failed(
+                    new WorkerApiUnavailableException("worker returned an empty body"));
+            return Result<System.Text.Json.JsonElement>.Success(
+                System.Text.Json.JsonSerializer.Deserialize<System.Text.Json.JsonElement>(resp.Body, Json));
+        }
+
+        return Result<System.Text.Json.JsonElement>.Failed(WorkerProblemDetails.From(resp));
+    }
+
     // Результат прокси с исходным кодом воркера (для зеркалирования 202|204/201|200).
     // Объявляется на уровне namespace AdminPanel.Api.Operations (НЕ внутри WorkerProxy —
     // команды Operations.S3 ссылаются на него без квалификации).

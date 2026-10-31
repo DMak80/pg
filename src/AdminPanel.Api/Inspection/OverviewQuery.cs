@@ -26,7 +26,11 @@ public sealed record OverviewDto(
     OverviewBackupsDto? Backups = null,     // u06: бэкапы с сервера
     OverviewReliabilityDto? Reliability = null, // u06: надёжность с сервера
     IReadOnlyList<OverviewOperationDto>? Operations = null, // u07: активные операции
-    OverviewFreshnessDto? Freshness = null); // u08: свежесть per-домен
+    OverviewFreshnessDto? Freshness = null, // u08: свежесть per-домен
+    BackupsDisabledDto? BackupsDisabled = null); // u10: null = бэкапы работают
+
+// Глобальный стоп бэкапов (u10): значение /pgworker/backups-disabled.
+public sealed record BackupsDisabledDto(long UpdatedUnix, string? UpdatedBy);
 
 // HA-сводка (u06): без лидера считаются только matched-скопы (как TS HaCard).
 public sealed record OverviewHaDto(int ScopesTotal, int WithoutLeader, int Unmatched);
@@ -128,7 +132,10 @@ public static class OverviewMapper
             MapBackups(snapshot),
             MapReliability(snapshot, nowUtc),
             MapOperations(snapshot, kafka, valkey, s3),
-            MapFreshness(snapshot, kafka, valkey, s3));
+            MapFreshness(snapshot, kafka, valkey, s3),
+            snapshot.BackupsDisabled is { } disabled
+                ? new BackupsDisabledDto(disabled.UpdatedUnix, disabled.UpdatedBy)
+                : null);
     }
 
     // HA-сводка (u06): тот же расчёт, что TS HaCard — scopesTotal, без лидера

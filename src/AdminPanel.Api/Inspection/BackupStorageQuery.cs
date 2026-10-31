@@ -86,7 +86,8 @@ public sealed record BackupStorageDto(
     IReadOnlyList<BackupClusterStorageDto> Clusters,
     IReadOnlyList<string> ForeignPrefixes, // корневые префиксы вне <C>/<X> — без вердикта
     IReadOnlyList<BackupOrphanDto> Orphans, // реестр воркера + сверка панели, слитые
-    long InventoryUpdatedUnix, string? InventoryError);
+    long InventoryUpdatedUnix, string? InventoryError,
+    BackupsDisabledDto? BackupsDisabled = null); // u10-баннер: null = бэкапы работают
 
 public sealed record BackupClusterStorageDto(
     string Cluster, long SizeBytes, IReadOnlyList<BackupShardSummaryDto> Shards,
@@ -201,7 +202,8 @@ private static string WalStateName(WalStreamInfoState state) => state switch
                 Endpoints: [], Bucket: null, Health: null, Buckets: [], Etcd: null,
                 EtcdSnapshots: MapEtcdSnapshots(snapshot.EtcdSnapshots),
                 LiveUsedBytes: null, Clusters: [], ForeignPrefixes: [], Orphans: [],
-                InventoryUpdatedUnix: 0, InventoryError: null);
+                InventoryUpdatedUnix: 0, InventoryError: null,
+                BackupsDisabled: DisabledOf(snapshot));
         }
 
         var reconcile = S3Reconciler.Reconcile(
@@ -221,8 +223,15 @@ private static string WalStateName(WalStreamInfoState state) => state switch
             ForeignPrefixes: s3.ForeignPrefixes,
             Orphans: MergeOrphans(reconcile.OrphanPrefixes, snapshot.BackupOrphans, orphanTtlSec, nowUnix),
             InventoryUpdatedUnix: s3.UpdatedAtUnix,
-            InventoryError: s3.LastError);
+            InventoryError: s3.LastError,
+            BackupsDisabled: DisabledOf(snapshot));
     }
+
+    // u10-баннер грани: значение /pgworker/backups-disabled (null = работают).
+    private static BackupsDisabledDto? DisabledOf(EtcdSnapshot snapshot)
+        => snapshot.BackupsDisabled is { } disabled
+            ? new BackupsDisabledDto(disabled.UpdatedUnix, disabled.UpdatedBy)
+            : null;
 
     public static S3HealthDto? MapHealth(S3Health? health)
         => health is null ? null : new S3HealthDto(

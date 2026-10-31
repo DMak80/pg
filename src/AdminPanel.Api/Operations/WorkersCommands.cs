@@ -25,6 +25,21 @@ public sealed record DeleteWorkerApiCertCommand(string Worker) : ICommand<Worker
 
 public sealed record RestartWorkerCommand(string Worker, string RequestedBy) : ICommand<WorkerRestartDto>;
 
+// Эффективный конфиг воркера (u15, adminpanel/02 §2.3.5): on-demand прокси
+// GET /api/config живого инстанса — БЕЗ снапшота и etcd (D12); тело —
+// JSON воркера как есть (camelCase, read-only).
+public sealed record GetWorkerEffectiveConfigCommand(string Worker) : ICommand<System.Text.Json.JsonElement>;
+
+[InjectAsScoped]
+public sealed class GetWorkerEffectiveConfigCommandHandler(IWorkerApiGateway api)
+    : ICommandHandler<GetWorkerEffectiveConfigCommand, System.Text.Json.JsonElement>
+{
+    public ValueTask<Result<System.Text.Json.JsonElement>> Handle(
+        GetWorkerEffectiveConfigCommand command, CancellationToken ct)
+        => WorkerProxy.SendElementAsync(
+            api, command.Worker, HttpMethod.Get, "/api/config", body: null, requestedBy: null, ct);
+}
+
 public sealed record WorkerApiCertDto(
     string Worker, string Thumbprint, long UpdatedUnix, string UpdatedBy,
     bool RestartRequired, string? Warning = null);

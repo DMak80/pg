@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using System.Text.Json;
 using System.Text.Json.Serialization;
 using AdminPanel.Core;
 using AdminPanel.Core.Kafka;
@@ -59,6 +60,17 @@ public static class WorkersModule
             var result = await handler.HandleCommand<RestartWorkerCommand, WorkerRestartDto>(
                 new(worker, user.Identity?.Name ?? "adminpanel"), ct);
             return result.IsSuccess ? Results.Accepted((string?)null, result.Value) : Error(result);
+        });
+
+        // GET /api/workers/{worker}/effective-config — read-only on-demand прокси
+        // GET /api/config воркера (u15, adminpanel/02 §2.3.5): тело отдаётся как
+        // есть (JSON воркера camelCase); живых инстансов нет → 503.
+        endpoints.MapGet("/api/workers/{worker}/effective-config", async (
+            string worker, IHandler handler, CancellationToken ct) =>
+        {
+            var result = await handler.HandleCommand<GetWorkerEffectiveConfigCommand, JsonElement>(
+                new(worker), ct);
+            return result.IsSuccess ? Results.Ok(result.Value) : Error(result);
         });
 
         return endpoints;
