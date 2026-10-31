@@ -66,3 +66,29 @@
   Мерж-гейт: docker-E2E PgWorker на свежем Release + чеки стенда
   65-metrics.sh и 43-etcd-ha.sh.
 
+- **`t05-node-secret-push`** — нода без секретов в env: доставка пушем
+  от воркера через загрузочного агента (дизайн пользователя, arch-first
+  внесён: arch/14 §4 «Планируемое», arch/13 §4). Контейнер ноды
+  создаётся БЕЗ секретов в env (только неконфиденциальное:
+  DOORMAN_CONFIG-шаблон, адреса etcd); supervisord поднимает ТОЛЬКО
+  walreceiver, тот поднимает mTLS-сервер (сёрт ноды — материалы
+  per-install REST-CA, кандидат); PgWorker — инициатор канала: он создал
+  контейнер, знает хост/порты, контролит поднятие (adopt/supervise) и
+  ПУШИТ бандл паролей (состав — SuPassword/standby/bucket_admin/mover +
+  per-cluster секреты кластера — на spec); нода про pgWorker ничего не
+  знает и ничего не инициирует. Агент пишет секреты файлами 0600,
+  рендерит конфиги (Patroni-bootstrap, DOORMAN_CONFIG) и стартует
+  spilo/pg_doorman. Доступность: restart контейнера — бандл из
+  writable-слоя (воркер не нужен); recreate делает только воркер — он
+  же тут же пушит; канал — порт внутри docker-сети кластера, на хост
+  не публикуется. Развилки на spec: роль агента (walreceiver vs
+  отдельный бинарник), bootstrap PG файлами без PGPASSWORD_SUPERUSER
+  (отход от upstream Spilo), схема сертов канала, ротация rest_password
+  пушем вместо rolling-recreate, защита кэша (0600/шифрование).
+  Затронуто: docker/node (entrypoint/supervisord), PgWorker.WalReceiver
+  (агент), ClusterDriver (env без секретов + push-клиент), arch/13 §2
+  (firewall-строка канала). Не зависит от t02-external-secret-manager
+  (то — хранение per-cluster секретов, это — доставка в ноду).
+  Мерж-гейт: docker-E2E PgWorker на свежем Release + негативная
+  проверка «в docker inspect ноды нет секретов».
+
