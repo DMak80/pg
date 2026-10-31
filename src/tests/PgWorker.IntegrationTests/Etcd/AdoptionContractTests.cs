@@ -256,7 +256,7 @@ internal sealed class NoDelivery : PgWorker.Provisioning.Processes.INodeBootstra
         ShardTopology topology, string nodeName, NodeAddress addr, InstallSecrets secrets,
         PgWorker.Core.Tuning.PgTuneResult? tuning,
         System.Collections.Generic.IReadOnlySet<string>? excludeParams, bool syncStrict,
-        string restPassword, CancellationToken ct)
+        string restPassword, bool isToolStart, CancellationToken ct)
         => Task.FromResult(new PgWorker.Provisioning.Processes.DeliveryOutcome(
             Delivered: false, Wait: true, Transient: false, null));
 

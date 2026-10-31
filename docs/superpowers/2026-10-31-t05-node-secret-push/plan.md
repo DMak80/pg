@@ -487,17 +487,33 @@ src/tests/PgWorker.IntegrationTests -c Release --no-build --filter
   `RestWindowOpen == true` (окно живёт), креды в etcd NEW (не
   «PasswordUntouched-навсегда» — NEW закоммичены, ALTER ждёт мастера);
   следующий тик при появившемся мастере — до done;
-  (е) `Tick_TicketExternalPasswordChange_CompareLostRetriable`
-  (:370–398) — переписать: инъекция внешней перезаписи креда — ДО ПЕРВОГО
-  тика (при txn-в-начале перезапись ПОСЛЕ коммита compare'ом уже не
-  ловится): в rig.Etcd перезаписать `/clusters/shop/app_password` после
-  R1-сида, до первого `TickAsync`; Assert: первый тик — txn compare
-  проигран, фаза `commit-conflict`, окно НЕ открыто (`RestWindowOpen != true`
-  / записи нет), креды не изменены нашим txn, ретрай следующим тиком со
-  свежими OLD достигает done (RunUntilDoneAsync);
-  (ж) `Tick_ExternalDsnChange_CompareLostRetriable` (:400–435) — то же для
-  dsn-ключа: инъекция внешней перезаписи `/clusters/shop/shards/<X>/dsn`
-  ДО первого тика; Assert: commit-conflict, окно не открыто; ретрай до done;
+  (е) compare-lost — ДВА обязательных теста (dsn-вариант уже реализован
+  кодером; кред-вариант ОТСУТСТВУЕТ — добавить):
+  (е1) `Rotate_ExternalCredChange_CompareLostRetriable` (НОВЫЙ, кред) —
+  механика инъекции ОТЛИЧАЕТСЯ от dsn-варианта: кред-compare строится по
+  СВЕЖЕМУ ensure-чтению тика — до-тиковая перезапись креда была бы прочитана
+  ensure'ом как OLD и compare ПРОШЁЛ бы. Поэтому «внешняя перезапись
+  etcdctl» инъецируется хуком `FakeEtcd.OnTxnBeforeCompare`
+  (`Action<TxnRequest>?`, Fakes.cs:59 — вызывается ПОСЛЕ ensure-чтения и ДО
+  применения txn ротатора): в тесте после `SeedTicket` и снапшота поставить
+  `rig.Etcd.OnTxnBeforeCompare = _ => rig.Etcd.Store["/clusters/shop/
+  app_password"] = new Fakes.FakeEtcd.Entry("ExternallyRewritten0000000000X",
+  modRevision: 9, 9);` (значение ≠ OLD-сида "OldPassword000000000000000000A").
+  Assert (первый тик): `outcome.IsSuccess` false; `work.Phase ==
+  "commit-conflict"`; `work.RestWindowOpen` NotTrue (окно не открыто);
+  креды etcd НЕ изменены нашим txn (`app_password` == инъецированному,
+  `bucket_admin_password`/`mover_password`/`rest_password` == OLD-сиду);
+  заявка жива (`/pgworker/rotations/shop` в Store). Снять хук → ретрай
+  `RunUntilDoneAsync` до `done` (свежий ensure читает инъецированное как
+  OLD, txn проходит: заявка снята, флаг закрыт);
+  (е2) `Rotate_ExternalDsnChange_CompareLostRetriable` (dsn — реализован
+  кодером, :492): сверить с эталоном — снапшот ДО инъекции
+  (`var staleSnapshot = await Snapshot(rig.Etcd);`), затем перезапись
+  `/clusters/shop/shards/shard1/dsn` в Store ДО первого тика (dsn-compare
+  строится по ПЕРЕДАННОМУ снапшоту — до-тиковая инъекция корректна);
+  ассерты первого тика: outcome false, заявка жива, окно не открыто
+  (`RestWindowOpen` NotTrue), креды OLD; далее `RunUntilDoneAsync` до
+  done. Эталоном считать фактическую реализацию кодера;
   (з) серия `Rotate_Rest*` + сопутствующие (:492–666): `Rotate_RestStart_
   FixesPendingAndDeliversReplicaFirst` (:492) → `Rotate_FirstTick_Commits_
   Upfront_AndDeliversReplicaFirst` (первый тик: txn-коммит + флаг true +
@@ -521,7 +537,8 @@ src/tests/PgWorker.IntegrationTests -c Release --no-build --filter
   с R2)». Тесты `Tick_NoTicket_NoOp` (:201), `Tick_MalformedTicket_
   RemovedAsGarbage` (:438), `Tick_ClaimNotMine_MutationsForbidden` (:456) —
   без правок (no-op-тест дополнить: при `RestWindowOpen:true` без заявки —
-  продолжение, не no-op — если кейс ещё не покрыт (ж)).
+  продолжение, не no-op — если кейс ещё не покрыт — см.
+  `Rotate_Rolling_ContinuesByWindowFlag_Takeover` в (з)).
 - П11.6. **Интеграционные тесты ротации и юниты окна.**
   а) `src/tests/PgWorker.IntegrationTests/Docker/RestRotationTests.cs` —
   ETCD-FIRST-сценарий (каркас сохраняется: EtcdFixture, SeedAsync,

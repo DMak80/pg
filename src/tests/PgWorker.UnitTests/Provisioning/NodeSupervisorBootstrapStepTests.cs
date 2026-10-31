@@ -30,7 +30,7 @@ public class NodeSupervisorBootstrapStepTests
         public Task<DeliveryOutcome> EnsureAsync(
             ShardTopology topology, string nodeName, NodeAddress addr, InstallSecrets secrets,
             PgTuneResult? tuning, IReadOnlySet<string>? excludeParams, bool syncStrict,
-            string restPassword, CancellationToken ct)
+            string restPassword, bool isToolStart, CancellationToken ct)
         {
             Calls.Add((topology.Shard, nodeName));
             return Task.FromResult(new DeliveryOutcome(

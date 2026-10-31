@@ -37,6 +37,7 @@ public sealed class RestoreProcess(
     InstallSecrets secrets,
     EtcdEndpoints etcdEndpoints,
     IClusterSecretEnsurer appSecret,
+    PgWorker.Provisioning.Processes.INodeBootstrapDelivery bootstrap,
     ShardProbe probe,
     ISqlExecutor db,
     ThresholdsOptions thresholds,
@@ -421,6 +422,39 @@ public sealed class RestoreProcess(
             return await TransientAsync(cluster, $"docker-unavailable/{shard.Name}/{op.Id}",
                 ensured.Error!.Message, ct);
 
+        // t05 tool-доставка (arch/14 §4, spec §3.6-3а/§8-22 is_tool_start):
+        // нода restore НЕ запускает компоненты — агент готовит параметры
+        // (tmpfs-рендер по bootstrap-ключу, is_tool_start=true) и переводит
+        // машину в ready (components=prepared). БЕЗ этого старт spilo после
+        // restore упал бы fail-fast по пустой tmpfs (env-секретов больше нет).
+        // Transient-ретрай тиком: delivery идемпотентен (put при изменении,
+        // handshake повторно — ок-пинок); машина агента bounded (рендер).
+        var toolCreds = await appSecret.EnsureAsync(cluster, snap.Config, ct);
+        if (!toolCreds.IsSuccess)
+            return await TransientAsync(cluster, $"bootstrap-tool/{shard.Name}/{first}",
+                toolCreds.Error!.Message, ct);
+        var toolTopology = Topology(cluster, shard.Name, addresses);
+        var toolDelivery = await bootstrap.EnsureAsync(
+            toolTopology, first, addr, secrets, null, null,
+            snap.Config.SyncStrict, toolCreds.Value.RestPassword, isToolStart: true, ct);
+        if (!toolDelivery.Delivered)
+            return await TransientAsync(cluster, $"bootstrap-tool/{shard.Name}/{first}",
+                toolDelivery.Detail ?? "bootstrap delivery is not complete (waiting)", ct);
+        var toolStatusRead = await ReadStatusAsync(cluster, shard.Name, first, ct);
+        if (!toolStatusRead.IsSuccess)
+            return await TransientAsync(cluster, $"bootstrap-tool/{shard.Name}/{first}",
+                toolStatusRead.Error!.Message, ct);
+        if (toolStatusRead.Value?.State == "start_failed")
+        {
+            await FailPermanentAsync(cluster, shard.Name, op,
+                "agent reported start_failed (tool parameters): " +
+                (toolStatusRead.Value.Error ?? "no diagnostics"), ct);
+            return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
+        }
+        if (toolStatusRead.Value?.State != "ready")
+            return await TransientAsync(cluster, $"bootstrap-tool/{shard.Name}/{first}",
+                $"agent machine is {toolStatusRead.Value?.State ?? "absent"} (waiting for prepared)", ct);
+
         // Команда запуска restore-операции: backup_id / target_time (null =
         // latest) / recovery_timeout_sec / S3-контекст source_pool ?? своего
         // пула (prefix — DR-источник). Секреты — только в POST-теле (Р4).
@@ -475,6 +509,34 @@ public sealed class RestoreProcess(
         if (!putPhase.IsSuccess)
             return Result<ProcessOutcome>.Failed(putPhase.Error!);
         return Result<ProcessOutcome>.Success(ProcessOutcome.InProgress);
+    }
+
+    // Статусная машина агента ноды (t05 tool-доставка): null-факт — не сбой
+    // (агент стартует) — вызывающий решает (transient-ретрай тиком).
+    private async Task<Result<PgNodeStatusFact?>> ReadStatusAsync(
+        string cluster, string shard, string node, CancellationToken ct)
+    {
+        Result<Kv?> last = default;
+        foreach (var endpoint in endpoints)
+        {
+            var read = await etcd.GetAsync(endpoint,
+                PgNodeStatusFact.StatusKey(cluster, shard, node), ct);
+            if (!read.IsSuccess)
+            {
+                last = read;
+                continue;
+            }
+
+            if (read.Value is null)
+                return Result<PgNodeStatusFact?>.Success(null);
+            return Result<PgNodeStatusFact?>.Success(
+                PgNodeStatusFact.Parse(read.Value.Value) is { } fact
+                    ? Result<PgNodeStatusFact?>.Success(fact).Value
+                    : null);
+        }
+
+        return Result<PgNodeStatusFact?>.Failed(
+            last.Error ?? new ApplicationException("etcd endpoints are not set"));
     }
 
     // EnsureNode одной ноды шарда (тик запуска restore/rejoin): идемпотентно,

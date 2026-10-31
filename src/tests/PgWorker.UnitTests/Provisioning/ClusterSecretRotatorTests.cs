@@ -158,8 +158,8 @@ public class ClusterSecretRotatorTests
     private static async Task<Rig> NewRig(Fakes.FakeEtcd? etcd = null, Fakes.FakeSql? sql = null)
     {
         var store = etcd ?? new Fakes.FakeEtcd();
-        if (etcd is null)
-            SeedCluster(store);
+        if (store.Store.Count == 0)
+            SeedCluster(store); // пред-сиднутые etcd (кастомные portalloc/мастера) не перетираем
         var usedSql = sql ?? new Fakes.FakeSql();
         var claims = new ClaimStore("/pgworker", [Ep], store, TimeProvider.System);
         await claims.TryClaimClusterAsync("shop", CancellationToken.None);
@@ -519,6 +519,66 @@ public class ClusterSecretRotatorTests
         done.Should().BeTrue("the retry commits with a fresh snapshot");
         failed.Should().BeFalse();
         rig.Etcd.Store.Should().NotContainKey("/pgworker/rotations/shop");
+    }
+
+    // (е1, ETCD-FIRST): кред-compare строится по СВЕЖЕМУ ensure-чтению тика —
+    // до-тиковая перезапись креда была бы прочитана ensure'ом как OLD и
+    // compare ПРОШЁЛ бы. Поэтому «внешняя перезапись etcdctl» инъецируется
+    // хуком OnTxnBeforeCompare (после ensure-чтения, ДО применения txn):
+    // compare проигран → commit-conflict, окно НЕ открыто, креды не изменены
+    // нашим txn; снятие хука → ретрай со свежими OLD (инъекция стала OLD)
+    // достигает done.
+    [Fact]
+    public async Task Rotate_ExternalCredChange_CompareLostRetriable()
+    {
+        // Arrange — заявка; снапшот; хук инъекции при R2-txn (R1 ensure при
+        // полном сиде делает ранний возврат без txn — creds остаются OLD;
+        // хук срабатывает ПОСЛЕ ensure-чтения и ДО применения txn — инъекция
+        // «внешнего etcdctl» в этом зазоре).
+        var rig = await NewRig();
+        SeedTicket(rig.Etcd);
+        var staleSnapshot = await Snapshot(rig.Etcd);
+        // Дистинкт: инъекция ТОЛЬКО на txn ротатора (R2 несёт del заявки);
+        // ensure-txn (put-if-absent R1) хук игнорирует — иначе re-read ensure
+        // подхватил бы инъекцию как OLD и compare прошёл бы.
+        rig.Etcd.OnTxnBeforeCompare = req =>
+        {
+            if (req.Success.OfType<TxnOp.Delete>().Any(d => d.Key == "/pgworker/rotations/shop"))
+                rig.Etcd.Store["/clusters/shop/app_password"] =
+                    new Fakes.FakeEtcd.Entry("ExternallyRewritten00000000X", 9, 9);
+        };
+
+        // Act: тик — R2-txn compare app проигран (внешняя перезапись).
+        var first = await rig.Rotator.TickAsync(staleSnapshot, CancellationToken.None);
+
+        // Assert: commit-conflict, окно НЕ открыто, креды НЕ изменены нашим
+        // txn (app — инъекция, остальные — OLD-сид), заявка жива.
+        first.IsSuccess.Should().BeFalse(first.Error?.ToString());
+        foreach (var kv in rig.Etcd.Store.Where(k => k.Key.Contains("/clusters/shop/") && !k.Key.Contains("bootstrap") && !k.Key.Contains("app_params")))
+            File.AppendAllText("/tmp/e1-dump.txt", $"[e1] {kv.Key} = {kv.Value.Value[..Math.Min(30, kv.Value.Value.Length)]} mod={kv.Value.ModRevision}\n");
+        var work = await rig.Journal.ReadAsync("shop", CancellationToken.None);
+        work.Value!.Phase.Should().Be("commit-conflict");
+        work.Value.RestWindowOpen.Should().NotBeTrue("the conflict happens before the window opens");
+        rig.Etcd.Store["/clusters/shop/app_password"].Value
+            .Should().Be("ExternallyRewritten00000000X");
+        rig.Etcd.Store["/clusters/shop/bucket_admin_password"].Value
+            .Should().Be("OldAdminPass000000000000000A");
+        rig.Etcd.Store["/clusters/shop/mover_password"].Value
+            .Should().Be("OldMoverPass0000000000000000000A");
+        // rest_password отсутствовал в сиде — P1.5 ensure сгенерировал его
+        // (put-if-absent, mod 38) — наш txn его не менял (32-симв GEN).
+        rig.Etcd.Store["/clusters/shop/rest_password"].Value
+            .Should().MatchRegex("^[A-Za-z0-9]{32}$");
+        rig.Etcd.Store.Should().ContainKey("/pgworker/rotations/shop");
+
+        // Ретрай: хук снят — txn проходит (заявка снята, флаг закрыт).
+        rig.Etcd.OnTxnBeforeCompare = null;
+        var (done, failed) = await RunUntilDoneAsync(rig);
+        done.Should().BeTrue("the retry commits with fresh OLD values");
+        failed.Should().BeFalse();
+        rig.Etcd.Store.Should().NotContainKey("/pgworker/rotations/shop");
+        (await rig.Journal.ReadAsync("shop", CancellationToken.None)).Value!.RestWindowOpen
+            .Should().BeFalse("done closes the window");
     }
 
     [Fact]

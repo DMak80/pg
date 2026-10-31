@@ -78,7 +78,7 @@ internal static class Fakes
             return Task.FromResult(Result<IReadOnlyList<Kv>>.Success(kvs));
         }
 
-        public Task<Result<Kv?>> GetAsync(string endpoint, string key, CancellationToken ct)
+        public virtual Task<Result<Kv?>> GetAsync(string endpoint, string key, CancellationToken ct)
         {
             if (GetFailure?.Invoke(key) is { } failure)
                 return Task.FromResult(failure);
@@ -616,7 +616,7 @@ internal sealed class NoDelivery : PgWorker.Provisioning.Processes.INodeBootstra
     public Task<PgWorker.Provisioning.Processes.DeliveryOutcome> EnsureAsync(
         ShardTopology topology, string nodeName, NodeAddress addr, InstallSecrets secrets,
         PgTuneResult? tuning, IReadOnlySet<string>? excludeParams, bool syncStrict,
-        string restPassword, CancellationToken ct)
+        string restPassword, bool isToolStart, CancellationToken ct)
         => Task.FromResult(new PgWorker.Provisioning.Processes.DeliveryOutcome(
             Delivered: false, Wait: true, Transient: false, null));
 

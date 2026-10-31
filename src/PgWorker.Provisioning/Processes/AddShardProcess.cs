@@ -317,7 +317,7 @@ public sealed partial class AddShardProcess(
             // ретрай тиком).
             var delivery = await bootstrap.EnsureAsync(
                 topology, node.Name, topology.Nodes[node.Name], clusterSecrets, tuning,
-                pgtune.ExcludeParams, syncStrict, restPassword, ct);
+                pgtune.ExcludeParams, syncStrict, restPassword, isToolStart: false, ct);
             if (delivery.Transient)
                 await journal.WritePhaseAsync(cluster, Op,
                     $"bootstrap-delivery/{shard.Name}/{node.Name}",

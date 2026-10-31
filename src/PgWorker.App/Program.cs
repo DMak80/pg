@@ -713,6 +713,7 @@ builder.Services.AddSingleton(sp => new PgWorker.Backups.Process.RestoreProcess(
     sp.GetRequiredService<InstallSecrets>(),
     sp.GetRequiredService<EtcdEndpoints>(),
     sp.GetRequiredService<IClusterSecretEnsurer>(),
+    sp.GetRequiredService<PgWorker.Provisioning.Processes.INodeBootstrapDelivery>(),
     sp.GetRequiredService<ShardProbe>(),
     sp.GetRequiredService<ISqlExecutor>(),
     new ProcessThresholds(sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Thresholds.NodeDeadSec,

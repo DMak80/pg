@@ -154,8 +154,6 @@ public class BackupProcessTests
         public Task<Result> StopNodeAsync(string cluster, string shard, string nodeName, CancellationToken ct) => throw NotSupported();
         public Task<Result<IReadOnlyDictionary<string, DiscoveredNode>>> InspectNodesAsync(
             string cluster, IReadOnlyCollection<string> nodeNames, CancellationToken ct) => throw NotSupported();
-        public Task<Result<IReadOnlyDictionary<string, string>>> InspectNodeEnvAsync(
-            string cluster, string shard, string node, CancellationToken ct) => throw NotSupported();
         public bool SupportsRunningInspection => true;
         public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, CancellationToken ct) => throw NotSupported();
         public Task<Result> RemoveBackupAgentsAsync(string cluster, string? shard, CancellationToken ct)

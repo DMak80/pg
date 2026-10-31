@@ -97,7 +97,10 @@ public sealed partial class ClusterSecretRotator(
             var addressesGuard = await ReadPortAllocAsync(cluster, ct);
             if (!addressesGuard.IsSuccess)
                 return await FailAsync(cluster, addressesGuard.Error!, "portalloc", ct);
-            if (!await AllNodesReadyAsync(cluster, snap, addressesGuard.Value, ct))
+            var readiness = await AllNodesReadyAsync(cluster, snap, addressesGuard.Value, ct);
+            if (!readiness.IsSuccess)
+                return await FailAsync(cluster, readiness.Error!, "nodes-status-read", ct);
+            if (!readiness.Value)
                 return await Finish(cluster, "waiting-nodes-ready", ProcessOutcome.InProgress, ct);
 
             var started = await journal.WritePhaseAsync(cluster, Op, "started", claims.InstanceId, null, ct);
@@ -216,7 +219,7 @@ public sealed partial class ClusterSecretRotator(
                 // тиком (проба IsOnRevisionAsync: применила — идём дальше).
                 await bootstrap.EnsureAsync(
                     topology, node.Name, addr, secrets, tuning, pgtune.ExcludeParams,
-                    snap.Config.SyncStrict, newRest, ct);
+                    snap.Config.SyncStrict, newRest, isToolStart: false, ct);
                 return await Finish(cluster,
                     $"rotate-rest-rolling/{shard.Name}/{node.Name}", ProcessOutcome.Done, ct);
             }
@@ -275,15 +278,18 @@ public sealed partial class ClusterSecretRotator(
     // Гвард «тихого окна» (arch/14 §5 I): все канонические ноды кластера
     // должны иметь статусную машину ready ДО мутаций ротации (R2 ALTER app
     // меняет pg_authid — Initializing-нода с etcd-кредами теряет вход через
-    // doorman навсегда, пока R3 не закроет окно). Один range статусных ключей
-    // кластера; гварды надзора повторены: QUARANTINED/REMOVING, усыновлённые
-    // (object), ноды без записи portalloc — вне проверки.
-    private async Task<bool> AllNodesReadyAsync(
+    // doorman навсегда, пока R4 не закроет окно). Триада исходов: Success(true)
+    // — все ready, Success(false) — есть неготовые (waiting), Failed — отказ
+    // чтения статусных ключей (различим, не маскируется под waiting). Один
+    // range статусных ключей кластера; гварды надзора повторены:
+    // QUARANTINED/REMOVING, усыновлённые (object), ноды без записи
+    // portalloc — вне проверки.
+    private async Task<Result<bool>> AllNodesReadyAsync(
         string cluster, ClusterSnapshot snap, IReadOnlyDictionary<string, NodeAddress> addresses, CancellationToken ct)
     {
         var range = await RangeAsync($"/pgworker/nodes/{cluster}/", ct);
         if (!range.IsSuccess)
-            return false; // etcd-сбой — не мутим
+            return Result<bool>.Failed(range.Error!);
         var statuses = new Dictionary<string, PgNodeStatusFact>();
         foreach (var kv in range.Value)
         {
@@ -306,11 +312,11 @@ public sealed partial class ClusterSecretRotator(
                     continue;
                 if (!statuses.TryGetValue($"{shard.Name}/{node.Name}", out var status)
                     || status.State != "ready")
-                    return false; // нода ещё стартует/не готова — окно не открываем
+                    return Result<bool>.Success(false); // нода ещё стартует/не готова
             }
         }
 
-        return true;
+        return Result<bool>.Success(true);
     }
 
     private static string PasswordKey(string cluster) => $"/clusters/{cluster}/app_password";

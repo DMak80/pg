@@ -86,15 +86,61 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
     // (URL — адрес приёмника первой ноды alias:8080).
     private readonly FakeReceiverClient _receiver = new();
 
+    // Фейк tool-доставки (t05): фиксирует isToolStart и публикует статус
+    // ready(applied=1) при tool-вызове — модель bounded-машины агента.
+    // DeferredWait > 0: первые вызовы — initializing-статус + Wait (28P01-
+    // модель окна), потом ready (transient-ретрай тиком).
+    private sealed class FakeToolDelivery(OwnedEtcdFixture fixture) : PgWorker.Provisioning.Processes.INodeBootstrapDelivery
+    {
+        public readonly List<(bool IsToolStart, string Node)> Calls = [];
+        public int DeferredWait;
+
+        public async Task<PgWorker.Provisioning.Processes.DeliveryOutcome> EnsureAsync(
+            ShardTopology topology, string nodeName, NodeAddress addr, InstallSecrets secrets,
+            PgTuneResult? tuning, IReadOnlySet<string>? excludeParams, bool syncStrict,
+            string restPassword, bool isToolStart, CancellationToken ct)
+        {
+            Calls.Add((isToolStart, nodeName));
+            var ready = !isToolStart || DeferredWait <= 0;
+            if (isToolStart && DeferredWait > 0)
+                DeferredWait--;
+            var status = System.Text.Json.JsonSerializer.Serialize(new Dictionary<string, object?>
+            {
+                ["state"] = ready ? "ready" : "initializing",
+                ["applied_revision"] = ready ? 1 : null,
+                ["components"] = ready
+                    ? new Dictionary<string, string>
+                    {
+                        ["pg"] = isToolStart ? "prepared" : "ready",
+                        ["doorman"] = isToolStart ? "prepared" : "ready",
+                    }
+                    : new Dictionary<string, string> { ["pg"] = "ready", ["doorman"] = "starting" },
+                ["updated_unix"] = 1,
+            });
+            await fixture.Gateway.PutAsync(fixture.Endpoint,
+                PgNodeStatusFact.StatusKey(topology.Cluster, topology.Shard, nodeName), status, null, ct);
+            return new PgWorker.Provisioning.Processes.DeliveryOutcome(
+                Delivered: ready, Wait: !ready, Transient: false, null);
+        }
+
+        public Task<bool> IsOnRevisionAsync(
+            ShardTopology topology, string nodeName, NodeAddress addr,
+            PgTuneResult? tuning, IReadOnlySet<string>? excludeParams, bool syncStrict,
+            string restPassword, CancellationToken ct)
+            => Task.FromResult(false);
+    }
+
     private RestoreProcess BuildProcess(FakeBackupS3 s3, IClusterDriver driver,
         TimeProvider? clock = null, HttpMessageHandler? patroni = null,
         BackupsRuntimeOptions? options = null, ISqlExecutor? db = null,
-        Action<string, string, string>? restoreObserver = null)
+        Action<string, string, string>? restoreObserver = null,
+        PgWorker.Provisioning.Processes.INodeBootstrapDelivery? bootstrap = null)
         => new(fixture.Gateway, [fixture.Endpoint], driver, FakePoolFactory.Single(s3), _receiver,
             _claims,
             new WorkJournal("/pgworker", fixture.Gateway, [fixture.Endpoint]), options ?? Options(),
             new InstallSecrets("su-pw", "sb-pw", "adm-pw", "mov-pw"),
             new EtcdEndpoints([fixture.Endpoint]), new StubAppSecret(),
+            bootstrap ?? new FakeToolDelivery(fixture),
             new ShardProbe(new HttpClient(patroni ?? new DeadHandler())),
             db ?? new FakeDb(),
             new ThresholdsOptions(600, 1800, PatroniBootSec: 600),
@@ -604,6 +650,42 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
         var running = (await ReadRestoresAsync("c1", "shard1")).Single(r => r.Id == op.Id);
         running.State.Should().Be(RestoreStatus.Running);
         running.Phase.Should().Be("launching", "the next tick polls GET only");
+    }
+
+    // AAA (t05 tool-доставка, arch/14 §4, spec §3.6-3а/§8-22): тик запуска —
+    // EnsureNode, ЗАТЕМ tool-пин is_tool_start=true ДО команды restore
+    // (28P01-окно: transient-ретрай тиком, Phase заявки не меняется),
+    // машина prepared → POST /api/ops/restore (Phase="launching").
+    [Fact]
+    public async Task LaunchTickToolDeliversWithToolStartBeforeRestoreCommand()
+    {
+        // Arrange — RUNNING-заявка на шаге запуска; deferred: первые 2 tool-
+        // вызова — initializing (28P01-окно модель).
+        var ct = TestContext.Current.CancellationToken;
+        await SeedAsync("c1");
+        var inner = new StubScaleDriver();
+        var driver = new TestDriver(inner, new FakeBackupEngine());
+        var bootstrap = new FakeToolDelivery(fixture) { DeferredWait = 2 };
+        var process = BuildProcess(new FakeBackupS3(), driver, bootstrap: bootstrap);
+        await SeedRestoreAsync("c1", "shard1", "20260911121001Z",
+            backupId: "20260910120000Z", state: RestoreStatus.Running, startedUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 60,
+            phase: "demolished");
+        (await _claims.TryClaimClusterAsync("c1", ct)).Value.Should().BeTrue();
+
+        // Act: три тика запуска (transient-ретрай тиком).
+        for (var i = 0; i < 3; i++)
+            (await process.TickAsync(BuildSnap(), await BackupsFromEtcdAsync("c1"), ct))
+                .IsSuccess.Should().BeTrue();
+
+        // Assert: команда restore НЕ уходила, пока tool-доставка не готова;
+        // все tool-пины — с is_tool_start=true, нода — первая (shard1a);
+        // после prepared — команда принята, Phase="launching".
+        bootstrap.Calls.Should().NotBeEmpty();
+        bootstrap.Calls.Should().OnlyContain(c => c.IsToolStart && c.Node == "shard1a");
+        _receiver.StartCalls.Should().Be(1, "restore launches only after prepared");
+        var running = (await ReadRestoresAsync("c1", "shard1")).Single(r => r.Id != "" || true);
+        running.Phase.Should().Be("launching");
+        inner.EnsuredNodes.Should().BeEquivalentTo(["shard1/shard1a"]);
     }
 
     [Fact]

@@ -435,7 +435,7 @@ public sealed class AdoptionProcess(
                 // расширяется — прежняя семантика ensure-пути).
                 var delivery = await bootstrap.EnsureAsync(
                     topology, nodeName, addr, secrets, tuning, pgtune.ExcludeParams,
-                    snap.Config.SyncStrict, snap.RestPassword ?? "", ct);
+                    snap.Config.SyncStrict, snap.RestPassword ?? "", isToolStart: false, ct);
                 if (delivery.Transient)
                     await journal.WritePhaseAsync(cluster, Op,
                         $"bootstrap-delivery/{shardName}/{nodeName}",

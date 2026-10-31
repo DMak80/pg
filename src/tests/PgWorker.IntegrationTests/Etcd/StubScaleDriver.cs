@@ -104,11 +104,6 @@ public sealed class StubScaleDriver : IClusterDriver
                 .Where(p => nodeNames.Contains(p.Key))
                 .ToDictionary(p => p.Key, p => p.Value)));
 
-        public Task<Result<IReadOnlyDictionary<string, string>>> InspectNodeEnvAsync(
-        string cluster, string shard, string nodeName, CancellationToken ct)
-        => Task.FromResult(Result<IReadOnlyDictionary<string, string>>.Success(
-            (IReadOnlyDictionary<string, string>)new Dictionary<string, string>()));
-
 public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, CancellationToken ct)
         => Task.FromResult(Result<IReadOnlyList<string>>.Success(
             (IReadOnlyList<string>)NodeObjects));

@@ -386,7 +386,7 @@ public sealed class NodeSupervisor(
                 // journal-факт (ретрай тиком; ensure-путь не проваливается).
                 var delivery = await bootstrap.EnsureAsync(
                     topology, node.Name, topology.Nodes[node.Name], secrets, tuning,
-                    pgtuneSettings.ExcludeParams, snap.Config.SyncStrict, restPassword, ct);
+                    pgtuneSettings.ExcludeParams, snap.Config.SyncStrict, restPassword, isToolStart: false, ct);
                 if (delivery.Transient)
                     await journal.WritePhaseAsync(cluster, "supervise",
                         $"bootstrap-delivery/{shard.Name}/{node.Name}",
@@ -620,7 +620,7 @@ public sealed class NodeSupervisor(
                         var resources = await ReadShardResourcesAsync(cluster, shard.Name, ct);
                         var outcome = await bootstrap.EnsureAsync(
                             topology, node.Name, addr, secrets, pgtune.Create(resources),
-                            pgtuneSettings.ExcludeParams, snap.Config.SyncStrict, restPassword, ct);
+                            pgtuneSettings.ExcludeParams, snap.Config.SyncStrict, restPassword, isToolStart: false, ct);
                         if (outcome.Transient)
                             await journal.WritePhaseAsync(cluster, "supervise",
                                 $"bootstrap-delivery/{shard.Name}/{node.Name}",
@@ -646,7 +646,7 @@ public sealed class NodeSupervisor(
                         var applyResources = await ReadShardResourcesAsync(cluster, shard.Name, ct);
                         var outcome = await bootstrap.EnsureAsync(
                             topology, node.Name, addr, secrets, pgtune.Create(applyResources),
-                            pgtuneSettings.ExcludeParams, snap.Config.SyncStrict, restPassword, ct);
+                            pgtuneSettings.ExcludeParams, snap.Config.SyncStrict, restPassword, isToolStart: false, ct);
                         if (outcome.Transient)
                             await journal.WritePhaseAsync(cluster, "supervise",
                                 $"bootstrap-apply/{shard.Name}/{node.Name}",
@@ -682,7 +682,7 @@ public sealed class NodeSupervisor(
 
                         var outcome = await bootstrap.EnsureAsync(
                             topology, node.Name, addr, secrets, tuning,
-                            pgtuneSettings.ExcludeParams, snap.Config.SyncStrict, restPassword, ct);
+                            pgtuneSettings.ExcludeParams, snap.Config.SyncStrict, restPassword, isToolStart: false, ct);
                         if (outcome.Transient)
                             await journal.WritePhaseAsync(cluster, "supervise",
                                 $"bootstrap-delivery/{shard.Name}/{node.Name}",
@@ -813,7 +813,7 @@ public sealed class NodeSupervisor(
             // Transient — journal-факт (ретрай тиком).
             var delivery = await bootstrap.EnsureAsync(
                 topology, node.Name, addr, secrets, tuning,
-                pgtuneSettings.ExcludeParams, snap.Config.SyncStrict, restPassword, ct);
+                pgtuneSettings.ExcludeParams, snap.Config.SyncStrict, restPassword, isToolStart: false, ct);
             if (delivery.Transient)
                 await journal.WritePhaseAsync(cluster, "supervise",
                     $"bootstrap-delivery/{shard.Name}/{node.Name}",
@@ -1013,7 +1013,7 @@ public sealed class NodeSupervisor(
                 // Transient — journal-факт (ретрай тиком).
                 var deliveryAuto = await bootstrap.EnsureAsync(
                     topology, name, addr, secrets, tuning,
-                    pgtuneSettings.ExcludeParams, snap.Config.SyncStrict, restPassword, ct);
+                    pgtuneSettings.ExcludeParams, snap.Config.SyncStrict, restPassword, isToolStart: false, ct);
                 if (deliveryAuto.Transient)
                     await journal.WritePhaseAsync(cluster, "supervise",
                         $"bootstrap-delivery/{shard.Name}/{name}",

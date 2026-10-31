@@ -21,10 +21,13 @@ public sealed record DeliveryOutcome(bool Delivered, bool Wait, bool Transient, 
 /// применения. Инициатор всегда воркер; идемпотентен на каждом шаге.</summary>
 public interface INodeBootstrapDelivery
 {
+    // isToolStart (spec §3.6-3а/§8-22): true — агент ТОЛЬКО готовит параметры
+    // (tmpfs-рендер, компоненты не стартуют, → ready prepared); false —
+    // штатный bootstrap (старт компонентов, → ready). Restore-контур — true.
     Task<DeliveryOutcome> EnsureAsync(
         ShardTopology topology, string nodeName, NodeAddress addr, InstallSecrets secrets,
         PgTuneResult? tuning, IReadOnlySet<string>? excludeParams, bool syncStrict,
-        string restPassword, CancellationToken ct);
+        string restPassword, bool isToolStart, CancellationToken ct);
 
     /// <summary>Немутирующая проба «нода применила bootstrap с ЭТОЙ парой
     /// restPassword» (ротация, шаг 11): без put и без команд канала.
@@ -49,7 +52,7 @@ public sealed class NodeBootstrapDelivery(
     public async Task<DeliveryOutcome> EnsureAsync(
         ShardTopology topology, string nodeName, NodeAddress addr, InstallSecrets secrets,
         PgTuneResult? tuning, IReadOnlySet<string>? excludeParams, bool syncStrict,
-        string restPassword, CancellationToken ct)
+        string restPassword, bool isToolStart, CancellationToken ct)
     {
         // 1) Построить ожидаемый JSON (детерминированный рендер) и сравнить с
         // хранимым: равен — put НЕ делаем (без дребезга mod_revision, spec
@@ -98,7 +101,7 @@ public sealed class NodeBootstrapDelivery(
             case "not_initialized":
                 var handshake = await channel.HandshakeAsync(
                     baseUrl, secrets.SuPassword, secrets.StandbyPassword,
-                    isToolStart: false, ct);
+                    isToolStart, ct);
                 return handshake.IsSuccess
                     ? new DeliveryOutcome(Delivered: true, Wait: false, Transient: false, null)
                     : Transient($"{baseUrl}/api/bootstrap → {handshake.StatusCode}");
