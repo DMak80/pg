@@ -338,6 +338,26 @@ export function requestKafkaRebalance(cluster: string): Promise<KafkaRebalanceRe
     { method: 'POST' });
 }
 
+// ===== u17: DELETE-отмена живых заявок ротаций kafka/valkey (arch/02
+// §10.2-18/19/20, §11.2-7/8): воркер удаляет ключ заявки (del — только
+// воркер, D13); 204/404 (заявки нет)/409 (ротация начата)/503. =====
+
+export type KafkaRotationKind = 'app-password/rotate' | 'admin-password/rotate' | 'ca/rotate';
+
+export function cancelKafkaRotation(cluster: string, kind: KafkaRotationKind): Promise<void> {
+  return apiFetch<void>(
+    `/api/kafka/clusters/${encodeURIComponent(cluster)}/${kind}`,
+    { method: 'DELETE' });
+}
+
+export type ValkeyRotationKind = 'password/rotate' | 'ca/rotate';
+
+export function cancelValkeyRotation(cluster: string, kind: ValkeyRotationKind): Promise<void> {
+  return apiFetch<void>(
+    `/api/valkey/clusters/${encodeURIComponent(cluster)}/${kind}`,
+    { method: 'DELETE' });
+}
+
 // DELETE /api/kafka/clusters/{cluster}/rebalance — отмена ребалансировки
 // (t02, arch/02 §10.2-10): новые батчи не подаются, поданные Kafka доиграет.
 export async function cancelKafkaRebalance(cluster: string): Promise<void> {

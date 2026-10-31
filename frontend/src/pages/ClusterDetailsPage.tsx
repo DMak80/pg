@@ -7,14 +7,14 @@ import { useQuery } from '@tanstack/react-query';
 import { Anchor, Badge, Group, Stack, Text } from '@mantine/core';
 import { useState } from 'react';
 import { Link, useParams } from 'react-router';
-import { fetchClusterDetails, queryKeys } from '../api/queries';
+import { deleteCluster, fetchClusterDetails, queryKeys } from '../api/queries';
 import { ErrorSection, LoadingSection } from '../components/LoadState';
 import { DomainPageLayout } from '../components/DomainPageLayout';
 import { usePollingIntervalMs } from '../polling/PollingContext';
 import { formatUnix } from '../utils/format';
 import { BackupsSliceTab } from './cluster-details/BackupsSliceTab';
 import { BucketsTab } from './cluster-details/BucketsTab';
-import { DeleteClusterButton } from './cluster-details/DeleteClusterButton';
+import { DeleteEntityButton } from '../components/actions/DeleteEntityButton';
 import { JournalTab } from './cluster-details/JournalTab';
 import { MovesTab } from './cluster-details/MovesTab';
 import { SecretsTab } from './cluster-details/SecretsTab';
@@ -93,7 +93,14 @@ export function ClusterDetailsPage() {
               {/* t06: переключатель strict-режима (мутация только Active) */}
               <StrictModeSwitch cluster={data.name} state={data.state}
                 strict={data.synchronousModeStrict} />
-              <DeleteClusterButton name={data.name} />
+              {/* u02: общая кнопка удаления (подтверждение модалом) */}
+              <DeleteEntityButton
+                title={`Удалить кластер ${data.name}`}
+                confirmText={`Кластер ${data.name} перейдёт в состояние TO_REMOVE. Панель не удаляет ключи etcd и ноды — снятие ресурсов выполняет внешний оркестратор. Обратного перехода нет.`}
+                onConfirm={() => deleteCluster(data.name)}
+                invalidateKeys={[['clusters'], [data.name]]}
+                label="Удалить кластер"
+              />
             </Group>
           )
         }

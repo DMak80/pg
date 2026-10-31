@@ -3,19 +3,25 @@
 import { useQuery } from '@tanstack/react-query';
 import { Alert, Badge, Group, Stack, Text, Tooltip } from '@mantine/core';
 import { useParams } from 'react-router';
-import { fetchKafkaClusterDetails, kafkaQueryKeys } from '../../api/queries';
+import {
+  cancelKafkaRotation,
+  deleteKafkaCluster,
+  rotateKafkaAdminPassword,
+  rotateKafkaCa,
+  rotateKafkaPassword,
+  fetchKafkaClusterDetails,
+  kafkaQueryKeys,
+} from '../../api/queries';
 import { ErrorSection, LoadingSection } from '../../components/LoadState';
 import { DomainPageLayout } from '../../components/DomainPageLayout';
 import { WorkJournalBlock } from '../../components/WorkJournalBlock';
 import { usePollingIntervalMs } from '../../polling/PollingContext';
 import { BrokersTab } from './BrokersTab';
-import { DeleteKafkaClusterButton } from './DeleteKafkaClusterButton';
+import { DeleteEntityButton } from '../../components/actions/DeleteEntityButton';
 import { EditClusterConfigModal } from './EditClusterConfigModal';
 import { GroupsTab } from './GroupsTab';
 import { RebalanceButton } from './RebalanceButton';
-import { RotatePasswordButton } from './RotatePasswordButton';
-import { RotateAdminPasswordButton } from './RotateAdminPasswordButton';
-import { RotateCaButton } from './RotateCaButton';
+import { RotateSecretButton } from '../../components/actions/RotateSecretButton';
 import { TopicsTab } from './TopicsTab';
 import type { TicketOutcomeDto } from '../../api/dto';
 
@@ -100,11 +106,48 @@ export function KafkaClusterDetailsPage() {
           active ? (
             <Group gap="sm">
               <EditClusterConfigModal cluster={c} />
-              <RotatePasswordButton cluster={c.name} disabled={c.rotation !== null} />
-              <RotateAdminPasswordButton cluster={c.name} disabled={!active} />
-              <RotateCaButton cluster={c.name} disabled={!active} />
+              {/* u02: общая кнопка ротации; u17: у живой заявки — «Отменить» */}
+              <RotateSecretButton
+                title="Сменить app-пароль"
+                warningText={'Воркер ротирует пароль фазами: A) rolling-перезапуск брокеров с ДВУМЯ кредами '
+                  + '(старый и новый), B) атомарная замена app_password в etcd, C) rolling-удаление старого креда. '
+                  + 'Rolling-перезапуск — выполняйте в тихое окно.'}
+                liveTicketText={c.rotation !== null ? 'ротация app…' : null}
+                onRotate={() => rotateKafkaPassword(c.name)}
+                onCancel={() => cancelKafkaRotation(c.name, 'app-password/rotate')}
+                invalidateKeys={[kafkaQueryKeys.clusters, kafkaQueryKeys.cluster(c.name)]}
+                disabled={!active}
+              />
+              <RotateSecretButton
+                title="Сменить admin-пароль"
+                warningText={'Воркер ротирует admin-кред фазами A/B/C (rolling-перезапуск брокеров, атомарная '
+                  + 'замена admin_password, удаление старого). Приложения с ролью app не затронуты.'}
+                liveTicketText={c.adminRotation !== null && c.adminRotation !== undefined ? 'ротация admin…' : null}
+                onRotate={() => rotateKafkaAdminPassword(c.name)}
+                onCancel={() => cancelKafkaRotation(c.name, 'admin-password/rotate')}
+                invalidateKeys={[kafkaQueryKeys.clusters, kafkaQueryKeys.cluster(c.name)]}
+                disabled={!active}
+              />
+              <RotateSecretButton
+                title="Ротация CA"
+                warningText={'Воркер ротирует per-cluster CA и серверные серты брокеров без остановки записи: '
+                  + '(P) staging нового CA, (D) окно двойного доверия — ca_pem = OLD+NEW bundle, '
+                  + '(R) rolling-пересоздание брокеров с сертами нового CA, (C) атомарный коммит. '
+                  + 'Клиенты перечитывают ca_pem из etcd.'}
+                liveTicketText={c.caRotation !== null ? 'ротация CA…' : null}
+                onRotate={() => rotateKafkaCa(c.name)}
+                onCancel={() => cancelKafkaRotation(c.name, 'ca/rotate')}
+                invalidateKeys={[kafkaQueryKeys.clusters, kafkaQueryKeys.cluster(c.name)]}
+                disabled={!active}
+              />
               <RebalanceButton cluster={c.name} rebalance={c.rebalance} disabled={!active} />
-              <DeleteKafkaClusterButton cluster={c.name} />
+              <DeleteEntityButton
+                title={`Удалить kafka-кластер ${c.name}`}
+                confirmText={`Кластер ${c.name} перейдёт в TO_REMOVE: воркер снимет контейнеры брокеров, тома и ключи etcd (финал X2). Обратного перехода нет.`}
+                onConfirm={() => deleteKafkaCluster(c.name)}
+                invalidateKeys={[kafkaQueryKeys.clusters, kafkaQueryKeys.cluster(c.name)]}
+                label="Удалить кластер"
+              />
             </Group>
           ) : null
         }

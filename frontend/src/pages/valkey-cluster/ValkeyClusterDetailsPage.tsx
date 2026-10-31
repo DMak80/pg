@@ -6,16 +6,22 @@ import { useQuery } from '@tanstack/react-query';
 import { Badge, Button, Card, Group, SimpleGrid, Stack, Text, Tooltip } from '@mantine/core';
 import { useParams } from 'react-router';
 import { useState } from 'react';
-import { fetchValkeyClusterDetails, valkeyQueryKeys } from '../../api/queries';
+import {
+  cancelValkeyRotation,
+  deleteValkeyCluster,
+  fetchValkeyClusterDetails,
+  rotateValkeyCa,
+  rotateValkeyPassword,
+  valkeyQueryKeys,
+} from '../../api/queries';
 import { ErrorSection, LoadingSection } from '../../components/LoadState';
 import { DomainPageLayout, Field } from '../../components/DomainPageLayout';
 import { WorkJournalBlock } from '../../components/WorkJournalBlock';
 import { usePollingIntervalMs } from '../../polling/PollingContext';
-import { DeleteValkeyClusterButton } from './DeleteValkeyClusterButton';
+import { DeleteEntityButton } from '../../components/actions/DeleteEntityButton';
 import { EditClusterConfigModal } from './EditClusterConfigModal';
 import { EditNodeResourcesModal } from './EditNodeResourcesModal';
-import { RotateCaButton } from './RotateCaButton';
-import { RotatePasswordButton } from './RotatePasswordButton';
+import { RotateSecretButton } from '../../components/actions/RotateSecretButton';
 import type { TicketOutcomeDto, ValkeyNodeDto } from '../../api/dto';
 
 const MIB = 1024 * 1024;
@@ -78,6 +84,7 @@ export function ValkeyClusterDetailsPage() {
                 </Badge>
               </Tooltip>
             ) : null}
+{/* u17: кнопки «Отменить» — на rotate-кнопках (liveTicketText + onCancel) */}
           </>
         }
         endpoints={c.endpoints}
@@ -85,10 +92,47 @@ export function ValkeyClusterDetailsPage() {
           canMutate ? (
             <Group gap="sm">
               <EditClusterConfigModal cluster={c} />
-              <RotatePasswordButton cluster={c.name} role="app" disabled={c.rotation !== null} />
-              <RotatePasswordButton cluster={c.name} role="admin" disabled={c.rotation !== null} />
-              <RotateCaButton cluster={c.name} disabled={c.rotation !== null || c.caRotation != null} />
-              <DeleteValkeyClusterButton cluster={c.name} />
+              {/* u02/u17: общая кнопка ротации; бейдж живой заявки в modeBadges */}
+              <RotateSecretButton
+                title="Сменить app-пароль"
+                warningText={'Воркер даст ноде ДВА пароля (окно двух паролей, arch/21 §5 E — без рестарта ноды), '
+                  + 'затем атомарно заменит app_password в etcd и удалит старый кред. После применения подключения '
+                  + 'со старым паролем отвергаются, пока клиент не перечитает кред из etcd.'}
+                liveTicketText={c.rotation !== null ? `ротация пароля (${c.rotation.role})…` : null}
+                onRotate={() => rotateValkeyPassword(c.name, 'app')}
+                onCancel={() => cancelValkeyRotation(c.name, 'password/rotate')}
+                invalidateKeys={[valkeyQueryKeys.clusters, valkeyQueryKeys.cluster(c.name)]}
+                disabled={!canMutate}
+              />
+              <RotateSecretButton
+                title="Сменить admin-пароль"
+                warningText={'Воркер даст ноде ДВА пароля (окно двух паролей), затем атомарно заменит '
+                  + 'admin_password в etcd и удалит старый кред. Панель ходит пробой как admin — '
+                  + 'проба переходит на новый кред из etcd автоматически.'}
+                liveTicketText={c.rotation !== null ? `ротация пароля (${c.rotation.role})…` : null}
+                onRotate={() => rotateValkeyPassword(c.name, 'admin')}
+                onCancel={() => cancelValkeyRotation(c.name, 'password/rotate')}
+                invalidateKeys={[valkeyQueryKeys.clusters, valkeyQueryKeys.cluster(c.name)]}
+                disabled={!canMutate}
+              />
+              <RotateSecretButton
+                title="Ротация CA"
+                warningText={'Воркер ротирует per-cluster CA и серверный серт ноды без остановки сервиса: '
+                  + '(P) staging нового CA, (D) окно двойного доверия — ca_pem = OLD+NEW bundle, '
+                  + '(R) пересоздание ноды с сертом нового CA, (C) атомарный коммит. PKI переиспользуется.'}
+                liveTicketText={c.caRotation != null ? 'ротация CA…' : null}
+                onRotate={() => rotateValkeyCa(c.name)}
+                onCancel={() => cancelValkeyRotation(c.name, 'ca/rotate')}
+                invalidateKeys={[valkeyQueryKeys.clusters, valkeyQueryKeys.cluster(c.name)]}
+                disabled={!canMutate}
+              />
+              <DeleteEntityButton
+                title={`Удалить valkey-кластер ${c.name}`}
+                confirmText={`Кластер ${c.name} перейдёт в TO_REMOVE: воркер снимет контейнер ноды и ключи etcd (финал X2). Обратного перехода нет.`}
+                onConfirm={() => deleteValkeyCluster(c.name)}
+                invalidateKeys={[valkeyQueryKeys.clusters, valkeyQueryKeys.cluster(c.name)]}
+                label="Удалить кластер"
+              />
             </Group>
           ) : null
         }

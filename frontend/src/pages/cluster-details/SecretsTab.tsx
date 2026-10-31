@@ -3,7 +3,8 @@
 // значений); предупреждение о разрыве подключений; живая заявка — бейдж
 // «ротация…» из data.secretsRotationPending (источник — /pgworker/rotations/<C>).
 import { Badge, Group, Stack, Text } from '@mantine/core';
-import { RotateClusterSecretsButton } from './RotateClusterSecretsButton';
+import { RotateSecretButton } from '../../components/actions/RotateSecretButton';
+import { rotateClusterSecrets } from '../../api/queries';
 
 export function SecretsTab({ cluster, state, rotationPending }: {
   cluster: string;
@@ -34,7 +35,18 @@ export function SecretsTab({ cluster, state, rotationPending }: {
       </Text>
       {/* Ротация — только Active (у NOT_INITIALIZED пароль ещё не используется);
           у TO_REMOVE кнопка скрыта (обратного перехода нет, arch/02 §9.4). */}
-      {state === 'ACTIVE' ? <RotateClusterSecretsButton name={cluster} /> : null}
+      {state === 'ACTIVE' ? (
+        <RotateSecretButton
+          title="Сменить app-пароль"
+          warningText={'PgWorker ротирует пароли ролей app, bucket_admin и bucket_mover на всех шардах, '
+            + 'перезаписывает app_password/mover_password/bucket_admin_password и dsn в etcd. '
+            + 'После применения подключения со старыми паролями отвергаются до перечитывания кредов '
+            + 'приложением — выполняйте в тихое окно.'}
+          liveTicketText={rotationPending ? 'ротация…' : null}
+          onRotate={() => rotateClusterSecrets(cluster)}
+          invalidateKeys={[['clusters'], [cluster]]}
+        />
+      ) : null}
     </Stack>
   );
 }

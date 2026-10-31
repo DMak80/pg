@@ -4,16 +4,21 @@
 import { useQuery } from '@tanstack/react-query';
 import { Badge, Card, Group, SimpleGrid, Stack, Text, Tooltip } from '@mantine/core';
 import { useParams } from 'react-router';
-import { fetchS3ClusterDetails, s3QueryKeys } from '../../api/queries';
+import {
+  deleteS3Cluster,
+  fetchS3ClusterDetails,
+  rotateS3Secrets,
+  s3QueryKeys,
+} from '../../api/queries';
 import { ErrorSection, LoadingSection } from '../../components/LoadState';
 import { DomainPageLayout, Field } from '../../components/DomainPageLayout';
 import { WorkJournalBlock } from '../../components/WorkJournalBlock';
 import { usePollingIntervalMs } from '../../polling/PollingContext';
 import { ConnectivitySyncTab } from './ConnectivitySyncTab';
-import { DeleteS3ClusterButton } from './DeleteS3ClusterButton';
+import { DeleteEntityButton } from '../../components/actions/DeleteEntityButton';
 import { NodesTab } from './NodesTab';
 import { ReplicationTab } from './ReplicationTab';
-import { RotateSecretsButton } from './RotateSecretsButton';
+import { RotateSecretButton } from '../../components/actions/RotateSecretButton';
 import { SyncProbeButton } from './SyncProbeButton';
 
 export function S3ClusterDetailsPage() {
@@ -73,8 +78,23 @@ export function S3ClusterDetailsPage() {
           canMutate ? (
             <Group gap="sm">
               <SyncProbeButton cluster={c.name} />
-              <RotateSecretsButton cluster={c.name} disabled={c.rotation !== null} />
-              <DeleteS3ClusterButton cluster={c.name} />
+              <RotateSecretButton
+                title="Ротация секретов"
+                warningText={'Воркер выполняет rolling-пересоздание инстансов с новым env профиля '
+                  + `${c.name}: на время пересоздания каждого инстанса ёмкость хранилища деградирует. `
+                  + 'PKI переиспользуется — ключи нод переживают пересоздание; заявка не отменяется '
+                  + '(снятие — только воркером).'}
+                onRotate={() => rotateS3Secrets(c.name)}
+                invalidateKeys={[s3QueryKeys.clusters, s3QueryKeys.cluster(c.name)]}
+                disabled={!canMutate || c.rotation !== null}
+              />
+              <DeleteEntityButton
+                title={`Удалить S3-кластер ${c.name}`}
+                confirmText={`Снос уничтожает данные бэкапов на дисках всех инстансов — осознанное действие; демонтаж асинхронный (воркер). Обратного перехода нет.`}
+                onConfirm={() => deleteS3Cluster(c.name)}
+                invalidateKeys={[s3QueryKeys.clusters, s3QueryKeys.cluster(c.name)]}
+                label="Удалить кластер"
+              />
             </Group>
           ) : null
         }
