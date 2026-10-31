@@ -74,23 +74,27 @@
   walreceiver, тот поднимает mTLS-сервер (сёрт ноды — материалы
   per-install REST-CA, кандидат); PgWorker — инициатор канала: он создал
   контейнер, знает хост/порты, контролит поднятие (adopt/supervise) и
-  ПУШИТ бандл паролей (состав — SuPassword/standby/bucket_admin/mover +
-  per-cluster секреты кластера + серверный серт doorman (серт+ключ) —
-  на spec); нода про pgWorker ничего не знает и ничего не инициирует.
-  Агент пишет секреты файлами 0600, рендерит конфиги
-  (Patroni-bootstrap, DOORMAN_CONFIG) и стартует spilo/pg_doorman;
-  walreceiver — менеджер doorman: ведёт его конфиг и серты, при замене
-  серта/конфига выполняет релод/рестарт пулера. Целевая схема серта
-  заменяет entrypoint-генерацию self-signed (текущий канон — до мержа
-  t05). Доступность: restart контейнера — бандл из
-  writable-слоя (воркер не нужен); recreate делает только воркер — он
-  же тут же пушит; канал — порт внутри docker-сети кластера, на хост
-  не публикуется. Развилки на spec: роль агента (walreceiver vs
-  отдельный бинарник), bootstrap PG файлами без PGPASSWORD_SUPERUSER
-  (отход от upstream Spilo), источник серта doorman (per-install CA
-  c SAN — кандидат, vs self-signed от воркера) и верификация его
-  клиентами, ротация rest_password пушем вместо rolling-recreate,
-  защита кэша (0600/шифрование).
+  ИНИЦИИРУЕТ на walreceiver проверку и замену (триггер по mTLS-каналу:
+  порт внутри docker-сети кластера, на хост не публикуется); нода про
+  pgWorker ничего не знает и ничего не инициирует. Данные — из etcd,
+  самим walreceiver (доступ к etcd у него уже есть): воркер пишет в
+  etcd серверный серт doorman (серт+ключ; per-cluster секреты —
+  кандидат на тот же путь), walreceiver забирает сам, пишет файлами
+  0600, рендерит конфиги (Patroni-bootstrap, DOORMAN_CONFIG), стартует
+  spilo/pg_doorman; walreceiver — менеджер doorman: ведёт его конфиг и
+  серты, по триггеру проверки/замены перечитывает etcd и выполняет
+  релод/рестарт пулера. Целевая схема серта заменяет
+  entrypoint-генерацию self-signed (текущий канон — до мержа t05).
+  Доступность: restart контейнера — конфиги/серты из writable-слоя
+  (воркер не нужен; перечитывание etcd — по триггеру); recreate делает
+  только воркер — он же тут же инициирует. Развилки на spec: роль
+  агента (walreceiver vs отдельный бинарник), bootstrap PG файлами без
+  PGPASSWORD_SUPERUSER (отход от upstream Spilo), доставка per-install
+  SuPassword при модели «etcd-only» (Д7: per-install в etcd не живут —
+  исключение-ключ / env / данные по триггеру), источник серта
+  (per-install CA c SAN — кандидат) и верификация клиентами, watch
+  etcd-ключа вместо/вместе с триггером, ротация rest_password без
+  rolling-recreate, защита кэша (0600/шифрование).
   Затронуто: docker/node (entrypoint/supervisord), PgWorker.WalReceiver
   (агент), ClusterDriver (env без секретов + push-клиент), arch/13 §2
   (firewall-строка канала). Не зависит от t02-external-secret-manager
