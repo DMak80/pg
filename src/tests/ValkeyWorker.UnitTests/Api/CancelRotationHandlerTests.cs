@@ -1,4 +1,5 @@
 using FluentAssertions;
+using Shared.Etcd.Client;
 using Microsoft.Extensions.Logging.Abstractions;
 using ValkeyWorker.App.Api.Operations;
 using ValkeyWorker.UnitTests.Provisioning;
@@ -198,6 +199,37 @@ public class CancelRotationHandlerTests
         var kept = await etcd.GetAsync(Ep, "/valkeyworker/rotations/race",
             TestContext.Current.CancellationToken);
         kept.Value.Should().NotBeNull("начатая ротация доедет — заявка не снимается");
+    }
+
+    // Воркер пишет журнал перед КАЖДЫМ txn (compare по mod_revision не
+    // сходится ДВАЖДЫ) — 503 EtcdWriteUnavailableException, заявка жива
+    // (arch/02 §11.2: «compare не сошёлся дважды»).
+    [Fact]
+    public async Task Race_CompareLostTwice_WriteUnavailable_TicketKept()
+    {
+        // Arrange — журнал «не начата» (waiting); hook переписывает журнал
+        // ТЕМ ЖЕ значением перед каждым txn (mod_revision растёт).
+        var etcd = new Fakes.FakeEtcd();
+        etcd.Seed("/valkeyworker/rotations/storm",
+            """{"role":"app","requested_unix":1756500000,"requested_by":"ops"}""");
+        etcd.Seed("/valkeyworker/work/storm",
+            """{"op":"rotate","phase":"waiting-cluster","instance":"i1","updated_unix":1756500050}""");
+        etcd.OnTxnBeforeCompare = _ =>
+        {
+            etcd.Seed("/valkeyworker/work/storm",
+                """{"op":"rotate","phase":"waiting-cluster","instance":"i1","updated_unix":1756500060}""");
+        };
+        var handler = PwHandler(etcd);
+
+        // Act
+        var result = await handler.HandleAsync("storm", Op, TestContext.Current.CancellationToken);
+
+        // Assert
+        result.Error.Should().BeOfType<EtcdWriteUnavailableException>(
+            "двойной несходящийся compare — честный 503, не догадка");
+        var kept = await etcd.GetAsync(Ep, "/valkeyworker/rotations/storm",
+            TestContext.Current.CancellationToken);
+        kept.Value.Should().NotBeNull("503 не снимает заявку");
     }
 
     // Гонка со сменой значения заявки (журнал/стейт не менялись): повторный

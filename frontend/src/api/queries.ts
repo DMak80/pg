@@ -491,14 +491,24 @@ export function rotateValkeyCa(cluster: string): Promise<ValkeyCaRotatedDto> {
 // ===== Грань «Хранилище бэкапов» (t08, arch/03 §1) =====
 
 export const backupsQueryKeys = {
+  // Полная сводка грани (страница /backups-storage).
   storage: ['backups-storage'] as const,
+  // Срез одного кластера (?cluster= — серверная фильтрация, arch/03 §1):
+  // вкладка «Бэкапы (срез)» pg-страницы и формы деталей шарда бэкапов.
+  storageCluster: (cluster: string) => ['backups-storage', cluster] as const,
   shard: (cluster: string, shard: string) => ['backups-storage', cluster, shard] as const,
   // u16: пулы для формы Policy (02 §12.4).
   pools: ['backups-storage', 's3-pools'] as const,
 };
 
-export function fetchBackupsStorage(): Promise<BackupStorageDto> {
-  return apiFetch<BackupStorageDto>('/api/backups/storage');
+export function fetchBackupsStorage(cluster?: string): Promise<BackupStorageDto> {
+  // Опциональный ?cluster= — серверная фильтрация срезов одного кластера
+  // (arch/03 §1): вкладка «Бэкапы (срез)» и формы деталей шарда не тянут
+  // сводку всей установки.
+  return apiFetch<BackupStorageDto>(
+    cluster !== undefined
+      ? `/api/backups/storage?cluster=${encodeURIComponent(cluster)}`
+      : '/api/backups/storage');
 }
 
 // POST /api/backups/orphans/{cluster}/{shard}/hold — hold-флаг сироты

@@ -13,7 +13,6 @@ import {
   diffBackupsStorage, diffClusterDetails, diffClusterExtras, diffClusters,
   diffHa, diffKafka, diffOverview, diffS3, diffValkey,
 } from './eventsDiff';
-import { backupsQueryKeys } from '../api/queries';
 
 // Снимки prev по queryKey (строковый ключ) — храним сами: у SuccessAction в
 // TanStack Query v5 НЕТ поля action.data.previous (уточнение re-плана).
@@ -69,8 +68,14 @@ export function EventsProvider({ children }: { children: React.ReactNode }) {
           // arch/03 §3 «События» перечисляет overview среди наблюдаемых —
           // диффим переключение глобального стопа бэкапов (u10).
           diffOverview(prev as never, next as never);
-        } else if (id === keyId(backupsQueryKeys.storage)) {
-          // restore/drill факты шардов + сироты из ответа backups-storage.
+        } else if (root === 'backups-storage'
+          && (key.length === 1
+            || (key.length === 2 && typeof key[1] === 'string'))) {
+          // restore/drill факты шардов + сироты из ответа backups-storage:
+          // полный ключ ['backups-storage'] (страница грани) и cluster-scoped
+          // ['backups-storage', <C>] (?cluster= — вкладка «Бэкапы (срез)»,
+          // формы деталей шарда) — иначе события restore/drill/сирот при
+          // открытой странице кластера пропадали бы из ленты.
           diffBackupsStorage(prev as never, next as never);
         } else if (DETAIL_ROOTS.has(root) && key.length === 2 && typeof key[1] === 'string') {
           if (root === 'clusters') {

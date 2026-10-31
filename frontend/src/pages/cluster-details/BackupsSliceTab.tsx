@@ -1,7 +1,8 @@
-// Вкладка «Бэкапы (срез)» pg-кластера (u04-связь «кластер → его бэкапы/RPO»):
-// RPO/WAL/полные шардов кластера из существующего GET /api/backups/storage
-// (клиентский фильтр по кластеру) + policy кластера; ссылки на /backups-storage
-// и /reliability; строки полных — на детали шарда бэкапов (arch/03 §3).
+// Вкладка «Бэкапы (срез)» pg-кластера (связь «кластер → его бэкапы/RPO»):
+// RPO/WAL/полные шардов кластера из GET /api/backups/storage?cluster=<C>
+// (серверная фильтрация срезов одного кластера — arch/03 §1) + policy
+// кластера; ссылки на /backups-storage и /reliability; строки полных — на
+// детали шарда бэкапов (arch/03 §3).
 import { useQuery } from '@tanstack/react-query';
 import { Anchor, Button, Group, Stack, Table, Text } from '@mantine/core';
 import { Link } from 'react-router';
@@ -14,8 +15,8 @@ import { formatBytes, formatUnix } from '../../utils/format';
 export function BackupsSliceTab({ cluster }: { cluster: string }) {
   const intervalMs = usePollingIntervalMs();
   const storage = useQuery({
-    queryKey: backupsQueryKeys.storage,
-    queryFn: fetchBackupsStorage,
+    queryKey: backupsQueryKeys.storageCluster(cluster),
+    queryFn: () => fetchBackupsStorage(cluster),
     refetchInterval: intervalMs,
   });
   const details = useQuery({

@@ -29,7 +29,7 @@ export function BackupsStoragePage() {
   const intervalMs = usePollingIntervalMs();
   const query = useQuery({
     queryKey: backupsQueryKeys.storage,
-    queryFn: fetchBackupsStorage,
+    queryFn: () => fetchBackupsStorage(),
     refetchInterval: intervalMs,
   });
   // t36 (arch/adminpanel/03 §3): бейджи пула + модал «Пул бэкапов».

@@ -252,10 +252,11 @@ function drillColor(state: string): string {
 // (канон замещения целиком; панель в etcd не пишет).
 function DrillCard({ drill, cluster }: { drill: BackupDrillBadgeDto | null; cluster: string }) {
   const queryClient = useQueryClient();
-  // policy кластера — из сводки грани (форма читает текущие значения/дефолтирует).
+  // policy кластера — из СРЕЗА своего кластера (?cluster=, arch/03 §1;
+  // форма читает текущие значения/дефолтирует).
   const storage = useQuery({
-    queryKey: backupsQueryKeys.storage,
-    queryFn: fetchBackupsStorage,
+    queryKey: backupsQueryKeys.storageCluster(cluster),
+    queryFn: () => fetchBackupsStorage(cluster),
   });
   const policy = storage.data?.clusters.find((c) => c.cluster === cluster)?.policy ?? null;
 
