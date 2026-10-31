@@ -151,6 +151,68 @@ export interface OverviewDto {
   s3: OverviewS3Dto | null;
   snapshotAgeMs: number;
   stale: boolean;
+  // u06: HA-сводка с сервера (клиентские доборы /api/ha удалены с дашборда).
+  ha?: OverviewHaDto | null;
+  // u06: бэкапы с сервера.
+  backups?: OverviewBackupsDto | null;
+  // u06: надёжность с сервера (перенос TS-агрегации ReliabilityCard).
+  reliability?: OverviewReliabilityDto | null;
+  // u07: активные операции всех доменов (kind — словарь сервера, UI не парсит).
+  operations?: OverviewOperationDto[];
+  // u08: свежесть per-домен (unix-секунды; null — домен ещё не тикал).
+  freshness?: OverviewFreshnessDto | null;
+  // u10: глобальный стоп бэкапов; null = работают.
+  backupsDisabled?: BackupsDisabledDto | null;
+}
+
+// u06: HA-сводка (без лидера считаются только matched).
+export interface OverviewHaDto {
+  scopesTotal: number;
+  withoutLeader: number;
+  unmatched: number;
+}
+
+// u06: бэкапы дашборда.
+export interface OverviewBackupsDto {
+  configured: boolean;
+  health: { apiOk: boolean; liveOk: boolean; clusterOk: boolean | null } | null;
+  storageState: 'OK' | 'WARN' | 'CRIT' | null;
+  usedBytes: number;
+  quotaBytes: number | null;
+  etcdSnapshots: { enabled: boolean; state: string | null } | null;
+}
+
+// u06: надёжность дашборда.
+export interface OverviewReliabilityDto {
+  worstRpoPotentialSec: number | null;
+  fullOnlyCount: number;
+  offCount: number;
+  lastFailover: { durationSec: number; atUnix: number } | null;
+}
+
+// u07: активная операция домена.
+export interface OverviewOperationDto {
+  domain: 'pg' | 'kafka' | 'valkey' | 's3';
+  kind: string;
+  cluster: string;
+  entity: string | null;
+  detail: string;
+  updatedUnix: number | null;
+}
+
+// u08: свежесть per-домен (unix-секунды; null — не тикал).
+export interface OverviewFreshnessDto {
+  etcd: { builtAtUnix: number } | null;
+  pg: { builtAtUnix: number } | null;
+  kafka: { builtAtUnix: number } | null;
+  valkey: { builtAtUnix: number } | null;
+  s3: { builtAtUnix: number } | null;
+}
+
+// u10: глобальный стоп бэкапов (/pgworker/backups-disabled).
+export interface BackupsDisabledDto {
+  updatedUnix: number;
+  updatedBy: string | null;
 }
 
 export interface OverviewKafkaDto {

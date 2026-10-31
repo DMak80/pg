@@ -6,8 +6,9 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { AppShell, Box, Button, Group, Loader, NavLink, Stack, Text, Title } from '@mantine/core';
 import { Link, Outlet, useLocation, useNavigate } from 'react-router';
 import { fetchSession, logoutRequest, queryKeys } from '../api/queries';
+import { EventsProvider } from '../events/EventsProvider';
 import { PollingToggle } from './PollingToggle';
-import { StaleBadge } from './StaleBadge';
+import { FreshnessBadges } from './FreshnessBadges';
 import { AlertsNavCounters } from './AlertsNavCounters';
 
 // Структура навигации: секции (u01) + пункты (маршрут + подпись); активность
@@ -86,6 +87,9 @@ export function AppLayout() {
     );
 
   return (
+    // u09: провайдер ленты — только в открытой вкладке (после guard'а сессии);
+    // перезагрузка = пустая лента.
+    <EventsProvider>
     <AppShell
       header={{ height: 56 }}
       navbar={{ width: 220, breakpoint: 'sm' }}
@@ -95,7 +99,7 @@ export function AppLayout() {
         <Group h="100%" px="md" justify="space-between">
           <Group gap="sm">
             <Text fw={700}>AdminPanel</Text>
-            <StaleBadge />
+            <FreshnessBadges />
           </Group>
           <Group gap="sm">
             <PollingToggle />
@@ -130,5 +134,6 @@ export function AppLayout() {
         <Outlet />
       </AppShell.Main>
     </AppShell>
+    </EventsProvider>
   );
 }

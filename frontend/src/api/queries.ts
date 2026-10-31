@@ -577,10 +577,20 @@ export function fetchBackupObjectsPage(
 
 export const workerQueryKeys = {
   workers: ['workers'] as const,
+  // u15: эффективный конфиг воркера (on-demand прокси — не polling-ключ).
+  effectiveConfig: (worker: string) => ['workers', 'effective-config', worker] as const,
 };
 
 export function fetchWorkers(): Promise<WorkersViewDto> {
   return apiFetch<WorkersViewDto>('/api/workers');
+}
+
+// GET /api/workers/{worker}/effective-config (u15, adminpanel/02 §2.3.5):
+// on-demand прокси GET /api/config воркера; тело — JSON воркера как есть.
+export async function fetchWorkerEffectiveConfig(worker: string): Promise<Record<string, unknown>> {
+  const json = await apiFetch<unknown>(
+    `/api/workers/${encodeURIComponent(worker)}/effective-config`);
+  return (json ?? {}) as Record<string, unknown>;
 }
 
 // POST /api/workers/{worker}/api-cert/generate — self-signed лист (SAN по живым

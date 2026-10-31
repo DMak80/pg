@@ -27,7 +27,7 @@ export function EtcdPage() {
 
   // Паттерн состояний (t08 spec §4.15): нет данных + ошибка → ErrorSection;
   // нет данных без ошибки → загрузка; ошибка ПРИ данных (polling-сбой) — тихо,
-  // показываем предыдущие данные (StaleBadge в шапке уже сигнализирует).
+  // показываем предыдущие данные (FreshnessBadges в шапке уже сигнализирует).
   if (query.data === undefined)
     return query.isError ? (
       <ErrorSection error={query.error} onRetry={() => void query.refetch()} />

@@ -3,6 +3,7 @@ import { createBrowserRouter, Navigate } from 'react-router';
 import { LoginPage } from './auth/LoginPage';
 import { AppLayout } from './layout/AppLayout';
 import { AlertsPage } from './pages/AlertsPage';
+import { EventsPage } from './pages/EventsPage';
 import { BackupsStoragePage } from './pages/BackupsStoragePage';
 import { BackupsShardDetailsPage } from './pages/backups-storage/BackupsShardDetailsPage';
 import { ClusterDetailsPage } from './pages/ClusterDetailsPage';
@@ -44,6 +45,7 @@ export const router = createBrowserRouter([
       { path: 'ha/:scope', element: <HaScopeDetailsPage /> },
       { path: 'reliability', element: <ReliabilityPage /> },
       { path: 'alerts', element: <AlertsPage /> },
+      { path: 'events', element: <EventsPage /> },
       { path: 'workers', element: <WorkersPage /> },
       { path: '*', element: <Navigate to="/" replace /> },
     ],
