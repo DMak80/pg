@@ -207,6 +207,13 @@ public class NodeWalReceiverTests
                 Budget,
                 async () => await SupervisordStatusAsync(node, "walreceiver", ct));
 
+            // Assert — пулер тоже жив: DOORMAN_CONFIG-стаб валиден и стартует
+            // не-root (user=postgres) — pg_doorman RUNNING под supervisord'ом.
+            await WaitUntilAsync(
+                async () => (await SupervisordStatusAsync(node, "pg_doorman", ct)).Contains("RUNNING"),
+                Budget,
+                async () => await SupervisordStatusAsync(node, "pg_doorman", ct));
+
             // Assert — статус-ключ агента в etcd: waiting_role (REST ноды не
             // поднят — роль none; гейты/пароль/policy отсутствуют — но роль
             // проверяется ПЕРВЫЙ, ожидание waiting_role канонично)

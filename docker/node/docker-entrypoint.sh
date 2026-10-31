@@ -44,6 +44,12 @@ fi
 openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -subj "/CN=pg_doorman" \
     -keyout /etc/pg_doorman/tls.key -out /etc/pg_doorman/tls.crt
 
+# Пулер работает под postgres (supervisord user=postgres): конфиг и TLS-файлы
+# его; ключ — 0600 (читает только владелец).
+chown postgres:postgres /etc/pg_doorman/pg_doorman.yaml \
+    /etc/pg_doorman/tls.key /etc/pg_doorman/tls.crt
+chmod 600 /etc/pg_doorman/tls.key
+
 # ENV lease-скрипта мастер-ключа (P11) — переживает env-фильтр runit.
 {
     echo "PGW_ETCD=$(printf '%s' "$PGW_ETCD")"
