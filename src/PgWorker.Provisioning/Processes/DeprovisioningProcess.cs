@@ -192,6 +192,11 @@ public sealed class DeprovisioningProcess(
         if (!delBackups.IsSuccess)
             return delBackups;
 
+        // Статусные ключи агентов PgNode (arch/14 §3.3: D2 чистит префикс).
+        var delNodeStatus = await DeleteAsync($"/pgworker/nodes/{cluster}/", prefix: true, ct);
+        if (!delNodeStatus.IsSuccess)
+            return delNodeStatus;
+
         // Заявки переездов (spec §5.3 D2): префикс /pgworker/moves/<C>/ целиком.
         return await DeleteAsync($"/pgworker/moves/{cluster}/", prefix: true, ct);
     }

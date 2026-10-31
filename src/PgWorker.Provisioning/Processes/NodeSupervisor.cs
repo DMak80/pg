@@ -132,20 +132,17 @@ public sealed class NodeSupervisor(
                 return Fail(migrated.Error!);
         }
 
-        // 1.7) Общий шаг пересоздания нод REST-TLS (arch/14 §5 C): вход
-        // «конвергенция» (легаси-контейнеры без SSL_RESTAPI_*) и вход «ротация»
-        // (hash env != hash(pending) журнала) — единая механика, ≤1 пересоздание
-        // на тик кластера, volume сохраняется. Ветви лидера (spec §5.5):
-        // живой TLS-лидер — soft-switchover (снос следующим тиком); легаси-http
-        // лидер входа конвергенции — жёсткий снос с выборами Patroni под
-        // DCS-свидетелем (реплика state running — heartbeat мимо REST).
-        // РАНЬШЕ проб шарда (флап проб легаси-http нод не успевает породить
-        // rebuild/UNREACHABLE).
-        var restRecreated = await RecreateRestTlsNodesAsync(
-            cluster, snap, addresses.Value, restoring, restPassword,
-            ensuredSecrets.Value.RestPassword, supervision.Value.RestPending, ct);
-        if (!restRecreated.IsSuccess)
-            return Fail(restRecreated.Error!);
+        // 1.7) Шаг хендшейка и конвергенции доставки секретов (arch/14 §5 C,
+        // spec §3.7.3): реакции по статусному ключу /pgworker/nodes/<C>/… —
+        // not_initialized → доставка; initializing → ждать; ready с
+        // расхождением applied_revision → применение; start_failed →
+        // пересоздание ноды С НОВЫМ ДИСКОМ. Недоступность канала — transient
+        // тика (journal с адресом), статус ноды не портится. Пересоздание по
+        // СЕКРЕТАМ не выполняется — замены применяются доставкой.
+        var bootstrapConverged = await EnsureBootstrapConvergenceAsync(
+            cluster, snap, addresses.Value, restoring, restPassword, ct);
+        if (!bootstrapConverged.IsSuccess)
+            return Fail(bootstrapConverged.Error!);
 
         // 2) Пробы + сценарии недоступности (трек в work-журнале, план №4).
         var deadShards = new List<string>();
@@ -565,34 +562,36 @@ public sealed class NodeSupervisor(
             : Result<FailoverAcceleration>.Failed(deleted.Error!);
     }
 
-    // Общий шаг пересоздания нод REST-TLS (arch/14 §5 C/§5 I): ДВА входа —
-    // (а) конвергенция живых канонических нод, созданных до TLS (нет
-    // SSL_RESTAPI_CERTIFICATE в env); (б) rolling-ротация REST-пары (hash env !=
-    // hash(pending) журнала). Единая механика: инспекция env контейнера, ≤1
-    // пересоздание на тик кластера, volume сохраняется (stop + rm force БЕЗ
-    // RemoveNodeAsync — он снёс бы pgw-…-data), гвард кворума (свидетель-план
-    // помимо кандидата). Ветви лидера (spec §5.5): живой TLS-лидер — сначала
-    // graceful-switchover (снос следующим тиком, семантика TO_RECREATE-soft;
-    // кред — пара ФАКТИЧЕСКОГО поколения ноды — ключ etcd, до txn R3 это OLD:
-    // effective=NEW дала бы вечный 401 на ноде со OLD), легаси-http лидер входа
-    // конвергенции — жёсткий снос с выборами Patroni под DCS-свидетелем (без
-    // свидетеля шаг ждёт — лидерство в пустоту не сносим). В окне ротации её
-    // кандидаты доминируют; Swarm (SupportsRunningInspection=false) — шаг no-op
-    // (заглушка инспекции). Источник пароля ПЕРЕСОЗДАНИЯ — эффективная пара
-    // (ensure-результат либо pending), снапшот не используется.
-    private async Task<Result> RecreateRestTlsNodesAsync(
+    // Шаг хендшейка/конвергенции (arch/14 §5 C): один range статусных ключей
+    // /pgworker/nodes/<C>/ + реакции. Гварды: restore (свежая сверка)/
+    // TO_REMOVE-шарды и object-ноды пропускаются; QUARANTINED/REMOVING — вне.
+    // ≤1 мутация на тик кластера. start_failed → RemoveNodeAsync (kill+rm
+    // контейнера+volume) + EnsureNodeAsync (новый volume) + доставка.
+    private async Task<Result> EnsureBootstrapConvergenceAsync(
         string cluster, ClusterSnapshot snap,
         IReadOnlyDictionary<string, NodeAddress> addresses,
-        HashSet<string> restoring, string restPassword, string restKeyPassword,
-        string? restPending, CancellationToken ct)
+        HashSet<string> restoring, string restPassword, CancellationToken ct)
     {
-        if (!driver.SupportsRunningInspection)
-            return Result.Success(); // Swarm: инспекция env — заглушка, шаг no-op
-
-        // Живая сверка клэйма перед фазой пересозданий REST-TLS (arch/17 S5).
-        if (!await ClaimAliveAsync(cluster, "rest-tls", ct))
+        // Живая сверка клэйма перед шагом реакций (arch/17 S5).
+        if (!await ClaimAliveAsync(cluster, "bootstrap-convergence", ct))
             return Fail(new ApplicationException(
-                $"supervise {cluster}: claim lost before rest-tls step"));
+                $"supervise {cluster}: claim lost before bootstrap-convergence step"));
+
+        // Один range статусных ключей кластера → карта "<shard>/<node>" → факт.
+        var range = await RangeAsync($"/pgworker/nodes/{cluster}/", ct);
+        if (!range.IsSuccess)
+            return Fail(range.Error!);
+        var statuses = new Dictionary<string, PgNodeStatusFact>();
+        foreach (var kv in range.Value)
+        {
+            // "/pgworker/nodes/<C>/<X>/<N>/status" → ["", "pgworker", "nodes", <C>, <X>, <N>, "status"]
+            var segments = kv.Key.Split('/');
+            if (segments.Length != 7 || segments[6] != "status")
+                continue; // чужой ключ под префиксом
+            var fact = PgNodeStatusFact.Parse(kv.Value);
+            if (fact is not null)
+                statuses[$"{segments[4]}/{segments[5]}"] = fact;
+        }
 
         foreach (var shard in snap.Shards.Where(s => s.Dsn is not null && !s.ToRemove))
         {
@@ -605,141 +604,94 @@ public sealed class NodeSupervisor(
                     continue; // карантин/демонтаж — вне надзора
                 if (!addresses.TryGetValue($"{shard.Name}/{node.Name}", out var addr) || addr.Object is not null)
                     continue; // записи нет / усыновлённая (object) — чужой контейнер (R9)
-
-                var env = await driver.InspectNodeEnvAsync(cluster, shard.Name, node.Name, ct);
-                if (!env.IsSuccess)
-                    return env;
-
-                // Кандидат по входу: ротация (окно открыто) — hash env !=
-                // hash(pending); конвергенция (окна нет) — легаси-контейнер
-                // без серта.
-                var candidate = restPending is not null
-                    ? !string.Equals(
-                        env.Value.GetValueOrDefault(RestRotation.EnvPasswordHash),
-                        RestRotation.PasswordHash(restPending), StringComparison.Ordinal)
-                    : !env.Value.ContainsKey(RestRotation.EnvCert);
-                if (!candidate)
-                    continue;
-
-                // Гвард кворума: свидетель-план (не карантин/демонтаж) помимо
-                // кандидата — иначе снос оставит шард без источника basebackup.
-                if (!shard.Nodes.Any(n => n.Name != node.Name
-                        && n.State is not NodeState.Quarantined and not NodeState.Removing))
-                    continue;
-
-                // Пароль пересоздания — эффективная пара тика (ensure-результат
-                // либо pending; снапшот не используется).
-                var effective = restPassword;
-
-                var scope = $"{cluster}-{shard.Name}";
-                var scopeKvs = await RangeAsync($"/service/{scope}/", ct);
-                if (!scopeKvs.IsSuccess)
-                    return scopeKvs;
-                var leader = ClusterSnapshotParser.ParseService(scopeKvs.Value).FirstOrDefault()?.LeaderName;
-
-                if (leader == node.Name)
-                {
-                    if (await probe.IsAliveAsync(addr, ct))
-                    {
-                        // Живой TLS-лидер — soft (снос следующим тиком; снапшот
-                        // тика устареет сам). Кред — пара фактического поколения
-                        // ноды: ключ etcd (в окне ротации до txn R3 — OLD);
-                        // отказ switchover — тиковый ретрай (return Failed),
-                        // окно живёт (spec §5.5).
-                        var switched = await probe.SwitchoverAsync(addr, node.Name, restKeyPassword, ct);
-                        if (!switched.IsSuccess)
-                            return switched;
-                        await journal.WritePhaseAsync(cluster, "supervise",
-                            $"rest-tls-switchover/{shard.Name}/{node.Name}", claims.InstanceId, null, ct);
-                        return Result.Success(); // одно действие на тик кластера
-                    }
-
-                    // https-проба лидера не подтверждена. Вход ротации (окно
-                    // открыто): ноды ротации — TLS, значит лидер МЁРТВ — снос
-                    // сразу (канон TO_RECREATE: EnsureNode поднимет контейнер,
-                    // Patroni вернёт ноду репликой). Вход конвергенции: это
-                    // легаси-http лидер (soft транспортно недостижим — слушает
-                    // голый http) — жёсткий снос с выборами Patroni допускаем
-                    // ТОЛЬКО под DCS-свидетелем: реплика state running по
-                    // /service/<scope>/members/<n> (heartbeat Patroni ходит
-                    // через etcd, мимо REST — REST-проба легаси-контура не
-                    // работает); свидетеля нет — ждём тика, лидерство в пустоту
-                    // не сносим (spec §5.5, рев.3).
-                    if (restPending is null && !HasRunningDcsWitness(scopeKvs.Value, node.Name))
-                    {
-                        await journal.WritePhaseAsync(cluster, "supervise",
-                            $"rest-tls-wait-witness/{shard.Name}/{node.Name}", claims.InstanceId, null, ct);
-                        return Result.Success(); // ждём свидетеля — тик здоров
-                    }
-                }
-
-                // Пересоздание с сохранением volume: stop + rm force движка
-                // (stop → kill (spilo, arch/14 §6); паттерн port-mismatch-ветки
-                // EnsureNodeAsync; RemoveNodeAsync снёс бы data-volume).
-                // Движок хоста ноды; null — transient.
-                var engine = driver.EngineFor(addr.Host);
-                if (engine is null)
-                    return Result.Failed(new ApplicationException(
-                        $"supervise {cluster}: docker host {addr.Host} is unknown (rest-tls step)"));
-                var containerName = $"pgw-{cluster}-{shard.Name}-{node.Name}";
-                var stopped = await engine.KillContainerAsync(containerName, ct);
-                if (!stopped.IsSuccess)
-                    return stopped;
-                var removed = await engine.RemoveContainerAsync(containerName, force: true, ct);
-                if (!removed.IsSuccess)
-                    return removed;
+                if (!statuses.TryGetValue($"{shard.Name}/{node.Name}", out var status))
+                    continue; // статуса нет — агент стартует, следующий тик увидит not_initialized
 
                 var topology = TopologyOf(cluster, snap, shard.Name, addresses);
-                var resources = await ReadShardResourcesAsync(cluster, shard.Name, ct);
-                var tuning = pgtune.Create(resources);
-                var ensuredNode = await driver.EnsureNodeAsync(
-                    topology, node.Name, addr,
-                    etcdForNodes ?? new EtcdEndpoints(endpoints), resources, tuning,
-                    snap.Config.SyncStrict, ct);
-                if (!ensuredNode.IsSuccess)
-                    return ensuredNode;
 
-                // Доставка bootstrap-секретов пересозданной ноде (t05, §3.7.2):
-                // Transient — journal-факт (ретрай тиком).
-                var delivery = await bootstrap.EnsureAsync(
-                    topology, node.Name, addr, secrets, tuning,
-                    snap.Config.SyncStrict, restPassword, ct);
-                if (delivery.Transient)
-                    await journal.WritePhaseAsync(cluster, "supervise",
-                        $"bootstrap-delivery/{shard.Name}/{node.Name}",
-                        claims.InstanceId, delivery.Detail, ct);
+                switch (status.State)
+                {
+                    case "initializing":
+                        continue; // машина конечна — ждать
 
-                // Фазовая запись (трек carry-forward): оператор видит миграцию.
-                var phase = restPending is not null
-                    ? $"rest-rotate-rolled/{shard.Name}/{node.Name}"
-                    : $"rest-tls-migrated/{shard.Name}/{node.Name}";
-                await journal.WritePhaseAsync(cluster, "supervise", phase, claims.InstanceId, null, ct);
-                return Result.Success(); // ≤1 пересоздание на тик кластера
+                    case "not_initialized":
+                    {
+                        var outcome = await bootstrap.EnsureAsync(
+                            topology, node.Name, addr, secrets, null,
+                            snap.Config.SyncStrict, restPassword, ct);
+                        if (outcome.Transient)
+                            await journal.WritePhaseAsync(cluster, "supervise",
+                                $"bootstrap-delivery/{shard.Name}/{node.Name}",
+                                claims.InstanceId, outcome.Detail, ct);
+                        return Result.Success(); // ≤1 мутация на тик кластера
+                    }
+
+                    case "ready":
+                    {
+                        // Расхождение applied_revision с mod_revision bootstrap-ключа —
+                        // команда применения (через EnsureAsync: put при изменении +
+                        // apply по готовности). GET ключа — без put (put делает
+                        // delivery при изменении содержимого).
+                        var keyRead = await GetAsync(
+                            $"/clusters/{cluster}/shards/{shard.Name}/nodes/{node.Name}/bootstrap", ct);
+                        if (!keyRead.IsSuccess)
+                            return Fail(keyRead.Error!);
+                        if (keyRead.Value is null || status.AppliedRevision == (long)keyRead.Value.ModRevision)
+                            continue; // ключ ещё не доставлен / нода на ревизии — мутаций нет
+
+                        var outcome = await bootstrap.EnsureAsync(
+                            topology, node.Name, addr, secrets, null,
+                            snap.Config.SyncStrict, restPassword, ct);
+                        if (outcome.Transient)
+                            await journal.WritePhaseAsync(cluster, "supervise",
+                                $"bootstrap-apply/{shard.Name}/{node.Name}",
+                                claims.InstanceId, outcome.Detail, ct);
+                        return Result.Success(); // ≤1 мутация на тик кластера
+                    }
+
+                    case "start_failed":
+                    {
+                        // Пересоздание ноды С НОВЫМ ДИСКОМ (spec §3.7.3): данные ноды
+                        // не сохраняются — живой шард восстанавливает реплику
+                        // репликацией/бэкапом; restore/TO_REMOVE/object — вне (гварды
+                        // выше). Клэйм фазы — claim-дисциплина мутаций.
+                        var claimed = await ClaimAliveAsync(
+                            cluster, $"node-startfailed/{shard.Name}/{node.Name}", ct);
+                        if (!claimed)
+                            return Fail(new ApplicationException(
+                                $"supervise {cluster}: claim lost before node-startfailed step"));
+
+                        var removed = await driver.RemoveNodeAsync(
+                            cluster, shard.Name, node.Name, ct);
+                        if (!removed.IsSuccess)
+                            return removed;
+
+                        var resources = await ReadShardResourcesAsync(cluster, shard.Name, ct);
+                        var tuning = pgtune.Create(resources);
+                        var ensuredNode = await driver.EnsureNodeAsync(
+                            topology, node.Name, addr,
+                            etcdForNodes ?? new EtcdEndpoints(endpoints), resources, tuning,
+                            snap.Config.SyncStrict, ct);
+                        if (!ensuredNode.IsSuccess)
+                            return ensuredNode;
+
+                        var outcome = await bootstrap.EnsureAsync(
+                            topology, node.Name, addr, secrets, tuning,
+                            snap.Config.SyncStrict, restPassword, ct);
+                        if (outcome.Transient)
+                            await journal.WritePhaseAsync(cluster, "supervise",
+                                $"bootstrap-delivery/{shard.Name}/{node.Name}",
+                                claims.InstanceId, outcome.Detail, ct);
+                        await journal.WritePhaseAsync(cluster, "supervise",
+                            $"node-startfailed-recreate/{shard.Name}/{node.Name}",
+                            claims.InstanceId, null, ct);
+                        return Result.Success(); // ≤1 мутация на тик кластера
+                    }
+                }
             }
         }
 
         return Result.Success();
-    }
-
-    // DCS-свидетель жёсткого сноса лидера (spec §5.5 рев.3): реплика scope,
-    // живая по ЧЛЕНСТВУ — /service/<scope>/members/<n> со state running.
-    // Heartbeat Patroni ходит через etcd (мимо REST), поэтому свидетель жив
-    // даже в легаси-http контуре, где REST-проба воркера не работает. Пробелы
-    // JSON нормализуем (Patroni/emulator пишут с разделителями json.dumps).
-    private static bool HasRunningDcsWitness(IReadOnlyList<Kv> scopeKvs, string candidate)
-    {
-        foreach (var kv in scopeKvs)
-        {
-            // "/service/<scope>/members/<n>" → ["", "service", <scope>, "members", <n>]
-            var segments = kv.Key.Split('/');
-            if (segments.Length != 5 || segments[3] != "members" || segments[4] == candidate)
-                continue;
-            if (kv.Value.Replace(" ", string.Empty)
-                    .Contains("\"state\":\"running\"", StringComparison.Ordinal))
-                return true;
-        }
-
-        return false;
     }
 
     // Operator-triggered recreate (TO_RECREATE): оператор панелью просит

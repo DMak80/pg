@@ -65,13 +65,6 @@ public interface IClusterDriver
     // Имена объектов нод кластера (pgw-<C>-*): сверка декларации + сироты (D1).
     Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, CancellationToken ct);
 
-    // Инспекция env живого контейнера ноды (arch/14 §5 C — шаг пересоздания:
-    // критерий кандидата — факт env: SSL_RESTAPI_CERTIFICATE / PGW_REST_PASSWORD_HASH).
-    // Нет контейнера — пустой словарь; Swarm — заглушка (шаг пересоздания — no-op,
-    // симметрия заглушки InspectNodesAsync).
-    Task<Result<IReadOnlyDictionary<string, string>>> InspectNodeEnvAsync(
-        string cluster, string shard, string nodeName, CancellationToken ct);
-
     // ── WAL-агенты бэкапов (arch/19 §3) ──
 
     // Санитарный снос legacy wal-контейнеров pgw-backup-wal-<C>-* (+ их
@@ -626,23 +619,6 @@ public sealed class PlainClusterDriver(
             NetworkAliases: [nodeName, NodeName(topology.Cluster, topology.Shard, nodeName)]);
     }
 
-    // Env живого контейнера ноды (по имени на всех хостах таблицы — записи
-    // portalloc нет у шага; хост с находкой несёт непустой env). Нет контейнера
-    // нигде / transport-фейл всех хостов — пустой словарь (не свидетельство).
-    public async Task<Result<IReadOnlyDictionary<string, string>>> InspectNodeEnvAsync(
-        string cluster, string shard, string nodeName, CancellationToken ct)
-    {
-        var empty = (IReadOnlyDictionary<string, string>)new Dictionary<string, string>();
-        foreach (var engine in _engines.Values)
-        {
-            var env = await engine.InspectContainerEnvAsync(NodeName(cluster, shard, nodeName), ct);
-            if (env is { IsSuccess: true, Value: { Count: > 0 } })
-                return Result<IReadOnlyDictionary<string, string>>.Success(env.Value);
-        }
-
-        return Result<IReadOnlyDictionary<string, string>>.Success(empty);
-    }
-
     internal static string NodeName(string cluster, string shard, string nodeName)
         => $"pgw-{cluster}-{shard}-{nodeName}";
 
@@ -770,13 +746,6 @@ public sealed class SwarmClusterDriver(
         var tail = service[prefix.Length..];
         return tail.StartsWith("-", StringComparison.Ordinal) ? "" : tail.Split('-')[0];
     }
-
-    // Swarm: шаг пересоздания нод надзора — no-op (заглушка, симметрия
-    // InspectNodesAsync): сервисы не инспектируются по env.
-    public Task<Result<IReadOnlyDictionary<string, string>>> InspectNodeEnvAsync(
-        string cluster, string shard, string nodeName, CancellationToken ct)
-        => Task.FromResult(Result<IReadOnlyDictionary<string, string>>.Success(
-            (IReadOnlyDictionary<string, string>)new Dictionary<string, string>()));
 
     // Усыновление swarm-кластеров: за пределами текущей задачи (стенд plain,
     // spec §3.1); при необходимости — инспект тасков сервисов.

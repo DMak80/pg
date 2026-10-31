@@ -395,38 +395,9 @@ internal sealed class FakeDriver : IClusterDriver
                 EnsuredNodes.Add($"{topology.Shard}/{nodeName}");
                 EnsuredDetails.Add((nodeName, resources));
                 EnsuredSyncStrict.Add(syncStrict); // значение фиксируется для ассертов
-                // Пересоздание шагом REST-TLS — новый контейнер несёт полный env
-                // (серт + hash фактической пары): тестовая семантика «ensure пишет env».
-                NodeEnvs[$"{topology.Shard}/{nodeName}"] = new Dictionary<string, string>
-                {
-                    [RestRotation.EnvCert] = "-----BEGIN CERTIFICATE-----\nunit\n-----END CERTIFICATE-----\n",
-                };
             }
 
             return Task.FromResult(EnsureResultByNode is { } f ? f(nodeName) : Result.Success());
-        }
-
-        // env живого контейнера (шаг пересоздания). Дефолт — «TLS уже на
-        // месте» (существующие тесты надзора: шаг no-op); кейсы шага затирают
-        // NodeEnvs управляемым env (легаси без серта / чужой hash).
-        public bool DefaultNodeEnvIsLegacy { get; set; }
-        // ротация: оверрайд env инспекции (кейс «нода несёт hash(pending)» —
-        // тесты ротатора читают журнал напрямую).
-        public Func<string, string, IReadOnlyDictionary<string, string>>? InspectEnvOverride { get; set; }
-        public Task<Result<IReadOnlyDictionary<string, string>>> InspectNodeEnvAsync(
-            string cluster, string shard, string nodeName, CancellationToken ct)
-        {
-            if (InspectEnvOverride is { } over)
-                return Task.FromResult(Result<IReadOnlyDictionary<string, string>>.Success(over(shard, nodeName)));
-            if (NodeEnvs.TryGetValue($"{shard}/{nodeName}", out var env))
-                return Task.FromResult(Result<IReadOnlyDictionary<string, string>>.Success(env));
-            return Task.FromResult(Result<IReadOnlyDictionary<string, string>>.Success(
-                DefaultNodeEnvIsLegacy
-                    ? (IReadOnlyDictionary<string, string>)new Dictionary<string, string>()
-                    : new Dictionary<string, string>
-                    {
-                        [RestRotation.EnvCert] = "-----BEGIN CERTIFICATE-----\nunit\n-----END CERTIFICATE-----\n",
-                    }));
         }
 
         public Task<Result> RemoveNodeAsync(string cluster, string shard, string nodeName, CancellationToken ct)
