@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.Options;
 using PgWorker.App.Api.Operations;
 
 using PgWorker.Core.Writing;
@@ -530,6 +531,11 @@ public static class ApiModule
                     title: "Etcd write failed", detail: result.Error!.Message),
             };
         });
+
+        // GET /api/config — эффективный конфиг установки (arch/14 §1.1, u15):
+        // read-only, mTLS-зона /api, без снапшота и etcd.
+        endpoints.MapGet("/api/config", (IOptions<PgWorkerOptions> options)
+            => Results.Ok(PgWorkerEffectiveConfig.From(options.Value)));
 
         // POST /api/seed/demo — демо-сид pg-контура (arch/14 §1.1.1, стенд):
         // перенос seed.sh 1:1; идемпотентен по /clusters/demo/config.

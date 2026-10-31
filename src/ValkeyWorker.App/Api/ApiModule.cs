@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.Options;
 using ValkeyWorker.App.Api.Operations;
 
 namespace ValkeyWorker.App.Api;
@@ -199,6 +200,11 @@ public static class ApiModule
                     detail: result.Error!.Message),
             };
         });
+
+        // GET /api/config — эффективный конфиг установки (arch/21 §1.1, u15):
+        // read-only, mTLS-зона /api, без снапшота и etcd.
+        endpoints.MapGet("/api/config", (IOptions<ValkeyWorkerOptions> options)
+            => Results.Ok(ValkeyWorkerEffectiveConfig.From(options.Value)));
 
         // POST /api/seed/demo — стендовый сид за флагом (идемпотентен).
         endpoints.MapPost("/api/seed/demo", async (SeedDemoHandler handler, CancellationToken ct) =>

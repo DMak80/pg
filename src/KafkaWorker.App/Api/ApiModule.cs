@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.Options;
 using KafkaWorker.App.Api.Operations;
 
 using KafkaWorker.Core.Writing;
@@ -482,6 +483,11 @@ public static class ApiModule
         endpoints.MapDelete("/api/kafka/clusters/{cluster}/topics/{topic}/desired.delete", async (
             string cluster, string topic, CancelLifecycleHandler handler, CancellationToken ct) =>
             await CancelTopicLifecycleAsync(cluster, topic, "delete", handler, ct));
+
+        // GET /api/config — эффективный конфиг установки (arch/16 §1.1, u15):
+        // read-only, mTLS-зона /api, без снапшота и etcd.
+        endpoints.MapGet("/api/config", (IOptions<KafkaWorkerOptions> options)
+            => Results.Ok(KafkaWorkerEffectiveConfig.From(options.Value)));
 
         // POST /api/seed/demo — демо-сид kafka-домена (arch/16 §1.1.1, стенд):
         // перенос kafka-seed.sh 1:1; идемпотентен по /kafka/clusters/events/config.
