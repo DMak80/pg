@@ -91,7 +91,8 @@ public static class ValkeyMappers
             ticketOutcome is null ? null : new TicketOutcomeDto(
                 ticketOutcome.Kind, ticketOutcome.Outcome, ticketOutcome.Reason,
                 ticketOutcome.RequestedUnix, ticketOutcome.RequestedBy, ticketOutcome.FinishedUnix),
-            work is null ? null : new WorkDto(work.Op, work.Phase, work.UpdatedUnix, work.LastError));
+            work is null ? null : new WorkDto(work.Op, work.Phase, work.UpdatedUnix, work.LastError,
+                work.Instance, work.FailCount, work.FailFirstUnix, work.RetryNotBeforeUnix));
 
     public static string StateName(ValkeyClusterState state) => state switch
     {

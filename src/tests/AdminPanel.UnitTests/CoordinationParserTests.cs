@@ -30,7 +30,7 @@ public class CoordinationParserTests
         };
 
         // Act
-        var (coordination, errors) = CoordinationParser.Parse(Root, leaderKv, claims, instances);
+        var (coordination, errors) = CoordinationParser.Parse(leaderKv, claims, instances);
 
         // Assert
         errors.Should().BeEmpty();
@@ -46,7 +46,7 @@ public class CoordinationParserTests
     public void Parse_NoKeys_EmptyCoordination_NoErrors()
     {
         // Arrange / Act — префиксы пусты (воркер ещё не поднимался)
-        var (coordination, errors) = CoordinationParser.Parse(Root, null, [], []);
+        var (coordination, errors) = CoordinationParser.Parse(null, [], []);
 
         // Assert — пустая координация, не ошибка (u14-толерантность)
         errors.Should().BeEmpty();
@@ -67,7 +67,7 @@ public class CoordinationParserTests
         };
 
         // Act
-        var (coordination, errors) = CoordinationParser.Parse(Root, leaderKv, claims, []);
+        var (coordination, errors) = CoordinationParser.Parse(leaderKv, claims, []);
 
         // Assert — тик не роняет: leader=null, claims разобраны
         errors.Should().ContainSingle().Which.Key.Should().Be($"{Root}/leader");
@@ -85,7 +85,7 @@ public class CoordinationParserTests
         };
 
         // Act
-        var (coordination, errors) = CoordinationParser.Parse(Root, null, [], instances);
+        var (coordination, errors) = CoordinationParser.Parse(null, [], instances);
 
         // Assert — инстанс учтён без since
         errors.Should().BeEmpty();
@@ -104,7 +104,7 @@ public class CoordinationParserTests
         };
 
         // Act
-        var (coordination, errors) = CoordinationParser.Parse(Root, null, claims, []);
+        var (coordination, errors) = CoordinationParser.Parse(null, claims, []);
 
         // Assert
         errors.Should().ContainSingle().Which.Key.Should().Be($"{Root}/claims/demo");

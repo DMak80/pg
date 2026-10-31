@@ -80,10 +80,11 @@ public static class ValkeyOperationsModule
         // заявки ротации пароля (u17, 02 §11.2-7; ключ один на обе роли):
         // прокси DELETE воркера; 204/404/409/503.
         endpoints.MapDelete("/api/valkey/clusters/{cluster}/password/rotate", async (
-            string cluster, IHandler handler, CancellationToken ct) =>
+            string cluster, ClaimsPrincipal user, IHandler handler, CancellationToken ct) =>
         {
             var result = await handler.HandleCommand<CancelValkeyRotationCommand, ValkeyRotationCancelledDto>(
-                new CancelValkeyRotationCommand(cluster, "password/rotate"), ct);
+                new CancelValkeyRotationCommand(
+                    cluster, "password/rotate", user.Identity?.Name ?? "adminpanel"), ct);
             if (result.IsSuccess)
                 return Results.NoContent();
 
@@ -93,10 +94,11 @@ public static class ValkeyOperationsModule
         // DELETE /api/valkey/clusters/{cluster}/ca/rotate — отмена живой заявки
         // ротации CA (02 §11.2-8).
         endpoints.MapDelete("/api/valkey/clusters/{cluster}/ca/rotate", async (
-            string cluster, IHandler handler, CancellationToken ct) =>
+            string cluster, ClaimsPrincipal user, IHandler handler, CancellationToken ct) =>
         {
             var result = await handler.HandleCommand<CancelValkeyRotationCommand, ValkeyRotationCancelledDto>(
-                new CancelValkeyRotationCommand(cluster, "ca/rotate"), ct);
+                new CancelValkeyRotationCommand(
+                    cluster, "ca/rotate", user.Identity?.Name ?? "adminpanel"), ct);
             if (result.IsSuccess)
                 return Results.NoContent();
 

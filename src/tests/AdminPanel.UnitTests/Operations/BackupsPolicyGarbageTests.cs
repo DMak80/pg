@@ -68,3 +68,75 @@ public class BackupsPolicyGarbageTests
         json.Should().NotContain("garbage_min_age_sec");
     }
 }
+
+// Панельная валидация policy-тела (400-ветка модуля, u16/arch/02 §9.12):
+// границы гварда панели — дубль для UX (истина — воркер). Имя кластера —
+// канон; garbageMinAgeSec < 600 — 400 (A1: граница канона arch/19 §4). AAA.
+public class PolicyBodyValidationTests
+{
+    private static UpdateBackupsPolicyRequest ValidBody(long? garbage = 600)
+        => new(7, 4, 6, 86400, true, 1, S3: null, GarbageMinAgeSec: garbage);
+
+    [Theory]
+    [InlineData(600L)]
+    [InlineData(601L)]
+    [InlineData(null)]
+    public void GarbageMinAgeSec_AtOrAboveMin_BodyValid(long? garbage)
+    {
+        // Arrange/Act — граница включена (600 — дефолт канона)
+        var invalid = PolicyBodyValidation.IsInvalid(ValidBody(garbage));
+
+        // Assert
+        invalid.Should().BeFalse();
+    }
+
+    [Theory]
+    [InlineData(599L)]
+    [InlineData(0L)]
+    [InlineData(-1L)]
+    public void GarbageMinAgeSec_BelowMin_BodyInvalid(long? garbage)
+    {
+        // Arrange/Act
+        var invalid = PolicyBodyValidation.IsInvalid(ValidBody(garbage));
+
+        // Assert
+        invalid.Should().BeTrue();
+    }
+
+    [Fact]
+    public void RetentionDaysZero_BodyInvalid()
+    {
+        // Arrange — граница retention (первичное поле политики)
+        var body = ValidBody() with { RetentionDays = 0 };
+
+        // Act/Assert
+        PolicyBodyValidation.IsInvalid(body).Should().BeTrue();
+    }
+
+    [Fact]
+    public void FullMaxAgeSec599_BodyInvalid()
+    {
+        // Arrange — соседняя граница сек-полей (единый порог 600)
+        var body = ValidBody() with { FullMaxAgeSec = 599 };
+
+        // Act/Assert
+        PolicyBodyValidation.IsInvalid(body).Should().BeTrue();
+    }
+
+    [Fact]
+    public void DrillIntervalDaysOutOfRange_BodyInvalid()
+    {
+        // Arrange — граница дрилов [0..3650]
+        var body = ValidBody() with { DrillIntervalDays = 3651 };
+
+        // Act/Assert
+        PolicyBodyValidation.IsInvalid(body).Should().BeTrue();
+    }
+
+    [Fact]
+    public void Hint_MentionsGarbageBoundary()
+    {
+        // Arrange/Act/Assert — подсказка формы называет границу garbage
+        PolicyBodyValidation.Hint.Should().Contain("garbageMinAgeSec ≥ 600");
+    }
+}

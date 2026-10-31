@@ -49,13 +49,13 @@ public class CancelRotationProxyTests
 
         // Act
         var result = await handler.Handle(
-            new CancelKafkaRotationCommand("events", "app-password/rotate"), CancellationToken.None);
+            new CancelKafkaRotationCommand("events", "app-password/rotate", "ops"), CancellationToken.None);
 
-        // Assert — DELETE без requestedBy (заявка не создаётся), путь канонический
+        // Assert — оператор уходит воркеру заголовком (аудит отмен — host-лог воркера)
         result.IsSuccess.Should().BeTrue();
         api.Calls.Should().ContainSingle().Which.Should().Match<StubWorkerApi.Call>(c =>
             c.Worker == "kafkaworker" && c.Method == HttpMethod.Delete
-            && c.Path == "/api/kafka/clusters/events/app-password/rotate" && c.RequestedBy == null);
+            && c.Path == "/api/kafka/clusters/events/app-password/rotate" && c.RequestedBy == "ops");
     }
 
     [Fact]
@@ -71,7 +71,7 @@ public class CancelRotationProxyTests
 
         // Act
         var result = await handler.Handle(
-            new CancelKafkaRotationCommand("events", "ca/rotate"), CancellationToken.None);
+            new CancelKafkaRotationCommand("events", "ca/rotate", "ops"), CancellationToken.None);
 
         // Assert — ProblemDetails воркера как ошибка прокси (тело как есть,
         // модуль зеркалит его ProblemDetails-ответом панели)
@@ -90,7 +90,7 @@ public class CancelRotationProxyTests
 
         // Act
         var result = await handler.Handle(
-            new CancelValkeyRotationCommand("cache", "password/rotate"), CancellationToken.None);
+            new CancelValkeyRotationCommand("cache", "password/rotate", "ops"), CancellationToken.None);
 
         // Assert
         result.IsSuccess.Should().BeTrue();
@@ -108,7 +108,7 @@ public class CancelRotationProxyTests
 
         // Act
         var result = await handler.Handle(
-            new CancelKafkaRotationCommand("events", "admin-password/rotate"), CancellationToken.None);
+            new CancelKafkaRotationCommand("events", "admin-password/rotate", "ops"), CancellationToken.None);
 
         // Assert — 503-семантика модуля (Error → 503)
         result.Error.Should().BeOfType<WorkerApiUnavailableException>();

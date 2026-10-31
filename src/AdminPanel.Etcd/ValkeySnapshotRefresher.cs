@@ -75,17 +75,30 @@ public sealed class ValkeySnapshotRefresher(
             ? _activeEndpoint
             : endpoints[0];
 
-        var clustersKv = await RangeWithFailoverAsync(endpoints, active, Prefixes.Clusters, ct);
-        var rotationsKv = await RangeWithFailoverAsync(endpoints, active, Prefixes.Rotations, ct);
-        var caRotationsKv = await RangeWithFailoverAsync(endpoints, active, Prefixes.CaRotations, ct);
-        var ticketOutcomesKv = await RangeWithFailoverAsync(endpoints, active, Prefixes.TicketOutcomes, ct);
-        var workerApiKv = await RangeWithFailoverAsync(endpoints, active, Prefixes.WorkerApi, ct);
-        var certKv = await RangeWithFailoverAsync(endpoints, active, Prefixes.WorkerApiCert, ct);
+        // Чтения тика — ПАРАЛЛЕЛЬНО (образец pg-цикла SnapshotRefresher):
+        // длина тика = max латентностей, а не сумма; частичный провал любого
+        // чтения = отказ тика (механика без изменений).
+        var clustersTask = RangeWithFailoverAsync(endpoints, active, Prefixes.Clusters, ct);
+        var rotationsTask = RangeWithFailoverAsync(endpoints, active, Prefixes.Rotations, ct);
+        var caRotationsTask = RangeWithFailoverAsync(endpoints, active, Prefixes.CaRotations, ct);
+        var ticketOutcomesTask = RangeWithFailoverAsync(endpoints, active, Prefixes.TicketOutcomes, ct);
+        var workerApiTask = RangeWithFailoverAsync(endpoints, active, Prefixes.WorkerApi, ct);
+        var certTask = RangeWithFailoverAsync(endpoints, active, Prefixes.WorkerApiCert, ct);
         // u13/u14: work-журналы и координация valkey-домена (arch/20 §3).
-        var workKv = await RangeWithFailoverAsync(endpoints, active, Prefixes.Work, ct);
-        var leaderKv = await RangeWithFailoverAsync(endpoints, active, Prefixes.Leader, ct);
-        var claimsKv = await RangeWithFailoverAsync(endpoints, active, Prefixes.Claims, ct);
-        var instancesKv = await RangeWithFailoverAsync(endpoints, active, Prefixes.Instances, ct);
+        var workTask = RangeWithFailoverAsync(endpoints, active, Prefixes.Work, ct);
+        var leaderTask = RangeWithFailoverAsync(endpoints, active, Prefixes.Leader, ct);
+        var claimsTask = RangeWithFailoverAsync(endpoints, active, Prefixes.Claims, ct);
+        var instancesTask = RangeWithFailoverAsync(endpoints, active, Prefixes.Instances, ct);
+        var clustersKv = await clustersTask;
+        var rotationsKv = await rotationsTask;
+        var caRotationsKv = await caRotationsTask;
+        var ticketOutcomesKv = await ticketOutcomesTask;
+        var workerApiKv = await workerApiTask;
+        var certKv = await certTask;
+        var workKv = await workTask;
+        var leaderKv = await leaderTask;
+        var claimsKv = await claimsTask;
+        var instancesKv = await instancesTask;
         if (!clustersKv.IsSuccess || !rotationsKv.IsSuccess || !caRotationsKv.IsSuccess
             || !ticketOutcomesKv.IsSuccess || !workerApiKv.IsSuccess || !certKv.IsSuccess
             || !workKv.IsSuccess || !leaderKv.IsSuccess || !claimsKv.IsSuccess || !instancesKv.IsSuccess)
@@ -102,8 +115,7 @@ public sealed class ValkeySnapshotRefresher(
         var certParsed = WorkerCertParser.Parse(Prefixes.WorkerApiCert, certKv.Value.FirstOrDefault());
         // u13/u14: журналы и координация (факт-поля pg у домена отсутствуют).
         var workParsed = WorkJournalParser.Parse(workKv.Value);
-        var coordinationParsed = CoordinationParser.Parse(
-            "/valkeyworker", leaderKv.Value.FirstOrDefault(), claimsKv.Value, instancesKv.Value);
+        var coordinationParsed = CoordinationParser.Parse(leaderKv.Value.FirstOrDefault(), claimsKv.Value, instancesKv.Value);
 
         // Креды проб: admin-пара — internal-стор; в модель кластера не попадает
         // (arch/02 §11.1). Частичный набор — не ошибка (ensure воркера в процессе).

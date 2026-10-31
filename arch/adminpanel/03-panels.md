@@ -54,7 +54,7 @@ effective-config` → `GET /api/config` API воркера (02 §2.3.5). JSON, c
 | `GET /api/ha` | список HA-scope'ов (сводный) |
 | `GET /api/ha/{scope}` | детали scope: leader, members+runtime, optime, raw config, request_* |
 | `GET /api/reliability` | грань «Надёжность» (read-only): per-cluster/per-shard RPO-блок (mode wal/full/off, возраст валидного полного + id, лаг/возраст WAL, сводный RPO-потенциал, порог) и RTO-блок (последний failover/rebuild с cause/duration/ongoing, длительности последнего drill/restore); всегда 200 с пустыми секциями при выключенных подсистемах, 503 — нет снапшота |
-| `GET /api/backups/storage` | грань «Хранилище бэкапов»: `configured` (false → только это поле+причина), endpoint/bucket (без ключей), health, место (etcd-ключ `storage` + live-инвентарь), дерево кластеров/шардов, сироты (реестр воркера + сверка панели), `inventoryUpdatedUnix`/`inventoryError` (02 §2.5) |
+| `GET /api/backups/storage` | грань «Хранилище бэкапов»: `configured` (false → только это поле+причина), endpoint/bucket (без ключей), health, место (etcd-ключ `storage` + live-инвентарь), дерево кластеров/шардов, сироты (реестр воркера + сверка панели), `inventoryUpdatedUnix`/`inventoryError` (02 §2.5); опциональный `?cluster=<C>` — серверная фильтрация срезов ОДНОГО кластера (вкладка «Бэкапы (срез)» pg-страницы; без параметра — полная сводка; reconcile на сервере не сужается) |
 | `GET /api/backups/storage/{cluster}/{shard}` | детали шарда: полные (id/size/objectCount/lastModified + etcd state/verify/size + статус сверки), WAL (S3-факт + etcd-статус), активный restore (бейдж), 404 — нет ни в etcd, ни в S3-дереве |
 | `GET /api/backups/objects?prefix=&maxKeys=200&continuationToken=` | on-demand list-v2 (единственный выход в S3-хранилище на запрос): `prefix` пуст или `<кластерный паттерн>/…` **и** первый сегмент — кластер снапшота или S3-дерева инвентаря (иначе 400 — защита от произвольного листинга), `maxKeys` 1..1000 (иначе 400), `nextContinuationToken` |
 | `GET /api/alerts` | все алерты; query `?severity=critical|warning|info`, `?kind=` |
@@ -321,8 +321,12 @@ OverviewDto: alertsCritical, alertsWarning, etcd{reachable, endpointsOk, endpoin
  переезды/заявки/ротации/reassignment/lifecycle/restore/drill/work;
  имена kind — словарь сервера, UI их не парсит),
  freshness{etcd{builtAtUnix}, pg{builtAtUnix}, kafka{builtAtUnix},
- valkey{builtAtUnix}, s3{builtAtUnix}} (u08 — BuiltAtUtc per снапшот
- в unix-секундах, etcd — lastRefresh; null-домен — ещё не тикал),
+ valkey{builtAtUnix}, s3{builtAtUnix}, intervalSeconds} (u08 —
+ BuiltAtUtc per снапшот в unix-секундах, etcd — lastRefresh;
+ null-домен — ещё не тикал; intervalSeconds — серверный интервал тика
+ pg-домена (02 §4): порог stale бейджей UI — 3×intervalSeconds от НЕГО,
+ не от клиентского интервала опроса — синхронно с правилом
+ snapshot-stale),
  backupsDisabled{updatedUnix, updatedBy?}? (u10 — null = бэкапы работают)
 EtcdStatusDto: endpoints[{url, reachable, latencyMs, version, dbSizeBytes,
  leaderMemberId, raftTerm, errors[], active}], members[{id, name,
@@ -333,10 +337,12 @@ ClusterDto: name, dbname, bucketsCount, createdUnix, incomplete(bool),
  synchronousModeStrict(bool — снапшот-поле), shards[ShardDto],
  buckets[BucketDto], pendingMoves[MoveTicketDto] — очередь заявок
  /pgworker/moves/<C>/ (02 §2.3.1; джойн по кластеру, сортировка
- по requestedUnix), work{op, phase, updatedUnix, lastError}?
+ по requestedUnix), work{op, phase, updatedUnix, lastError?,
+ instance?, failCount?, failFirstUnix?, retryNotBeforeUnix?}?
  (nullable — журнал /pgworker/work/<C>, 02 §2.3.1; последний
  результат процесса воркера — результат исполненной/отвергнутой
- заявки переездов), heals[HealDto],
+ заявки переездов; instance/fail-серия — u13: зациклившийся отказ
+ отличим от разового), heals[HealDto],
  evacuations[EvacuationDto] (u12 — журналы /pgworker/evacuations/<C>/<X>
  этого кластера, 02 §2.3.1),
  secretsRotationPending(bool) (u07-бейдж: живая заявка
@@ -423,7 +429,8 @@ lastDeliveredSegment?, lastDeliveredUnix?, poolExhausted, tliJump?,
 error?, updatedUnix}`).
 
 Доменные DTO u13/u14: `KafkaClusterDto`/`ValkeyClusterDto`/`S3ClusterDto` +
-`work{op, phase, instance?, updatedUnix, lastError?}?` (nullable — джойн
+`work{op, phase, instance?, updatedUnix, lastError?, failCount?,
+failFirstUnix?, retryNotBeforeUnix?}?` (nullable — джойн
 work-журналов домена по кластеру, отсутствие журнала → null);
 `KafkaClusterDto` + `adminRotation{requestedUnix, requestedBy}?` (джойн
 `/kafkaworker/admin_rotations/<C>` — бейдж живой admin-ротации, образец
@@ -456,7 +463,7 @@ NOT_INITIALIZED/TO_REMOVE — серым, режимы, endpoints, заявки 
 | Панель | Что показывает |
 |---|---|
 | **Login** | форма логин/пароль; ошибка 401 |
-| **Обзор** (`/`) | бейджи свежести 5 доменов в шапке layout'а (u08, §3.0-группы «НАБЛЮДЕНИЕ» не касаются — рендер в layout'е); карточки: etcd (reachable, endpoints ok/total; alarms — в ленте алертов и на панели etcd), кластеры pg (шарды/бакеты/переезды), карточка Valkey (порт KafkaCard: clustersTotal/clustersCritical; null до первого тика — «Снапшот valkey ещё не собран», u05); карточки доменов дублируют возраст данных из `freshness` (жёлтый при старше 3×интервала, u08); при `backupsDisabled` — жёлтый баннер «Бэкапы остановлены (глобальный стоп)» над карточками (u10); секция «Активные операции» — таблица `operations` (Домен \| Тип \| Кластер \| Сущность \| Детали \| Обновлено; пусто → «Нет активных операций»; u07 — замена прежней таблицы activeMoves, переезды — подмножество операций pg); секция «Требуют оператора» рядом с лентой алертов — только алерты с remedy `OperatorApi`/`OperatorRunbook` (u18); лента алертов critical/warning; сводка HA (`data.ha`: scopesTotal/withoutLeader/unmatched), карточка «Бэкапы» (`data.backups`), карточка «Надёжность» (`data.reliability`) — все числа с сервера `/api/overview` (u06 — клиентские доборы `/api/ha`, `/api/backups/storage`, `/api/reliability` с дашборда удалены; сами эндпоинты остаются — потребители-страницы есть) |
+| **Обзор** (`/`) | бейджи свежести 5 доменов в шапке layout'а (u08, §3.0-группы «НАБЛЮДЕНИЕ» не касаются — рендер в layout'е); карточки: etcd (reachable, endpoints ok/total; alarms — в ленте алертов и на панели etcd), кластеры pg (шарды/бакеты/переезды), карточка Valkey (порт KafkaCard: clustersTotal/clustersCritical; null до первого тика — «Снапшот valkey ещё не собран», u05); карточки доменов дублируют возраст данных из `freshness` (жёлтый при старше 3×`freshness.intervalSeconds` — серверный интервал тика, u08); при `backupsDisabled` — жёлтый баннер «Бэкапы остановлены (глобальный стоп)» над карточками (u10); секция «Активные операции» — таблица `operations` (Домен \| Тип \| Кластер \| Сущность \| Детали \| Обновлено; пусто → «Нет активных операций»; u07 — замена прежней таблицы activeMoves, переезды — подмножество операций pg); секция «Требуют оператора» рядом с лентой алертов — только алерты с remedy `OperatorApi`/`OperatorRunbook` (u18); лента алертов critical/warning; сводка HA (`data.ha`: scopesTotal/withoutLeader/unmatched), карточка «Бэкапы» (`data.backups`), карточка «Надёжность» (`data.reliability`) — все числа с сервера `/api/overview` (u06 — клиентские доборы `/api/ha`, `/api/backups/storage`, `/api/reliability` с дашборда удалены; сами эндпоинты остаются — потребители-страницы есть) |
 | **События** (`/events`, u09) | клиентская лента событий из query-кэша (диффы prev→next ответов polling'а: overview/clusters/cluster-details/ha/kafka/valkey/s3/backups-storage): таблица Время \| Домен \| Тип сущности \| Сущность \| Событие (from→to) \| Детали; фильтры Select домена (Все/pg/kafka/valkey/s3/etcd) и entityKind; клик по событию — deep-link на сущность (та же функция маршрутизации, что у алертов — §3.9); события типа state-change/appeared/gone/outcome (заявка: появление = «поставлена», исчезновение = «исполнена или отвергнута»); подпись «Лента живёт в открытой вкладке; после перезагрузки пуста» — persistence нет (02 §3-инварианты истории); freshness-события не эмитятся |
 | **etcd** | таблица endpoints (reachable, latency, версия, raftTerm, ошибки, метка «активный»), members (+лидер), alarms; `lastRefreshUtc` |
 | **Clusters** | список: имя, dbname, N, шард мастеровых/всего, активные переезды, бейдж режима `strict`/`availability` (по `synchronousModeStrict`), пометки (incomplete, not-initialized, «к удалению» при `toRemove`); кнопка «Создать кластер» → модальная форма (§3.1) |

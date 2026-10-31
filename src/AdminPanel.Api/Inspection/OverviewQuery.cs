@@ -57,10 +57,13 @@ public sealed record OverviewOperationDto(
     string Domain, string Kind, string Cluster, string? Entity, string Detail, long? UpdatedUnix);
 
 // Свежесть (u08): BuiltAtUtc per снапшот в unix-секундах; etcd — lastRefresh;
-// null-домен — снапшот ещё не тикал.
+// null-домен — снапшот ещё не тикал. IntervalSeconds — серверный интервал тика
+// (RefreshIntervalSeconds, §2/§3): порог stale бейджей считается от НЕГО
+// (3×interval, как SnapshotStaleRule), а не от клиентского интервала опроса.
 public sealed record OverviewFreshnessDto(
     OverviewFreshnessItemDto? Etcd, OverviewFreshnessItemDto? Pg,
-    OverviewFreshnessItemDto? Kafka, OverviewFreshnessItemDto? Valkey, OverviewFreshnessItemDto? S3);
+    OverviewFreshnessItemDto? Kafka, OverviewFreshnessItemDto? Valkey,
+    OverviewFreshnessItemDto? S3, long IntervalSeconds = 0);
 
 public sealed record OverviewFreshnessItemDto(long BuiltAtUnix);
 
@@ -132,7 +135,7 @@ public static class OverviewMapper
             MapBackups(snapshot),
             MapReliability(snapshot, nowUtc),
             MapOperations(snapshot, kafka, valkey, s3),
-            MapFreshness(snapshot, kafka, valkey, s3),
+            MapFreshness(snapshot, kafka, valkey, s3, (long)Math.Round(refreshIntervalSeconds)),
             snapshot.BackupsDisabled is { } disabled
                 ? new BackupsDisabledDto(disabled.UpdatedUnix, disabled.UpdatedBy)
                 : null);
@@ -242,16 +245,18 @@ public static class OverviewMapper
             operations.Add(new OverviewOperationDto(
                 "pg", "move-ticket", ticket.Cluster, ticket.Bucket, ticket.Op, ticket.RequestedUnix));
 
-        // pg: живые заявки ротаций per-cluster секретов.
+        // pg: живые заявки ротаций per-cluster секретов (detail "unknown" —
+        // пустая строка в таблице операций неотличима от отсутствия значения).
         foreach (var rotation in pg.PgRotations ?? [])
             operations.Add(new OverviewOperationDto(
-                "pg", "rotation", rotation.Cluster, null, rotation.RequestedBy ?? "", rotation.RequestedUnix));
+                "pg", "rotation", rotation.Cluster, null,
+                rotation.RequestedBy ?? "unknown", rotation.RequestedUnix));
 
-        // pg: активные restore (RUNNING|REJOINING) и RUNNING-дриллы.
+        // pg: активные restore (RUNNING|REJOINING) и RUNNING-дриллы
+        // (fallback-словари — static readonly: без new на каждый кластер).
         foreach (var backups in pg.Backups)
         {
-            foreach (var (shard, restores) in backups.ShardsRestores
-                ?? (IReadOnlyDictionary<string, IReadOnlyList<RestoreOperationInfo>>)new Dictionary<string, IReadOnlyList<RestoreOperationInfo>>())
+            foreach (var (shard, restores) in backups.ShardsRestores ?? EmptyRestores)
             {
                 foreach (var restore in restores.Where(r => r.State is "RUNNING" or "REJOINING"))
                     operations.Add(new OverviewOperationDto(
@@ -259,8 +264,7 @@ public static class OverviewMapper
                         restore.Phase ?? restore.State.ToLowerInvariant(), restore.RequestedUnix));
             }
 
-            foreach (var (shard, drill) in backups.ShardsDrills
-                ?? (IReadOnlyDictionary<string, DrillInfo>)new Dictionary<string, DrillInfo>())
+            foreach (var (shard, drill) in backups.ShardsDrills ?? EmptyDrills)
             {
                 if (drill.State == "RUNNING")
                     operations.Add(new OverviewOperationDto(
@@ -284,19 +288,19 @@ public static class OverviewMapper
             foreach (var ticket in kafka.Rotations)
                 operations.Add(new OverviewOperationDto(
                     "kafka", "rotation", ticket.Cluster, null,
-                    ticket.RequestedBy ?? "", ticket.RequestedUnix));
+                    ticket.RequestedBy ?? "unknown", ticket.RequestedUnix));
             foreach (var ticket in kafka.AdminRotations ?? [])
                 operations.Add(new OverviewOperationDto(
                     "kafka", "rotation", ticket.Cluster, null,
-                    ticket.RequestedBy ?? "", ticket.RequestedUnix));
+                    ticket.RequestedBy ?? "unknown", ticket.RequestedUnix));
             foreach (var ticket in kafka.CaRotations ?? [])
                 operations.Add(new OverviewOperationDto(
                     "kafka", "ca-rotation", ticket.Cluster, null,
-                    ticket.RequestedBy ?? "", ticket.RequestedUnix));
+                    ticket.RequestedBy ?? "unknown", ticket.RequestedUnix));
             foreach (var ticket in kafka.Rebalances)
                 operations.Add(new OverviewOperationDto(
                     "kafka", "rebalance", ticket.Cluster, null,
-                    ticket.RequestedBy ?? "", ticket.RequestedUnix));
+                    ticket.RequestedBy ?? "unknown", ticket.RequestedUnix));
             foreach (var progress in kafka.Reassignments)
                 operations.Add(new OverviewOperationDto(
                     "kafka", "reassignment", progress.Cluster, progress.DrainBroker,
@@ -324,7 +328,7 @@ public static class OverviewMapper
             foreach (var ticket in valkey.CaRotations ?? [])
                 operations.Add(new OverviewOperationDto(
                     "valkey", "ca-rotation", ticket.Cluster, null,
-                    ticket.RequestedBy ?? "", ticket.RequestedUnix));
+                    ticket.RequestedBy ?? "unknown", ticket.RequestedUnix));
         }
 
         // s3: живая заявка ротации клиентских кредов.
@@ -333,25 +337,28 @@ public static class OverviewMapper
             foreach (var ticket in s3.Rotations)
                 operations.Add(new OverviewOperationDto(
                     "s3", "rotation", ticket.Cluster, null,
-                    ticket.RequestedBy ?? "", ticket.RequestedUnix));
+                    ticket.RequestedBy ?? "unknown", ticket.RequestedUnix));
         }
 
         return operations;
     }
 
     // Свежесть (u08): BuiltAtUtc per снапшот (unix-секунды); etcd — lastRefresh;
-    // null-домен — снапшот ещё не тикал (UI рисует серое «—»).
+    // null-домен — снапшот ещё не тикал (UI рисует серое «—»); IntervalSeconds —
+    // серверный интервал тика (u08/D7: порог stale UI — от сервера, не клиента).
     public static OverviewFreshnessDto MapFreshness(
         EtcdSnapshot pg,
         Core.Kafka.KafkaSnapshot? kafka,
         Core.Valkey.ValkeySnapshot? valkey,
-        Core.S3.S3Snapshot? s3)
+        Core.S3.S3Snapshot? s3,
+        long refreshIntervalSeconds = 0)
         => new(
             new OverviewFreshnessItemDto(pg.Etcd.LastRefreshUtc.ToUnixTimeSeconds()),
             new OverviewFreshnessItemDto(pg.BuiltAtUtc.ToUnixTimeSeconds()),
             kafka is null ? null : new OverviewFreshnessItemDto(kafka.BuiltAtUtc.ToUnixTimeSeconds()),
             valkey is null ? null : new OverviewFreshnessItemDto(valkey.BuiltAtUtc.ToUnixTimeSeconds()),
-            s3 is null ? null : new OverviewFreshnessItemDto(s3.BuiltAtUtc.ToUnixTimeSeconds()));
+            s3 is null ? null : new OverviewFreshnessItemDto(s3.BuiltAtUtc.ToUnixTimeSeconds()),
+            refreshIntervalSeconds);
 
     // kafka-сводка (arch/03 §7.1): кластеры + ВСЕ critical kafka-алерты
     // (MapKafka хендлера — public-семантика прежняя, дубликат осознан).
@@ -387,6 +394,13 @@ public static class OverviewMapper
                 s3.Alerts.Count(a => a.Severity == Core.AlertSeverity.Critical
                     && a.Kind is "s3-node-not-running" or "s3-endpoints-missing"
                         or "s3-connectivity-down" or "s3-sync-diverged"));
+
+    // Пустые fallback-словари отсутствующих restore/drill-фактов (arch/03 §2):
+    // один static readonly вместо new Dictionary на каждый кластер цикла.
+    private static readonly IReadOnlyDictionary<string, IReadOnlyList<RestoreOperationInfo>> EmptyRestores =
+        new Dictionary<string, IReadOnlyList<RestoreOperationInfo>>();
+    private static readonly IReadOnlyDictionary<string, DrillInfo> EmptyDrills =
+        new Dictionary<string, DrillInfo>();
 }
 
 // Хендлер: store → отказ «снапшота нет» или маппер (spec §3.12).

@@ -206,9 +206,9 @@ public static class ApiModule
         // /valkeyworker/rotations/<C> (один на обе роли) воркером; гвард
         // «не начата» по work-журналу (409), заявки нет → 404.
         endpoints.MapDelete("/api/valkey/clusters/{cluster}/password/rotate", async (
-            string cluster, CancelPasswordRotationHandler handler, CancellationToken ct) =>
+            string cluster, HttpRequest http, CancelPasswordRotationHandler handler, CancellationToken ct) =>
         {
-            var result = await handler.HandleAsync(cluster, ct);
+            var result = await handler.HandleAsync(cluster, RequestedBy(http), ct);
             if (result.IsSuccess)
                 return Results.NoContent();
 
@@ -216,11 +216,11 @@ public static class ApiModule
         });
 
         // DELETE /api/valkey/clusters/{cluster}/ca/rotate — отмена живой заявки
-        // ротации CA (arch/02 §11.2-8, u17; гвард CaMutationLive CaRotator).
+        // ротации CA (arch/02 §11.2-8, u17; гвард MutationLive CaRotator).
         endpoints.MapDelete("/api/valkey/clusters/{cluster}/ca/rotate", async (
-            string cluster, CancelValkeyCaRotationHandler handler, CancellationToken ct) =>
+            string cluster, HttpRequest http, CancelValkeyCaRotationHandler handler, CancellationToken ct) =>
         {
-            var result = await handler.HandleAsync(cluster, ct);
+            var result = await handler.HandleAsync(cluster, RequestedBy(http), ct);
             if (result.IsSuccess)
                 return Results.NoContent();
 

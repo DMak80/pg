@@ -83,26 +83,28 @@ public sealed class SnapshotRefresher(
         _activeEndpoint = active.Url;
 
         // 3. Чтения на активном — параллельно; транспортный провал → failover по кругу живых (spec §3.10).
-        var clustersTask = WithFailoverAsync(alive, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.Clusters, t), ct);
-        var serviceTask = WithFailoverAsync(alive, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.Service, t), ct);
-        var nodesTask = WithFailoverAsync(alive, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.Nodes, t), ct);
-        var portAllocTask = WithFailoverAsync(alive, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.PortAlloc, t), ct);
-        var movesTask = WithFailoverAsync(alive, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.Moves, t), ct);
-        var backupsTask = WithFailoverAsync(alive, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.Backups, t), ct);
-        var pgApiTask = WithFailoverAsync(alive, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.PgWorkerApi, t), ct);
-        var pgCertTask = WithFailoverAsync(alive, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.WorkerApiCert, t), ct);
-        var etcdSnapshotsTask = WithFailoverAsync(alive, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.EtcdSnapshots, t), ct);
-        var workTask = WithFailoverAsync(alive, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.PgWorkerWork, t), ct);
+        // URL живых endpoints — один массив на тик (не пересобирается в каждом WithFailoverAsync).
+        var aliveUrls = alive.Select(e => e.Url).ToArray();
+        var clustersTask = WithFailoverAsync(aliveUrls, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.Clusters, t), ct);
+        var serviceTask = WithFailoverAsync(aliveUrls, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.Service, t), ct);
+        var nodesTask = WithFailoverAsync(aliveUrls, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.Nodes, t), ct);
+        var portAllocTask = WithFailoverAsync(aliveUrls, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.PortAlloc, t), ct);
+        var movesTask = WithFailoverAsync(aliveUrls, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.Moves, t), ct);
+        var backupsTask = WithFailoverAsync(aliveUrls, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.Backups, t), ct);
+        var pgApiTask = WithFailoverAsync(aliveUrls, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.PgWorkerApi, t), ct);
+        var pgCertTask = WithFailoverAsync(aliveUrls, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.WorkerApiCert, t), ct);
+        var etcdSnapshotsTask = WithFailoverAsync(aliveUrls, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.EtcdSnapshots, t), ct);
+        var workTask = WithFailoverAsync(aliveUrls, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.PgWorkerWork, t), ct);
         // u10–u14: стоп бэкапов (точечный range — образец WorkerApiCert),
         // эвакуации, живые заявки ротаций, координация leader/claims/instances.
-        var backupsDisabledTask = WithFailoverAsync(alive, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.BackupsDisabled, t), ct);
-        var evacuationsTask = WithFailoverAsync(alive, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.Evacuations, t), ct);
-        var pgRotationsTask = WithFailoverAsync(alive, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.PgRotations, t), ct);
-        var leaderTask = WithFailoverAsync(alive, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.Leader, t), ct);
-        var claimsTask = WithFailoverAsync(alive, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.Claims, t), ct);
-        var instancesTask = WithFailoverAsync(alive, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.Instances, t), ct);
-        var membersTask = WithFailoverAsync(alive, active, (ep, t) => gateway.MemberListAsync(ep, t), ct);
-        var alarmsTask = WithFailoverAsync(alive, active, (ep, t) => gateway.AlarmAsync(ep, t), ct);
+        var backupsDisabledTask = WithFailoverAsync(aliveUrls, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.BackupsDisabled, t), ct);
+        var evacuationsTask = WithFailoverAsync(aliveUrls, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.Evacuations, t), ct);
+        var pgRotationsTask = WithFailoverAsync(aliveUrls, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.PgRotations, t), ct);
+        var leaderTask = WithFailoverAsync(aliveUrls, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.Leader, t), ct);
+        var claimsTask = WithFailoverAsync(aliveUrls, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.Claims, t), ct);
+        var instancesTask = WithFailoverAsync(aliveUrls, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.Instances, t), ct);
+        var membersTask = WithFailoverAsync(aliveUrls, active, (ep, t) => gateway.MemberListAsync(ep, t), ct);
+        var alarmsTask = WithFailoverAsync(aliveUrls, active, (ep, t) => gateway.AlarmAsync(ep, t), ct);
 
         var clustersKv = await clustersTask;
         var serviceKv = await serviceTask;
@@ -157,8 +159,7 @@ public sealed class SnapshotRefresher(
         var backupsDisabledParsed = BackupsDisabledParser.Parse(backupsDisabledKv.Value.FirstOrDefault());
         var evacuationsParsed = EvacuationsParser.Parse(evacuationsKv.Value);
         var pgRotationsParsed = RotationsParser.Parse(pgRotationsKv.Value);
-        var coordinationParsed = CoordinationParser.Parse(
-            "/pgworker", leaderKv.Value.FirstOrDefault(), claimsKv.Value, instancesKv.Value);
+        var coordinationParsed = CoordinationParser.Parse(leaderKv.Value.FirstOrDefault(), claimsKv.Value, instancesKv.Value);
 
         // 5. Кворум-эвристика (spec §3.11) + мягкие метаданные member/alarm (ошибка не роняет тик).
         var quorumSuspected = alive.All(a => a.LeaderMemberId is not > 0 || a.RaftTerm is not > 0)
@@ -198,7 +199,8 @@ public sealed class SnapshotRefresher(
             evacuationsParsed,
             pgRotationsParsed,
             coordinationParsed.Coordination,
-            coordinationParsed.Errors);
+            coordinationParsed.Errors,
+            backupsDisabledParsed.Error);
         var enrichedBase = ProbeEnricher.Apply(builtBase, probeStateStore.Current)
             with
         {
@@ -229,14 +231,14 @@ public sealed class SnapshotRefresher(
     // Failover: один проход по живым endpoints по кругу от активного; смена цели, не повтор
     // (retry внутри тика запрещён arch/02 §4; failover — §3.10).
     private static async Task<Result<T>> WithFailoverAsync<T>(
-        EtcdEndpoint[] alive,
+        string[] aliveUrls,
         EtcdEndpoint active,
         Func<string, CancellationToken, Task<Result<T>>> call,
         CancellationToken ct)
     {
         var result = await EtcdEndpointFailover.CallAsync(
-            alive.Select(e => e.Url).ToArray(), call, ct,
-            Math.Max(Array.IndexOf(alive, active), 0));
+            aliveUrls, call, ct,
+            Math.Max(Array.IndexOf(aliveUrls, active.Url), 0));
         return result.IsSuccess
             ? result
             : Result<T>.Failed(new EtcdUnreachableException(

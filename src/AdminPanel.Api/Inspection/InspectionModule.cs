@@ -230,11 +230,13 @@ public static class InspectionModule
     // детали — из снапшота; objects — on-demand list-v2 (единственный выход в ownS3).
     public static IEndpointRouteBuilder MapBackupsInspectionApi(this IEndpointRouteBuilder endpoints)
     {
-        // GET /api/backups/storage — сводка (configured=false → 200 с одним полем+причиной).
-        endpoints.MapGet("/api/backups/storage", async (IHandler handler, CancellationToken ct) =>
+        // GET /api/backups/storage — сводка (configured=false → 200 с одним полем+причиной);
+        // опциональный ?cluster= сужает ответ срезами одного кластера (arch/03 §1).
+        endpoints.MapGet("/api/backups/storage", async (
+            string? cluster, IHandler handler, CancellationToken ct) =>
         {
             var result = await handler.HandleQuery<BackupStorageQuery, BackupStorageDto>(
-                new BackupStorageQuery(), ct);
+                new BackupStorageQuery(cluster), ct);
             return ResultToHttp(result);
         });
 

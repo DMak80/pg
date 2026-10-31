@@ -13,7 +13,11 @@ namespace AdminPanel.Api.Inspection;
 // единственный прямой выход в ownS3 на запрос. Креды S3 в DTO не отдаются
 // никогда (AC8): только endpoint/bucket.
 
-public sealed record BackupStorageQuery : IQuery<BackupStorageDto>;
+// Опциональный ?cluster= (arch/03 §1): ответ сужается до срезов ОДНОГО
+// кластера (clusters/шарды/джойны) — вкладка «Бэкапы (срез)» не тянет сводку
+// всей установки; полный ответ (null) — прежний. Reconcile на сервере
+// остаётся полным (сверка по всему бакету — дешёвая чистая функция).
+public sealed record BackupStorageQuery(string? Cluster = null) : IQuery<BackupStorageDto>;
 
 public sealed record BackupShardStorageQuery(string Cluster, string Shard) : IQuery<BackupShardStorageDto>;
 
@@ -291,7 +295,10 @@ private static string WalStateName(WalStreamInfoState state) => state switch
                     HasS3Only: s3OnlyByShard.Contains((s.Cluster, s.Shard)),
                     Orphan: orphanPrefixes.Contains($"{s.Cluster}/{s.Shard}"),
                     RestoreState: restoreByShard.TryGetValue(s.Shard, out var restores)
-                        ? restores.FirstOrDefault(r => r.State is not ("COMPLETED" or "FAILED"))?.State
+                        ? restores
+                            .Where(r => r.State is not ("COMPLETED" or "FAILED"))
+                            .OrderByDescending(r => r.StartedUnix ?? r.RequestedUnix)
+                            .FirstOrDefault()?.State
                         : null,
                     DrillState: drillByShard.TryGetValue(s.Shard, out var drill)
                         ? drill.State
@@ -399,8 +406,13 @@ private static string WalStateName(WalStreamInfoState state) => state switch
             S3LastModifiedUnix: s3Shard?.Wal?.LastModifiedUnix ?? 0,
             S3LastObject: walEntry?.S3LastObject);
 
+        // Активный restore — ПОСЛЕДНИЙ по started/requested (нештатный случай
+        // двух активных: сводка от новейшей, не по порядку Id-Ordinal).
         var restore = etcdCluster?.ShardsRestores?.TryGetValue(shard, out var restores) == true
-            ? restores.FirstOrDefault(r => r.State is not ("COMPLETED" or "FAILED"))
+            ? restores
+                .Where(r => r.State is not ("COMPLETED" or "FAILED"))
+                .OrderByDescending(r => r.StartedUnix ?? r.RequestedUnix)
+                .FirstOrDefault()
             : null;
 
         // Сводная пометка сверки (для шапки деталей шарда).
@@ -453,11 +465,18 @@ public sealed class BackupStorageQueryHandler(ISnapshotReader reader, IOptions<A
             return ValueTask.FromResult(Result<BackupStorageDto>.Failed(
                 new InspectionModule.SnapshotNotReadyException()));
 
-        return ValueTask.FromResult(Result<BackupStorageDto>.Success(
-            BackupStorageMappers.MapStorage(
-                snapshot,
-                alertsOptions.Value.Backups.OrphanTtlSec,
-                DateTimeOffset.UtcNow.ToUnixTimeSeconds())));
+        var dto = BackupStorageMappers.MapStorage(
+            snapshot,
+            alertsOptions.Value.Backups.OrphanTtlSec,
+            DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+
+        // ?cluster= — серверная фильтрация среза одного кластера (архив: полный
+        // reconcile не сужается — сверка считается по всему бакету сразу).
+        var filtered = query.Cluster is null
+            ? dto
+            : dto with { Clusters = [.. dto.Clusters.Where(c => c.Cluster == query.Cluster)] };
+
+        return ValueTask.FromResult(Result<BackupStorageDto>.Success(filtered));
     }
 }
 

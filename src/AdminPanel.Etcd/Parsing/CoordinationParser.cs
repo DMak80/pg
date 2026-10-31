@@ -15,7 +15,7 @@ namespace AdminPanel.Etcd.Parsing;
 public static class CoordinationParser
 {
     public static (WorkerCoordination? Coordination, IReadOnlyList<KeyParseError> Errors) Parse(
-        string prefixRoot, Kv? leaderKv, IReadOnlyList<Kv> claimsKv, IReadOnlyList<Kv> instancesKv)
+        Kv? leaderKv, IReadOnlyList<Kv> claimsKv, IReadOnlyList<Kv> instancesKv)
     {
         var errors = new List<KeyParseError>();
 

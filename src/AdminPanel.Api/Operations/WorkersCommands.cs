@@ -36,8 +36,16 @@ public sealed class GetWorkerEffectiveConfigCommandHandler(IWorkerApiGateway api
 {
     public ValueTask<Result<System.Text.Json.JsonElement>> Handle(
         GetWorkerEffectiveConfigCommand command, CancellationToken ct)
-        => WorkerProxy.SendElementAsync(
+    {
+        // Неизвестный воркер — 404 (гвард как у рестарт-хендлера): иначе
+        // WorkerApiGateway.ResolveEndpoints отвечал ArgumentOutOfRangeException → 500.
+        if (command.Worker is not ("pgworker" or "kafkaworker" or "valkeyworker" or "s3worker"))
+            return ValueTask.FromResult(
+                Result<System.Text.Json.JsonElement>.Failed(new WorkerNotFoundException(command.Worker)));
+
+        return WorkerProxy.SendElementAsync(
             api, command.Worker, HttpMethod.Get, "/api/config", body: null, requestedBy: null, ct);
+    }
 }
 
 public sealed record WorkerApiCertDto(

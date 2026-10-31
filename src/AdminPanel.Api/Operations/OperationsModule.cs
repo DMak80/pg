@@ -198,16 +198,12 @@ public static class OperationsModule
             string cluster, UpdateBackupsPolicyRequest request, ClaimsPrincipal user,
             IHandler handler, CancellationToken ct) =>
         {
-            if (request.RetentionDays < 1 || request.RetentionWeeks < 0 || request.RetentionMonths < 0
-                || request.FullMaxAgeSec < 600
-                || request.DrillIntervalDays is < 0 or > 3650
-                || request.GarbageMinAgeSec is < 600)
+            if (PolicyBodyValidation.IsInvalid(request))
             {
                 return Results.Problem(
                     statusCode: StatusCodes.Status400BadRequest,
                     title: "Invalid body",
-                    detail: "retentionDays ≥ 1, weeks/months ≥ 0, fullMaxAgeSec ≥ 600, "
-                        + "drillIntervalDays in [0..3650], garbageMinAgeSec ≥ 600");
+                    detail: PolicyBodyValidation.Hint);
             }
 
             var result = await handler.HandleCommand<UpdateBackupsPolicyCommand, string>(
@@ -288,3 +284,18 @@ public static class OperationsModule
 public sealed record RestoreShardRequestDto(
     [property: System.Text.Json.Serialization.JsonPropertyName("confirm")] string Confirm,
     [property: System.Text.Json.Serialization.JsonPropertyName("targetTime")] string? TargetTime);
+
+// Валидация тела policy (02 §9.12, u16): статик — юнит-тесты границ
+// (400-ветка: retention/full_max_age/drill/garbage_min_age < 600).
+// Истина — сервер воркера; панель — дубль для UX.
+public static class PolicyBodyValidation
+{
+    public const string Hint = "retentionDays ≥ 1, weeks/months ≥ 0, fullMaxAgeSec ≥ 600, "
+        + "drillIntervalDays in [0..3650], garbageMinAgeSec ≥ 600";
+
+    public static bool IsInvalid(UpdateBackupsPolicyRequest request)
+        => request.RetentionDays < 1 || request.RetentionWeeks < 0 || request.RetentionMonths < 0
+           || request.FullMaxAgeSec < 600
+           || request.DrillIntervalDays is < 0 or > 3650
+           || request.GarbageMinAgeSec is < 600;
+}

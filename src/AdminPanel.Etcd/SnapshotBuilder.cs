@@ -27,7 +27,8 @@ public static class SnapshotBuilder
         EvacuationsParseResult? evacuations = null,    // u12: /pgworker/evacuations/
         PgRotationsParseResult? pgRotations = null,    // u07: /pgworker/rotations/
         WorkerCoordination? coordination = null,       // u14: leader/claims/instances
-        IReadOnlyList<KeyParseError>? coordinationErrors = null)
+        IReadOnlyList<KeyParseError>? coordinationErrors = null,
+        KeyParseError? backupsDisabledError = null)    // u10: битый ключ стопа бэкапов
         => new(
             time.GetUtcNow(),
             etcd,
@@ -46,7 +47,9 @@ public static class SnapshotBuilder
                 .. etcdSnapshots?.Errors ?? [],
                 .. evacuations?.Errors ?? [], // u12: битые журналы эвакуаций — key-malformed
                 .. pgRotations?.Errors ?? [], // u07: битые заявки ротаций — key-malformed
-                .. coordinationErrors ?? []], // u14: битые ключи координации — key-malformed
+                .. coordinationErrors ?? [], // u14: битые ключи координации — key-malformed
+                // u10: битый /pgworker/backups-disabled — key-malformed (не невидим)
+                .. backupsDisabledError is null ? Array.Empty<KeyParseError>() : [backupsDisabledError]],
             clusters.UnknownKeyCount + service.UnknownKeyCount,
             backups.Storage, // /pgworker/backups/storage
             backups.Orphans, // /pgworker/backups/orphans

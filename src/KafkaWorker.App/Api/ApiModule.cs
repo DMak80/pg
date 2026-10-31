@@ -294,9 +294,9 @@ public static class ApiModule
         // /kafkaworker/rotations/<C> воркером; гвард «не начата» по work-журналу
         // (409 «Rotation rejected»), заявки нет → 404.
         endpoints.MapDelete("/api/kafka/clusters/{cluster}/app-password/rotate", async (
-            string cluster, CancelAppRotationHandler handler, CancellationToken ct) =>
+            string cluster, HttpRequest http, CancelAppRotationHandler handler, CancellationToken ct) =>
         {
-            var result = await handler.HandleAsync(cluster, ct);
+            var result = await handler.HandleAsync(cluster, RequestedBy(http), ct);
             if (result.IsSuccess)
                 return Results.NoContent();
 
@@ -306,9 +306,9 @@ public static class ApiModule
         // DELETE /api/kafka/clusters/{cluster}/admin-password/rotate — отмена
         // живой заявки ротации admin-пароля (arch/02 §10.2-19, u17).
         endpoints.MapDelete("/api/kafka/clusters/{cluster}/admin-password/rotate", async (
-            string cluster, CancelAdminRotationHandler handler, CancellationToken ct) =>
+            string cluster, HttpRequest http, CancelAdminRotationHandler handler, CancellationToken ct) =>
         {
-            var result = await handler.HandleAsync(cluster, ct);
+            var result = await handler.HandleAsync(cluster, RequestedBy(http), ct);
             if (result.IsSuccess)
                 return Results.NoContent();
 
@@ -316,11 +316,11 @@ public static class ApiModule
         });
 
         // DELETE /api/kafka/clusters/{cluster}/ca/rotate — отмена живой заявки
-        // ротации CA (arch/02 §10.2-20, u17; гвард CaMutationLive CaRotator).
+        // ротации CA (arch/02 §10.2-20, u17; гвард MutationLive CaRotator).
         endpoints.MapDelete("/api/kafka/clusters/{cluster}/ca/rotate", async (
-            string cluster, CancelCaRotationHandler handler, CancellationToken ct) =>
+            string cluster, HttpRequest http, CancelCaRotationHandler handler, CancellationToken ct) =>
         {
-            var result = await handler.HandleAsync(cluster, ct);
+            var result = await handler.HandleAsync(cluster, RequestedBy(http), ct);
             if (result.IsSuccess)
                 return Results.NoContent();
 

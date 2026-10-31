@@ -149,7 +149,8 @@ public static class S3Mappers
             cluster.Sync.LastError),
         cluster.Rotation is null ? null : new S3RotationDto(
             cluster.Rotation.RequestedUnix, cluster.Rotation.RequestedBy),
-        work is null ? null : new WorkDto(work.Op, work.Phase, work.UpdatedUnix, work.LastError));
+        work is null ? null : new WorkDto(work.Op, work.Phase, work.UpdatedUnix, work.LastError,
+                work.Instance, work.FailCount, work.FailFirstUnix, work.RetryNotBeforeUnix));
 
     public static string StateName(S3ClusterState state) => state switch
     {

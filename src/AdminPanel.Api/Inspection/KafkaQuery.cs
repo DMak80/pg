@@ -233,7 +233,8 @@ public static class KafkaMappers
             AdminRotation: adminRotation is null
                 ? null
                 : new KafkaRotationTicketDto(adminRotation.RequestedUnix, adminRotation.RequestedBy),
-            Work: work is null ? null : new WorkDto(work.Op, work.Phase, work.UpdatedUnix, work.LastError));
+            Work: work is null ? null : new WorkDto(work.Op, work.Phase, work.UpdatedUnix, work.LastError,
+                work.Instance, work.FailCount, work.FailFirstUnix, work.RetryNotBeforeUnix));
     }
 
     private static TopicLifecycleDto? LifecycleDto(KafkaTopicLifecycleTicket? ticket)

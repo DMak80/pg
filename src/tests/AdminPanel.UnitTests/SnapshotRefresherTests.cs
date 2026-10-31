@@ -622,6 +622,31 @@ public class SnapshotRefresherTests
             .Which.InstanceId.Should().Be("pgw-1");
     }
 
+    // u10: битый JSON /pgworker/backups-disabled — parseError-запись в снапшоте
+    // (key-malformed), BackupsDisabled == null: стоп бэкапов с битым значением
+    // НЕ невидим (алерт key-malformed собирается по ParseErrors снапшота).
+    [Fact]
+    public async Task Refresh_BrokenBackupsDisabled_KeyMalformedRecorded()
+    {
+        // Arrange — точечный ключ с повреждённым значением
+        var gateway = DemoGateway();
+        gateway.ExtraKv["/pgworker/backups-disabled"] =
+            [new Kv("/pgworker/backups-disabled", "not-a-json{", 1)];
+        var store = new SnapshotStore();
+        var refresher = RefresherTestHarness.New(gateway, store, "http://etcd1:2379");
+
+        // Act
+        var result = await refresher.RefreshOnceAsync(TestContext.Current.CancellationToken);
+
+        // Assert — тик успешен (толерантный парсер), ошибка ключа — в ParseErrors
+        result.IsSuccess.Should().BeTrue();
+        var snapshot = store.Current!;
+        snapshot.BackupsDisabled.Should().BeNull("битое значение не даёт факта стопа");
+        snapshot.ParseErrors.Should().Contain(e =>
+            e.Key == "/pgworker/backups-disabled"
+            && e.Reason.Contains("broken backups-disabled JSON", StringComparison.Ordinal));
+    }
+
     // u10–u14: транспортный провал НОВОГО range → отказ тика, данные прежние
     // (инвариант «неполный снапшот хуже прежнего», adminpanel/02 §4).
     [Fact]

@@ -409,6 +409,10 @@ public sealed class CaRotator(
            && j.Phase != "done"
            && !j.Phase.StartsWith("waiting-", StringComparison.Ordinal);
 
+    // Гвард отмены заявки CA (App/Operations CancelRotationHandlers): тот же
+    // предикат — литералы фаз в App не дублируются. Public: App — другая сборка.
+    public static bool MutationLive(WorkState? journalState) => CaMutationLive(journalState);
+
     private async Task<Result<IReadOnlyDictionary<string, NodeAddress>>> ReadPortAllocAsync(
         string cluster, CancellationToken ct)
     {
