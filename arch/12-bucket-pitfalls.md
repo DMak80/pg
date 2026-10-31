@@ -719,7 +719,7 @@ etcd — настройка при старте кластера: `--etcd` в in
 etcd-контрол-плейна, доверие адресу обеспечивает аутентификация etcd-канала
 (TLS etcd). Серверные сертификаты doorman не hot-reload'ятся — self-signed
 перегенерируется entrypoint при каждом старте (arch/13 §4), план ротации
-для пулера не требуется; целевая доставка серта — etcd/walreceiver
+для пулера не требуется; целевая доставка серта — etcd/агент PgNode (arch/14 §4)
 (t05-node-secret-push).
 **(3) Аутентификация** — per-pool auth_query doorman: логин/пароль единственной
 app-роли; doorman проверяет креды запросом `SELECT passwd FROM pg_shadow
