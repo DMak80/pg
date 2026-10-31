@@ -358,7 +358,15 @@ function diffTicketLike(
 export function diffBackupsStorage(
   prev: BackupStorageDto | undefined, next: BackupStorageDto,
 ): void {
-  if (prev === undefined) return;
+  // Shape-guard: под префиксом ['backups-storage', …] живут и СЛУЖЕБНЫЕ
+  // ключи (['backups-storage','s3-pools'] — S3PoolDto[]): их ответ — массив
+  // пулов без clusters — не DTO сводки. Дифф молча пропускает такой тик
+  // (иначе TypeError со второго тика поллинга пулов → ложный счётчик ошибок
+  // «Лента неполна» + спам console.error); гвард переживает любые будущие
+  // ключи под этим префиксом. Точечное исключение 's3-pools' в провайдере
+  // не нужно сознательно.
+  if (!prev || !Array.isArray((prev as { clusters?: unknown }).clusters)) return;
+  if (!next || !Array.isArray((next as { clusters?: unknown }).clusters)) return;
 
   // restore/drill per-shard: ключи сводки clusters[].shards[].
   interface ShardFact { restoreState: string | null; drillState: string | null }

@@ -352,6 +352,37 @@ describe('diffBackupsStorage', () => {
     diffBackupsStorage(undefined, storage([], []));
     expect(eventsSince(mark)).toEqual([]);
   });
+
+  it('служебный ключ пулов (S3PoolDto[]) под тем же префиксом — без TypeError и без событий (#28-регресс)', () => {
+    // Arrange — ответ ['backups-storage','s3-pools'] — МАССИВ пулов, не DTO
+    // сводки (нет clusters): shape-guard обязан молча пропустить оба тика,
+    // не роняя TypeError в счётчик ошибок ленты.
+    const pools = [{ pool: 'p1', writeMaster: [], writeReplica: [] }] as unknown as BackupStorageDto;
+    const mark = getEvents().length;
+
+    // Act — оба направления (массив→массив, массив→валидный DTO)
+    diffBackupsStorage(pools, pools);
+    diffBackupsStorage(pools, storage([], []));
+    diffBackupsStorage(undefined, storage([], []));
+
+    // Assert — ни событий, ни исключения (бросок упал бы тест)
+    expect(eventsSince(mark)).toEqual([]);
+  });
+
+  it('позитивный кейс после гварда жив: restore-факт по-прежнему диффится', () => {
+    // Arrange
+    const prev = storage([{ cluster: 'demo', shard: 's1', restoreState: null }], []);
+    const next = storage([{ cluster: 'demo', shard: 's1', restoreState: 'RUNNING' }], []);
+    const mark = getEvents().length;
+
+    // Act
+    diffBackupsStorage(prev, next);
+
+    // Assert
+    const ev = eventsSince(mark);
+    expect(ev).toHaveLength(1);
+    expect(ev[0]).toMatchObject({ entityKind: 'restore', type: 'appeared' });
+  });
 });
 
 // ——— overview: глобальный стоп ———
