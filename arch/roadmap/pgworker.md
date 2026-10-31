@@ -50,11 +50,10 @@
   нужен ОТДЕЛЬНЫЙ клиентский валидатор (в клиентской ветке добавлять
   `chain.ChainPolicy.ApplicationPolicy.Add("1.3.6.1.5.5.7.3.2")`). Факты
   PKI: gen.sh panel/seed — EKU clientAuth уже; тест-хелпер Pg —
-  [serverAuth, clientAuth] (MtlsApiTests.cs:58–59); Kafka/Valkey/S3
-  тест-хелперы — БЕЗ EKU (править в этой задаче); E2E-серты —
-  serverAuth-only (E2eWorkerCertScenarios.cs:212) — правка тянет E2E-PKI
-  (граница §3.4 задачи t04-open-metrics-healthz-facet, потому не сделано
-  в ней).
+  [serverAuth, clientAuth] (MtlsApiTests.cs:58–59); Valkey/S3
+  тест-хелперы — БЕЗ EKU (править в этой задаче); Pg TestPki и Kafka
+  ClusterPki.IssueBrokerCertificate — уже с clientAuth; E2E-серты —
+  serverAuth-only (E2eWorkerCertScenarios.cs:212) — правка тянет E2E-PKI.
 
 - **`t05-stand-tls-hardening`** — хардненинг стенда: (1) пофайловые маунты
   TLS вместо bind всего каталога `deploy/tls` (внутри `ca.key` — приватный

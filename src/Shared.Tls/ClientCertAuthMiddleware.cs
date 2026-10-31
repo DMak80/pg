@@ -10,9 +10,15 @@ namespace Shared.Tls;
 // ТОЛЬКО на префиксе /api: без серта или с невалидным сертом — HTTP 401 (НЕ
 // разрыв TLS). /healthz и /metrics — открытая грань доверенной docker-сети:
 // присланный серт игнорируется. Enabled=false — pass-through (режим
-// AllowInsecureHttp, только in-memory WAF-тесты). Инвариант опции:
-// Enabled=true ⇒ ClientCa≠null; нарушение — InvalidOperationException
-// при конфигурировании, не пер-запросный 500.
+// AllowInsecureHttp, только in-memory WAF-тесты).
+/// <summary>401-политика клиентского серта на префиксе /api — опция
+/// middleware ClientCertAuthMiddleware (arch/14 §1.1 — канон всех четырёх
+/// воркеров). Enabled=false — pass-through (режим AllowInsecureHttp, только
+/// in-memory WAF-тесты); ClientCa — CA валидации клиентских сертов
+/// per-install API-PKI.</summary>
+/// <remarks>Инвариант: Enabled=true ⇒ ClientCa≠null; нарушение —
+/// InvalidOperationException при конфигурировании (guard в конструкторе
+/// middleware), не пер-запросный 500.</remarks>
 public sealed record ClientCertAuthOptions(bool Enabled, X509Certificate2? ClientCa);
 
 public sealed class ClientCertAuthMiddleware
@@ -22,11 +28,11 @@ public sealed class ClientCertAuthMiddleware
 
     public ClientCertAuthMiddleware(RequestDelegate next, ClientCertAuthOptions options)
     {
-        // Guard инварианта опции (spec §3.1.1): без него невалидная пара
+        // Guard инварианта опции (arch/14 §1.1): без него невалидная пара
         // дошла бы до TlsChain.ValidateChain(cert, null) и упала 500-м
         // на каждом /api-запросе при зелёном старте (не fail-fast).
         if (options.Enabled && options.ClientCa is null)
-            throw new InvalidOperationException("ClientCertAuthOptions: Enabled=true требует ClientCa (инвариант spec §3.1.1)");
+            throw new InvalidOperationException("ClientCertAuthOptions: Enabled=true requires ClientCa");
         _next = next;
         _options = options;
     }
