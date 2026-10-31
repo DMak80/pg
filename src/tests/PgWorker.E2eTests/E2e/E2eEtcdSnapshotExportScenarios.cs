@@ -344,6 +344,18 @@ public sealed class E2eEtcdSnapshotFailoverScenarios(E2eEtcdSnapshotFailoverScen
             var firstObject = PgWorker.Backups.EtcdExport.EtcdSnapshotStatusJson.Parse(
                 await StatusValueAsync(ct))!.LastObject;
 
+            // Assert (п.5 ревью) — первая пара РЕАЛЬНО на ПЕРВОЙ ноде (mc-листинг
+            // node1): сообщение ассерта выше подтверждено листингом, а не
+            // декларацией (ловит реверс порядка целей фабрики — arch/19 §5
+            // «перебор всегда с первой»). Возможен следующий плановый слепок
+            // (тоже на node1) — достаточное условие: пара last_object на node1.
+            var firstDbKey = firstObject!["etcd/".Length..];
+            var firstMetaKey = firstDbKey[..^".db".Length] + ".meta.json";
+            var node1Keys = McKeys(await E2eFixture.TimedAsync("snap-fail mc-ls-node1-first-ok",
+                () => McLsOnNodeAsync("e2e-owns3", ct)));
+            node1Keys.Should().Contain(firstDbKey, "the first snapshot .db is on the FIRST node");
+            node1Keys.Should().Contain(firstMetaKey, "the first snapshot .meta.json is on the FIRST node");
+
             // Act — стоп ПЕРВОЙ ноды (контейнер pgw-eo-{runId}, alias e2e-owns3)
             await E2eFixture.TimedAsync("snap-fail stop-first-node",
                 () => Fx.RunDockerAsync(["stop", Fx.S3NodeContainerName], ct));
