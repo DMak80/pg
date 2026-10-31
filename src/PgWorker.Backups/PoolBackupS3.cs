@@ -33,6 +33,7 @@ public sealed class PoolBackupS3 : IBackupS3, IAsyncDisposable
     private readonly TimeSpan _breakerWindow;
     private readonly TimeProvider _clock;
     private readonly object _breakerGate = new();
+    private readonly object _cacheGate = new();
     private readonly Dictionary<string, (DateTimeOffset Until, string Error)> _broken = new(StringComparer.Ordinal);
 
     public PoolBackupS3(
@@ -63,8 +64,12 @@ public sealed class PoolBackupS3 : IBackupS3, IAsyncDisposable
 
     // Попытка цели под breaker-семантикой: цель в окне → сохранённая причина
     // (участвует в маркере исчерпания как исходная ошибка); после вызова —
-    // успех закрывает окно, транспортный отказ открывает.
-    private async Task<Result<T>> AttemptAsync<T>(string uri, Func<Task<Result<T>>> call)
+    // успех закрывает окно, транспортный отказ открывает. Отмена/исчерпание
+    // бюджета источника — не транспортный отказ цели (arch/19 §5): попытка,
+    // прерванная отменой токена источника (linked-CTS общего бюджета),
+    // breaker цели НЕ открывает — цель остаётся в переборе.
+    private async Task<Result<T>> AttemptAsync<T>(
+        string uri, CancellationToken ct, Func<Task<Result<T>>> call)
     {
         if (IsExcluded(uri, out var saved))
             return Result<T>.Failed(new ApplicationException(saved));
@@ -75,6 +80,9 @@ public sealed class PoolBackupS3 : IBackupS3, IAsyncDisposable
             return result;
         }
 
+        if (ct.IsCancellationRequested)
+            return result;
+
         var message = result.Error!.Message;
         if (!IsNotFound(message))
             NoteFailure(uri, message);
@@ -82,7 +90,7 @@ public sealed class PoolBackupS3 : IBackupS3, IAsyncDisposable
     }
 
     // Не-генерик-перегрузка: put/delete — Result без значения.
-    private async Task<Result> AttemptAsync(string uri, Func<Task<Result>> call)
+    private async Task<Result> AttemptAsync(string uri, CancellationToken ct, Func<Task<Result>> call)
     {
         if (IsExcluded(uri, out var saved))
             return Result.Failed(new ApplicationException(saved));
@@ -92,6 +100,9 @@ public sealed class PoolBackupS3 : IBackupS3, IAsyncDisposable
             NoteSuccess(uri);
             return result;
         }
+
+        if (ct.IsCancellationRequested)
+            return result;
 
         var message = result.Error!.Message;
         if (!IsNotFound(message))
@@ -133,7 +144,7 @@ public sealed class PoolBackupS3 : IBackupS3, IAsyncDisposable
         Result<bool> last = default;
         foreach (var uri in _writeTargets.Concat(_readTargets))
         {
-            var result = await AttemptAsync(uri, () => Target(uri).BucketExistsAsync(ct));
+            var result = await AttemptAsync(uri, ct, () => Target(uri).BucketExistsAsync(ct));
             if (result.IsSuccess)
                 return result;
             last = result;
@@ -147,7 +158,7 @@ public sealed class PoolBackupS3 : IBackupS3, IAsyncDisposable
         string cluster, string shard, int? maxKeysPerTest = null, CancellationToken ct = default)
         => await FirstAliveAsync(
             uri => Target(uri).ListWalAsync(cluster, shard, maxKeysPerTest, ct),
-            "list-wal");
+            ct, "list-wal");
 
     /// <summary>Union-листинг wal/ по ВСЕМ read-целям (arch/19 §5 «где
     /// данные есть»): дедуп по имени объекта. Для сверки цепочки контроля:
@@ -174,7 +185,7 @@ public sealed class PoolBackupS3 : IBackupS3, IAsyncDisposable
         var anySuccess = false;
         foreach (var uri in _readTargets)
         {
-            var result = await AttemptAsync(uri, () => Target(uri).ListAsync(cluster, shard, prefix, maxKeysPerTest, ct));
+            var result = await AttemptAsync(uri, ct, () => Target(uri).ListAsync(cluster, shard, prefix, maxKeysPerTest, ct));
             if (!result.IsSuccess)
             {
                 last = result;
@@ -196,7 +207,7 @@ public sealed class PoolBackupS3 : IBackupS3, IAsyncDisposable
         string prefix, int? maxKeysPerTest = null, CancellationToken ct = default)
         => await FirstAliveAsync(
             uri => Target(uri).ListPrefixAsync(prefix, maxKeysPerTest, ct),
-            $"list {prefix}");
+            ct, $"list {prefix}");
 
     /// <summary>Union-листинг произвольного префикса (S3ObjectInfo) по ВСЕМ
     /// read-целям, дедуп по ключу: полный набор заливается на первую живую
@@ -212,7 +223,7 @@ public sealed class PoolBackupS3 : IBackupS3, IAsyncDisposable
         var anySuccess = false;
         foreach (var uri in _readTargets)
         {
-            var result = await AttemptAsync(uri, () => Target(uri).ListPrefixAsync(prefix, maxKeysPerTest, ct));
+            var result = await AttemptAsync(uri, ct, () => Target(uri).ListPrefixAsync(prefix, maxKeysPerTest, ct));
             if (!result.IsSuccess)
             {
                 last = result;
@@ -236,7 +247,7 @@ public sealed class PoolBackupS3 : IBackupS3, IAsyncDisposable
         Result last = default;
         foreach (var uri in _writeTargets)
         {
-            var result = await AttemptAsync(uri, () => Target(uri).PutObjectAsync(key, data, sha256, ct));
+            var result = await AttemptAsync(uri, ct, () => Target(uri).PutObjectAsync(key, data, sha256, ct));
             if (result.IsSuccess)
                 return result;
             last = result;
@@ -253,7 +264,7 @@ public sealed class PoolBackupS3 : IBackupS3, IAsyncDisposable
         Result last = default;
         foreach (var uri in _writeTargets)
         {
-            var result = await AttemptAsync(uri, () => Target(uri).DeleteKeysAsync(keys, ct));
+            var result = await AttemptAsync(uri, ct, () => Target(uri).DeleteKeysAsync(keys, ct));
             if (result.IsSuccess)
                 return result;
             last = result;
@@ -267,26 +278,26 @@ public sealed class PoolBackupS3 : IBackupS3, IAsyncDisposable
         string cluster, string shard, string prefix, int? maxKeysPerTest = null, CancellationToken ct = default)
         => await FirstAliveAsync(
             uri => Target(uri).ListAsync(cluster, shard, prefix, maxKeysPerTest, ct),
-            $"list {prefix}");
+            ct, $"list {prefix}");
 
     // Точечное чтение: NotFound/транспортный отказ → следующая; успех — оттуда;
     // исчерпание → последняя исходная ошибка (не маркер — причина важнее).
     public async Task<Result<string>> GetObjectAsync(
         string cluster, string shard, string key, CancellationToken ct = default)
         => await FirstFoundAsync(
-            uri => Target(uri).GetObjectAsync(cluster, shard, key, ct), $"get {key}");
+            uri => Target(uri).GetObjectAsync(cluster, shard, key, ct), ct, $"get {key}");
 
     public async Task<Result<IReadOnlyList<string>>> ListFullsAsync(
         string cluster, string shard, int? maxKeysPerTest = null, CancellationToken ct = default)
         => await FirstAliveAsync(
             uri => Target(uri).ListFullsAsync(cluster, shard, maxKeysPerTest, ct),
-            "list-fulls");
+            ct, "list-fulls");
 
     public async Task<Result<string>> DownloadTextAsync(
         string cluster, string shard, string objectKey, CancellationToken ct = default)
         => await FirstFoundAsync(
             uri => Target(uri).DownloadTextAsync(cluster, shard, objectKey, ct),
-            $"get {objectKey}");
+            ct, $"get {objectKey}");
 
     // Запись файла: write-семантика put (перебор write-списка); исчерпание → маркер.
     public async Task<Result> PutFileAsync(string key, string filePath, CancellationToken ct = default)
@@ -294,7 +305,7 @@ public sealed class PoolBackupS3 : IBackupS3, IAsyncDisposable
         Result last = default;
         foreach (var uri in _writeTargets)
         {
-            var result = await AttemptAsync(uri, () => Target(uri).PutFileAsync(key, filePath, ct));
+            var result = await AttemptAsync(uri, ct, () => Target(uri).PutFileAsync(key, filePath, ct));
             if (result.IsSuccess)
                 return result;
             last = result;
@@ -312,7 +323,7 @@ public sealed class PoolBackupS3 : IBackupS3, IAsyncDisposable
         Result last = default;
         foreach (var uri in _readTargets)
         {
-            var result = await AttemptAsync(uri, () => Target(uri)
+            var result = await AttemptAsync(uri, ct, () => Target(uri)
                 .GetObjectToFileAsync(cluster, shard, key, destFilePath, ct));
             if (result.IsSuccess)
                 return result;
@@ -325,12 +336,12 @@ public sealed class PoolBackupS3 : IBackupS3, IAsyncDisposable
     // Листинги: первая доступная read-цель (успех = пустой список тоже успех);
     // исчерпание — маркер (алертная грань «пул недоступен»).
     private async Task<Result<T>> FirstAliveAsync<T>(
-        Func<string, Task<Result<T>>> call, string what)
+        Func<string, Task<Result<T>>> call, CancellationToken ct, string what)
     {
         Result<T> last = default;
         foreach (var uri in _readTargets)
         {
-            var result = await AttemptAsync(uri, () => call(uri));
+            var result = await AttemptAsync(uri, ct, () => call(uri));
             if (result.IsSuccess)
                 return result;
             last = result;
@@ -343,12 +354,12 @@ public sealed class PoolBackupS3 : IBackupS3, IAsyncDisposable
     // Точечные GET: любой отказ (NotFound/транспорт) → следующая; успех — оттуда;
     // исчерпание — ПОСЛЕДНЯЯ исходная ошибка (текст причины).
     private async Task<Result<string>> FirstFoundAsync(
-        Func<string, Task<Result<string>>> call, string what)
+        Func<string, Task<Result<string>>> call, CancellationToken ct, string what)
     {
         Result<string> last = default;
         foreach (var uri in _readTargets)
         {
-            var result = await AttemptAsync(uri, () => call(uri));
+            var result = await AttemptAsync(uri, ct, () => call(uri));
             if (result.IsSuccess)
                 return result;
             last = result;
@@ -358,13 +369,20 @@ public sealed class PoolBackupS3 : IBackupS3, IAsyncDisposable
     }
 
     // Кэш per-цели: один клиент на endpoint (переиспользование соединений).
+    // Под локом: sink-пул — синглтон, ExportAsync зовётся из несериализованных
+    // контуров (SnapshotLoop лидера + процессы в точках изменений) — первый
+    // конкурентный промах кэша без лока = параллельная запись/чтение обычного
+    // Dictionary; lock исключает двойное создание фабрики на один промах.
     private IBackupS3 Target(string uri)
     {
-        if (_cache.TryGetValue(uri, out var cached))
-            return cached;
-        var created = _targetFactory(uri);
-        _cache[uri] = created;
-        return created;
+        lock (_cacheGate)
+        {
+            if (_cache.TryGetValue(uri, out var cached))
+                return cached;
+            var created = _targetFactory(uri);
+            _cache[uri] = created;
+            return created;
+        }
     }
 
     internal static bool IsNotFound(string message)

@@ -316,6 +316,36 @@ public class PoolBackupS3Tests
         t2.Calls.Should().Be(2);
     }
 
+    // AAA (arch/19 §5): отмена/исчерпание бюджета ИСТОЧНИКА — не транспортный
+    // отказ цели: breaker цели НЕ открывается, цель остаётся в переборе
+    // (иначе истёкший общий бюджет одного вызова исключал бы на 45 с все
+    // неуспешные цели, включая возможно здоровую, и доводка тормозила бы
+    // дольше модели «transient → доводка тиком»).
+    [Fact]
+    public async Task Put_CancelledBySourceBudget_TargetStaysInRotation()
+    {
+        // Arrange — токен источника уже отменён (бюджет истёк); обе цели
+        // отвечают отказом (текст без «not found» — обычный транспортный).
+        using var cts = new CancellationTokenSource();
+        await cts.CancelAsync();
+        var t1 = new FakeTargetS3(put: _ => Task.FromResult(Result.Failed(
+            new ApplicationException("S3 put: down"))));
+        var t2 = new FakeTargetS3(put: _ => Task.FromResult(Result.Failed(
+            new ApplicationException("S3 put: down"))));
+        var pool = Pool(t1, t2, new FakeClock());
+
+        // Act — два вызова подряд с отменённым токеном.
+        var first = await pool.PutObjectAsync("k", [1], null, cts.Token);
+        var second = await pool.PutObjectAsync("k", [1], null, cts.Token);
+
+        // Assert — оба вызова опросили ЦЕЛИ по порядку (не отказ по breaker'у):
+        // n1 вызвана дважды — окна нет, цель в переборе.
+        first.IsSuccess.Should().BeFalse();
+        second.IsSuccess.Should().BeFalse();
+        t1.Calls.Should().Be(2, "source-budget cancellation does not open the breaker — the target stays in the rotation");
+        t2.Calls.Should().Be(2);
+    }
+
     // AAA: единственная write-цель в окне breaker'а — маркер исчерпания несёт
     // ИСХОДНУЮ причину отказа (сохранённую при открытии окна), а не пустую.
     [Fact]

@@ -51,6 +51,20 @@ public class SnapshotSinkFactoryTests
         targets.Should().Equal(expected.Split('|', StringSplitOptions.RemoveEmptyEntries));
     }
 
+    // AAA: дубликат URI схлопывается (дедуп, arch/14 §6) с сохранением порядка
+    // ПЕРВОГО вхождения — копипаст-ошибка не крашит сборку per-целей и не
+    // меняет приоритет перебора.
+    [Fact]
+    public void ParseEndpoints_Duplicates_DedupedKeepingFirstOrder()
+    {
+        // Act
+        var targets = SnapshotExportS3Options.ParseEndpoints(
+            "http://h2:9000,http://h1:9000,http://h2:9000, http://h1:9000 ");
+
+        // Assert — h2 один раз (первое вхождение раньше h1), дубликаты h1 схлопнуты.
+        targets.Should().Equal("http://h2:9000", "http://h1:9000");
+    }
+
     // AAA: per-цельные опции — bucket/креды/Region/CA ОДНИ на все цели пары,
     // Endpoint — каждой цели свой.
     [Fact]
@@ -69,17 +83,24 @@ public class SnapshotSinkFactoryTests
             target.SecretKey.Should().Be(TestSecretKey);
             target.Region.Should().Be("us-east-1");
             target.CaBundlePath.Should().Be("/tls/ca.pem");
+            // Клиентские ретраи AWSSDK выключены на per-целях — перебор несёт
+            // пул (arch/14 §6): ретрай клиента на мёртвой цели съедает бюджет
+            // экспорта (30 с) до перебора следующих целей.
+            target.MaxErrorRetry.Should().Be(0);
         }
     }
 
     // AAA: Create — пул-клиент PoolBackupS3 (носитель перебора arch/19 §5;
-    // write=read=список пары — по построению фабрики).
+    // write=read=список пары — по построению фабрики). CA не задан — per-цели
+    // собираются без чтения файла.
     [Fact]
     public void Create_ReturnsPoolBackupS3()
     {
         // Arrange
         var opts = new PgWorkerOptions();
-        opts.Snapshots.Export.S3 = Pair("http://h1:9000,http://h2:9000");
+        var pair = Pair("http://h1:9000,http://h2:9000");
+        pair.CaBundlePath = null;
+        opts.Snapshots.Export.S3 = pair;
         opts.Backups.S3 = new BackupsS3Options { Bucket = "pgworker-backups" };
 
         // Act
@@ -87,5 +108,24 @@ public class SnapshotSinkFactoryTests
 
         // Assert
         target.Should().BeOfType<PoolBackupS3>();
+    }
+
+    // AAA (п.1 ревью): per-цели строятся EAGERLY в Create — нечитаемый CA-файл
+    // пары роняет СБОРКУ пула на старте хоста с диагностикой BackupCaPem
+    // (fail-fast «битый файл это дефект инсталляции»), а не первую попытку
+    // экспорта (там исключение глоталось бы молча или роняло хост в crash-loop).
+    [Fact]
+    public void Create_UnreadableCaBundle_ThrowsAtBuildTime()
+    {
+        // Arrange — путь CA не существует (дефект инсталляции)
+        var opts = new PgWorkerOptions();
+        opts.Snapshots.Export.S3 = Pair("http://h1:9000");
+
+        // Act
+        var act = () => EtcdSnapshotSinkFactory.Create(opts);
+
+        // Assert — диагностика BackupCaPem именно на сборке фабрики
+        act.Should().Throw<InvalidOperationException>()
+            .WithMessage("*CA file is not readable*");
     }
 }

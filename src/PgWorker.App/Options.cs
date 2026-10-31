@@ -464,10 +464,15 @@ public sealed class SnapshotExportS3Options
 
     /// <summary>Разбор списка целей (чистая функция для тестов; прецедент —
     /// FetchWalCommand.ParseEnv): сплит ',' + RemoveEmptyEntries/TrimEntries;
-    /// пустые/пробельные элементы отбрасываются.</summary>
+    /// пустые/пробельные элементы отбрасываются; дубликаты URI схлопываются —
+    /// дедуп с сохранением порядка ПЕРВОГО вхождения (arch/14 §6: дубликат
+    /// семантически безвреден — breaker отсёк бы вторую копию, поэтому
+    /// копипаст-ошибка не крашит сборку словаря per-целей, а сжимает список).</summary>
     internal static string[] ParseEndpoints(string raw)
         => (raw ?? string.Empty)
-            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
 }
 
 /// <summary>Дефолт значения ключа nodes/&lt;n&gt;/app_params (spec §3.1): libpq-строка

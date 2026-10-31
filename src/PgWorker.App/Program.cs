@@ -324,6 +324,13 @@ builder.Services.AddSingleton<IClusterDriver>(sp =>
         CaPem: BackupCaPem.ReadIfConfigured(opts.Backups.S3.CaBundlePath),
         StagingDir: string.IsNullOrWhiteSpace(opts.Backups.Staging.Dir) ? null : opts.Backups.Staging.Dir);
 
+    // CA слепочной пары DR-слепков (arch/14 §6/§8): симметрия CA пары бэкапов
+    // выше — путь задан конфигом установки, нечитаемый/пустой файл = дефект
+    // инсталляции → fail-fast старта воркера с диагностикой BackupCaPem.
+    // Осознанно НЕ зависит от Snapshots:Export:Enabled (та же связка:
+    // выключенная опция с корректным путём читает файл без последствий).
+    BackupCaPem.ReadIfConfigured(opts.Snapshots.Export.S3.CaBundlePath);
+
     if (string.Equals(docker.Mode, "Swarm", StringComparison.OrdinalIgnoreCase))
     {
         if (string.IsNullOrWhiteSpace(docker.SwarmManager))
