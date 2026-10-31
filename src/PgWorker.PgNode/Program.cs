@@ -3,6 +3,7 @@ using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Server.Kestrel.Https;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using PgWorker.Etcd.S3;
@@ -48,13 +49,6 @@ internal partial class Program
         if (args is [{ } sub, ..] && sub == "fetch-wal")
             Environment.Exit(await Operations.FetchWalCommand.RunAsync(args[1..]));
 
-        var builder = WebApplication.CreateBuilder(args);
-        builder.WebHost.UseUrls("http://0.0.0.0:8080");
-        builder.Services.AddAppMetrics(WalReceiverMetrics.MeterName, builder.Configuration.GetSection("Metrics"));
-        builder.Services.AddSingleton<OperationRegistry>();
-        builder.Services.AddSingleton<OpsOperationRegistry>();
-        builder.Services.AddSingleton<IProcessRunner, ProcessRunner>();
-
         // Identity обязана быть валидной (env ноды — невалидный набор: лог в
         // stdout + exit 1; supervisord с exitcodes=0 не перезапускает —
         // лупинга env-дефекта нет).
@@ -68,6 +62,40 @@ internal partial class Program
         var endpoints = identity.EtcdEndpoints.ToArray();
 
         var etcd = new EtcdGateway(new HttpClient { Timeout = TimeSpan.FromSeconds(10) });
+
+        // Статусная машина агента (arch/14 §3.3/§4, spec §3.6): mTLS-канал
+        // :8081 и хендшейк живут этим же процессом; стрим/операции бэкапов от
+        // машины не зависят (spec §3.6-6).
+        var machine = new PgNodeMachine(
+            identity, etcd, endpoints,
+            new SupervisorCommands(new ProcessRunner()),
+            Environment.GetEnvironmentVariable("DOORMAN_CONFIG_TEMPLATE") ?? "");
+
+        var builder = WebApplication.CreateBuilder(args);
+        builder.WebHost.ConfigureKestrel(o =>
+        {
+            o.ListenAnyIP(8080); // metrics + HTTP API операций (arch/25 №22)
+            o.ListenAnyIP(8081, lo => lo.UseHttps(https =>
+            {
+                // Канал доставки секретов (arch/13 §2, arch/25 №23): серверный
+                // серт — из bootstrap-ключа (null до чтения → handshake
+                // отклоняется: канала нет, воркер повторит тиком); клиент
+                // обязан предъявить валидный серт воркера (публичный CA из env).
+                // Валидация клиента — ClientCertificateValidation (фактический
+                // колбэк-хук HttpsConnectionAdapterOptions текущего TFM).
+                https.ClientCertificateMode = ClientCertificateMode.RequireCertificate;
+                https.ServerCertificateSelector = (_, _) => machine.ServerCertificate;
+                https.ClientCertificateValidation = (certificate, _, _) =>
+                    certificate is { } client
+                    && NodeClientCa() is { } ca
+                    && Shared.Tls.TlsChain.ValidateChain(client, ca);
+            }));
+        });
+        builder.Services.AddAppMetrics(WalReceiverMetrics.MeterName, builder.Configuration.GetSection("Metrics"));
+        builder.Services.AddSingleton<OperationRegistry>();
+        builder.Services.AddSingleton<OpsOperationRegistry>();
+        builder.Services.AddSingleton<IProcessRunner, ProcessRunner>();
+
         var pools = new S3PoolStore(
             new EtcdGateway(new HttpClient { Timeout = TimeSpan.FromSeconds(10) }), endpoints);
         Func<CancellationToken, Task<WalReceiverRole>> roleProbe = ct =>
@@ -103,12 +131,92 @@ internal partial class Program
                 stagingDir, sp.GetRequiredService<OpsOperationRegistry>()));
 
         var app = builder.Build();
+        _ = machine.RunAsync(app.Lifetime.ApplicationStopping);
         app.MapAppMetrics();
         MapNodeRoutes(app);
+        MapBootstrapRoutes(app, machine);
         MapFullBackupRoutes(app, identity, endpoints);
         MapOpsRoutes(app);
         await app.RunAsync();
     }
+
+    // Публичный CA верификации клиентских сертов воркера (env
+    // PGW_AGENT_CLIENT_CA, t05): X509Certificate2 с кешем по содержимому PEM
+    // (temp-файл по образцу PatroniRoleProbe.GetCaAsync). null — env пуст
+    // (листенер поднимется, но handshake отклонится: клиента не верифицировать).
+    private static System.Security.Cryptography.X509Certificates.X509Certificate2? _nodeClientCa;
+    private static string? _nodeClientCaPem;
+
+    private static System.Security.Cryptography.X509Certificates.X509Certificate2? NodeClientCa()
+    {
+        var caPem = Environment.GetEnvironmentVariable("PGW_AGENT_CLIENT_CA");
+        if (string.IsNullOrWhiteSpace(caPem))
+            return null;
+        if (_nodeClientCa is not null && _nodeClientCaPem == caPem)
+            return _nodeClientCa;
+
+        // Temp-файл по образцу PatroniRoleProbe.GetCaAsync: CreateFromPemFile
+        // требует пару cert+key — CA-PEM пишет в temp и грузит LoadCertificate.
+        var caPath = Path.Combine(Path.GetTempPath(), $"pgw-agent-ca-{Guid.NewGuid():N}.pem");
+        try
+        {
+            File.WriteAllText(caPath, caPem + "\n");
+            _nodeClientCa = System.Security.Cryptography.X509Certificates.X509CertificateLoader
+                .LoadCertificateFromFile(caPath);
+            _nodeClientCaPem = caPem;
+            return _nodeClientCa;
+        }
+        catch (Exception e) when (
+            e is ArgumentException
+                or System.Security.Cryptography.CryptographicException
+                or System.IO.IOException)
+        {
+            return null; // PEM битый/ФС недоступна — клиента не верифицировать
+        }
+        finally
+        {
+            try { File.Delete(caPath); } catch { /* temp — не критично */ }
+        }
+    }
+
+    // Команды канала доставки (spec §3.4): статус воркер читает из etcd —
+    // здесь только команды. POST /api/bootstrap — хендшейк старта (валидация
+    // аргументов 400 / атомарный txn-переход / ок-пинок 200); POST
+    // /api/bootstrap/apply — применение на ready-ноде (ротации/замены).
+    // Секреты в логи/ошибки не попадают.
+    private static void MapBootstrapRoutes(WebApplication app, PgNodeMachine machine)
+    {
+        app.MapPost("/api/bootstrap", async (WorkerPushRequest body, CancellationToken ct) =>
+        {
+            var result = await machine.HandshakeAsync(
+                body.SuPassword ?? "", body.StandbyPassword ?? "", body.IsToolStart ?? false, ct);
+            return result switch
+            {
+                HandshakeResult.Invalid => Results.Json(
+                    new ErrorResponse("invalid arguments or bootstrap key"), JsonOpts, statusCode: 400),
+                HandshakeResult.EtcdError => Results.Json(
+                    new ErrorResponse("etcd is unavailable"), JsonOpts, statusCode: 503),
+                _ => Results.Json(new OkResponse(), JsonOpts), // Started | Nop («пинок состоялся»)
+            };
+        });
+
+        app.MapPost("/api/bootstrap/apply", async (CancellationToken ct) =>
+        {
+            var result = await machine.ApplyAsync(ct);
+            if (result.EtcdError)
+                return Results.Json(new ErrorResponse("etcd is unavailable"), JsonOpts, statusCode: 503);
+            if (!result.Ok)
+                return Results.Json(new ErrorResponse("node is not ready"), JsonOpts, statusCode: 409);
+            return Results.Json(new AppliedResponse(result.AppliedRevision), JsonOpts);
+        });
+    }
+
+    private sealed record OkResponse([property: JsonPropertyName("ok")] bool Ok = true);
+    private sealed record AppliedResponse([property: JsonPropertyName("applied_revision")] long? AppliedRevision);
+    private sealed record WorkerPushRequest(
+        [property: JsonPropertyName("su_password")] string? SuPassword,
+        [property: JsonPropertyName("standby_password")] string? StandbyPassword,
+        [property: JsonPropertyName("is_tool_start")] bool? IsToolStart);
 
     // Node-операции приёмника (arch/25 №22): обеспечение pg_hba (arch/19 §7),
     // pg_dump схемы (arch/14 §Move M1), проба данных ноды (arch/14 Д3) —

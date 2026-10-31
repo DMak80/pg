@@ -26,5 +26,7 @@
         <ProjectReference Include="..\PgWorker.Backups\PgWorker.Backups.csproj"/>
         <!-- Метрики приёмника: AddAppMetrics/MapAppMetrics (arch/18 §1/§2.8). -->
         <ProjectReference Include="..\Shared.Metrics\Shared.Metrics.csproj"/>
+        <!-- Валидация цепочки клиентских сертов mTLS-канала :8081 (arch/13 §2). -->
+        <ProjectReference Include="..\Shared.Tls\Shared.Tls.csproj"/>
     </ItemGroup>
 </Project>
