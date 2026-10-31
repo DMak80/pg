@@ -51,13 +51,6 @@ public static class InstallSecretsGuard
     }
 }
 
-/// <summary>
-/// REST-TLS материал ноды (arch/14 §2.1): PEM серта/ключа/CA
-/// REST-эндпоинта (выпускает воркер из per-install CA, кеш процесса) +
-/// эффективная per-cluster REST-пара (rest_password; окно ротации — pending).
-/// </summary>
-public sealed record NodeRestTls(string CertPem, string KeyPem, string CaPem, string RestPassword);
-
 /// <summary>Env бэкап-целей ноды для приёмника WAL (arch/19 §7):
 /// bucket/CA https S3 — per-install константы (не секреты, не дрейфуют);
 /// ставит BuildSpec драйвера из Backups-опций воркера. Bucket null/пуст ⇒
@@ -68,33 +61,24 @@ public sealed record NodeRestTls(string CertPem, string KeyPem, string CaPem, st
 public sealed record NodeBackupEnv(string? Bucket, string? CaPem, string? StagingDir = null);
 
 /// <summary>
-/// ENV контейнера pgworker-node для Spilo/Patroni. SPILO_CONFIGURATION —
-/// YAML-строка по эталону arch/configs/postgres/pg.env с правками PgWorker:
-/// P11 (канонические тайминги PatroniTimings: ttl=20/loop_wait=1/
-/// retry_timeout=3 — полы Patroni 4.x; применяется при первой
-/// инициализации DCS-кластера, далее гарантируется конвергенцией §5 C) +
-/// callback on_role_change → lease-скрипт мастер-ключа
-/// /clusters/&lt;C&gt;/shards/&lt;X&gt;/master,
-/// P3 (wal_level=logical, sync_replication_slots, max_slot_wal_keep_size),
-/// P15 (максимальные соединения и бюджет doorman — синхронизированы).
-/// При tuning != null параметры PG — merge(PGTune ∪ канон), построение набора —
-/// в PgParametersCanon.Desired (единый источник с конвергенцией, arch/14
-/// §2.1/§5 C); SpiloEnvBuilder только цитирует значения для YAML (все — в
-/// двойных кавычках, КРОМЕ wal_level — исторический raw-string; порядок §5.2,
-/// канон поверх без дубликатов). tuning == null — прежний хардкод-набор (тесты
-/// драйвера, изолированные пути). syncStrict — per-cluster опция
-/// synchronous_mode_strict из config кластера (arch/14 §2.1/§3):
-/// bootstrap.dcs несёт значение кластера, живые кластеры приводит конвергенция
-/// DCS (§5 C). Per-нода PGW_NODE_HOST добавляет драйвер при
-/// создании контейнера.
+/// ENV контейнера pgworker-node для Spilo/Patroni — ТОЛЬКО неконфиденциальное
+/// (t05, arch/14 §4): идентификация Patroni-DCS, lease-скрипт, идентичность
+/// приёмника, публичные CA. Секреты (SPILO_CONFIGURATION с rest_password,
+/// серт/ключ ноды, пароли PG) доставляет агент PgNode: bootstrap-ключ etcd
+/// (NodeBootstrapBuilder) + mTLS-push per-install паролей. Полный YAML
+/// SPILO_CONFIGURATION (rest_password внутри) — единственный потребитель
+/// bootstrap-билдер (SpiloConfiguration).
 /// </summary>
 public static class SpiloEnvBuilder
 {
-    private static readonly string RestPasswordKey = "pass" + "word";
-
+    /// <summary>ENV контейнера ноды — ТОЛЬКО неконфиденциальное (t05,
+    /// arch/14 §4): идентификация Patroni-DCS, lease-скрипт, идентичность
+    /// приёмника, публичные CA. Секреты (SPILO_CONFIGURATION с rest_password,
+    /// серт/ключ ноды, пароли PG) доставляет агент PgNode: bootstrap-ключ etcd
+    /// (NodeBootstrapBuilder) + mTLS-push per-install паролей.</summary>
     public static IReadOnlyDictionary<string, string> Build(
-        ShardTopology topology, EtcdEndpoints etcd, InstallSecrets secrets,
-        bool syncStrict, string nodeName, NodeRestTls rest,
+        ShardTopology topology, EtcdEndpoints etcd, bool syncStrict,
+        string nodeName, string caPem,
         PgTuneResult? tuning = null, IReadOnlySet<string>? excludeParams = null)
     {
         // Patroni DCS: Spilo строит его из env ETCD3_HOSTS (etcd v3 API; наш etcd
@@ -103,36 +87,14 @@ public static class SpiloEnvBuilder
         var etcdHosts = string.Join(",", etcd.Http.Select(StripScheme));
         var etcdUrls = string.Join(",", etcd.Http);
         var masterKey = $"/clusters/{topology.Cluster}/shards/{topology.Shard}/master";
-        // Полное имя ноды — SAN серта и connect_address REST (арх/14 §2.4 п.6).
-        var nodeFullName = RestCertificateCache.NodeFullName(topology.Cluster, topology.Shard, nodeName);
-
         return new Dictionary<string, string>
         {
             // Идентификация Patroni-кластера (scope глобально уникален, arch/11 §2).
             ["SCOPE"] = topology.Scope,
             ["ETCD3_HOSTS"] = etcdHosts,
 
-            // REST-TLS ноды (арх/14 §2.1): PEM с реальными переносами строк
-            // (Spilo пишет значение в файл буквально); хеш эффективной пары —
-            // факт для инспекции (rolling-ротация), сам пароль — в YAML ниже.
-            ["SSL_RESTAPI_CERTIFICATE"] = rest.CertPem,
-            ["SSL_RESTAPI_PRIVATE_KEY"] = rest.KeyPem,
-            ["SSL_RESTAPI_CA"] = rest.CaPem,
-            [RestRotation.EnvPasswordHash] = RestRotation.PasswordHash(rest.RestPassword),
-
-            // Учётные данные PostgreSQL (bootstrap Spilo).
-            ["PGUSER_SUPERUSER"] = "postgres",
-            ["PGPASSWORD_SUPERUSER"] = secrets.SuPassword,
-            ["PGUSER_STANDBY"] = "standby",
-            ["PGPASSWORD_STANDBY"] = secrets.StandbyPassword,
-
-            // Пароли ролей бакетного слоя (создаёт DatabaseProvisioner; здесь —
-            // доступность внутри контейнера для админ-скриптов). App-пароль в env
-            // НЕ прокидывается — per-cluster в etcd (spec §4.1). bucket_admin —
-            // per-cluster credentials из config (переопределены в ProvisioningProcess).
-            ["PGW_BUCKET_ADMIN_PASSWORD"] = secrets.BucketAdminPassword,
-            ["PGW_BUCKET_ADMIN_USER"] = secrets.BucketAdminUser,
-            ["PGW_BUCKET_MOVER_PASSWORD"] = secrets.MoverPassword,
+            // Публичный CA REST-слоя (не секретен: arch/13 §4).
+            ["SSL_RESTAPI_CA"] = caPem,
 
             // Идентичность приёмника WAL (arch/19 §3 + arch/14 §2.1): СТРОГО
             // всегда, независимо от Backups:Enabled — приёмник гейтится
@@ -150,48 +112,56 @@ public static class SpiloEnvBuilder
             // падает); данные живут в дефолтном /home/postgres/pgdata (туда
             // монтируется volume, ClusterDriver).
             ["USE_DATA_DIR_FOR_WAL"] = "true",
-
-            // Patroni-конфигурация: эталон pg.env; параметры PG — merge(PGTune ∪
-            // канон) при tuning != null, иначе прежний хардкод-набор; тайминги —
-            // из канона PatroniTimings (полы Patroni 4.x); strict —
-            // per-cluster опция из config кластера (arch/14 §2.1/§3).
-            // restapi : connect_address DNS-именем (перекрывает шаблонный
-            // IP контейнера; api_url в DCS = DNS из SAN), authentication —
-            // per-cluster REST-пара (мутационные эндпоинты); listen не задаём.
-            // REST-пароль подставляется из runtime-секрета; ключ YAML собирается
-            // отдельно, чтобы не хранить кред-имя литералом рядом с паролем.
-            ["SPILO_CONFIGURATION"] = $$"""
-                ---
-                restapi:
-                  connect_address: "{{nodeFullName}}:8008"
-                  authentication:
-                    username: {{RestRotation.RestUsername}}
-                    {{RestPasswordKey}}: "{{rest.RestPassword}}"
-                postgresql:
-                  callbacks:
-                    # P11: key /clusters/<C>/shards/<X>/master under etcd-lease.
-                    # Секция ЛОКАЛЬНАЯ, не bootstrap.dcs: Patroni мержит локальную
-                    # postgresql поверх динамической ключ-за-ключом, и Spilo-дефолт
-                    # callbacks (on_role_change.sh zalandos) целиком заменяет
-                    # DCS-свой — в dcs наш скрипт молча не работал. CLI-параметр
-                    # env-file обязателен: Patroni-callback запускается с
-                    # обрезанным env; роль Patroni добавляет позиционным
-                    # аргументом (pgwnodetool уходит в probe-фоллбэк).
-                    on_start: /opt/pgw-tools/pgwnodetool master-lease --env-file /home/postgres/pgw-node.env
-                    on_role_change: /opt/pgw-tools/pgwnodetool master-lease --env-file /home/postgres/pgw-node.env
-                bootstrap:
-                  dcs:
-                    ttl: {{PatroniTimings.Ttl}}
-                    loop_wait: {{PatroniTimings.LoopWait}}
-                    retry_timeout: {{PatroniTimings.RetryTimeout}}
-                    synchronous_mode: true
-                    synchronous_mode_strict: {{(syncStrict ? "true" : "false")}}
-                    postgresql:
-                      use_pg_rewind: true
-                      parameters:
-                {{ParametersBlock(tuning, excludeParams)}}
-                """,
         };
+    }
+
+    /// <summary>Полный YAML SPILO_CONFIGURATION (rest_password внутри) —
+    /// содержимое bootstrap-ключа etcd (arch/14 §3.2/§4); в docker-env НЕ
+    /// попадает. Тело — прежний YAML без изменений (байт-в-байт): эталон
+    /// pg.env; параметры PG — merge(PGTune ∪ канон) при tuning != null, иначе
+    /// прежний хардкод-набор; тайминги — из канона PatroniTimings (полы
+    /// Patroni 4.x); strict — per-cluster опция из config кластера; restapi —
+    /// connect_address DNS-именем (SAN), authentication — per-cluster
+    /// REST-пара.</summary>
+    internal static string SpiloConfiguration(
+        ShardTopology topology, EtcdEndpoints etcd, bool syncStrict,
+        string nodeName, string restPassword,
+        PgTuneResult? tuning, IReadOnlySet<string>? excludeParams)
+    {
+        // Полное имя ноды — SAN серта и connect_address REST (арх/14 §2.4 п.6).
+        var nodeFullName = RestCertificateCache.NodeFullName(topology.Cluster, topology.Shard, nodeName);
+        var RestPasswordKey = "pass" + "word";
+        return $$"""
+            ---
+            restapi:
+              connect_address: "{{nodeFullName}}:8008"
+              authentication:
+                username: {{RestRotation.RestUsername}}
+                {{RestPasswordKey}}: "{{restPassword}}"
+            postgresql:
+              callbacks:
+                # P11: key /clusters/<C>/shards/<X>/master under etcd-lease.
+                # Секция ЛОКАЛЬНАЯ, не bootstrap.dcs: Patroni мержит локальную
+                # postgresql поверх динамической ключ-за-ключом, и Spilo-дефолт
+                # callbacks (on_role_change.sh zalandos) целиком заменяет
+                # DCS-свой — в dcs наш скрипт молча не работал. CLI-параметр
+                # env-file обязателен: Patroni-callback запускается с
+                # обрезанным env; роль Patroni добавляет позиционным
+                # аргументом (pgwnodetool уходит в probe-фоллбэк).
+                on_start: /opt/pgw-tools/pgwnodetool master-lease --env-file /home/postgres/pgw-node.env
+                on_role_change: /opt/pgw-tools/pgwnodetool master-lease --env-file /home/postgres/pgw-node.env
+            bootstrap:
+              dcs:
+                ttl: {{PatroniTimings.Ttl}}
+                loop_wait: {{PatroniTimings.LoopWait}}
+                retry_timeout: {{PatroniTimings.RetryTimeout}}
+                synchronous_mode: true
+                synchronous_mode_strict: {{(syncStrict ? "true" : "false")}}
+                postgresql:
+                  use_pg_rewind: true
+                  parameters:
+            {{ParametersBlock(tuning, excludeParams)}}
+            """;
     }
 
     // Блок parameters YAML (отступ 8): tuning == null → прежний хардкод-набор
@@ -253,31 +223,26 @@ public static class SpiloEnvBuilder
 }
 
 /// <summary>
-/// Конфиг pg_doorman ноды (arch/11 §4; формат фактического pg_doorman
-/// v3.11.0 — YAML general/pools, файл /etc/pg_doorman/pg_doorman.yaml):
-/// ЕДИНСТВЕННЫЙ пул &lt;dbname&gt; (P14) с бэкендом 127.0.0.1:5432 этой ноды,
-/// transaction-режим (P13), бюджет серверных соединений — синхронизирован
-/// от рассчитанного PGTune max_connections (P15: serverConnections =
-/// max(10, max_connections − 5); 60 = 55 + 2 админ/mover + 3 reserved).
-/// Клиентский вход — :6432 c TLS (sslmode=require, P17 — серты генерирует
-/// entrypoint ноды). Допуск клиентов — per-pool auth_query (единственный
-/// работающий механизм v3.11.0: без объявленных пользователей пулер
-/// отклоняет каждого клиента): пулер верифицирует клиентский SCRAM по
-/// verifier'у из pg_shadow и переиспользует клиентское доказательство к
-/// бэкенду — пароли клиентов в конфиге не хранятся. Роль исполнения
-/// auth_query — существующий superuser postgres (per-install SuPassword;
-/// алфавит DSN-safe [A-Za-z0-9._-] по InstallSecretsGuard — вставка в
-/// YAML-строку в двойных кавычках безопасна). admin_username/admin_password —
+/// Шаблон конфига pg_doorman ноды (env DOORMAN_CONFIG_TEMPLATE —
+/// неконфиденциальный; arch/11 §4; формат фактического pg_doorman
+/// v3.11.0 — YAML general/pools): ЕДИНСТВЕННЫЙ пул &lt;dbname&gt; (P14) с
+/// бэкендом 127.0.0.1:5432 этой ноды, transaction-режим (P13), бюджет
+/// серверных соединений — синхронизирован от рассчитанного PGTune
+/// max_connections (P15). Клиентский вход — :6432 c TLS (sslmode=require,
+/// P17 — TLS-файлы рендерит агент PgNode в tmpfs). Допуск клиентов —
+/// per-pool auth_query; литеральный плейсхолдер ${PGW_SU_PASSWORD} в
+/// password подставляет агент PgNode при рендере в tmpfs (arch/14 §4):
+/// пароль в docker-env НЕ попадает. InstallSecretsGuard остаётся гвардом
+/// алфавита подстановки в YAML-строку. admin_username/admin_password —
 /// обязательные поля general фактического v3.11.0 (без них отказ парса,
-/// exit 78); админ-консоль пулера продуктом не потребляется — литералы
-/// детерминированы (конфиг обязан быть стабильным между reconcile'ами,
-/// иначе вечное пересоздание контейнеров) и границей секьюрити не являются.
+/// exit 78); литералы детерминированы (конфиг детерминирован между
+/// reconcile'ами — перезаписей контейнера по дрейфу не возникает).
 /// </summary>
 public static class DoormanConfigBuilder
 {
-    public static string Build(string dbname, int serverConnections, string suPassword) =>
-        $"""
-        # pg_doorman: single pool {dbname} per node (P13/P14/P15/P17).
+    public static string Build(string dbname, int serverConnections) =>
+        $$"""
+        # pg_doorman: single pool {{dbname}} per node (P13/P14/P15/P17).
         # Clients connect on :6432 with sslmode=require (P17); admission — auth_query.
         general:
           host: "0.0.0.0"
@@ -285,19 +250,19 @@ public static class DoormanConfigBuilder
           admin_username: "pgwd_admin"
           admin_password: "pgwd_admin_password"
           tls_mode: "require"
-          tls_certificate: "/etc/pg_doorman/tls.crt"
-          tls_private_key: "/etc/pg_doorman/tls.key"
+          tls_certificate: "/run/pgw/doorman/tls.crt"
+          tls_private_key: "/run/pgw/doorman/tls.key"
         pools:
-          "{dbname}":
+          "{{dbname}}":
             server_host: "127.0.0.1"
             server_port: 5432
-            server_database: "{dbname}"
+            server_database: "{{dbname}}"
             pool_mode: "transaction"
-            max_db_connections: {serverConnections}
+            max_db_connections: {{serverConnections}}
             auth_query:
               query: "SELECT passwd FROM pg_shadow WHERE usename = $1"
               user: "postgres"
-              password: "{suPassword}"
+              password: "${PGW_SU_PASSWORD}"
         """;
 
     /// <summary>

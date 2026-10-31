@@ -314,11 +314,12 @@ public class DcsConfigConvergenceTests
             18, PgTuneOsType.Linux, PgTuneDbType.Oltp, 8388608, PgTuneMemoryUnit.KB,
             4, 60, PgTuneHdType.Ssd, PgTuneDbSize.MidRam));
 
-        // Act: env → вырезаем YAML-блок parameters → JSON живого конфига.
-        var spilo = SpiloEnvBuilder.Build(
-            topology, new EtcdEndpoints(["http://e1:2379"]),
-            new InstallSecrets("su", "sb", "adm", "mov"), syncStrict: false,
-            "shard1a", NodeConfigBuildersTests.TestRestTls(), tuning, null)["SPILO_CONFIGURATION"];
+        // Act: bootstrap-ключ → SPILO_CONFIGURATION → вырезаем YAML-блок
+        // parameters → JSON живого конфига.
+        using var bootstrapDoc = JsonDocument.Parse(NodeBootstrapBuilder.Build(
+            topology, new EtcdEndpoints(["http://e1:2379"]), syncStrict: false,
+            "shard1a", "CERT", "KEY", "restpw", tuning, null));
+        var spilo = bootstrapDoc.RootElement.GetProperty("spilo_configuration").GetString()!;
         var lines = spilo.Split('\n')
             .SkipWhile(l => !l.TrimEnd().EndsWith("parameters:", StringComparison.Ordinal))
             .Skip(1)
