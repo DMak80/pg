@@ -201,6 +201,32 @@ public static class ApiModule
             };
         });
 
+        // DELETE /api/valkey/clusters/{cluster}/password/rotate — отмена живой
+        // заявки ротации пароля (arch/02 §11.2-7, u17): del ключа
+        // /valkeyworker/rotations/<C> (один на обе роли) воркером; гвард
+        // «не начата» по work-журналу (409), заявки нет → 404.
+        endpoints.MapDelete("/api/valkey/clusters/{cluster}/password/rotate", async (
+            string cluster, CancelPasswordRotationHandler handler, CancellationToken ct) =>
+        {
+            var result = await handler.HandleAsync(cluster, ct);
+            if (result.IsSuccess)
+                return Results.NoContent();
+
+            return MapCancelRotationError(result.Error!.Message, result.Error);
+        });
+
+        // DELETE /api/valkey/clusters/{cluster}/ca/rotate — отмена живой заявки
+        // ротации CA (arch/02 §11.2-8, u17; гвард CaMutationLive CaRotator).
+        endpoints.MapDelete("/api/valkey/clusters/{cluster}/ca/rotate", async (
+            string cluster, CancelValkeyCaRotationHandler handler, CancellationToken ct) =>
+        {
+            var result = await handler.HandleAsync(cluster, ct);
+            if (result.IsSuccess)
+                return Results.NoContent();
+
+            return MapCancelRotationError(result.Error!.Message, result.Error);
+        });
+
         // GET /api/config — эффективный конфиг установки (arch/21 §1.1, u15):
         // read-only, mTLS-зона /api, без снапшота и etcd.
         endpoints.MapGet("/api/config", (IOptions<ValkeyWorkerOptions> options)
@@ -237,6 +263,21 @@ public static class ApiModule
     }
 
     // Оператор панели (fallback "api" — у панели ClaimsPrincipal).
+    // Маппинг отмены живой заявки ротации (§11.2-7/8): порт существующих веток
+    // модуля — 404/409/503, дефолт 503.
+    private static IResult MapCancelRotationError(string message, Exception error)
+        => error switch
+        {
+            ValkeyClusterNotFoundException or ValkeyRotationNotFoundException => Results.Problem(
+                statusCode: StatusCodes.Status404NotFound, title: "Not found", detail: message),
+            ValkeyRotationInProgressException => Results.Problem(
+                statusCode: StatusCodes.Status409Conflict, title: "Rotation rejected", detail: message),
+            EtcdWriteUnavailableException or InvalidValkeyConfigException => Results.Problem(
+                statusCode: StatusCodes.Status503ServiceUnavailable, title: "Etcd write unavailable", detail: message),
+            _ => Results.Problem(
+                statusCode: StatusCodes.Status503ServiceUnavailable, title: "Etcd write failed", detail: message),
+        };
+
     private static string RequestedBy(HttpRequest http)
         => http.Headers.TryGetValue("X-Requested-By", out var value) && value.Count > 0
             ? value[0]!

@@ -289,6 +289,44 @@ public static class ApiModule
             };
         });
 
+        // DELETE /api/kafka/clusters/{cluster}/app-password/rotate — отмена
+        // живой заявки ротации app-пароля (arch/02 §10.2-18, u17): del ключа
+        // /kafkaworker/rotations/<C> воркером; гвард «не начата» по work-журналу
+        // (409 «Rotation rejected»), заявки нет → 404.
+        endpoints.MapDelete("/api/kafka/clusters/{cluster}/app-password/rotate", async (
+            string cluster, CancelAppRotationHandler handler, CancellationToken ct) =>
+        {
+            var result = await handler.HandleAsync(cluster, ct);
+            if (result.IsSuccess)
+                return Results.NoContent();
+
+            return MapCancelRotationError(result.Error!.Message, result.Error);
+        });
+
+        // DELETE /api/kafka/clusters/{cluster}/admin-password/rotate — отмена
+        // живой заявки ротации admin-пароля (arch/02 §10.2-19, u17).
+        endpoints.MapDelete("/api/kafka/clusters/{cluster}/admin-password/rotate", async (
+            string cluster, CancelAdminRotationHandler handler, CancellationToken ct) =>
+        {
+            var result = await handler.HandleAsync(cluster, ct);
+            if (result.IsSuccess)
+                return Results.NoContent();
+
+            return MapCancelRotationError(result.Error!.Message, result.Error);
+        });
+
+        // DELETE /api/kafka/clusters/{cluster}/ca/rotate — отмена живой заявки
+        // ротации CA (arch/02 §10.2-20, u17; гвард CaMutationLive CaRotator).
+        endpoints.MapDelete("/api/kafka/clusters/{cluster}/ca/rotate", async (
+            string cluster, CancelCaRotationHandler handler, CancellationToken ct) =>
+        {
+            var result = await handler.HandleAsync(cluster, ct);
+            if (result.IsSuccess)
+                return Results.NoContent();
+
+            return MapCancelRotationError(result.Error!.Message, result.Error);
+        });
+
         // POST /api/kafka/clusters/{cluster}/rebalance — заявка ребалансировки
         // партиций (§10.2-13); исполнение — PartitionReassigner воркера.
         // requested_by — заголовок X-Requested-By, fallback "api".
@@ -526,6 +564,21 @@ public static class ApiModule
             && !string.IsNullOrWhiteSpace(by)
             ? by.ToString()
             : "api";
+
+    // Маппинг отмены живой заявки ротации (§10.2-18/19/20): порт существующих
+    // веток модуля — 404/409/503, дефолт 503.
+    private static IResult MapCancelRotationError(string message, Exception error)
+        => error switch
+        {
+            KafkaClusterNotFoundException or KafkaRotationNotFoundException => Results.Problem(
+                statusCode: StatusCodes.Status404NotFound, title: "Not found", detail: message),
+            KafkaRotationInProgressException => Results.Problem(
+                statusCode: StatusCodes.Status409Conflict, title: "Rotation rejected", detail: message),
+            EtcdWriteUnavailableException or InvalidKafkaConfigException => Results.Problem(
+                statusCode: StatusCodes.Status503ServiceUnavailable, title: "Etcd write unavailable", detail: message),
+            _ => Results.Problem(
+                statusCode: StatusCodes.Status503ServiceUnavailable, title: "Etcd write failed", detail: message),
+        };
 
     // Общий хендлер отмены lifecycle-заявок (§10.2-11/12): успех → 204.
     private static async Task<IResult> CancelTopicLifecycleAsync(
