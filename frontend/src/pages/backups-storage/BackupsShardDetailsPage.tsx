@@ -16,6 +16,7 @@ import {
   Table,
   Text,
   Title,
+  Tooltip,
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { Link, useParams } from 'react-router';
@@ -32,6 +33,7 @@ import {
   fetchBackupObjectsPage,
   fetchBackupShardStorage,
   fetchBackupsStorage,
+  restoreShard,
   updateBackupsPolicy,
 } from '../../api/queries';
 import { ApiError } from '../../api/client';
@@ -108,8 +110,12 @@ export function BackupsShardDetailsPage() {
           <Text size="sm" c="yellow" mt={4}>Reconcile: {data.reconcileNote}</Text>
         ) : null}
       </div>
+      {/* u-restore: кнопка «Восстановить из бэкапа» — модал 02 §9.13 */}
+      <RestoreBlock cluster={data.cluster} shard={data.shard} />
       <FullsTable fulls={data.fulls} />
       <WalCard wal={data.wal} />
+      {/* u11: приёмники WAL per-node (arch/19 §4) */}
+      <AgentsBlock agents={data.agents ?? null} />
       <DrillCard drill={data.drill} cluster={data.cluster} />
       <ObjectsBlock cluster={data.cluster} shard={data.shard} />
     </Stack>
@@ -423,4 +429,153 @@ function ObjectsBlock({ cluster, shard }: { cluster: string; shard: string }) {
       )}
     </Card>
   );
+}
+// ——— Restore-заявка (u-restore, 02 §9.13): модал targetTime (опц., RFC3339) +
+// подтверждение вводом имени шарда; предупреждение «разрушающая и долгая»;
+// 202 → баннер «Заявка restore поставлена»; 400/409 — текстом ProblemDetails. ———
+function RestoreBlock({ cluster, shard }: { cluster: string; shard: string }) {
+  const [opened, setOpened] = useState(false);
+  const [targetTime, setTargetTime] = useState('');
+  const [confirm, setConfirm] = useState('');
+  const [banner, setBanner] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  const confirmed = confirm === shard;
+  const targetTimeValid = targetTime === ''
+    || !Number.isNaN(Date.parse(targetTime)); // RFC3339-парсится
+
+  const submit = async (): Promise<void> => {
+    setSaving(true);
+    setError(null);
+    try {
+      await restoreShard(cluster, shard, shard, targetTime === '' ? undefined : targetTime);
+      setBanner('Заявка restore поставлена — исполнит джоб воркера (статус: бейдж Restore выше).');
+      setOpened(false);
+      setConfirm('');
+      setTargetTime('');
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Stack gap="xs">
+      <Group justify="space-between">
+        <Button color="orange" variant="light" onClick={() => setOpened(true)}>
+          Восстановить из бэкапа
+        </Button>
+        {banner !== null ? <Text size="sm" c="teal">{banner}</Text> : null}
+      </Group>
+      {opened ? (
+        <Card withBorder padding="md" radius="md" style={{ borderColor: 'var(--mantine-color-orange-6)' }}>
+          <Stack gap="sm">
+            <Text size="sm" c="orange">
+              Операция разрушающая и долгая: шард восстанавливается из бэкапа
+              (PITR latest или target_time; arch/19 §3.5).
+            </Text>
+            <Text size="sm" c="dimmed">
+              Подтвердите вводом имени шарда <Text span ff="monospace">{shard}</Text>:
+            </Text>
+            <input
+              value={confirm}
+              onChange={(e) => setConfirm(e.currentTarget.value)}
+              placeholder={shard}
+              style={{
+                padding: 8, borderRadius: 4, border: '1px solid var(--mantine-color-gray-6)',
+                background: 'transparent', color: 'inherit',
+              }}
+            />
+            <Text size="sm" c="dimmed">targetTime (опционально, RFC3339, пусто = latest):</Text>
+            <input
+              value={targetTime}
+              onChange={(e) => setTargetTime(e.currentTarget.value)}
+              placeholder="2026-01-01T12:00:00Z"
+              style={{
+                padding: 8, borderRadius: 4, border: '1px solid var(--mantine-color-gray-6)',
+                background: 'transparent', color: 'inherit',
+              }}
+            />
+            {error !== null ? <Text size="sm" c="red">{error}</Text> : null}
+            <Group justify="flex-end">
+              <Button variant="default" onClick={() => setOpened(false)}>Отмена</Button>
+              <Button color="orange" disabled={!confirmed || !targetTimeValid} loading={saving}
+                onClick={() => void submit()}>
+                Поставить заявку
+              </Button>
+            </Group>
+          </Stack>
+        </Card>
+      ) : null}
+    </Stack>
+  );
+}
+
+// ——— Приёмники WAL (u11): таблица agents[] — Нода|Роль|State-бейдж|Ошибка|Штамп;
+// state-бейджи: streaming=green, waiting_*=yellow, failed_permanent=red. ———
+function AgentsBlock({ agents }: { agents: { node: string; role: string | null; state: string;
+  lastDeliveredSegment: number | null; lastDeliveredUnix: number | null; poolExhausted: boolean;
+  tliJump: number | null; error: string | null; updatedUnix: number }[] | null }) {
+  if (agents === null || agents.length === 0) return null;
+  return (
+    <Card withBorder padding="md" radius="md">
+      <Text fw={600} mb="xs">Приёмники WAL (агенты нод)</Text>
+      <Table.ScrollContainer minWidth={720}>
+        <Table>
+          <Table.Thead>
+            <Table.Tr>
+              <Table.Th>Нода</Table.Th>
+              <Table.Th>Роль</Table.Th>
+              <Table.Th>State</Table.Th>
+              <Table.Th>Последний сегмент</Table.Th>
+              <Table.Th>Ошибка</Table.Th>
+              <Table.Th>Штамп</Table.Th>
+            </Table.Tr>
+          </Table.Thead>
+          <Table.Tbody>
+            {agents.map((a) => (
+              <Table.Tr key={a.node}>
+                <Table.Td><Text size="sm" ff="monospace">{a.node}</Text></Table.Td>
+                <Table.Td>{a.role ?? '—'}</Table.Td>
+                <Table.Td>
+                  <Badge
+                    color={agentColor(a.state)}
+                    variant="light"
+                  >
+                    {a.state}
+                    {a.poolExhausted ? ' · pool exhausted' : ''}
+                  </Badge>
+                  {a.tliJump !== null ? (
+                    <Tooltip label={`tli_jump: ${a.tliJump}`}>
+                      <Badge color="yellow" variant="light" size="xs" ml={4}>tli {a.tliJump}</Badge>
+                    </Tooltip>
+                  ) : null}
+                </Table.Td>
+                <Table.Td>
+                  {a.lastDeliveredSegment === null ? '—' : (
+                    <Tooltip label={a.lastDeliveredUnix === null ? '' : formatUnix(a.lastDeliveredUnix)}>
+                      <Text size="sm" ff="monospace">{a.lastDeliveredSegment}</Text>
+                    </Tooltip>
+                  )}
+                </Table.Td>
+                <Table.Td>
+                  {a.error !== null ? <Text size="sm" c="red">{a.error}</Text> : <Text c="dimmed">—</Text>}
+                </Table.Td>
+                <Table.Td>{formatUnix(a.updatedUnix)}</Table.Td>
+              </Table.Tr>
+            ))}
+          </Table.Tbody>
+        </Table>
+      </Table.ScrollContainer>
+    </Card>
+  );
+}
+
+function agentColor(state: string): string {
+  if (state === 'streaming') return 'green';
+  if (state === 'failed_permanent') return 'red';
+  if (state.startsWith('waiting_')) return 'yellow';
+  return 'gray'; // starting/paused — нейтрально
 }

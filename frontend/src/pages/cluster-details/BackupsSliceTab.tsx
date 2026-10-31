@@ -3,9 +3,11 @@
 // (клиентский фильтр по кластеру) + policy кластера; ссылки на /backups-storage
 // и /reliability; строки полных — на детали шарда бэкапов (arch/03 §3).
 import { useQuery } from '@tanstack/react-query';
-import { Anchor, Group, Stack, Table, Text } from '@mantine/core';
+import { Anchor, Button, Group, Stack, Table, Text } from '@mantine/core';
 import { Link } from 'react-router';
-import { backupsQueryKeys, fetchBackupsStorage, fetchClusterDetails, queryKeys } from '../../api/queries';
+import { useState } from 'react';
+import { backupsQueryKeys, fetchBackupsStorage, fetchClusterDetails, fetchS3Pools, queryKeys } from '../../api/queries';
+import { PolicyBackupsModal } from '../backups-storage/PolicyBackupsModal';
 import { usePollingIntervalMs } from '../../polling/PollingContext';
 import { formatBytes, formatUnix } from '../../utils/format';
 
@@ -24,6 +26,13 @@ export function BackupsSliceTab({ cluster }: { cluster: string }) {
 
   const storageData = storage.data;
   const clusters = storageData?.clusters ?? [];
+  const [policyOpened, setPolicyOpened] = useState(false);
+  const poolsQuery = useQuery({
+    queryKey: backupsQueryKeys.pools,
+    queryFn: fetchS3Pools,
+    enabled: policyOpened,
+    staleTime: 30_000,
+  });
   const slice = clusters.find((c) => c.cluster === cluster) ?? null;
   const policy = slice?.policy ?? null;
   const shards = details.data?.shards.map((s) => s.name) ?? [];
@@ -33,6 +42,10 @@ export function BackupsSliceTab({ cluster }: { cluster: string }) {
       <Group justify="space-between">
         <Text fw={500}>Бэкапы кластера (срез)</Text>
         <Group gap="xs">
+          {/* u16/D14: та же форма Policy, что на /backups-storage */}
+          <Button size="xs" variant="light" onClick={() => setPolicyOpened(true)}>
+            Policy бэкапов
+          </Button>
           <Anchor component={Link} to="/backups-storage" size="sm">Хранилище бэкапов →</Anchor>
           <Anchor component={Link} to="/reliability" size="sm">Надёжность (RPO/RTO) →</Anchor>
         </Group>
@@ -95,6 +108,18 @@ export function BackupsSliceTab({ cluster }: { cluster: string }) {
           <Text size="xs" c="dimmed">Штамп инвентаря: {formatUnix(storageData?.inventoryUpdatedUnix ?? 0)}</Text>
         </>
       )}
+      {policyOpened ? (
+        <PolicyBackupsModal
+          cluster={cluster}
+          policy={storageData?.clusters.find((c) => c.cluster === cluster)?.policy ?? null}
+          pools={poolsQuery.data ?? []}
+          onClose={() => setPolicyOpened(false)}
+          onSaved={() => {
+            void storage.refetch();
+            void details.refetch();
+          }}
+        />
+      ) : null}
     </Stack>
   );
 }

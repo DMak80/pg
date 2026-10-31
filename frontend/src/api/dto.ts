@@ -935,6 +935,8 @@ export interface BackupPolicyDto {
   fullMaxAgeSec: number | null;
   verifyOnCreate: boolean | null;
   drillIntervalDays: number | null;
+  // u16: возрастной гейт мусора (arch/19 §4); null — дефолт воркера 600 с.
+  garbageMinAgeSec: number | null;
   // t36: секция s3 policy (arch/19 §4); null — пул не выбран.
   s3: { pool: string; writeMaster: string[]; writeReplica: string[] } | null;
 }
@@ -1004,6 +1006,8 @@ export interface BackupStorageDto {
   orphans: BackupOrphanDto[];
   inventoryUpdatedUnix: number;
   inventoryError: string | null;
+  // u10-баннер грани: null = бэкапы работают.
+  backupsDisabled?: BackupsDisabledDto | null;
 }
 
 // GET /api/backups/storage/{cluster}/{shard} — детали шарда.

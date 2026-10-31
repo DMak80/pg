@@ -6,6 +6,7 @@ import { Anchor, Badge, Button, Card, Group, Select, Stack, Table, Text, Title }
 import { useSyncExternalStore } from 'react';
 import { Link } from 'react-router';
 import { clearEvents, getEvents, subscribe } from '../events/eventsStore';
+import { alertRoute } from '../utils/alertRoutes';
 import type { EventDomain, EventEntityKind, EventItem } from '../events/eventsStore';
 
 const DOMAIN_OPTIONS = [
@@ -31,27 +32,6 @@ const ENTITY_KIND_OPTIONS: { value: string; label: string }[] = [
   { value: 'rotation', label: 'rotation' },
   { value: 'instance', label: 'instance' },
 ];
-
-// Таблица маршрутов событий (u04-подмножество до появления alertRoutes —
-// deep-link по домену/сущности; алерты используют полную alertRoutes).
-function eventRoute(e: EventItem): string | null {
-  const [cluster, entity] = e.entity.includes('/') ? e.entity.split('/', 2) : [e.entity, null];
-  switch (e.domain) {
-    case 'pg':
-      if (e.entityKind === 'shard') return `/clusters/${cluster}/shards/${entity}`;
-      if (e.entityKind === 'bucket') return `/clusters/${cluster}`;
-      if (e.entityKind === 'evacuation' || e.entityKind === 'heal') return `/clusters/${cluster}`;
-      return `/clusters/${cluster}`;
-    case 'kafka':
-      return `/kafka/${cluster}`;
-    case 'valkey':
-      return `/valkey/${cluster}`;
-    case 's3':
-      return `/s3/${cluster}`;
-    default:
-      return null;
-  }
-}
 
 export function EventsPage() {
   const events = useSyncExternalStore(subscribe, getEvents);
@@ -121,7 +101,13 @@ function EventsTable({ events }: { events: EventItem[] }) {
             </Table.Thead>
             <Table.Tbody>
               {filtered.map((e) => {
-                const route = eventRoute(e);
+                // u04: единая таблица маршрутов с алертами (kind фиктивный —
+                // маршрут по домену/сущности события).
+                const fakeKind = e.domain === 'kafka' ? 'kafka-rotation-pending'
+                  : e.domain === 'valkey' ? 'valkey-rotation-pending'
+                    : e.domain === 's3' ? 's3-rotation-pending'
+                      : 'cluster-incomplete';
+                const route = alertRoute(fakeKind, e.entity);
                 const change = e.type === 'state-change' && e.from !== undefined && e.to !== undefined
                   ? `${e.from} → ${e.to}`
                   : e.type;

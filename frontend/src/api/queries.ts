@@ -494,6 +494,8 @@ export const backupsQueryKeys = {
   storage: ['backups-storage'] as const,
   shard: (cluster: string, shard: string) => ['backups-storage', cluster, shard] as const,
   objects: (prefix: string, token: string | null) => ['backups-storage', 'objects', prefix, token] as const,
+  // u16: пулы для формы Policy (02 §12.4).
+  pools: ['backups-storage', 's3-pools'] as const,
 };
 
 export function fetchBackupsStorage(): Promise<BackupStorageDto> {
@@ -535,6 +537,8 @@ export interface UpdateBackupsPolicyRequestDto {
   fullMaxAgeSec: number;
   verifyOnCreate: boolean;
   drillIntervalDays: number;
+  // u16 (02 §9.12): null — поле в policy не шлётся (дефолт воркера 600 с).
+  garbageMinAgeSec?: number | null;
   // t36 (02 §9.12): null — сброс секции (policy без s3 — выключение бэкапов).
   s3: { pool: string; writeMaster: string[]; writeReplica: string[] } | null;
 }
@@ -552,6 +556,17 @@ export function updateBackupsPolicy(
   return apiFetch<void>(
     `/api/clusters/${encodeURIComponent(cluster)}/backups/policy`,
     { method: 'PUT', body });
+}
+
+// POST /api/clusters/{cluster}/shards/{shard}/restore — restore-заявка
+// (u-restore, 02 §9.13): прокси в API PgWorker; 202 (заявка поставлена) /
+// 400 (мисматч confirm) / 404 / 409 (активный restore уже идёт) / 503.
+export function restoreShard(
+  cluster: string, shard: string, confirm: string, targetTime?: string,
+): Promise<unknown> {
+  return apiFetch<unknown>(
+    `/api/clusters/${encodeURIComponent(cluster)}/shards/${encodeURIComponent(shard)}/restore`,
+    { method: 'POST', body: { confirm, targetTime } });
 }
 
 export function fetchBackupShardStorage(cluster: string, shard: string): Promise<BackupShardStorageDto> {
