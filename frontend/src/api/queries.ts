@@ -77,6 +77,8 @@ export const queryKeys = {
   cluster: (name: string) => ['clusters', name] as const,
   haScopes: ['ha-scopes'] as const,
   haScope: (scope: string) => ['ha-scopes', scope] as const,
+  // u03: HA-данные страницы шарда (scope = <cluster>-<shard>).
+  shardHa: (cluster: string, shard: string) => ['ha-scopes', `${cluster}-${shard}`] as const,
   alerts: (severity?: string, kind?: string) => ['alerts', { severity, kind }] as const,
 };
 

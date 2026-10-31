@@ -265,6 +265,20 @@ export interface ClusterDto {
   standNodes: StandNodeDto[];
   // Журнал последнего процесса воркера (t07, arch/03 §2); null — журнала нет.
   work?: ClusterWorkDto | null;
+  // u12: журналы эвакуаций кластера (arch/14 §3.2); null — не тикали.
+  evacuations?: EvacuationDto[] | null;
+  // u07-бейдж: живая заявка ротации per-cluster секретов /pgworker/rotations/<C>.
+  secretsRotationPending?: boolean;
+}
+
+// Журнал эвакуации шарда (u12, arch/14 §3.2): buckets — старый → новый.
+export interface EvacuationDto {
+  shard: string;
+  evacuatedUnix: number;
+  reason: string;
+  buckets: Record<string, string>;
+  state: 'DONE' | 'QUARANTINED';
+  returnedUnix: number | null;
 }
 
 export interface ShardDto {
@@ -457,6 +471,10 @@ export interface KafkaClusterDto {
   groups: KafkaGroupDto[] | null;
   probeOk: boolean | null;
   probeError: string | null;
+  // u07: живая заявка admin-ротации (бейдж шапки + u17-отмена); null = нет.
+  adminRotation?: KafkaRotationTicketDto | null;
+  // u13: work-журнал кластера /kafkaworker/work/<C>; null = журнала нет.
+  work?: ClusterWorkDto | null;
 }
 
 export interface KafkaBrokerDto {
@@ -718,6 +736,8 @@ export interface ValkeyClusterDto {
   caRotation: ValkeyCaRotationDto | null;
   // Последний исход заявки (t10): null = исходов нет.
   ticketOutcome: TicketOutcomeDto | null;
+  // u13: work-журнал кластера /valkeyworker/work/<C>; null = журнала нет.
+  work?: ClusterWorkDto | null;
 }
 
 export interface ValkeyNodeDto {
@@ -962,6 +982,21 @@ export interface BackupShardStorageDto {
   reconcileNote: string | null;
   // Последний/текущий дрилл шарда (reliability t02, arch/19 §3.6); null — ключа нет.
   drill: BackupDrillBadgeDto | null;
+  // u11: приёмники WAL per-node (arch/19 §4); null — не тикали.
+  agents?: WalAgentDto[] | null;
+}
+
+// Приёмник WAL ноды (u11, arch/19 §4): lease-ключ жив = приёмник жив.
+export interface WalAgentDto {
+  node: string;
+  role: string | null;
+  state: string;
+  lastDeliveredSegment: number | null;
+  lastDeliveredUnix: number | null;
+  poolExhausted: boolean;
+  tliJump: number | null;
+  error: string | null;
+  updatedUnix: number;
 }
 
 // Статус дрилла шарда (reliability t02): state/фаза/времена/LSN/error.
@@ -1014,6 +1049,21 @@ export interface WorkerViewDto {
   worker: string;
   instances: WorkerInstanceDto[];
   targetCert?: WorkerCertDto | null;
+  // u14: координация (лидер + claims «кто держит кластер»); null — не тикали.
+  coordination?: WorkerCoordinationDto | null;
+}
+
+// Координация воркера домена (u14, adminpanel/02 §3.7).
+export interface WorkerCoordinationDto {
+  leaderInstance: string | null;
+  claims: WorkerClaimDto[];
+  instances: string[];
+}
+
+export interface WorkerClaimDto {
+  cluster: string;
+  instance: string;
+  sinceUnix: number | null;
 }
 
 export interface WorkersViewDto {
@@ -1167,6 +1217,8 @@ export type S3ClusterDto = {
   connectivity: S3ConnectivityDto | null;
   sync: S3SyncDto | null;
   rotation: S3RotationDto | null;
+  // u13: work-журнал кластера /s3worker/work/<C>; null = журнала нет.
+  work?: ClusterWorkDto | null;
 };
 export type CreateS3ClusterRequestDto = {
   name: string;

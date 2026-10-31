@@ -6,6 +6,7 @@ import { AlertsPage } from './pages/AlertsPage';
 import { BackupsStoragePage } from './pages/BackupsStoragePage';
 import { BackupsShardDetailsPage } from './pages/backups-storage/BackupsShardDetailsPage';
 import { ClusterDetailsPage } from './pages/ClusterDetailsPage';
+import { ShardDetailsPage } from './pages/shard/ShardDetailsPage';
 import { ClustersPage } from './pages/ClustersPage';
 import { KafkaClusterDetailsPage } from './pages/kafka-cluster/KafkaClusterDetailsPage';
 import { KafkaClustersPage } from './pages/KafkaClustersPage';
@@ -30,6 +31,7 @@ export const router = createBrowserRouter([
       { path: 'etcd', element: <EtcdPage /> },
       { path: 'clusters', element: <ClustersPage /> },
       { path: 'clusters/:cluster', element: <ClusterDetailsPage /> },
+      { path: 'clusters/:cluster/shards/:shard', element: <ShardDetailsPage /> },
       { path: 'backups-storage', element: <BackupsStoragePage /> },
       { path: 'backups-storage/:cluster/:shard', element: <BackupsShardDetailsPage /> },
       { path: 'kafka', element: <KafkaClustersPage /> },
