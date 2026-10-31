@@ -29,8 +29,10 @@ public class NodeWalReceiverTests
 
     // Пин pg_doorman (arch/14 §2.1 R1): пулер — ОБЯЗАТЕЛЬНАЯ часть образа ноды,
     // docker build без build-arg DOORMAN_IMAGE падает fail-fast. Пин — те же
-    // три точки, что в ранбуке («Обновить пин pg_doorman»): 00-up.sh,
-    // E2eEnvironment.DoormanImage, images.txt.
+    // четыре рабочие точки, что в ранбуке («Обновить пин pg_doorman»):
+    // 00-up.sh, E2eEnvironment.DoormanImage, сам этот файл (DoormanImage —
+    // ниже им же собирается образ ноды с --build-arg DOORMAN_IMAGE), раздел
+    // ранбука; images.txt — отдельный шаг рутины.
     private const string DoormanImage = "ghcr.io/ozontech/pg_doorman:v3.11.0";
 
     // Пулер обязателен (arch/14 §8): entrypoint ноды без непустого DOORMAN_CONFIG
