@@ -48,13 +48,13 @@ DockerEnvBindings.ApplyRestTlsEnvOverrides(builder.Configuration);
 
 // Конфигурация: appsettings.json + env-оверрайды PgWorker__* (пример — в корне проекта).
 builder.Services.Configure<PgWorkerOptions>(builder.Configuration.GetSection("PgWorker"));
-// Fail-fast: advertise без URL бессмысленен; http-advertise запрещён при mTLS-каноне (arch/14 §1.1).
+// Fail-fast: advertise без URL бессмысленен; http-advertise запрещён (HTTPS-грань, arch/14 §1.1).
 builder.Services.AddOptions<PgWorkerOptions>()
     .Validate(o => !string.IsNullOrWhiteSpace(o.Api.AdvertiseUrl),
         "PgWorker:Api:AdvertiseUrl is not set (API URL reachable by the panel; env PGW_API_ADVERTISE_URL)")
     .Validate(o => o.Api.Tls.AllowInsecureHttp
         || o.Api.AdvertiseUrl.StartsWith("https://", StringComparison.Ordinal),
-        "PgWorker:Api:AdvertiseUrl must be https:// (mTLS-only API, arch/14 §1.1)")
+        "PgWorker:Api:AdvertiseUrl must be https:// (HTTPS-only edge, mTLS on /api only; arch/14 §1.1)")
     // Экспорт etcd-снапшотов в S3 (reliability): Enabled=true требует
     // ПОЛНУЮ СОБСТВЕННУЮ пару PgWorker:Snapshots:Export:S3 (env
     // PGW_SNAPSHOTS_S3_* — не креды пулов бэкапов); диапазоны — всегда.
@@ -79,8 +79,8 @@ builder.Services.AddOptions<PgWorkerOptions>()
 var etcdEndpoints = builder.Configuration.GetSection("PgWorker:Etcd:Endpoints").Get<string[]>() ?? [];
 var managedCert = await WorkerApiCertReader.ReadAsync(etcdEndpoints, "pgworker", CancellationToken.None);
 
-// mTLS HTTP API (arch/14 §1.1): Kestrel с серверным сертом и требованием
-// клиентского серта per-install API-CA (порт — из ASPNETCORE_URLS/urls, иначе 8080).
+// HTTPS HTTP API (arch/14 §1.1): Kestrel с серверным сертом; клиентский серт
+// опционален, mTLS (401) — только /api (порт — из ASPNETCORE_URLS/urls, иначе 8080).
 var apiTls = ApiTlsEndpoints.ConfigureMtls(builder, managedCert);
 
 // Thumbprint применённого серта → дискавери-ключ (spec §3.2 п.3): панель
@@ -94,7 +94,7 @@ builder.Services.AddSingleton<HealthState>();
 // Прогресс-отметки долгих фаз reconcile в глубину процессов (Provisioning/Moves).
 builder.Services.AddSingleton<Shared.Core.Hosting.ILoopProgress>(sp => sp.GetRequiredService<HealthState>());
 
-// Метрики (arch/18 §3): /metrics на том же mTLS-Kestrel-порту, что /healthz.
+// Метрики (arch/18 §3): /metrics на том же HTTPS-Kestrel-порту, что /healthz.
 builder.Services.AddAppMetrics("PgWorker", builder.Configuration.GetSection("PgWorker:Metrics"));
 builder.Services.AddSingleton(sp =>
 {
@@ -885,6 +885,9 @@ if (apiTls.Source is { } certSource)
     app.Logger.LogInformation("PgWorker:Api:Tls: API server certificate — source {Source}", certSource);
 if (apiTls.Warning is { } certWarning)
     app.Logger.LogWarning("PgWorker:Api:Tls: {Warning}", certWarning);
+// Открытая грань (arch/14 §1.1): клиентский серт опционален на хендшейке;
+// 401 без валидного серта — только на /api; /healthz и /metrics — без серта.
+app.UseMiddleware<Shared.Tls.ClientCertAuthMiddleware>();
 app.MapAppMetrics();
 app.MapHealthChecks("/healthz");
 app.MapWorkerApi();

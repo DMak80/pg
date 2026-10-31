@@ -129,10 +129,16 @@ restart); поле опционально (инстансы до введени�
 arch/16 §1.1: CA `kfw-install-ca`, отдельные клиентские серты панели
 `panel.crt` и сида `seed.crt`); запрос `/api` без валидного клиентского
 серта — 401. `/healthz` и `/metrics` — открытая грань доверенной
-docker-сети, без клиентского серта (паттерн Patroni REST `:8008` —
-arch/13 §4, verify_client нет): скрейп Prometheus — `https` + `ca_file`
-без `cert_file`/`key_file` (arch/18 §5.2), docker-HEALTHCHECK — без
-клиентского серта.
+docker-сети И хост-публикаций портов API docker-хоста
+(`localhost:{PORT}`; публикации нужны панели — AdvertiseUrl
+`host.docker.internal` — и хостовым потребителям: чеки, скрейп), без
+клиентского серта (паттерн Patroni REST `:8008` — arch/13 §4,
+verify_client нет): скрейп Prometheus — `https` + `ca_file` без
+`cert_file`/`key_file` (arch/18 §5.2), docker-HEALTHCHECK — без
+клиентского серта. Граница доверия грани — периметр docker-хоста, а не
+только docker-сеть; опциональное сужение (bind `127.0.0.1` отдельным
+env-флагом; ломает `host.docker.internal`-потребителей) — роадмап,
+каноном не предписывается.
 `X-Api-Key`/`PGW_API_KEY` удалён; отдельные креды панели и сида — разные
 клиентские серты одной клиентской CA (различимы в журналах сервера,
 отзываются независимо). Отключение TLS

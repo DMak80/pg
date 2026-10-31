@@ -8,11 +8,11 @@ using Shared.Tls;
 
 namespace PgWorker.App.Api;
 
-// mTLS HTTP-грани PgWorker (arch/14 §1.1): вся грань (вкл. /healthz и
-// /metrics) — только TLS; клиентские серты — per-install API-CA (единая пакета
-// с KafkaWorker, решение О1). Вызывается на WebApplicationBuilder ДО Build().
-// Сертификаты живут всё приложение: ClientCertificateValidation — на каждом
-// хендшейке (без using).
+// HTTPS HTTP-грань PgWorker (arch/14 §1.1): клиентский серт опционален на
+// хендшейке, mTLS обязателен только на /api (401 без валидного серта —
+// Shared.Tls.ClientCertAuthMiddleware); /healthz и /metrics — открытая грань
+// доверенной docker-сети. Вызывается на WebApplicationBuilder ДО Build().
+// Сертификаты живут всё приложение (без using).
 public static class ApiTlsEndpoints
 {
     // env-секреты → конфиг-дерево (arch/14 §4): PEM-значения и _PATH-файлы.
@@ -50,7 +50,12 @@ public static class ApiTlsEndpoints
     {
         var tls = builder.Configuration.GetSection("PgWorker:Api:Tls").Get<TlsOptions>() ?? new TlsOptions();
         if (tls.AllowInsecureHttp)
+        {
+            // WAF-режим (in-memory тесты, без TLS): middleware в pipeline у всех —
+            // pass-through (Enabled=false).
+            builder.Services.AddSingleton(new ClientCertAuthOptions(Enabled: false, ClientCa: null));
             return new ApiTlsSetup(null, null, null); // без TLS — только WAF-тесты; warning логирует Program.cs
+        }
 
         // Управляемый серт: etcd-ключ > env (spec §3.2 п.1). Битый ключ —
         // fail-fast: ключ — явное намерение оператора.
@@ -82,15 +87,25 @@ public static class ApiTlsEndpoints
         var clientCa = LoadClientCa(tls) ?? throw new ApplicationException(
             "PgWorker:Api:Tls: ClientCA not set (PGW_API_TLS_CLIENT_CA[_PATH])");
 
+        // 401-политика /api (arch/14 §1.1): опция middleware — DI-синглтон;
+        // clientCa живёт всё приложение (уже загружен без using, как серверный).
+        builder.Services.AddSingleton(new ClientCertAuthOptions(Enabled: true, ClientCa: clientCa));
+
         var port = ResolvePort(builder.Configuration);
-        // Явный Listen подавляет default-URL — только mTLS-грань.
-        builder.WebHost.ConfigureKestrel(o => o.ListenAnyIP(port, listenOptions => listenOptions.UseHttps(
-            new HttpsConnectionAdapterOptions
-            {
-                ServerCertificate = serverCert,
-                ClientCertificateMode = ClientCertificateMode.RequireCertificate,
-                ClientCertificateValidation = (certificate, _, _) => TlsChain.ValidateChain(certificate, clientCa),
-            })));
+        // Явный Listen подавляет default-URL — только HTTPS-грань. Серт
+        // запрашивается, но НЕ требуется (AllowCertificate) и НЕ валидируется
+        // на хендшейке: без AllowAnyClientCertificate Kestrel применяет
+        // дефолтную системную валидацию цепочки и рвёт хендшейк. Валидация —
+        // в ClientCertAuthMiddleware (401 только на /api; /healthz и /metrics
+        // — открытая грань доверенной docker-сети).
+        // AllowAnyClientCertificate() мутирует опцию до захвата её listener'ом; вызываем до ConfigureKestrel для определённости.
+        var httpsOptions = new HttpsConnectionAdapterOptions
+        {
+            ServerCertificate = serverCert,
+            ClientCertificateMode = ClientCertificateMode.AllowCertificate,
+        };
+        httpsOptions.AllowAnyClientCertificate();
+        builder.WebHost.ConfigureKestrel(o => o.ListenAnyIP(port, listenOptions => listenOptions.UseHttps(httpsOptions)));
         return new ApiTlsSetup(serverCert, source, warning);
     }
 

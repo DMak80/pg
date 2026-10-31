@@ -14,10 +14,11 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 BASE="${ADMINPANEL_URL:-http://localhost:5050}"
-# mTLS (t03): /healthz воркера — только по https с клиентским сертом healthcheck.
+# /healthz воркера — открытая https-грань без клиентского серта (arch/16 §1.1).
 ROOT="$(cd ../.. && pwd)"
 TLS_DIR="$ROOT/deploy/tls"
 WORKER_HEALTHZ="${KAFKAWORKER_HEALTHZ:-https://localhost:8082/healthz}"
+WORKER_API="${KAFKAWORKER_API:-https://localhost:8082/api/kafka/clusters}"
 JAR="$(mktemp)"; trap 'rm -f "$JAR"' EXIT
 
 curl -fsS -c "$JAR" -o /dev/null -X POST "$BASE/api/auth/login" \
@@ -41,13 +42,17 @@ wait_state() {
   done
   echo "❌ $label not reached within 120 s ($fn/$want)"; return 1
 }
-wait_healthz() { for i in $(seq 1 30); do curl -fsS -o /dev/null --cacert "$TLS_DIR/ca.pem" --cert "$TLS_DIR/healthcheck.crt" --key "$TLS_DIR/healthcheck.key" "$WORKER_HEALTHZ" && return 0; sleep 1; done; echo "❌ $WORKER_HEALTHZ did not return to 200 within 30 s"; return 1; }
+wait_healthz() { for i in $(seq 1 30); do curl -fsS -o /dev/null --cacert "$TLS_DIR/ca.pem" "$WORKER_HEALTHZ" && return 0; sleep 1; done; echo "❌ $WORKER_HEALTHZ did not return to 200 within 30 s"; return 1; }
 ect() { docker compose exec -T etcd1 etcdctl --endpoints=http://localhost:2379 "$@"; }
 
 # Preconditions: lease-ключи живы, воркер здоров, worker-* алертов нет.
 [ -n "$(ect get /kafkaworker/api/ --prefix --keys-only </dev/null 2>/dev/null)" ] \
   || { echo "❌ no live /kafkaworker/api/ — bring up the stand (00-up.sh, full+kafka)"; exit 1; }
-curl -fsS -o /dev/null --cacert "$TLS_DIR/ca.pem" --cert "$TLS_DIR/healthcheck.crt" --key "$TLS_DIR/healthcheck.key" "$WORKER_HEALTHZ" || { echo "❌ worker /healthz not 200 before the stimulus"; exit 1; }
+curl -fsS -o /dev/null --cacert "$TLS_DIR/ca.pem" "$WORKER_HEALTHZ" || { echo "❌ worker /healthz not 200 before the stimulus"; exit 1; }
+# /api без клиентского серта — ровно 401 (mTLS-политика /api, arch/16 §1.1;
+# /healthz выше — открытая грань). Без -f: 401 для curl — не ошибка транспорта.
+api_no_cert_code="$(curl -s -m 3 -o /dev/null -w '%{http_code}' --cacert "$TLS_DIR/ca.pem" "$WORKER_API")"
+[ "$api_no_cert_code" = 401 ] || { echo "❌ worker /api without a client cert = $api_no_cert_code (expected 401)"; exit 1; }
 ! has_unhealthy || { echo "❌ worker-unhealthy already present — run after a clean 00-up.sh"; exit 1; }
 ! has_api_down  || { echo "❌ worker-api-unreachable already present — stand inconsistent"; exit 1; }
 started_before="$(docker inspect -f '{{.State.StartedAt}}' as-kafkaworker)"

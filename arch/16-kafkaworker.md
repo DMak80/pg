@@ -117,9 +117,15 @@ URL API — из etcd) URL воркера (§1.1)
 `/api` — клиенты (панель, стендовый сид) аутентифицируются клиентским
 сертификатом, подписанным per-install API-CA; запрос `/api` без валидного
 клиентского серта — 401. `/healthz` и `/metrics` — открытая грань
-доверенной docker-сети, без клиентского серта (паттерн Patroni REST
+доверенной docker-сети И хост-публикаций портов API docker-хоста
+(`localhost:{PORT}`; публикации нужны панели — AdvertiseUrl
+`host.docker.internal` — и хостовым потребителям: чеки, скрейп), без
+клиентского серта (паттерн Patroni REST
 `:8008` — arch/13 §4); скрейп Prometheus — `https` + `ca_file`
-(arch/18 §5.2). `X-Api-Key`/`KFW_API_KEY`
+(arch/18 §5.2). Граница доверия грани — периметр docker-хоста, а не
+только docker-сеть; опциональное сужение (bind `127.0.0.1` отдельным
+env-флагом; ломает `host.docker.internal`-потребителей) — роадмап,
+каноном не предписывается. `X-Api-Key`/`KFW_API_KEY`
 удалён. Отключение TLS
 (`KafkaWorker:Api:Tls:AllowInsecureHttp`, default false) — только для
 in-memory WAF-тестов; в deploy/стенде грань всегда HTTPS.

@@ -38,7 +38,7 @@ public class OptionsValidationTests
         o.Api.AdvertiseUrl = url;
         o.Api.Tls.AllowInsecureHttp = allowInsecure;
 
-        // Assert — https:// обязателен (mTLS-only, arch/24 §1.1); AllowInsecureHttp — WAF-лазейка
+        // Assert — https:// обязателен (HTTPS-грань, mTLS — только /api, arch/24 §1.1); AllowInsecureHttp — WAF-лазейка
         S3StartupChecks.AdvertiseUrl(o).Should().Be(expected);
     }
 

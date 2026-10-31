@@ -28,8 +28,8 @@ x-pgworker-env: &pgworker-env
   # (extra_hosts), панель видела DNS-таймауты проб. Пусто (прод/мульти-хост)
   # → имя docker-хоста как есть.
   PgWorker__Docker__AdvertisedHost: ${PGW_ADVERTISED_HOST:-host.docker.internal}
-  # HTTP API воркера (arch/14 §1.1, t03): mTLS-only грань — advertise
-  # https://, ключи-серты из /tls (per-install пакет kfw-install-ca);
+  # HTTP API воркера (arch/14 §1.1, t03): HTTPS-грань, mTLS только на /api —
+  # advertise https://, ключи-серты из /tls (per-install пакет kfw-install-ca);
   # демо-сид POST /api/seed/demo за флагом (стенд; прод — false).
   # X-Api-Key удалён (t03) — аутентификация транспортная (mTLS).
   # AdvertiseUrl ЗАДАЁТСЯ В СЕРВИСАХ (уникален per инстанс, t07).
@@ -127,7 +127,7 @@ x-kafkaworker-env: &kafkaworker-env
   KafkaWorker__AdvertisedClientHost: ${KFW_ADVERTISED_CLIENT_HOST:-host.docker.internal}
   # HTTP API воркера (arch/16 §1.1): advertise-URL https:// в /kafkaworker/api/<id>,
   # mTLS-серты из /tls, демо-сид за флагом (стенд; прод — false). KFW_API_KEY
-  # удалён (t03) — грань mTLS-only.
+  # удалён (t03) — грань HTTPS, mTLS только на /api.
   KFW_API_TLS_CERT_PATH: /tls/server.crt
   KFW_API_TLS_KEY_PATH: /tls/server.key
   KFW_API_TLS_CLIENT_CA_PATH: /tls/ca.pem

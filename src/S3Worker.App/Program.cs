@@ -10,8 +10,8 @@ using Shared.Core.HealthChecks;
 using Shared.Core.Hosting;
 using Shared.Etcd.Client;
 
-// Точка входа S3Worker (arch/24 §8): host-builder с mTLS-гранью HTTP API
-// (вкл. /healthz), конфигурация appsettings+env, DI слоёв. Per-install
+// Точка входа S3Worker (arch/24 §8): host-builder с HTTPS-гранью HTTP API
+// (mTLS — только /api; /healthz — открытая грань), конфигурация appsettings+env, DI. Per-install
 // env-секреты — TLS API (S3W_API_TLS_*), docker-транспорт (S3W_DOCKER_*),
 // спец-ключ бэкапа etcd (S3W_ETCD_BACKUP_{ACCESSKEY,SECRETKEY}, arch/23 §6).
 // Каркас Task 3: координация/циклы — Task 4, драйвер docker — Task 6,
@@ -27,8 +27,8 @@ builder.Services.AddSingleton<HealthState>();
 // Прогресс-отметки долгих фаз reconcile в глубину процессов (provisioning).
 builder.Services.AddSingleton<Shared.Core.Hosting.ILoopProgress>(sp => sp.GetRequiredService<HealthState>());
 
-// Метрики (arch/18 §2.2): /metrics на том же mTLS-Kestrel-порту, что /healthz —
-// scrape ходит клиентским сертом per-install пакета. Meter "S3Worker" —
+// Метрики (arch/18 §2.2): /metrics на том же HTTPS-Kestrel-порту, что /healthz —
+// открытая грань скрейпа без клиентского серта (arch/18 §5.2). Meter "S3Worker" —
 // s3worker_*-метрики домена (arch/24 §7).
 builder.Services.AddAppMetrics("S3Worker", builder.Configuration.GetSection("S3Worker:Metrics"));
 builder.Services.AddSingleton(sp =>
@@ -59,7 +59,7 @@ DockerEnvBindings.ApplySshEnvOverrides(builder.Configuration);
 builder.Services.AddOptions<S3WorkerOptions>()
     .Validate(o => S3StartupChecks.EtcdEndpoints(o), "S3Worker:Etcd:Endpoints are not configured")
     .Validate(o => S3StartupChecks.AdvertiseUrl(o),
-        "S3Worker:Api:AdvertiseUrl is not set or not https:// (env S3W_API_ADVERTISE_URL; mTLS-only API — arch/24 §1.1)")
+        "S3Worker:Api:AdvertiseUrl is not set or not https:// (env S3W_API_ADVERTISE_URL; HTTPS-only edge, mTLS on /api only — arch/24 §1.1)")
     .Validate(o => S3StartupChecks.DockerTopology(o),
         "S3Worker:Docker: invalid topology (Swarm → SwarmManager required; Plain → non-empty Hosts table without duplicate names)")
     .Validate(o => S3StartupChecks.Thresholds(o),
@@ -131,8 +131,8 @@ builder.Services.AddSingleton(sp => new S3Worker.App.Api.Operations.SeedDemoHand
 var etcdEndpoints = builder.Configuration.GetSection("S3Worker:Etcd:Endpoints").Get<string[]>() ?? [];
 var managedCert = await WorkerApiCertReader.ReadAsync(etcdEndpoints, "s3worker", CancellationToken.None);
 
-// mTLS HTTP API (arch/24 §1.1): env-секреты TLS → конфиг, Kestrel c
-// серверным сертом и требованием клиентского серта per-install API-CA.
+// HTTPS HTTP API (arch/24 §1.1): env-секреты TLS → конфиг, Kestrel c
+// серверным сертом; клиентский серт опционален, mTLS — только /api.
 TlsEndpoints.ApplyEnvOverrides(builder.Configuration);
 var apiTls = TlsEndpoints.ConfigureMtls(builder, port: 8080, managedCert);
 
@@ -384,6 +384,9 @@ if (apiTls.Source is { } certSource)
     app.Logger.LogInformation("S3Worker:Api:Tls: API server certificate — source {Source}", certSource);
 if (apiTls.Warning is { } certWarning)
     app.Logger.LogWarning("S3Worker:Api:Tls: {Warning}", certWarning);
+// Открытая грань (arch/24 §1.1): клиентский серт опционален на хендшейке;
+// 401 без валидного серта — только на /api; /healthz и /metrics — без серта.
+app.UseMiddleware<Shared.Tls.ClientCertAuthMiddleware>();
 app.MapAppMetrics();
 app.MapHealthChecks("/healthz");
 app.MapWorkerApi();

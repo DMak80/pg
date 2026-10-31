@@ -177,17 +177,12 @@ HTTP API воркеров — HTTPS-грань ЕДИНОЙ per-install API-PKI
 `kfw-install-ca` (arch/14 §1.1 / arch/16 §1.1): mTLS (клиентский серт)
 обязателен только на `/api`; `/healthz` и `/metrics` — открытая грань
 без клиентского серта (arch/18 §3/§5.2). Ключевая аутентификация
-X-Api-Key удалена у обоих воркеров. До миграции
-t04-open-metrics-healthz-facet (arch/roadmap/pgworker.md) клиентские
-серты `prometheus.crt`/`healthcheck.crt` продолжают выпускаться и
-использоваться скрейпом/чеками — код и конфиги стенда ещё на
-прежней модели.
+X-Api-Key удалена у обоих воркеров.
 
 - **Генерация пакета**: `bash deploy/tls/gen.sh` — создаёт в `deploy/tls/`
   `ca.pem`, серверные `server.crt/key` (kafkaworker) и `pgserver.crt/key`
   (pgworker; SAN: pgworker, localhost, host.docker.internal, 127.0.0.1),
-  клиентские `panel.crt/key`, `seed.crt/key`, `prometheus.crt/key`,
-  `healthcheck.crt/key` (каталог gitignored). `00-up.sh` делает это
+  клиентские `panel.crt/key`, `seed.crt/key` (каталог gitignored). `00-up.sh` делает это
   идемпотентно (только если `ca.pem` нет).
 - **pgworker**: volume `pgw-api-tls:/tls:ro` (наполняет `00-up.sh`) + env
   `PGW_API_TLS_{CERT,KEY,CLIENT_CA}_PATH` (deploy/docker-compose.yml).
@@ -196,9 +191,8 @@ t04-open-metrics-healthz-facet (arch/roadmap/pgworker.md) клиентские
   `ADMINPANEL__WORKERS__WORKERTLS__*_PATH` (единый клиентский серт panel
   на оба API и доверие ca.pem).
 - **Prometheus**: mount `../../deploy/tls:/tls:ro` + `tls_config`
-  (канон arch/18 §5.2 — только `ca_file`, без клиентского серта; до
-  миграции t04 в `prometheus.yml` остаётся `prometheus.crt`).
-- **Чеки**: прямые вызовы API воркера (05-seed pg, 20, 65) ходят по
-  `https://localhost:8080|8082` с `--cacert ca.pem --cert seed|healthcheck.crt
-  --key ...`; остальные — через панель, чей `IWorkerApiGateway` сам
-  подписывает запросы клиентским сертом (mTLS-проксирование).
+  (канон arch/18 §5.2 — только `ca_file`, без клиентского серта).
+- **Чеки**: прямые пробы `/healthz` и `/metrics` — `https` + `--cacert`
+  без клиентского серта; `/api`-вызовы чеков — клиентский серт `seed.crt`;
+  остальные — через панель, чей `IWorkerApiGateway` сам подписывает запросы
+  клиентским сертом (mTLS-проксирование `panel.crt`).

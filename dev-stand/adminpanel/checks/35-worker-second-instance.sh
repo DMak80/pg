@@ -22,7 +22,7 @@ PGW_PORT2="$(env_or_dotenv PGW_API_HOST_PORT2 8083)"
 # Контейнер первого инстанса pgw: compose-проект deploy (00-up.sh поднимает из
 # deploy/); env-оверрайд на случай нестандартного имени проекта.
 PGW1="${PGW1_CONTAINER:-deploy-pgworker-1}"
-MTLS="curl -fsS -m 3 --cacert $ROOT/deploy/tls/ca.pem --cert $ROOT/deploy/tls/healthcheck.crt --key $ROOT/deploy/tls/healthcheck.key"
+HEALTH="curl -fsS -m 3 --cacert $ROOT/deploy/tls/ca.pem"
 ect() { docker compose exec -T etcd1 etcdctl --endpoints=http://localhost:2379 "$@"; }
 keys() { ect get "$1" --prefix --keys-only 2>/dev/null | grep -c . || true; }
 wait_keys() { # <prefix> <want> <budget-sec> <label>
@@ -44,8 +44,12 @@ api() { curl -s -o /dev/null -w '%{http_code}' -b "$JAR" "$BASE$1"; }
 
 # ===== 1) PgWorker (deploy-контейнеры) =====
 echo ">>> pgworker: both instances alive (Arrange)"
-$MTLS https://localhost:${PGW_PORT1}/healthz >/dev/null || { echo "❌ pgworker-1 not alive (:${PGW_PORT1}/healthz mTLS; is the stand up?)"; exit 1; }
-$MTLS https://localhost:${PGW_PORT2}/healthz >/dev/null || { echo "❌ pgworker-2 not alive (:${PGW_PORT2}/healthz mTLS; did 00-up.sh bring up both?)"; exit 1; }
+$HEALTH https://localhost:${PGW_PORT1}/healthz >/dev/null || { echo "❌ pgworker-1 not alive (:${PGW_PORT1}/healthz https; is the stand up?)"; exit 1; }
+$HEALTH https://localhost:${PGW_PORT2}/healthz >/dev/null || { echo "❌ pgworker-2 not alive (:${PGW_PORT2}/healthz https; did 00-up.sh bring up both?)"; exit 1; }
+# /api без клиентского серта — ровно 401 (mTLS-политика /api, arch/14 §1.1;
+# /healthz выше — открытая грань). Без -f: 401 для curl — не ошибка транспорта.
+pg_no_cert_code="$(curl -s -m 3 -o /dev/null -w '%{http_code}' --cacert "$ROOT/deploy/tls/ca.pem" https://localhost:${PGW_PORT1}/api/clusters)"
+[ "$pg_no_cert_code" = 401 ] || { echo "❌ pgworker-1 /api without a client cert = $pg_no_cert_code (expected 401; :${PGW_PORT1}/api/clusters)"; exit 1; }
 wait_keys /pgworker/api/ 2 30 "Arrange pgworker"
 
 echo ">>> pgworker: docker stop of the first ($PGW1)"
@@ -54,7 +58,7 @@ docker stop "$PGW1" >/dev/null
 wait_keys /pgworker/api/ 1 60 "takeover pgworker: first instance key cleared"
 survivor="$(ect get /pgworker/api/ --prefix --keys-only 2>/dev/null | head -1 | awk -F/ '{print $NF}')"
 [ -n "$survivor" ] || { echo "❌ surviving instance not found (/pgworker/api/)"; exit 1; }
-$MTLS https://localhost:${PGW_PORT2}/healthz >/dev/null \
+$HEALTH https://localhost:${PGW_PORT2}/healthz >/dev/null \
   || { echo "❌ surviving pgworker-2 not alive (:${PGW_PORT2}/healthz)"; exit 1; }
 [ "$(keys /pgworker/instances/)" = "1" ] || { echo "❌ /pgworker/instances/ did not shrink to 1"; exit 1; }
 # клэйм живого кластера стенда (demo) — у выжившего; кластера нет → пропуск
@@ -74,7 +78,7 @@ echo "  supervision on the second: keys cleared ≤60 s, healthz :${PGW_PORT2} a
 echo ">>> pgworker: docker start of the first (Restore)"
 docker start "$PGW1" >/dev/null
 wait_keys /pgworker/api/ 2 60 "restore pgworker"
-$MTLS https://localhost:${PGW_PORT1}/healthz >/dev/null \
+$HEALTH https://localhost:${PGW_PORT1}/healthz >/dev/null \
   || { echo "❌ first pgworker did not come alive after start (:${PGW_PORT1}/healthz)"; exit 1; }
 echo "  ✓ pgworker: both instances alive again"
 
@@ -83,10 +87,9 @@ echo ">>> kafkaworker: both instances alive (Arrange)"
 [ "$(keys /kafkaworker/api/)" = "2" ] || { echo "❌ /kafkaworker/api/ != 2 keys (is the kafka profile up?)"; exit 1; }
 docker stop as-kafkaworker >/dev/null
 wait_keys /kafkaworker/api/ 1 60 "takeover kafkaworker"
-docker exec as-kafkaworker-2 curl -fsS -m 3 \
-  --cacert /tls/ca.pem --cert /tls/healthcheck.crt --key /tls/healthcheck.key \
+docker exec as-kafkaworker-2 curl -fsS -m 3 --cacert /tls/ca.pem \
   https://localhost:8080/healthz >/dev/null \
-  || { echo "❌ surviving as-kafkaworker-2 not alive (/healthz mTLS from inside)"; exit 1; }
+  || { echo "❌ surviving as-kafkaworker-2 not alive (/healthz https from inside)"; exit 1; }
 echo "  supervision on as-kafkaworker-2: first instance key cleared ≤60 s, healthz alive"
 docker start as-kafkaworker >/dev/null
 wait_keys /kafkaworker/api/ 2 60 "restore kafkaworker"
@@ -97,10 +100,9 @@ echo ">>> valkeyworker: both instances alive (Arrange)"
 [ "$(keys /valkeyworker/api/)" = "2" ] || { echo "❌ /valkeyworker/api/ != 2 keys (is the valkey profile up?)"; exit 1; }
 docker stop as-valkeyworker >/dev/null
 wait_keys /valkeyworker/api/ 1 60 "takeover valkeyworker"
-docker exec as-valkeyworker-2 curl -fsS -m 3 \
-  --cacert /tls/ca.pem --cert /tls/healthcheck.crt --key /tls/healthcheck.key \
+docker exec as-valkeyworker-2 curl -fsS -m 3 --cacert /tls/ca.pem \
   https://localhost:8080/healthz >/dev/null \
-  || { echo "❌ surviving as-valkeyworker-2 not alive (/healthz mTLS from inside)"; exit 1; }
+  || { echo "❌ surviving as-valkeyworker-2 not alive (/healthz https from inside)"; exit 1; }
 echo "  supervision on as-valkeyworker-2: first instance key cleared ≤60 s, healthz alive"
 docker start as-valkeyworker >/dev/null
 wait_keys /valkeyworker/api/ 2 60 "restore valkeyworker"

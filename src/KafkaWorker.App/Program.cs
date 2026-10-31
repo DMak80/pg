@@ -18,8 +18,8 @@ using KafkaWorker.Etcd.Parsing;
 using KafkaWorker.Provisioning.Kafka;
 using KafkaWorker.Provisioning.Processes;
 
-// Точка входа KafkaWorker (arch/16 §8): host-builder с mTLS-гранью HTTP API
-// (вкл. /healthz), конфигурация appsettings+env, DI всех слоёв (etcd →
+// Точка входа KafkaWorker (arch/16 §8): host-builder с HTTPS-гранью HTTP API
+// (mTLS — только /api; /healthz — открытая грань), конфигурация appsettings+env, DI (etcd →
 // координация → docker → процессы → циклы). Per-install env-секреты — только
 // TLS HTTP API (arch/16 §4); per-cluster секреты (app/admin/CA) — в etcd.
 // Fail-fast: пустые Etcd:Endpoints/Hosts, не-https AdvertiseUrl.
@@ -31,8 +31,8 @@ builder.Services.Configure<KafkaWorkerOptions>(builder.Configuration.GetSection(
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<HealthState>();
 
-// Метрики (arch/18 §3): /metrics на том же mTLS-Kestrel-порту, что /healthz
-//  — scrape ходит клиентским сертом per-install пакета.
+// Метрики (arch/18 §3): /metrics на том же HTTPS-Kestrel-порту, что /healthz
+//  — открытая грань скрейпа без клиентского серта (arch/18 §5.2).
 builder.Services.AddAppMetrics("KafkaWorker", builder.Configuration.GetSection("KafkaWorker:Metrics"));
 builder.Services.AddSingleton(sp =>
 {
@@ -64,7 +64,7 @@ builder.Services.AddOptions<KafkaWorkerOptions>()
         "KafkaWorker:Api:AdvertiseUrl is not set (env KFW_API_ADVERTISE_URL)")
     .Validate(o => o.Api.Tls.AllowInsecureHttp
         || o.Api.AdvertiseUrl.StartsWith("https://", StringComparison.Ordinal),
-        "AdvertiseUrl must be https:// (mTLS-only API, arch/16 §1.1)")
+        "AdvertiseUrl must be https:// (HTTPS-only edge, mTLS on /api only; arch/16 §1.1)")
     .ValidateOnStart();
 
 // Управляемый серт API (spec §3.2 п.1): чтение ключа /workers/api_tls/kafkaworker
@@ -72,8 +72,8 @@ builder.Services.AddOptions<KafkaWorkerOptions>()
 var etcdEndpoints = builder.Configuration.GetSection("KafkaWorker:Etcd:Endpoints").Get<string[]>() ?? [];
 var managedCert = await WorkerApiCertReader.ReadAsync(etcdEndpoints, "kafkaworker", CancellationToken.None);
 
-// mTLS HTTP API (arch/16 §1.1): env-секреты TLS → конфиг, Kestrel c
-// серверным сертом и требованием клиентского серта per-install API-CA.
+// HTTPS HTTP API (arch/16 §1.1): env-секреты TLS → конфиг, Kestrel c
+// серверным сертом; клиентский серт опционален, mTLS — только /api.
 TlsEndpoints.ApplyEnvOverrides(builder.Configuration);
 var apiTls = TlsEndpoints.ConfigureMtls(builder, port: 8080, managedCert);
 
@@ -441,6 +441,9 @@ if (apiTls.Source is { } certSource)
     app.Logger.LogInformation("KafkaWorker:Api:Tls: API server certificate — source {Source}", certSource);
 if (apiTls.Warning is { } certWarning)
     app.Logger.LogWarning("KafkaWorker:Api:Tls: {Warning}", certWarning);
+// Открытая грань (arch/16 §1.1): клиентский серт опционален на хендшейке;
+// 401 без валидного серта — только на /api; /healthz и /metrics — без серта.
+app.UseMiddleware<Shared.Tls.ClientCertAuthMiddleware>();
 app.MapAppMetrics();
 app.MapHealthChecks("/healthz");
 app.MapWorkerApi();

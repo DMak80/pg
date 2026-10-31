@@ -46,7 +46,7 @@ public sealed class ApiOptions
 }
 
 /// <summary>
-/// mTLS HTTP API воркера (arch/24 §1.1): серверный серт+ключ и CA клиентских
+/// HTTPS HTTP API воркера (arch/24 §1.1; mTLS — только /api): серверный серт+ключ и CA клиентских
 /// сертов per-install API-CA; env S3W_API_TLS_{CERT,KEY,CLIENT_CA}[_PATH]
 /// (таблица TlsEndpoints.EnvBindings). AllowInsecureHttp — ТОЛЬКО WAF-тесты.
 /// </summary>

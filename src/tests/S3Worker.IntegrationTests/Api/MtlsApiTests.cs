@@ -13,15 +13,24 @@ using Xunit;
 
 namespace S3Worker.IntegrationTests.Api;
 
-// mTLS HTTP API (arch/24 §1.1; порт MtlsApiTests valkey): клиент без серта —
-// отказ TLS-хендшейка, с сертом API-CA — 200; /healthz за тем же TLS.
-// Реальный Kestrel-сокет (WAF-транспорт in-memory TLS не исполняет) — порт
-// динамический (зонд). Клиентский серт живёт в SslOptions хендшейков.
+// HTTPS HTTP API (arch/24 §1.1): клиентский серт опционален на хендшейке;
+// /api без серта и с невалидным сертом — 401 (HTTP-ответ, не TLS-отказ);
+// /healthz и /metrics — открытая грань (200 без серта, невалидный серт
+// игнорируется). Реальный Kestrel-сокет (WAF-транспорт in-memory TLS не
+// исполняет) — порт динамический (зонд). Клиентский серт живёт в SslOptions.
 public class MtlsApiTests
 {
     private static readonly (string CaPem, string CaKeyPem) ApiCa = TestPki.GenerateCa("api-test");
 
-    private sealed record TlsHost(WebApplication App, HttpClient Client, X509Certificate2 ClientCert);
+    private sealed record TlsHost(WebApplication App, HttpClient Client, X509Certificate2 ClientCert)
+        : IAsyncDisposable
+    {
+        public async ValueTask DisposeAsync()
+        {
+            await App.DisposeAsync();
+            Client.Dispose();
+        }
+    }
 
     private static TlsHost StartTlsHost(int port)
     {
@@ -39,8 +48,12 @@ public class MtlsApiTests
         // ДО Build — ConfigureKestrel этап хоста (управляемый серт — null: PEM из конфига).
         TlsEndpoints.ConfigureMtls(builder, port, managedCert: null);
         var app = builder.Build();
+        // 401-политика /api в pipeline тест-хоста (в Program.cs воркера
+        // подключается так же — здесь хост собирает тест).
+        app.UseMiddleware<Shared.Tls.ClientCertAuthMiddleware>();
         app.MapGet("/api/ping", () => Results.Ok("pong"));
         app.MapHealthChecks("/healthz");
+        app.MapGet("/metrics", () => Results.Ok("")); // заглушка: транспортная семантика, не формат выгрузки
         app.Start();
 
         var (clientCertPem, clientKeyPem) = TestPki.IssueCertificate(
@@ -72,13 +85,12 @@ public class MtlsApiTests
     }
 
     [Fact]
-    public async Task Mtls_NoClientCertRefused_WithCertOk()
+    public async Task Api_WithoutCert_401_HealthzMetrics_WithoutCert_200_InvalidCert_401_WithCert_200()
     {
         // Arrange: TLS-хост на свободном порту (динамический).
         var port = FreePort();
-        var host = StartTlsHost(port);
-        using var _ = host.ClientCert;
-        using var app = host.App;
+        await using var host = StartTlsHost(port);
+        using var _ = host.ClientCert; // серт нужен хендшейкам до конца теста (App+Client диспоузит хост)
         // Готовность листенера: ждём фактического приёма TCP.
         var readyDeadline = DateTimeOffset.UtcNow.AddSeconds(15);
         while (true)
@@ -94,8 +106,7 @@ public class MtlsApiTests
                 await Task.Delay(200, TestContext.Current.CancellationToken);
             }
         }
-
-        using var badClient = new HttpClient(new SocketsHttpHandler
+        using var noCertClient = new HttpClient(new SocketsHttpHandler
         {
             SslOptions = new()
             {
@@ -103,17 +114,54 @@ public class MtlsApiTests
                 RemoteCertificateValidationCallback = (_, _, _, _) => true,
             },
         }) { BaseAddress = new Uri($"https://localhost:{port}") };
+        // Невалидный клиентский серт: подписан ДРУГОЙ тестовой CA (не CA сервера).
+        var badCa = TestPki.GenerateCa("api-test-invalid");
+        var (badCertPem, badKeyPem) = TestPki.IssueCertificate(badCa.CaPem, badCa.CaKeyPem, "panel");
+        // PFX round-trip: эфемерный ключ CreateFromPem не годится для SslStream
+        // на macOS (ре-импорт делает ключ экспортируемым).
+        var badPemCert = X509Certificate2.CreateFromPem(badCertPem, badKeyPem);
+        using var invalidCert = X509CertificateLoader.LoadPkcs12(badPemCert.Export(X509ContentType.Pkcs12), null);
+        using var invalidClient = new HttpClient(new SocketsHttpHandler
+        {
+            SslOptions = new()
+            {
+                EnabledSslProtocols = System.Security.Authentication.SslProtocols.Tls12,
+                ClientCertificates = [invalidCert],
+                RemoteCertificateValidationCallback = (_, _, _, _) => true,
+            },
+        }) { BaseAddress = new Uri($"https://localhost:{port}") };
 
-        // Act 1: запрос без клиентского серта.
         var ct = TestContext.Current.CancellationToken;
-        var refused = await Assert.ThrowsAnyAsync<HttpRequestException>(
-            () => badClient.GetAsync("/api/ping", ct));
 
-        // Assert 1: TLS-отказ (ClientCertificateMode.Required).
-        refused.Should().NotBeNull();
+        // Act 1 / Assert 1: /api без серта — 401 (HTTP-ответ, не TLS-отказ).
+        (await noCertClient.GetAsync("/api/ping", ct)).StatusCode.Should().Be(HttpStatusCode.Unauthorized);
 
-        // Act 2 / Assert 2: с сертом API-CA — 200; /healthz — тоже за TLS.
+        // Act 2 / Assert 2: /healthz без серта — 200 (открытая грань).
+        (await noCertClient.GetAsync("/healthz", ct)).StatusCode.Should().Be(HttpStatusCode.OK);
+
+        // Act 3 / Assert 3: /metrics без серта — 200 (открытая грань, заглушка).
+        (await noCertClient.GetAsync("/metrics", ct)).StatusCode.Should().Be(HttpStatusCode.OK);
+
+        // Act 4 / Assert 4: /api с сертом API-CA — 200.
         (await host.Client.GetAsync("/api/ping", ct)).StatusCode.Should().Be(HttpStatusCode.OK);
-        (await host.Client.GetAsync("/healthz", ct)).StatusCode.Should().Be(HttpStatusCode.OK);
+
+        // Act 5 / Assert 5: /api с НЕВАЛИДНЫМ сертом — 401, хендшейк НЕ рвётся
+        // (сервер принял соединение, middleware отверг путь).
+        (await invalidClient.GetAsync("/api/ping", ct)).StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+
+        // Act 6 / Assert 6: /healthz с невалидным сертом — 200 (серт игнорируется
+        // открытой гранью).
+        (await invalidClient.GetAsync("/healthz", ct)).StatusCode.Should().Be(HttpStatusCode.OK);
+
+        // Act 7 / Assert 7: /apifoo без серта — 404 (не /api: сегмент-префикс
+        // точный, прочие пути — открытая грань).
+        (await noCertClient.GetAsync("/apifoo", ct)).StatusCode.Should().Be(HttpStatusCode.NotFound);
+
+        // Act 8 / Assert 8: bare /api без серта — 401 (точное "/api" тоже под политикой).
+        (await noCertClient.GetAsync("/api", ct)).StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+
+        // Act 9 / Assert 9: /API/ping без серта — 401 (сравнение префикса
+        // регистронезависимо, OrdinalIgnoreCase).
+        (await noCertClient.GetAsync("/API/ping", ct)).StatusCode.Should().Be(HttpStatusCode.Unauthorized);
     }
 }
