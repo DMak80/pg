@@ -1861,14 +1861,13 @@ public class NodeSupervisorTests
         // Act: тик надзора.
         var result = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
 
-        // Assert: нода пересоздана с парой ensure; env несёт серт и hash пары;
+        // Assert: нода пересоздана; env несёт серт (hash-механика t05 удалена —
+        // rest-пара доставляется bootstrap-каналом, не env);
         // stop/rm через движок (volume жив — RemoveNodeAsync не звался).
         result.IsSuccess.Should().BeTrue(result.Error?.ToString());
         rig.Driver.EnsuredNodes.Should().Contain("shard1/shard1a");
         rig.Driver.EnsuredNodes.Should().NotContain("shard1/shard1b", "TLS node is not a candidate");
         rig.Driver.NodeEnvs["shard1/shard1a"].Should().ContainKey(RestRotation.EnvCert);
-        rig.Driver.NodeEnvs["shard1/shard1a"][RestRotation.EnvPasswordHash]
-            .Should().Be(RestRotation.PasswordHash(Fakes.FakeSecretEnsurer.RestPassword));
         engine.Killed.Should().ContainSingle().Which.Should().Be("pgw-shop-shard1-shard1a");
         engine.Removed.Should().ContainSingle().Which.Should().Be("pgw-shop-shard1-shard1a");
         engine.RemovedVolumes.Should().BeEmpty("volume is preserved (not RemoveNodeAsync)");

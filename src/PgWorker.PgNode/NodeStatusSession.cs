@@ -3,6 +3,17 @@ using Shared.Etcd.Client;
 
 namespace PgWorker.PgNode;
 
+/// <summary>Писатель статусного ключа машины (arch/14 §3.3): развязка
+/// PgNodeMachine от lease-сессии для юнит-тестов (фейк-писатель по образцу
+/// internal-seam плана; прод — NodeStatusSession).</summary>
+internal interface INodeStatusWriter : IAsyncDisposable
+{
+    Task<bool> StartAsync(PgNodeStatus initial, CancellationToken ct);
+    void Update(PgNodeStatus status);
+    Task<bool> FlushAsync(CancellationToken ct);
+    Task<bool> TryTransitionAsync(string newValueJson, string expectedValueJson, CancellationToken ct);
+}
+
 /// <summary>Lease-сессия статусного ключа агента /pgworker/nodes/&lt;C&gt;/&lt;X&gt;/&lt;N&gt;/status
 /// (arch/14 §3.3, spec §3.6): lease TTL 15 c → первичный put → фоновый цикл
 /// каждые 5 c — LeaseKeepalive + put актуального значения (ключ жив = агент
@@ -13,7 +24,7 @@ namespace PgWorker.PgNode;
 /// (сериализация ToJson; node-суффикс в ключ не пишется — контракт arch/14
 /// §3.3). Атомарный txn-переход машины — TryTransitionAsync (compare по
 /// VALUE — устойчив к keepalive-put'ам того же значения).</summary>
-public sealed class NodeStatusSession : IAsyncDisposable
+public sealed class NodeStatusSession : INodeStatusWriter
 {
     /// <summary>TTL lease статус-ключа (arch/14 §3.3): 15 c.</summary>
     public const int LeaseTtlSec = 15;

@@ -48,6 +48,10 @@ internal static class Fakes
         // когда gateway бросает, а не возвращает Result.Failed).
         public Func<string, Exception?>? RangeFault { get; set; }
 
+        // Сбой-инъекция GET (etcd недоступен для чтения ключа — Result-семантика
+        // шлюза: читатели получают Failed, не исключение).
+        public Func<string, Result<Kv?>>? GetFailure { get; set; }
+
         // Сбой-инъекция txn (: ошибка захвата PortAllocLock → Result.Failed).
         public Func<TxnRequest, Result<TxnResult>>? TxnFault { get; set; }
 
@@ -76,6 +80,8 @@ internal static class Fakes
 
         public Task<Result<Kv?>> GetAsync(string endpoint, string key, CancellationToken ct)
         {
+            if (GetFailure?.Invoke(key) is { } failure)
+                return Task.FromResult(failure);
             Kv? kv;
             lock (_gate)
             {

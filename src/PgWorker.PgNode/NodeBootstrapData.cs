@@ -32,6 +32,8 @@ public sealed record NodeBootstrapData(
 
     /// <summary>Валидность для старта (spec §3.4): сертификат+ключ парсятся в
     /// пару, YAML непуст. Значения в текст ошибок не включаются.</summary>
+    internal static string? LastValidityError;
+
     public bool IsValidForStart()
     {
         try
@@ -43,6 +45,7 @@ public sealed record NodeBootstrapData(
         catch (Exception e) when (
             e is ArgumentException or System.Security.Cryptography.CryptographicException)
         {
+            LastValidityError = e.GetType().Name + ": " + e.Message;
             return false;
         }
     }
