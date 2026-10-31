@@ -137,6 +137,28 @@ builder.Services.AddHttpClient("etcd", c => c.Timeout = TimeSpan.FromSeconds(7.5
 builder.Services.AddHttpClient("walreceiver", c => c.Timeout = TimeSpan.FromSeconds(10));
 builder.Services.AddSingleton<IWalReceiverApiClient>(sp =>
     new WalReceiverApiClient(sp.GetRequiredService<IHttpClientFactory>().CreateClient("walreceiver")));
+// mTLS-клиент канала доставки секретов (arch/14 §4, arch/25 №23): клиентский
+// серт воркера + верификация серверного серта агента по per-install CA и SAN
+// полного имени ноды. Таймаут — существующий HttpClient-уровень 10 с.
+builder.Services.AddHttpClient("pgnode-channel", c => c.Timeout = TimeSpan.FromSeconds(10))
+    .ConfigurePrimaryHttpMessageHandler(sp =>
+    {
+        var material = sp.GetRequiredService<RestTlsMaterial>();
+        var clientCert = sp.GetRequiredService<X509Certificate2>();
+        var ca = material.Ca;
+        return new SocketsHttpHandler
+        {
+            SslOptions = new System.Net.Security.SslClientAuthenticationOptions
+            {
+                ClientCertificates = new X509CertificateCollection { clientCert },
+                RemoteCertificateValidationCallback = (sender, certificate, _, _) =>
+                    PgWorker.Provisioning.Probes.NodeChannelSsl.Validate(sender, certificate, ca),
+            },
+        };
+    });
+builder.Services.AddSingleton<PgWorker.Provisioning.Probes.INodeChannelClient>(sp =>
+    new PgWorker.Provisioning.Probes.NodeChannelClient(
+        sp.GetRequiredService<IHttpClientFactory>().CreateClient("pgnode-channel")));
 builder.Services.AddSingleton<PgWorker.Provisioning.Probes.INodeDataProbe>(sp =>
     new WalNodeDataProbe(sp.GetRequiredService<IWalReceiverApiClient>()));
 // Клиент Patroni REST (arch/14 §5 C): https к host:patroni-port portalloc;
