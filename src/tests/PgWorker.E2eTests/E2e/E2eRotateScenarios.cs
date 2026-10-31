@@ -61,6 +61,10 @@ public sealed class E2eRotateScenarios(E2eRotateScenariosFx Ctx) : IClassFixture
             await cmd.ExecuteNonQueryAsync(ct);
         }
 
+        // StartedAt контейнеров нод ДО ротации (spec §6.3/§9.6: ротация
+        // rest_password — БЕЗ пересоздания контейнеров).
+        var startedAtBefore = await StartedAtMapAsync(Cluster, ct);
+
         // Act — заявка ротации (формат панели §9.8)
         await G.PutAsync(Endpoint, $"/pgworker/rotations/{Cluster}",
             $$"""{"requested_unix":{{DateTimeOffset.UtcNow.ToUnixTimeSeconds()}},"requested_by":"e2e"}""",
@@ -85,6 +89,15 @@ public sealed class E2eRotateScenarios(E2eRotateScenariosFx Ctx) : IClassFixture
         newAdmin.Should().NotBe(oldAdmin).And.MatchRegex("^[A-Za-z0-9]{32}$");
         var newDsn = (await GetOrNullAsync($"/clusters/{Cluster}/shards/shard1/dsn"))!.Value;
         newDsn.Should().Contain($"password={newAdmin}").And.NotContain(oldAdmin);
+
+        // Assert 1c (spec §6.3/§9.6): ротация rest_password БЕЗ пересоздания —
+        // StartedAt каждого контейнера нод НЕ изменился.
+        var startedAtAfter = await StartedAtMapAsync(Cluster, ct);
+        startedAtAfter.Keys.Should().BeEquivalentTo(startedAtBefore.Keys,
+            "the node container set did not change");
+        foreach (var (name, startedAt) in startedAtAfter)
+            startedAt.Should().Be(startedAtBefore[name],
+                $"the container {name} was not recreated by the rotation");
 
         // Assert 2b (критерий «без остановки записи»): writer — DSN-точка
         // входа bucket_admin — перечитывает креды из etcd на каждую попытку
@@ -185,6 +198,22 @@ public sealed class E2eRotateScenarios(E2eRotateScenariosFx Ctx) : IClassFixture
 
     private async Task<Kv?> GetOrNullAsync(string key)
         => (await G.GetAsync(Endpoint, key, TestContext.Current.CancellationToken)).Value;
+
+    // StartedAt контейнеров нод кластера (docker inspect) — ротация без
+    // пересоздания не меняет их (spec §6.3/§9.6).
+    private async Task<Dictionary<string, string>> StartedAtMapAsync(string cluster, CancellationToken ct)
+    {
+        var names = (await E2eFixture.RunDockerAsync(
+            ["ps", "--format", "{{.Names}}", "--filter", $"name=pgw-{cluster}-"], ct))
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var map = new Dictionary<string, string>();
+        foreach (var name in names)
+        {
+            map[name] = (await E2eFixture.RunDockerAsync(
+                ["inspect", "-f", "{{.State.StartedAt}}", name], ct)).Trim();
+        }
+        return map;
+    }
 }
 
 /// <summary>Компаньон-фикстура окружения класса (полный контур на класс:
