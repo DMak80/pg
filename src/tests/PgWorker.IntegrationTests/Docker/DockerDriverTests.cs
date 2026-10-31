@@ -56,6 +56,33 @@ public class DockerDriverTests
 
     private static string ContainerName(string cluster) => $"pgw-{cluster}-s1-n1";
 
+    // Динамическая тройка портов ноды (план 5432/8008/6432 — зонды свободных,
+    // arch-канон: тест не хардкодит хост-порты): листенеры держатся открытыми
+    // до отбора всех трёх — дубликаты внутри тройки невозможны.
+    private static NodePorts FreeNodePorts()
+    {
+        var listeners = new[]
+        {
+            new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0),
+            new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0),
+            new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0),
+        };
+        try
+        {
+            foreach (var l in listeners)
+                l.Start();
+            return new NodePorts(
+                ((System.Net.IPEndPoint)listeners[0].LocalEndpoint).Port,
+                ((System.Net.IPEndPoint)listeners[1].LocalEndpoint).Port,
+                ((System.Net.IPEndPoint)listeners[2].LocalEndpoint).Port);
+        }
+        finally
+        {
+            foreach (var l in listeners)
+                l.Stop();
+        }
+    }
+
     // Pull образа один раз на прогон (только при включённой серии): create не тянет образ сам.
     private static readonly Lazy<Task> ImageReady = new(async () =>
     {
@@ -119,7 +146,7 @@ public class DockerDriverTests
         var cluster = $"c2{Suffix}";
         await CleanupAsync(cluster);
         var driver = NewDriver();
-        var addr = new NodeAddress(Host, new NodePorts(25102, 25103, 25104));
+        var addr = new NodeAddress(Host, FreeNodePorts());
 
         // Act — повторный Ensure с тем же именем
         var first = await driver.EnsureNodeAsync(Topology(cluster, addr), "n1", addr, Secrets, Etcd, resources: null, tuning: null, syncStrict: false, restPassword: RestTestPassword, ct: CancellationToken.None);
@@ -144,7 +171,7 @@ public class DockerDriverTests
         var cluster = $"c3{Suffix}";
         await CleanupAsync(cluster);
         var driver = NewDriver();
-        var addr = new NodeAddress(Host, new NodePorts(25105, 25106, 25107));
+        var addr = new NodeAddress(Host, FreeNodePorts());
         await driver.EnsureNodeAsync(Topology(cluster, addr), "n1", addr, Secrets, Etcd, resources: null, tuning: null, syncStrict: false, restPassword: RestTestPassword, ct: CancellationToken.None);
 
         // Act — удаление и его повтор (все объекты уже исчезли)
