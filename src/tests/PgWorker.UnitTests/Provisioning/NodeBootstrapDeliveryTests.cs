@@ -104,7 +104,7 @@ public class NodeBootstrapDeliveryTests
 
         // Act
         var outcome = await delivery.EnsureAsync(Topology, "shard1a", Topology.Nodes["shard1a"],
-            Secrets, null, syncStrict: false, RestPassword, CancellationToken.None);
+            Secrets, null, excludeParams: null, syncStrict: false, RestPassword, CancellationToken.None);
 
         // Assert: ключ записан; команда доставки ушла; Delivered.
         outcome.Delivered.Should().BeTrue();
@@ -120,7 +120,7 @@ public class NodeBootstrapDeliveryTests
         var cache = NewCache();
         var (delivery, etcd, channel) = NewDelivery(cache);
         await delivery.EnsureAsync(Topology, "shard1a", Topology.Nodes["shard1a"],
-            Secrets, null, false, RestPassword, CancellationToken.None);
+            Secrets, null, excludeParams: null, false, RestPassword, CancellationToken.None);
         channel.Calls.Clear();
         SeedStatus(etcd, "not_initialized", null);
         var putsBefore = etcd.Txns.Count; // put'ы не через txn — фиксируем значение
@@ -128,7 +128,7 @@ public class NodeBootstrapDeliveryTests
 
         // Act: повторная доставка при неизменном ключе.
         await delivery.EnsureAsync(Topology, "shard1a", Topology.Nodes["shard1a"],
-            Secrets, null, false, RestPassword, CancellationToken.None);
+            Secrets, null, excludeParams: null, false, RestPassword, CancellationToken.None);
 
         // Assert: содержимое ключа не перезаписано (та же строка — put-пути
         // перезаписали бы через ++rev только при изменении).
@@ -144,14 +144,14 @@ public class NodeBootstrapDeliveryTests
         var sharedEtcd = new Fakes.FakeEtcd();
         var (delivery0, _, channel0) = NewDelivery(cache, sharedEtcd);
         await delivery0.EnsureAsync(Topology, "shard1a", Topology.Nodes["shard1a"],
-            Secrets, null, false, RestPassword, CancellationToken.None);
+            Secrets, null, excludeParams: null, false, RestPassword, CancellationToken.None);
         var mod = sharedEtcd.Store[BootstrapKey].ModRevision;
         SeedStatus(sharedEtcd, "ready", (long)mod, mod);
 
         // Act
         var (delivery, _, channel) = NewDelivery(cache, sharedEtcd);
         var outcome = await delivery.EnsureAsync(Topology, "shard1a", Topology.Nodes["shard1a"],
-            Secrets, null, false, RestPassword, CancellationToken.None);
+            Secrets, null, excludeParams: null, false, RestPassword, CancellationToken.None);
 
         // Assert: Delivered без handshake/apply.
         outcome.Delivered.Should().BeTrue();
@@ -166,13 +166,13 @@ public class NodeBootstrapDeliveryTests
         var cache = NewCache();
         var (delivery, etcd, channel) = NewDelivery(cache);
         await delivery.EnsureAsync(Topology, "shard1a", Topology.Nodes["shard1a"],
-            Secrets, null, false, RestPassword, CancellationToken.None);
+            Secrets, null, excludeParams: null, false, RestPassword, CancellationToken.None);
         channel.Calls.Clear();
         SeedStatus(etcd, "ready", applied: 2, mod: etcd.Store[BootstrapKey].ModRevision);
 
         // Act
         var outcome = await delivery.EnsureAsync(Topology, "shard1a", Topology.Nodes["shard1a"],
-            Secrets, null, false, RestPassword, CancellationToken.None);
+            Secrets, null, excludeParams: null, false, RestPassword, CancellationToken.None);
 
         // Assert: apply ушёл, Delivered.
         outcome.Delivered.Should().BeTrue();
@@ -189,13 +189,13 @@ public class NodeBootstrapDeliveryTests
         var cache = NewCache();
         var (delivery0, etcd, _) = NewDelivery(cache);
         await delivery0.EnsureAsync(Topology, "shard1a", Topology.Nodes["shard1a"],
-            Secrets, null, false, RestPassword, CancellationToken.None);
+            Secrets, null, excludeParams: null, false, RestPassword, CancellationToken.None);
         SeedStatus(etcd, state, null);
         var (delivery, _, channel) = NewDelivery(cache, etcd);
 
         // Act
         var outcome = await delivery.EnsureAsync(Topology, "shard1a", Topology.Nodes["shard1a"],
-            Secrets, null, false, RestPassword, CancellationToken.None);
+            Secrets, null, excludeParams: null, false, RestPassword, CancellationToken.None);
 
         // Assert: Wait, команд нет.
         outcome.Wait.Should().BeTrue();
@@ -210,13 +210,13 @@ public class NodeBootstrapDeliveryTests
         var cache = NewCache();
         var (delivery0, etcd, _) = NewDelivery(cache);
         await delivery0.EnsureAsync(Topology, "shard1a", Topology.Nodes["shard1a"],
-            Secrets, null, false, RestPassword, CancellationToken.None);
+            Secrets, null, excludeParams: null, false, RestPassword, CancellationToken.None);
         etcd.Store.Remove(StatusKey);
         var (delivery, _, channel) = NewDelivery(cache, etcd);
 
         // Act
         var outcome = await delivery.EnsureAsync(Topology, "shard1a", Topology.Nodes["shard1a"],
-            Secrets, null, false, RestPassword, CancellationToken.None);
+            Secrets, null, excludeParams: null, false, RestPassword, CancellationToken.None);
 
         // Assert: Wait (агент стартует, следующий тик увидит not_initialized).
         outcome.Wait.Should().BeTrue();
@@ -235,7 +235,7 @@ public class NodeBootstrapDeliveryTests
 
         // Act
         var outcome = await delivery.EnsureAsync(Topology, "shard1a", Topology.Nodes["shard1a"],
-            Secrets, null, false, RestPassword, CancellationToken.None);
+            Secrets, null, excludeParams: null, false, RestPassword, CancellationToken.None);
 
         // Assert
         outcome.Transient.Should().BeTrue();
@@ -253,7 +253,7 @@ public class NodeBootstrapDeliveryTests
 
         // Act
         var outcome = await delivery.EnsureAsync(Topology, "shard1a", Topology.Nodes["shard1a"],
-            Secrets, null, false, RestPassword, CancellationToken.None);
+            Secrets, null, excludeParams: null, false, RestPassword, CancellationToken.None);
 
         // Assert: адрес в Detail.
         outcome.Transient.Should().BeTrue();
@@ -273,7 +273,7 @@ public class NodeBootstrapDeliveryTests
 
         // Act
         var outcome = await delivery.EnsureAsync(Topology, "shard1a", Topology.Nodes["shard1a"],
-            Secrets, null, false, RestPassword, CancellationToken.None);
+            Secrets, null, excludeParams: null, false, RestPassword, CancellationToken.None);
 
         // Assert
         outcome.Transient.Should().BeTrue();
@@ -289,7 +289,7 @@ public class NodeBootstrapDeliveryTests
         var cache = NewCache();
         var (delivery0, etcd, _) = NewDelivery(cache);
         await delivery0.EnsureAsync(Topology, "shard1a", Topology.Nodes["shard1a"],
-            Secrets, null, false, RestPassword, CancellationToken.None);
+            Secrets, null, excludeParams: null, false, RestPassword, CancellationToken.None);
         var mod = etcd.Store[BootstrapKey].ModRevision;
         SeedStatus(etcd, "ready", (long)mod, mod);
         var (delivery, _, channel) = NewDelivery(cache, etcd);
@@ -297,7 +297,7 @@ public class NodeBootstrapDeliveryTests
 
         // Act
         var onRevision = await delivery.IsOnRevisionAsync(Topology, "shard1a",
-            Topology.Nodes["shard1a"], null, false, RestPassword, CancellationToken.None);
+            Topology.Nodes["shard1a"], null, excludeParams: null, false, RestPassword, CancellationToken.None);
 
         // Assert: true; put/канала не было.
         onRevision.Should().BeTrue();
@@ -312,14 +312,14 @@ public class NodeBootstrapDeliveryTests
         var cache = NewCache();
         var (delivery0, etcd, _) = NewDelivery(cache);
         await delivery0.EnsureAsync(Topology, "shard1a", Topology.Nodes["shard1a"],
-            Secrets, null, false, RestPassword, CancellationToken.None);
+            Secrets, null, excludeParams: null, false, RestPassword, CancellationToken.None);
         var mod = etcd.Store[BootstrapKey].ModRevision;
         SeedStatus(etcd, "ready", (long)mod, mod);
         var (delivery, _, _) = NewDelivery(cache);
 
         // Act
         var onRevision = await delivery.IsOnRevisionAsync(Topology, "shard1a",
-            Topology.Nodes["shard1a"], null, false, RestPassword + "-new", CancellationToken.None);
+            Topology.Nodes["shard1a"], null, excludeParams: null, false, RestPassword + "-new", CancellationToken.None);
 
         // Assert: false — ключ ещё не перерендерен под NEW.
         onRevision.Should().BeFalse();
@@ -334,14 +334,14 @@ public class NodeBootstrapDeliveryTests
         var cache = NewCache();
         var (delivery0, etcd, _) = NewDelivery(cache);
         await delivery0.EnsureAsync(Topology, "shard1a", Topology.Nodes["shard1a"],
-            Secrets, null, false, RestPassword, CancellationToken.None);
+            Secrets, null, excludeParams: null, false, RestPassword, CancellationToken.None);
         var mod = etcd.Store[BootstrapKey].ModRevision;
         SeedStatus(etcd, state, null, mod);
         var (delivery, _, _) = NewDelivery(cache, etcd);
 
         // Act
         var onRevision = await delivery.IsOnRevisionAsync(Topology, "shard1a",
-            Topology.Nodes["shard1a"], null, false, RestPassword, CancellationToken.None);
+            Topology.Nodes["shard1a"], null, excludeParams: null, false, RestPassword, CancellationToken.None);
 
         // Assert
         onRevision.Should().BeFalse();
@@ -354,13 +354,13 @@ public class NodeBootstrapDeliveryTests
         var cache = NewCache();
         var (delivery0, etcd, _) = NewDelivery(cache);
         await delivery0.EnsureAsync(Topology, "shard1a", Topology.Nodes["shard1a"],
-            Secrets, null, false, RestPassword, CancellationToken.None);
+            Secrets, null, excludeParams: null, false, RestPassword, CancellationToken.None);
         SeedStatus(etcd, "ready", applied: 2, mod: etcd.Store[BootstrapKey].ModRevision);
         var (delivery, _, _) = NewDelivery(cache, etcd);
 
         // Act
         var onRevision = await delivery.IsOnRevisionAsync(Topology, "shard1a",
-            Topology.Nodes["shard1a"], null, false, RestPassword, CancellationToken.None);
+            Topology.Nodes["shard1a"], null, excludeParams: null, false, RestPassword, CancellationToken.None);
 
         // Assert
         onRevision.Should().BeFalse();
@@ -373,13 +373,13 @@ public class NodeBootstrapDeliveryTests
         var cache = NewCache();
         var (delivery0, etcd, _) = NewDelivery(cache);
         await delivery0.EnsureAsync(Topology, "shard1a", Topology.Nodes["shard1a"],
-            Secrets, null, false, RestPassword, CancellationToken.None);
+            Secrets, null, excludeParams: null, false, RestPassword, CancellationToken.None);
         etcd.Store.Remove(StatusKey);
         var (delivery, _, _) = NewDelivery(cache);
 
         // Act
         var onRevision = await delivery.IsOnRevisionAsync(Topology, "shard1a",
-            Topology.Nodes["shard1a"], null, false, RestPassword, CancellationToken.None);
+            Topology.Nodes["shard1a"], null, excludeParams: null, false, RestPassword, CancellationToken.None);
 
         // Assert
         onRevision.Should().BeFalse();
@@ -395,7 +395,7 @@ public class NodeBootstrapDeliveryTests
 
         // Act
         var onRevision = await delivery.IsOnRevisionAsync(Topology, "shard1a",
-            Topology.Nodes["shard1a"], null, false, RestPassword, CancellationToken.None);
+            Topology.Nodes["shard1a"], null, excludeParams: null, false, RestPassword, CancellationToken.None);
 
         // Assert: отказ etcd → false (EnsureAsync разрулит transient).
         onRevision.Should().BeFalse();

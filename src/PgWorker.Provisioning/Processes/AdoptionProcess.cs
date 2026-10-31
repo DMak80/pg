@@ -434,7 +434,7 @@ public sealed class AdoptionProcess(
                 // Пара — ключ кластера снапшота (окно ротации усыновлением не
                 // расширяется — прежняя семантика ensure-пути).
                 var delivery = await bootstrap.EnsureAsync(
-                    topology, nodeName, addr, secrets, tuning,
+                    topology, nodeName, addr, secrets, tuning, pgtune.ExcludeParams,
                     snap.Config.SyncStrict, snap.RestPassword ?? "", ct);
                 if (delivery.Transient)
                     await journal.WritePhaseAsync(cluster, Op,

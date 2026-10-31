@@ -20,7 +20,7 @@ public static class NodeChannelSsl
     // имён расширения subjectAltName (OID 2.5.29.17): SEQUENCE { GeneralName* },
     // [2] IMPLICIT IA5String (тег 0x82) — dNSName (мини-разбор DER по образцу
     // PatroniRoleProbe.SanContainsLoopback).
-    private static bool SanContainsDnsName(X509Certificate2 cert, string expected)
+    internal static bool SanContainsDnsName(X509Certificate2 cert, string expected)
     {
         if (expected is not { Length: > 0 })
             return false;
@@ -67,12 +67,15 @@ public static class NodeChannelSsl
     }
 
     // Размер (в байтах) поля DER-длины, начинающегося в i (для пропуска
-    // заголовка SEQUENCE).
+    // заголовка SEQUENCE): семантика — «число байтов поля длины, ВКЛЮЧАЯ
+    // первый» (короткая форма — 1; длинная — 1 + число байтов длины).
+    // КОПИРОВАНО ДОСЛОВНО из прецедента PatroniRoleProbe.DerLengthSize —
+    // мини-парсеры DER из прецедентов копируются байт-в-байт и обязаны
+    // покрываться тестом на реальном серте (сдвиг на байт не ловится
+    // рукотворными массивами).
     private static int DerLengthSize(byte[] data, int i)
     {
         var first = data[i];
-        if ((first & 0x80) == 0)
-            return 0;
-        return first & 0x7F;
+        return (first & 0x80) == 0 ? 1 : 1 + (first & 0x7F);
     }
 }

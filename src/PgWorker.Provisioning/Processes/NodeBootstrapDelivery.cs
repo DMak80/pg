@@ -23,7 +23,8 @@ public interface INodeBootstrapDelivery
 {
     Task<DeliveryOutcome> EnsureAsync(
         ShardTopology topology, string nodeName, NodeAddress addr, InstallSecrets secrets,
-        PgTuneResult? tuning, bool syncStrict, string restPassword, CancellationToken ct);
+        PgTuneResult? tuning, IReadOnlySet<string>? excludeParams, bool syncStrict,
+        string restPassword, CancellationToken ct);
 
     /// <summary>Немутирующая проба «нода применила bootstrap с ЭТОЙ парой
     /// restPassword» (ротация, шаг 11): без put и без команд канала.
@@ -32,7 +33,8 @@ public interface INodeBootstrapDelivery
     /// ключа. Отказ etcd → false (EnsureAsync разрулит transient).</summary>
     Task<bool> IsOnRevisionAsync(
         ShardTopology topology, string nodeName, NodeAddress addr,
-        PgTuneResult? tuning, bool syncStrict, string restPassword, CancellationToken ct);
+        PgTuneResult? tuning, IReadOnlySet<string>? excludeParams, bool syncStrict,
+        string restPassword, CancellationToken ct);
 }
 
 public sealed class NodeBootstrapDelivery(
@@ -46,7 +48,8 @@ public sealed class NodeBootstrapDelivery(
 
     public async Task<DeliveryOutcome> EnsureAsync(
         ShardTopology topology, string nodeName, NodeAddress addr, InstallSecrets secrets,
-        PgTuneResult? tuning, bool syncStrict, string restPassword, CancellationToken ct)
+        PgTuneResult? tuning, IReadOnlySet<string>? excludeParams, bool syncStrict,
+        string restPassword, CancellationToken ct)
     {
         // 1) Построить ожидаемый JSON (детерминированный рендер) и сравнить с
         // хранимым: равен — put НЕ делаем (без дребезга mod_revision, spec
@@ -54,7 +57,7 @@ public sealed class NodeBootstrapDelivery(
         var (certPem, keyPem) = restCertificates.GetOrCreate(topology.Cluster, topology.Shard, nodeName);
         var expectedJson = NodeBootstrapBuilder.Build(
             topology, new EtcdEndpoints(endpoints), syncStrict, nodeName,
-            certPem, keyPem, restPassword, tuning, null);
+            certPem, keyPem, restPassword, tuning, excludeParams);
         var bootstrapKey = BootstrapKey(topology.Cluster, topology.Shard, nodeName);
 
         var read = await GetAsync(bootstrapKey, ct);
@@ -116,14 +119,15 @@ public sealed class NodeBootstrapDelivery(
 
     public async Task<bool> IsOnRevisionAsync(
         ShardTopology topology, string nodeName, NodeAddress addr,
-        PgTuneResult? tuning, bool syncStrict, string restPassword, CancellationToken ct)
+        PgTuneResult? tuning, IReadOnlySet<string>? excludeParams, bool syncStrict,
+        string restPassword, CancellationToken ct)
     {
         // БЕЗ put и БЕЗ команд канала (не нарушает ≤1 нода/тик): content-сверка
         // хранимого ключа с рендером под ЭТУ пару + ready + applied==mod.
         var (certPem, keyPem) = restCertificates.GetOrCreate(topology.Cluster, topology.Shard, nodeName);
         var expectedJson = NodeBootstrapBuilder.Build(
             topology, new EtcdEndpoints(endpoints), syncStrict, nodeName,
-            certPem, keyPem, restPassword, tuning, null);
+            certPem, keyPem, restPassword, tuning, excludeParams);
 
         var bootstrapKey = BootstrapKey(topology.Cluster, topology.Shard, nodeName);
         var read = await GetAsync(bootstrapKey, ct);

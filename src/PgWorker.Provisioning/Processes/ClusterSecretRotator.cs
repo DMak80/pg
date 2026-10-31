@@ -211,7 +211,7 @@ public sealed partial class ClusterSecretRotator(
                         addresses.Value.Where(p => p.Key.StartsWith($"{shard.Name}/", StringComparison.Ordinal))
                             .ToDictionary(p => p.Key.Split('/')[1], p => p.Value));
                     if (await bootstrap.IsOnRevisionAsync(
-                            topology, node.Name, addr, tuning,
+                            topology, node.Name, addr, tuning, pgtune.ExcludeParams,
                             snap.Config.SyncStrict, newRestPassword, ct))
                         continue; // применила NEW — следующая нода
 
@@ -223,7 +223,7 @@ public sealed partial class ClusterSecretRotator(
                     // исходах; исход диагностируется следующим тиком (проба
                     // IsOnRevisionAsync: применила — идём дальше, нет — повтор).
                     await bootstrap.EnsureAsync(
-                        topology, node.Name, addr, secrets, tuning,
+                        topology, node.Name, addr, secrets, tuning, pgtune.ExcludeParams,
                         snap.Config.SyncStrict, newRestPassword, ct);
                     return await Finish(cluster,
                         $"rotate-rest-rolling/{shard.Name}/{node.Name}", ProcessOutcome.Done, ct);

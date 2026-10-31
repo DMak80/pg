@@ -137,11 +137,26 @@ public sealed class PgNodeMachine : IDisposable
 
     // Одна итерация чтения bootstrap-ключа (+первичная публикация
     // not_initialized) — юнит-seam для детерминизма тестов (без ретрай-цикла).
+    // Переходный флаг публикации ключа (образец PatroniRoleProbe._lastCaState):
+    // диагностика — ТОЛЬКО при смене состояния (штатный poll каждые 5 c молчит,
+    // иначе десятки тысяч строк/сутки — прецедент предупреждает прямо).
+    private bool _bootstrapLogged;
+
     internal async Task PollBootstrapOnceAsync(CancellationToken ct)
     {
         var bootstrap = await ReadBootstrapAsync(ct);
+        if (bootstrap is null)
+        {
+            if (_bootstrapLogged)
+                Console.Error.WriteLine("pgnode: bootstrap key not ready yet (retry in 5 s)");
+            _bootstrapLogged = false;
+        }
         if (bootstrap is { Data: { } data, ModRevision: { } mod })
         {
+            if (!_bootstrapLogged)
+                Console.Error.WriteLine(
+                    $"pgnode: bootstrap key read (mod={mod}) — publishing not_initialized");
+            _bootstrapLogged = true;
             lock (_dataGate)
             {
                 _bootstrap = data;
@@ -160,7 +175,14 @@ public sealed class PgNodeMachine : IDisposable
                     ? factory()
                     : new NodeStatusSession(_etcd, _endpoints, _statusKey);
                 if (await writer.StartAsync(NotInitializedStatus(), ct))
+                {
+                    Console.Error.WriteLine("pgnode: not_initialized published (status session up)");
                     _status = writer;
+                }
+                else
+                {
+                    Console.Error.WriteLine("pgnode: status session start failed — retry");
+                }
             }
         }
     }
@@ -182,7 +204,11 @@ public sealed class PgNodeMachine : IDisposable
         }
         if (string.IsNullOrEmpty(suPassword) || string.IsNullOrEmpty(standbyPassword)
             || bootstrap is not { } valid || !valid.IsValidForStart())
+        {
+            Console.Error.WriteLine(
+                $"pgnode: handshake invalid (bootstrap cached: {bootstrap is not null})");
             return HandshakeResult.Invalid;
+        }
 
         if (!await _commandGate.WaitAsync(0, ct))
             return HandshakeResult.Nop; // фазы в ходу — повторная команда ок-пинок
@@ -201,16 +227,26 @@ public sealed class PgNodeMachine : IDisposable
                 return HandshakeResult.EtcdError;
             var currentJson = current.Value?.Value;
             if (currentJson is null)
+            {
+                Console.Error.WriteLine("pgnode: handshake: status key is absent yet");
                 return HandshakeResult.EtcdError; // ключа нет — сессия ещё не опубликовала
+            }
             if (!IsNotInitialized(currentJson))
+            {
+                Console.Error.WriteLine("pgnode: handshake nop (state is not not_initialized)");
                 return HandshakeResult.Nop; // «пинок состоялся» — без действий
+            }
 
             // Сохранить пароли ТОЛЬКО при выигранном переходе (секреты — память).
             var initializing = new PgNodeStatus(PgNodeStatus.Initializing, null,
                 new Dictionary<string, string>(), UpdatedUnix: NowUnix()).ToJson();
             var transitioned = await status.TryTransitionAsync(initializing, currentJson, ct);
             if (!transitioned)
+            {
+                Console.Error.WriteLine("pgnode: handshake txn lost (parallel writer)");
                 return HandshakeResult.Nop; // параллельный писатель изменил значение
+            }
+            Console.Error.WriteLine("pgnode: handshake accepted — starting initializing phases");
 
             _suPassword = suPassword;
             _standbyPassword = standbyPassword;
@@ -320,6 +356,7 @@ public sealed class PgNodeMachine : IDisposable
     {
         // Фаза (а), шаг 1 — рендер tmpfs (ошибка → start_failed, компоненты
         // не запускаются).
+        Console.Error.WriteLine($"pgnode: initializing: rendering tmpfs (mod={modRevision})");
         var doormanConfig = RenderedDoormanConfig(bootstrap);
         try
         {
@@ -328,12 +365,14 @@ public sealed class PgNodeMachine : IDisposable
         }
         catch (Exception e)
         {
+            Console.Error.WriteLine($"pgnode: render failed: {FirstLine(e.Message)}");
             await PublishAsync(PgNodeStatus.StartFailed, modRevision,
                 Components(pg: "stopped", doorman: "stopped"), FirstLine(e.Message), ct);
             _state = PgNodeStatus.StartFailed;
             return;
         }
 
+        Console.Error.WriteLine("pgnode: tmpfs rendered — starting components");
         if (_isToolStart)
         {
             // tool-контур: терминальный успех — ПОДГОТОВЛЕННОСТЬ ПАРАМЕТРОВ
@@ -440,9 +479,11 @@ public sealed class PgNodeMachine : IDisposable
             {
                 throw;
             }
-            catch (Exception)
+            catch (Exception e)
             {
                 // Провал попытки — перезапуск (до 3); значения в текст не идут.
+                Console.Error.WriteLine(
+                    $"pgnode: start {program} attempt {attempt} failed: {FirstLine(e.Message)}");
             }
         }
         return false;

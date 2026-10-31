@@ -254,14 +254,16 @@ internal sealed class NoDelivery : PgWorker.Provisioning.Processes.INodeBootstra
 {
     public Task<PgWorker.Provisioning.Processes.DeliveryOutcome> EnsureAsync(
         ShardTopology topology, string nodeName, NodeAddress addr, InstallSecrets secrets,
-        PgWorker.Core.Tuning.PgTuneResult? tuning, bool syncStrict, string restPassword,
-        CancellationToken ct)
+        PgWorker.Core.Tuning.PgTuneResult? tuning,
+        System.Collections.Generic.IReadOnlySet<string>? excludeParams, bool syncStrict,
+        string restPassword, CancellationToken ct)
         => Task.FromResult(new PgWorker.Provisioning.Processes.DeliveryOutcome(
             Delivered: false, Wait: true, Transient: false, null));
 
     public Task<bool> IsOnRevisionAsync(
         ShardTopology topology, string nodeName, NodeAddress addr,
-        PgWorker.Core.Tuning.PgTuneResult? tuning, bool syncStrict, string restPassword,
-        CancellationToken ct)
+        PgWorker.Core.Tuning.PgTuneResult? tuning,
+        System.Collections.Generic.IReadOnlySet<string>? excludeParams, bool syncStrict,
+        string restPassword, CancellationToken ct)
         => Task.FromResult(false);
 }

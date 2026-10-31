@@ -188,6 +188,7 @@ internal partial class Program
     {
         app.MapPost("/api/bootstrap", async (WorkerPushRequest body, CancellationToken ct) =>
         {
+            Console.Out.WriteLine("pgnode: POST /api/bootstrap received");
             var result = await machine.HandshakeAsync(
                 body.SuPassword ?? "", body.StandbyPassword ?? "", body.IsToolStart ?? false, ct);
             return result switch

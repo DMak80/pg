@@ -73,6 +73,8 @@ public sealed class NodeChannelClient(HttpClient http) : INodeChannelClient
 
     private static async Task<ChannelReply> ReadAsync(HttpResponseMessage resp, CancellationToken ct)
     {
+        Console.Error.WriteLine(
+            $"pgnode-channel: {(resp.RequestMessage?.Method.Method)} {resp.RequestMessage?.RequestUri} → {(int)resp.StatusCode}");
         if (!resp.IsSuccessStatusCode)
             return new ChannelReply((int)resp.StatusCode, false, null, null);
         try

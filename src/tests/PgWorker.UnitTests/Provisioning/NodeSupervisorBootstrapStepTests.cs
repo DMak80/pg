@@ -29,7 +29,8 @@ public class NodeSupervisorBootstrapStepTests
 
         public Task<DeliveryOutcome> EnsureAsync(
             ShardTopology topology, string nodeName, NodeAddress addr, InstallSecrets secrets,
-            PgTuneResult? tuning, bool syncStrict, string restPassword, CancellationToken ct)
+            PgTuneResult? tuning, IReadOnlySet<string>? excludeParams, bool syncStrict,
+            string restPassword, CancellationToken ct)
         {
             Calls.Add((topology.Shard, nodeName));
             return Task.FromResult(new DeliveryOutcome(
@@ -38,7 +39,8 @@ public class NodeSupervisorBootstrapStepTests
 
         public Task<bool> IsOnRevisionAsync(
             ShardTopology topology, string nodeName, NodeAddress addr,
-            PgTuneResult? tuning, bool syncStrict, string restPassword, CancellationToken ct)
+            PgTuneResult? tuning, IReadOnlySet<string>? excludeParams, bool syncStrict,
+            string restPassword, CancellationToken ct)
             => Task.FromResult(false);
     }
 
