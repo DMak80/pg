@@ -222,6 +222,45 @@ public class BackupStorageQueryTests
         s3.TtlLeftSec.Should().NotBeNull().And.BeLessThan(0, "expired — deletion on the next pass");
     }
 
+    // ——— маппер сводки: restore/drill факты per-shard (u09-/events) — AAA ———
+
+    // AAA: активный restore RUNNING + drill SUCCEEDED в etcd → сводка несёт
+    // RestoreState/DrillState шарда (клиентские диффы ленты /events); шард
+    // без фактов — null/null.
+    [Fact]
+    public void MapStorage_JoinsRestoreDrillFacts()
+    {
+        // Arrange — s1 с RUNNING-restore и SUCCEEDED-дриллом, s2 без фактов
+        var snapshot = SnapshotWithTree() with
+        {
+            Backups = [new ClusterBackupsInfo(
+                "demo", null, new Dictionary<string, long?>(),
+                ShardsRestores: new Dictionary<string, IReadOnlyList<RestoreOperationInfo>>
+                {
+                    ["s1"] = [new RestoreOperationInfo(
+                        "demo", "s1", "r1", "RUNNING", null, NowUnix - 10, NowUnix - 5, null, "recovering")],
+                },
+                ShardsDrills: new Dictionary<string, DrillInfo>
+                {
+                    ["s1"] = new DrillInfo(
+                        "demo", "s1", "d1", "SUCCEEDED", "b1", NowUnix - 100, NowUnix - 50, null, null, null),
+                })],
+        };
+
+        // Act
+        var dto = BackupStorageMappers.MapStorage(snapshot, TtlSec, NowUnix);
+
+        // Assert — джойн по кластеру×шарду; шард без фактов в etcd → null/null
+        var demo = dto.Clusters.Should().Contain(c => c.Cluster == "demo").Subject;
+        var s1 = demo.Shards.Should().Contain(s => s.Shard == "s1").Subject;
+        s1.RestoreState.Should().Be("RUNNING");
+        s1.DrillState.Should().Be("SUCCEEDED");
+        var ghost = dto.Clusters.Should().Contain(c => c.Cluster == "ghost-shard").Subject;
+        var s9 = ghost.Shards.Should().Contain(s => s.Shard == "s9").Subject;
+        s9.RestoreState.Should().BeNull();
+        s9.DrillState.Should().BeNull();
+    }
+
     // ——— маппер деталей шарда — AAA ———
 
     // AAA: etcd full COMPLETED+verify OK + S3-факт → Reconcile="Ok"; PLANNED-restore — бейдж

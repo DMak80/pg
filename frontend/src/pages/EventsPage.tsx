@@ -31,6 +31,9 @@ const ENTITY_KIND_OPTIONS: { value: string; label: string }[] = [
   { value: 'evacuation', label: 'evacuation' },
   { value: 'rotation', label: 'rotation' },
   { value: 'instance', label: 'instance' },
+  { value: 'restore', label: 'restore' },
+  { value: 'drill', label: 'drill' },
+  { value: 'orphan', label: 'orphan' },
 ];
 
 export function EventsPage() {
@@ -102,11 +105,15 @@ function EventsTable({ events }: { events: EventItem[] }) {
             <Table.Tbody>
               {filtered.map((e) => {
                 // u04: единая таблица маршрутов с алертами (kind фиктивный —
-                // маршрут по домену/сущности события).
-                const fakeKind = e.domain === 'kafka' ? 'kafka-rotation-pending'
-                  : e.domain === 'valkey' ? 'valkey-rotation-pending'
-                    : e.domain === 's3' ? 's3-rotation-pending'
-                      : 'cluster-incomplete';
+                // маршрут по домену/сущности события; restore/drill/orphan —
+                // свои kind'ы бэкапов → грань /backups-storage).
+                const fakeKind = e.entityKind === 'restore' ? 'restore-failed'
+                  : e.entityKind === 'drill' ? 'backup-drill-failed'
+                    : e.entityKind === 'orphan' ? 'backup-orphan'
+                      : e.domain === 'kafka' ? 'kafka-rotation-pending'
+                        : e.domain === 'valkey' ? 'valkey-rotation-pending'
+                          : e.domain === 's3' ? 's3-rotation-pending'
+                            : 'cluster-incomplete';
                 const route = alertRoute(fakeKind, e.entity);
                 const change = e.type === 'state-change' && e.from !== undefined && e.to !== undefined
                   ? `${e.from} → ${e.to}`

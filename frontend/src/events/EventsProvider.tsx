@@ -9,8 +9,10 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useEffect } from 'react';
 import type { Query } from '@tanstack/react-query';
 import {
-  diffClusterDetails, diffClusterExtras, diffClusters, diffHa, diffKafka, diffS3, diffValkey,
+  diffBackupsStorage, diffClusterDetails, diffClusterExtras, diffClusters,
+  diffHa, diffKafka, diffOverview, diffS3, diffValkey,
 } from './eventsDiff';
+import { backupsQueryKeys } from '../api/queries';
 
 // Снимки prev по queryKey (строковый ключ) — храним сами: у SuccessAction в
 // TanStack Query v5 НЕТ поля action.data.previous (уточнение re-плана).
@@ -23,6 +25,8 @@ function keyId(key: readonly unknown[]): string {
 const WATCHED = [
   keyId(['clusters']),
   keyId(['ha-scopes']),
+  keyId(['overview']),
+  keyId(backupsQueryKeys.storage),
 ] as const;
 
 // Детальные ключи: ['clusters', name] / ['kafka-clusters', name] / ... —
@@ -49,6 +53,14 @@ export function EventsProvider({ children }: { children: React.ReactNode }) {
           diffClusters(prev as never, next as never);
         } else if (keyId(key) === keyId(['ha-scopes'])) {
           diffHa(prev as never, next as never);
+        } else if (keyId(key) === keyId(['overview'])) {
+          // FINDING 1: arch/03 §3 «События» перечисляет overview среди
+          // наблюдаемых — диффим переключение глобального стопа бэкапов (u10).
+          diffOverview(prev as never, next as never);
+        } else if (keyId(key) === keyId(backupsQueryKeys.storage)) {
+          // FINDING 1: restore/drill факты шардов + сироты из ответа
+          // backups-storage (arch/03 §3 «События»).
+          diffBackupsStorage(prev as never, next as never);
         } else if (DETAIL_ROOTS.has(root) && key.length === 2 && typeof key[1] === 'string') {
           const name = key[1];
           if (root === 'clusters') {

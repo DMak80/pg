@@ -6,8 +6,9 @@ namespace AdminPanel.Api.Operations.Valkey;
 
 // Отмена живых заявок ротаций valkey (u17, arch/02 §11.2-7/8): панель —
 // прокси DELETE в API ValkeyWorker (del ключа выполняет ТОЛЬКО воркер, D13).
-// DELETE не создаёт заявку → requestedBy=null — консистентно образцу
-// CancelKafkaRebalanceCommandHandler (осознанное решение).
+// DELETE не создаёт заявку → requestedBy=null — закреплено в spec §7 /
+// arch 02 §10.2/§11.2: del без тела, аудит — host-лог воркера (образец
+// CancelKafkaRebalanceCommandHandler).
 public sealed record CancelValkeyRotationCommand(string Cluster, string Path)
     : ICommand<ValkeyRotationCancelledDto>;
 

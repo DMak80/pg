@@ -6,8 +6,9 @@ namespace AdminPanel.Api.Operations.Kafka;
 
 // Отмена живых заявок ротаций kafka (u17, arch/02 §10.2-18/19/20): панель —
 // прокси DELETE в API KafkaWorker (del ключа заявки выполняет ТОЛЬКО воркер,
-// D13). DELETE не создаёт заявку → requestedBy=null — консистентно образцу
-// CancelKafkaRebalanceCommandHandler (осознанное решение).
+// D13). DELETE не создаёт заявку → requestedBy=null — закреплено в spec §7 /
+// arch 02 §10.2/§11.2: del без тела, аудит — host-лог воркера (образец
+// CancelKafkaRebalanceCommandHandler).
 public sealed record CancelKafkaRotationCommand(string Cluster, string Path)
     : ICommand<KafkaRotationCancelledDto>;
 

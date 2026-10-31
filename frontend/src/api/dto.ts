@@ -916,6 +916,10 @@ export interface BackupShardSummaryDto {
   walSegmentCount: number;
   hasS3Only: boolean; // есть объекты без ключа
   orphan: boolean; // префикс без владельца
+  // u09-/events: restore/drill факты шарда (etcd-ключи /pgworker/backups/);
+  // null — факта нет.
+  restoreState?: string | null;
+  drillState?: string | null;
 }
 
 export interface BackupClusterStorageDto {

@@ -5,10 +5,12 @@
 // отвергнута»; heals — новые записи; эвакуации — появление/изменение/исчезновение.
 // freshness-события НЕ эмитим (шум).
 import type {
+  BackupStorageDto,
   BucketDto,
   ClusterDto,
   ClusterSummaryDto,
   KafkaClusterDto,
+  OverviewDto,
   S3ClusterDto,
   ValkeyClusterDto,
   HaScopeSummaryDto,
@@ -303,6 +305,128 @@ function diffTicketLike(
     emit({
       tsUnix: now(), domain, entityKind, entity: `${cluster}/${label}`,
       type: 'gone', detail: `заявка ${label} исполнена или отвергнута`,
+    });
+  }
+}
+
+// ——— backups-storage: restore/drill факты шардов + сироты (FINDING 1, u09;
+// arch/03 §3 «События» прямо перечисляет backups-storage среди наблюдаемых
+// ключей). restore: появление state = «заявка поставлена», исчезновение =
+// «исполнена или отвергнута» (gone — исход), смена state = state-change;
+// drill: появление RUNNING = appeared, терминальный исход = outcome;
+// сироты: появление/исчезновение префикса + смена state (OBSERVED→DELETING). ———
+
+export function diffBackupsStorage(
+  prev: BackupStorageDto | undefined, next: BackupStorageDto,
+): void {
+  if (prev === undefined) return;
+
+  // restore/drill per-shard: ключи сводки clusters[].shards[].
+  interface ShardFact { restoreState: string | null; drillState: string | null }
+  const factsOf = (dto: BackupStorageDto): Map<string, ShardFact> => {
+    const map = new Map<string, ShardFact>();
+    for (const cluster of dto.clusters) {
+      for (const shard of cluster.shards) {
+        map.set(`${shard.cluster}/${shard.shard}`, {
+          restoreState: shard.restoreState ?? null,
+          drillState: shard.drillState ?? null,
+        });
+      }
+    }
+    return map;
+  };
+  const before = factsOf(prev);
+  const after = factsOf(next);
+
+  for (const [key, was] of before) {
+    const nowFact = after.get(key);
+    if (nowFact === undefined) continue; // шард исчез из сводки — не событие шарда
+
+    // restore-заявка: активный restore появился / сменил фазу / завершился.
+    if (was.restoreState === null && nowFact.restoreState !== null) {
+      emit({
+        tsUnix: now(), domain: 'pg', entityKind: 'restore', entity: key,
+        type: 'appeared', detail: `restore-заявка поставлена (${nowFact.restoreState})`,
+      });
+    } else if (was.restoreState !== null && nowFact.restoreState === null) {
+      emit({
+        tsUnix: now(), domain: 'pg', entityKind: 'restore', entity: key,
+        type: 'gone', detail: `restore исполнен или отклонён (было ${was.restoreState})`,
+      });
+    } else if (was.restoreState !== null
+      && nowFact.restoreState !== null
+      && was.restoreState !== nowFact.restoreState) {
+      emit({
+        tsUnix: now(), domain: 'pg', entityKind: 'restore', entity: key,
+        type: 'state-change', from: was.restoreState, to: nowFact.restoreState,
+      });
+    }
+
+    // drill: появление RUNNING; терминальный исход (RUNNING → SUCCEEDED/FAILED);
+    // новый FAILED после SUCCEEDED — outcome тоже (восстановимость не доказана).
+    if (was.drillState !== 'RUNNING' && nowFact.drillState === 'RUNNING') {
+      emit({
+        tsUnix: now(), domain: 'pg', entityKind: 'drill', entity: key,
+        type: 'appeared', detail: 'drill запущен',
+      });
+    } else if (was.drillState === 'RUNNING'
+      && (nowFact.drillState === 'SUCCEEDED' || nowFact.drillState === 'FAILED')) {
+      emit({
+        tsUnix: now(), domain: 'pg', entityKind: 'drill', entity: key,
+        type: 'outcome', to: nowFact.drillState,
+        detail: `drill ${nowFact.drillState === 'SUCCEEDED' ? 'подтвердил' : 'не подтвердил'} восстановимость`,
+      });
+    }
+  }
+
+  // Сироты: появление/исчезновение префикса + смена state.
+  const orphansOf = (dto: BackupStorageDto): Map<string, string | null> => {
+    const map = new Map<string, string | null>();
+    for (const o of dto.orphans) map.set(o.prefix, o.registryState ?? null);
+    return map;
+  };
+  const orphansBefore = orphansOf(prev);
+  const orphansAfter = orphansOf(next);
+  for (const [prefix, state] of orphansAfter) {
+    const prevState = orphansBefore.get(prefix);
+    if (prevState === undefined) {
+      emit({
+        tsUnix: now(), domain: 'pg', entityKind: 'orphan', entity: prefix,
+        type: 'appeared', detail: 'сирота обнаружена (S3-префикс без владельца в etcd)',
+      });
+    } else if (prevState !== state && state !== null && prevState !== null) {
+      emit({
+        tsUnix: now(), domain: 'pg', entityKind: 'orphan', entity: prefix,
+        type: 'state-change', from: prevState, to: state,
+      });
+    }
+  }
+  for (const prefix of orphansBefore.keys()) {
+    if (!orphansAfter.has(prefix)) {
+      emit({
+        tsUnix: now(), domain: 'pg', entityKind: 'orphan', entity: prefix,
+        type: 'gone', detail: 'сирота удалена (sweeper воркера)',
+      });
+    }
+  }
+}
+
+// ——— overview: глобальный стоп бэкапов (u10) — появление/снятие ключа
+// /pgworker/backups-disabled. Остальные агрегаты overview не эмитим
+// (кластеры/HA уже покрыты своими ключами, freshness — шум). ———
+
+export function diffOverview(prev: OverviewDto | undefined, next: OverviewDto): void {
+  const was = prev?.backupsDisabled ?? null;
+  const isNow = next.backupsDisabled ?? null;
+  if (was === null && isNow !== null) {
+    emit({
+      tsUnix: now(), domain: 'pg', entityKind: 'ticket', entity: 'backups-disabled',
+      type: 'appeared', detail: 'глобальный стоп бэкапов: приёмники WAL всех кластеров замирают',
+    });
+  } else if (was !== null && isNow === null) {
+    emit({
+      tsUnix: now(), domain: 'pg', entityKind: 'ticket', entity: 'backups-disabled',
+      type: 'gone', detail: 'глобальный стоп снят — бэкапы возобновлены',
     });
   }
 }

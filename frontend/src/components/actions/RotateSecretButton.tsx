@@ -115,7 +115,8 @@ export function RotateSecretButton({
         opened={cancelOpened}
         onClose={() => setCancelOpened(false)}
         title={`Отменить заявку: ${title}`}
-        text="Начатая ротация доедет; отменяется только не начатая заявка (гвард воркера: 409 «уже исполняется»)."
+        text={'Начатая ротация доедет; отменяется только не начатая заявка '
+          + '(гвард воркера: 409 «уже исполняется»; del без тела — аудит в host-логе воркера, spec §7).'}
         confirmLabel="Отменить заявку"
         busy={cancel.isPending}
         error={cancelError}

@@ -2,7 +2,7 @@
 // вводом ожидаемой строки (кнопка заблокирована до совпадения) — образец
 // delete-сироты/restore. Все домены используют его вместо своих копий.
 import { Alert, Button, Group, Modal, Stack, Text, TextInput } from '@mantine/core';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { ApiError } from '../../api/client';
 
 // Ошибка сервера (ProblemDetails текстом) — общая для всех действий.
@@ -35,6 +35,11 @@ export function ConfirmModal({
   onConfirm: () => void;
 }) {
   const [typed, setTyped] = useState('');
+  // FINDING 4: сброс ввода при закрытии — повторное открытие не наследует
+  // набранный текст (как RestoreBlock).
+  useEffect(() => {
+    if (!opened) setTyped('');
+  }, [opened]);
   const confirmed = expectedInput === undefined || typed === expectedInput;
   return (
     <Modal opened={opened} onClose={onClose} title={title} centered>

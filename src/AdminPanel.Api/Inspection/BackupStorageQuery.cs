@@ -103,7 +103,11 @@ public sealed record BackupPolicyDto(
 
 public sealed record BackupShardSummaryDto(
     string Cluster, string Shard, long SizeBytes,
-    int FullsCount, long WalSegmentCount, bool HasS3Only, bool Orphan); // пометки сверки
+    int FullsCount, long WalSegmentCount, bool HasS3Only, bool Orphan, // пометки сверки
+    // u09-/events: restore/drill факты шарда из etcd-ключей /pgworker/backups/
+    // (state активного restore и последнего drill) — источник клиентских
+    // диффов ленты событий; null = факта нет.
+    string? RestoreState = null, string? DrillState = null);
 
 // Сирота грани «Хранилище бэкапов» ( защита — reliability, arch/19 §4):
 // HasValidFull — автозащита (валидный полный), Held — hold-флаг, DeleteRequested
@@ -265,20 +269,37 @@ private static string WalStateName(WalStreamInfoState state) => state switch
             .ToHashSet();
 
         var policies = etcdBackups.ToDictionary(b => b.Cluster, b => b.Policy);
-        return [.. clusters.Select(c => new BackupClusterStorageDto(
-            c.Cluster,
-            c.SizeBytes,
-            [.. c.Shards.Select(s => new BackupShardSummaryDto(
-                s.Cluster,
-                s.Shard,
-                s.SizeBytes,
-                s.Fulls.Count,
-                s.Wal?.SegmentCount ?? 0,
-                HasS3Only: s3OnlyByShard.Contains((s.Cluster, s.Shard)),
-                Orphan: orphanPrefixes.Contains($"{s.Cluster}/{s.Shard}")))],
-            policies.TryGetValue(c.Cluster, out var policy)
-                ? MapPolicy(policy)
-                : null))];
+        return [.. clusters.Select(c =>
+        {
+            // u09-/events: restore/drill факты шарда (активный restore — первый
+            // не-терминальный; drill — последний ключ per-shard, перезаписывается).
+            var etcd = etcdBackups.FirstOrDefault(b => b.Cluster == c.Cluster);
+            var restoreByShard = etcd?.ShardsRestores
+                ?? (IReadOnlyDictionary<string, IReadOnlyList<RestoreOperationInfo>>)
+                    new Dictionary<string, IReadOnlyList<RestoreOperationInfo>>();
+            var drillByShard = etcd?.ShardsDrills
+                ?? (IReadOnlyDictionary<string, DrillInfo>)new Dictionary<string, DrillInfo>();
+            return new BackupClusterStorageDto(
+                c.Cluster,
+                c.SizeBytes,
+                [.. c.Shards.Select(s => new BackupShardSummaryDto(
+                    s.Cluster,
+                    s.Shard,
+                    s.SizeBytes,
+                    s.Fulls.Count,
+                    s.Wal?.SegmentCount ?? 0,
+                    HasS3Only: s3OnlyByShard.Contains((s.Cluster, s.Shard)),
+                    Orphan: orphanPrefixes.Contains($"{s.Cluster}/{s.Shard}"),
+                    RestoreState: restoreByShard.TryGetValue(s.Shard, out var restores)
+                        ? restores.FirstOrDefault(r => r.State is not ("COMPLETED" or "FAILED"))?.State
+                        : null,
+                    DrillState: drillByShard.TryGetValue(s.Shard, out var drill)
+                        ? drill.State
+                        : null))],
+                policies.TryGetValue(c.Cluster, out var policy)
+                    ? MapPolicy(policy)
+                    : null);
+        })];
     }
 
     // Полная policy → DTO (reliability): null-поля как есть — фронт дефолтирует.

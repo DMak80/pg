@@ -191,6 +191,8 @@ function ClustersCard({ data }: { data: OverviewDto }) {
           ))}
         </Stack>
       )}
+      {/* u08 (FINDING 2): возраст данных pg-домена */}
+      <DomainAgeLine data={data} domain="pg" />
     </Card>
   );
 }
@@ -220,6 +222,8 @@ function KafkaCard({ data }: { data: OverviewDto }) {
           </Group>
         </Group>
       )}
+      {/* u08 (FINDING 2): возраст данных домена */}
+      <DomainAgeLine data={data} domain="kafka" />
     </Card>
   );
 }
@@ -249,6 +253,8 @@ function ValkeyCard({ data }: { data: OverviewDto }) {
           </Group>
         </Group>
       )}
+      {/* u08 (FINDING 2): возраст данных домена */}
+      <DomainAgeLine data={data} domain="valkey" />
     </Card>
   );
 }
@@ -278,6 +284,8 @@ function S3Card({ data }: { data: OverviewDto }) {
           </Group>
         </Group>
       )}
+      {/* u08 (FINDING 2): возраст данных домена */}
+      <DomainAgeLine data={data} domain="s3" />
     </Card>
   );
 }
@@ -437,6 +445,22 @@ const DOMAIN_COLORS: Record<string, string> = {
   valkey: 'orange',
   s3: 'grape',
 };
+
+// u08 (FINDING 2): строка возраста данных домена в карточке — «данные: N назад»,
+// жёлтая при старше 3×интервала (та же механика, что FreshnessBadges/SnapshotStaleRule).
+function DomainAgeLine({ data, domain }: { data: OverviewDto; domain: 'pg' | 'kafka' | 'valkey' | 's3' | 'etcd' }) {
+  const intervalMs = usePollingIntervalMs();
+  const item = data.freshness?.[domain] ?? null;
+  if (item === null || item === undefined) return null;
+  const staleThresholdSec = typeof intervalMs === 'number' ? (intervalMs / 1000) * 3 : null;
+  const ageSec = Math.max(0, Date.now() / 1000 - item.builtAtUnix);
+  const stale = staleThresholdSec !== null && ageSec > staleThresholdSec;
+  return (
+    <Text size="xs" c={stale ? 'yellow' : 'dimmed'}>
+      данные: {formatAge(ageSec * 1000)} назад{stale ? ' (stale)' : ''}
+    </Text>
+  );
+}
 
 // Лента алертов: critical/warning, все (без топ-N); info отфильтрован (t08 spec §4.4).
 function AlertsFeedSection({ isPending, isError, onRetry, rows, operatorOnly = false }: {
