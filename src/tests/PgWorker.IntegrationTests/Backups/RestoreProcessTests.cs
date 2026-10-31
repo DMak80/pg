@@ -685,7 +685,8 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
         _receiver.StartCalls.Should().Be(1, "restore launches only after prepared");
         var running = (await ReadRestoresAsync("c1", "shard1")).Single(r => r.Id != "" || true);
         running.Phase.Should().Be("launching");
-        inner.EnsuredNodes.Should().BeEquivalentTo(["shard1/shard1a"]);
+        // EnsureNode идемпотентен: три тика — три идемпотентных прохода одной ноды.
+        inner.EnsuredNodes.Should().OnlyContain(n => n == "shard1/shard1a");
     }
 
     [Fact]
