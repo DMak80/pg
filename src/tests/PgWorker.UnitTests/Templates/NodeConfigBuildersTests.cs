@@ -225,10 +225,10 @@ public class NodeConfigBuildersTests
         config.Should().Contain("auth_query:");
         config.Should().Contain("user: \"postgres\"");
         config.Should().Contain("pools:");
-        config.Should().Contain("  shop:");
+        config.Should().Contain("  \"shop\":");
         config.Should().Contain("server_host: \"127.0.0.1\"");
         config.Should().Contain("server_port: 5432");
-        config.Should().Contain("server_database: shop");
+        config.Should().Contain("server_database: \"shop\"");
     }
 
     [Fact]

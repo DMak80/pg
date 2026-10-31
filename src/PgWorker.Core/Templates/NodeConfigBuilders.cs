@@ -288,10 +288,10 @@ public static class DoormanConfigBuilder
           tls_certificate: "/etc/pg_doorman/tls.crt"
           tls_private_key: "/etc/pg_doorman/tls.key"
         pools:
-          {dbname}:
+          "{dbname}":
             server_host: "127.0.0.1"
             server_port: 5432
-            server_database: {dbname}
+            server_database: "{dbname}"
             pool_mode: "transaction"
             max_db_connections: {serverConnections}
             auth_query:
