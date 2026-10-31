@@ -1251,9 +1251,12 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
     }
 
     [Fact]
-    public async Task RejoinRotationWindowEnsureCarriesPendingPair()
+    public async Task RejoinRotationWindowEnsureCarriesWindowFlag()
     {
-        // Arrange — REJOINING; журнал работы несёт rest_pending (окно rolling
+        // Arrange — REJOINING; журнал работы несёт rest_window_open=true
+        // (открытое окно REST-ротации, ETCD-FIRST): EnsureNode-путь restore
+        // окно НЕ расширяет — нода поднимается с NEW-парой из etcd
+        // (arch/14 §5 I).
         // REST-ротации): EnsureNode-путь restore окно НЕ расширяет — нода
         // поднимается с NEW-парой (арх/14 §5 I).
         var ct = TestContext.Current.CancellationToken;
@@ -1265,7 +1268,7 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
         var op = await SeedRestoreAsync("c1", "shard1", "20260911122002Z",
             backupId: "20260910120000Z", state: RestoreStatus.Rejoining);
         await fixture.Gateway.PutAsync(fixture.Endpoint, "/pgworker/work/c1",
-            """{"op":"rotate-app-password","phase":"rotate-rest-rolling","instance":"i","updated_unix":1,"rest_pending":"New0Pass00000000000000000000000B"}""",
+            """{"op":"rotate-app-password","phase":"rotate-rest-rolling","instance":"i","updated_unix":1,"rest_window_open":true}""",
             null, ct);
         (await _claims.TryClaimClusterAsync("c1", ct)).Value.Should().BeTrue();
 

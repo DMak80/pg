@@ -23,8 +23,10 @@ SuPassword). Секреты доставляет агент ноды:
   и ничего не инициирует;
 - PgNode — менеджер пулера: ведёт конфиг/серты pg_doorman, применяет
   замены (рестарт/релод) по сигналу воркера;
-- ротация `rest_password` — без пересоздания контейнеров: перезапись
-  bootstrap-данных в etcd + сигнал → рестарт Patroni-процесса.
+- ротация per-cluster секретов — порядок ETCD-FIRST: NEW в etcd в
+  начале окна, rolling-применение нод (rest_password — без пересоздания
+  контейнеров: перезапись bootstrap-данных + команда применения → рестарт
+  Patroni-процесса), финальный ALTER pg_authid последним.
 
 В ту же задачу входит переименование компонента walreceiver → **PgNode**
 (решение пользователя): у агента уже много обязанностей (приём WAL, mTLS-
@@ -342,15 +344,34 @@ P15 и формат v3.11.0 — без изменений; InstallSecretsGuard �
    УДАЛЯЮТСЯ; `InspectNodeEnvAsync` из IClusterDriver удаляется
    (потребителей после удаления шага нет — проверить grep'ом).
    RecreateMarkedNodes (TO_RECREATE оператора) — без изменений.
-4. ClusterSecretRotator (§5 I): R2 для `rest_password` — вместо
-   rolling-пересоздания: рендер bootstrap-ключей всех нод с NEW
-   (эффективная пара `RestRotation.EffectivePassword`: pending ?? ключ),
-   команда применения `ready`-нодам последовательно (реплики вперёд, лидер последним,
-   ≤1 нода/тик; restore/TO_REMOVE-шарды и `object`-ноды гейт
-   пропускает), прогресс — факт `applied_revision`; все применили → R3
-   txn (без изменений: compare OLD / put NEW / del заявки; `rest_pending`
-   в журнале — прежняя семантика фиксации пары «в полёте»). Гварды окна
-   (skip PATCH `/config` и RecreateMarked-soft до R3) сохраняются.
+4. ClusterSecretRotator (§5 I, порядок ETCD-FIRST — решение
+   пользователя): R2 = txn-коммит NEW-четвёрки в etcd В НАЧАЛЕ окна
+   (compare OLD / put NEW `app_password`+`mover_password`+
+   `bucket_admin_password`+`rest_password` / перезапись dsn / del
+   заявки) — etcd несёт NEW, окно открыто: маркер окна — ПЕРЕНОСИМЫЙ
+   флаг `rest_window_open` журнала работы (carry-forward всеми
+   писателями — надзор пишет supervise-записи каждый тик, фазовый
+   маркер last-write-wins затирался бы; true при rotate-etcd-committed,
+   false при done; предикат окна/гварды — от флага, фазы `rotate-*` —
+   только прогресс, включая failure-фазы — на предикат не влияют);
+   takeover-продолжение по флагу — пара NEW читается из etcd,
+   `rest_pending`-поле умирает); R3 = rolling-применение rest-пары
+   каналом агента БЕЗ пересоздания контейнеров: рендер bootstrap-ключей
+   нод с NEW из etcd, команда применения `ready`-нодам последовательно
+   (реплики вперёд, лидер последним — основания порядка записаны в
+   arch/14 §5 I: рестарт лидера единственный деградирует запись,
+   к его рестарту реплики уже здоровы на NEW, при сломанном окне
+   лидер остаётся на старой рабочей конфигурации; ≤1 нода/тик;
+   restore/TO_REMOVE-шарды
+   и `object`-ноды гейт пропускает), прогресс — факт `applied_revision`;
+   R4 = финальный ALTER ROLE app/bucket_admin/bucket_mover PASSWORD NEW
+   на мастере каждого шарда («etcd — источник, PG следует») → окно
+   закрыто → снапшот + journal done. В открытом окне отказ
+   аутентификации app (28P01: pg_authid ещё OLD при etcd NEW) —
+   ТРАНЗИЕНТ: проба агента не мешает initializing→ready и не роняет
+   ready; за окном несовпадение — честный инцидент. Гварды окна (skip
+   PATCH `/config` и RecreateMarked-soft — ПОКА окно открыто) — по
+   флагу `rest_window_open`.
 5. Валидация старта воркера: пара `PGW_REST_TLS_{CA,CA_KEY}` уже
    обязательна; клиентский серт канала выпускается из неё автоматически
    (новых env-секретов НЕ появляется).
@@ -435,9 +456,13 @@ env `PGW_WALRECEIVER_NO_STREAM`, ключи `/pgworker/backups/.../agent/<N>`
    битый образ doorman) → статус `start_failed` с диагностикой → воркер
    пересоздаёт ноду с НОВЫМ диском (volume удалён, контейнер новый,
    хендшейк заново) — StartedAt и volume-имя меняются.
-3. Ротация per-cluster секретов (процесс I): ALTER ROLE-часть прежняя;
-   `rest_password` — bootstrap-перерендер + применение без пересоздания
-   контейнеров (StartedAt контейнеров не меняется), окно закрывается.
+3. Ротация per-cluster секретов (процесс I, ETCD-FIRST): etcd-коммит
+   NEW в начале окна → rolling-применение rest-парии без пересоздания
+   контейнеров (StartedAt не меняется) → финальный ALTER pg_authid под
+   NEW — окно закрыто; в окне пробы нод с NEW-кредами из etcd получают
+   28P01-транзиент (ready не роняется, initializing доходит до ready);
+   после done шард согласованный (нет пост-apply «No standbys
+   available»).
 4. Замена серта ноды (смена REST-CA → перезапуск воркера): новый серт в
    bootstrap-ключах → применение рестартом сервисов агентом.
 5. Негативный: `docker inspect` ноды — нет запрещённых env-ключей (3.1) и
@@ -511,7 +536,8 @@ env `PGW_WALRECEIVER_NO_STREAM`, ключи `/pgworker/backups/.../agent/<N>`
 8. **Ротация rest_password**: без rolling-recreate (решение пользователя:
    легаси-кластеров нет — env-механика RecreateRestTlsNodes не нужна);
    перерендер bootstrap-ключей + применение рестартом Patroni-процесса;
-   R3-txn и `rest_pending`-семантика — без изменений.
+   порядок всего прохода — ETCD-FIRST (решение 19a): etcd-коммит NEW в
+   начале окна, ALTER — последним.
 9. **Миграция живых кластеров**: не требуется — таких нет (решение
    пользователя); стендовые/тестовые контуры пересоздаются provisioning'ом
    заново.
@@ -563,6 +589,28 @@ env `PGW_WALRECEIVER_NO_STREAM`, ключи `/pgworker/backups/.../agent/<N>`
     недоступность данных этой ноды, живой шард восстанавливает реплику
     репликацией/бэкапом. Границы: `object`-усыновлённые (R9),
     restore/TO_REMOVE-шарды — вне реакции (владельцы — свои процессы).
+19a. **Порядок ротации app-пароля — ETCD-FIRST** (решение
+    пользователя): NEW-креды коммитятся в etcd В НАЧАЛЕ окна (б. R3 →
+    R2), ноды применяют rest-пару каналом (rolling, б. R2-rest → R3),
+    финальный ALTER pg_authid — ПОСЛЕДНИМ (б. R2-Alter → R4, «etcd —
+    источник, PG следует», прецедент — выравнивание ролей P1.5').
+    Проба нод в окне с NEW из etcd против OLD pg_authid (28P01) —
+    транзиент: не мешает initializing→ready, не роняет ready; окно
+    закрывается ALTER'ом, пост-apply «No standbys available» не
+    возникает. Маркер окна — переносимый булев флаг `rest_window_open`
+    журнала работы (ревью шага 11: журнал last-write-wins, надзор
+    пишет supervise-записи каждый тик — фазовый маркер затирался бы;
+    флаг carry-forward всеми писателями, true при rotate-etcd-committed
+    R2 / false при done R4; предикат окна и гварды — от флага, фазы
+    rotate-* — прогресс, failure-фазы на предикат не влияют; заявка
+    удалена R2-txn, takeover продолжает по флагу, пара NEW — в etcd;
+    `rest_pending`-поле журнала упразднено).
+19b. **Backup-креды — ВНЕ тикета ротации t05** (следствие 19a:
+    ETCD-FIRST-тикет ротирует app/bucket_admin/bucket_mover/rest + dsn;
+    `/clusters/<C>/backup_password` и pg_authid `backup_exec` он НЕ
+    трогает — пароль статичен с ensure, arch/19 §7 синхронизирован).
+    Ротация backup-кредов — отдельная задача t06-rotate-backup-creds
+    (arch/roadmap/pgworker.md), тем же каноном ETCD-FIRST после t05.
 20. **Развод bootstrap vs ротация**: команда доставки (тело с паролями)
     действует только из `not_initialized`; команда применения (без
     тела) — только на `ready`. Воркер различает по статусному ключу —

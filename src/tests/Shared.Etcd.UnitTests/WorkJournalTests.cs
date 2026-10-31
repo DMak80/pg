@@ -373,105 +373,92 @@ public class WorkJournalTests
         var state = await journal.ReadAsync("demo", TestContext.Current.CancellationToken);
         state.Value!.LastRebuild!.DetectedUnix.Should().Be(500);
     }
-    // --- rest_pending (arch/14 §5 I: пара REST-ротации «в полёте») ---
+    // --- rest_window_open (arch/14 §5 I ETCD-FIRST: маркер открытого окна) ---
 
     [Fact]
-    public async Task WritePhaseAsync_WithRestPending_RoundTrip()
+    public async Task WritePhaseAsync_OpenRestWindow_RoundTrip()
     {
         // Arrange: журнал ротатора.
         var gateway = new FakeCoordinationGateway();
         var journal = NewJournal(gateway);
 
-        // Act: фаза rotate-rest-start фиксирует NEW-пару в rest_pending.
+        // Act: фаза rotate-etcd-committed открывает окно (R2-txn прошёл).
         var result = await journal.WritePhaseAsync(
-            "shop", "rotate-app-password", "rotate-rest-start", "i1", null,
-            CancellationToken.None, restPending: "NEWpass00000000000000000000000X");
+            "shop", "rotate-app-password", "rotate-etcd-committed", "i1", null,
+            CancellationToken.None, restWindowOpen: true);
 
-        // Assert: поле пережило запись (JSON snake_case + чтение).
+        // Assert: флаг пережил запись (JSON snake_case + чтение).
         result.IsSuccess.Should().BeTrue();
-        gateway.Store[$"{Prefix}/work/shop"].Should().Contain("\"rest_pending\":\"NEWpass00000000000000000000000X\"");
+        gateway.Store[$"{Prefix}/work/shop"].Should().Contain("\"rest_window_open\":true");
         var state = await journal.ReadAsync("shop", CancellationToken.None);
-        state.Value!.RestPending.Should().Be("NEWpass00000000000000000000000X");
+        state.Value!.RestWindowOpen.Should().BeTrue();
     }
 
     [Fact]
-    public async Task WritePhaseAsync_WithoutRestPending_CarriesForward()
+    public async Task WritePhaseAsync_WithoutRestWindow_CarriesForward()
     {
-        // Arrange: pending зафиксирован фазой ротатора.
+        // Arrange: окно открыто фазой ротатора.
         var gateway = new FakeCoordinationGateway();
         var journal = NewJournal(gateway);
-        await journal.WritePhaseAsync("shop", "rotate-app-password", "rotate-rest-start", "i1", null,
-            CancellationToken.None, restPending: "NEWpass00000000000000000000000X");
+        await journal.WritePhaseAsync("shop", "rotate-app-password", "rotate-etcd-committed", "i1", null,
+            CancellationToken.None, restWindowOpen: true);
 
-        // Act: следующая фаза БЕЗ параметра (тики rolling).
+        // Act: следующая фаза БЕЗ параметра (тики rolling/alter).
         var result = await journal.WritePhaseAsync("shop", "rotate-app-password", "rotate-rest-rolling", "i1", null,
             CancellationToken.None);
 
-        // Assert: pending сохранён (повтор тиков продолжает проход той же парой).
+        // Assert: флаг сохранён (повтор тиков продолжает открытое окно).
         result.IsSuccess.Should().BeTrue();
         var state = await journal.ReadAsync("shop", CancellationToken.None);
-        state.Value!.RestPending.Should().Be("NEWpass00000000000000000000000X");
+        state.Value!.RestWindowOpen.Should().BeTrue();
     }
 
     [Fact]
-    public async Task WritePhaseAsync_DropRestPending_ClearsField()
+    public async Task WritePhaseAsync_CloseRestWindow_ClearsFlag()
     {
-        // Arrange: pending в ключе.
+        // Arrange: окно в ключе.
         var gateway = new FakeCoordinationGateway();
         var journal = NewJournal(gateway);
-        await journal.WritePhaseAsync("shop", "rotate-app-password", "rotate-rest-start", "i1", null,
-            CancellationToken.None, restPending: "NEWpass00000000000000000000000X");
+        await journal.WritePhaseAsync("shop", "rotate-app-password", "rotate-etcd-committed", "i1", null,
+            CancellationToken.None, restWindowOpen: true);
 
-        // Act: фаза done с dropRestPending (закрытие окна — txn-коммит прошёл).
+        // Act: фаза done с restWindowOpen=false (закрытие окна — все ALTER'ы прошли).
         var result = await journal.WritePhaseAsync("shop", "rotate-app-password", "done", "i1", null,
-            CancellationToken.None, dropRestPending: true);
+            CancellationToken.None, restWindowOpen: false);
 
-        // Assert: поле отсутствует (и в JSON, и в модели).
+        // Assert: флаг false (и в JSON нет true, и в модели).
         result.IsSuccess.Should().BeTrue();
-        gateway.Store[$"{Prefix}/work/shop"].Should().NotContain("rest_pending");
+        gateway.Store[$"{Prefix}/work/shop"].Should().NotContain("rest_window_open\":true");
         var state = await journal.ReadAsync("shop", CancellationToken.None);
-        state.Value!.RestPending.Should().BeNull();
+        state.Value!.RestWindowOpen.Should().BeFalse();
     }
 
     [Fact]
-    public async Task WriteSupervisionAsync_DoesNotEraseRestPending()
+    public async Task ReadSupervisionStateAsync_ReturnsRestWindowOpen()
     {
-        // Arrange: окно ротации открыто (pending в ключе).
+        // Arrange: окно открыто.
         var gateway = new FakeCoordinationGateway();
         var journal = NewJournal(gateway);
-        await journal.WritePhaseAsync("shop", "rotate-app-password", "rotate-rest-start", "i1", null,
-            CancellationToken.None, restPending: "NEWpass00000000000000000000000X");
-
-        // Act: супервизионная запись тика надзора (свои трек/факты).
-        var result = await journal.WriteSupervisionAsync("shop", "i1",
-            new Dictionary<string, long>(), null, CancellationToken.None);
-
-        // Assert: pending не затёрт (надзор не должен закрывать окно мимо txn).
-        result.IsSuccess.Should().BeTrue();
-        var state = await journal.ReadAsync("shop", CancellationToken.None);
-        state.Value!.RestPending.Should().Be("NEWpass00000000000000000000000X");
-    }
-
-    [Fact]
-    public async Task ReadSupervisionStateAsync_ReturnsRestPending()
-    {
-        // Arrange: pending в ключе.
-        var gateway = new FakeCoordinationGateway();
-        var journal = NewJournal(gateway);
-        await journal.WritePhaseAsync("shop", "rotate-app-password", "rotate-rest-start", "i1", null,
-            CancellationToken.None, restPending: "NEWpass00000000000000000000000X");
+        await journal.WritePhaseAsync("shop", "rotate-app-password", "rotate-etcd-committed", "i1", null,
+            CancellationToken.None, restWindowOpen: true);
 
         // Act
-        var state = await journal.ReadSupervisionStateAsync("shop", CancellationToken.None);
+        var open = await journal.ReadSupervisionStateAsync("shop", CancellationToken.None);
 
         // Assert: надзор читает окно одним чтением.
-        state.Value!.RestPending.Should().Be("NEWpass00000000000000000000000X");
+        open.Value!.RestWindowOpen.Should().BeTrue();
+
+        // И после закрытия — false.
+        await journal.WritePhaseAsync("shop", "rotate-app-password", "done", "i1", null,
+            CancellationToken.None, restWindowOpen: false);
+        var closed = await journal.ReadSupervisionStateAsync("shop", CancellationToken.None);
+        closed.Value!.RestWindowOpen.Should().BeFalse();
     }
 
     [Fact]
-    public async Task ReadAsync_LegacyKeyWithoutRestPending_Null()
+    public async Task ReadAsync_LegacyKeyWithoutRestWindow_False()
     {
-        // Arrange: старый журнал без поля (до).
+        // Arrange: старый журнал без поля (до ETCD-FIRST).
         var gateway = new FakeCoordinationGateway();
         gateway.Store[$"{Prefix}/work/old"] =
             """{"op":"provision","phase":"planned","instance":"i","updated_unix":1756000000}""";
@@ -479,8 +466,10 @@ public class WorkJournalTests
 
         // Act
         var state = await journal.ReadAsync("old", CancellationToken.None);
+        var supervision = await journal.ReadSupervisionStateAsync("old", CancellationToken.None);
 
-        // Assert: null без ошибок (обратная совместимость десериализации).
-        state.Value!.RestPending.Should().BeNull();
+        // Assert: поле отсутствует в модели, надзор видит окно закрытым.
+        state.Value!.RestWindowOpen.Should().BeNull();
+        supervision.Value!.RestWindowOpen.Should().BeFalse();
     }
 }

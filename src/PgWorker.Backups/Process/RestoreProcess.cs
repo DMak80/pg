@@ -479,8 +479,8 @@ public sealed class RestoreProcess(
 
     // EnsureNode одной ноды шарда (тик запуска restore/rejoin): идемпотентно,
     // поллинг create/start (arch/14 §6 инвариант), бюджет — PatroniBootSec.
-    // Креды (P1.5-образец): ensured тройка — env ноды; REST-пара —
-    // EffectivePassword (arch/14 §5 I).
+    // Креды (P1.5-образец): ensured тройка — env ноды; REST-пара — ключ
+    // etcd (arch/14 §5 I ETCD-FIRST).
     private async Task<Result> EnsureShardNodeAsync(
         ClusterSnapshot snap, ShardSpec shard, string node, NodeAddress addr,
         IReadOnlyDictionary<string, NodeAddress> addresses, CancellationToken ct)

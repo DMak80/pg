@@ -1835,4 +1835,85 @@ public class NodeSupervisorTests
         rig.Etcd.Store["/clusters/shop/shards/shard1/nodes/shard1c/state"].Value
             .Should().Be("REMOVING");
     }
+
+    // Гвард окна ротации ETCD-FIRST (arch/14 §3.3/§5 I, П11.6б): предикат —
+    // ТОЛЬКО флаг rest_window_open (failure-фаза alter/shard1 не влияет).
+    // Открытый флаг → DCS-конвергенция транзиент-skip (PATCH /config не
+    // зовётся); supervise-запись тика флаг переносит — следующий тик гвард
+    // продолжает действовать.
+    [Fact]
+    public async Task Tick_RestWindowOpen_DcsConfigPatchSkipped()
+    {
+        // Arrange — канонический конфиг (без окна патчей не было бы вовсе;
+        // делаем РАСХОДЯЩИЙСЯ конфиг: без окна был бы ровно один PATCH),
+        // work-ключ: failure-фаза alter/shard1 + rest_window_open:true.
+        var patches = new List<string>();
+        var rig = await NewRig(_ => Ok(), respondRaw: r =>
+        {
+            if (r.Method.Method == "PATCH" && r.RequestUri!.AbsolutePath == "/config")
+            {
+                patches.Add(new StreamReader(r.Content!.ReadAsStream()).ReadToEnd());
+                return new HttpResponseMessage(HttpStatusCode.OK);
+            }
+
+            if (r.Method.Method == "GET" && r.RequestUri!.AbsolutePath == "/config")
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(
+                        """{"ttl":30,"loop_wait":10,"retry_timeout":10}""", Encoding.UTF8, "application/json"),
+                };
+
+            return Ok();
+        });
+        rig.Etcd.Seed("/pgworker/work/shop",
+            """{"op":"rotate-app-password","phase":"alter/shard1","instance":"i","updated_unix":1,"rest_window_open":true}""");
+
+        // Act: два тика надзора подряд (между ними supervise-запись переносит
+        // флаг — гвард должен продолжать действовать).
+        var tick1 = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
+        var tick2 = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
+
+        // Assert: PATCH не звался ни в одном тике (транзиент-skip оба тика).
+        tick1.Value.Outcome.Should().Be(ProcessOutcome.Done);
+        tick2.Value.Outcome.Should().Be(ProcessOutcome.Done);
+        patches.Should().BeEmpty("the rotation window keeps DCS converge skipped");
+        // Флаг пережил supervise-записи обоих тиков (carry-forward).
+        var work = await rig.Journal.ReadAsync("shop", CancellationToken.None);
+        work.Value!.RestWindowOpen.Should().BeTrue("supervise writes carry the flag");
+    }
+
+    // Без флага (false/отсутствует) — гварды НЕ срабатывают: расходящийся
+    // конфиг конвергируется каноническим PATCH'ем (регресс-пара к скип-тесту).
+    [Fact]
+    public async Task Tick_NoRestWindow_DcsConfigPatchApplied()
+    {
+        // Arrange — расходящийся конфиг, work-ключ БЕЗ флага.
+        var patches = new List<string>();
+        var rig = await NewRig(_ => Ok(), respondRaw: r =>
+        {
+            if (r.Method.Method == "PATCH" && r.RequestUri!.AbsolutePath == "/config")
+            {
+                patches.Add(new StreamReader(r.Content!.ReadAsStream()).ReadToEnd());
+                return new HttpResponseMessage(HttpStatusCode.OK);
+            }
+
+            if (r.Method.Method == "GET" && r.RequestUri!.AbsolutePath == "/config")
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(
+                        """{"ttl":30,"loop_wait":10,"retry_timeout":10}""", Encoding.UTF8, "application/json"),
+                };
+
+            return Ok();
+        });
+        rig.Etcd.Seed("/pgworker/work/shop",
+            """{"op":"rotate-app-password","phase":"done","instance":"i","updated_unix":1,"rest_window_open":false}""");
+
+        // Act
+        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
+
+        // Assert: PATCH выполнен (окно закрыто — конвергенция работает).
+        outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
+        patches.Should().ContainSingle().Which.Should().Contain("\"ttl\":20");
+    }
 }

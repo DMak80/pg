@@ -91,16 +91,14 @@ public sealed class NodeSupervisor(
         var track = new Dictionary<string, long>(supervision.Value.Unreachable);
         var haFacts = HaFactState.FromStored(supervision.Value.LastFailover, supervision.Value.LastRebuild);
         // Ensure per-cluster кредов + эффективная REST-пара тика (arch/14
-        // §5 I): ensure идемпотентен (put-if-absent) — легаси-кластер без
-        // rest_password получает ключ ДО любого EnsureNode-пути тика; пара —
-        // pending окна ротации ?? ensure-результат (НЕ снапшот тика: он читан
-        // до ensure).
+        // §5 I ETCD-FIRST): ensure идемпотентен (put-if-absent) — легаси-
+        // кластер без rest_password получает ключ ДО любого EnsureNode-пути
+        // тика; пара — ключ etcd (с R2-txn ключ несёт NEW; takeover-безопасно).
         var ensuredSecrets = await appSecret.EnsureAsync(cluster, snap.Config, ct);
         if (!ensuredSecrets.IsSuccess)
             return Fail(ensuredSecrets.Error!);
-        var restPassword = RestRotation.EffectivePassword(
-            ensuredSecrets.Value.RestPassword, supervision.Value.RestPending)
-            ?? ensuredSecrets.Value.RestPassword;
+        var restPassword = ensuredSecrets.Value.RestPassword;
+        var restRotationWindowOpen = supervision.Value.RestWindowOpen;
 
         var addresses = await ReadPortAllocAsync(cluster, ct);
         if (!addresses.IsSuccess)
@@ -163,7 +161,7 @@ public sealed class NodeSupervisor(
             // Operator-triggered recreate (TO_RECREATE): оператор панелью просит
             // пересоздать ноду — rebuild немедленно, без ожидания NodeDeadSec.
             var recreated = await RecreateMarkedNodesAsync(cluster, snap, shard, addresses.Value, track, haFacts,
-                restPassword, supervision.Value.RestPending, ct);
+                restPassword, restRotationWindowOpen, ct);
             if (!recreated.IsSuccess)
                 return Fail(recreated.Error!);
 
@@ -252,7 +250,7 @@ public sealed class NodeSupervisor(
             if (restoring.Contains(shard.Name))
                 continue; //  §3.4: конфиг DCS восстановит свежеподнятая нода
             var converged = await ConvergeDcsConfigAsync(cluster, shard, addresses.Value,
-                snap.Config.SyncStrict, track, haFacts, restPassword, supervision.Value.RestPending, ct);
+                snap.Config.SyncStrict, track, haFacts, restPassword, restRotationWindowOpen, ct);
             if (!converged.IsSuccess)
                 return Fail(converged.Error!);
         }
@@ -423,7 +421,7 @@ public sealed class NodeSupervisor(
     private async Task<Result> ConvergeDcsConfigAsync(
         string cluster, ShardSpec shard, IReadOnlyDictionary<string, NodeAddress> addresses,
         bool syncStrict, Dictionary<string, long> track, HaFactState haFacts,
-        string restPassword, string? restPending, CancellationToken ct)
+        string restPassword, bool restRotationWindowOpen, CancellationToken ct)
     {
         var probeNode = addresses
             .Where(p => p.Key.StartsWith($"{shard.Name}/", StringComparison.Ordinal))
@@ -460,7 +458,7 @@ public sealed class NodeSupervisor(
         // Гвард окна REST-ротации (arch/14 §5 I): до txn-коммита воркер не
         // инициирует PATCH /config кластера по REST — транзиент-skip тика,
         // конвергенция повторится после закрытия окна.
-        if (restPending is not null)
+        if (restRotationWindowOpen)
         {
             await journal.WritePhaseAsync(cluster, "supervise", "dcs-converge-skipped-rest-window",
                 claims.InstanceId, null, ct);
@@ -713,7 +711,7 @@ public sealed class NodeSupervisor(
         string cluster, ClusterSnapshot snap, ShardSpec shard,
         IReadOnlyDictionary<string, NodeAddress> addresses,
         Dictionary<string, long> track, HaFactState haFacts,
-        string restPassword, string? restPending, CancellationToken ct)
+        string restPassword, bool restRotationWindowOpen, CancellationToken ct)
     {
         var marked = shard.Nodes.Where(n => n.State == NodeState.ToRecreate).ToList();
         if (marked.Count == 0)
@@ -757,7 +755,7 @@ public sealed class NodeSupervisor(
                     // Гвард окна REST-ротации (§5.5): switchover через REST до
                     // txn-коммита подавлен — skip тика (журнал), мутация
                     // ретрается после закрытия окна.
-                    if (restPending is not null)
+                    if (restRotationWindowOpen)
                     {
                         await journal.WritePhaseAsync(cluster, "supervise", "recreate-skipped-rest-window",
                             claims.InstanceId, $"{shard.Name}/{node.Name}", ct);

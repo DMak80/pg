@@ -337,6 +337,56 @@ public class PgNodeMachineTests
         probeCalls.Should().Be(0);
     }
 
+    // (6a) Окно ротации ETCD-FIRST: doorman-проба false (28P01 при OLD
+    // pg_authid в открытом окне) — waiting-повтор БЕЗ бюджета (не
+    // start_failed): initializing держится, затем проба true → ready.
+    [Fact]
+    public async Task Handshake_ProbeFalseWaits_ThenTrueReachesReady()
+    {
+        // Arrange: первые ДВАДЦАТЬ проб false (28P01-окно держится), затем true.
+        await using var rig = await Rig.CreateAsync(RealPemPair());
+        var calls = 0;
+        rig.Machine.ProbeOverride = _ =>
+        {
+            calls++;
+            return Task.FromResult(calls > 20);
+        };
+
+        // Act
+        var result = await rig.HandshakeAsync();
+
+        // Assert: waiting-повтор — НЕ start_failed при длительной false-пробе;
+        // после true — ready. Поллинг состояния (фаза (б) без бюджета, clock
+        // рига мгновенный — пробы циклятся быстро).
+        result.Should().Be(HandshakeResult.Started);
+        calls.Should().BeGreaterThan(10, "the probe loops without budget while 28P01 holds");
+        for (var i = 0; i < 200 && rig.Machine.State != PgNodeStatus.Ready; i++)
+            await Task.Delay(50, TestContext.Current.CancellationToken);
+        rig.Machine.State.Should().Be(PgNodeStatus.Ready);
+        rig.Supervisor.Commands.Should().NotBeEmpty("components were started");
+    }
+
+    // (6c) Apply на ready-ноде оставляет машину ready (фоновое применение —
+    // рестарты компонентов не меняют состояние, ETCD-FIRST окно).
+    [Fact]
+    public async Task Apply_OnReady_StateStaysReady()
+    {
+        // Arrange: нода ready; ключ перезаписан с новым YAML (spilo-материал).
+        await using var rig = await Rig.CreateAsync(RealPemPair());
+        rig.ProbeAllReady();
+        (await rig.HandshakeAsync()).Should().Be(HandshakeResult.Started);
+        rig.Etcd.Store[BootstrapKey] = new Fakes.FakeEtcd.Entry(
+            BootstrapJson(spilo: "spilo-yaml-window", cert: rig.MachinePem.Cert, key: rig.MachinePem.Key), 8, 2);
+
+        // Act
+        var apply = await rig.Machine.ApplyAsync(CancellationToken.None);
+        await rig.Machine.ApplyTask!;
+
+        // Assert: Ok; машина остаётся ready (не initializing).
+        apply.Ok.Should().BeTrue();
+        rig.Machine.State.Should().Be(PgNodeStatus.Ready);
+    }
+
     // (7) Ошибка рендера (недоступный корень рендера через internal-seam) →
     // start_failed.
     [Fact]

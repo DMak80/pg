@@ -12,22 +12,22 @@ using PgWorker.Provisioning.Sql;
 namespace PgWorker.Provisioning.Processes;
 
 /// <summary>
-/// Ротация per-cluster секретов по заявке /pgworker/rotations/&lt;C&gt; (
-/// arch/14 §5 I / arch/19 §7): app + bucket_admin + bucket_mover + backup_exec
-/// + rest_password (: basic-auth Patroni REST — rolling-пересоздание нод
-/// общим шагом надзора, пара NEW «в полёте» — rest_pending журнала; txn-коммит
-/// R3 после применения на всех нодах; гварды окна — в NodeSupervisor).
-/// R1 ensure кредов → R2 ALTER ROLE ролей на мастере каждого шарда с dsn
-/// (backup_exec — через gexec-гвард: роли может не быть при выключенных бэкапах;
-/// реплики получают pg_authid физической репликацией) → R3 атомарный txn
-/// [compare value==OLD по кредам и ВСЕМ dsn-ключам][put новые креды; перезапись
-/// dsn; del заявки] → R4 снапшот P12. transient-сбой → заявка жива, креды в
-/// etcd НЕ меняются, следующий тик повторяет с начала со свежими NEW (ALTER
-/// идемпотентен перезаписью). Имя journal-op сохранено (rotate-app-password) —
+/// Ротация per-cluster секретов по заявке /pgworker/rotations/&lt;C&gt; —
+/// порядок ETCD-FIRST (arch/14 §5 I/§3.3): R0 заявка/битая-мусор + takeover
+/// открытого окна по флагу rest_window_open → гвард «тихого окна» (все
+/// канонические ноды ready — до открытия) → R1 ensure кредов (OLD —
+/// compare-база) → R2 txn-коммит NEW-четвёрки (app/bucket_admin/bucket_mover/
+/// rest + dsn-перепись + del заявки) В НАЧАЛЕ окна (фаза
+/// rotate-etcd-committed, флаг true) → R3 rolling rest-пары каналом агента
+/// по NEW из etcd (реплики вперёд, лидер последним, ≤1 нода/тик; в окне 28P01
+/// — транзиент) → R4 финальный ALTER app/bucket_admin/bucket_mover на мастере
+/// каждого dsn-шарда (rotate-waiting-master/&lt;X&gt; при недоступном мастере,
+/// флаг переносится) → снапшот P12 → done (флаг false). backup_exec — вне
+/// тикета (spec §8-19b). Имя journal-op сохранено (rotate-app-password) —
 /// совместимость журналов (образец RotationRole.Phase, arch/16 §5 H). Вызывается
 /// только держателем клэйма &lt;C&gt;. Ротация при активном переезде: mover-DSN
 /// строится из свежего снапшота на тик — оборванная ротацией фаза переезда
-/// возобновляется с journal-фазы уже с новыми кредами.
+/// возобновляется с journal-фазы уже с новыми кредами (etcd).
 /// </summary>
 public sealed partial class ClusterSecretRotator(
     IEtcdGateway etcd,
@@ -57,14 +57,15 @@ public sealed partial class ClusterSecretRotator(
                 $"{Op} {cluster}: claim is not ours (or lost) — mutations forbidden"));
 
         // R0: заявка (цикл префикс /pgworker/ не читает — читаем ключ сами).
+        // Раннего no-op-выхода при отсутствии заявки НЕТ (arch/14 §5 I
+        // ETCD-FIRST): после R2-txn заявка снята, а окно продолжает жить —
+        // тики R3/R4 работают БЕЗ заявки; no-op — в ветке !windowOpen ниже.
         var ticket = await GetAsync(TicketKey(cluster), ct);
         if (!ticket.IsSuccess)
             return Result<ProcessOutcome>.Failed(ticket.Error!);
-        if (ticket.Value is null)
-            return Result<ProcessOutcome>.Success(ProcessOutcome.Done); // нет заявки — no-op
 
         // Битая заявка (не-JSON/без requested_unix) — мусор: удалить с journal-записью.
-        if (!IsWellFormed(ticket.Value.Value))
+        if (ticket.Value is not null && !IsWellFormed(ticket.Value.Value))
         {
             var cleaned = await DeleteAsync(TicketKey(cluster), ct);
             if (!cleaned.IsSuccess)
@@ -74,223 +75,194 @@ public sealed partial class ClusterSecretRotator(
             return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
         }
 
-        // Гвард «тихого окна» (arch/14 §5 I): ротация мутит pg_authid (R2
-        // ALTER app на мастере каждого шарда) — клиенты с etcd-кредами (OLD
-        // до R3) наInitializing-нодах теряют вход. Пока ВСЕ канонические ноды
-        // кластера не ready (статусные машины агентов), мутаций нет: тик —
-        // InProgress (заявка жива, R1/R2 повторяются следующим тиком с начала).
-        var addressesGuard = await ReadPortAllocAsync(cluster, ct);
-        if (!addressesGuard.IsSuccess)
-            return await FailAsync(cluster, addressesGuard.Error!, "portalloc", ct);
-        var allReady = await AllNodesReadyAsync(cluster, snap, addressesGuard.Value, ct);
-        if (!allReady)
-            return await Finish(cluster, "waiting-nodes-ready", ProcessOutcome.InProgress, ct);
-
-        var started = await journal.WritePhaseAsync(cluster, Op, "started", claims.InstanceId, null, ct);
-        if (!started.IsSuccess)
-            return Result<ProcessOutcome>.Failed(started.Error!);
-
-        // R1: ensure тройки кредов — OLD-значения после этого существуют.
-        var credsResult = await appSecret.EnsureAsync(cluster, snap.Config, ct);
-        if (!credsResult.IsSuccess)
-            return await FailAsync(cluster, credsResult.Error!, "ensure-app-secret", ct);
-        var creds = credsResult.Value;
-
-        // R2: ALTER ROLE трёх ролей + гвард backup_exec на мастере каждого
-        // ПОДНЯТОГО шарда (dsn есть; шард без dsn — домен AddShardProcess: роли
-        // создадутся/выровняются по свежим кредам, §5 I R2). NEW-пароли
-        // генерируются на попытку — ALTER идемпотентен перезаписью, регенерация
-        // между тиками безопасна.
-        var newAppPassword = AppSecretGenerator.Generate();
-        var newMoverPassword = AppSecretGenerator.Generate();
-        var newBucketAdminPassword = AppSecretGenerator.Generate();
-        var newBackupPassword = AppSecretGenerator.Generate();
-        var addresses = await ReadPortAllocAsync(cluster, ct);
-
-        // R2-rest (arch/14 §5 I): пара NEW «в полёте» — rest_pending
-        // журнала: повторные тики ПРОДОЛЖАЮТ проход с той же парой (регенерация
-        // обнуляла бы прогресс rolling); потери поля (битый журнал) — свежая
-        // пара, повторный rolling идемпотентен.
+        // Takeover-детект открытого окна (arch/14 §5 I/§3.3): маркер —
+        // ТОЛЬКО переносимый флаг rest_window_open (заявки уже нет — снята
+        // txn R2; supervise-записи надзора флаг переносят, фазовый маркер
+        // затирался бы). Имена фаз — только прогресс: failure-фазы на
+        // предикат окна не влияют.
         var work = await journal.ReadAsync(cluster, ct);
         if (!work.IsSuccess)
             return await FailAsync(cluster, work.Error!, "journal-read", ct);
-        string newRestPassword;
-        if (work.Value?.RestPending is { } pending)
-        {
-            newRestPassword = pending;
-        }
-        else
-        {
-            newRestPassword = AppSecretGenerator.Generate();
-            var fixedPending = await journal.WritePhaseAsync(cluster, Op, "rotate-rest-start",
-                claims.InstanceId, null, ct, restPending: newRestPassword);
-            if (!fixedPending.IsSuccess)
-                return Result<ProcessOutcome>.Failed(fixedPending.Error!);
-            // work прочитан ДО постановки pending (первый тик окна: журнала могло
-            // не быть) — перечитать: R2-блок ниже смотрит rest_pending.
-            work = await journal.ReadAsync(cluster, ct);
-            if (!work.IsSuccess)
-                return await FailAsync(cluster, work.Error!, "journal-read", ct);
-        }
-        if (!addresses.IsSuccess)
-            return await FailAsync(cluster, addresses.Error!, "portalloc", ct);
+        var windowOpen = work.Value?.RestWindowOpen == true;
 
-        foreach (var shard in snap.Shards.Where(s => s.Dsn is not null))
+        if (!windowOpen)
         {
-            var master = await ResolveMasterAsync(cluster, shard, addresses.Value, ct);
-            if (master is null)
+            if (ticket.Value is null)
+                return Result<ProcessOutcome>.Success(ProcessOutcome.Done); // нет заявки и окна — no-op
+
+            // Гвард «тихого окна» (ДО записи started): до ОТКРЫТИЯ окна все
+            // канонические ноды ready (ETCD-FIRST: после R2 etcd несёт NEW —
+            // initializing-нода держит 28P01 до R4; окно не открываем поверх
+            // стартов).
+            var addressesGuard = await ReadPortAllocAsync(cluster, ct);
+            if (!addressesGuard.IsSuccess)
+                return await FailAsync(cluster, addressesGuard.Error!, "portalloc", ct);
+            if (!await AllNodesReadyAsync(cluster, snap, addressesGuard.Value, ct))
+                return await Finish(cluster, "waiting-nodes-ready", ProcessOutcome.InProgress, ct);
+
+            var started = await journal.WritePhaseAsync(cluster, Op, "started", claims.InstanceId, null, ct);
+            if (!started.IsSuccess)
+                return Result<ProcessOutcome>.Failed(started.Error!);
+
+            // R1: ensure четвёрки — OLD-значения (compare-база R2).
+            var credsResult = await appSecret.EnsureAsync(cluster, snap.Config, ct);
+            if (!credsResult.IsSuccess)
+                return await FailAsync(cluster, credsResult.Error!, "ensure-app-secret", ct);
+            var creds = credsResult.Value;
+
+            // R2 (ETCD-FIRST, arch/14 §5 I): txn-коммит NEW-четвёрки В
+            // НАЧАЛЕ окна — etcd несёт NEW, роли PG ещё OLD; заявка снимается
+            // той же txn (неразделимо). backup_exec вне тикета t05 (spec
+            // §8-19b: backup_password статичен с ensure).
+            var newAppPassword = AppSecretGenerator.Generate();
+            var newMoverPassword = AppSecretGenerator.Generate();
+            var newBucketAdminPassword = AppSecretGenerator.Generate();
+            var newRestPassword = AppSecretGenerator.Generate();
+            var compares = new List<TxnCompare>
+            {
+                TxnCompare.ValueEqual(PasswordKey(cluster), creds.App.Password),
+                TxnCompare.ValueEqual(MoverKey(cluster), creds.MoverPassword),
+                TxnCompare.ValueEqual(BucketAdminPasswordKey(cluster), creds.BucketAdmin.Password),
+                TxnCompare.ValueEqual(RestKey(cluster), creds.RestPassword),
+            };
+            var ops = new List<TxnOp>
+            {
+                new TxnOp.Put(PasswordKey(cluster), newAppPassword, null),
+                new TxnOp.Put(MoverKey(cluster), newMoverPassword, null),
+                new TxnOp.Put(BucketAdminPasswordKey(cluster), newBucketAdminPassword, null),
+                new TxnOp.Put(RestKey(cluster), newRestPassword, null),
+                new TxnOp.Delete(TicketKey(cluster), Prefix: false),
+            };
+            foreach (var shard in snap.Shards.Where(s => s.Dsn is not null))
+            {
+                compares.Add(TxnCompare.ValueEqual(DsnKey(cluster, shard.Name), shard.Dsn!));
+                ops.Add(new TxnOp.Put(DsnKey(cluster, shard.Name),
+                    PasswordRegex().Replace(shard.Dsn!,
+                        m => (m.Value.StartsWith(' ') ? " " : "") + "password=" + newBucketAdminPassword),
+                    null));
+            }
+
+            var committed = await TxnAsync(TxnRequest.Of([.. compares], [.. ops]), ct);
+            if (!committed.IsSuccess)
+                return await FailAsync(cluster, committed.Error!, "committing", ct);
+            if (!committed.Value.Succeeded)
                 return await FailAsync(cluster,
                     new ApplicationException(
-                        $"shard {shard.Name}: master is unreachable (master key/Patroni REST) — retry on the next tick"),
-                    $"waiting-master/{shard.Name}", ct);
-
-            var dsn = DatabaseProvisioner.BuildAdminDsn(master.Host, master.Ports.Pg, snap.Config.DbName, secrets);
-            foreach (var (role, password) in new[]
-                     {
-                         (creds.App.User, newAppPassword),
-                         (creds.BucketAdmin.User, newBucketAdminPassword),
-                         (MoverRole, newMoverPassword),
-                     })
-            {
-                var altered = await db.ExecuteAsync(
-                    dsn,
-                    DatabaseProvisioner.BuildAlterRolePasswordSql(role, password),
-                    ct);
-                if (!altered.IsSuccess)
-                    return await FailAsync(cluster, altered.Error!, $"alter/{shard.Name}", ct);
-            }
-
-            // backup_exec (arch/19 §7): роли может не быть (подсистема
-            // бэкапов выключена — G2 не выполнялся) → gexec-гвард вместо голого
-            // ALTER: нет роли — CREATE с NEW-паролем; есть — ALTER (идемпотентная
-            // перезапись, семантика «четвёртого ALTER» сохранена, spec §3.4).
-            var backupGuard = await db.ExecuteScalarAsync(
-                dsn, DatabaseProvisioner.BuildBackupExecRoleGuardSql(newBackupPassword), ct);
-            if (!backupGuard.IsSuccess)
-                return await FailAsync(cluster, backupGuard.Error!, $"alter/{shard.Name}", ct);
-            if (backupGuard.Value is string createBackupRole)
-            {
-                var created = await db.ExecuteAsync(dsn, createBackupRole, ct);
-                if (!created.IsSuccess)
-                    return await FailAsync(cluster, created.Error!, $"alter/{shard.Name}", ct);
-            }
-            else
-            {
-                var alteredBackup = await db.ExecuteAsync(
-                    dsn,
-                    DatabaseProvisioner.BuildAlterRolePasswordSql(DatabaseProvisioner.BackupExecRole, newBackupPassword),
-                    ct);
-                if (!alteredBackup.IsSuccess)
-                    return await FailAsync(cluster, alteredBackup.Error!, $"alter/{shard.Name}", ct);
-            }
+                        "credentials/dsn changed since they were read (external write?) — retry on the next tick"),
+                    "commit-conflict", ct);
+            // Открытие окна: флаг true — ЭТОЙ записью фазы rotate-etcd-committed.
+            var etcdCommitted = await journal.WritePhaseAsync(
+                cluster, Op, "rotate-etcd-committed", claims.InstanceId, null, ct,
+                restWindowOpen: true);
+            if (!etcdCommitted.IsSuccess)
+                return Result<ProcessOutcome>.Failed(etcdCommitted.Error!);
         }
 
-        // R2-rest (arch/14 §5 I): NEW-пара применяется доставкой каналом БЕЗ
-        // пересоздания: перерендер bootstrap-ключа ОДНОЙ ноды с pending-парой
-        // + команда применения (≤1 нода/тик; реплики вперёд, лидер последним;
-        // restore/TO_REMOVE-шарды и усыновлённые ноды гейт пропускает — их
-        // ноды создадутся с NEW после R3). Прогресс — немутирующая проба
-        // IsOnRevisionAsync(pending): content хранимого ключа == рендер под
-        // NEW + ready + applied_revision == mod_revision (сверка по NEW, а не
-        // по текущему/OLD ключу — нода со стационарным applied==mod(OLD)
-        // пробу НЕ проходит и получает доставку NEW).
+        // Открытое окно: все пары — из etcd (NEW с R2; takeover-безопасно).
+        var restKv = await GetAsync(RestKey(cluster), ct);
+        if (!restKv.IsSuccess || restKv.Value is not { } restKey)
+            return await FailAsync(cluster,
+                new ApplicationException("open rotation window: rest_password key is unreadable"),
+                "rotate-etcd-read", ct);
+        var newRest = restKey.Value;
+        var addressesResult = await ReadPortAllocAsync(cluster, ct);
+        if (!addressesResult.IsSuccess)
+            return await FailAsync(cluster, addressesResult.Error!, "portalloc", ct);
+        var addressMap = addressesResult.Value;
+
+        // R3: rolling rest-пары каналом агента БЕЗ пересоздания (≤1 нода/тик;
+        // реплики вперёд, лидер последним; restore/TO_REMOVE-шарды и
+        // усыновлённые ноды гейт пропускает — их ноды создадутся с NEW после
+        // закрытия окна — NEW в etcd с R2). Прогресс — немутирующая проба
+        // IsOnRevisionAsync(newRest): content хранимого ключа == рендер под
+        // NEW + ready + applied_revision == mod_revision. Применение у агента
+        // фоновое — Delivered = команда принята, прогресс — проба тиками;
+        // исход доставки завершает тик.
         var restoring = await ReadRestoringShardsAsync(cluster, ct);
         if (!restoring.IsSuccess)
             return await FailAsync(cluster, restoring.Error!, "backups-read", ct);
 
-        if (work.Value?.RestPending is not null)
+        foreach (var shard in snap.Shards.Where(s => s.Dsn is not null && !s.ToRemove))
         {
-            foreach (var shard in snap.Shards.Where(s => s.Dsn is not null && !s.ToRemove))
+            if (restoring.Value.Contains(shard.Name))
+                continue; // демонтажем владеет restore-процесс
+            var scopeKvs = await RangeAsync($"/service/{cluster}-{shard.Name}/", ct);
+            if (!scopeKvs.IsSuccess)
+                return await FailAsync(cluster, scopeKvs.Error!, $"scope/{shard.Name}", ct);
+            var leader = ClusterSnapshotParser.ParseService(scopeKvs.Value)
+                .FirstOrDefault()?.LeaderName;
+            var resources = await ReadShardResourcesAsync(cluster, shard.Name, ct);
+            var tuning = pgtune.Create(resources);
+            var ordered = shard.Nodes
+                .Where(n => n.State is not (NodeState.Quarantined or NodeState.Removing))
+                .OrderBy(n => n.Name == leader ? 1 : 0); // реплики вперёд, лидер последним
+            foreach (var node in ordered)
             {
-                if (restoring.Value.Contains(shard.Name))
-                    continue; // демонтажем владеет restore-процесс
-                var scopeKvs = await RangeAsync($"/service/{cluster}-{shard.Name}/", ct);
-                if (!scopeKvs.IsSuccess)
-                    return await FailAsync(cluster, scopeKvs.Error!, $"scope/{shard.Name}", ct);
-                var leader = ClusterSnapshotParser.ParseService(scopeKvs.Value)
-                    .FirstOrDefault()?.LeaderName;
-                var resources = await ReadShardResourcesAsync(cluster, shard.Name, ct);
-                var tuning = pgtune.Create(resources);
-                var ordered = shard.Nodes
-                    .Where(n => n.State is not (NodeState.Quarantined or NodeState.Removing))
-                    .OrderBy(n => n.Name == leader ? 1 : 0); // реплики вперёд, лидер последним
-                foreach (var node in ordered)
-                {
-                    if (!addresses.Value.TryGetValue($"{shard.Name}/{node.Name}", out var addr)
-                        || addr.Object is not null)
-                        continue; // записи нет / усыновлённая (R9) — гейт пропускает
-                    var topology = new ShardTopology(cluster, shard.Name, $"{cluster}-{shard.Name}",
-                        addresses.Value.Where(p => p.Key.StartsWith($"{shard.Name}/", StringComparison.Ordinal))
-                            .ToDictionary(p => p.Key.Split('/')[1], p => p.Value));
-                    if (await bootstrap.IsOnRevisionAsync(
-                            topology, node.Name, addr, tuning, pgtune.ExcludeParams,
-                            snap.Config.SyncStrict, newRestPassword, ct))
-                        continue; // применила NEW — следующая нода
+                if (!addressMap.TryGetValue($"{shard.Name}/{node.Name}", out var addr)
+                    || addr.Object is not null)
+                    continue; // записи нет / усыновлённая (R9) — гейт пропускает
+                var topology = new ShardTopology(cluster, shard.Name, $"{cluster}-{shard.Name}",
+                    addressMap.Where(p => p.Key.StartsWith($"{shard.Name}/", StringComparison.Ordinal))
+                        .ToDictionary(p => p.Key.Split('/')[1], p => p.Value));
+                if (await bootstrap.IsOnRevisionAsync(
+                        topology, node.Name, addr, tuning, pgtune.ExcludeParams,
+                        snap.Config.SyncStrict, newRest, ct))
+                    continue; // применила NEW — следующая нода
 
-                    // ОДНА доставка на тик (spec §3.7.4: ≤1 нода/тик, реплики
-                    // вперёд, лидер последним): доставка завершает тик В
-                    // ЛЮБОМ случае — синхронный apply не даёт этому же тику
-                    // уйти дальше по нодам; следующая нода — следующим тиком.
-                    // Finish фиксирует фазу rotate-rest-rolling/<X>/<n> в обоих
-                    // исходах; исход диагностируется следующим тиком (проба
-                    // IsOnRevisionAsync: применила — идём дальше, нет — повтор).
-                    await bootstrap.EnsureAsync(
-                        topology, node.Name, addr, secrets, tuning, pgtune.ExcludeParams,
-                        snap.Config.SyncStrict, newRestPassword, ct);
-                    return await Finish(cluster,
-                        $"rotate-rest-rolling/{shard.Name}/{node.Name}", ProcessOutcome.Done, ct);
-                }
+                // ОДНА доставка на тик (spec §3.7.4): доставка завершает тик В
+                // ЛЮБОМ случае — применение у агента фоновое; следующая нода —
+                // следующим тиком. Finish фиксирует фазу
+                // rotate-rest-rolling/<X>/<n>; исход диагностируется следующим
+                // тиком (проба IsOnRevisionAsync: применила — идём дальше).
+                await bootstrap.EnsureAsync(
+                    topology, node.Name, addr, secrets, tuning, pgtune.ExcludeParams,
+                    snap.Config.SyncStrict, newRest, ct);
+                return await Finish(cluster,
+                    $"rotate-rest-rolling/{shard.Name}/{node.Name}", ProcessOutcome.Done, ct);
             }
         }
 
-        // R3: атомарный коммит — новые креды + перезапись dsn + снятие заявки
-        // ОДНОЙ txn (нет двойной ротации из-за сбоя между put и del). Compare по
-        // OLD-кредам и по прочитанным dsn: внешняя запись etcdctl между R1 и R3
-        // (или гонка репарации dsn) → ретрай тиком со свежими OLD.
-        var compares = new List<TxnCompare>
-        {
-            TxnCompare.ValueEqual(PasswordKey(cluster), creds.App.Password),
-            TxnCompare.ValueEqual(MoverKey(cluster), creds.MoverPassword),
-            TxnCompare.ValueEqual(BucketAdminPasswordKey(cluster), creds.BucketAdmin.Password),
-            TxnCompare.ValueEqual(BackupKey(cluster), creds.BackupPassword),
-            TxnCompare.ValueEqual(RestKey(cluster), creds.RestPassword),
-        };
-        var ops = new List<TxnOp>
-        {
-            new TxnOp.Put(PasswordKey(cluster), newAppPassword, null),
-            new TxnOp.Put(MoverKey(cluster), newMoverPassword, null),
-            new TxnOp.Put(BucketAdminPasswordKey(cluster), newBucketAdminPassword, null),
-            new TxnOp.Put(BackupKey(cluster), newBackupPassword, null),
-            new TxnOp.Put(RestKey(cluster), newRestPassword, null),
-            new TxnOp.Delete(TicketKey(cluster), Prefix: false),
-        };
+        // R4 (финальный ALTER — закрытие окна, «etcd — источник, PG следует»):
+        // NEW читаются из etcd (не локальные переменные R2 — takeover).
+        var newApp = await GetAsync(PasswordKey(cluster), ct);
+        var newMover = await GetAsync(MoverKey(cluster), ct);
+        var newAdmin = await GetAsync(BucketAdminPasswordKey(cluster), ct);
+        var appUser = await appSecret.EnsureAsync(cluster, snap.Config, ct);
+        if (!newApp.IsSuccess || newApp.Value is null || !newMover.IsSuccess
+            || newMover.Value is null || !newAdmin.IsSuccess || newAdmin.Value is null
+            || !appUser.IsSuccess)
+            return await FailAsync(cluster,
+                new ApplicationException("open rotation window: NEW credentials unreadable from etcd"),
+                "rotate-etcd-read", ct);
+        var credsNow = appUser.Value;
         foreach (var shard in snap.Shards.Where(s => s.Dsn is not null))
         {
-            compares.Add(TxnCompare.ValueEqual(DsnKey(cluster, shard.Name), shard.Dsn!));
-            ops.Add(new TxnOp.Put(DsnKey(cluster, shard.Name),
-                PasswordRegex().Replace(shard.Dsn!,
-                    m => (m.Value.StartsWith(' ') ? " " : "") + "password=" + newBucketAdminPassword),
-                null));
+            var master = await ResolveMasterAsync(cluster, shard, addressMap, ct);
+            if (master is null)
+                return await Finish(cluster, $"rotate-waiting-master/{shard.Name}", ProcessOutcome.Done, ct);
+            var dsn = DatabaseProvisioner.BuildAdminDsn(master.Host, master.Ports.Pg, snap.Config.DbName, secrets);
+            foreach (var (role, password) in new[]
+                     {
+                         (credsNow.App.User, newApp.Value!.Value),
+                         (credsNow.BucketAdmin.User, newAdmin.Value!.Value),
+                         (MoverRole, newMover.Value!.Value),
+                     })
+            {
+                var altered = await db.ExecuteAsync(
+                    dsn, DatabaseProvisioner.BuildAlterRolePasswordSql(role, password), ct);
+                if (!altered.IsSuccess)
+                    return await FailAsync(cluster, altered.Error!, $"alter/{shard.Name}", ct);
+            }
         }
 
-        var commit = await TxnAsync(TxnRequest.Of([.. compares], [.. ops]), ct);
-        if (!commit.IsSuccess)
-            return await FailAsync(cluster, commit.Error!, "committing", ct);
-        if (!commit.Value.Succeeded)
-            return await FailAsync(cluster,
-                new ApplicationException(
-                    "credentials/dsn changed since they were read (external write?) — retry on the next tick"),
-                "commit-conflict", ct, dropRestPending: true);
-
-        // R4: снапшот P12 (точка изменения, best-effort делегат) + journal done.
+        // Окно закрыто: снапшот P12 + done (флаг false — ЭТОЙ записью).
         if (snapshot is not null)
         {
             var shot = await snapshot(ct);
             if (!shot.IsSuccess)
                 return await FailAsync(cluster, shot.Error!, "snapshot", ct);
         }
-
-        return await Finish(cluster, "done", ProcessOutcome.Done, ct, dropRestPending: true);
+        return await Finish(cluster, "done", ProcessOutcome.Done, ct, restWindowOpen: false);
     }
 
     // Замена password= в conninfo dsn-ключа (пароль bucket_admin внутри dsn).
@@ -346,8 +318,6 @@ public sealed partial class ClusterSecretRotator(
     private static string MoverKey(string cluster) => $"/clusters/{cluster}/mover_password";
 
     private static string BucketAdminPasswordKey(string cluster) => $"/clusters/{cluster}/bucket_admin_password";
-
-    private static string BackupKey(string cluster) => $"/clusters/{cluster}/backup_password";
 
     private static string RestKey(string cluster) => $"/clusters/{cluster}/rest_password";
 
@@ -464,20 +434,20 @@ public sealed partial class ClusterSecretRotator(
 
     private async Task<Result<ProcessOutcome>> Finish(
         string cluster, string phase, ProcessOutcome outcome, CancellationToken ct,
-        bool dropRestPending = false)
+        bool? restWindowOpen = null)
     {
         var written = await journal.WritePhaseAsync(cluster, Op, phase, claims.InstanceId, null, ct,
-            dropRestPending: dropRestPending);
+            restWindowOpen: restWindowOpen);
         return written.IsSuccess
             ? Result<ProcessOutcome>.Success(outcome)
             : Result<ProcessOutcome>.Failed(written.Error!);
     }
 
     private async Task<Result<ProcessOutcome>> FailAsync(
-        string cluster, Exception error, string phase, CancellationToken ct, bool dropRestPending = false)
+        string cluster, Exception error, string phase, CancellationToken ct, bool? restWindowOpen = null)
     {
         await journal.WritePhaseAsync(cluster, Op, phase, claims.InstanceId, error.Message, ct,
-            dropRestPending: dropRestPending);
+            restWindowOpen: restWindowOpen);
         return Result<ProcessOutcome>.Failed(error);
     }
 

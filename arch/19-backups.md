@@ -1216,10 +1216,14 @@ s3://<bucket>/<C>/<X>/
  PEM в POST-команде (`ca_pem`), приёмник материализует тем же порядком.
  http-endpoint — переменные не заданы, поведение прежнее.
 - **Per-cluster БД-роль** `backup_exec` (LOGIN + REPLICATION): пароль
- per-cluster `/clusters/<C>/backup_password` — по образцу прочих per-cluster секретов
- (ensure put-if-absent, ротация в общем тикете §9.8, 32 симв
- `[A-Za-z0-9]`). Отдельная от
- bucket_mover (иная зона доверия/ротации).
+ per-cluster `/clusters/<C>/backup_password` — по образцу прочих
+ per-cluster секретов (ensure put-if-absent, 32 симв `[A-Za-z0-9]`).
+ Ротация: в общий тикет ротации (ETCD-FIRST, arch/14 §5 I — app/
+ bucket_admin/bucket_mover/rest + dsn) backup-креды НЕ входят — ротация
+ `backup_password` (и выравнивание pg_authid `backup_exec`) — отдельная
+ задача t06-rotate-backup-creds (arch/roadmap/pgworker.md), тем же
+ каноном ETCD-FIRST после t05; до неё пароль статичен с ensure.
+ Отдельная от bucket_mover (иная зона доверия/ротации).
 - **pg_hba-гвард**: дефолтный Spilo-pg_hba разрешает replication-соединения
  только роли `standby` — физический WAL-стриминг `pg_basebackup` под
  `backup_exec` отсекается. Гвард G2 (каждый тик) командует приёмнику КАЖДОЙ

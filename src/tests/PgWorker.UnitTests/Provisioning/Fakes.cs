@@ -36,7 +36,7 @@ internal static class Fakes
     // сверяет Version/Value/ModRevision (нужно P1-portalloc и P4-config).
     // Потокобезопасен: процессы реально параллелят шарды/ноды
     // (Parallel.ForEachAsync), обычный Dictionary терял записи (флaky-тесты).
-    internal sealed class FakeEtcd : IEtcdGateway
+    internal class FakeEtcd : IEtcdGateway
     {
         internal sealed record Entry(string Value, long ModRevision, long Version);
 
