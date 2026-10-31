@@ -95,7 +95,7 @@ URL API — из etcd) URL воркера (§1.1)
 заявка ротации, ребалансировка, drain-прогресс; набор — 1:1 сид-фикстуры
 интеграционных тестов; флаг `KafkaWorker:Api:EnableSeedEndpoint`, default
 `false`; идемпотентен: живой `/kafka/clusters/events/config` → 200
-`{"seeded":false}`). Плюс (adminpanel/02 §10.2-18/19/20, u17): DELETE-отмена
+`{"seeded":false}`). Плюс (adminpanel/02 §10.2-18/19/20): DELETE-отмена
 живых заявок ротаций — `DELETE /api/kafka/clusters/{c}/app-password/rotate`
 (ключ `/kafkaworker/rotations/<C>`), `DELETE /api/kafka/clusters/{c}/
 admin-password/rotate` (`/kafkaworker/admin_rotations/<C>`), `DELETE
@@ -106,7 +106,7 @@ admin-password/rotate` (`/kafkaworker/admin_rotations/<C>`), `DELETE
 P/D/R/C — CaRotator: 409 «rotation is already executing»; терминальные/
 waiting-фазы и отсутствие журнала — отмена разрешена), заявки нет → 404
 (идемпотентность повтора отсутствует осознанно — порт 02 §9.7.5). Коды:
-204 / 404 / 409 / 503. Плюс read-only `GET /api/config` (u15, adminpanel/02
+204 / 404 / 409 / 503. Плюс read-only `GET /api/config` (adminpanel/02
 §2.3.5): эффективный конфиг установки — плоский JSON групп `thresholds`
 (BrokerBoot/NodeDead/ReassignSubmit/ReassignRetrySubmit/RotationTicketTimeout),
 `loops` (Scan/Keepalive/TopicSync/Reassign/ReassignBatch/Snapshot/ErrorDelay),

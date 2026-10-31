@@ -122,8 +122,6 @@ public sealed class SnapshotRefresher(
         var pgCertKv = await pgCertTask;
         var etcdSnapshotsKv = await etcdSnapshotsTask;
 
-        // Частичный KV-провал = неполный снапшот: консервативно отказ тика, данные прежние
-        // (уточнение к spec §7.2 п.5: пустой префикс — валидные данные, транспортный отказ — нет).
         var backupsDisabledKv = await backupsDisabledTask;
         var evacuationsKv = await evacuationsTask;
         var pgRotationsKv = await pgRotationsTask;
@@ -131,8 +129,6 @@ public sealed class SnapshotRefresher(
         var claimsKv = await claimsTask;
         var instancesKv = await instancesTask;
 
-        // Частичный KV-провал = неполный снапшот: консервативно отказ тика, данные прежние
-        // (уточнение к spec §7.2 п.5: пустой префикс — валидные данные, транспортный отказ — нет).
         if (!clustersKv.IsSuccess || !serviceKv.IsSuccess || !nodesKv.IsSuccess
             || !portAllocKv.IsSuccess || !movesKv.IsSuccess || !backupsKv.IsSuccess
             || !pgApiKv.IsSuccess || !workKv.IsSuccess || !pgCertKv.IsSuccess

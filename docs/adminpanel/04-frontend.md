@@ -27,7 +27,7 @@
   `RotateSecretButton`, `ResourcesForm`, `ConfirmModal`) — единые замены
   доменных дубликатов; `utils/validation.ts` — единый модуль границ валидации
   (зеркало arch/02 §9.3/§10.3/§11.3/§12.3).
-- `events/`: клиентский событийный слой ленты `/events` (u09) — подписка на
+- `events/`: клиентский событийный слой ленты `/events`  — подписка на
   query-кэш TanStack Query, диффы prev→next снимков, in-memory store (cap 500,
   без persistence).
 
