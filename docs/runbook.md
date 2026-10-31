@@ -237,12 +237,19 @@ CA-сертификат registry должен быть доверен Docker и 
 ### Обновить пин pg_doorman
 
 1. Изменить пин `ghcr.io/ozontech/pg_doorman:v3.11.0` на новую версию
-   РОВНО в трёх точках: `dev-stand/adminpanel/checks/00-up.sh`,
+   РОВНО в четырёх рабочих точках: `dev-stand/adminpanel/checks/00-up.sh`,
    `src/tests/PgWorker.E2eTests/E2e/E2eEnvironment.cs` (константа
-   `DoormanImage`), этот раздел (команда сборки + строка каталога ниже).
+   `DoormanImage`),
+   `src/tests/PgWorker.IntegrationTests/Backups/NodeWalReceiverTests.cs`
+   (константа `DoormanImage` — файл сам собирает образ ноды с
+   `--build-arg DOORMAN_IMAGE`), этот раздел (команда сборки + строка
+   каталога ниже).
 2. Обновить строку в `dev-stand/images/images.txt`.
 3. Перемirrorить: `dev-stand/images/mirror-image.sh ghcr.io/ozontech/pg_doorman:<новая версия>`,
    затем `dev-stand/images/pull-images.sh`.
+4. Контроль полноты: `grep -rn "pg_doorman:v" dev-stand/ src/ docker/ docs/runbook.md`
+   — вхождений старой версии не осталось (grep заодно ловит упоминания пина
+   вне рабочих точек: комментарий в `docker/node/Dockerfile`, этот раздел).
 
 ### Известная особенность: TLS-сертификат registry и Go-клиенты
 
