@@ -486,8 +486,6 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
         public Task<Result> RemoveNodeAsync(string c, string sh, string node, CancellationToken ct) => inner.RemoveNodeAsync(c, sh, node, ct);
         public Task<Result> StopNodeAsync(string c, string sh, string node, CancellationToken ct) => inner.StopNodeAsync(c, sh, node, ct);
         public Task<Result<IReadOnlyDictionary<string, DiscoveredNode>>> InspectNodesAsync(string c, IReadOnlyCollection<string> names, CancellationToken ct) => inner.InspectNodesAsync(c, names, ct);
-        public Task<Result<IReadOnlyDictionary<string, string>>> InspectNodeEnvAsync(
-            string cluster, string shard, string nodeName, CancellationToken ct) => inner.InspectNodeEnvAsync(cluster, shard, nodeName, ct);
         public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string c, CancellationToken ct) => inner.ListNodeObjectsAsync(c, ct);
         public Task<Result> RemoveBackupAgentsAsync(string c, string? sh, CancellationToken ct) => inner.RemoveBackupAgentsAsync(c, sh, ct);
     }

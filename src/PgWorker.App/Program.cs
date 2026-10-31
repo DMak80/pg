@@ -669,12 +669,13 @@ builder.Services.AddSingleton(sp => new ClusterSecretRotator(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
     sp.GetRequiredService<ISqlExecutor>(),
-    sp.GetRequiredService<IClusterDriver>(),
     sp.GetRequiredService<ShardProbe>(),
     sp.GetRequiredService<ClaimStore>(),
     sp.GetRequiredService<WorkJournal>(),
     sp.GetRequiredService<InstallSecrets>(),
     sp.GetRequiredService<IClusterSecretEnsurer>(),
+    sp.GetRequiredService<PgWorker.Provisioning.Processes.INodeBootstrapDelivery>(),
+    sp.GetRequiredService<PgtuneInputsFactory>(),
     SnapshotDelegate(sp.GetRequiredService<SnapshotJob>())));
 
 // Полные бэкапы шардов (/, arch/19 §2): планировщик + супервизия через

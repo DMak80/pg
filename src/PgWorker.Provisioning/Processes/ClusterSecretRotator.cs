@@ -33,12 +33,13 @@ public sealed partial class ClusterSecretRotator(
     IEtcdGateway etcd,
     string[] endpoints,
     ISqlExecutor db,
-    IClusterDriver driver,
     ShardProbe probe,
     ClaimStore claims,
     WorkJournal journal,
     InstallSecrets secrets,
     IClusterSecretEnsurer appSecret,
+    INodeBootstrapDelivery bootstrap,
+    PgtuneInputsFactory pgtune,
     Func<CancellationToken, Task<Result>>? snapshot = null)
 {
     private const string Op = "rotate-app-password";
@@ -113,6 +114,11 @@ public sealed partial class ClusterSecretRotator(
                 claims.InstanceId, null, ct, restPending: newRestPassword);
             if (!fixedPending.IsSuccess)
                 return Result<ProcessOutcome>.Failed(fixedPending.Error!);
+            // work прочитан ДО постановки pending (первый тик окна: журнала могло
+            // не быть) — перечитать: R2-блок ниже смотрит rest_pending.
+            work = await journal.ReadAsync(cluster, ct);
+            if (!work.IsSuccess)
+                return await FailAsync(cluster, work.Error!, "journal-read", ct);
         }
         if (!addresses.IsSuccess)
             return await FailAsync(cluster, addresses.Error!, "portalloc", ct);
@@ -167,39 +173,60 @@ public sealed partial class ClusterSecretRotator(
             }
         }
 
-        // R2-rest rolling-гейт (arch/14 §5 I): ноды dsn-шардов обязаны нести
-        // hash(NEW) до txn — катит общий шаг надзора (≤1 нода/тик; вход ротации).
-        // Гварды зеркалят надзор (§5 C): restore-шард (демонтаж — restore-процесс,
-        // его ноды создадутся с новой парой) и TO_REMOVE — skip; усыновлённые
-        // (object) — инспекция по каноническому имени пуста, не показатель — skip.
-        // Драйвер БЕЗ честной инспекции (Swarm-заглушка SupportsRunningInspection=
-        // false) — окно НЕ удерживаем: сам rolling-шаг там no-op (заглушка), вечное
-        // ожидание лишь блокировало бы ротацию четвёрки; приведение env Swarm-нод к
-        // ключу — домен (реализация running-inspection). Есть расхождение →
-        // окно открыто: тик ЖДЁТ (Done — ретрай тиком; заявка и pending живы).
-        // Rotator сам REST-мутаций не делает (гварды окна — надзор).
+        // R2-rest (arch/14 §5 I): NEW-пара применяется доставкой каналом БЕЗ
+        // пересоздания: перерендер bootstrap-ключа ОДНОЙ ноды с pending-парой
+        // + команда применения (≤1 нода/тик; реплики вперёд, лидер последним;
+        // restore/TO_REMOVE-шарды и усыновлённые ноды гейт пропускает — их
+        // ноды создадутся с NEW после R3). Прогресс — немутирующая проба
+        // IsOnRevisionAsync(pending): content хранимого ключа == рендер под
+        // NEW + ready + applied_revision == mod_revision (сверка по NEW, а не
+        // по текущему/OLD ключу — нода со стационарным applied==mod(OLD)
+        // пробу НЕ проходит и получает доставку NEW).
         var restoring = await ReadRestoringShardsAsync(cluster, ct);
         if (!restoring.IsSuccess)
             return await FailAsync(cluster, restoring.Error!, "backups-read", ct);
-        if (driver.SupportsRunningInspection)
+
+        if (work.Value?.RestPending is not null)
         {
-            foreach (var shard in snap.Shards.Where(s => s.Dsn is not null && !s.ToRemove
-                                                              && !restoring.Value.Contains(s.Name)))
+            foreach (var shard in snap.Shards.Where(s => s.Dsn is not null && !s.ToRemove))
             {
-                foreach (var node in shard.Nodes)
+                if (restoring.Value.Contains(shard.Name))
+                    continue; // демонтажем владеет restore-процесс
+                var scopeKvs = await RangeAsync($"/service/{cluster}-{shard.Name}/", ct);
+                if (!scopeKvs.IsSuccess)
+                    return await FailAsync(cluster, scopeKvs.Error!, $"scope/{shard.Name}", ct);
+                var leader = ClusterSnapshotParser.ParseService(scopeKvs.Value)
+                    .FirstOrDefault()?.LeaderName;
+                var resources = await ReadShardResourcesAsync(cluster, shard.Name, ct);
+                var tuning = pgtune.Create(resources);
+                var ordered = shard.Nodes
+                    .Where(n => n.State is not (NodeState.Quarantined or NodeState.Removing))
+                    .OrderBy(n => n.Name == leader ? 1 : 0); // реплики вперёд, лидер последним
+                foreach (var node in ordered)
                 {
-                    if (node.State is NodeState.Quarantined or NodeState.Removing)
-                        continue;
-                    if (addresses.Value.TryGetValue($"{shard.Name}/{node.Name}", out var addr)
-                        && addr.Object is not null)
-                        continue; // усыновлённая — внешняя orchestration, не инспектируем
-                    var env = await driver.InspectNodeEnvAsync(cluster, shard.Name, node.Name, ct);
-                    if (!env.IsSuccess)
-                        return await FailAsync(cluster, env.Error!, $"inspect/{shard.Name}/{node.Name}", ct);
-                    if (!string.Equals(env.Value.GetValueOrDefault(RestRotation.EnvPasswordHash),
-                            RestRotation.PasswordHash(newRestPassword), StringComparison.Ordinal))
-                        return await Finish(cluster, $"rotate-rest-rolling/{shard.Name}/{node.Name}",
-                            ProcessOutcome.Done, ct);
+                    if (!addresses.Value.TryGetValue($"{shard.Name}/{node.Name}", out var addr)
+                        || addr.Object is not null)
+                        continue; // записи нет / усыновлённая (R9) — гейт пропускает
+                    var topology = new ShardTopology(cluster, shard.Name, $"{cluster}-{shard.Name}",
+                        addresses.Value.Where(p => p.Key.StartsWith($"{shard.Name}/", StringComparison.Ordinal))
+                            .ToDictionary(p => p.Key.Split('/')[1], p => p.Value));
+                    if (await bootstrap.IsOnRevisionAsync(
+                            topology, node.Name, addr, tuning,
+                            snap.Config.SyncStrict, newRestPassword, ct))
+                        continue; // применила NEW — следующая нода
+
+                    // ОДНА доставка на тик (spec §3.7.4: ≤1 нода/тик, реплики
+                    // вперёд, лидер последним): доставка завершает тик В
+                    // ЛЮБОМ случае — синхронный apply не даёт этому же тику
+                    // уйти дальше по нодам; следующая нода — следующим тиком.
+                    // Finish фиксирует фазу rotate-rest-rolling/<X>/<n> в обоих
+                    // исходах; исход диагностируется следующим тиком (проба
+                    // IsOnRevisionAsync: применила — идём дальше, нет — повтор).
+                    await bootstrap.EnsureAsync(
+                        topology, node.Name, addr, secrets, tuning,
+                        snap.Config.SyncStrict, newRestPassword, ct);
+                    return await Finish(cluster,
+                        $"rotate-rest-rolling/{shard.Name}/{node.Name}", ProcessOutcome.Done, ct);
                 }
             }
         }
@@ -437,5 +464,18 @@ public sealed partial class ClusterSecretRotator(
         }
 
         return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
+    }
+
+    // Лимиты шарда от заявки request_* (копия NodeSupervisor.ReadShardResourcesAsync
+    // — у ротатора своей не было; прецедент упрощённой копии RestoreProcess).
+    private async Task<NodeResources?> ReadShardResourcesAsync(
+        string cluster, string shard, CancellationToken ct)
+    {
+        var scope = $"{cluster}-{shard}";
+        var cpu = await GetAsync($"/service/{scope}/request_cpu", ct);
+        if (!cpu.IsSuccess)
+            return null;
+        var mem = await GetAsync($"/service/{scope}/request_mem", ct);
+        return mem.IsSuccess ? NodeResourcesParser.Parse(cpu.Value?.Value, mem.Value?.Value) : null;
     }
 }

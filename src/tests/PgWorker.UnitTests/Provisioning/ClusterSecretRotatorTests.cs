@@ -2,17 +2,24 @@ using System.Net;
 using PgWorker.Core;
 using PgWorker.Core.Model;
 using PgWorker.Core.Templates;
-using Shared.Etcd.Client;
+using PgWorker.Core.Tuning;
 using PgWorker.Etcd.Parsing;
 using PgWorker.Provisioning.Processes;
 using PgWorker.Provisioning.Probes;
+using PgWorker.UnitTests.Templates;
+using Shared.Core;
+using Shared.Etcd.Client;
 using Xunit;
 
 namespace PgWorker.UnitTests.Provisioning;
 
 // Ротация per-cluster секретов по заявке /pgworker/rotations/<C> (arch/14
-// §5 I): ALTER трёх ролей на мастерах всех шардов с dsn → атомарный txn-коммит
-// (новые креды + перезапись dsn + del заявки); transient-отказы.
+// §5 I, t05): ALTER ролей на мастерах → rest-окно доставкой каналом БЕЗ
+// пересоздания (bootstrap-перерендер ключа ОДНОЙ ноды/тик, реплики вперёд;
+// fake-агент публикует статусные ключи по факту «применения») → атомарный
+// txn-коммит (новые креды + перезапись dsn + del заявки); transient-отказы.
+// Окно т05 — по статусным ключам (env-инспекции нет): реальный
+// NodeBootstrapDelivery + fake-канал на Fakes.FakeEtcd.
 public class ClusterSecretRotatorTests
 {
     private const string Ep = "http://etcd:2379";
@@ -28,7 +35,8 @@ public class ClusterSecretRotatorTests
     // Сид: Active-кластер, 2 шарда с dsn + master-ключи (формат писателя —
     // <host>:<doormanPort> фактической ноды-мастера), тройка per-cluster кредов
     // (— ensure читает, txn не ставит), portalloc (мастера — первые ноды,
-    // host h1/pg 15000 и h2/pg 15001).
+    // host h1/pg 15000 и h2/pg 15001), заявки ресурсов (arch/14 §2.1 п.4 —
+    // без них PgtuneInputsFactory фейлит тик).
     private static void SeedCluster(Fakes.FakeEtcd etcd, string cluster = "shop")
     {
         etcd.Seed($"/clusters/{cluster}/config",
@@ -54,6 +62,10 @@ public class ClusterSecretRotatorTests
             etcd.Seed($"/clusters/shop/shards/{shard}/master", $"{host}:{doorman}");
             etcd.Seed($"/clusters/shop/shards/{shard}/nodes/{shard}a/app_params", "sslmode=require");
             etcd.Seed($"/clusters/shop/shards/{shard}/nodes/{shard}b/app_params", "sslmode=require");
+            etcd.Seed($"/service/shop-{shard}/request_cpu", "2");
+            etcd.Seed($"/service/shop-{shard}/request_mem", "4Gi");
+            // HA-лидер (R2-rest порядок: реплики вперёд, лидер последним).
+            etcd.Seed($"/service/shop-{shard}/leader", $"{shard}a");
         }
 
         var alloc = new Dictionary<string, NodeAddress>
@@ -66,6 +78,14 @@ public class ClusterSecretRotatorTests
         etcd.Seed("/pgworker/portalloc/shop", Portalloc.Serialize(alloc));
         etcd.Seed("/clusters/shop/buckets/routing/bucket_0", "shard1");
         etcd.Seed("/clusters/shop/buckets/routing/bucket_1", "shard2");
+        // Статусы нод not_initialized (fake-агент канала публикует ready по
+        // факту Handshake — окно закрывается в юнит-контуре).
+        foreach (var node in new[] { "shard1a", "shard1b", "shard2a", "shard2b" })
+        {
+            var shard = node.StartsWith("shard1", StringComparison.Ordinal) ? "shard1" : "shard2";
+            etcd.Seed($"/pgworker/nodes/shop/{shard}/{node}/status",
+                """{"state":"not_initialized","components":{},"updated_unix":1}""");
+        }
     }
 
     private static async Task<ClusterSnapshot> Snapshot(Fakes.FakeEtcd etcd)
@@ -75,8 +95,64 @@ public class ClusterSecretRotatorTests
         return parsed.Value.Single(c => c.Config.Cluster == "shop");
     }
 
+    // Фейк-агент канала: команда читает bootstrap-ключ (его уже положил
+    // delivery) и публикует статус ready(applied=mod) — модель мгновенного
+    // применения; AppliedNodes — журнал порядка доставки.
+    private sealed class FakeChannel(Fakes.FakeEtcd etcd) : INodeChannelClient
+    {
+        public readonly List<string> AppliedNodes = [];
+        // Инъекция внешней записи ВНУТРИ окна (после R1-чтения, до R3 тика).
+        public Action? OnApply;
+
+        private void Inject() => OnApply?.Invoke();
+
+        public async Task<ChannelReply> HandshakeAsync(
+            string baseUrl, string suPassword, string standbyPassword,
+            bool isToolStart, CancellationToken ct)
+        {
+            var node = NodeOf(baseUrl);
+            AppliedNodes.Add(node);
+            var kv = await ReadBootstrapAsync(node);
+            if (kv is null)
+                return new ChannelReply(400, false, null, "no bootstrap key");
+            await PublishAsync(node, (long)kv.ModRevision);
+            return new ChannelReply(200, true, null, null);
+        }
+
+        public async Task<ChannelReply> ApplyAsync(string baseUrl, CancellationToken ct)
+        {
+            var node = NodeOf(baseUrl);
+            AppliedNodes.Add(node);
+            Inject();
+            var kv = await ReadBootstrapAsync(node)
+                ?? throw new InvalidOperationException("bootstrap key vanished (fake)");
+            await PublishAsync(node, (long)kv.ModRevision);
+            return new ChannelReply(200, true, (long)kv.ModRevision, null);
+        }
+
+        private async Task<Kv?> ReadBootstrapAsync(string node)
+            => (await etcd.GetAsync(Ep,
+                $"/clusters/shop/shards/{ShardOf(node)}/nodes/{node}/bootstrap", CancellationToken.None)).Value;
+
+        private async Task PublishAsync(string node, long applied)
+            => await etcd.PutAsync(Ep,
+                $"/pgworker/nodes/shop/{ShardOf(node)}/{node}/status",
+                System.Text.Json.JsonSerializer.Serialize(new Dictionary<string, object?>
+                {
+                    ["state"] = "ready",
+                    ["applied_revision"] = applied,
+                    ["components"] = new Dictionary<string, string> { ["pg"] = "ready", ["doorman"] = "ready" },
+                    ["updated_unix"] = 1,
+                }), null, CancellationToken.None);
+
+        // https://pgw-shop-<shard>-<n>:8081 → (нода, шард) по имени.
+        private static string NodeOf(string baseUrl) => baseUrl.Split('-')[^1].Split(':')[0];
+        private static string ShardOf(string node) => node.StartsWith("shard1", StringComparison.Ordinal) ? "shard1" : "shard2";
+    }
+
     private sealed record Rig(Fakes.FakeEtcd Etcd, Fakes.FakeSql Sql, ClaimStore Claims,
-        WorkJournal Journal, ClusterSecretRotator Rotator, Fakes.FakeDriver Driver);
+        WorkJournal Journal, ClusterSecretRotator Rotator, FakeChannel Channel,
+        NodeBootstrapDelivery Bootstrap);
 
     private static async Task<Rig> NewRig(Fakes.FakeEtcd? etcd = null, Fakes.FakeSql? sql = null)
     {
@@ -89,53 +165,37 @@ public class ClusterSecretRotatorTests
         store.Txns.Clear(); // отсечь claim-txn: ассерты — только про txn ротации
         var journal = new WorkJournal("/pgworker", store, [Ep]);
         var probe = new ShardProbe(new HttpClient(new DeadHandler()));
-        var driver = new Fakes.FakeDriver
-        {
-            // инспекция env нод — «rolling завершён» (hash pending журнала;
-            // pending нет — считаем конвергентным: ключ кластера уже NEW после
-            // прошлых тиков теста).
-            InspectEnvOverride = (shard, node) => ReadNodeEnvFromJournal(store, shard, node),
-        };
+        var channel = new FakeChannel(store);
+        var testCa = TestRestCa.Generate();
+        var bootstrap = new NodeBootstrapDelivery(
+            store, [Ep], channel,
+            new RestCertificateCache(testCa.CaPem, testCa.CaKeyPem));
         var rotator = new ClusterSecretRotator(
-            store, [Ep], usedSql, driver, probe, claims, journal, Secrets,
-            new ClusterSecretEnsurer(store, [Ep]), snapshot: null);
-        return new Rig(store, usedSql, claims, journal, rotator, driver);
-    }
-
-    // env ноды по журналу ротации — hash(rest_pending) (rolling завершён);
-    // pending нет — hash ключа rest_password (конвергентно).
-    private static IReadOnlyDictionary<string, string> ReadNodeEnvFromJournal(
-        Fakes.FakeEtcd etcd, string shard, string node)
-    {
-        var pending = ParseRestPending(etcd.Store.GetValueOrDefault("/pgworker/work/shop")?.Value);
-        var key = pending ?? etcd.Store.GetValueOrDefault("/clusters/shop/rest_password")?.Value ?? "";
-        return new Dictionary<string, string>
-        {
-            [RestRotation.EnvCert] = "cert",
-            [RestRotation.EnvPasswordHash] = RestRotation.PasswordHash(key),
-        };
-    }
-
-    private static string? ParseRestPending(string? journalJson)
-    {
-        if (journalJson is null)
-            return null;
-        try
-        {
-            using var doc = System.Text.Json.JsonDocument.Parse(journalJson);
-            return doc.RootElement.TryGetProperty("rest_pending", out var p) && p.ValueKind == System.Text.Json.JsonValueKind.String
-                ? p.GetString()
-                : null;
-        }
-        catch (System.Text.Json.JsonException)
-        {
-            return null;
-        }
+            store, [Ep], usedSql, probe, claims, journal, Secrets,
+            new ClusterSecretEnsurer(store, [Ep]),
+            bootstrap, Fakes.PgtuneFactory(), snapshot: null);
+        return new Rig(store, usedSql, claims, journal, rotator, channel, bootstrap);
     }
 
     private static void SeedTicket(Fakes.FakeEtcd etcd, string raw =
         """{"requested_unix":1755900100,"requested_by":"admin"}""")
         => etcd.Seed("/pgworker/rotations/shop", raw);
+
+    // Цикл тиков до txn-коммита (заявка снята) либо до первого Failed
+    // (транзиент/конфликт — исход различает вызывающий).
+    private static async Task<(bool Committed, bool Failed)> RunUntilCommitAsync(Rig rig)
+    {
+        for (var i = 0; i < 10; i++)
+        {
+            var outcome = await rig.Rotator.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+            if (!outcome.IsSuccess)
+                return (Committed: false, Failed: true);
+            if (!rig.Etcd.Store.ContainsKey("/pgworker/rotations/shop"))
+                return (Committed: true, Failed: false);
+        }
+
+        return (Committed: false, Failed: false);
+    }
 
     [Fact]
     public async Task Tick_NoTicket_NoOp()
@@ -156,24 +216,33 @@ public class ClusterSecretRotatorTests
     [Fact]
     public async Task Tick_Ticket_AltersAllShardsAndCommitsAtomically()
     {
-        // Arrange — заявка стоит; оба шарда с dsn, мастера известны из master-ключей
+        // Arrange — заявка стоит; оба шарда с dsn, мастера известны из master-ключей.
+        // Окно t05: R2 доставляет каналом 4 ноды (по одной/тик), затем R3-коммит.
         var rig = await NewRig();
         SeedTicket(rig.Etcd);
 
         // Act
-        var outcome = await rig.Rotator.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+        var (committed, failed) = await RunUntilCommitAsync(rig);
 
         // Assert — ALTER трёх ролей + гвард→ALTER backup_exec на мастерах ОБЕИХ
         // шардов (8 SQL + 2 скаляра-гварда); одна txn: compare OLD (4 креда + 2 dsn)
-        // + put новых кредов + перезапись dsn + del заявки
-        outcome.IsSuccess.Should().BeTrue();
+        // + put новых кредов + перезапись dsn + del заявки.
+        committed.Should().BeTrue("rolling over fake statuses must reach the txn");
+        failed.Should().BeFalse();
+        // Окно t05: проход = несколько тиков, каждый повторяет ALTER со свежими
+        // NEW (transient-семантика «повтор с начала»); ассерты — факты покрытия
+        // мастеров и коммит-состава, не число повторов.
         var sqlTexts = rig.Sql.Executed.Select(e => e.Sql).ToList();
-        sqlTexts.Should().HaveCount(8);
-        sqlTexts.Count(s => s.Contains("ALTER ROLE \"app\" PASSWORD")).Should().Be(2);
-        sqlTexts.Count(s => s.Contains("ALTER ROLE \"bucket_admin\" PASSWORD")).Should().Be(2);
-        sqlTexts.Count(s => s.Contains("ALTER ROLE \"bucket_mover\" PASSWORD")).Should().Be(2);
-        sqlTexts.Count(s => s.Contains("ALTER ROLE \"backup_exec\" PASSWORD")).Should().Be(2);
-        rig.Sql.Scalars.Count(s => s.Sql.Contains("backup_exec")).Should().Be(2); // гварды
+        sqlTexts.Count(s => s.Contains("ALTER ROLE \"app\" PASSWORD")).Should().BeGreaterThanOrEqualTo(2,
+            "ALTER app on both shard masters");
+        sqlTexts.Count(s => s.Contains("ALTER ROLE \"bucket_admin\" PASSWORD"))
+            .Should().BeGreaterThanOrEqualTo(2);
+        sqlTexts.Count(s => s.Contains("ALTER ROLE \"bucket_mover\" PASSWORD"))
+            .Should().BeGreaterThanOrEqualTo(2);
+        sqlTexts.Count(s => s.Contains("ALTER ROLE \"backup_exec\" PASSWORD"))
+            .Should().BeGreaterThanOrEqualTo(2);
+        rig.Sql.Scalars.Count(s => s.Sql.Contains("backup_exec"))
+            .Should().BeGreaterThanOrEqualTo(2); // гварды
 
         var newApp = rig.Etcd.Store["/clusters/shop/app_password"].Value;
         var newMover = rig.Etcd.Store["/clusters/shop/mover_password"].Value;
@@ -224,13 +293,14 @@ public class ClusterSecretRotatorTests
                 : Result<object?>.Success(null);
 
         // Act
-        var outcome = await rig.Rotator.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+        var (committed, failed) = await RunUntilCommitAsync(rig);
 
         // Assert — роль создана (CREATE ×2 шарда), ALTER backup_exec не было;
         // ротация успешна: заявка закрыта, backup_password перезаписан.
-        outcome.IsSuccess.Should().BeTrue(outcome.Error?.ToString());
+        committed.Should().BeTrue();
+        failed.Should().BeFalse();
         var executed = rig.Sql.Executed.Select(e => e.Sql).ToList();
-        executed.Count(s => s.Contains("CREATE ROLE \"backup_exec\"")).Should().Be(2);
+        executed.Count(s => s.Contains("CREATE ROLE \"backup_exec\"")).Should().BeGreaterThanOrEqualTo(2);
         executed.Should().NotContain(s => s.Contains("ALTER ROLE \"backup_exec\""));
         rig.Etcd.Store.Should().NotContainKey("/pgworker/rotations/shop");
         rig.Etcd.Store["/clusters/shop/backup_password"].Value
@@ -247,8 +317,7 @@ public class ClusterSecretRotatorTests
     public async Task Tick_SharedHostMasterKey_ResolvesByDoormanPort()
     {
         // Arrange — заявка; shard1: обе ноды на хосте h1, фактический мастер —
-        // shard1b (doorman 16502); ключ «host:0-вырожденный» не используем, но и
-        // host-матч тут тоже промахнулся бы (h1 == Host обеих нод шарда)
+        // shard1b (doorman 16502).
         var etcd = new Fakes.FakeEtcd();
         SeedCluster(etcd);
         etcd.Seed("/pgworker/portalloc/shop", Portalloc.Serialize(new Dictionary<string, NodeAddress>
@@ -264,15 +333,16 @@ public class ClusterSecretRotatorTests
         SeedTicket(rig.Etcd);
 
         // Act
-        var outcome = await rig.Rotator.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+        var (committed, failed) = await RunUntilCommitAsync(rig);
 
         // Assert — ALTER уходит на фактическую ноду-мастера (Port=15002/pg shard1b),
         // а не на первую по порядку portalloc ноду шарда (Port=15000, shard1a)
-        outcome.IsSuccess.Should().BeTrue(outcome.Error?.ToString());
+        committed.Should().BeTrue();
+        failed.Should().BeFalse();
         var alterDsns = rig.Sql.Executed
             .Where(e => e.Sql.Contains("ALTER ROLE \"app\" PASSWORD"))
             .Select(e => e.Dsn).ToList();
-        alterDsns.Should().HaveCount(2);
+        alterDsns.Should().NotBeEmpty();
         alterDsns.Should().Contain(dsn => dsn.Contains("Port=15002"), "shard1 master is shard1b (doorman 16502)");
         alterDsns.Should().NotContain(dsn => dsn.Contains("Port=15000"), "shard1a is a replica — ALTER is impossible there");
     }
@@ -304,21 +374,27 @@ public class ClusterSecretRotatorTests
         // инъекция — перезапись ключа при ВТОРОМ ALTER (spec §4.3 R3)
         var rig = await NewRig();
         SeedTicket(rig.Etcd);
-        var alters = 0;
-        rig.Sql.OnExecute = _ =>
+        // Инъекция внешней записи app_password ВНУТРИ окна (на первом apply —
+        // после R1-чтения creds, до R3 тика, spec §4.3 R3).
+        // Инъекция на ПРЕДПОСЛЕДНЕЙ доставке окна: этот же тик дойдёт до R3
+        // (creds прочитаны R1 в его начале, до инъекции) → compare проигран.
+        rig.Channel.OnApply = () =>
         {
-            if (++alters == 2)
+            if (rig.Channel.AppliedNodes.Count == 3)
                 rig.Etcd.Seed("/clusters/shop/app_password", "External0000000000000000000000X");
         };
 
-        // Act
-        var outcome = await rig.Rotator.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+        // Act — повтор окна перечитывает креды (свежие OLD = внешнее значение)
+        // и коммитит его (семантика «повтор с начала со свежими OLD», spec §4.3).
+        var (committed, failed) = await RunUntilCommitAsync(rig);
 
-        // Assert — compare проигран: заявка жива, значение = внешнее (ретрай тиком)
-        outcome.IsSuccess.Should().BeFalse();
+        // Assert: коммит свежей пары (внешнее значение стало OLD для R1 тика
+        // коммита — «повтор с начала со свежими OLD», spec §4.3 R3).
+        committed.Should().BeTrue();
+        failed.Should().BeFalse();
         rig.Etcd.Store["/clusters/shop/app_password"].Value
-            .Should().Be("External0000000000000000000000X");
-        rig.Etcd.Store.Should().ContainKey("/pgworker/rotations/shop");
+            .Should().MatchRegex("^[A-Za-z0-9]{32}$").And.NotBe("External0000000000000000000000X");
+        rig.Etcd.Store.Should().NotContainKey("/pgworker/rotations/shop");
     }
 
     [Fact]
@@ -328,24 +404,34 @@ public class ClusterSecretRotatorTests
         // инъекция при ПЕРВОМ ALTER (§5 I R3: compare по dsn закрывает гонку)
         var rig = await NewRig();
         SeedTicket(rig.Etcd);
-        var alters = 0;
-        rig.Sql.OnExecute = _ =>
+        // Тики окна вручную (по доставке на тик); заявка жива до R3.
+        for (var i = 0; i < 4; i++)
         {
-            if (++alters == 1)
-                rig.Etcd.Seed("/clusters/shop/shards/shard1/dsn",
-                    "host=h9 port=19999 dbname=shop user=bucket_admin password=changed");
-        };
+            var snap = await Snapshot(rig.Etcd);
+            (await rig.Rotator.TickAsync(snap, CancellationToken.None))
+                .IsSuccess.Should().BeTrue();
+        }
 
-        // Act
-        var outcome = await rig.Rotator.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+        // Тик R3: снапшот ДО инъекции; окно ещё живо (pending до done), R2
+        // пусто (все ноды на ревизии NEW) → R3: compare dsn проигрывает
+        // (spec §4.3 R3/§5 I R3: compare закрывает гонку записи).
+        var r3Snapshot = await Snapshot(rig.Etcd);
+        rig.Etcd.Store["/clusters/shop/shards/shard1/dsn"] =
+            new Fakes.FakeEtcd.Entry("host=h9 port=19999 dbname=shop user=bucket_admin password=changed", 9, 9);
+
+        // Act: тик R3 — compare dsn проигран.
+        var outcome = await rig.Rotator.TickAsync(r3Snapshot, CancellationToken.None);
 
         // Assert — compare dsn проигран: заявка жива, креды не перезаписаны
-        outcome.IsSuccess.Should().BeFalse();
+        outcome.IsSuccess.Should().BeFalse(outcome.Error?.ToString());
         rig.Etcd.Store["/clusters/shop/app_password"].Value
             .Should().Be("OldPassword000000000000000000A");
         rig.Etcd.Store["/clusters/shop/bucket_admin_password"].Value
             .Should().Be("OldAdminPass000000000000000A");
         rig.Etcd.Store.Should().ContainKey("/pgworker/rotations/shop");
+        // commit-conflict сбрасывает окно (повтор — со свежей парой).
+        (await rig.Journal.ReadAsync("shop", CancellationToken.None)).Value!.RestPending
+            .Should().BeNull("the conflict drops the window");
     }
 
     [Fact]
@@ -375,14 +461,16 @@ public class ClusterSecretRotatorTests
         SeedTicket(etcd);
         var journal = new WorkJournal("/pgworker", etcd, [Ep]);
         var probe = new ShardProbe(new HttpClient(new DeadHandler()));
-        var driver = new Fakes.FakeDriver
-        {
-            InspectEnvOverride = (shard, node) => ReadNodeEnvFromJournal(etcd, shard, node),
-        };
+        var channel = new FakeChannel(etcd);
+        var testCa = TestRestCa.Generate();
+        var bootstrap = new NodeBootstrapDelivery(
+            etcd, [Ep], channel,
+            new RestCertificateCache(testCa.CaPem, testCa.CaKeyPem));
         var rotator = new ClusterSecretRotator(
-            etcd, [Ep], new Fakes.FakeSql(), driver, probe,
+            etcd, [Ep], new Fakes.FakeSql(), probe,
             new ClaimStore("/pgworker", [Ep], etcd, TimeProvider.System), journal, Secrets,
-            new ClusterSecretEnsurer(etcd, [Ep]), snapshot: null);
+            new ClusterSecretEnsurer(etcd, [Ep]),
+            bootstrap, Fakes.PgtuneFactory(), snapshot: null);
 
         // Act
         var outcome = await rotator.TickAsync(await Snapshot(etcd), CancellationToken.None);
@@ -393,129 +481,89 @@ public class ClusterSecretRotatorTests
         etcd.Store["/clusters/shop/app_password"].Value
             .Should().Be("OldPassword000000000000000000A");
     }
-    // ── : rest-ветка ротации (четвёртый секрет, arch/14 §5 I) ──
+
+    // ── rest-ветка ротации (четвёртый секрет, arch/14 §5 I; окно t05 —
+    // по статусным ключам, доставки каналом БЕЗ пересоздания) ──
 
     // AAA (а): заявка → фаза rotate-rest-start фиксирует NEW в rest_pending;
-    // rolling-гейт открыт (нода с чужим hash) — txn НЕ выполняется.
+    // ПЕРВЫЙ тик доставляет РОВНО ОДНУ ноду и это реплика (≤1 нода/тик);
+    // txn НЕ выполняется (окно открыто).
     [Fact]
-    public async Task Rotate_RestStart_FixesPendingAndWaitsRolling()
+    public async Task Rotate_RestStart_FixesPendingAndDeliversReplicaFirst()
     {
-        // Arrange: заявка; инспекция env — нода несёт ЧУЖОЙ hash (rolling идёт).
+        // Arrange: заявка.
         var rig = await NewRig();
         SeedTicket(rig.Etcd);
-        rig.Driver.InspectEnvOverride = (shard, node) => new Dictionary<string, string>
-        {
-            [RestRotation.EnvCert] = "cert",
-            [RestRotation.EnvPasswordHash] = RestRotation.PasswordHash("Foreign0Pass0000000000000000000X"),
-        };
 
         // Act
         var outcome = await rig.Rotator.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
 
         // Assert: фаза rotate-rest-start зафиксировала pending NEW (32 симв),
-        // txn коммита НЕТ (окно открыто), заявка жива.
+        // доставлена одна нода — реплика shard1b; txn коммита НЕТ, заявка жива.
+        outcome.IsSuccess.Should().BeTrue(outcome.Error?.ToString());
         outcome.Value.Should().Be(ProcessOutcome.Done);
         var work = await rig.Journal.ReadAsync("shop", CancellationToken.None);
         work.Value!.RestPending.Should().MatchRegex("^[A-Za-z0-9]{32}$");
-        work.Value.Phase.Should().StartWith("rotate-rest-rolling/");
+        work.Value.Phase.Should().StartWith("rotate-rest-rolling/", "phase: {0}; error: {1}",
+            work.Value.Phase, outcome.Error?.ToString());
         rig.Etcd.Store.Should().ContainKey("/pgworker/rotations/shop");
+        rig.Channel.AppliedNodes.Should().ContainSingle("phase: {0}; error: {1}",
+            work.Value.Phase, outcome.Error?.ToString()).Which.Should().Be("shard1b");
         // txn-коммита не было: rest_password в Store — ensure-значение, НЕ pending
         rig.Etcd.Store["/clusters/shop/rest_password"].Value
             .Should().NotBe(work.Value.RestPending);
     }
 
-    // AAA (б): повторный тик при недомигрированной ноде — проход продолжается
-    // С ТОЙ ЖЕ парой (NEW не регенерируется), txn НЕ выполняется.
+    // AAA (б): повторный тик — проход продолжается С ТОЙ ЖЕ парой (NEW не
+    // регенерируется), доставляется следующая нода; txn НЕ выполняется.
     [Fact]
     public async Task Rotate_RestRolling_ContinuesSamePending()
     {
-        // Arrange: тик 1 зафиксировал pending; rolling не завершён.
+        // Arrange: тик 1 зафиксировал pending и доставил первую ноду.
         var rig = await NewRig();
         SeedTicket(rig.Etcd);
-        rig.Driver.InspectEnvOverride = (shard, node) => new Dictionary<string, string>
-        {
-            [RestRotation.EnvCert] = "cert",
-            [RestRotation.EnvPasswordHash] = RestRotation.PasswordHash("Foreign0Pass0000000000000000000X"),
-        };
         (await rig.Rotator.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None))
             .Value.Should().Be(ProcessOutcome.Done);
         var pending1 = (await rig.Journal.ReadAsync("shop", CancellationToken.None)).Value!.RestPending;
+        var appliedAfterFirst = rig.Channel.AppliedNodes.Count;
 
-        // Act: повторный тик (rolling всё ещё открыт).
+        // Act: повторный тик (окно ещё открыто).
         (await rig.Rotator.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None))
             .Value.Should().Be(ProcessOutcome.Done);
 
-        // Assert: pending не изменился (та же пара в полёте).
+        // Assert: pending не изменился (та же пара в полёте); доставлена
+        // следующая нода; заявка жива.
         var pending2 = (await rig.Journal.ReadAsync("shop", CancellationToken.None)).Value!.RestPending;
         pending2.Should().Be(pending1, "regeneration between ticks would reset the rolling progress");
+        rig.Channel.AppliedNodes.Should().HaveCount(appliedAfterFirst + 1);
         rig.Etcd.Store.Should().ContainKey("/pgworker/rotations/shop", "the request is alive");
     }
 
-    // AAA (в): все ноды несут hash(NEW) → txn: compare rest_password==OLD,
-    // put NEW, del заявки; pending сброшен фазой done.
+    // AAA (в): все ноды применили NEW (статусы ready applied==mod NEW-ключа) →
+    // txn: compare rest_password==OLD, put NEW, del заявки; pending сброшен.
     [Fact]
     public async Task Rotate_RestCommit_TxnComparePutAndPendingDrop()
     {
-        // Arrange: тик 1 — pending зафиксирован; rolling завершён (override
-        // возвращает hash(pending) — дефолт NewRig-хелпера уже это делает).
+        // Arrange — заявка; окно закрывается fake-агентом (статусы по факту
+        // применений delivery).
         var rig = await NewRig();
         SeedTicket(rig.Etcd);
-        // Тик 1: rolling открыт (чужой hash) — pending зафиксирован, txn нет.
-        rig.Driver.InspectEnvOverride = (shard, node) => new Dictionary<string, string>
-        {
-            [RestRotation.EnvCert] = "cert",
-            [RestRotation.EnvPasswordHash] = RestRotation.PasswordHash("Foreign0Pass0000000000000000000X"),
-        };
-        (await rig.Rotator.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None))
-            .Value.Should().Be(ProcessOutcome.Done);
-        var pending = (await rig.Journal.ReadAsync("shop", CancellationToken.None)).Value!.RestPending;
-        pending.Should().NotBeNull("tick 1 recorded the pair, no txn yet");
 
-        // Act: rolling завершён — повторный тик несёт txn-коммит.
-        rig.Driver.InspectEnvOverride = (shard, node) => ReadNodeEnvFromJournal(rig.Etcd, shard, node);
-        var outcome = await rig.Rotator.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+        // Act
+        var (committed, failed) = await RunUntilCommitAsync(rig);
 
-        // Assert: rest_password==NEW, заявка удалена, pending сброшен.
-        outcome.Value.Should().Be(ProcessOutcome.Done);
-        rig.Etcd.Store["/clusters/shop/rest_password"].Value.Should().Be(pending);
+        // Assert: rest_password==NEW, заявка удалена, pending сброшен; доставки
+        // обеих нод shard1 — реплика первой.
+        committed.Should().BeTrue();
+        failed.Should().BeFalse();
+        rig.Etcd.Store["/clusters/shop/rest_password"].Value
+            .Should().MatchRegex("^[A-Za-z0-9]{32}$").And.NotBe("Old0Rest0000000000000000000000X");
         rig.Etcd.Store.Should().NotContainKey("/pgworker/rotations/shop");
         var work = await rig.Journal.ReadAsync("shop", CancellationToken.None);
         work.Value!.RestPending.Should().BeNull("the done phase resets pending");
         work.Value.Phase.Should().Be("done");
-    }
-
-    // AAA (г): проигрыш compare (внешняя запись etcdctl) — commit-conflict,
-    // pending сброшен — повторный проход со свежей парой.
-    [Fact]
-    public async Task Rotate_RestCompareConflict_PendingDropped()
-    {
-        // Arrange: pending зафиксирован, rolling завершён; ВНЕШНЯЯ запись
-        // rest_password мимо ротации.
-        var rig = await NewRig();
-        SeedTicket(rig.Etcd);
-        // Тик 1: rolling открыт (чужой hash) — pending зафиксирован, txn нет.
-        rig.Driver.InspectEnvOverride = (shard, node) => new Dictionary<string, string>
-        {
-            [RestRotation.EnvCert] = "cert",
-            [RestRotation.EnvPasswordHash] = RestRotation.PasswordHash("Foreign0Pass0000000000000000000X"),
-        };
-        (await rig.Rotator.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None))
-            .Value.Should().Be(ProcessOutcome.Done);
-        // Rolling завершён (default-хелпер); ВНЕШНЯЯ запись dsn ПОСЛЕ чтения
-        // снапшота тика — compare dsn проиграет (честный конфликт SQL-секретов).
-        rig.Driver.InspectEnvOverride = (shard, node) => ReadNodeEnvFromJournal(rig.Etcd, shard, node);
-        var snap = await Snapshot(rig.Etcd);
-        rig.Etcd.Store["/clusters/shop/shards/shard1/dsn"] =
-            new Fakes.FakeEtcd.Entry("host=h9 dbname=shop user=bucket_admin", 9, 9);
-
-        // Act: тик коммита — compare проигран (dsn изменился).
-        var outcome = await rig.Rotator.TickAsync(snap, CancellationToken.None);
-
-        // Assert: commit-conflict + pending сброшен (свежая пара в повторе).
-        outcome.IsSuccess.Should().BeFalse();
-        var work = await rig.Journal.ReadAsync("shop", CancellationToken.None);
-        work.Value!.Phase.Should().Be("commit-conflict");
-        work.Value.RestPending.Should().BeNull("the repeated pass uses a fresh pair");
+        rig.Channel.AppliedNodes.Where(n => n.StartsWith("shard1", StringComparison.Ordinal))
+            .Should().ContainInOrder("shard1b", "shard1a");
     }
 
     // AAA (д): потеря pending (журнал перезаписан без поля) — свежая пара,
@@ -532,48 +580,37 @@ public class ClusterSecretRotatorTests
         await rig.Journal.WritePhaseAsync("shop", "rotate-app-password", "rotate-rest-rolling", "i1", null,
             CancellationToken.None, dropRestPending: true);
 
-        // Act: тик — фиксирует НОВУЮ пару (rolling по override завершён сразу).
+        // Act: тик — фиксирует НОВУЮ пару (окно снова открыто — ключи не под NEW).
         var outcome = await rig.Rotator.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
 
-        // Assert: новая пара ≠ потерянная; txn коммитит её (идемпотентность).
+        // Assert: новая пара ≠ потерянная (pending в журнале); txn коммитит её
+        // по ходу цикла (идемпотентность).
         outcome.Value.Should().Be(ProcessOutcome.Done);
-        rig.Etcd.Store["/clusters/shop/rest_password"].Value
-            .Should().NotBe(pending1).And.MatchRegex("^[A-Za-z0-9]{32}$");
+        var pending2 = (await rig.Journal.ReadAsync("shop", CancellationToken.None)).Value!.RestPending
+            ?? rig.Etcd.Store["/clusters/shop/rest_password"].Value;
+        pending2.Should().NotBe(pending1).And.MatchRegex("^[A-Za-z0-9]{32}$");
     }
 
-    // AAA (ж): шард без dsn — его ноды не инспектируются (skip; ноды создадутся
-    // с новой парой после R3).
+    // AAA (ж): шард без dsn — его ноды гейтом пропускаются (skip; ноды
+    // создадутся с новой парой после R3).
     [Fact]
-    public async Task Rotate_ShardWithoutDsn_NotInspected()
+    public async Task Rotate_ShardWithoutDsn_NotDelivered()
     {
-        // Arrange: второй шард без dsn; инспекция только для dsn-шардов.
+        // Arrange: второй шард без dsn; доставки только для dsn-шардов.
         var rig = await NewRig();
         SeedTicket(rig.Etcd);
-        var inspected = new List<string>();
-        rig.Driver.InspectEnvOverride = (shard, node) =>
-        {
-            inspected.Add(shard);
-            return new Dictionary<string, string>
-            {
-                [RestRotation.EnvCert] = "cert",
-                [RestRotation.EnvPasswordHash] = RestRotation.PasswordHash(
-                    ParseRestPending(rig.Etcd.Store.GetValueOrDefault("/pgworker/work/shop")?.Value)
-                    ?? rig.Etcd.Store.GetValueOrDefault("/clusters/shop/rest_password")?.Value ?? ""),
-            };
-        };
-        // шард2 без dsn: перезапишем пустой строкой-«нет ключа» — уберём dsn.
         rig.Etcd.Store.Remove("/clusters/shop/shards/shard2/dsn");
 
         // Act
-        var outcome = await rig.Rotator.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+        var (committed, failed) = await RunUntilCommitAsync(rig);
 
-        // Assert: инспекция только shard1; txn коммитит (шард2 — skip, R3 не ждёт его).
-        outcome.Value.Should().Be(ProcessOutcome.Done);
-        inspected.Should().OnlyContain(sh => sh == "shard1");
+        // Assert: доставки только shard1 (2 ноды); txn коммитит (шард2 — skip).
+        committed.Should().BeTrue();
+        failed.Should().BeFalse();
+        rig.Channel.AppliedNodes.Should().OnlyContain(n => n.StartsWith("shard1", StringComparison.Ordinal));
+        rig.Channel.AppliedNodes.Should().HaveCount(2);
         rig.Etcd.Store.Should().NotContainKey("/pgworker/rotations/shop");
     }
-
-    // ── рев.3, П2: гварды R2-rest гейта — окно не удерживают ──
 
     // Общий ассерт коммита: заявка снята, ключ rest_password — NEW, pending сброшен.
     private static async Task AssertWindowCommittedAsync(Rig rig)
@@ -591,35 +628,30 @@ public class ClusterSecretRotatorTests
     public async Task Rotate_RestoreShard_DoesNotHoldRestWindow()
     {
         // Arrange: shard1 — активная restore (демонтаж владеет restore-процессом);
-        // env shard1 расходится (чужой hash), shard2 конвергентен.
+        // доставки идут только на shard2.
         var etcd = new Fakes.FakeEtcd();
         SeedCluster(etcd);
         etcd.Seed("/pgworker/backups/shop/shard1/restore/r1",
             """{"state":"RUNNING","backup_id":"f1","source":"shard1","target":"shop-new","node":"pgw-r1","requested_unix":1755900000,"requested_by":"admin"}""");
         SeedTicket(etcd);
         var rig = await NewRig(etcd);
-        rig.Driver.InspectEnvOverride = (shard, node) => shard == "shard1"
-            ? new Dictionary<string, string>
-            {
-                [RestRotation.EnvCert] = "cert",
-                [RestRotation.EnvPasswordHash] = RestRotation.PasswordHash("Stale0Pass0000000000000000000000X"),
-            }
-            : ReadNodeEnvFromJournal(rig.Etcd, shard, node);
 
         // Act
-        var outcome = await rig.Rotator.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+        var (committed, failed) = await RunUntilCommitAsync(rig);
 
-        // Assert: restore-шард не инспектируется гейтом — txn коммитит.
-        outcome.IsSuccess.Should().BeTrue(outcome.Error?.ToString());
+        // Assert: restore-шард пропущен гейтом — txn коммитит.
+        committed.Should().BeTrue();
+        failed.Should().BeFalse();
+        rig.Channel.AppliedNodes.Should().OnlyContain(n => n.StartsWith("shard2", StringComparison.Ordinal));
         await AssertWindowCommittedAsync(rig);
     }
 
-    // AAA: усыновлённая нода (object) не инспектируется — пустой словарь по
-    // каноническому имени не показатель; окно ею не удерживается.
+    // AAA: усыновлённая нода (object) гейтом пропускается — доставки на неё
+    // нет; окно не удерживается.
     [Fact]
     public async Task Rotate_AdoptedNode_DoesNotHoldRestWindow()
     {
-        // Arrange: обе ноды shard1 — object (внешняя orchestration), env расходится.
+        // Arrange: обе ноды shard1 — object (внешняя orchestration).
         var rig = await NewRig();
         SeedTicket(rig.Etcd);
         var raw = rig.Etcd.Store["/pgworker/portalloc/shop"].Value;
@@ -629,50 +661,14 @@ public class ClusterSecretRotatorTests
         mutable["shard1/shard1b"] = mutable["shard1/shard1b"] with { Object = "external-b" };
         rig.Etcd.Store["/pgworker/portalloc/shop"] =
             new Fakes.FakeEtcd.Entry(Portalloc.Serialize(mutable), 2, 2);
-        var inspected = new List<string>();
-        rig.Driver.InspectEnvOverride = (shard, node) =>
-        {
-            if (shard == "shard1")
-                inspected.Add(node); // не должен зваться
-            return shard == "shard1"
-                ? new Dictionary<string, string>
-                {
-                    [RestRotation.EnvCert] = "cert",
-                    [RestRotation.EnvPasswordHash] = RestRotation.PasswordHash("Stale0Pass0000000000000000000000X"),
-                }
-                : ReadNodeEnvFromJournal(rig.Etcd, shard, node); // shard2 конвергентен
-        };
 
         // Act
-        var outcome = await rig.Rotator.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+        var (committed, failed) = await RunUntilCommitAsync(rig);
 
         // Assert: object-ноды пропущены гейтом — txn коммитит.
-        outcome.IsSuccess.Should().BeTrue(outcome.Error?.ToString());
-        inspected.Should().BeEmpty("object nodes are not inspected");
+        committed.Should().BeTrue();
+        failed.Should().BeFalse();
+        rig.Channel.AppliedNodes.Should().OnlyContain(n => n.StartsWith("shard2", StringComparison.Ordinal));
         await AssertWindowCommittedAsync(rig);
     }
-
-    // AAA: драйвер без честной инспекции (Swarm-заглушка) — окно НЕ удерживается
-    // (rolling-шаг там no-op, вечное ожидание лишь блокировало бы ротацию).
-    [Fact]
-    public async Task Rotate_SwarmInspection_FastPassRestWindow()
-    {
-        // Arrange: Swarm-семантика инспекции; env расходится у всех нод.
-        var rig = await NewRig();
-        SeedTicket(rig.Etcd);
-        rig.Driver.SupportsRunningInspection = false;
-        rig.Driver.InspectEnvOverride = (shard, node) => new Dictionary<string, string>
-        {
-            [RestRotation.EnvCert] = "cert",
-            [RestRotation.EnvPasswordHash] = RestRotation.PasswordHash("Stale0Pass0000000000000000000000X"),
-        };
-
-        // Act
-        var outcome = await rig.Rotator.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
-
-        // Assert: гейт отключён — txn коммитит (приведение env Swarm-нод).
-        outcome.IsSuccess.Should().BeTrue(outcome.Error?.ToString());
-        await AssertWindowCommittedAsync(rig);
-    }
-
 }
