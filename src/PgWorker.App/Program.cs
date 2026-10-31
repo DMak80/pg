@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using System.Security.Cryptography.X509Certificates;
 using PgWorker.App;
 using PgWorker.App.Api;
 using PgWorker.App.Api.Operations;
@@ -261,6 +262,16 @@ builder.Services.AddSingleton(sp =>
 {
     var material = sp.GetRequiredService<RestTlsMaterial>();
     return new RestCertificateCache(material.CaPem, material.CaKeyPem);
+});
+
+// Клиентский серт mTLS-канала доставки (arch/14 §4): выпуск из той же пары
+// PGW_REST_TLS_{CA,CA_KEY} при старте, кеш процесса; новых env-секретов нет.
+builder.Services.AddSingleton(sp =>
+{
+    var material = sp.GetRequiredService<RestTlsMaterial>();
+    var (certPem, keyPem) = RestPki.IssueWorkerClientCertificate(
+        material.CaPem, material.CaKeyPem, "pgworker");
+    return X509Certificate2.CreateFromPem(certPem, keyPem);
 });
 
 // docker: драйвер по режиму (Plain: таблица Hosts; Swarm: manager endpoint).

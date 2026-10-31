@@ -17,6 +17,34 @@ public static class RestPki
 {
     private static readonly Oid ServerAuthOid = new("1.3.6.1.5.5.7.3.1");
 
+    private static readonly Oid ClientAuthOid = new("1.3.6.1.5.5.7.3.2");
+
+    /// <summary>Выпуск клиентского серта воркера для mTLS-канала доставки
+    /// (arch/14 §4, arch/25 №23): CN по роли инициатора канала (pgworker),
+    /// EKU — только ClientAuth; RSA-2048/SHA256, срок и границы — как у
+    /// серверного серта ноды (зажим в NotAfter CA).</summary>
+    public static (string CertPem, string KeyPem) IssueWorkerClientCertificate(
+        string caCertPem, string caKeyPem, string commonName)
+    {
+        using var caCertificate = ParseCertificate(caCertPem);
+        using var caKey = ParseRsaKey(caKeyPem);
+        using var caWithKey = caCertificate.CopyWithPrivateKey(caKey);
+        using var rsa = RSA.Create(2048);
+        var request = new CertificateRequest(
+            $"CN={commonName}", rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+        request.CertificateExtensions.Add(
+            new X509EnhancedKeyUsageExtension([ClientAuthOid], critical: false));
+        var notBefore = DateTimeOffset.UtcNow.AddDays(-1);
+        if (notBefore < caWithKey.NotBefore)
+            notBefore = caWithKey.NotBefore;
+        var notAfter = DateTimeOffset.UtcNow.AddYears(10);
+        if (notAfter > caWithKey.NotAfter)
+            notAfter = caWithKey.NotAfter;
+        using var certificate = request.Create(
+            caWithKey, notBefore, notAfter, RandomNumberGenerator.GetBytes(16));
+        return (certificate.ExportCertificatePem(), rsa.ExportPkcs8PrivateKeyPem());
+    }
+
     /// <summary>
     /// Выпуск серта REST-эндпоинта ноды: CN = полное имя ноды, RSA-2048,
     /// SHA256, срок 10 лет с зажимом NotAfter в NotAfter CA. Ключ — PKCS#8 PEM.
