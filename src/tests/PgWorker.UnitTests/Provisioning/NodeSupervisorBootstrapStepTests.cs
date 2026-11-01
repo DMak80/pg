@@ -202,12 +202,16 @@ public class NodeSupervisorBootstrapStepTests
         var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
 
         // Assert: RemoveNode (kill+rm контейнера+volume) + EnsureNode (новый
-        // volume) + доставка — ровно одна мутация на тик.
+        // volume) + доставка — ровно одна мутация на тик; статус-ключ снесён
+        // (lease прежнего агента переживает RemoveNode — протухший
+        // start_failed без удаления даёт recreate-thrash до бюджета).
         outcome.IsSuccess.Should().BeTrue(outcome.Error?.ToString());
         rig.Driver.RemovedNodes.Should().Contain("shard1/shard1a");
         rig.Driver.EnsuredNodes.Should().Contain("shard1/shard1a");
         rig.Delivery.Calls.Should().HaveCount(1);
         rig.Delivery.Calls[0].Should().Be(("shard1", "shard1a"));
+        rig.Etcd.Store.Should().NotContainKey("/pgworker/nodes/shop/shard1/shard1a/status",
+            "the stale status of the removed agent must not outlive RemoveNode");
     }
 
     // start_failed ЛИДЕРА (leader-ключ — голое имя Patroni, arch/14 §5 F) при

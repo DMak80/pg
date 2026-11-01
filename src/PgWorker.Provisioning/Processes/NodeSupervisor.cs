@@ -701,6 +701,17 @@ public sealed class NodeSupervisor(
                             cluster, shard.Name, node.Name, ct);
                         if (!removed.IsSuccess)
                             return removed;
+                        // Статус-ключ ноды сносится вместе с машиной: lease
+                        // прежнего агента жив до 15 c ПОСЛЕ RemoveNode — без
+                        // удаления следующий тик видит протухший start_failed
+                        // и пересоздаёт ТОЛЬКО ЧТО поднятую ноду (thrash до
+                        // бюджета, факт стенда: 3 recreate за ~4 тика при
+                        // рестарте мастера). Свежий агент перепубликует
+                        // not_initialized своим lease'ом при загрузке.
+                        var delStatus = await DeleteAsync(
+                            $"/pgworker/nodes/{cluster}/{shard.Name}/{node.Name}/status", ct);
+                        if (!delStatus.IsSuccess)
+                            return delStatus;
 
                         var resources = await ReadShardResourcesAsync(cluster, shard.Name, ct);
                         var tuning = pgtune.Create(resources);
