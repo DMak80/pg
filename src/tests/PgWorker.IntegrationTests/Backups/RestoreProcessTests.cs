@@ -10,8 +10,9 @@ using PgWorker.Etcd.Parsing;
 using PgWorker.IntegrationTests.Etcd;
 using PgWorker.Core.Templates;
 using PgWorker.Core.Tuning;
-using PgWorker.Provisioning.Endpoints;
+using Microsoft.Extensions.Logging.Abstractions;
 using PgWorker.Provisioning.Processes;
+using PgWorker.Provisioning.Endpoints;
 using PgWorker.Provisioning.Probes;
 using PgWorker.Provisioning.Sql;
 using Xunit;
@@ -80,6 +81,13 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
             {
                 [$"{shard}/shard1a"] = new("localhost", new NodePorts(16001, 18001, 17001)),
             }), null, ct);
+        // Заявки ресурсов ОБЯЗАТЕЛЬНЫ (arch/14 §2.1 п.4): restore-путь рендерит
+        // bootstrap с tuned-параметрами (pgtune.Create на EnsureNode-пути) —
+        // без заявок pgtune честно фейлит фазу.
+        await fixture.Gateway.PutAsync(fixture.Endpoint,
+            $"/service/{cluster}-{shard}/request_cpu", "2", null, ct);
+        await fixture.Gateway.PutAsync(fixture.Endpoint,
+            $"/service/{cluster}-{shard}/request_mem", "4Gi", null, ct);
     }
 
     // Фейк клиента API приёмника: программируемые ответы, журнал команд
@@ -145,6 +153,12 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
             db ?? new FakeDb(),
             new ThresholdsOptions(600, 1800, PatroniBootSec: 600),
             clock ?? TimeProvider.System,
+            new PgtuneInputsFactory(
+                new PgtuneSettings(18, "oltp", "ssd", "mid_ram", 60,
+                    new HashSet<string>(StringComparer.Ordinal)),
+                NullLogger<PgtuneInputsFactory>.Instance),
+            new PgtuneSettings(18, "oltp", "ssd", "mid_ram", 60,
+                new HashSet<string>(StringComparer.Ordinal)),
             restoreObserver: restoreObserver);
 
     /// <summary>Мини-фейк API приёмника (restore-сценарии): StartRestore — 202

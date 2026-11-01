@@ -121,13 +121,18 @@ public class ClusterSecretRotatorTests
             return new ChannelReply(200, true, null, null);
         }
 
+        // Refuse-ноды: команда принимается (200), но применение НЕ происходит
+        // (модель ready-ноды, отвергающей рестарт против OLD pg_authid).
+        public readonly HashSet<string> RefuseNodes = [];
+
         public async Task<ChannelReply> ApplyAsync(string baseUrl, CancellationToken ct)
         {
             var node = NodeOf(baseUrl);
             AppliedNodes.Add(node);
             var kv = await ReadBootstrapAsync(node)
                 ?? throw new InvalidOperationException("bootstrap key vanished (fake)");
-            await PublishAsync(node, (long)kv.ModRevision);
+            if (!RefuseNodes.Contains(node))
+                await PublishAsync(node, (long)kv.ModRevision);
             return new ChannelReply(200, true, (long)kv.ModRevision, null);
         }
 
@@ -386,6 +391,105 @@ public class ClusterSecretRotatorTests
         done.Should().BeTrue("the leader key resolves the master — R4 completes");
         failed.Should().BeFalse();
         (await rig.Journal.ReadAsync("shop", CancellationToken.None)).Value!.Phase.Should().Be("done");
+    }
+
+    // Ревью 2 (BLOCKER+MAJOR): initializing-нода АКТИВНОГО шарда в открытом
+    // окне (Wait — мутации нет, попытка ≠ прогресс): 3 тихих тика подводят
+    // R4-гвард → ALTER (28P01 уходит) → InProgress с ОТКРЫТЫМ окном
+    // (rotateQuietTicks не сбрасывает флаг); применение узла → done (флаг
+    // false). Гвард лайвлока достижим, окно не закрывается при частичном
+    // схождении.
+    [Fact]
+    public async Task Rotate_InitializingNode_QuietTicksReachAlter_PartialStaysOpen_ThenDone()
+    {
+        // Arrange: заявка при всех ready — тик 1 открывает окно (R0/R1/R2) и
+        // доставляет shard1a; initializing-нода входит в initializing УЖЕ В
+        // ОТКРЫТОМ окне (кейс MR-#2: гвард «до открытия» здесь не действует —
+        // окно открыто поверх живого кластера).
+        var rig = await NewRig();
+        SeedTicket(rig.Etcd);
+        (await rig.Rotator.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None))
+            .IsSuccess.Should().BeTrue("tick 1 opens the window and delivers shard1a");
+
+        // Act-0: shard1b вошла в initializing в открытом окне (28P01 против
+        // OLD pg_authid — ready недостижим до ALTER).
+        rig.Etcd.Store["/pgworker/nodes/shop/shard1/shard1b/status"] =
+            new Fakes.FakeEtcd.Entry(
+                """{"state":"initializing","components":{"pg":"ready","doorman":"starting"},"updated_unix":1}""",
+                1, 1);
+
+        // Act-1: тики — shard2 применения (Delivered, quiet:0), затем тихие
+        // (initializing-b Wait — попытка ≠ прогресс) → quiet 1..3 → R4-допуск
+        // (ALTER на тике с quiet>=3).
+        var ticks = new List<string>();
+        for (var i = 0; i < 8; i++)
+        {
+            var o = await rig.Rotator.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+            var w = await rig.Journal.ReadAsync("shop", CancellationToken.None);
+            ticks.Add($"TICK{i + 1}: ok={o.IsSuccess} err={o.Error?.Message} phase={w.Value?.Phase} quiet={w.Value?.RotateQuietTicks} open={w.Value?.RestWindowOpen}");
+        }
+
+        ticks.All(t => t.Contains("phase=rotate-quiet-alter-partial") || t.Contains("ok=True"))
+            .Should().BeTrue(string.Join(" | ", ticks));
+        // Assert-1: ALTER выполнен (NEW-пароль в pg_authid — канон «etcd —
+        // источник»), окно ОСТАЛОСЬ открытым (partial — InProgress, не done).
+        var work = await rig.Journal.ReadAsync("shop", CancellationToken.None);
+        rig.Sql.Executed.Should().Contain(c => c.Sql.Contains("ALTER ROLE"),
+            "quiet guard reaches the ALTER; ticks: " + string.Join(" | ", ticks));
+        // После ALTER узел ещё initializing: следующий тик — тихий (окно
+        // открыто; частичное схождение НЕ закрывает окно и НЕ ставит done).
+        work.Value!.RestWindowOpen.Should().BeTrue("partial convergence keeps the window open");
+        work.Value!.Phase.Should().NotBe("done");
+
+        // Act-2: узел применяет NEW (после ALTER 28P01 ушёл) → следующий тик.
+        var key = await rig.Etcd.GetAsync(Ep,
+            "/clusters/shop/shards/shard1/nodes/shard1b/bootstrap", CancellationToken.None);
+        var mod = key.Value!.ModRevision;
+        await rig.Etcd.PutAsync(Ep, "/pgworker/nodes/shop/shard1/shard1b/status",
+            System.Text.Json.JsonSerializer.Serialize(new Dictionary<string, object?>
+            {
+                ["state"] = "ready",
+                ["applied_revision"] = mod,
+                ["components"] = new Dictionary<string, string> { ["pg"] = "ready", ["doorman"] = "ready" },
+                ["updated_unix"] = 2,
+            }), null, CancellationToken.None);
+        var (done, failed) = await RunUntilDoneAsync(rig);
+
+        // Assert-2: полное схождение — done, окно закрыто.
+        done.Should().BeTrue("full convergence closes the window");
+        failed.Should().BeFalse();
+        (await rig.Journal.ReadAsync("shop", CancellationToken.None)).Value!.RestWindowOpen
+            .Should().BeFalse();
+    }
+
+    // Ревью 2 (BLOCKER, контр-кейс): ready-нода, НЕ применяющая NEW (refuse —
+    // рестарт против OLD отвергнут) — НЕ «меньшинство» (unappliedNotReady
+    // = false): ALTER не выполняется, окно остаётся открытым, тики ждут
+    // (waiting-refusal) — операторский разбор.
+    [Fact]
+    public async Task Rotate_ReadyRefusal_NoAlter_WaitingRefusal()
+    {
+        // Arrange: shard1b — ready-отказник (apply Ok, применение не происходит);
+        // остальные ready (применятся сразу).
+        var rig = await NewRig();
+        rig.Channel.RefuseNodes.Add("shard1b");
+        SeedTicket(rig.Etcd);
+
+        // Act: 8 тиков (дольше порога quiet).
+        for (var i = 0; i < 8; i++)
+            (await rig.Rotator.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None))
+                .IsSuccess.Should().BeTrue();
+
+        // Assert: ALTER НЕ выполнялся — refuse-нода даёт Delivered (команда
+        // принята), quiet:0 каждый тик, R4-допуск недостижим (refuse — не
+        // «меньшинство»: unappliedNotReady=false закрыл бы тихий допуск и
+        // без этого); окно остаётся открытым (операторский разбор), rolling
+        // повторяет Apply отказнику каждым тиком.
+        rig.Sql.Executed.Should().NotContain(c => c.Sql.Contains("ALTER ROLE"),
+            "a ready refusal is NOT the quiet minority — no ALTER");
+        var work = await rig.Journal.ReadAsync("shop", CancellationToken.None);
+        work.Value!.RestWindowOpen.Should().BeTrue("the window waits for the operator");
+        work.Value.Phase.Should().StartWith("rotate-rest-rolling");
     }
 
     // Т1 (MR-#7, П11.8): гвард waiting-nodes-ready — тик InProgress, ноль

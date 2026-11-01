@@ -42,6 +42,8 @@ public sealed class RestoreProcess(
     ISqlExecutor db,
     ThresholdsOptions thresholds,
     TimeProvider time,
+    PgtuneInputsFactory pgtune,
+    PgtuneSettings pgtuneSettings,
     ILogger<RestoreProcess>? logger = null,
     Action<string, string, string>? restoreObserver = null, // (cluster, shard, ok|failed), arch/18 §2.7
     TimeSpan? watchdogWindow = null,
@@ -434,8 +436,9 @@ public sealed class RestoreProcess(
             return await TransientAsync(cluster, $"bootstrap-tool/{shard.Name}/{first}",
                 toolCreds.Error!.Message, ct);
         var toolTopology = Topology(cluster, shard.Name, addresses);
+        var toolTuning = pgtune.Create(await ReadShardResourcesAsync(cluster, shard.Name, ct));
         var toolDelivery = await bootstrap.EnsureAsync(
-            toolTopology, first, addr, secrets, null, null,
+            toolTopology, first, addr, secrets, toolTuning, pgtuneSettings.ExcludeParams,
             snap.Config.SyncStrict, toolCreds.Value.RestPassword, isToolStart: true, ct);
         if (!toolDelivery.Delivered)
             return await TransientAsync(cluster, $"bootstrap-tool/{shard.Name}/{first}",
@@ -556,10 +559,12 @@ public sealed class RestoreProcess(
         var work = await journal.ReadAsync(cluster, ct);
         if (!work.IsSuccess)
             return work;
+        // arch/14 §2.1: тюнинг — пересчёт от заявки на КАЖДОМ EnsureNode-пути.
+        var tuning = pgtune.Create(resources);
         return await LongCallPolling.EnsureAsync(
             $"create/start of node {node}",
             token => driver.EnsureNodeAsync(
-                topology, node, addr, etcdEndpoints, resources, null,
+                topology, node, addr, etcdEndpoints, resources, tuning,
                 snap.Config.SyncStrict, token),
             progress, logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<RestoreProcess>.Instance,
             TimeSpan.FromTicks(Math.Max(TimeSpan.TicksPerSecond, WatchdogWindow.Ticks / 2)),
@@ -831,6 +836,17 @@ public sealed class RestoreProcess(
         string cluster, ShardSpec shard, ClusterSnapshot snap,
         RestoreOperationState op, CancellationToken ct)
     {
+        // Живая сверка клэйма перед МУТАЦИЯМИ preflight (arch/17 S5, образец
+        // Demolish/Rejoin): EnsureNode/put/хендшейк без клэйма — мутации
+        // потерявшего клэйм инстанса.
+        if (!await ClaimAliveAsync(cluster, shard.Name, op, ct))
+        {
+            await journal.WritePhaseAsync(cluster, Op,
+                "rejoin-preflight/claim-lost", claims.InstanceId,
+                "claim lost before rejoin-preflight — no mutations", ct);
+            return;
+        }
+
         var addresses = await ReadPortAllocAsync(cluster, ct);
         if (!addresses.IsSuccess)
         {
@@ -856,8 +872,9 @@ public sealed class RestoreProcess(
             if (!addresses.Value.TryGetValue($"{shard.Name}/{node}", out var addr))
                 continue;
             var resources = await ReadShardResourcesAsync(cluster, shard.Name, ct);
+            var tuning = pgtune.Create(resources);
             var ensured = await driver.EnsureNodeAsync(
-                topology, node, addr, etcdEndpoints, resources, null,
+                topology, node, addr, etcdEndpoints, resources, tuning,
                 snap.Config.SyncStrict, ct);
             if (!ensured.IsSuccess)
             {
@@ -868,7 +885,7 @@ public sealed class RestoreProcess(
             }
 
             var delivery = await bootstrap.EnsureAsync(
-                topology, node, addr, secrets, null, null,
+                topology, node, addr, secrets, tuning, pgtuneSettings.ExcludeParams,
                 snap.Config.SyncStrict, creds.Value.RestPassword, isToolStart: false, ct);
             if (delivery.Transient || !delivery.Delivered)
                 await journal.WritePhaseAsync(cluster, Op,
@@ -956,10 +973,11 @@ public sealed class RestoreProcess(
         if (!work.IsSuccess)
             return await TransientAsync(cluster, $"docker-unavailable/{shard.Name}/{op.Id}",
                 work.Error!.Message, ct);
+        var rejoinTuning = pgtune.Create(resources);
         var firstEnsure = await LongCallPolling.EnsureAsync(
             $"create/start of node {first}",
             token => driver.EnsureNodeAsync(
-                topology, first, firstAddr, etcdEndpoints, resources, null,
+                topology, first, firstAddr, etcdEndpoints, resources, rejoinTuning,
                 snap.Config.SyncStrict, token),
             progress, logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<RestoreProcess>.Instance,
             TimeSpan.FromTicks(Math.Max(TimeSpan.TicksPerSecond, WatchdogWindow.Ticks / 2)),
@@ -975,7 +993,7 @@ public sealed class RestoreProcess(
         // не сходится (rejoin-wait выгорает бюджет). Тюнинг null: bootstrap-ключ
         // ноды в etcd жив (provisioning) — рендер не нужен, ensure повторяет его.
         var rejoinDelivery = await bootstrap.EnsureAsync(
-            topology, first, firstAddr, secrets, null, null,
+            topology, first, firstAddr, secrets, rejoinTuning, pgtuneSettings.ExcludeParams,
             snap.Config.SyncStrict, creds.Value.RestPassword, isToolStart: false, ct);
         if (!rejoinDelivery.Delivered)
             return await TransientAsync(cluster, $"bootstrap-rejoin/{shard.Name}/{first}",
@@ -1008,7 +1026,7 @@ public sealed class RestoreProcess(
             var ensured = await LongCallPolling.EnsureAsync(
                 $"create/start of node {node}",
                 token => driver.EnsureNodeAsync(
-                    topology, node, addr, etcdEndpoints, resources, null,
+                    topology, node, addr, etcdEndpoints, resources, rejoinTuning,
                     snap.Config.SyncStrict, token),
                 progress, logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<RestoreProcess>.Instance,
                 TimeSpan.FromTicks(Math.Max(TimeSpan.TicksPerSecond, WatchdogWindow.Ticks / 2)),
@@ -1021,7 +1039,7 @@ public sealed class RestoreProcess(
             // restore пропускает): пин хендшейка → агент стартует компоненты →
             // реплика догоняет лидера.
             var replicaDelivery = await bootstrap.EnsureAsync(
-                topology, node, addr, secrets, null, null,
+                topology, node, addr, secrets, rejoinTuning, pgtuneSettings.ExcludeParams,
                 snap.Config.SyncStrict, creds.Value.RestPassword, isToolStart: false, ct);
             if (!replicaDelivery.Delivered)
                 return await TransientAsync(cluster, $"bootstrap-rejoin/{shard.Name}/{node}",

@@ -391,14 +391,26 @@ public sealed class PgNodeMachine : IDisposable
             error = FirstLine(e.Message);
         }
 
-        _appliedSpiloMaterial = SpiloMaterial(data);
-        _appliedDoormanConfig = DoormanMaterialOf(doormanConfig, data);
-        // MR-#12: при ошибке рестарта ревизия НЕ фиксируется («полуприменённое»
-        // не маскируется) — повторный Apply по ТОМУ ЖЕ ключу не no-op: рестарты
-        // повторяются, applied обновляется после успеха.
         if (error is null)
+        {
+            // Успех: материалы зафиксированы, applied — новая ревизия.
+            _appliedSpiloMaterial = SpiloMaterial(data);
+            _appliedDoormanConfig = DoormanMaterialOf(doormanConfig, data);
             _appliedRevision = (long)mod;
-        await PublishAsync(PgNodeStatus.Ready, mod,
+            await PublishAsync(PgNodeStatus.Ready, mod,
+                Components(pg: spiloChanged ? "starting" : "ready",
+                    doorman: doormanChanged ? "starting" : "ready"),
+                null, ct);
+            return;
+        }
+
+        // MR-#12 (усилено ревью 2): при ошибке рестарта «полуприменённое» не
+        // маскируется — материалы НЕ фиксируются (рестарты повторятся),
+        // Ready публикуется со СТАРОЙ ревизией (applied_revision ≠ mod →
+        // ротатор/доставка честно повторяют Apply, проба с NEW-паролью честно
+        // отражает OLD pg_authid), факт — в error.
+        await PublishAsync(PgNodeStatus.Ready,
+            _appliedRevision is { } appliedOld ? (ulong)appliedOld : null,
             Components(pg: spiloChanged ? "starting" : "ready",
                 doorman: doormanChanged ? "starting" : "ready"),
             error, ct);

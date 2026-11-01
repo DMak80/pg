@@ -568,23 +568,34 @@ public class PgNodeMachineTests
         rig.Supervisor.FailRestartTimes("spilo", 1);
         var apply1 = await rig.Machine.ApplyAsync(CancellationToken.None);
         await rig.Machine.ApplyTask!;
+        var restartsAfterFail = rig.Supervisor.Commands.Count(c => c == "restart spilo");
 
-        // Assert 1: команда принята (Ok=true), но applied НЕ зафиксирован
-        // (остался старый) — «полуприменённое» не маскируется (MR-#12).
+        // Assert 1: команда принята (Ok=true), но «полуприменённое» не
+        // маскируется: applied в машине И в статус-ключе — СТАРАЯ ревизия
+        // (ротатор/доставка честно повторяют Apply), материалы не
+        // зафиксированы (рестарты повторятся).
         apply1.Ok.Should().BeTrue("the command is accepted, the background apply failed");
         rig.Machine.AppliedRevision.Should().Be(appliedBefore,
             "MR-#12: the failed apply must NOT fix the applied revision");
+        var statusAfterFail = rig.Etcd.Store[StatusKey];
+        statusAfterFail.Value.Should().Contain(
+            "\"applied_revision\":" + appliedBefore,
+            "the published Ready carries the OLD revision (not the new mod)");
+        statusAfterFail.Value.Should().Contain("supervisorctl restart spilo",
+            "the failure fact is in error");
 
         // Act 2: повторный Apply по ТОМУ ЖЕ ключу с рабочим supervisorctl —
-        // не no-op: рестарты повторяются.
+        // не no-op: рестарты ПОВТОРЯЮТСЯ (счётчик grew — материалы не были
+        // зафиксированы упавшим применением).
         rig.Etcd.Store[BootstrapKey] = new Fakes.FakeEtcd.Entry(
             BootstrapJson(spilo: "spilo-yaml-fail", cert: rig.MachinePem.Cert, key: rig.MachinePem.Key), 8, 2);
         var apply2 = await rig.Machine.ApplyAsync(CancellationToken.None);
         await rig.Machine.ApplyTask!;
 
-        // Assert 2: Ok=true; рестарты выполнены; applied обновлён.
+        // Assert 2: Ok=true; рестарты grew; applied обновлён.
         apply2.Ok.Should().BeTrue("the retry applies the same key");
-        rig.Supervisor.Commands.Should().Contain("restart spilo");
+        rig.Supervisor.Commands.Count(c => c == "restart spilo").Should()
+            .BeGreaterThan(restartsAfterFail, "the retry repeats the restarts (not a no-op)");
         rig.Machine.AppliedRevision.Should().Be(8);
     }
     [Fact]

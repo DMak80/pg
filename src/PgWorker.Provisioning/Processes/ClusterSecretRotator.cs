@@ -231,18 +231,21 @@ public sealed partial class ClusterSecretRotator(
                         snap.Config.SyncStrict, newRest, ct))
                     continue; // применила NEW — следующая нода
 
-                // ОДНА доставка на тик (spec §3.7.4): доставка завершает тик В
-                // ЛЮБОМ случае — применение у агента фоновое; следующая нода —
-                // следующим тиком. Finish фиксирует фазу
-                // rotate-rest-rolling/<X>/<n>; исход диагностируется следующим
-                // тиком (проба IsOnRevisionAsync: применила — идём дальше).
-                await bootstrap.EnsureAsync(
+                // Ревью 2 (BLOCKER): тихим считается тик БЕЗ фактической
+                // мутации. Delivered — команда принята/применена: прогресс
+                // rolling (finish, quiet:0). Wait/Transient — узел
+                // initializing/недостижим, мутации НЕ было (попытка ≠ прогресс:
+                // иначе initializing-нода держит quiet:0 вечно и R4-гвард
+                // недостижим) — к следующей ноде; решение «меньшинства»
+                // отдаётся R4-гварду ниже.
+                var outcome = await bootstrap.EnsureAsync(
                     topology, node.Name, addr, secrets, tuning, pgtune.ExcludeParams,
                     snap.Config.SyncStrict, newRest, isToolStart: false, ct);
-                // MR-#2: delivery = прогресс rolling — quiet-счётчик обнулён.
-                return await Finish(cluster,
-                    $"rotate-rest-rolling/{shard.Name}/{node.Name}", ProcessOutcome.Done, ct,
-                    restWindowOpen: true, rotateQuietTicks: 0);
+                if (outcome.Delivered)
+                    return await Finish(cluster,
+                        $"rotate-rest-rolling/{shard.Name}/{node.Name}", ProcessOutcome.Done, ct,
+                        restWindowOpen: true, rotateQuietTicks: 0);
+                continue; // Wait/Transient — без мутации, не прогресс
             }
         }
 
@@ -270,6 +273,11 @@ public sealed partial class ClusterSecretRotator(
 
         foreach (var shard in snap.Shards.Where(s => s.Dsn is not null && !s.ToRemove))
         {
+            // MR-#13-симметрия: restore-шард вне rolling (R3-гейт) — и вне
+            // подсчёта схождения (его ноды создадутся с NEW после закрытия
+            // окна; учёт в allApplied сделал бы done недостижимым).
+            if (restoring.Value.Contains(shard.Name))
+                continue;
             var scopeKvs = await RangeAsync($"/service/{cluster}-{shard.Name}/", ct);
             var leader = scopeKvs.IsSuccess
                 ? ClusterSnapshotParser.ParseService(scopeKvs.Value).FirstOrDefault()?.LeaderName
@@ -317,8 +325,11 @@ public sealed partial class ClusterSecretRotator(
             }
             // ALTER выполняется ниже; окно остаётся открытым (флаг не гасится).
         }
-        await journal.WritePhaseAsync(cluster, Op, "rotate-etcd-quiet-passed",
-            claims.InstanceId, null, ct, restWindowOpen: true, rotateQuietTicks: 0);
+        // При полном схождении фаза не нужна (ALTER + done ниже); при
+        // quiet-допуске с неприменившими — отдельная фаза сигнализации.
+        if (!allApplied)
+            await journal.WritePhaseAsync(cluster, Op, "rotate-quiet-alter-unapplied",
+                claims.InstanceId, null, ct, restWindowOpen: true, rotateQuietTicks: quietTicks + 1);
 
         var newApp = await GetAsync(PasswordKey(cluster), ct);
         var newMover = await GetAsync(MoverKey(cluster), ct);
@@ -350,6 +361,14 @@ public sealed partial class ClusterSecretRotator(
                     return await FailAsync(cluster, altered.Error!, $"alter/{shard.Name}", ct);
             }
         }
+
+        // Ревью 2 (MAJOR): после quiet-ALTER окно НЕ закрывается при
+        // неприменивших — R3 продолжается тиками (initializing-ноды применят
+        // NEW: 28P01 ушёл — pg_authid несёт NEW), InProgress с флагом true;
+        // done (флаг false — ЭТОЙ записью) — только при полном схождении.
+        if (!allApplied)
+            return await Finish(cluster, "rotate-quiet-alter-partial", ProcessOutcome.InProgress, ct,
+                restWindowOpen: true, rotateQuietTicks: 0);
 
         // Окно закрыто: снапшот P12 + done (флаг false — ЭТОЙ записью).
         if (snapshot is not null)

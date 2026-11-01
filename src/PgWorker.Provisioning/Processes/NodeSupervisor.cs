@@ -651,7 +651,7 @@ public sealed class NodeSupervisor(
                             await journal.WritePhaseAsync(cluster, "supervise",
                                 $"bootstrap-delivery/{shard.Name}/{node.Name}",
                                 claims.InstanceId, outcome.Detail, ct);
-                        return (Result.Success(), false); // ≤1 мутация на тик кластера
+                        return (Result.Success(), waitQuorum); // ≤1 мутация на тик кластера
                     }
 
                     case "ready":
@@ -663,7 +663,7 @@ public sealed class NodeSupervisor(
                         var keyRead = await GetAsync(
                             $"/clusters/{cluster}/shards/{shard.Name}/nodes/{node.Name}/bootstrap", ct);
                         if (!keyRead.IsSuccess)
-                            return (Fail(keyRead.Error!), false);
+                            return (Fail(keyRead.Error!), waitQuorum);
                         if (keyRead.Value is null || status.AppliedRevision == (long)keyRead.Value.ModRevision)
                             continue; // ключ ещё не доставлен / нода на ревизии — мутаций нет
 
@@ -677,7 +677,7 @@ public sealed class NodeSupervisor(
                             await journal.WritePhaseAsync(cluster, "supervise",
                                 $"bootstrap-apply/{shard.Name}/{node.Name}",
                                 claims.InstanceId, outcome.Detail, ct);
-                        return (Result.Success(), false); // ≤1 мутация на тик кластера
+                        return (Result.Success(), waitQuorum); // ≤1 мутация на тик кластера
                     }
 
                     case "start_failed":
@@ -791,7 +791,7 @@ public sealed class NodeSupervisor(
                             $"node-startfailed-recreate/{shard.Name}/{node.Name}",
                             claims.InstanceId, null, ct,
                             startFailedRecreateCount: recreateCount + 1);
-                        return (Result.Success(), false); // ≤1 мутация на тик кластера
+                        return (Result.Success(), waitQuorum); // ≤1 мутация на тик кластера
                     }
                 }
             }
