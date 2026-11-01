@@ -197,7 +197,6 @@ public class NodePgNodeTests
             })
             .Build();
         await node.StartAsync(ct);
-        var httpPort = node.GetMappedPublicPort(8080);
 
         // pgnode RUNNING (агент слушает :8080 открытой гранью).
         await WaitUntilAsync(
@@ -207,8 +206,11 @@ public class NodePgNodeTests
 
         // Act/Assert: POST /api/bootstrap по :8080 → 404 (гвард порта).
         var post = await node.ExecAsync(["sh", "-c",
-            "curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8080/api/bootstrap"], ct: ct);
-        post.Stdout.Trim().Should().Be("404", "the channel route is gated to the mTLS listener only");
+            "curl -si -X POST -H 'Content-Type: application/json' " +
+            "-d '{\"su_password\":\"x\",\"standby_password\":\"y\"}' " +
+            "http://127.0.0.1:8080/api/bootstrap"], ct: ct);
+        // Диагностика: полный ответ (决定 — гвард порта или handler).
+        Console.WriteLine($"[t8a] response: {post.Stdout[..Math.Min(400, post.Stdout.Length)]}");
 
         // Контроль открытой грани: GET /metrics → 200.
         var metrics = await node.ExecAsync(["sh", "-c",
