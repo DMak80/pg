@@ -1,4 +1,4 @@
-# t05-node-secret-push — план реализации (Фаза 3 dev-flow, рев. 9)
+# t05-node-secret-push — план реализации (Фаза 3 dev-flow, рев. 10)
 
 > **Для исполнителя (субагент coder):** работать по шагам, следом за заголовком
 > «Глобальные ограничения». Каждый шаг: Вход → Действие → Выход → Проверка →
@@ -9,9 +9,11 @@
 > **Статус исполнения:** шаги 1–10, 12, 13 УЖЕ РЕАЛИЗОВАНЫ в ветке
 > (feat-t05-node-secret-push, серия коммитов `feat/fix/test(t05)` — см.
 > git-лог; сборка зелёная, юниты/интеграции/E2E t05-сценарии в ветке).
-> Актуальная задача — **шаг 11 (ротация ETCD-FIRST, маркер окна — переносимый
-> флаг `rest_window_open`)**, затем шаг 14 (мерж-гейт). Выполненные шаги
-> оставлены как статусные строки.
+> Актуальная задача — **шаг 11**: impl-часть ETCD-FIRST (П11.1–П11.3,
+> П11.5-юниты ротатора, П11.6а) уже в ветке; ОСТАЮТСЯ: **П11.9 — перевод
+> apply-пути агента на применение ПО МАТЕРИАЛУ (решение 29: пароль — reload
+> Patroni, НЕ рестарт spilo)** и тестовая доработка **П11.8 (Т1–Т13)**,
+> затем шаг 14 (мерж-гейт). Выполненные шаги оставлены как статусные строки.
 
 **Цель:** контейнер PG-ноды без секретов в docker-env; доставка агентом PgNode
 по статусной машине (`not_initialized → initializing → ready | start_failed`,
@@ -23,8 +25,9 @@
 ноды с новым диском; компонент walreceiver переименован в PgNode.
 
 **Спецификация:** `docs/superpowers/2026-10-31-t05-node-secret-push/spec.md`
-(§3.7.4, §8-19a/19b). Канон — arch/14 §2.1/§3.2/§3.3 (work-строка:
-`rest_window_open`)/§4/§5 C/§5 I (R0–R4), arch/13, arch/25 №23, arch/18,
+(§3.6-4, §3.7.4, §8-19a/19b/29). Канон — arch/14 §2.1/§3.2/§3.3 (work-строка:
+`rest_window_open`)/§4 (применение по материалу)/§5 C/§5 I (R0–R4, R3-пароль
+reload / R3-СЕРТ, граница запрета), arch/13, arch/25 №23, arch/18,
 arch/19.
 
 Все пути — от корня worktree
@@ -61,6 +64,25 @@ arch/19.
   Backup-креды (`backup_password`/`backup_exec`) — ВНЕ тикета t05
   (spec §8-19b: статичны с ensure; ротация — отдельная задача
   t06-rotate-backup-creds).
+- **Применение ротаций на ready-ноде — ПО МАТЕРИАЛУ (spec §8-29; arch/14
+  §4/§5 I):** rest-ПАРОЛЬ — reload Patroni: `REST POST
+  https://127.0.0.1:8008/reload` (basic-auth patroni/NEW) после
+  перегенерации `/run/postgres.yml` из перерендеренного материала
+  (`configure_spilo.py patroni --force`); рестарт Patroni-ПРОЦЕССА и
+  рестарт/пересоздание контейнера ДЛЯ ПАРОЛЯ ЗАПРЕЩЕНЫ (TERM-логика Patroni
+  гасит управляемый PG). rest-СЕРТ — reload SSL-материал НЕ применяет
+  (свойство patroni 4.1.0): рестарт Patroni-программы — ТОЛЬКО реплика
+  (мастера сертом не применяет агент — пересоздаёт воркер, R3-СЕРТ —
+  оркестрация вне тикета t05); порядок серт-ротации «реплики вперёд,
+  лидер последним, ≤1 нода/тик». doorman — рестарт пулера (supervisorctl,
+  рестарты допустимы). supervisorctl-рестарт `spilo` как механика применения
+  ПАРОЛЯ не существует (остаётся: `start` — фаза инициализации, рестарт —
+  серт-ветка реплики). Права доставляемых файлов — поставщик (tmpfs 0600
+  postgres): root-владелец — PermissionError Patroni на reload.
+  Верификация применённости ПАРОЛЯ — ТОЛЬКО на мутирующем эндпоинте
+  (PATCH /config: old-пара → 401, new-пара → 200; GET / публичен —
+  доказательством аутентификации НЕ является); применённость СЕРТА — новый
+  серт в TLS-handshake после возврата реплики в кластер / failover'а.
 
 ## Review Focus
 
@@ -78,6 +100,12 @@ arch/19.
    (реплики→лидер, ≤1 нода/тик, безусловный выход после доставки) и финальный
    ALTER — последний; takeover — по флагу, NEW — из etcd (шаг 11).
 6. `start_failed` → новый диск — границы object/restore/TO_REMOVE (в ветке).
+7. **Применение по материалу (решение 29):** рестарт spilo умирает как
+   механика применения rest-ПАРОЛЯ (reload Patroni; postmaster
+   PID/start_time неизменны — PG не останавливается); серт — рестарт
+   Patroni-программы на реплике / пересоздание мастера воркером;
+   applied_revision фиксируется по факту применения, сбой — error при
+   ready (шаг 11, П11.9).
 
 ---
 
@@ -130,13 +158,19 @@ arch/19.
 
 ## Шаг 11. ClusterSecretRotator: ETCD-FIRST (R0–R4), маркер окна `rest_window_open` — АКТУАЛЬНАЯ ЗАДАЧА
 
-**Вход:** шаги 1–10 в ветке; ротатор — прежний порядок (R2-Alter в середине,
-`rest_pending`, txn-финал) — `src/PgWorker.Provisioning/Processes/ClusterSecretRotator.cs`
-(534 строки); arch/14 §5 I/§3.3 и spec §3.7.4/§8-19a переписаны под
-ETCD-FIRST + флаг `rest_window_open`.
+**Вход:** шаги 1–10 в ветке; impl-часть ETCD-FIRST уже в ветке (ротатор
+`src/PgWorker.Provisioning/Processes/ClusterSecretRotator.cs` — R2-txn
+в начале/флаг `rest_window_open`/лайвлок-гвард; `WorkJournal.RestWindowOpen`;
+гварды надзора от флага — серия коммитов `feat/fix/test(t05)`, см. git-лог).
+ПРОТИВ КАНОНА: apply-путь агента применяет ЛЮБОЕ изменение spilo-материала
+рестартом — `PgNodeMachine.ApplyRestartsAsync` → `supervisorctl restart
+spilo` (рестарт Patroni-процесса для применения rest-ПАРОЛЯ запрещён —
+arch/14 §5 I, spec §8-29); arch/14 §5 I/§4 и spec §3.6-4/§8-19a/§8-29
+переписаны под ETCD-FIRST + применение ПО МАТЕРИАЛУ.
 
-**Действие (кодер):** перевести ротатор на ETCD-FIRST, маркер окна —
-переносимый флаг; удалить `rest_pending`-инфраструктуру; обновить тесты.
+**Действие (кодер):** перевести apply-путь агента на применение по
+материалу (П11.9); завершить тесты ETCD-FIRST (П11.4–П11.7 — сверить по
+факту ветки); тестовая доработка MR (П11.8).
 
 1. **WorkJournal — флаг вместо pending** (`src/Shared.Etcd/Coordination/WorkJournal.cs`;
    механика carry-forward — строки 119–120, 173; П11.2): `WorkState`
@@ -187,17 +221,25 @@ ETCD-FIRST + флаг `rest_window_open`.
 4. **RestRotation** — метод `EffectivePassword` удалить (потребитель один —
    надзор); комментарий `RestoreProcess.cs:483` обновить («REST-пара — ключ
    etcd (arch/14 §5 I ETCD-FIRST)»).
-5. **PgNodeMachine** — без правок (фоновое применение, 28P01-проба —
-   waiting-повтор, не гейт; `ready` пост-apply не ревалидируется); юнит-кейсы
-   окна — П11.6.
+5. **PgNodeMachine — применение ПО МАТЕРИАЛУ** (решение 29 — arch/14
+   §4/§5 I; П11.9): rest-пара — reload Patroni (REST POST /reload после
+   перегенерации конфига Patroni из перерендеренного материала; PG не
+   останавливается — postmaster PID/start_time неизменны), серт — рестарт
+   Patroni-программы (ТОЛЬКО реплика; мастер сертом агентом не применяется —
+   пересоздаёт воркер, R3-СЕРТ вне тикета), doorman — рестарт пулера; фон
+   прежний (28P01-проба — waiting-повтор, не гейт; `ready` пост-apply не
+   ревалидируется); юнит-кейсы окна — П11.6в.
 6. **Тесты** (MAJOR): WorkJournalTests-секция → флаг (П11.4);
    ClusterSecretRotatorTests → ETCD-FIRST, полный список (П11.5);
    RestoreProcessTests-сид окна → `rest_window_open` (П11.7);
-   RestRotationTests-интеграция → ETCD-FIRST (П11.6); E2E Rotate — прогон в
-   шаге 14.
+   RestRotationTests-интеграция → ETCD-FIRST (П11.6а); PgNodeMachineTests —
+   применение по материалу (П11.6в/Т7); E2E Rotate — прогон в шаге 14
+   (верификация пароля — PATCH /config, Т3).
 
-**Выход:** ротация ETCD-FIRST с переносимым маркером окна; `rest_pending`
-отсутствует в коде и тестах; гварды/предикты — от флага.
+**Выход:** ротация ETCD-FIRST с переносимым маркером окна; применение
+ротаций на ready-ноде — по материалу (пароль — reload Patroni, без рестарта
+Patroni-процесса/контейнера); `rest_pending` отсутствует в коде и тестах;
+гварды/предикты — от флага.
 
 **Проверка:** сборка Release 0w/0e; `DOTNET_CLI_UI_LANGUAGE=en dotnet test
 src/tests/Shared.Etcd.UnitTests -c Release --no-build` → зелёные;
@@ -207,9 +249,11 @@ src/tests/PgWorker.IntegrationTests -c Release --no-build --filter
 "FullyQualifiedName~RestRotation|FullyQualifiedName~RestoreProcessTests|`
 `FullyQualifiedName~BootstrapApi"` → зелёные; после П11.8 — фильтры Т12.
 
-**Связь со spec:** §3.7.4, §6.3, §8-19a (ETCD-FIRST + флаг)/§8-19b (backup
-вне тикета); arch/14 §3.3 (`rest_window_open`), §5 I (R0–R4, гварды от
-флага, failure-фазы на предикат не влияют).
+**Связь со spec:** §3.6-4 (применение по материалу), §3.7.4, §6.3, §8-19a
+(ETCD-FIRST + флаг)/§8-19b (backup вне тикета)/§8-29 (применение ротаций:
+пароль — reload, серт — рестарт реплик/пересоздание мастера, граница
+запрета); arch/14 §3.3 (`rest_window_open`), §4, §5 I (R0–R4, гварды от
+флага, failure-фазы на предикат не влияют, R3-СЕРТ и граница запрета).
 
 **Подпункты:**
 
@@ -578,7 +622,10 @@ src/tests/PgWorker.IntegrationTests -c Release --no-build --filter
     флага → switchover отправляется (прежнее поведение).
   в) PgNodeMachineTests — кейсы окна (если ещё нет): doorman-проба false
   (28P01) в фазе (б) → `initializing` (waiting-повтор, НЕ start_failed),
-  после true → `ready`; apply на ready → фоновые рестарты, статус остаётся
+  после true → `ready`; apply на ready → фоновое применение ПО МАТЕРИАЛУ
+  (П11.9: фейк-команды применения — reload Patroni для rest-пары / рестарт
+  Patroni-программы для серта на реплике / рестарт pg_doorman;
+  `supervisorctl restart spilo` для пароля НЕ вызывается), статус остаётся
   `ready`.
 - П11.7. **RestoreProcessTests: сид окна.** В
   `src/tests/PgWorker.IntegrationTests/Backups/RestoreProcessTests.cs`
@@ -625,14 +672,25 @@ src/tests/PgWorker.IntegrationTests -c Release --no-build --filter
   пишет путь — дополнить фейк полем `List<string> Calls` (запись
   `$"{method} {path}"`), не меняя остальных потребителей.
 
-  **Т3 (MR-#9) — E2E Rotate: StartedAt на ВСЁМ окне.** Файл
+  **Т3 (MR-#9) — E2E Rotate: StartedAt на ВСЁМ окне + верификация
+  применённости пароля.** Файл
   `src/tests/PgWorker.E2eTests/E2e/E2eRotateScenarios.cs`: повторный снимок
   `startedAtAfter` (`StartedAtMapAsync`, :95) выполнять ТОЛЬКО ПОСЛЕ
   явного ожидания закрытия окна — `WaitForAsync` по etcd: журнальная фаза
   `done` ИЛИ `rest_window_open != true` (после текущего ожидания снятия
   заявки — окно может жить дольше заявки, ETCD-FIRST); ассерт поэлементного
   равенства с `startedAtBefore` остаётся — теперь «без пересоздания»
-  проверено на полном окне R2→R4.
+  проверено на полном окне R2→R4. Дополнительно (решение 29 — верификация
+  применённости пароля): (1) применённость пароля — ТОЛЬКО на
+  мутирующем эндпоинте (GET / публичен, доказательством не является):
+  Patroni-REST выбранной ноды `PATCH /config` с телом `{}` (no-op-патч,
+  конфиг не меняется) — basic-auth OLD-парой → `401`, NEW-парой (значение
+  `/clusters/<C>/rest_password` из etcd ПОСЛЕ окна) → `200` (клиент — по
+  образцу существующих Patroni-REST-проб фикстуры, CA контура, NEW-пара
+  читается etcd-клиентом фикстуры); (2) PG не останавливался:
+  снимок `postmaster`/`start_time` из публичного `GET /` ДО окна и ПОСЛЕ
+  закрытия — поэлементно равны (postmaster PID/start_time неизменны —
+  факт пробы reload, arch/14 §5 I).
 
   **Т4 (MR-#10) — тест-призрак Rejoin.** Файл
   `src/tests/PgWorker.IntegrationTests/Backups/RestoreProcessTests.cs:1337`
@@ -683,12 +741,13 @@ src/tests/PgWorker.IntegrationTests -c Release --no-build --filter
   фаз (Assert: счётчик `RunInitializingAsync`-запусков рига == 1; txn
   сессии не вызывается повторно — счётчик Txns фейка etcd не вырос);
   подтверждает контракт `TryTransitionAsync` обновлять `_current` сессии;
-  (б) `Apply_Failure_DoesNotFixAppliedRevision`: Apply с падающим
-  supervisorctl (фейк настроен на исключение) → `ApplyResult.Ok == false`;
-  `AppliedRevision` НЕ зафиксирован (машина ready со СТАРЫМ applied);
-  повторный Apply с рабочим supervisorctl по ТОМУ ЖЕ ключу — НЕ no-op
-  (рестарты выполняются, applied обновляется) — «полуприменённое» не
-  маскируется.
+  (б) `Apply_Failure_DoesNotFixAppliedRevision`: Apply с падающей командой
+  применения (фейк `IPatroniApplyCommands.ApplyRestPairAsync` настроен на
+  исключение — механика П11.9, supervisorctl для пароля НЕ существует) →
+  `ApplyResult.Ok == false`; `AppliedRevision` НЕ зафиксирован (машина
+  ready со СТАРЫМ applied); повторный Apply с рабочим фейком по ТОМУ ЖЕ
+  ключу — НЕ no-op (применение выполняется, applied обновляется) —
+  «полуприменённое» не маскируется.
 
   **Т8 (§9-негативы) — порт-граница и клиент-серт канала.**
   (а) `src/tests/PgWorker.IntegrationTests/PgNode/BootstrapApiTests.cs`
@@ -827,6 +886,93 @@ src/tests/PgWorker.IntegrationTests -c Release --no-build --filter
     если сценарий сеет сбой лидера, добавить в Act ожидание смены
     leader-ключа (etcd) перед ожиданием пересоздания.
 
+- П11.9. **PgNodeMachine: применение ротаций ПО МАТЕРИАЛУ (решение 29 —
+  arch/14 §4/§5 I, spec §3.6-4/§8-29).** Выполняется ДО обновления юнитов
+  П11.6в и Т7 (тесты применяют новую механику); уровень — сильная модель
+  (интеграция в машину состояний и транспорт; подпунктов coder-flash нет).
+  Файл `src/PgWorker.PgNode/PgNodeMachine.cs` (+ новый компонент
+  применения рядом, `src/PgWorker.PgNode/`). Против канона сейчас:
+  `ApplyRestartsAsync` применяет ЛЮБОЕ изменение spilo-материала рестартом
+  `supervisorctl restart spilo` — рестарт Patroni-ПРОЦЕССА для применения
+  rest-ПАРОЛЯ ЗАПРЕЩЁН (arch/14 §5 I: TERM-логика Patroni гасит управляемый
+  PG — рестарт процесса = остановка PG; рестарт контейнера — тоже).
+  Заменить раздельным применением по материалу:
+
+  а) материалы — расщепить сравнение: rest-пара — `SpiloMaterial(data)`
+  (YAML `spilo_configuration`); серт — `CertMaterial(data)` = конкатенация
+  `data.CertPem` + `data.KeyPem` (сегодня серт входит в `SpiloMaterial` —
+  признак `spiloChanged` расщепить на `restConfigChanged`/`certChanged`;
+  `SetServerCertificate` — как сейчас); doorman — `DoormanMaterialOf`
+  (без изменений). Новый интерфейс компонента применения (DI в
+  `PgNodeMachine`, фейк — в юнитах П11.6в/Т7):
+  `IPatroniApplyCommands { Task ApplyRestPairAsync(string
+  spiloConfigurationYaml, string restPassword, CancellationToken ct); Task
+  RestartProgramAsync(CancellationToken ct); }` (реализация
+  `PatroniApplyCommands`: ApplyRestPairAsync — пункты б1+б2;
+  RestartProgramAsync — пункт в). Таймаут HTTP — 10 c (единый с клиентом
+  канала; новых констант не вводить).
+  б) ветка rest-пары (серт не менялся) — reload Patroni, БЕЗ рестарта
+  spilo/контейнера:
+  1. перегенерация конфига Patroni из перерендеренного материала:
+     `Process.Start` → `python3 /scripts/configure_spilo.py patroni
+     --force`, env процесса = env агента + `SPILO_CONFIGURATION` =
+     содержимое tmpfs `/run/pgw/spilo-configuration.yml` (остальной env
+     контейнера — SCOPE/PGDATA/ETCD3_HOSTS/… — наследуется). Факты образа
+     spilo-18:4.1-p2: конфиг Patroni — `/run/postgres.yml` (RW_DIR=/run),
+     пишется configure_spilo.py; БЕЗ `--force` существующий файл НЕ
+     перезаписывается (write_file: warning + пропуск) — force обязателен;
+  2. `POST https://127.0.0.1:8008/reload` (HttpClient по образцу
+     `PatroniRoleProbe`: доверие CA из env `SSL_RESTAPI_CA`, SAN-пиннинг
+     loopback 127.0.0.1; basic-auth — username константа `patroni`, пароль
+     — rest_password из ПРИМЕНЯЕМОГО `spiloConfigurationYaml` (NEW)) →
+     ожидание 202. Факты пробы spilo-18:4.1-p2/patroni 4.1.0: reload
+     перечитывает restapi-аутентификацию (OLD-пара 401 / NEW-пара 200),
+     postmaster PID/start_time неизменны — PG не останавливается. Выбор
+     REST POST /reload (а не SIGHUP) зафиксирован: управляемый HttpClient;
+     SIGHUP в .NET без P/Invoke — внешний `kill` с поиском PID patroni
+     (запрещённый путь);
+  в) ветка серта (`certChanged`; reload SSL-материал НЕ применяет —
+  свойство patroni 4.1.0: restapi зависает на TLS-handshake): роль ноды —
+  `PatroniRoleProbe.ProbeAsync` (caPem из env `SSL_RESTAPI_CA`); роль ==
+  Master → серт агентом НЕ применяется (мастера пересоздаёт воркер —
+  R3-СЕРТ arch/14 §5 I: реплики рестартуются ПО ОЧЕРЕДИ (rolling, ≤1
+  нода/тик, между шагами — ожидание возврата реплики в кластер), мастер —
+  пересоздание контейнера kill+remove+ensure с failover'ом на обновлённую
+  реплику, PGDATA сохраняется; оркестрация — ВНЕ тикета t05);
+  `applied_revision` НЕ фиксируется (конвергенция повторит применение
+  после пересоздания); пароль при этом применяется по (б). Роль ≠ Master
+  (реплика/переходное окно) → рестарт Patroni-ПРОГРАММЫ:
+  `IPatroniApplyCommands.RestartProgramAsync` = `supervisorctl restart
+  spilo` (легитимная граница запрета — arch/14 §5 I «R3-серт … запрет на
+  них НЕ переносится»; обёртка spilo-supervised.sh гасит runit-дерево
+  чисто; supervisord autorestart поднимет программу → configure_spilo
+  регенерирует /run/postgres.yml из tmpfs → Patroni стартует с новым
+  сертом и усыновляет локальный PG по DCS; PG реплики гасится на секунды
+  рестарта — канон). Комбинация «серт+пара» на реплике: рестарт покрывает
+  ОБА материала (reload не выполняется);
+  г) doorman — без изменений: `supervisorctl restart pg_doorman`
+  (рестарты пулера допустимы всегда); порядок прежний: сначала пулер,
+  затем spilo-материал;
+  д) семантика машины прежняя: успех → фиксация `_applied*`-материалов и
+  `applied_revision`, публикация `ready`; сбой (регенерация/команда
+  применения бросила) → error-факт, материалы НЕ фиксируются, `ready` со
+  СТАРОЙ ревизией, коулдаун `ApplyRetryCooldownSec` (комментарий
+  MR-#12 «полуприменённое не маскируется» сохранить);
+  е) комментарии/XML-doc обновить по материалу: «rest-пароль — reload
+  Patroni (PG не останавливается; рестарт Patroni-процесса/контейнера для
+  пароля запрещён); серт — рестарт Patroni-программы (только реплика;
+  мастер — пересоздание воркером, R3-СЕРТ); doorman — рестарт пулера;
+  верификация применённости пароля — мутирующий эндпоинт PATCH /config
+  (old 401/new 200), GET / публичен; применённость серта — новый серт в
+  TLS-handshake REST :8008 после возврата реплики в кластер /
+  failover'а (мастер)».
+  Проверка: сборка 0w/0e; юниты PgNodeMachine с фейком
+  `IPatroniApplyCommands` (П11.6в): применение пароля — ApplyRestPairAsync
+  (фейк reload), `restart spilo` в парольной ветке НЕ вызывается; grep
+  `src/PgWorker.PgNode/PgNodeMachine.cs`: обращения `_supervisor.
+  RestartAsync` — ТОЛЬКО `pg_doorman`; серт-ветка — `RestartProgramAsync`
+  на реплике (роль != Master) и пропуск на мастере.
+
 ## Шаг 12. Образ ноды — выполнен
 
 (autostart только pgnode; entrypoint `DOORMAN_CONFIG_TEMPLATE` без openssl;
@@ -835,9 +981,10 @@ SPILO_CONFIGURATION/SSL_RESTAPI_*; образ собирается — 4e36668d.
 
 ## Шаг 13. E2E t05 — выполнено; прогон с ETCD-FIRST — шаг 14
 
-(4 сценария NodeSecrets + Rotate StartedAt — в ветке. Правки шага 11 контур
-E2E не меняют; StartedAt-ассерт валиден — ETCD-FIRST не пересоздаёт
-контейнеры.)
+(4 сценария NodeSecrets + Rotate StartedAt — в ветке. Правки шага 11
+контур E2E не меняют; StartedAt-ассерт валиден — ETCD-FIRST не
+пересоздаёт контейнеры, применение пароля reload'ом (П11.9) postmaster не
+трогает; верификация применённости пароля — PATCH /config, Т3.)
 
 ## Шаг 14. Мерж-гейт (приёмка spec §9)
 
@@ -858,13 +1005,17 @@ E2E не меняют; StartedAt-ассерт валиден — ETCD-FIRST не
 4. docker-E2E: минимум `DOTNET_CLI_UI_LANGUAGE=en dotnet test
    src/tests/PgWorker.E2eTests -c Release --no-build --filter
    FullyQualifiedName~Scale_AddEmptyShard`; полный прогон E2eFixture
-   (`… --no-build`) → зелёные (NodeSecrets-сценарии, Rotate StartedAt,
-   ac2-doorman-sql, WalStream).
+   (`… --no-build`) → зелёные (NodeSecrets-сценарии, Rotate StartedAt
+   + PATCH /config-верификация Т3, ac2-doorman-sql, WalStream).
 5. Grep-контроль: `arch/` без «walreceiver» как имени компонента; в `src/`
    (код и тесты) нет `rest_pending`/`RestPending`/`dropRestPending`/
    `EffectivePassword` (имена упразднены); ВАЖНО: `rest_window_open`/
    `RestWindowOpen` — канонный флаг (arch/14 §3.3), grep-гейт на него НЕ
-   распространяется; `docker inspect` нод — без секретов (E2E-ассерт).
+   распространяется; применение rest-пары — reload Patroni (П11.9): в
+   `src/PgWorker.PgNode/PgNodeMachine.cs` обращение `_supervisor.
+   RestartAsync("spilo")` ОТСУТСТВУЕТ (рестарт Patroni-программы — только
+   серт-ветка реплики через `IPatroniApplyCommands.RestartProgramAsync`);
+   `docker inspect` нод — без секретов (E2E-ассерт).
 6. Роадмап: тег `t05-node-secret-push` удалить из
    `arch/roadmap/pgworker.md` мерж-коммитом; прочие `← t05`-маркеры, если
    появятся у уже реализованных пунктов, — удалить тем же коммитом; пункт
@@ -880,7 +1031,35 @@ E2E не меняют; StartedAt-ассерт валиден — ETCD-FIRST не
 
 ## Самопроверка плана (выполнена plan-writer'ом)
 
-- **Рев. 9 (текущая, тестовая часть MR-ревью):** новый П11.8 (Т1–Т12) —
+- **Рев. 10 (текущая, применение ротаций ПО МАТЕРИАЛУ — решение 29,
+  канон arch/14 §5 I/§4 + spec §8-29/§3.6-4):** (MAJOR) новый П11.9 —
+  перевод apply-пути `PgNodeMachine` с рестарта `supervisorctl restart
+  spilo` на раздельное применение по материалу: rest-пара — reload Patroni
+  (перегенерация `/run/postgres.yml` через `configure_spilo.py patroni
+  --force` + REST `POST /reload` 127.0.0.1:8008, basic-auth NEW; выбор
+  REST против SIGHUP зафиксирован — P/Invoke-запрет; факты образа
+  spilo-18:4.1-p2: конфиг `/run/postgres.yml`, без `--force` файл не
+  перезаписывается), серт — рестарт Patroni-программы ТОЛЬКО на реплике
+  (`PatroniRoleProbe`-гвард роли; мастер сертом агентом не применяется —
+  пересоздание воркером R3-СЕРТ, оркестрация вне тикета), doorman —
+  рестарт пулера; интерфейс `IPatroniApplyCommands` (фейк — юниты);
+  семантика applied_revision/error прежняя. П.5 «Действие» шага 11
+  («PgNodeMachine — без правок») аннулирован. Т7(б) — падение фейка
+  `ApplyRestPairAsync` (не supervisorctl). П11.6в — применение по
+  материалу (не «фоновые рестарты»). Т3 усилен: верификация применённости
+  пароля PATCH /config `{}` (old 401/new 200; GET / публичен) + postmaster
+  PID/start_time неизменны. Глобальные ограничения + Review Focus 7 +
+  шаг 13/14 (grep: `RestartAsync("spilo")` в PgNodeMachine отсутствует,
+  рестарт программы — только серт-ветка реплики). Статус исполнения
+  актуализирован: impl ETCD-FIRST в ветке, остались П11.9 и П11.8.
+  Границы зафиксированы: запрет рестарта Patroni-процесса/контейнера —
+  ТОЛЬКО применение rest-пароля (arch/14 §5 I «граница запрета»: серт/
+  restore/start_failed — легитимные пути); supervisorctl-рестарт spilo
+  остаётся ТОЛЬКО в серт-ветке реплики. Развилок нет: механика reload/
+  рестарта по материалу, инструмент (REST /reload, supervisorctl для
+  серта/пулера/start) и границы — канон arch/14 §4/§5 I + spec §8-29.
+
+- **Рев. 9 (тестовая часть MR-ревью):** новый П11.8 (Т1–Т12) —
   полные спецификации: Т1 юнит гварда waiting-nodes-ready (InProgress/ноль
   txn/доставок → готовность → done); Т2 усиление RecreateMarked-soft-юнита
   (ассерт «probe-журнал без /config»); Т3 E2E Rotate — StartedAt-снимок
@@ -911,7 +1090,7 @@ E2E не меняют; StartedAt-ассерт валиден — ETCD-FIRST не
   Т4 — дополнение ассертами (не переименование), Т9(в) — переписать
   (не удалять).
 
-- **Рев. 8 (текущая, фиксы целевого ревью шага 11):** (MAJOR) П11.5 — полный
+- **Рев. 8 (фиксы целевого ревью шага 11):** (MAJOR) П11.5 — полный
   список `ClusterSecretRotatorTests` (фактические имена/строки: :216–280,
   :284–308, :316–348, :350–368, :370–398, :400–435, :492–666): удаление
   backup-gexec-теста; атомарный тест → ETCD-FIRST (txn-состав без backup,
@@ -941,5 +1120,6 @@ E2E не меняют; StartedAt-ассерт валиден — ETCD-FIRST не
   перечислена явно (удалить/переименовать/переписать с точными ассертами).
 - История ревизий: рев. 3 — TLS-пути + content-проба; рев. 4 — безусловный
   выход/перенос restoring/txn ValueEqual; рев. 5 — generic CallAsync<T>/
-  переменная delivered; рев. 6 — ETCD-FIRST v1; рев. 7 — флаг окна; все
-  реализованы в ветке либо поглощены рев. 8.
+  переменная delivered; рев. 6 — ETCD-FIRST v1; рев. 7 — флаг окна; рев. 8–9
+  — реализованы в ветке либо поглощены следующей; рев. 10 — применение
+  ротаций ПО МАТЕРИАЛУ (текущая).
