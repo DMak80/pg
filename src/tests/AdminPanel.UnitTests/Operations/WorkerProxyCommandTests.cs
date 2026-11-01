@@ -1,6 +1,7 @@
 using System.Text.Json;
 using AdminPanel.Api.Operations;
 using AdminPanel.Api.Operations.Kafka;
+using AdminPanel.Api.Operations.Etcd;
 using AdminPanel.Etcd.Workers;
 using FluentAssertions;
 using Xunit;
@@ -311,6 +312,65 @@ public class WorkerProxyCommandTests
         var result = await handler.Handle(new GetWorkerEffectiveConfigCommand("pgworker"), CancellationToken.None);
 
         // Assert
+        result.Error.Should().BeOfType<WorkerApiUnavailableException>();
+    }
+
+    // Мутация состава etcd-контура (02 §9.14): прокси PUT /api/etcd/config в
+    // API EtcdWorker; оператора нет (декларация, не заявка) — requestedBy null.
+    [Fact]
+    public async Task PutEtcdConfig_200WithBody_ReturnsDtoAndProxies()
+    {
+        // Arrange
+        var api = new StubWorkerApi
+        {
+            Respond = _ => new WorkerApiResult(200, """{"nodes":3}"""),
+        };
+        var handler = new PutEtcdConfigCommandHandler(api);
+
+        // Act
+        var result = await handler.Handle(new PutEtcdConfigCommand(3), CancellationToken.None);
+
+        // Assert
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Nodes.Should().Be(3);
+        api.Calls.Should().ContainSingle().Which.Should().Match<StubWorkerApi.Call>(c =>
+            c.Worker == "etcdworker" && c.Method == HttpMethod.Put && c.Path == "/api/etcd/config"
+            && c.RequestedBy == null);
+        JsonSerializer.Serialize(api.Calls[0].Body, Json).Should().Be("""{"nodes":3}""");
+    }
+
+    [Fact]
+    public async Task PutEtcdConfig_409ProblemDetails_FailedWithStatus()
+    {
+        // Arrange — кворум-гвард воркера проксируется 1:1
+        var api = new StubWorkerApi
+        {
+            Respond = _ => new WorkerApiResult(409,
+                """{"title":"Unsafe membership","status":409,"detail":"состав ниже безопасного"}"""),
+        };
+        var handler = new PutEtcdConfigCommandHandler(api);
+
+        // Act
+        var result = await handler.Handle(new PutEtcdConfigCommand(1), CancellationToken.None);
+
+        // Assert
+        result.IsSuccess.Should().BeFalse();
+        result.Error.Should().BeOfType<WorkerProblemDetails>()
+            .Which.StatusCode.Should().Be(409);
+    }
+
+    [Fact]
+    public async Task PutEtcdConfig_GatewayUnavailable_FailedWithUnavailableException()
+    {
+        // Arrange — живых ключей/URL нет → модуль панели ответит 503
+        var api = new StubWorkerApi { Throw = new WorkerApiUnavailableException("etcdworker") };
+        var handler = new PutEtcdConfigCommandHandler(api);
+
+        // Act
+        var result = await handler.Handle(new PutEtcdConfigCommand(3), CancellationToken.None);
+
+        // Assert
+        result.IsSuccess.Should().BeFalse();
         result.Error.Should().BeOfType<WorkerApiUnavailableException>();
     }
 }
