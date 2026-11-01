@@ -179,6 +179,97 @@ public class NodeBootstrapDeliveryTests
         channel.Calls.Should().Contain(c => c.StartsWith("apply", StringComparison.Ordinal));
     }
 
+    // Дисциплина пина (arch/14 §5 C/§5 I R3): пин этой ревизии уже принят —
+    // повторная доставка (тот же applied != mod, ключ не менялся) apply НЕ
+    // отправляет (Wait): повтор — только по транспорт-фейлу/новой ревизии;
+    // долбёжка apply при не-applied запрещена.
+    [Fact]
+    public async Task Ensure_SecondEnsureSameRevision_NoRepeatPin()
+    {
+        // Arrange: первый пин принят (apply Ok); applied остался отставать
+        // (агент применяет фоново).
+        var cache = NewCache();
+        var (delivery, etcd, channel) = NewDelivery(cache);
+        await delivery.EnsureAsync(Topology, "shard1a", Topology.Nodes["shard1a"],
+            Secrets, null, excludeParams: null, false, RestPassword, isToolStart: false, CancellationToken.None);
+        channel.Calls.Clear();
+        SeedStatus(etcd, "ready", applied: 2, mod: etcd.Store[BootstrapKey].ModRevision);
+        (await delivery.EnsureAsync(Topology, "shard1a", Topology.Nodes["shard1a"],
+            Secrets, null, excludeParams: null, false, RestPassword, isToolStart: false, CancellationToken.None))
+            .Delivered.Should().BeTrue();
+        channel.Calls.Clear(); // журнал первого пина — Act смотрит только повтор
+
+        // Act: повторная доставка той же ревизии (тип R3/шага конвергенции).
+        var outcome = await delivery.EnsureAsync(Topology, "shard1a", Topology.Nodes["shard1a"],
+            Secrets, null, excludeParams: null, false, RestPassword, isToolStart: false, CancellationToken.None);
+
+        // Assert: Wait БЕЗ второго apply (ровно один пин на ревизию).
+        outcome.Wait.Should().BeTrue();
+        outcome.Transient.Should().BeFalse();
+        channel.Calls.Should().BeEmpty("a pinned revision is not re-pinned");
+    }
+
+    // Транспорт-фейл apply снимает delivered-факт: следующая доставка пинит
+    // СНОВА (повтор по транспорт-фейлу — канон arch/14 §5 I R3).
+    [Fact]
+    public async Task Ensure_ApplyTransportFail_RetriesNextEnsure()
+    {
+        // Arrange: ready stale; первый apply — транспорт-отказ.
+        var cache = NewCache();
+        var (delivery, etcd, channel) = NewDelivery(cache);
+        await delivery.EnsureAsync(Topology, "shard1a", Topology.Nodes["shard1a"],
+            Secrets, null, excludeParams: null, false, RestPassword, isToolStart: false, CancellationToken.None);
+        channel.Calls.Clear();
+        channel.TransportFail = true;
+        SeedStatus(etcd, "ready", applied: 2, mod: etcd.Store[BootstrapKey].ModRevision);
+        (await delivery.EnsureAsync(Topology, "shard1a", Topology.Nodes["shard1a"],
+            Secrets, null, excludeParams: null, false, RestPassword, isToolStart: false, CancellationToken.None))
+            .Transient.Should().BeTrue();
+
+        // Act: транспорт восстановлен — следующая доставка.
+        channel.TransportFail = false;
+        var outcome = await delivery.EnsureAsync(Topology, "shard1a", Topology.Nodes["shard1a"],
+            Secrets, null, excludeParams: null, false, RestPassword, isToolStart: false, CancellationToken.None);
+
+        // Assert: пин повторён (Delivered); apply-вызовов 2.
+        outcome.Delivered.Should().BeTrue();
+        channel.Calls.Count(c => c.StartsWith("apply", StringComparison.Ordinal)).Should().Be(2);
+    }
+
+    // Схождение снимает delivered-факт: applied == mod (Delivered без команд),
+    // затем НОВАЯ ревизия ключа — пин уходит снова (новый материал).
+    [Fact]
+    public async Task Ensure_AfterConvergence_NewRevision_PinsAgain()
+    {
+        // Arrange: пин принят; агент догнал ревизию (applied == mod).
+        var cache = NewCache();
+        var (delivery, etcd, channel) = NewDelivery(cache);
+        await delivery.EnsureAsync(Topology, "shard1a", Topology.Nodes["shard1a"],
+            Secrets, null, excludeParams: null, false, RestPassword, isToolStart: false, CancellationToken.None);
+        channel.Calls.Clear();
+        var mod = etcd.Store[BootstrapKey].ModRevision;
+        SeedStatus(etcd, "ready", (long)mod, mod);
+        (await delivery.EnsureAsync(Topology, "shard1a", Topology.Nodes["shard1a"],
+            Secrets, null, excludeParams: null, false, RestPassword, isToolStart: false, CancellationToken.None))
+            .Delivered.Should().BeTrue();
+        channel.Calls.Should().BeEmpty("converged node gets no commands");
+
+        // Act: НОВАЯ ревизия ключа (ротация перерендерила), агент ещё не применял.
+        etcd.Store[BootstrapKey] = etcd.Store[BootstrapKey] with
+        {
+            Value = etcd.Store[BootstrapKey].Value + " ",
+            ModRevision = mod + 5,
+        };
+        SeedStatus(etcd, "ready", applied: (long)mod, mod: mod + 5);
+
+        var outcome = await delivery.EnsureAsync(Topology, "shard1a", Topology.Nodes["shard1a"],
+            Secrets, null, excludeParams: null, false, RestPassword, isToolStart: false, CancellationToken.None);
+
+        // Assert: новая ревизия пинится (apply ушёл).
+        outcome.Delivered.Should().BeTrue();
+        channel.Calls.Should().Contain(c => c.StartsWith("apply", StringComparison.Ordinal));
+    }
+
     // Статус initializing → Wait без команд; статусного ключа нет → Wait.
     [Theory]
     [InlineData("initializing")]

@@ -118,6 +118,7 @@ public class PgNodeMachineTests
     private sealed class FakeStatusWriter(Fakes.FakeEtcd etcd) : INodeStatusWriter
     {
         public readonly List<string> Published = [];
+        public readonly List<string> Jsons = []; // ВСЕ публикации — для ассертов промежуточных фактов
         public int StartCalls;
         public Action? OnBeforeTransition; // инжекция гонки keepalive-put
         private string _lastJson = "";
@@ -127,6 +128,7 @@ public class PgNodeMachineTests
             StartCalls++;
             Published.Add(initial.State);
             _lastJson = initial.ToJson();
+            Jsons.Add(_lastJson);
             await etcd.PutAsync("e", StatusKey, _lastJson, lease: 1, ct);
             return true;
         }
@@ -141,6 +143,7 @@ public class PgNodeMachineTests
         {
             if (_lastJson.Length == 0)
                 return true;
+            Jsons.Add(_lastJson);
             await etcd.PutAsync("e", StatusKey, _lastJson, lease: 1, ct);
             return true;
         }
@@ -153,7 +156,10 @@ public class PgNodeMachineTests
                 [new TxnOp.Put(StatusKey, newValueJson, 1)]);
             var result = await etcd.TxnAsync("e", txn, ct);
             if (result.IsSuccess && result.Value.Succeeded)
+            {
                 _lastJson = newValueJson;
+                Jsons.Add(newValueJson);
+            }
             return result.IsSuccess && result.Value.Succeeded;
         }
 
@@ -662,17 +668,18 @@ public class PgNodeMachineTests
         rig.Supervisor.Commands.Count.Should().Be(commandsAfterFirst);
     }
 
-    // Т7б (MR-#12): Apply с падающим применением (reload) — applied НЕ
-    // зафиксирован («полуприменённое» не маскируется); повторный Apply по ТОМУ
-    // ЖЕ ключу с рабочим применением — выполняется, applied обновлён.
+    // Т7б (MR-#12 + arch/14 §5 I R3): Apply с падающим применением (reload) —
+    // промежуточная публикация со СТАРОЙ ревизией и error-фактом
+    // («полуприменённое» не маскируется), затем применитель САМ ретраит
+    // (коулдаун-пауза 0) и доводит материал — applied обновлён БЕЗ второго
+    // пина воркера (воркер пинает один раз на ревизию).
     [Fact]
-    public async Task Apply_RestartFailure_AppliedNotFixed_ThenRetryApplies()
+    public async Task Apply_FailedReload_SelfRetryConverges_WithoutSecondPin()
     {
-        // Arrange: нода ready; ключ перезаписан с новым YAML; команда
-        // применения бросает (reload реплики — «полуприменённое»).
-        // Коулдаун анти-дребезга выключен — тест проверяет КАНОН немедленного
-        // повтора (MR-#12); в проде повтор той же ревизии отложен на
-        // ApplyRetryCooldownSec (анти-цикл stop/start спило, факт E2E).
+        // Arrange: нода ready; ключ перезаписан с новым YAML; reload падает
+        // ОДИН раз (самоповтор применителя — второй вызов успешен).
+        // Коулдаун-пауза 0 — тест немедленного самоповтора (MR-#12); в проде
+        // пауза ApplyRetryCooldownSec (анти-цикл stop/start спило, факт E2E).
         PgNodeMachine.ApplyRetryCooldownSec = 0;
         await using var rig = await Rig.CreateAsync(RealPemPair());
         rig.ProbeAllReady();
@@ -681,40 +688,147 @@ public class PgNodeMachineTests
         rig.Etcd.Store[BootstrapKey] = new Fakes.FakeEtcd.Entry(
             BootstrapJson(spilo: "spilo-yaml-fail", cert: rig.MachinePem.Cert, key: rig.MachinePem.Key), 8, 2);
 
-        // Act 1: apply с падающим reload.
+        // Act: ОДИН пин — применитель сам ретраит после неудачи.
         rig.PatroniApply.FailReloadTimes(1);
-        var apply1 = await rig.Machine.ApplyAsync(CancellationToken.None);
-        await rig.Machine.ApplyTask!;
-        var reloadsAfterFail = rig.PatroniApply.ReloadCalls;
-
-        // Assert 1: команда принята (Ok=true), но «полуприменённое» не
-        // маскируется: applied в машине И в статус-ключе — СТАРАЯ ревизия
-        // (ротатор/доставка честно повторяют Apply), материалы не
-        // зафиксированы (применение повторится).
-        apply1.Ok.Should().BeTrue("the command is accepted, the background apply failed");
-        rig.Machine.AppliedRevision.Should().Be(appliedBefore,
-            "MR-#12: the failed apply must NOT fix the applied revision");
-        var statusAfterFail = rig.Etcd.Store[StatusKey];
-        statusAfterFail.Value.Should().Contain(
-            "\"applied_revision\":" + appliedBefore,
-            "the published Ready carries the OLD revision (not the new mod)");
-        statusAfterFail.Value.Should().Contain("patroni reload: 401 (fake)",
-            "the failure fact is in error");
-
-        // Act 2: повторный Apply по ТОМУ ЖЕ ключу с рабочим применением —
-        // не no-op: reload ПОВТОРЯЕТСЯ (счётчик grew — материалы не были
-        // зафиксированы упавшим применением).
-        rig.Etcd.Store[BootstrapKey] = new Fakes.FakeEtcd.Entry(
-            BootstrapJson(spilo: "spilo-yaml-fail", cert: rig.MachinePem.Cert, key: rig.MachinePem.Key), 8, 2);
-        var apply2 = await rig.Machine.ApplyAsync(CancellationToken.None);
+        var apply = await rig.Machine.ApplyAsync(CancellationToken.None);
         await rig.Machine.ApplyTask!;
 
-        // Assert 2: Ok=true; reload grew; applied обновлён.
-        apply2.Ok.Should().BeTrue("the retry applies the same key");
-        rig.PatroniApply.ReloadCalls.Should()
-            .BeGreaterThan(reloadsAfterFail, "the retry repeats the apply (not a no-op)");
-        rig.Machine.AppliedRevision.Should().Be(8);
+        // Assert: команда принята (Ok=true); промежуточный факт неудачи
+        // опубликован со СТАРОЙ ревизией и error (MR-#12); самоповтор довёл
+        // материал — applied = новая ревизия; reload-вызовов ровно 2 (неудача
+        // + ретрай) БЕЗ второго пина.
+        apply.Ok.Should().BeTrue("the command is accepted, the background apply self-retries");
+        rig.Machine.AppliedRevision.Should().Be(8,
+            "the applier's own retry converges the material");
+        rig.PatroniApply.ReloadCalls.Should().Be(2,
+            "one failed attempt + one self-retry — no second worker pin");
+        rig.Status.Jsons.Should().Contain(j =>
+                j.Contains("\"applied_revision\":" + appliedBefore, StringComparison.Ordinal)
+                && j.Contains("patroni reload: 401 (fake)", StringComparison.Ordinal),
+            "MR-#12: the failed attempt published Ready with the OLD revision and the error fact");
     }
+
+    // Растущий mod_revision ТОГО ЖЕ контента (переписывание ключа тем же
+    // материалом) НЕ триггерит re-применение: материалы совпадают с
+    // применёнными — ревизия догоняется фиксацией БЕЗ рестартов/reload
+    // (arch/14 §5 I R3: переписывание тем же контентом не снимает/не будит).
+    [Fact]
+    public async Task Apply_SameContentRewrite_FixesRevisionWithoutRestarts()
+    {
+        // Arrange: ready на ревизии 7 (материал M); ключ переписан ТЕМ ЖЕ
+        // материалом — mod вырос до 9.
+        PgNodeMachine.ApplyRetryCooldownSec = 0;
+        var pem = RealPemPair();
+        await using var rig = await Rig.CreateAsync(pem);
+        rig.ProbeAllReady();
+        (await rig.HandshakeAsync()).Should().Be(HandshakeResult.Started);
+        rig.Machine.AppliedRevision.Should().Be(7);
+        rig.Etcd.Store[BootstrapKey] = new Fakes.FakeEtcd.Entry(
+            BootstrapJson(cert: pem.Cert, key: pem.Key), 9, 3);
+        var commandsBefore = rig.Supervisor.Commands.Count;
+        var reloadsBefore = rig.PatroniApply.ReloadCalls;
+
+        // Act: пин новой ревизии того же материала.
+        var apply = await rig.Machine.ApplyAsync(CancellationToken.None);
+        await rig.Machine.ApplyTask!;
+
+        // Assert: Ok; applied = 9; НИ ОДНОЙ команды рестарта/reload.
+        apply.Ok.Should().BeTrue();
+        rig.Machine.AppliedRevision.Should().Be(9,
+            "same-content rewrite is caught up by fixing the revision only");
+        rig.Supervisor.Commands.Skip(commandsBefore).Should().BeEmpty("no restarts on same content");
+        rig.PatroniApply.ReloadCalls.Should().Be(reloadsBefore, "no reload on same content");
+    }
+
+    // Материальный гейт анти-дребезга (arch/14 §5 I R3): материал НЕДАВНО
+    // падал — пин при РАСТУЩЕЙ ревизии того же контента держится коулдауном:
+    // ok-пинок, применитель не запускается, команд нет.
+    [Fact]
+    public async Task Apply_FailedMaterial_GrowingModRevisionKeepsCooldown()
+    {
+        // Arrange: ready; ключ с материалом M (rev 9); в машине зафиксирован
+        // неудавшийся материал M «только что» (юнит-seam); коулдаун 45.
+        PgNodeMachine.ApplyRetryCooldownSec = 45;
+        var pem = RealPemPair();
+        await using var rig = await Rig.CreateAsync(pem);
+        rig.ProbeAllReady();
+        (await rig.HandshakeAsync()).Should().Be(HandshakeResult.Started);
+        var json = BootstrapJson(spilo: "spilo-yaml-v2", cert: pem.Cert, key: pem.Key);
+        rig.Etcd.Store[BootstrapKey] = new Fakes.FakeEtcd.Entry(json, 9, 3);
+        var data = NodeBootstrapData.Parse(json)!;
+        rig.Machine.MarkFailedMaterialForTests(
+            PgNodeMachine.MaterialFingerprint(data),
+            DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+        var commandsBefore = rig.Supervisor.Commands.Count;
+
+        // Act: пин при растущей ревизии того же материала.
+        var apply = await rig.Machine.ApplyAsync(CancellationToken.None);
+
+        // Assert: коулдаун ДЕРЖИТСЯ — ok-пинок; применитель НЕ запущен
+        // (ApplyTask null), команд нет, applied не тронут.
+        apply.Ok.Should().BeTrue("the pin is accepted, the material is in cooldown");
+        rig.Machine.ApplyTask.Should().BeNull("the applier must not start for a material in cooldown");
+        rig.Machine.AppliedRevision.Should().Be(7, "the revision is not fixed while in cooldown");
+        rig.Supervisor.Commands.Skip(commandsBefore).Should().BeEmpty("no restarts while in cooldown");
+    }
+
+    // Материальный гейт: ИСТЕКШИЙ коулдаун (тот же материал) — применитель
+    // запускается, материал применяется.
+    [Fact]
+    public async Task Apply_FailedMaterial_CooldownExpired_Applies()
+    {
+        // Arrange: как в гейт-тесте, но неудача зафиксирована 46 c назад.
+        PgNodeMachine.ApplyRetryCooldownSec = 45;
+        var pem = RealPemPair();
+        await using var rig = await Rig.CreateAsync(pem);
+        rig.ProbeAllReady();
+        (await rig.HandshakeAsync()).Should().Be(HandshakeResult.Started);
+        var json = BootstrapJson(spilo: "spilo-yaml-v2", cert: pem.Cert, key: pem.Key);
+        rig.Etcd.Store[BootstrapKey] = new Fakes.FakeEtcd.Entry(json, 9, 3);
+        var data = NodeBootstrapData.Parse(json)!;
+        rig.Machine.MarkFailedMaterialForTests(
+            PgNodeMachine.MaterialFingerprint(data),
+            DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 46);
+
+        // Act
+        var apply = await rig.Machine.ApplyAsync(CancellationToken.None);
+        await rig.Machine.ApplyTask!;
+
+        // Assert: применён — applied = 9, reload выполнен.
+        apply.Ok.Should().BeTrue();
+        rig.Machine.AppliedRevision.Should().Be(9);
+        rig.PatroniApply.ReloadCalls.Should().Be(1);
+    }
+
+    // Материальный гейт: ДРУГОЙ материал коулдаун не держит (материал
+    // изменился — применение немедленно).
+    [Fact]
+    public async Task Apply_DifferentMaterial_CooldownDoesNotHold()
+    {
+        // Arrange: неудавшийся материал — ЧУЖОЙ (старый YAML); ключ несёт M2.
+        PgNodeMachine.ApplyRetryCooldownSec = 45;
+        var pem = RealPemPair();
+        await using var rig = await Rig.CreateAsync(pem);
+        rig.ProbeAllReady();
+        (await rig.HandshakeAsync()).Should().Be(HandshakeResult.Started);
+        var json = BootstrapJson(spilo: "spilo-yaml-v2", cert: pem.Cert, key: pem.Key);
+        rig.Etcd.Store[BootstrapKey] = new Fakes.FakeEtcd.Entry(json, 9, 3);
+        var other = NodeBootstrapData.Parse(
+            BootstrapJson(spilo: "spilo-yaml-old", cert: pem.Cert, key: pem.Key))!;
+        rig.Machine.MarkFailedMaterialForTests(
+            PgNodeMachine.MaterialFingerprint(other),
+            DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+
+        // Act
+        var apply = await rig.Machine.ApplyAsync(CancellationToken.None);
+        await rig.Machine.ApplyTask!;
+
+        // Assert: применён немедленно — applied = 9.
+        apply.Ok.Should().BeTrue();
+        rig.Machine.AppliedRevision.Should().Be(9);
+        rig.PatroniApply.ReloadCalls.Should().Be(1);
+    }
+
     [Fact]
     public async Task Apply_NotReady_ReturnsNotReady()
     {

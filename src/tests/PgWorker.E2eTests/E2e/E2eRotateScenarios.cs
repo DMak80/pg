@@ -24,6 +24,16 @@ public sealed class E2eRotateScenarios(E2eRotateScenariosFx Ctx) : IClassFixture
 
     private EtcdGateway G => Fx.Gateway;
 
+    // Задача 2 (детерминированная диагностика): OLD rest-пароль — ФИКСИРОВАННАЯ
+    // константа, сидится в etcd ДО provisioning (ensure кладёт ключ
+    // put-if-absent — сид не переписывает). NEW-пароль константой быть НЕ МОЖЕТ:
+    // механизм заявки ротации (панель §9.8: {"requested_unix","requested_by"})
+    // явный rest-пароль НЕ принимает — NEW генерируется ротатором (R2) и
+    // читается из etcd после коммита окна. Все сверки — с константой OLD и
+    // прочитанным NEW; каждая проба пишет в лог «какой пароль послан, какой
+    // код ожидаем» — по любому логу видно, каким паролем ходили.
+    private const string OldRestPasswordConstant = "RotateOldRestE2EConstant00000001";
+
     [Fact]
     public async Task Rotate_TicketRotatesPerClusterSecretsOnAllShards()
     {
@@ -43,7 +53,14 @@ public sealed class E2eRotateScenarios(E2eRotateScenariosFx Ctx) : IClassFixture
         var oldPassword = await Fx.GetAppPasswordAsync(Cluster, ct);
         var oldMover = (await GetOrNullAsync($"/clusters/{Cluster}/mover_password"))!.Value;
         var oldAdmin = (await GetOrNullAsync($"/clusters/{Cluster}/bucket_admin_password"))!.Value;
-        var oldRest = (await GetOrNullAsync($"/clusters/{Cluster}/rest_password"))!.Value;
+        // OLD rest-пароль — константа теста (сид); факт в etcd сверяется.
+        var oldRest = OldRestPasswordConstant;
+        (await GetOrNullAsync($"/clusters/{Cluster}/rest_password"))!.Value
+            .Should().Be(OldRestPasswordConstant,
+                "the seeded OLD rest constant survived provisioning (ensure is put-if-absent)");
+        Console.WriteLine(
+            $"[REST-DIAG] OLD rest password is the test constant {OldRestPasswordConstant}; " +
+            "NEW will be read from etcd after the window opens (the ticket format does not carry it)");
         // Т3 (усиление): постмастер-снимок ДО ротации (после provisioned) —
         // сверка неизменности start_time после reload-применения (П11.9).
         var postmasterBefore = await PostmasterStartTimesAsync(Cluster, ct);
@@ -95,6 +112,9 @@ public sealed class E2eRotateScenarios(E2eRotateScenariosFx Ctx) : IClassFixture
         var newPassword = await Fx.GetAppPasswordAsync(Cluster, ct);
         var newRest = (await GetOrNullAsync($"/clusters/{Cluster}/rest_password"))!.Value;
         Regex.IsMatch(newPassword, "^[A-Za-z0-9]{32}$").Should().BeTrue();
+        Console.WriteLine(
+            $"[REST-DIAG] window opened: NEW rest password (from etcd, rotator-generated) length={newRest.Length}; " +
+            $"OLD is the constant {OldRestPasswordConstant}; expectations: PATCH/config OLD 401→NEW 200 per node as R3 applies");
 
         // Assert 1b : mover/bucket_admin тоже сменились (32 симв [A-Za-z0-9]);
         // dsn-ключи шардов перезаписаны новым bucket_admin-паролем.
@@ -119,7 +139,12 @@ public sealed class E2eRotateScenarios(E2eRotateScenariosFx Ctx) : IClassFixture
                 var work = await GetOrNullAsync($"/pgworker/work/{Cluster}");
                 var nodes = await RangeOrNullAsync($"/pgworker/nodes/{Cluster}/");
                 var rotations = await GetOrNullAsync($"/pgworker/rotations/{Cluster}");
-                return $"work={work?.Value ?? "absent"}; rotations={rotations?.Value ?? "absent"}; statuses={nodes}";
+                // Задача 2: детерминированная картина окна — какой rest-пароль
+                // КАЖДАЯ нода принимает прямо сейчас (мутирующий PATCH /config):
+                // OLD — константа (ожидание 200, пока R3 не применил NEW, далее
+                // 401), NEW — из etcd (ожидание 401 до применения, 200 после).
+                var restAuth = await RestAuthProbeLineAsync(newRest, ct);
+                return $"work={work?.Value ?? "absent"}; rotations={rotations?.Value ?? "absent"}; statuses={nodes}; rest-auth[{restAuth}]";
             });
         windowClosed.Should().BeTrue("R4 closes the rotation window");
 
@@ -141,11 +166,15 @@ public sealed class E2eRotateScenarios(E2eRotateScenariosFx Ctx) : IClassFixture
         foreach (var (key, addr) in addressesAfter.OrderBy(p => p.Key, StringComparer.Ordinal))
         {
             var patchNew = await PatchPatroniConfigAsync(addr.Patroni, newRest, ct);
+            Console.WriteLine(
+                $"[REST-DIAG] {key}: sent=NEW(etcd, len={newRest.Length}) expect=200 got={patchNew}");
             patchNew.Should().Be(200,
-                $"the NEW rest password is accepted by patroni on {key}");
+                $"the NEW rest password (etcd, rotator-generated) is accepted by patroni on {key}");
             var patchOld = await PatchPatroniConfigAsync(addr.Patroni, oldRest, ct);
+            Console.WriteLine(
+                $"[REST-DIAG] {key}: sent=OLD(const {oldRest}) expect=401 got={patchOld}");
             patchOld.Should().Be(401,
-                $"the OLD rest password is rejected by patroni on {key}");
+                $"the OLD rest password (test constant) is rejected by patroni on {key}");
         }
         var postmasterAfter = await PostmasterStartTimesAsync(Cluster, ct);
         postmasterAfter.Keys.Should().BeEquivalentTo(postmasterBefore.Keys,
@@ -236,6 +265,10 @@ public sealed class E2eRotateScenarios(E2eRotateScenariosFx Ctx) : IClassFixture
             {"buckets":2,"dbname":"{{cluster}}","created_unix":1755800000,"state":"NOT_INITIALIZED","bucket_admin_password":"{{E2eFixture.BucketAdminPassword}}"}
             """;
         await G.PutAsync(Endpoint, $"/clusters/{cluster}/config", config, null, ct);
+        // Задача 2: OLD rest-пароль — константа теста, сидится ДО provisioning
+        // (ensure per-cluster кредов put-if-absent — сид не переписывает).
+        await G.PutAsync(Endpoint, $"/clusters/{cluster}/rest_password",
+            OldRestPasswordConstant, null, ct);
         foreach (var shard in new[] { "shard1", "shard2" })
         {
             await G.PutAsync(Endpoint, $"/clusters/{cluster}/shards/{shard}/replicas", "2", null, ct);
@@ -306,6 +339,24 @@ public sealed class E2eRotateScenarios(E2eRotateScenariosFx Ctx) : IClassFixture
             "Basic", Convert.ToBase64String(Encoding.UTF8.GetBytes($"patroni:{password}")));
         using var response = await Fx.NewPatroniHttpClient().SendAsync(request, ct);
         return (int)response.StatusCode;
+    }
+
+    // Задача 2: срез «какой rest-пароль принимает каждая нода сейчас» —
+    // PATCH /config с константой OLD и с NEW из etcd. Формат строки называет
+    // пароль (константа/etcd) и ожидание — по логу окна детерминированно
+    // видно, каким паролем ходили и что ожидали.
+    private async Task<string> RestAuthProbeLineAsync(string newRest, CancellationToken ct)
+    {
+        var addresses = await PortallocAsync(Cluster);
+        var parts = new List<string>();
+        foreach (var (key, addr) in addresses.OrderBy(p => p.Key, StringComparer.Ordinal))
+        {
+            var oldCode = await PatchPatroniConfigAsync(addr.Patroni, OldRestPasswordConstant, ct);
+            var newCode = await PatchPatroniConfigAsync(addr.Patroni, newRest, ct);
+            parts.Add($"{key} sent=OLD(const) expect=200-until-R3-then-401 got={oldCode}" +
+                      $" | sent=NEW(etcd) expect=401-until-R3-then-200 got={newCode}");
+        }
+        return string.Join("; ", parts);
     }
 
     // Компактный срез статусных ключей нод (forensic-телеметрия прогресса

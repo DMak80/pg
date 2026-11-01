@@ -100,18 +100,19 @@ public sealed class PgNodeMachine : IDisposable
     // apply — ok без двойного рестарта).
     private volatile Task? _applyTask;
 
-    // Анти-дребезг повторного применения ТОЙ ЖЕ ревизии после неудавшегося
-    // рестарта: рестарт spilo на реплике с восстановлением PG длиннее
-    // supervisord-startsecs даёт цикл stop/start, каждый виток которого убивает
-    // поднимающийся PG (факт E2E: ротация rest-пары, нода пересоздавалась
-    // надзором). Коулдаун даёт компонентам доездить — окно ротации честно
-    // дозревает тиками (applied_revision не фиксирован, R3 повторяется по
-    // канону arch/14 §5 I; значение — интервал анти-дребезга, не бюджет фаз).
-    // Мутируемый internal static — юнит-seam (прецедент FetchWalCommand.
-    // TransportAttempts): 0 выключает коулдаун (канон-тест немедленного
-    // повтора MR-#12).
+    // Анти-дребезг повторного применения НЕУДАВШЕГОСЯ материала: рестарт spilo
+    // на реплике с восстановлением PG длиннее supervisord-startsecs даёт цикл
+    // stop/start, каждый виток которого убивает поднимающийся PG (факт E2E:
+    // ротация rest-пары, нода пересоздавалась надзором). Коулдаун даёт
+    // компонентам доездить; повтор применения неудавшегося материала —
+    // обязанность агента (самоповтор применителя, arch/14 §5 I R3), воркер
+    // пинает один раз на ревизию. Гейт коулдауна — ОТ МАТЕРИАЛА (отпечаток
+    // YAML+серт+ключ), не от ревизии: переписывание ключа тем же контентом
+    // (растущий mod_revision) коулдаун НЕ снимает. Мутируемый internal
+    // static — юнит-seam (прецедент FetchWalCommand.TransportAttempts):
+    // 0 выключает паузу самоповтора (канон-тест немедленного повтора MR-#12).
     internal static int ApplyRetryCooldownSec = 45;
-    private long? _failedApplyRevision;
+    private string? _failedApplyMaterial;
     private long _failedApplyUnix;
 
     // Юнит-seam: фоновая задача применения (тесты ждут её перед ассертами
@@ -312,19 +313,20 @@ public sealed class PgNodeMachine : IDisposable
     }
 
     /// <summary>Команда применения (POST /api/bootstrap/apply): только ready;
-    /// перечитать ключ, ревизия изменилась — перерендер (синхронно) + точечные
-    /// рестарты (ФОНОВО, под токеном процесса — не запроса). Прогресс воркер
-    /// видит по статусному ключу (applied_revision, arch/14 §5 I): рестарт
-    /// spilo занимает десятки секунд — дольше HttpClient-таймаута канала
-    /// (10 c, spec §2.7), синхронное применение рвало каждую команду по
-    /// таймауту и зацикливало окно ротации на одной ноде.</summary>
+    /// перечитать ключ, ревизия изменилась — запустить фонового применителя
+    /// (догоняет ключ сам, при неудаче повторяет с анти-дребезг-паузой —
+    /// arch/14 §5 I R3). Прогресс воркер видит по статусному ключу
+    /// (applied_revision, arch/14 §5 I): рестарт spilo занимает десятки
+    /// секунд — дольше HttpClient-таймаута канала (10 c, spec §2.7),
+    /// синхронное применение рвало каждую команду по таймауту и зацикливало
+    /// окно ротации на одной ноде.</summary>
     public async Task<ApplyResult> ApplyAsync(CancellationToken ct)
     {
         if (_state != PgNodeStatus.Ready)
             return new ApplyResult(Ok: false, AppliedRevision: null, NotReady: true, EtcdError: false);
-        // Применение уже в ходу (фоновые рестарты) — команда принята: рендер
-        // применён, рестарты/публикация завершатся фоново; повтор — без
-        // двойного рестарта (spec §3.6-4: повторный пинок — ok без действий).
+        // Применитель уже в ходу (в т.ч. спит в паузе самоповтора) — команда
+        // принята: он догоняет АКТУАЛЬНЫЙ ключ фоново; повтор — без второго
+        // применителя (spec §3.6-4: повторный пинок — ok без действий).
         if (_applyTask is { IsCompleted: false })
             return new ApplyResult(Ok: true, AppliedRevision: _appliedRevision,
                 NotReady: false, EtcdError: false);
@@ -350,44 +352,18 @@ public sealed class PgNodeMachine : IDisposable
                 return new ApplyResult(Ok: true, AppliedRevision: _appliedRevision,
                     NotReady: false, EtcdError: false); // ревизия без изменений — no-op
 
-            // Повтор применения той же ревизии сразу после неудавшегося рестарта —
-            // ok-пинок без рестарта (коулдаун анти-дребезга, см. поле).
-            if (_failedApplyRevision == (long)mod
-                && DateTimeOffset.UtcNow.ToUnixTimeSeconds() - _failedApplyUnix < ApplyRetryCooldownSec)
+            // Анти-дребезг по МАТЕРИАЛУ (arch/14 §5 I R3): тот же материал
+            // недавно дал сбой применения — ok-пинок без запуска (самоповтор
+            // применителя идёт по своей паузе). Растущая ревизия ТОГО ЖЕ
+            // контента гейт НЕ снимает — отпечаток материала, не ревизии.
+            if (FailedMaterialCooldownHolds(data, DateTimeOffset.UtcNow.ToUnixTimeSeconds()))
                 return new ApplyResult(Ok: true, AppliedRevision: _appliedRevision,
                     NotReady: false, EtcdError: false);
 
-            // Рендер tmpfs заново (перерендер идемпотентен, 0600).
-            var doormanConfig = RenderedDoormanConfig(data);
-            try
-            {
-                BootstrapRenderer.Render(data, _suPassword ?? "", _standbyPassword ?? "",
-                    _doormanTemplate, RenderRootDirOverride);
-            }
-            catch (Exception e)
-            {
-                // Ошибка рендера на ready-ноде — start_failed с диагностикой
-                // (значения секретов в текст не включаются).
-                await PublishAsync(PgNodeStatus.StartFailed, mod,
-                    Components(pg: "stopped", doorman: "stopped"), FirstLine(e.Message), ct);
-                _state = PgNodeStatus.StartFailed;
-                return new ApplyResult(Ok: false, AppliedRevision: null, NotReady: false, EtcdError: false);
-            }
-
-            // Применение ПО МАТЕРИАЛУ (arch/14 §5 I, spec §3.6-4, решение 29):
-            // rest-пара (YAML) и серт трекаются и применяются раздельно —
-            // пароль reload'ом, серт рестартом программы (только реплика).
-            var restConfigChanged = _appliedSpiloYaml != data.SpiloConfiguration;
-            var certChanged = _appliedCertMaterial != CertMaterial(data);
-            var doormanChanged = _appliedDoormanConfig != DoormanMaterialOf(doormanConfig, data);
-
             // Применение — фоновая задача ПРОЦЕССА (RequestAborted запроса умирает
-            // по таймауту клиента и рвал применение посреди); машина остаётся ready,
-            // факт применения — публикация статусного ключа (arch/14 §5 I).
-            _applyTask = Task.Run(
-                () => ApplyMaterialsAsync(data, mod, doormanConfig,
-                    restConfigChanged, certChanged, doormanChanged),
-                _loopCts.Token);
+            // по таймауту клиента и рвало применение посреди); машина остаётся
+            // ready, факт применения — публикация статусного ключа (arch/14 §5 I).
+            _applyTask = Task.Run(ApplyConvergeLoopAsync, _loopCts.Token);
             return new ApplyResult(Ok: true, AppliedRevision: (long)mod,
                 NotReady: false, EtcdError: false);
         }
@@ -397,22 +373,114 @@ public sealed class PgNodeMachine : IDisposable
         }
     }
 
-    // Фоновая часть применения ПО МАТЕРИАЛУ (arch/14 §5 I, spec §3.6-4,
-    // решение 29; план П11.9): порядок — сначала пулер (рестарты пулера
-    // допустимы всегда), затем spilo-материал. rest-ПАРОЛЬ — reload Patroni
-    // (PG не останавливается; рестарт Patroni-процесса/контейнера для пароля
-    // запрещён); REST-СЕРТ — рестарт Patroni-программы ТОЛЬКО на реплике
-    // (рестарт покрывает оба материала — reload не выполняется); на мастере
-    // серт агентом НЕ применяется (мастера пересоздаёт воркер — R3-СЕРТ вне
-    // тикета): applied_revision НЕ фиксируется — конвергенция повторит
-    // применение после пересоздания; пароль при этом применяется reload'ом.
-    // Сбой любой команды — error-факт, материалы НЕ фиксируются, ready со
-    // СТАРОЙ ревизией, коулдаун (MR-#12 «полуприменённое не маскируется»).
-    private async Task ApplyMaterialsAsync(
-        NodeBootstrapData data, ulong mod, string doormanConfig,
-        bool restConfigChanged, bool certChanged, bool doormanChanged)
+    // Гейт анти-дребезга (юнит-seam для детерминизма тестов): материал ключа
+    // совпадает с недавно неудавшимся И коулдаун не истёк.
+    internal bool FailedMaterialCooldownHolds(NodeBootstrapData data, long nowUnix)
+        => _failedApplyMaterial is { } failed
+           && failed == MaterialFingerprint(data)
+           && nowUnix - _failedApplyUnix < ApplyRetryCooldownSec;
+
+    // Юнит-seam: зафиксировать неудавшийся материал (тесты материального
+    // гейта без прогона реального применения — прецедент SetSuPasswordForTests).
+    internal void MarkFailedMaterialForTests(string material, long unix)
+    {
+        _failedApplyMaterial = material;
+        _failedApplyUnix = unix;
+    }
+
+    // Фоновый применитель-конвергер (arch/14 §5 I R3, spec §3.6-4): доводит
+    // ноду до материала ТЕКУЩЕГО bootstrap-ключа. На каждой итерации ключ
+    // ПЕРЕЧИТЫВАЕТСЯ — применитель догоняет актуальный материал (пин мог
+    // прийти под старую ревизию; ключ мог быть переписан тем же контентом —
+    // тогда ревизия фиксируется без рестартов). Неудавшееся применение —
+    // error-факт, материалы НЕ фиксируются (MR-#12 «полуприменённое не
+    // маскируется»), пауза анти-дребезг-коулдауна и ретрай САМИМ агентом
+    // (воркер пинает один раз на ревизию) — до успеха/остановки процесса.
+    // Порядок применения ПО МАТЕРИАЛУ (решение 29): сначала пулер (рестарты
+    // пулера допустимы всегда), затем spilo-материал: rest-ПАРОЛЬ — reload
+    // Patroni (PG не останавливается; рестарт Patroni-процесса/контейнера
+    // для пароля запрещён); REST-СЕРТ — рестарт Patroni-программы ТОЛЬКО на
+    // реплике (рестарт покрывает оба материала — reload не выполняется); на
+    // мастере серт агентом НЕ применяется (мастера пересоздаёт воркер —
+    // R3-СЕРТ вне тикета): применитель завершается без фиксации ревизии —
+    // конвергенция повторит применение после пересоздания; пароль при этом
+    // применён reload'ом и повтор идемпотентен по состояниям S1/S2.
+    private async Task ApplyConvergeLoopAsync()
     {
         var ct = _loopCts.Token;
+        while (!ct.IsCancellationRequested)
+        {
+            try
+            {
+                var done = await ApplyConvergeOnceAsync(ct);
+                if (done)
+                    return;
+                // Неудача: пауза анти-дребезга — следующий виток ретрая.
+                await Task.Delay(TimeSpan.FromSeconds(ApplyRetryCooldownSec), _clock, ct);
+            }
+            catch (OperationCanceledException)
+            {
+                return; // процесс гасится — публикация недостижима (lease умрёт сам)
+            }
+        }
+    }
+
+    // Одна итерация применителя. true — применение завершено (успех, серт
+    // мастера отложен воркеру, рендер-дефект или материал уже применён);
+    // false — неудача применения (ретрай по коулдауну).
+    private async Task<bool> ApplyConvergeOnceAsync(CancellationToken ct)
+    {
+        var fresh = await ReadBootstrapAsync(ct);
+        if (fresh is null || fresh.Data is not { } data || fresh.ModRevision is not { } mod)
+        {
+            Console.Error.WriteLine(
+                "pgnode: apply converger: bootstrap key unreadable — exiting (worker re-pins on delivery failure)");
+            return true; // ключ/etcd недоступны — применителя нет; пин повторит воркер при сбое доставки
+        }
+
+        lock (_dataGate)
+        {
+            _bootstrap = data;
+            _bootstrapModRevision = mod;
+        }
+        SetServerCertificate(data.CertPem, data.KeyPem);
+
+        // Рендер tmpfs заново (перерендер идемпотентен, 0600).
+        var doormanConfig = RenderedDoormanConfig(data);
+        try
+        {
+            BootstrapRenderer.Render(data, _suPassword ?? "", _standbyPassword ?? "",
+                _doormanTemplate, RenderRootDirOverride);
+        }
+        catch (Exception e)
+        {
+            // Ошибка рендера на ready-ноде — start_failed с диагностикой
+            // (значения секретов в текст не включаются).
+            Console.Error.WriteLine($"pgnode: apply render failed (mod={mod}): {FirstLine(e.Message)}");
+            await PublishAsync(PgNodeStatus.StartFailed, mod,
+                Components(pg: "stopped", doorman: "stopped"), FirstLine(e.Message), ct);
+            _state = PgNodeStatus.StartFailed;
+            return true;
+        }
+
+        // Применение ПО МАТЕРИАЛУ: rest-пара (YAML) и серт трекаются и
+        // применяются раздельно — пароль reload'ом, серт рестартом программы.
+        var restConfigChanged = _appliedSpiloYaml != data.SpiloConfiguration;
+        var certChanged = _appliedCertMaterial != CertMaterial(data);
+        var doormanChanged = _appliedDoormanConfig != DoormanMaterialOf(doormanConfig, data);
+        if (!restConfigChanged && !certChanged && !doormanChanged)
+        {
+            // Материал уже применён (ключ переписан тем же контентом —
+            // mod_revision вырос): фиксация ревизии БЕЗ рестартов
+            // (arch/14 §5 I R3: переписывание тем же контентом не триггерит
+            // re-применение).
+            _appliedRevision = (long)mod;
+            _failedApplyMaterial = null;
+            await PublishAsync(PgNodeStatus.Ready, mod,
+                Components(pg: "ready", doorman: "ready"), null, ct);
+            return true;
+        }
+
         string? error = null;
         var certDeferredToWorker = false; // серт мастера — воркеру (R3-СЕРТ)
         try
@@ -451,15 +519,18 @@ public sealed class PgNodeMachine : IDisposable
         }
         catch (OperationCanceledException)
         {
-            return; // процесс гасится — публикация недостижима (lease умрёт сам)
+            throw; // процесс гасится — виток применителя завершается
         }
         catch (Exception e)
         {
             error = FirstLine(e.Message);
-            // Факт неудавшегося применения — в анти-дребезг (повтор той же
-            // ревизии отложен до истечения коулдауна).
-            _failedApplyRevision = (long)mod;
-            _failedApplyUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            Console.Error.WriteLine(
+                $"pgnode: apply attempt failed (mod={mod}): {error} — retry after {ApplyRetryCooldownSec} s");
+            // Факт неудавшегося применения — в анти-дребезг (гейт по
+            // МАТЕРИАЛУ: повтор того же материала отложен на коулдаун;
+            // самоповтор — виток применителя после паузы).
+            _failedApplyMaterial = MaterialFingerprint(data);
+            _failedApplyUnix = NowUnix();
         }
 
         var pgComponent = restConfigChanged || (certChanged && !certDeferredToWorker)
@@ -468,33 +539,43 @@ public sealed class PgNodeMachine : IDisposable
 
         if (error is null && !certDeferredToWorker)
         {
-            // Успех: применённые материалы зафиксированы, applied — новая ревизия.
+            // Успех: применённые материалы зафиксированы, applied — ревизия ключа.
+            Console.Error.WriteLine($"pgnode: apply converged (mod={mod}, pg={pgComponent})");
             _appliedSpiloYaml = data.SpiloConfiguration;
             _appliedCertMaterial = CertMaterial(data);
             _appliedDoormanConfig = DoormanMaterialOf(doormanConfig, data);
             _appliedRevision = (long)mod;
-            _failedApplyRevision = null;
+            _failedApplyMaterial = null;
             await PublishAsync(PgNodeStatus.Ready, mod,
                 Components(pg: pgComponent,
                     doorman: doormanChanged ? "starting" : "ready"),
                 null, ct);
-            return;
+            return true;
         }
 
-        // Публикация со СТАРОЙ ревизией при сбое команды: «полуприменённое»
-        // не маскируется (MR-#12) — ротатор/доставка честно повторяют Apply,
-        // факт — в error. Случай «серт мастера отложен воркеру (R3-СЕРТ)» —
-        // НЕ ошибка, а ожидаемое состояние (пересоздание мастера — оркестрация
-        // воркера вне тикета): ready со СТАРОЙ ревизией БЕЗ error; применённые
-        // материалы не фиксируются — конвергенция повторит применение после
-        // пересоздания (пароль при этом уже применён reload'ом и повтор
-        // идемпотентен по состояниям S1/S2).
+        // Публикация со СТАРОЙ ревизией при сбое/отложении: «полуприменённое»
+        // не маскируется (MR-#12). Сбой — ретрай применителем по коулдауну
+        // (false); «серт мастера отложен воркеру (R3-СЕРТ)» — НЕ ошибка, а
+        // ожидаемое состояние (пересоздание мастера — оркестрация воркера вне
+        // тикета): ready со СТАРОЙ ревизией БЕЗ error, применитель завершается
+        // (применение повторится процессом пересозданной ноды).
         await PublishAsync(PgNodeStatus.Ready,
             _appliedRevision is { } appliedOld ? (ulong)appliedOld : null,
             Components(pg: pgComponent,
                 doorman: doormanChanged ? "starting" : "ready"),
             error, ct);
+        // true — применителя нет (серт отложен воркеру); false — сбой, ретрай.
+        return certDeferredToWorker;
     }
+
+    // Отпечаток материала применения (гейт анти-дребезга, arch/14 §5 I R3):
+    // YAML + серт + ключ. Ревизии в отпечатке НЕТ — переписывание ключа тем
+    // же контентом (растущий mod_revision) коулдаун не снимает; doorman-
+    // материал производен от шаблона и паролей процесса (константы в жизни
+    // процесса) — в отпечаток не входит. internal — юнит-seam (фейк-фиксация
+    // неудавшегося материала).
+    internal static string MaterialFingerprint(NodeBootstrapData data)
+        => data.SpiloConfiguration + "\n" + CertMaterial(data);
 
     // Роль ноды для серт-ветки: прод — PatroniRoleProbe (CA из env
     // SSL_RESTAPI_CA); юнит-seam — RoleProbeOverride.

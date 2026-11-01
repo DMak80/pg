@@ -49,6 +49,15 @@ public sealed class NodeBootstrapDelivery(
     public static string BootstrapKey(string cluster, string shard, string node)
         => $"/clusters/{cluster}/shards/{shard}/nodes/{node}/bootstrap";
 
+    // Delivered-факт per нода (arch/14 §5 C/§5 I R3): ревизия bootstrap-ключа,
+    // пин применения которой уже ПРИНЯТ агентом (Ok). Повтор пина той же
+    // ревизии не отправляется — применение неудавшегося материала повторяет
+    // сам агент (коулдаун по материалу), прогресс читается статусным ключом.
+    // Повтор пина — только по транспорт-фейлу (факт снимается) или по новой
+    // ревизии ключа (новый материал). Снят при схождении (applied == mod).
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<
+        (string Cluster, string Shard, string Node), ulong> _pinnedRevisions = new();
+
     public async Task<DeliveryOutcome> EnsureAsync(
         ShardTopology topology, string nodeName, NodeAddress addr, InstallSecrets secrets,
         PgTuneResult? tuning, IReadOnlySet<string>? excludeParams, bool syncStrict,
@@ -118,11 +127,30 @@ public sealed class NodeBootstrapDelivery(
                 return new DeliveryOutcome(Delivered: false, Wait: true, Transient: false, null);
             case "ready":
                 if (status.AppliedRevision == (long)modRevision)
+                {
+                    _pinnedRevisions.TryRemove((topology.Cluster, topology.Shard, nodeName), out _);
                     return new DeliveryOutcome(Delivered: true, Wait: false, Transient: false, null);
+                }
+                // Дисциплина пина (arch/14 §5 C/§5 I R3): пин этой ревизии уже
+                // принят агентом — повтор не отправляется (ok-ответ ≠ прогресс:
+                // применитель агента сам доводит материал, статусный ключ —
+                // источник прогресса). Без этого гварда не-applied нода
+                // долбится apply-командами каждый тик двумя вызывающими
+                // (ротатор R3 + шаг конвергенции надзора).
+                if (_pinnedRevisions.TryGetValue((topology.Cluster, topology.Shard, nodeName), out var pinned)
+                    && pinned == modRevision)
+                    return new DeliveryOutcome(Delivered: false, Wait: true, Transient: false,
+                        $"apply already pinned at revision {modRevision} — waiting for agent convergence");
                 var apply = await channel.ApplyAsync(baseUrl, ct);
-                return apply.IsSuccess
-                    ? new DeliveryOutcome(Delivered: true, Wait: false, Transient: false, null)
-                    : Transient($"{baseUrl}/api/bootstrap/apply → {apply.StatusCode}");
+                if (apply.IsSuccess)
+                {
+                    _pinnedRevisions[(topology.Cluster, topology.Shard, nodeName)] = modRevision;
+                    return new DeliveryOutcome(Delivered: true, Wait: false, Transient: false, null);
+                }
+                // Транспорт-фейл/отказ команды — пин не зафиксирован: ретрай
+                // следующим тиком (повтор по транспорт-фейлу — канон).
+                _pinnedRevisions.TryRemove((topology.Cluster, topology.Shard, nodeName), out _);
+                return Transient($"{baseUrl}/api/bootstrap/apply → {apply.StatusCode}");
             default:
                 return new DeliveryOutcome(Delivered: false, Wait: true, Transient: false, null);
         }

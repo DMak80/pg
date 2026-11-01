@@ -465,7 +465,9 @@ public class ClusterSecretRotatorTests
     // Ревью 2 (BLOCKER, контр-кейс): ready-нода, НЕ применяющая NEW (refuse —
     // рестарт против OLD отвергнут) — НЕ «меньшинство» (unappliedNotReady
     // = false): ALTER не выполняется, окно остаётся открытым, тики ждут
-    // (waiting-refusal) — операторский разбор.
+    // (waiting-refusal) — операторский разбор. Дисциплина пина (arch/14 §5 I
+    // R3): отказник пинется ОДИН раз (delivered-факт), дальше тихие тики —
+    // долбёжка apply каждый тик запрещена.
     [Fact]
     public async Task Rotate_ReadyRefusal_NoAlter_WaitingRefusal()
     {
@@ -480,16 +482,17 @@ public class ClusterSecretRotatorTests
             (await rig.Rotator.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None))
                 .IsSuccess.Should().BeTrue();
 
-        // Assert: ALTER НЕ выполнялся — refuse-нода даёт Delivered (команда
-        // принята), quiet:0 каждый тик, R4-допуск недостижим (refuse — не
-        // «меньшинство»: unappliedNotReady=false закрыл бы тихий допуск и
-        // без этого); окно остаётся открытым (операторский разбор), rolling
-        // повторяет Apply отказнику каждым тиком.
+        // Assert: ALTER НЕ выполнялся — refuse-нода не «меньшинство»
+        // (unappliedNotReady=false); пин отказнику отправлен РОВНО ОДИН раз
+        // (delivered-факт — повторы не по транспорт-фейлу запрещены), окно
+        // остаётся открытым (операторский разбор), фаза waiting-refusal.
         rig.Sql.Executed.Should().NotContain(c => c.Sql.Contains("ALTER ROLE"),
             "a ready refusal is NOT the quiet minority — no ALTER");
+        rig.Channel.AppliedNodes.Count(n => n == "shard1b").Should().Be(1,
+            "one pin per revision — repeat pins without transport failure are forbidden");
         var work = await rig.Journal.ReadAsync("shop", CancellationToken.None);
         work.Value!.RestWindowOpen.Should().BeTrue("the window waits for the operator");
-        work.Value.Phase.Should().StartWith("rotate-rest-rolling");
+        work.Value.Phase.Should().Be("rotate-waiting-ready-refusal");
     }
 
     // Т1 (MR-#7, П11.8): гвард waiting-nodes-ready — тик InProgress, ноль
