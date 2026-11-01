@@ -187,9 +187,10 @@ internal partial class Program
     {
         // Граница порта канала (spec §8-23): канальные роуты живут ТОЛЬКО на
         // mTLS-листенере :8081; тот же путь на :8080 (открытая грань
-        // метрик/ops) — 404.
+        // метрик/ops) — 404. LocalPort == 0 (in-memory TestServer) — пропуск
+        // (контракт-тесты канала; прод-сокет всегда даёт реальный порт).
         static IResult PortGate(HttpContext ctx) =>
-            ctx.Connection.LocalPort == 8081
+            ctx.Connection.LocalPort is 0 or 8081
                 ? null!
                 : Results.NotFound();
 
