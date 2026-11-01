@@ -1,4 +1,4 @@
-# t05-node-secret-push — план реализации (Фаза 3 dev-flow, рев. 10)
+# t05-node-secret-push — план реализации (Фаза 3 dev-flow, рев. 11)
 
 > **Для исполнителя (субагент coder):** работать по шагам, следом за заголовком
 > «Глобальные ограничения». Каждый шаг: Вход → Действие → Выход → Проверка →
@@ -10,10 +10,11 @@
 > (feat-t05-node-secret-push, серия коммитов `feat/fix/test(t05)` — см.
 > git-лог; сборка зелёная, юниты/интеграции/E2E t05-сценарии в ветке).
 > Актуальная задача — **шаг 11**: impl-часть ETCD-FIRST (П11.1–П11.3,
-> П11.5-юниты ротатора, П11.6а) уже в ветке; ОСТАЮТСЯ: **П11.9 — перевод
-> apply-пути агента на применение ПО МАТЕРИАЛУ (решение 29: пароль — reload
-> Patroni, НЕ рестарт spilo)** и тестовая доработка **П11.8 (Т1–Т13)**,
-> затем шаг 14 (мерж-гейт). Выполненные шаги оставлены как статусные строки.
+> П11.5-юниты ротатора, П11.6а) и **П11.9 — применение ПО МАТЕРИАЛУ**
+> реализованы в ветке (П11.9 — коммиты cfa1c90f, 7bd0093a; arch/14 §5 I
+> актуализирован — 6390a35d; П11.9 в плане сверен с фактом — рев. 11);
+> ОСТАЮТСЯ: тестовая доработка **П11.8 (Т1–Т13)**, затем шаг 14
+> (мерж-гейт). Выполненные шаги оставлены как статусные строки.
 
 **Цель:** контейнер PG-ноды без секретов в docker-env; доставка агентом PgNode
 по статусной машине (`not_initialized → initializing → ready | start_failed`,
@@ -66,8 +67,9 @@ arch/19.
   t06-rotate-backup-creds).
 - **Применение ротаций на ready-ноде — ПО МАТЕРИАЛУ (spec §8-29; arch/14
   §4/§5 I):** rest-ПАРОЛЬ — reload Patroni: `REST POST
-  https://127.0.0.1:8008/reload` (basic-auth patroni/NEW) после
-  перегенерации `/run/postgres.yml` из перерендеренного материала
+  https://127.0.0.1:8008/reload` (basic-auth patroni; аутентификация —
+  по in-memory конфигу Patroni, попытки паролей [OLD-применённый, NEW])
+  после перегенерации `/run/postgres.yml` из перерендеренного материала
   (`configure_spilo.py patroni --force`); рестарт Patroni-ПРОЦЕССА и
   рестарт/пересоздание контейнера ДЛЯ ПАРОЛЯ ЗАПРЕЩЕНЫ (TERM-логика Patroni
   гасит управляемый PG). rest-СЕРТ — reload SSL-материал НЕ применяет
@@ -80,7 +82,8 @@ arch/19.
   серт-ветка реплики). Права доставляемых файлов — поставщик (tmpfs 0600
   postgres): root-владелец — PermissionError Patroni на reload.
   Верификация применённости ПАРОЛЯ — ТОЛЬКО на мутирующем эндпоинте
-  (PATCH /config: old-пара → 401, new-пара → 200; GET / публичен —
+  (PATCH /config с телом {}: OLD-пара → 401, NEW-пара → 400 — пустой
+  патч отвергается ПОСЛЕ пройденной аутентификации; GET / публичен —
   доказательством аутентификации НЕ является); применённость СЕРТА — новый
   серт в TLS-handshake после возврата реплики в кластер / failover'а.
 
@@ -685,9 +688,13 @@ src/tests/PgWorker.IntegrationTests -c Release --no-build --filter
   мутирующем эндпоинте (GET / публичен, доказательством не является):
   Patroni-REST выбранной ноды `PATCH /config` с телом `{}` (no-op-патч,
   конфиг не меняется) — basic-auth OLD-парой → `401`, NEW-парой (значение
-  `/clusters/<C>/rest_password` из etcd ПОСЛЕ окна) → `200` (клиент — по
-  образцу существующих Patroni-REST-проб фикстуры, CA контура, NEW-пара
-  читается etcd-клиентом фикстуры); (2) PG не останавливался:
+  `/clusters/<C>/rest_password` из etcd ПОСЛЕ окна) → `400` — 400 =
+  аутентификация NEW ПРОЙДЕНА (пустой патч {} Patroni 4.1.0 отвергает
+  как Bad request ПОСЛЕ auth; 401 = пара не применена); ассерты:
+  `patchNew == 400` / `patchOld == 401` per нода (клиент — по образцу
+  существующих Patroni-REST-проб фикстуры, отправка SendAsync —
+  Authorization в самом запросе, CA контура, NEW-пара читается
+  etcd-клиентом фикстуры); (2) PG не останавливался:
   снимок `postmaster`/`start_time` из публичного `GET /` ДО окна и ПОСЛЕ
   закрытия — поэлементно равны (postmaster PID/start_time неизменны —
   факт пробы reload, arch/14 §5 I).
@@ -887,50 +894,101 @@ src/tests/PgWorker.IntegrationTests -c Release --no-build --filter
     leader-ключа (etcd) перед ожиданием пересоздания.
 
 - П11.9. **PgNodeMachine: применение ротаций ПО МАТЕРИАЛУ (решение 29 —
-  arch/14 §4/§5 I, spec §3.6-4/§8-29).** Выполняется ДО обновления юнитов
-  П11.6в и Т7 (тесты применяют новую механику); уровень — сильная модель
-  (интеграция в машину состояний и транспорт; подпунктов coder-flash нет).
-  Файл `src/PgWorker.PgNode/PgNodeMachine.cs` (+ новый компонент
-  применения рядом, `src/PgWorker.PgNode/`). Против канона сейчас:
-  `ApplyRestartsAsync` применяет ЛЮБОЕ изменение spilo-материала рестартом
-  `supervisorctl restart spilo` — рестарт Patroni-ПРОЦЕССА для применения
-  rest-ПАРОЛЯ ЗАПРЕЩЁН (arch/14 §5 I: TERM-логика Patroni гасит управляемый
-  PG — рестарт процесса = остановка PG; рестарт контейнера — тоже).
-  Заменить раздельным применением по материалу:
+  arch/14 §4/§5 I, spec §3.6-4/§8-29).** Реализовано в ветке (коммиты
+  cfa1c90f, 7bd0093a; arch/14 §5 I актуализирован — 6390a35d); ниже —
+  спецификация, сверенная с фактической реализацией (юниты П11.6в/Т7
+  применяют эту механику). Уровень — сильная модель (интеграция в машину
+  состояний и транспорт; подпунктов coder-flash нет). Файл
+  `src/PgWorker.PgNode/PgNodeMachine.cs` (+ компонент применения рядом —
+  `src/PgWorker.PgNode/PatroniApplyCommands.cs`). Раздельное применение
+  по материалу:
 
   а) материалы — расщепить сравнение: rest-пара — `SpiloMaterial(data)`
   (YAML `spilo_configuration`); серт — `CertMaterial(data)` = конкатенация
   `data.CertPem` + `data.KeyPem` (сегодня серт входит в `SpiloMaterial` —
   признак `spiloChanged` расщепить на `restConfigChanged`/`certChanged`;
   `SetServerCertificate` — как сейчас); doorman — `DoormanMaterialOf`
-  (без изменений). Новый интерфейс компонента применения (DI в
-  `PgNodeMachine`, фейк — в юнитах П11.6в/Т7):
+  (без изменений). Интерфейс компонента применения (DI в `PgNodeMachine`,
+  фейк — в юнитах П11.6в/Т7; сигнатура — фактическая):
   `IPatroniApplyCommands { Task ApplyRestPairAsync(string
-  spiloConfigurationYaml, string restPassword, CancellationToken ct); Task
-  RestartProgramAsync(CancellationToken ct); }` (реализация
-  `PatroniApplyCommands`: ApplyRestPairAsync — пункты б1+б2;
-  RestartProgramAsync — пункт в). Таймаут HTTP — 10 c (единый с клиентом
+  spiloConfigurationYaml, string restPasswordCurrent, string
+  restPasswordNew, string pgSuPassword, string pgStandbyPassword,
+  CancellationToken ct); Task RestartProgramAsync(CancellationToken ct); }`
+  — параметры: `spiloConfigurationYaml` — применяемый YAML;
+  `restPasswordCurrent` — пароль ПРИМЕНЁННОГО конфига (аутентификация
+  reload по in-memory конфигу — б2; источник — `RestPasswordOf(
+  _appliedSpiloYaml)` с fallback применяемого — идемпотентный повтор /
+  Patroni стартовал уже из новых tmpfs); `restPasswordNew` — применяемая
+  пара (`RestPasswordOf(data.SpiloConfiguration)`); `pgSuPassword`/
+  `pgStandbyPassword` — per-install пароли PG (`_suPassword`/
+  `_standbyPassword` машины; env регенерации — б1; пустые НЕ
+  прокидываются — путь без доставки per-install паролей). Реализация
+  `PatroniApplyCommands(ISupervisorCommands, ILogger?)`:
+  ApplyRestPairAsync — пункты б1+б2; RestartProgramAsync — пункт в;
+  `NullLogger` — юниты/без DI. Таймаут HTTP — 10 c (единый с клиентом
   канала; новых констант не вводить).
   б) ветка rest-пары (серт не менялся) — reload Patroni, БЕЗ рестарта
   spilo/контейнера:
   1. перегенерация конфига Patroni из перерендеренного материала:
      `Process.Start` → `python3 /scripts/configure_spilo.py patroni
      --force`, env процесса = env агента + `SPILO_CONFIGURATION` =
-     содержимое tmpfs `/run/pgw/spilo-configuration.yml` (остальной env
-     контейнера — SCOPE/PGDATA/ETCD3_HOSTS/… — наследуется). Факты образа
-     spilo-18:4.1-p2: конфиг Patroni — `/run/postgres.yml` (RW_DIR=/run),
-     пишется configure_spilo.py; БЕЗ `--force` существующий файл НЕ
-     перезаписывается (write_file: warning + пропуск) — force обязателен;
+     применяемый YAML (параметр команды; то же содержимое, что tmpfs
+     `/run/pgw/spilo-configuration.yml`; остальной env контейнера —
+     SCOPE/PGDATA/ETCD3_HOSTS/… — наследуется) + `SSL_RESTAPI_
+     CERTIFICATE_FILE`/`SSL_RESTAPI_PRIVATE_KEY_FILE` = пути пер-инсталл
+     рест-серт ноды `/run/certs/rest-api-server.crt` /
+     `/run/certs/restapi-api-server.key` (спило-константы
+     get_placeholders; серты материализованы bootstrap'ом; БЕЗ env-путей
+     placeholders пусты — шаблон restapi теряет certfile/keyfile, первое
+     перечитывание пересоздаёт REST-листенер В PLAIN HTTP, mTLS-канал
+     агента умирает — факт t05probe2) + per-install пароли PG:
+     `PGUSER_SUPERUSER`/`PGPASSWORD_SUPERUSER`,
+     `PGUSER_STANDBY`/`PGPASSWORD_STANDBY` — те же имена, что
+     spilo-supervised.sh экспортирует launch'у; БЕЗ них configure_spilo
+     собирает секцию postgresql.authentication ДЕФОЛТАМИ шаблона
+     (zalando/standby — факт t05probe3a); ПУСТЫЕ пароли НЕ прокидываются
+     (путь без доставки per-install паролей — прежнее поведение). Факты
+     образа spilo-18:4.1-p2: конфиг Patroni — `/run/postgres.yml`
+     (RW_DIR=/run), пишется configure_spilo.py; БЕЗ `--force`
+     существующий файл НЕ перезаписывается (write_file: warning +
+     пропуск) — force обязателен. Критерий применения файла — СОДЕРЖИМОЕ
+     `/run/postgres.yml` (exit-код НЕ критерий: скрипт штатно завершается
+     `sys.exit(int(not USE_WALG))` — exit 1 при выключенном WAL-G, файл
+     при этом записан): файл содержит НОВЫЙ restapi-пароль И per-install
+     значения су/standby (если заданы); расхождение — полный stderr
+     child-процесса в лог (д — диагностика) + отказ; пустой
+     `restPasswordNew` — дефект данных, явный отказ;
   2. `POST https://127.0.0.1:8008/reload` (HttpClient по образцу
      `PatroniRoleProbe`: доверие CA из env `SSL_RESTAPI_CA`, SAN-пиннинг
-     loopback 127.0.0.1; basic-auth — username константа `patroni`, пароль
-     — rest_password из ПРИМЕНЯЕМОГО `spiloConfigurationYaml` (NEW)) →
-     ожидание 202. Факты пробы spilo-18:4.1-p2/patroni 4.1.0: reload
-     перечитывает restapi-аутентификацию (OLD-пара 401 / NEW-пара 200),
-     postmaster PID/start_time неизменны — PG не останавливается. Выбор
-     REST POST /reload (а не SIGHUP) зафиксирован: управляемый HttpClient;
-     SIGHUP в .NET без P/Invoke — внешний `kill` с поиском PID patroni
-     (запрещённый путь);
+     loopback 127.0.0.1; таймаут 10 c). Отправка — `HttpClient.SendAsync`
+     по ПОДГОТОВЛЕННОМУ `HttpRequestMessage`: заголовок `Authorization`
+     (basic; username — константа `patroni`) живёт в САМОМ запросе;
+     `PostAsync(uri, content)` строит новый запрос БЕЗ заголовков
+     подготовленного — Authorization терялся, Patroni отвечал 401 «no auth
+     header received» на ЛЮБОЙ пароль (корень «codes: 401, 401» окна
+     ротации; факт пробы t05probe3a: корректно отправленный заголовок —
+     reload 202). Аутентификация reload-запроса — по конфигу Patroni
+     В ПАМЯТИ (in-memory), НЕ по перегенерированному `/run/postgres.yml`:
+     к моменту apply возможны ровно ДВА детерминированных состояния —
+     S1 (первое применение ревизии: валиден OLD-применённый, NEW даёт
+     401) и S2 (идемпотентный повтор — прошлый reload применил, но
+     ревизия/статус не зафиксировались, либо Patroni стартовал уже из
+     новых tmpfs: валиден NEW, OLD даёт 401); попытки паролей
+     [`restPasswordCurrent`, `restPasswordNew`] (без пустых, distinct)
+     покрывают ОБА состояния (не подбор): 202 от любой — успех; 401 от
+     обеих / 5xx / транспорт — отказ с фактом (повтор по коулдауну
+     apply-ветки); на 401 — диагностический PATCH-зонд тем же паролем
+     в лог (д — диагностика, без значений секретов); не-401 (5xx/транспорт)
+     — ретрай пароля бессмыслен. `202` = «reload scheduled»
+     АСИНХРОННО: исполнение перечитывания — в лупе Patroni (~3–6 с),
+     следующая команда может прийти ДО исполнения; 202 — НЕ
+     доказательство применённости, применённость пары проверяется
+     ОТДЕЛЬНО (зонд PATCH /config — 400/401; E2E — Т3). Факты пробы
+     spilo-18:4.1-p2/patroni 4.1.0: reload перечитывает
+     restapi-аутентификацию, postmaster PID/start_time неизменны — PG
+     не останавливается. Выбор REST POST /reload (а не SIGHUP)
+     зафиксирован: управляемый HttpClient; SIGHUP в .NET без P/Invoke —
+     внешний `kill` с поиском PID patroni (запрещённый путь);
   в) ветка серта (`certChanged`; reload SSL-материал НЕ применяет —
   свойство patroni 4.1.0: restapi зависает на TLS-handshake): роль ноды —
   `PatroniRoleProbe.ProbeAsync` (caPem из env `SSL_RESTAPI_CA`); роль ==
@@ -957,13 +1015,21 @@ src/tests/PgWorker.IntegrationTests -c Release --no-build --filter
   `applied_revision`, публикация `ready`; сбой (регенерация/команда
   применения бросила) → error-факт, материалы НЕ фиксируются, `ready` со
   СТАРОЙ ревизией, коулдаун `ApplyRetryCooldownSec` (комментарий
-  MR-#12 «полуприменённое не маскируется» сохранить);
+  MR-#12 «полуприменённое не маскируется» сохранить). Диагностика
+  применителя — ТОЛЬКО `ILogger` хоста (консольный провайдер
+  WebApplication → docker-лог контейнера): сбой применителя — уровень
+  Error СО СТЕКОМ исключения (`LogError(e, …)`); полный stderr
+  configure_spilo — в тот же лог; `Console.Error` НЕ использовать — его
+  строки в docker-лог контейнера НЕ попадают (молчание диагностики
+  применителя в красном прогоне окна ротации при живом error-статусе —
+  факт);
   е) комментарии/XML-doc обновить по материалу: «rest-пароль — reload
   Patroni (PG не останавливается; рестарт Patroni-процесса/контейнера для
   пароля запрещён); серт — рестарт Patroni-программы (только реплика;
   мастер — пересоздание воркером, R3-СЕРТ); doorman — рестарт пулера;
   верификация применённости пароля — мутирующий эндпоинт PATCH /config
-  (old 401/new 200), GET / публичен; применённость серта — новый серт в
+  (OLD → 401, NEW → 400 — пустой патч {} отвергается ПОСЛЕ пройденной
+  аутентификации), GET / публичен; применённость серта — новый серт в
   TLS-handshake REST :8008 после возврата реплики в кластер /
   failover'а (мастер)».
   Проверка: сборка 0w/0e; юниты PgNodeMachine с фейком
@@ -1031,12 +1097,50 @@ SPILO_CONFIGURATION/SSL_RESTAPI_*; образ собирается — 4e36668d.
 
 ## Самопроверка плана (выполнена plan-writer'ом)
 
-- **Рев. 10 (текущая, применение ротаций ПО МАТЕРИАЛУ — решение 29,
+- **Рев. 11 (текущая, сверка П11.9 с фактической реализацией):**
+  П11.9 реализован в ветке (коммиты cfa1c90f, 7bd0093a), arch/14 §5 I
+  актуализирован (6390a35d); план сверен с фактом — источники: arch/14
+  §5 I и `src/PgWorker.PgNode/PatroniApplyCommands.cs`. Закрытые
+  расхождения: (1) П11.9б2 — аутентификация reload по IN-MEMORY конфигу
+  Patroni (было: «пароль — NEW → 202»): попытки паролей
+  [OLD-применённый, NEW] покрывают два детерминированных состояния
+  S1/S2; отправка SendAsync по подготовленному HttpRequestMessage —
+  Authorization живёт в самом запросе (PostAsync(uri, content) терял
+  заголовок — корень «401 на любой пароль», факт t05probe3a); 202 =
+  «reload scheduled» АСИНХРОННО (~3–6 с лупа Patroni) — применённость
+  проверяется отдельно (зонд PATCH /config, E2E Т3); сигнатура
+  ApplyRestPairAsync — 5 параметров (YAML, current, new, pgSu,
+  pgStandby) — зафиксирована в П11.9а; (2) П11.9б1 — env регенерации
+  несёт не только SPILO_CONFIGURATION + env-пути рест-серт
+  /run/certs/*, но и per-install `PGPASSWORD_SUPERUSER`/
+  `PGPASSWORD_STANDBY` + `PGUSER_SUPERUSER`/`PGUSER_STANDBY` (те же
+  имена, что spilo-supervised.sh экспортирует launch'у; без них
+  postgresql.authentication собирается дефолтами шаблона — t05probe3a);
+  критерий применения файла — и restapi-пароль, И per-install значения
+  (exit-код не критерий: штатный exit 1 при выключенном WAL-G); пустые
+  пароли не прокидываются; (3) диагностика применителя (П11.9д) —
+  ILogger хоста (консольный провайдер WebApplication → docker-лог
+  контейнера), сбой — Error со стеком; Console.Error не используется
+  (молчание в docker-логе — факт красного прогона); (4) зонд
+  применённости пары — PATCH /config с телом {}: NEW → 400 (не 200),
+  OLD → 401 (GET / публичен — доказательством не является); Т3 —
+  ассерты patchNew=400/patchOld=401; снятые формулировки «new 200» /
+  «basic-auth NEW» исправлены по всему плану (глобальные ограничения,
+  П11.9е, Т3, записи рев. 10). Статус исполнения и преамбула П11.9 —
+  реализация закрыта, остаются П11.8 (Т1–Т13) и шаг 14. Grep-контроль
+  ревизии: «пароль — NEW»/«patroni/NEW»/«basic-auth NEW» — 0; PostAsync
+  — только как анти-паттерн (теряет Authorization — не использовать);
+  Console.Error — только как запрещённый канал применителя; «на
+  разрешении владельца» — 0. Развилок нет: механика — дословно
+  фактическая реализация, канон — arch/14 §5 I.
+
+- **Рев. 10 (применение ротаций ПО МАТЕРИАЛУ — решение 29,
   канон arch/14 §5 I/§4 + spec §8-29/§3.6-4):** (MAJOR) новый П11.9 —
   перевод apply-пути `PgNodeMachine` с рестарта `supervisorctl restart
   spilo` на раздельное применение по материалу: rest-пара — reload Patroni
   (перегенерация `/run/postgres.yml` через `configure_spilo.py patroni
-  --force` + REST `POST /reload` 127.0.0.1:8008, basic-auth NEW; выбор
+  --force` + REST `POST /reload` 127.0.0.1:8008, basic-auth patroni —
+  попытки паролей [OLD-применённый, NEW], уточнение рев. 11; выбор
   REST против SIGHUP зафиксирован — P/Invoke-запрет; факты образа
   spilo-18:4.1-p2: конфиг `/run/postgres.yml`, без `--force` файл не
   перезаписывается), серт — рестарт Patroni-программы ТОЛЬКО на реплике
@@ -1047,11 +1151,13 @@ SPILO_CONFIGURATION/SSL_RESTAPI_*; образ собирается — 4e36668d.
   («PgNodeMachine — без правок») аннулирован. Т7(б) — падение фейка
   `ApplyRestPairAsync` (не supervisorctl). П11.6в — применение по
   материалу (не «фоновые рестарты»). Т3 усилен: верификация применённости
-  пароля PATCH /config `{}` (old 401/new 200; GET / публичен) + postmaster
+  пароля PATCH /config `{}` (old 401/new 400 — код NEW уточнён рев. 11;
+  GET / публичен) + postmaster
   PID/start_time неизменны. Глобальные ограничения + Review Focus 7 +
   шаг 13/14 (grep: `RestartAsync("spilo")` в PgNodeMachine отсутствует,
   рестарт программы — только серт-ветка реплики). Статус исполнения
-  актуализирован: impl ETCD-FIRST в ветке, остались П11.9 и П11.8.
+  актуализирован: impl ETCD-FIRST в ветке (П11.9 закрыт — рев. 11),
+  остался П11.8.
   Границы зафиксированы: запрет рестарта Patroni-процесса/контейнера —
   ТОЛЬКО применение rest-пароля (arch/14 §5 I «граница запрета»: серт/
   restore/start_failed — легитимные пути); supervisorctl-рестарт spilo
@@ -1122,4 +1228,5 @@ SPILO_CONFIGURATION/SSL_RESTAPI_*; образ собирается — 4e36668d.
   выход/перенос restoring/txn ValueEqual; рев. 5 — generic CallAsync<T>/
   переменная delivered; рев. 6 — ETCD-FIRST v1; рев. 7 — флаг окна; рев. 8–9
   — реализованы в ветке либо поглощены следующей; рев. 10 — применение
-  ротаций ПО МАТЕРИАЛУ (текущая).
+  ротаций ПО МАТЕРИАЛУ; рев. 11 — сверка П11.9 с фактической реализацией
+  (текущая).
