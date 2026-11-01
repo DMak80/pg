@@ -91,17 +91,22 @@ public sealed class MembershipProcessTests(EtcdWorkerEnvironment env)
     }
 
     // Цикл тиков состава до условия (бюджет секунд); каждый тик — как
-    // ReconcileLoop лидера: надзор → доводка. Последние deadFacts/лидер —
-    // в текст таймаута (телеметрия «почему замена не выбирается»).
+    // ReconcileLoop лидера: надзор → доводка. Последние deadFacts/лидер +
+    // история сэмплов тиков (managed/факты/state-листы/фаза журнала) —
+    // в текст таймаута (телеметрия «почему доводка/замена не сошлись»).
     private static async Task RunUntilAsync(
         Rig rig, EtcdWorkerEnvironment env, Func<Task<bool>> done, int budgetSec, string because)
     {
         var ct = TestContext.Current.CancellationToken;
-        var deadline = DateTimeOffset.UtcNow.AddSeconds(budgetSec);
+        var startedUtc = DateTimeOffset.UtcNow;
+        var deadline = startedUtc.AddSeconds(budgetSec);
         string? lastError = null;
         Result<IReadOnlyList<ManagedDeadFact>>? lastFacts = null;
+        var samples = new StringBuilder();
+        var tick = 0;
         while (DateTimeOffset.UtcNow < deadline)
         {
+            tick++;
             var managed = await ManagedAsync(env);
             var nodesRange = await env.Gateway.RangeAsync(env.Endpoint, EtcdDomainKeys.NodesPrefix, ct);
             if (!nodesRange.IsSuccess)
@@ -115,13 +120,23 @@ public sealed class MembershipProcessTests(EtcdWorkerEnvironment env)
             var ports = await rig.Ports.ReadAllAsync(ct);
             var facts = await rig.Supervisor.ObserveAsync(managed, nodes, ports.Value, ct);
             lastFacts = facts;
+
+            // История тиков: первые 2, затем каждый 8-й (≈12 c) — срез
+            // состояния на моменты промахов предиката (mid-кейс телеметрия).
+            if (tick <= 2 || tick % 8 == 0)
+                AppendTickSample(samples, tick, startedUtc, env, managed, facts, nodes, ct);
+
             await rig.Membership.TickAsync(facts.Value, ct);
             if (await done())
                 return;
             await Task.Delay(1500, ct);
         }
 
-        var diagnosis = await DiagnoseAsync(env);
+        // Хвост истории — срез на момент таймаута.
+        AppendTickSample(samples, tick, startedUtc, env,
+            await ManagedAsync(env), lastFacts, null, ct, final: true);
+
+        var diagnosis = await DiagnoseAsync(env, startedUtc);
         IReadOnlyList<ManagedDeadFact> deadFacts = lastFacts is { IsSuccess: true } f ? f.Value : [];
         var factsView = lastFacts is { IsSuccess: true }
             ? string.Join(",", deadFacts.Select(f =>
@@ -132,12 +147,62 @@ public sealed class MembershipProcessTests(EtcdWorkerEnvironment env)
             ? leader.Value?.LeaderMemberId?.ToString() ?? "none"
             : leader.Error!.Message;
         throw new TimeoutException(
-            $"membership did not converge: {because}; last range error: {lastError}; deadFacts=[{factsView}]; leader={leaderView};{diagnosis}");
+            $"membership did not converge: {because}; last range error: {lastError}; deadFacts=[{factsView}]; leader={leaderView};{diagnosis}"
+            + $"; ticks[{samples}]");
     }
 
-    // Телеметрия таймаута (канон docs/e2e-launch.md): контейнеры узлов,
-    // их последние лог-строки, журнал фаз — «почему не сошлось».
-    private static async Task<string> DiagnoseAsync(EtcdWorkerEnvironment env)
+    // Сэмпл истории тиков: managed (k:имя:V/L), факты надзора, state-листы
+    // нод, фаза журнала — одна строка, ~всё нужное для разбора mid-кейса.
+    private static void AppendTickSample(
+        StringBuilder sb, int tick, DateTimeOffset startedUtc, EtcdWorkerEnvironment env,
+        IReadOnlyList<ManagedMember> managed,
+        Result<IReadOnlyList<ManagedDeadFact>>? facts,
+        IReadOnlyList<EtcdNodesParser.ManagedNodeState>? nodes,
+        CancellationToken ct,
+        bool final = false)
+    {
+        try
+        {
+            var elapsed = (int)(DateTimeOffset.UtcNow - startedUtc).TotalSeconds;
+            sb.Append($"\n  t{tick:+0000;-0000}").Append(final ? "+timeout " : " ").Append($"{elapsed}s managed=[");
+            foreach (var m in managed)
+                sb.Append($"k{m.K}:{m.Member.Name ?? "<unnamed>"}/{(m.Member.IsLearner ? 'L' : 'V')},");
+            sb.Append(']').Append(" facts=[");
+            if (facts is { IsSuccess: true } fr)
+                foreach (var f in fr.Value)
+                    sb.Append($"k{f.Member.K}:{(f.ProblemSinceUnix is { } s ? $"since{DateTimeOffset.UtcNow.ToUnixTimeSeconds() - s}s" : "no-since")}/{(f.EnvironmentMissing ? "envMissing" : "env-ok")},");
+            else
+                sb.Append(facts?.Error?.Message ?? "<no-facts-call>");
+            sb.Append(']');
+            if (nodes is { } ns && ns.Count > 0)
+            {
+                sb.Append(" states=[");
+                foreach (var n in ns)
+                    sb.Append($"k{n.K}={n.State ?? "?"},");
+                sb.Append(']');
+            }
+
+            var work = env.Gateway.GetAsync(
+                env.Endpoint, EtcdWorker.Provisioning.EtcdWorkJournal.Key, ct).ConfigureAwait(false).GetAwaiter().GetResult();
+            if (work.IsSuccess && work.Value is { } w && w.Value is { Length: > 0 })
+            {
+                var phase = w.Value;
+                var pIdx = phase.IndexOf("\"phase\"", StringComparison.Ordinal);
+                if (pIdx >= 0 && phase.Length - pIdx > 90) phase = phase[..(pIdx + 90)];
+                sb.Append(" journal=").Append(phase);
+            }
+            sb.Append('\n');
+        }
+        catch (Exception ex)
+        {
+            sb.Append("  sample-failed: ").Append(ex.Message).Append('\n');
+        }
+    }
+
+    // Телеметрия таймаута (канон docs/e2e-launch.md): журнал фаз, member list,
+    // контейнеры узлов с последними лог-строками и хронология docker-событий
+    // за время кейса — «почему не сошлось».
+    private static async Task<string> DiagnoseAsync(EtcdWorkerEnvironment env, DateTimeOffset sinceUtc)
     {
         var sb = new StringBuilder();
         try
@@ -164,6 +229,15 @@ public sealed class MembershipProcessTests(EtcdWorkerEnvironment env)
 
             if (ps.Length == 0)
                 sb.Append(" <docker ps empty/failed>");
+
+            // Хронология docker-событий кейса (die/kill/create/destroy узлов):
+            // events-буфер демона жив недолго — снимается ДО teardown.
+            var sinceUnix = sinceUtc.ToUnixTimeSeconds();
+            var events = RunDocker($"events --since {sinceUnix} --until 1s --filter type=container");
+            var etcdwEvents = events.Split('\n', StringSplitOptions.RemoveEmptyEntries)
+                .Where(l => l.Contains("etcdw")).Take(40).ToList();
+            if (etcdwEvents.Count > 0)
+                sb.Append(" events=").Append(string.Join(" | ", etcdwEvents));
         }
         catch (Exception ex)
         {
@@ -358,10 +432,10 @@ public sealed class MembershipProcessTests(EtcdWorkerEnvironment env)
     }
 
     // AAA: снос контейнера+тома ОДНОГО из двух managed (кворум выживает:
-    // seed + второй узел) → авто-замена: вывод мёртвого члена и новый номер
+    // seed + второй узел) → авто-замена: вывод мёртвого ЧЛЕНА и доводка нового
     // (порог NodeDeadSec, EnvironmentMissing)
     [Fact]
-    public async Task AutoReplace_DeadNode_NewNumber()
+    public async Task AutoReplace_DeadNode_NewMember()
     {
         DockerTrait.SkipIfUnavailable();
         var rig = NewRig();
@@ -393,7 +467,13 @@ public sealed class MembershipProcessTests(EtcdWorkerEnvironment env)
             }
 
             leaderId.Should().NotBeNull("stable leader expected before killing a non-leader");
-            var dead = (await ManagedAsync(env)).First(m => m.Member.Id != leaderId);
+            // Жертва — ДЕТЕРМИНИРОВАННА: старейший не-лидер (паттерн
+            // PickRemoveCandidate). Порядок member list недетерминирован
+            // (шаг 1 ruling) — First по списку ловил то k1, то k2.
+            var dead = (await ManagedAsync(env))
+                .Where(m => m.Member.Id != leaderId)
+                .OrderBy(m => m.K)
+                .First();
             var killed = await rig.Driver.RemoveNodeAsync(dead.K, removeVolume: true, TestContext.Current.CancellationToken);
             killed.IsSuccess.Should().BeTrue(killed.Error?.Message);
             // Проблема наблюдается дольше порога (NodeDeadSec=6).
@@ -402,15 +482,20 @@ public sealed class MembershipProcessTests(EtcdWorkerEnvironment env)
             {
                 var managed = await ManagedAsync(env);
                 return managed.Count == 2
-                       && managed.All(m => m.K != dead.K)
-                       && managed.All(m => m.Member.Name is { Length: > 0 });
-            }, budgetSec: 480, "replacement node with new number");
+                       && managed.All(m => m.Member.Name is { Length: > 0 })
+                       && managed.All(m => !m.Member.IsLearner)
+                       && managed.All(m => m.Member.Id != dead.Member.Id);
+            }, budgetSec: 480, "dead member replaced by a new started member");
 
-            // Assert: старого номера нет, новый номер (сквозная нумерация).
+            // Assert: состава 2 managed, мёртвого ЧЛЕНА нет (заменил новый).
+            // НОМЕР может быть переиспользован — канон NextNumber = max+1 по
+            // чистому составу (листы/ключи выведенного сняты RemoveAsync,
+            // portalloc released): «новость» замены — НОВЫЙ member-ID, не
+            // номер (переиспользование номера после полного вывода — штатно).
             var managed2 = await ManagedAsync(env);
             managed2.Should().HaveCount(2);
-            managed2.Select(m => m.K).Should().NotContain(dead.K);
-            managed2.Max(m => m.K).Should().BeGreaterThan(dead.K);
+            managed2.Select(m => m.Member.Id).Should().NotContain(dead.Member.Id);
+            managed2.Should().OnlyContain(m => !m.Member.IsLearner);
         }
         finally
         {
