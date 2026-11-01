@@ -390,3 +390,39 @@ public class EtcdWorkJournalTests(EtcdContainerFixture fixture) : IClassFixture<
         store.Current.ParseErrors.Should().NotContain(e => e.Key == "/pgworker/work/shop");
     }
 }
+
+// Домен /etcd/ (adminpanel/02 §2.3.5): точечные ключи PutAsync поверх demo-сида
+// (Demo НЕ расширяется) — свой класс со СВОИМ контейнером по образцу
+// EtcdRoutingMutationTests (order-independent).
+public class EtcdDomainRefresherTests(EtcdContainerFixture fixture) : IClassFixture<EtcdContainerFixture>
+{
+    [Fact]
+    public async Task Refresher_PicksUpEtcdDomainKeys()
+    {
+        // Arrange — декларация 2 + узлы 1 (RUNNING/local) и 2 (PROVISIONING);
+        // demo-сид уже налит фикстурой контейнера.
+        var store = new SnapshotStore();
+        var refresher = EtcdTestHarness.NewRefresher(store, fixture.Endpoint);
+        await EtcdSeed.PutAsync(fixture.Endpoint, "/etcd/config",
+            """{"nodes":2,"created_unix":1756000000}""", CancellationToken.None);
+        await EtcdSeed.PutAsync(fixture.Endpoint, "/etcd/nodes/1/state", "RUNNING", CancellationToken.None);
+        await EtcdSeed.PutAsync(fixture.Endpoint, "/etcd/nodes/1/placed_on", "local", CancellationToken.None);
+        await EtcdSeed.PutAsync(fixture.Endpoint, "/etcd/nodes/2/state", "PROVISIONING", CancellationToken.None);
+
+        // Act
+        var result = await refresher.RefreshOnceAsync(CancellationToken.None);
+
+        // Assert — тик успешен; домен в снапшоте: declared=2, два узла,
+        // placedOn узла 1 == "local".
+        result.IsSuccess.Should().BeTrue();
+        store.Current!.EtcdDomain.Should().NotBeNull();
+        var domain = store.Current!.EtcdDomain!;
+        domain.DeclaredNodes.Should().Be(2);
+        domain.CreatedUnix.Should().Be(1756000000L);
+        domain.Nodes.Should().HaveCount(2);
+        var node1 = domain.Nodes.Single(n => n.K == 1);
+        node1.State.Should().Be("RUNNING");
+        node1.PlacedOn.Should().Be("local");
+        domain.Nodes.Single(n => n.K == 2).State.Should().Be("PROVISIONING");
+    }
+}
