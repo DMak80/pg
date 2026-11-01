@@ -635,6 +635,17 @@ public sealed class RestoreProcess(
                     }
                 }
 
+                // §8-28 (arch/19 §3.5) — ПАРАЛЛЕЛЬНАЯ ДОСТАВКА rejoin-нод: пока
+                // джоба восстанавливает первичку (running), rejoin-ноды шарда
+                // поднимаются (EnsureNode, новый volume) и получают bootstrap-
+                // ключи/хендшейк БЕЗ ожидания конца восстановления: их Patroni
+                // легитимно держит initializing до initialize/лидера (щит
+                // демонтажа не даёт initdb). Первичка — в собственном порядке
+                // (REJOINING-путь ниже), параллельный путь её не трогает.
+                // Такты — те же transient-ретраи: EnsureNode идемпотентен,
+                // повторный хендшейк — Nop для машины не в not_initialized.
+                await RejoinPreflightAsync(cluster, shard, snap, op, ct);
+
                 return Result<ProcessOutcome>.Success(ProcessOutcome.InProgress); // жив — ждём
             }
 
@@ -809,6 +820,63 @@ public sealed class RestoreProcess(
     // Трекер ожидания Patroni (диагностика takeover: состояние в etcd-статусе
     // заявки, трекер — только бюджет ожидания; прецедент _patroniWaitSince).
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, long> _rejoinWaitSince = new();
+
+    // §8-28 (arch/19 §3.5): параллельная доставка rejoin-нод в фазе running —
+    // EnsureNode (новый volume) + bootstrap-ключи + команда доставки БЕЗ
+    // ожидания конца восстановления первички. Идемпотентно: EnsureNode не
+    // трогает живой контейнер, EnsureAsync ставит ключ при изменении,
+    // повторный хендшейк — Nop для машины не в not_initialized. Ошибки узла —
+    // transient-лог (следующий тик повторит); тик не роняют.
+    private async Task RejoinPreflightAsync(
+        string cluster, ShardSpec shard, ClusterSnapshot snap,
+        RestoreOperationState op, CancellationToken ct)
+    {
+        var addresses = await ReadPortAllocAsync(cluster, ct);
+        if (!addresses.IsSuccess)
+        {
+            await journal.WritePhaseAsync(cluster, Op, "rejoin-preflight/portalloc",
+                claims.InstanceId, addresses.Error!.Message, ct);
+            return;
+        }
+
+        var topology = Topology(cluster, shard.Name, addresses.Value);
+        var ordered = shard.Nodes
+            .Where(n => n.Name != shard.Nodes.Select(m => m.Name).OrderBy(m => m, StringComparer.Ordinal).First())
+            .Select(n => n.Name).ToList(); // все, кроме первички (её порядок — собственный)
+        var creds = await appSecret.EnsureAsync(cluster, snap.Config, ct);
+        if (!creds.IsSuccess)
+        {
+            await journal.WritePhaseAsync(cluster, Op, "rejoin-preflight/creds",
+                claims.InstanceId, creds.Error!.Message, ct);
+            return;
+        }
+
+        foreach (var node in ordered)
+        {
+            if (!addresses.Value.TryGetValue($"{shard.Name}/{node}", out var addr))
+                continue;
+            var resources = await ReadShardResourcesAsync(cluster, shard.Name, ct);
+            var ensured = await driver.EnsureNodeAsync(
+                topology, node, addr, etcdEndpoints, resources, null,
+                snap.Config.SyncStrict, ct);
+            if (!ensured.IsSuccess)
+            {
+                await journal.WritePhaseAsync(cluster, Op,
+                    $"rejoin-preflight/ensure/{shard.Name}/{node}",
+                    claims.InstanceId, ensured.Error!.Message, ct);
+                continue;
+            }
+
+            var delivery = await bootstrap.EnsureAsync(
+                topology, node, addr, secrets, null, null,
+                snap.Config.SyncStrict, creds.Value.RestPassword, isToolStart: false, ct);
+            if (delivery.Transient || !delivery.Delivered)
+                await journal.WritePhaseAsync(cluster, Op,
+                    $"rejoin-preflight/delivery/{shard.Name}/{node}",
+                    claims.InstanceId,
+                    delivery.Detail ?? "bootstrap delivery is not complete (waiting)", ct);
+        }
+    }
 
     private async Task<Result<ProcessOutcome>> RejoinAsync(
         ClusterSnapshot snap, ShardSpec shard, RestoreOperationState op, CancellationToken ct)
