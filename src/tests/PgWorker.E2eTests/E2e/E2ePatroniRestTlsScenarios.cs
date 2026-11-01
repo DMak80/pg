@@ -129,6 +129,18 @@ public sealed class E2ePatroniRestTlsScenarios(E2ePatroniRestTlsScenariosFx Ctx)
                     "the master key returned after the restart — the master-lease passed https /primary (P11)");
 
                 // (е) конвергенция легаси: маркер в volume реплики (не лидера).
+                // Перевычисляем мастера ПОСЛЕ (д): рестарт мастера мог отдать
+                // лидерство второй ноде (DCS ttl под нагрузкой) — рестартовать
+                // «старую» реплику тогда значило бы рестартовать уже-лидера.
+                // Промоут/REST догоняют ключ — проба с ретраем в бюджете фазы.
+                var masterNow = "";
+                var primaryResolved = await E2eFixture.WaitForAsync(async () =>
+                {
+                    masterNow = await PrimaryNodeAsync(cluster, ct);
+                    return masterNow is { Length: > 0 };
+                }, TimeSpan.FromSeconds(60), ct);
+                primaryResolved.Should().BeTrue("the primary is resolved after the master restart");
+                replica = masterNow == "shard1a" ? "shard1b" : "shard1a";
                 var replicaContainer = $"pgw-{cluster}-shard1-{replica}";
                 await Fx.RunDockerAsync(["exec", replicaContainer,
                     "touch", "/home/postgres/pgdata/resttls-marker"], ct);
