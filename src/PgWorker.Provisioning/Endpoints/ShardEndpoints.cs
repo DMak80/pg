@@ -1,4 +1,3 @@
-using System.Text.Json;
 using System.Text.RegularExpressions;
 using PgWorker.Core;
 using PgWorker.Core.Model;
@@ -85,25 +84,16 @@ public sealed partial class ShardEndpoints(IEtcdGateway etcd, string[] endpoints
             }
         }
 
-        // Шаг 2 (spec §3.3): HA-лидер контура — имя из /service/<C>-<X>/leader,
-        // адрес ноды из portalloc; работает без Patroni-REST (усыновлённые шарды,
-        // окно failover с протухшим master-ключом).
+        // Шаг 2 (spec §3.3, arch/14 §5 F): HA-лидер контура — имя из
+        // /service/<C>-<X>/leader, адрес ноды из portalloc; работает без
+        // Patroni-REST (усыновлённые шарды, окно failover с протухшим
+        // master-ключом). Значение — голое имя Patroni (JSON-обёртка демо-сидов
+        // — легаси, обе формы: LeaderKeyName).
         var leader = await GetAsync($"/service/{cluster}-{shard.Name}/leader", ct);
-        if (leader.IsSuccess && leader.Value is { } leaderKv)
-        {
-            try
-            {
-                using var doc = JsonDocument.Parse(leaderKv.Value);
-                if (doc.RootElement.TryGetProperty("name", out var name)
-                    && name.GetString() is { Length: > 0 } leaderName
-                    && shardNodes.TryGetValue(leaderName, out var leaderAddr))
-                    return Result<NodeAddress?>.Success(leaderAddr);
-            }
-            catch (JsonException)
-            {
-                // битый leader-ключ — просто идём дальше по цепочке
-            }
-        }
+        if (leader.IsSuccess && LeaderKeyName.From(leader.Value?.Value) is { Length: > 0 } leaderName
+            && shardNodes.TryGetValue(leaderName, out var leaderAddr))
+            return Result<NodeAddress?>.Success(leaderAddr);
+        // (битый leader-ключ — идём дальше по цепочке)
 
         foreach (var node in shardNodes)
         {

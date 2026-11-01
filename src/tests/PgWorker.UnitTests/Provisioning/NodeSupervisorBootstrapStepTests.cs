@@ -210,6 +210,76 @@ public class NodeSupervisorBootstrapStepTests
         rig.Delivery.Calls[0].Should().Be(("shard1", "shard1a"));
     }
 
+    // start_failed ЛИДЕРА (leader-ключ — голое имя Patroni, arch/14 §5 F) при
+    // живом свидетеле → пересоздание штатно. Регресс: JSON-парс значения
+    // валил тик исключением ('s' is an invalid start of a value) — recreate
+    // не выполнялся никогда (факт E2E StartFailed).
+    [Fact]
+    public async Task Tick_StartFailedLeader_AliveWitness_BareNameKey_Recreates()
+    {
+        // Arrange: статус start_failed ноды shard1a; leader-ключ — её ГОЛОЕ имя.
+        var rig = await NewRig();
+        SeedStatus(rig.Etcd, "shard1a", "start_failed");
+        rig.Etcd.Seed("/service/shop-shard1/leader", "shard1a");
+
+        // Act
+        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
+
+        // Assert: свидетель (b/c живы в portalloc) есть → пересоздание + доставка.
+        outcome.IsSuccess.Should().BeTrue(outcome.Error?.ToString());
+        rig.Driver.RemovedNodes.Should().Contain("shard1/shard1a");
+        rig.Driver.EnsuredNodes.Should().Contain("shard1/shard1a");
+        rig.Delivery.Calls.Should().HaveCount(1);
+    }
+
+    // MR-#4 (spec §8-24): start_failed ЛИДЕРА без живого свидетеля — фейл тика
+    // «failover first» (лидерство уйдёт в пустоту), мутаций нет; тик повторится.
+    [Fact]
+    public async Task Tick_StartFailedLeader_NoAliveWitness_FailsWithoutMutations()
+    {
+        // Arrange: лидер shard1a start_failed; b/c живы по state, но ВНЕ
+        // portalloc — живого свидетеля нет.
+        var rig = await NewRig();
+        SeedStatus(rig.Etcd, "shard1a", "start_failed");
+        rig.Etcd.Seed("/service/shop-shard1/leader", "shard1a");
+        rig.Etcd.Seed("/pgworker/portalloc/shop", Portalloc.Serialize(new Dictionary<string, NodeAddress>
+        {
+            ["shard1/shard1a"] = new("h1", new NodePorts(15000, 18000, 16500)),
+        }));
+
+        // Act
+        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
+
+        // Assert: фейл до мутаций; формула причины — failover first.
+        outcome.IsSuccess.Should().BeFalse();
+        outcome.Error!.Message.Should().Contain("failover first");
+        rig.Driver.RemovedNodes.Should().BeEmpty();
+        rig.Delivery.Calls.Should().BeEmpty();
+    }
+
+    // MR-#4 (spec §8-24): персистентный старт-дефект не даёт вечного
+    // recreate-цикла — бюджет исчерпан (start_failed_recreate_count >= 3) →
+    // фейл «operator investigation» без мутаций.
+    [Fact]
+    public async Task Tick_StartFailed_BudgetExhausted_FailsWithoutMutations()
+    {
+        // Arrange: счётчик пересозданий в work-журнале на пороге.
+        var rig = await NewRig();
+        SeedStatus(rig.Etcd, "shard1a", "start_failed");
+        rig.Etcd.Store["/pgworker/work/shop"] = new Fakes.FakeEtcd.Entry(
+            """{"op":"supervise","phase":"supervising","instance":"i1","updated_unix":1,"start_failed_recreate_count":3}""",
+            7, 1);
+
+        // Act
+        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
+
+        // Assert: фейл с бюджетной формулировкой; контейнер не трогали.
+        outcome.IsSuccess.Should().BeFalse();
+        outcome.Error!.Message.Should().Contain("exceeded start_failed recreate budget");
+        rig.Driver.RemovedNodes.Should().BeEmpty();
+        rig.Delivery.Calls.Should().BeEmpty();
+    }
+
     // TO_REMOVE-шард → никаких реакций даже при start_failed нод (спека
     // §3.7.3/§8.19: шаг пропускает TO_REMOVE-шарды ЦЕЛИКОМ).
     [Fact]

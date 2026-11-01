@@ -335,9 +335,11 @@ public class ClusterSecretRotatorTests
     [Fact]
     public async Task Rotate_ShardWithoutMaster_WindowOpen_WaitingMaster()
     {
-        // Arrange — у shard2 нет master-ключа и Patroni мёртв (transient)
+        // Arrange — у shard2 НЕТ резолва мастера: master-ключа нет, leader-ключ
+        // снят (шаг 2 цепочки arch/14 §5 F), Patroni мёртв (шаг 3, transient).
         var rig = await NewRig();
         rig.Etcd.Store.Remove("/clusters/shop/shards/shard2/master");
+        rig.Etcd.Store.Remove("/service/shop-shard2/leader");
         SeedTicket(rig.Etcd);
 
         // Act: тики rolling по нодам dsn-шардов (shard2 входит в dsn-список);
@@ -361,6 +363,27 @@ public class ClusterSecretRotatorTests
         rig.Etcd.Seed("/clusters/shop/shards/shard2/master", "h2:16501");
         var (done, failed) = await RunUntilDoneAsync(rig);
         done.Should().BeTrue("the master appeared — R4 completes the window");
+        failed.Should().BeFalse();
+        (await rig.Journal.ReadAsync("shop", CancellationToken.None)).Value!.Phase.Should().Be("done");
+    }
+
+    // Шаг 2 цепочки arch/14 §5 F: master-ключа нет, leader-ключ (ГОЛОЕ имя
+    // Patroni) разрешает мастера — R4 доводит окно до done БЕЗ waiting-фазы.
+    // Регресс: JSON-парс значения leader-ключа валил мастер-резолв (факт E2E
+    // Rotate/StartFailed — всегда fallback на Patroni-REST шага 3).
+    [Fact]
+    public async Task Rotate_MasterResolvedByBareNameLeaderKey_WindowCompletes()
+    {
+        // Arrange — у shard2 master-ключа нет, leader-ключ ведёт на shard2a.
+        var rig = await NewRig();
+        rig.Etcd.Store.Remove("/clusters/shop/shards/shard2/master");
+        SeedTicket(rig.Etcd);
+
+        // Act
+        var (done, failed) = await RunUntilDoneAsync(rig);
+
+        // Assert: мастер разрешён по leader-ключу — окно доведено до done.
+        done.Should().BeTrue("the leader key resolves the master — R4 completes");
         failed.Should().BeFalse();
         (await rig.Journal.ReadAsync("shop", CancellationToken.None)).Value!.Phase.Should().Be("done");
     }

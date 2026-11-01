@@ -503,23 +503,13 @@ public sealed partial class ClusterSecretRotator(
             }
         }
 
-        // HA-лидер контура (окно failover с протухшим master-ключом).
+        // HA-лидер контура (окно failover с протухшим master-ключом): значение
+        // leader-ключа — ИМЯ лидера (arch/14 §5 F, шаг 2 резолва; голое имя
+        // Patroni, JSON-обёртка демо-сидов — легаси; обе формы — LeaderKeyName).
         var leader = await GetAsync($"/service/{cluster}-{shard.Name}/leader", ct);
-        if (leader.IsSuccess && leader.Value is { } leaderKv)
-        {
-            try
-            {
-                using var doc = JsonDocument.Parse(leaderKv.Value);
-                if (doc.RootElement.TryGetProperty("name", out var name)
-                    && name.GetString() is { Length: > 0 } leaderName
-                    && shardNodes.TryGetValue(leaderName, out var leaderAddr))
-                    return leaderAddr;
-            }
-            catch (JsonException)
-            {
-                // битый leader-ключ — просто идём дальше по цепочке
-            }
-        }
+        if (leader.IsSuccess && Endpoints.LeaderKeyName.From(leader.Value?.Value) is { Length: > 0 } leaderName
+            && shardNodes.TryGetValue(leaderName, out var leaderNode))
+            return leaderNode;
 
         foreach (var node in shardNodes)
         {

@@ -670,11 +670,12 @@ public sealed class NodeSupervisor(
                         // ускорение failover, образец RecreateMarked-hard) + счётчик
                         // пересозданий с журналом (персистентный старт-дефект не
                         // даёт вечного recreate-цикла; порог N=3 —QuietTicks-канон).
+                        // Значение leader-ключа — ИМЯ лидера (arch/14 §5 F, шаг 2
+                        // резолва): голое имя Patroni (JSON-обёртка демо-сидов —
+                        // легаси; обе формы — LeaderKeyName).
                         var leaderKv = await GetAsync($"/service/{cluster}-{shard.Name}/leader", ct);
-                        var isLeader = leaderKv.IsSuccess && leaderKv.Value is { } lk &&
-                            System.Text.Json.JsonDocument.Parse(lk.Value)
-                                .RootElement.TryGetProperty("name", out var ln)
-                            && ln.GetString() == node.Name;
+                        var isLeader = leaderKv.IsSuccess &&
+                            PgWorker.Provisioning.Endpoints.LeaderKeyName.From(leaderKv.Value?.Value) == node.Name;
                         if (isLeader)
                         {
                             var aliveWitness = shard.Nodes.Any(n =>
