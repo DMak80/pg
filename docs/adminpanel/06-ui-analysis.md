@@ -21,7 +21,7 @@
 | Секция | Назначение | Канон |
 |---|---|---|
 | **etcd-контур** | Единственный источник истины (DCS): 3 узла, кворум 2/3, один контур на все домены. Декларации кластеров, координация воркеров (leader/claims/lease TTL 15 с), DCS Patroni, клиентский дискавери. Данные кластеров в etcd не живут — только метаданные | [arch/01](../../arch/01-architecture.md), [arch/17](../../arch/17-synchronization-principles.md) |
-| **PgWorker** | Оркестратор шардированных HA-кластеров PostgreSQL: provisioning/deprovisioning, надзор нод (failover/rebuild/конвергенция), переезды бакетов, эвакуации, ротации секретов, бэкапы, слепки etcd. Единственный писатель `/clusters/`, `/pgworker/`, `/service/<C>-<X>/request_*` | [arch/14](../../arch/14-pgworker.md) |
+| **PgWorker** | Оркестратор шардированных HA-кластеров PostgreSQL: provisioning/deprovisioning, надзор нод (failover/rebuild/конвергенция), переезды бакетов, эвакуации, ротации секретов, бэкапы. Единственный писатель `/clusters/`, `/pgworker/`, `/service/<C>-<X>/request_*` | [arch/14](../../arch/14-pgworker.md) |
 | **KafkaWorker** | Оркестратор Kafka-кластеров (KRaft): жизненный цикл брокеров, SASL/PKI, автосинк топиков, reassignment партиций, mutable-конфиги. Единственный писатель `/kafka/`, `/kafkaworker/` | [arch/16](../../arch/16-kafkaworker.md) |
 | **ValkeyWorker** | Оркестратор Valkey-кластеров (standalone-кеш, 1 нода, persistence off): контейнер, ACL-креды, TLS, ротации. Единственный писатель `/valkey/`, `/valkeyworker/` | [arch/21](../../arch/21-valkeyworker.md) |
 | **S3Worker** | Оркестратор пулов S3-хранилища бэкапов (ownS3): инстансы по placement-селекторам, mesh-репликация (`links`), PKI, deny-list, зонд синхронности. Единственный писатель `/s3/`, `/s3worker/` | [arch/24](../../arch/24-s3worker.md), [arch/23](../../arch/23-s3-clusters.md) |
@@ -32,7 +32,7 @@
 | **S3-хранилище (OwnS3)** | Durability-хранилище: бэкапы шардов (`<C>/<X>/full|wal`), слепки etcd; избыточность — mesh-репликация внутри пула. Внешний репозиторий `../OwnS3` | [arch/19 §5](../../arch/19-backups.md), [arch/23](../../arch/23-s3-clusters.md) |
 | **Docker-движки (plain/swarm)** | Исполнитель размещения: контейнеры/сети/тома через Engine API; воркер — строго управление запуском + проверка факта | [arch/25 §2–3](../../arch/25-component-communications.md) |
 | **Мониторинг** | Prometheus + Grafana + Alertmanager; таргеты — file_sd из portalloc. Канал наблюдения, независимый от панели | [arch/18](../../arch/18-metrics.md) |
-| **etcdworker** (план, t32) | Будущий оркестратор etcd-контура: состав узлов/кворум, бэкапы etcd (перенос `Snapshots:Export` из PgWorker), per-install ключ бэкапа etcd. Не реализован | [arch/roadmap/reliability t32](../../arch/roadmap/reliability.md) |
+| **EtcdWorker** | Оркестратор etcd-контура: поддержание состава (managed-узлы, кворум-гварды, rolling-доводка), DR-слепки etcd → S3 (безусловная выгрузка, ключ `/etcdworker/snapshots`). Единственный писатель `/etcd/`, `/etcdworker/` | [arch/25](../../arch/25-etcdworker.md) |
 
 ### 1.2. Зависимости (кто кого создаёт, читает, слушает)
 
@@ -112,15 +112,13 @@ PG P3/P4, TTL lease, порт-тройки, env брокеров/нод, тай�
    `Parallelism`) — естественная «страница настроек воркера» (паттерн рестарта
    уже есть).
 5. PGTune-профиль установки (`PGW_PGTUNE_*`) — влияет на все новые ноды.
-6. Экспорт etcd-слепков (`PGW_SNAPSHOTS_*`) — статус виден, управления нет.
-7. `AppParams:Default` (`sslmode=require`) — per-node параметры подключения.
-8. Пины образов и диапазоны портов (`Images:Node`, `PortRange`).
-9. Пороги алертов и проб панели (`AdminPanel:Alerts:*`, `Probes:*`).
-10. Отмена живых заявок ротаций kafka/valkey — сегодня только etcdctl;
+6. `AppParams:Default` (`sslmode=require`) — per-node параметры подключения.
+7. Пины образов и диапазоны портов (`Images:Node`, `PortRange`).
+8. Пороги алертов и проб панели (`AdminPanel:Alerts:*`, `Probes:*`).
+9. Отмена живых заявок ротаций kafka/valkey — сегодня только etcdctl;
     правка стоящих заявок переездов — runbook.
-11. `garbage_min_age_sec` — есть в arch/19 §4, отсутствует в форме policy
+10. `garbage_min_age_sec` — есть в arch/19 §4, отсутствует в форме policy
     панели (§3.8) — пробел контракта.
-12. Состав etcd-контура (member add/remove) — runbook; панель показывает health.
 
 Вынос каждого пункта — arch-first решение (изменение зон ответственности),
 не только UI-работа.
@@ -132,7 +130,8 @@ PG P3/P4, TTL lease, порт-тройки, env брокеров/нод, тай�
 | Домен | Автоматы |
 |---|---|
 | **pg** | Кластер `NOT_INITIALIZED→Active→TO_REMOVE`; шард `Active→TO_REMOVE` (guard'ы G1–G7); нода `NOT_INITIALIZED→PROVISIONING→RUNNING / REBUILDING / UNREACHABLE / QUARANTINED / REMOVING / TO_RECREATE`; бакет `Active (нет ключа) / NOT_INITIALIZED / SYNCING / FROZEN / ABORTING` (фазы ddl/frozen/flip/…); заявки переездов `move\|rollback\|finalize\|abort`; HA-scope Patroni (leader/members, master-lease 5 с) — [arch/14](../../arch/14-pgworker.md), [arch/11](../../arch/11-bucket-sharding.md) |
-| **бэкапы** | Полный `PLANNED→RUNNING→UPLOADING→COMPLETED\|FAILED→DELETING`; verify `PENDING/OK/FAILED`; WAL-поток `ACTIVE/DEGRADED/STOPPED/WAL_CHAIN_ERROR` (+gap); приёмник `starting/waiting_*/streaming/paused/failed_permanent` (lease 15 с); restore `PLANNED→RUNNING→REJOINING→COMPLETED\|FAILED`; drill `RUNNING/SUCCEEDED/FAILED`; сироты `OBSERVED/DELETING`; хранилище `OK/WARN/CRIT`; выгрузка etcd-слепков `OK/FAILED` — [arch/19](../../arch/19-backups.md) |
+| **бэкапы** | Полный `PLANNED→RUNNING→UPLOADING→COMPLETED\|FAILED→DELETING`; verify `PENDING/OK/FAILED`; WAL-поток `ACTIVE/DEGRADED/STOPPED/WAL_CHAIN_ERROR` (+gap); приёмник `starting/waiting_*/streaming/paused/failed_permanent` (lease 15 с); restore `PLANNED→RUNNING→REJOINING→COMPLETED\|FAILED`; drill `RUNNING/SUCCEEDED/FAILED`; сироты `OBSERVED/DELETING`; хранилище `OK/WARN/CRIT`; выгрузка etcd-слепков `OK/FAILED` — EtcdWorker (ключ `/etcdworker/snapshots`,
+[arch/25 §5](../../arch/25-etcdworker.md)) |
 | **kafka** | Кластер state; брокер `NOT_INITIALIZED→PROVISIONING→RUNNING / UNREACHABLE / REMOVING / TO_REMOVE` + role (навсегда); ротации app/admin/CA; reassignment (drain/balance, прогресс); регенерация; топики (факт + desired + lifecycle create/delete); ticket_outcomes `done\|expired` — [arch/16](../../arch/16-kafkaworker.md) |
 | **valkey** | Кластер state; нода (v1 — одна); ротации кредов (окно двух паролей) и CA; TLS-миграция; ticket_outcomes — [arch/21](../../arch/21-valkeyworker.md) |
 | **s3** | Кластер state; инстанс (state + placed_on + usage); connectivity `OK/DEGRADED/DOWN`; sync `SYNCED/LAGGING/DIVERGED`; denylist; ротации — [arch/24](../../arch/24-s3worker.md) |
@@ -255,9 +254,10 @@ per-node, глобальный стоп бэкапов, work-журналы до
   Воркеры /workers                инстансы, health по секциям, координация
                                   (leader/claims), серты API, рестарты,
                                   эффективный конфиг (read-only)
-  etcd-контур /etcd               endpoints/members/alarms; слепки
-                                  (выгрузка, статус); после t32 — состав
-                                  узлов/кворум (etcdworker)
+  etcd-контур /etcd               endpoints/members/alarms; состав контура
+                                  (декларация N, managed-узлы, форма
+                                  «Поддерживать N узлов»); DR-слепки
+                                  (статус выгрузки)
 ```
 
 ### 4.3. Состав ключевых секций (данные + управление)
@@ -274,7 +274,7 @@ per-node, глобальный стоп бэкапов, work-журналы до
 | Алерты | все kind, severity, since, Hint/Remedy | фильтры; переход на целевую сущность |
 | События | переходы состояний, исходы заявок, heals, эвакуации | фильтры по домену/сущности |
 | Воркеры | инстансы, health-секции, leader/claims, статус сертов | сгенерировать/загрузить/убрать серт; рестарт воркера |
-| etcd-контур | endpoints/members/alarms/raft, слепки | — (runbook; после t32 — заявки etcdworker) |
+| etcd-контур | endpoints/members/alarms/raft, состав контура (декларация, managed-узлы), DR-слепки | мутация состава «поддерживать N узлов» (02 §9.14; прокси в API EtcdWorker) |
 
 ### 4.4. Сквозные элементы
 
@@ -291,18 +291,14 @@ Overview, лента /events, наблюдаемость (координация
 приёмники WAL, глобальный стоп бэкапов, work-журналы доменов), эффективный
 конфиг воркеров, отмена ротаций kafka/valkey, policy с garbage_min_age_sec,
 группировка алертов по движителю; контракт arch↔код синхронизирован
-(`secrets/rotate`, полный каталог алертов). Известное остаточное — секция
-etcd-контура под выделенный etcdworker (после `t32-etcdworker` —
-arch/roadmap/reliability.md).
+(`secrets/rotate`, полный каталог алертов). Секция etcd-контура реализована:
+endpoints, members с managed/external-пометками, блок состава контура
+(декларация «поддерживать N узлов», managed-узлы), карточка DR-слепков,
+alarms; мутация состава — через API EtcdWorker (02 §9.14).
 
 ## 6. Задачи на доработку
 
-**Будущее (после roadmap t32-etcdworker)**
-
-- Секция etcd-контура под etcdworker: состав узлов/кворум, перенос
-  карточки etcd-слепков и алертов `etcd-snapshot-export-*` из грани бэкапов,
-  DR-статус контроль-плейна (тег задачи — `t32-etcdworker` в
-  arch/roadmap/reliability.md).
+Открытых задач нет.
 
 ## Чек-лист при изменениях
 

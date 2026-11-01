@@ -6,7 +6,7 @@ export type EventDomain = 'pg' | 'kafka' | 'valkey' | 's3' | 'etcd';
 export type EventEntityKind =
   | 'cluster' | 'shard' | 'node' | 'broker' | 'bucket'
   | 'topic' | 'ticket' | 'heal' | 'evacuation' | 'rotation' | 'instance'
-  | 'restore' | 'drill' | 'orphan';
+  | 'restore' | 'drill' | 'orphan' | 'snapshot' | 'config';
 
 export type EventType = 'state-change' | 'appeared' | 'gone' | 'outcome';
 

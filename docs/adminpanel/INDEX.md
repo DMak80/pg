@@ -13,7 +13,7 @@ Infrastructure скопирован из референса `Puzzle` (его doc
 |---|---|---|
 | [01 — Каркас](01-framework.md) | `Shared.Core (/common/)` | attribute-DI, CQRS-queries + `Result`, модульная композиция, health-checks; грабля статического кеша сборок. |
 | [02 — etcd-снапшот](02-etcd-snapshot.md) | `AdminPanel.Etcd` | HTTP JSON gateway `/v3/*`, парсеры, `SnapshotRefresher`/`SnapshotStore`; инвариант «API не ходит в etcd на запрос». |
-| [03 — Пробы и алерты](03-probes-alerts.md) | `AdminPanel.Probes` + `Core/Alerting` | Patroni/SQL live-пробы, HostMap, `AlertEngine` — 25 правил. |
+| [03 — Пробы и алерты](03-probes-alerts.md) | `AdminPanel.Probes` + `Core/Alerting` | Patroni/SQL live-пробы, HostMap, `AlertEngine` — 48 правил. |
 | [04 — Фронтенд](04-frontend.md) | `frontend/` | Сборка SPA в wwwroot, api-слой, polling, guard; TS7-css и registry-грабли. |
 | [05 — Dev-стенд](05-dev-stand.md) | `dev-stand/` | Один контур одна сеть, канонический demo через `POST /api/clusters`, owns3, e2e-чеки и их порядок. |
 | [06 — Анализ и целевая модель UI](06-ui-analysis.md) | вся система | Карта секций и зависимостей; параметры по этапам; состояния/события/алертинг; целевая модель интерфейса и сопоставление с текущим; правило ведения задач на доработку (§6). |

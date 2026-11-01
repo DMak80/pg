@@ -102,7 +102,7 @@ export function fetchEtcdDomain(): Promise<EtcdDomainDto> {
   return apiFetch<EtcdDomainDto>('/api/etcd/domain');
 }
 
-// PUT /api/etcd/config — декларация состава контура (02 §9.13): панель —
+// PUT /api/etcd/config — декларация состава контура (02 §9.14): панель —
 // прокси в API EtcdWorker; 200 / 400 (0..7) / 409 (кворум-гвард) / 503.
 export function putEtcdConfig(nodes: number): Promise<EtcdConfigUpdatedDto> {
   return apiFetch<EtcdConfigUpdatedDto>('/api/etcd/config', { method: 'PUT', body: { nodes } });

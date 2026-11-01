@@ -9,6 +9,7 @@ import type {
   BucketDto,
   ClusterDto,
   ClusterSummaryDto,
+  EtcdDomainDto,
   KafkaClusterDto,
   OverviewDto,
   S3ClusterDto,
@@ -302,6 +303,55 @@ export function diffS3(prev: S3ClusterDto | undefined, next: S3ClusterDto): void
   }
 
   diffTicketLike(prev.rotation !== null, next.rotation !== null, cluster, 'rotation', 'секреты', 's3', next.work?.lastError ?? undefined);
+}
+
+// ——— etcd: домен EtcdWorker (02 §2.3.5) — диффы /api/etcd/domain: узлы
+// state-change/appeared/gone (entity etcdw-node-<k>), статус DR-слепков и
+// декларация «поддерживать N» — state-change (null отображается «—»).
+// События эмитятся, пока опрашивается запрос etcdDomain (страница /etcd
+// открыта) — общая модель ленты «живёт в открытой вкладке» (arch/03 §3). ———
+
+export function diffEtcdDomain(prev: EtcdDomainDto | undefined, next: EtcdDomainDto): void {
+  if (prev === undefined) return;
+
+  // Управляемые узлы /etcd/nodes/<k>: появление/исчезновение/смена state.
+  const prevNodes = new Map(prev.nodes.map((n) => [n.k, n]));
+  for (const node of next.nodes) {
+    const before = prevNodes.get(node.k);
+    if (before === undefined) {
+      emit({ tsUnix: now(), domain: 'etcd', entityKind: 'node', entity: `etcdw-node-${node.k}`, type: 'appeared' });
+    } else if ((before.state ?? '—') !== (node.state ?? '—')) {
+      emit({
+        tsUnix: now(), domain: 'etcd', entityKind: 'node', entity: `etcdw-node-${node.k}`,
+        type: 'state-change', from: before.state ?? '—', to: node.state ?? '—',
+      });
+    }
+  }
+  const nextKs = new Set(next.nodes.map((n) => n.k));
+  for (const node of prev.nodes) {
+    if (!nextKs.has(node.k)) {
+      emit({ tsUnix: now(), domain: 'etcd', entityKind: 'node', entity: `etcdw-node-${node.k}`, type: 'gone' });
+    }
+  }
+
+  // Статус DR-выгрузки слепков (/etcdworker/snapshots): OK↔FAILED↔нет ключа.
+  const prevSnap = prev.snapshots?.state ?? null;
+  const nextSnap = next.snapshots?.state ?? null;
+  if (prevSnap !== nextSnap) {
+    emit({
+      tsUnix: now(), domain: 'etcd', entityKind: 'snapshot', entity: 'etcd',
+      type: 'state-change', from: prevSnap ?? '—', to: nextSnap ?? '—',
+    });
+  }
+
+  // Декларация «поддерживать N»: null↔N и N→N' (null — «только наблюдение»).
+  if (prev.declaredNodes !== next.declaredNodes) {
+    emit({
+      tsUnix: now(), domain: 'etcd', entityKind: 'config', entity: 'etcd',
+      type: 'state-change',
+      from: String(prev.declaredNodes ?? '—'), to: String(next.declaredNodes ?? '—'),
+    });
+  }
 }
 
 // Исход заявки (ticket_outcomes kafka/valkey): любое ИЗМЕНЕНИЕ содержимого

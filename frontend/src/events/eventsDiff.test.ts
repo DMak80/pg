@@ -5,12 +5,12 @@
 // eventsStore.test.ts).
 import { afterEach, describe, expect, it } from 'vitest';
 import {
-  diffBackupsStorage, diffClusterDetails, diffClusters, diffHa,
+  diffBackupsStorage, diffClusterDetails, diffClusters, diffEtcdDomain, diffHa,
   diffKafka, diffOverview, diffS3, diffValkey,
 } from '../events/eventsDiff';
 import { clearEvents, getEvents } from '../events/eventsStore';
 import type {
-  BackupStorageDto, ClusterDto, ClusterSummaryDto, HaScopeSummaryDto,
+  BackupStorageDto, ClusterDto, ClusterSummaryDto, EtcdDomainDto, HaScopeSummaryDto,
   KafkaClusterDto, OverviewDto, S3ClusterDto, ValkeyClusterDto,
 } from '../api/dto';
 
@@ -419,5 +419,149 @@ describe('diffOverview', () => {
     const mark = getEvents().length;
     diffOverview(undefined, overview({ updatedUnix: 1761900000, updatedBy: 'ops' }));
     expect(eventsSince(mark)).toEqual([]);
+  });
+});
+
+// ——— etcd: домен EtcdWorker ———
+
+describe('diffEtcdDomain', () => {
+  const domain = (overrides?: Partial<EtcdDomainDto>): EtcdDomainDto =>
+    ({
+      declaredNodes: 2,
+      createdUnix: 1,
+      nodes: [
+        { k: 1, state: 'PROVISIONING', placedOn: 'local' },
+        { k: 2, state: 'RUNNING', placedOn: null },
+      ],
+      snapshots: null,
+      ...overrides,
+    }) as EtcdDomainDto;
+
+  it('state-change узла PROVISIONING→RUNNING', () => {
+    // Arrange
+    const prev = domain();
+    const next = domain({
+      nodes: [
+        { k: 1, state: 'RUNNING', placedOn: 'local' },
+        { k: 2, state: 'RUNNING', placedOn: null },
+      ],
+    });
+    const mark = getEvents().length;
+
+    // Act
+    diffEtcdDomain(prev, next);
+
+    // Assert
+    const ev = eventsSince(mark);
+    expect(ev).toHaveLength(1);
+    expect(ev[0]).toMatchObject({
+      domain: 'etcd', entityKind: 'node', entity: 'etcdw-node-1',
+      type: 'state-change', from: 'PROVISIONING', to: 'RUNNING',
+    });
+  });
+
+  it('appeared/gone управляемого узла', () => {
+    // Arrange — узел 3 появился, узел 2 исчез
+    const prev = domain();
+    const next = domain({
+      nodes: [
+        { k: 1, state: 'PROVISIONING', placedOn: 'local' },
+        { k: 3, state: 'NOT_INITIALIZED', placedOn: null },
+      ],
+    });
+    const mark = getEvents().length;
+
+    // Act
+    diffEtcdDomain(prev, next);
+
+    // Assert
+    const ev = eventsSince(mark);
+    expect(ev.map((e) => `${e.entityKind}:${e.entity}:${e.type}`)).toEqual([
+      'node:etcdw-node-3:appeared',
+      'node:etcdw-node-2:gone',
+    ]);
+  });
+
+  it('статус DR-слепков OK→FAILED', () => {
+    // Arrange
+    const prev = domain({ snapshots: { state: 'OK', lastUploadedUnix: null, lastObject: null, lastSha256: null, sizeBytes: null, intervalMin: null, error: null } });
+    const next = domain({ snapshots: { state: 'FAILED', lastUploadedUnix: null, lastObject: null, lastSha256: null, sizeBytes: null, intervalMin: null, error: 'boom' } });
+    const mark = getEvents().length;
+
+    // Act
+    diffEtcdDomain(prev, next);
+
+    // Assert
+    const ev = eventsSince(mark);
+    expect(ev).toHaveLength(1);
+    expect(ev[0]).toMatchObject({
+      domain: 'etcd', entityKind: 'snapshot', entity: 'etcd',
+      type: 'state-change', from: 'OK', to: 'FAILED',
+    });
+  });
+
+  it('декларация 0→2 (kind config)', () => {
+    // Arrange
+    const prev = domain({ declaredNodes: 0 });
+    const next = domain({ declaredNodes: 2 });
+    const mark = getEvents().length;
+
+    // Act
+    diffEtcdDomain(prev, next);
+
+    // Assert
+    const ev = eventsSince(mark);
+    expect(ev).toHaveLength(1);
+    expect(ev[0]).toMatchObject({
+      domain: 'etcd', entityKind: 'config', entity: 'etcd',
+      type: 'state-change', from: '0', to: '2',
+    });
+  });
+
+  it('первый тик (prev нет) и без изменений — молчит', () => {
+    // Arrange/Act/Assert — prev undefined → без событий
+    let mark = getEvents().length;
+    diffEtcdDomain(undefined, domain());
+    expect(eventsSince(mark)).toEqual([]);
+    // повторный тик без изменений → без событий
+    mark = getEvents().length;
+    diffEtcdDomain(domain(), domain());
+    expect(eventsSince(mark)).toEqual([]);
+  });
+
+  it('появление ключа слепков: snapshots null→OK (from «—»)', () => {
+    // Arrange — в prev ключа /etcdworker/snapshots нет
+    const prev = domain({ snapshots: null });
+    const next = domain({ snapshots: { state: 'OK', lastUploadedUnix: null, lastObject: null, lastSha256: null, sizeBytes: null, intervalMin: null, error: null } });
+    const mark = getEvents().length;
+
+    // Act
+    diffEtcdDomain(prev, next);
+
+    // Assert — null отображается «—» (arch/03 §3)
+    const ev = eventsSince(mark);
+    expect(ev).toHaveLength(1);
+    expect(ev[0]).toMatchObject({
+      domain: 'etcd', entityKind: 'snapshot', entity: 'etcd',
+      type: 'state-change', from: '—', to: 'OK',
+    });
+  });
+
+  it('декларация null→3 (только наблюдение → поддерживать 3)', () => {
+    // Arrange — в prev ключа /etcd/config нет
+    const prev = domain({ declaredNodes: null });
+    const next = domain({ declaredNodes: 3 });
+    const mark = getEvents().length;
+
+    // Act
+    diffEtcdDomain(prev, next);
+
+    // Assert
+    const ev = eventsSince(mark);
+    expect(ev).toHaveLength(1);
+    expect(ev[0]).toMatchObject({
+      domain: 'etcd', entityKind: 'config', entity: 'etcd',
+      type: 'state-change', from: '—', to: '3',
+    });
   });
 });

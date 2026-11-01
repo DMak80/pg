@@ -1,5 +1,5 @@
-// Грань «Воркеры» (arch/adminpanel/03 §3.7): карточки 4 воркеров
-// (PgWorker/KafkaWorker/ValkeyWorker/S3Worker) — инстансы, целевой серт API,
+// Грань «Воркеры» (arch/adminpanel/03 §3.7): карточки 5 воркеров
+// (PgWorker/KafkaWorker/ValkeyWorker/S3Worker/EtcdWorker) — инстансы, целевой серт API,
 // статус применения, действия с сертом и рестарт; координация домена
 // (лидер, «кто держит кластер») и эффективный конфиг (read-only, u14/u15).
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -383,7 +383,8 @@ function ConfigTree({ config }: { config: Record<string, unknown> }) {
                       <Table.Td w={220}><Text size="sm" ff="monospace">{k}</Text></Table.Td>
                       <Table.Td>
                         <Text size="sm" ff="monospace">
-                          {v !== null && typeof v === 'object' ? JSON.stringify(v) : String(v)}
+                          {/* nullable-скаляр (advertisedHost без env) — «—», не литеральный null */}
+                          {v !== null && typeof v === 'object' ? JSON.stringify(v) : v === null ? '—' : String(v)}
                         </Text>
                       </Table.Td>
                     </Table.Tr>
