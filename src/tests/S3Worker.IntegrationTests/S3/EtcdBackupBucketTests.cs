@@ -19,7 +19,6 @@ public class EtcdBackupBucketTests(S3ClusterFixture fx)
     public async Task EtcdBackupCluster_BothBucketsOnEachInstance()
     {
         // Arrange: сид + признак etcd_backup в config.
-        DockerTrait.SkipIfUnavailable();
         var ct = TestContext.Current.CancellationToken;
         var cluster = fx.Cluster("etbkbkt");
         await fx.SeedClusterAsync(cluster, "node1");

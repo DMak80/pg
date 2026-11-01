@@ -185,7 +185,7 @@ export interface OverviewBackupsDto {
   storageState: 'OK' | 'WARN' | 'CRIT' | null;
   usedBytes: number;
   quotaBytes: number | null;
-  etcdSnapshots: { enabled: boolean; state: string | null } | null;
+  etcdSnapshots: { state: string | null } | null;
 }
 
 // u06: надёжность дашборда.
