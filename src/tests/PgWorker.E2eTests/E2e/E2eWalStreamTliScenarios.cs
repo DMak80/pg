@@ -259,7 +259,7 @@ public sealed class E2eWalStreamTliScenarios(E2eWalStreamTliScenariosFx Ctx) : I
             // ноды) и возвращается после пересоздания слота воркером (waiting_slot).
             var newMasterContainer = $"pgw-{cluster}-shard1-{newMasterNode}";
             await Fx.RunDockerAsync(
-                ["exec", newMasterContainer, "supervisorctl", "stop", "walreceiver"], ct);
+                ["exec", newMasterContainer, "supervisorctl", "stop", "pgnode"], ct);
             await using (var conn = new NpgsqlConnection(newMasterDsn))
             {
                 await conn.OpenAsync(ct);
@@ -281,7 +281,7 @@ public sealed class E2eWalStreamTliScenarios(E2eWalStreamTliScenariosFx Ctx) : I
             }
             Console.WriteLine("[PHASE] wal-t24b: 160 recorded switches + checkpoint done (old-tli segments recycled)");
             await Fx.RunDockerAsync(
-                ["exec", newMasterContainer, "supervisorctl", "start", "walreceiver"], ct);
+                ["exec", newMasterContainer, "supervisorctl", "start", "pgnode"], ct);
 
             // Индукция завершена — метка «свежести» полного (инвариант 4)
             var inductionDoneUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds();

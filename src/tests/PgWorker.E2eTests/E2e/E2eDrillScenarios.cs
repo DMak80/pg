@@ -245,7 +245,7 @@ public sealed class E2eDrillScenarios(E2eDrillScenariosFx Ctx) : IClassFixture<E
         var nodeNames = await Fx.ShardNodeContainerNamesAsync(cluster, "shard1", ct);
         nodeNames.Should().NotBeEmpty("the shard1 nodes are provisioned — a stop precondition");
         foreach (var nodeName in nodeNames)
-            await Fx.RunDockerAsync(["exec", nodeName, "supervisorctl", "stop", "walreceiver"], ct);
+            await Fx.RunDockerAsync(["exec", nodeName, "supervisorctl", "stop", "pgnode"], ct);
 
         (await corruptS3.DeleteKeysAsync([$"{cluster}/shard1/wal/{victim.Name}"], ct))
             .IsSuccess.Should().BeTrue("the victim segment must be removed");
@@ -272,7 +272,7 @@ public sealed class E2eDrillScenarios(E2eDrillScenariosFx Ctx) : IClassFixture<E
         {
             // глушим приёмники нод (supervisord-программа) — идемпотентно
             foreach (var nodeName in nodeNames)
-                await Fx.RunDockerAsync(["exec", nodeName, "supervisorctl", "stop", "walreceiver"], ct);
+                await Fx.RunDockerAsync(["exec", nodeName, "supervisorctl", "stop", "pgnode"], ct);
             var drillKv = await GetOrNullAsync($"/pgworker/backups/{cluster}/shard1/drill");
             failed = drillKv?.Value.Contains("\"FAILED\"") == true;
             if (!failed)

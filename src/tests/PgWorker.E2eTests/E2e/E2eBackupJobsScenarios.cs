@@ -154,10 +154,12 @@ public sealed class E2eBackupJobsScenarios(E2eBackupJobsScenariosFx Ctx) : IClas
         cleaned.Should().BeTrue("deprovisioning must remove the jobs, volumes and the backup prefix");
     }
 
-    // AAA: ротация per-cluster секретов включает backup_exec: NEW-пароль
-    // подключается к мастеру ролью backup_exec (R2-гвард, spec §7.4)
+    // AAA: тикет ротации (панель §9.8) крутит ТОЛЬКО per-cluster секреты
+    // (t05 ETCD-FIRST, spec §8-19b граница: backup-креды — отдельная задача
+    // t06). backup_password не меняется, backup_exec работает со СТАРЫМ
+    // паролем через окно, wal-цепочка жива.
     [Fact]
-    public async Task Backup_Rotator_IncludesBackupExec()
+    public async Task Backup_RotationTicket_PerClusterSecretsOnly_BackupExecUntouched()
     {
         // Arrange — кластер bkrot с завершённым полным; OLD backup_password
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(
@@ -176,37 +178,50 @@ public sealed class E2eBackupJobsScenarios(E2eBackupJobsScenariosFx Ctx) : IClas
             TimeSpan.FromSeconds(90), ct);
         completed.Should().BeTrue("before the rotation there must be a completed full (G2 alive on every tick)");
 
-        var oldPassword = (await G.GetAsync(Endpoint, $"/clusters/{cluster}/backup_password", ct)).Value!.Value;
+        var oldBackupPassword = (await G.GetAsync(Endpoint, $"/clusters/{cluster}/backup_password", ct)).Value!.Value;
+        var oldAppPassword = (await G.GetAsync(Endpoint, $"/clusters/{cluster}/app_password", ct)).Value!.Value;
 
-        // Act — заявка ротации (формат панели §9.8)
+        // Act — заявка ротации (формат панели §9.8): t05-ротатор крутит
+        // per-cluster секреты (app/mover/bucket_admin/rest), backup_password —
+        // ВНЕ прохода (§8-19b, t06).
         await G.PutAsync(Endpoint, $"/pgworker/rotations/{cluster}",
             $$"""{"requested_unix":{{DateTimeOffset.UtcNow.ToUnixTimeSeconds()}},"requested_by":"e2e"}""",
             null, ct);
 
-        // Assert 1 — backup_password сменился, заявка удалена
+        // Assert 1 — тикет исполнен: app_password сменился, заявка удалена
         var rotated = await E2eFixture.WaitForAsync(async () =>
         {
-            var current = await G.GetAsync(Endpoint, $"/clusters/{cluster}/backup_password", ct);
-            return current.Value is { } kv && kv.Value != oldPassword
+            var current = await G.GetAsync(Endpoint, $"/clusters/{cluster}/app_password", ct);
+            return current.Value is { } kv && kv.Value != oldAppPassword
                 && await GetOrNullAsync($"/pgworker/rotations/{cluster}") is null;
-        }, TimeSpan.FromSeconds(90), ct); // t03: фон тяжелее (WAL-агенты) — 120 c тесно
+        }, TimeSpan.FromSeconds(90), ct);
         if (!rotated)
         {
-            // диагностика: журнал ротации (last_error) + живая заявка + пароль
+            // диагностика: журнал ротации (last_error) + живая заявка + пароли
             var workKv = await GetOrNullAsync($"/pgworker/work/{cluster}");
             var ticketKv = await GetOrNullAsync($"/pgworker/rotations/{cluster}");
-            var pwKv = await GetOrNullAsync($"/clusters/{cluster}/backup_password");
+            var pwKv = await GetOrNullAsync($"/clusters/{cluster}/app_password");
             throw new ApplicationException(
                 $"the rotation did not finish: journal=[{workKv?.Value[..Math.Min(400, workKv.Value.Length)]}] " +
-                $"ticket=[{ticketKv?.Value ?? "-"}] password_changed={(pwKv!.Value != oldPassword)}");
+                $"ticket=[{ticketKv?.Value ?? "-"}] password_changed={(pwKv!.Value != oldAppPassword)}");
         }
-        rotated.Should().BeTrue("the rotation must overwrite backup_password and close the request");
-        var newPassword = (await G.GetAsync(Endpoint, $"/clusters/{cluster}/backup_password", ct)).Value!.Value;
+        rotated.Should().BeTrue("the rotation must rotate the per-cluster secrets and close the request");
 
-        // Assert 2 — NEW-пароль подключается user=backup_exec к мастеру shard1:
-        // DSN-ключ — multi-host с чужими кредами (bucket_admin), дубликаты
-        // User/Password в строке недопустимы — собираем параметры явно
-        // (пары host:port из ключа, Target Session Attributes=read-write).
+        // Assert 2 (граница §8-19b): backup_password НЕ тронут t05-проходом
+        (await G.GetAsync(Endpoint, $"/clusters/{cluster}/backup_password", ct)).Value!.Value
+            .Should().Be(oldBackupPassword, "backup-credentials rotation is a separate task (t06)");
+
+        // Assert 3 — окно закрыто R4 (флаг false в work-ключе)
+        var windowClosed = await E2eFixture.WaitForAsync(async () =>
+        {
+            var work = await GetOrNullAsync($"/pgworker/work/{cluster}");
+            return work is not null && !work.Value.Contains("\"rest_window_open\":true");
+        }, TimeSpan.FromSeconds(120), ct);
+        windowClosed.Should().BeTrue("R4 closes the rotation window");
+
+        // Assert 4 — backup_exec работает со СТАРЫМ паролем (мастер shard1):
+        // DSN-ключ — multi-host с чужими кредами (bucket_admin), параметры
+        // собираются явно (пары host:port из ключа, read-write).
         var dsn = (await GetOrNullAsync($"/clusters/{cluster}/shards/shard1/dsn"))!.Value;
         dsn.Should().Contain(",", "multi-host DSN");
         var hosts = System.Text.RegularExpressions.Regex.Match(dsn, "host=([^ ]+)").Groups[1].Value.Split(',');
@@ -217,7 +232,7 @@ public sealed class E2eBackupJobsScenarios(E2eBackupJobsScenariosFx Ctx) : IClas
             try
             {
                 await using var con = new NpgsqlConnection(
-                    $"Host={multiHost};Database={cluster};Username=backup_exec;Password={newPassword};" +
+                    $"Host={multiHost};Database={cluster};Username=backup_exec;Password={oldBackupPassword};" +
                     "Timeout=5;SSL Mode=Require;Trust Server Certificate=true;Target Session Attributes=read-write");
                 await con.OpenAsync(ct);
                 await using var cmd = new NpgsqlCommand("SELECT 1", con);
@@ -228,7 +243,11 @@ public sealed class E2eBackupJobsScenarios(E2eBackupJobsScenariosFx Ctx) : IClas
                 return false; // failover-окно/рестарт — повторим
             }
         }, TimeSpan.FromSeconds(60), ct);
-        connected.Should().BeTrue("the backup_exec role accepts the new password (the R2 guard)");
+        connected.Should().BeTrue("backup_exec keeps working with the untouched password through the window");
+
+        // Assert 5 — wal-цепочка пережила окно (система бэкапов жива)
+        var wal = await GetOrNullAsync($"/pgworker/backups/{cluster}/shard1/wal");
+        wal.Should().NotBeNull("the wal chain survives the rotation window");
     }
 
     // Воркер с включённой подсистемой бэкапов: пул — policy.s3 (etcd), bucket и

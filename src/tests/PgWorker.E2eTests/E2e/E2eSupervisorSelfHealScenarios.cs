@@ -204,7 +204,7 @@ public sealed class E2eSupervisorSelfHealScenarios(E2eSupervisorSelfHealScenario
         var nodeNames = await Fx.ShardNodeContainerNamesAsync(cluster, "shard1", ct);
         nodeNames.Should().NotBeEmpty("the shard1 nodes are provisioned — a stop precondition");
         foreach (var nodeName in nodeNames)
-            await Fx.RunDockerAsync(["exec", nodeName, "supervisorctl", "stop", "walreceiver"], ct);
+            await Fx.RunDockerAsync(["exec", nodeName, "supervisorctl", "stop", "pgnode"], ct);
         // Act 1 — порча + ожидание WAL_CHAIN_ERROR (контроль 1 c). Окно дыры мало:
         // супервизор пересоздаёт остановленных агентов за ScanInterval (1 c) и
         // пересъём заживает дыру за секунды — если первый заход не дошёл до
@@ -288,7 +288,7 @@ public sealed class E2eSupervisorSelfHealScenarios(E2eSupervisorSelfHealScenario
         // t25: приёмники возвращаются (программа ноды); по WAL_CHAIN_ERROR-гейту они стоят
         // в paused — пересъём идёт воркером, приёмники возобновятся после ACTIVE.
         foreach (var nodeName in nodeNames)
-            await Fx.RunDockerAsync(["exec", nodeName, "supervisorctl", "start", "walreceiver"], ct);
+            await Fx.RunDockerAsync(["exec", nodeName, "supervisorctl", "start", "pgnode"], ct);
 
         // Act 2 — новый полный с id ≠ старого (планировщик реагирует на WAL_CHAIN_ERROR),
         // затем COMPLETED (pg_basebackup со spread-чекпоинтом)

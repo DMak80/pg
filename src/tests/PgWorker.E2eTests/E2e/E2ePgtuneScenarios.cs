@@ -119,8 +119,18 @@ public sealed class E2ePgtuneScenarios(E2ePgtuneScenariosFx Ctx) : IClassFixture
                 $"/clusters/{cluster}/shards/shard1/nodes/{keyNode}/bootstrap") is not null,
             TimeSpan.FromSeconds(60), ct);
         bootstrapReady.Should().BeTrue("the initial bootstrap must exist");
-        var envBefore = (await GetOrNullAsync(
-            $"/clusters/{cluster}/shards/shard1/nodes/{keyNode}/bootstrap"))!.Value;
+        // spilo_configuration разбирается из ключа (JSON): в сыром значении
+        // кавычки экранированы — подстрочные Contains с «живыми» кавычками
+        // по сырому JSON не находят параметр (факт E2E-гейта).
+        string SpiloOf(Kv? kv)
+        {
+            kv.Should().NotBeNull("the bootstrap key must exist");
+            using var doc = JsonDocument.Parse(kv!.Value);
+            return doc.RootElement.GetProperty("spilo_configuration").GetString()!;
+        }
+
+        var envBefore = SpiloOf(await GetOrNullAsync(
+            $"/clusters/{cluster}/shards/shard1/nodes/{keyNode}/bootstrap"));
         envBefore.Should().Contain("shared_buffers: \"1GB\"", "the initial computation comes from the 4Gi request");
 
         // Снимок имён ключей etcd ДО (граница контракта: воркер не пишет параметры).
@@ -137,16 +147,17 @@ public sealed class E2ePgtuneScenarios(E2ePgtuneScenariosFx Ctx) : IClassFixture
         {
             // Т9а (MR-#6): источник — bootstrap-ключ ноды (spilo_configuration
             // от новой заявки 8Gi, старый env 1GB); env контейнера — НЕ источник.
-            var bKey = await GetOrNullAsync(
-                $"/clusters/{cluster}/shards/shard1/nodes/{keyNode}/bootstrap");
-            return bKey is not null && bKey.Value.Contains("shared_buffers: \"2GB\"", StringComparison.Ordinal);
+            var spilo = SpiloOf(await GetOrNullAsync(
+                $"/clusters/{cluster}/shards/shard1/nodes/{keyNode}/bootstrap"));
+            return spilo.Contains("shared_buffers: \"2GB\"", StringComparison.Ordinal);
         }, TimeSpan.FromSeconds(90), ct);
         recreated.Should().BeTrue($"the recreated node must get bootstrap from the 8Gi request; " +
                                   $"work={await WorkDumpAsync(cluster, ct)}");
 
-        // Assert: bootstrap-ключ отличается от прежнего (пересчёт от АКТУАЛЬНОЙ заявки).
-        var bAfter = (await GetOrNullAsync(
-            $"/clusters/{cluster}/shards/shard1/nodes/{keyNode}/bootstrap"))!.Value;
+        // Assert: расчёт отличается от прежнего (пересчёт от АКТУАЛЬНОЙ заявки);
+        // серт (MR-#21) при пересоздании повторяется — сравниваем spilo.
+        var bAfter = SpiloOf(await GetOrNullAsync(
+            $"/clusters/{cluster}/shards/shard1/nodes/{keyNode}/bootstrap"));
         bAfter.Should().NotBe(envBefore, "the recreated node is recomputed from the new request");
         bAfter.Should().Contain("max_connections: \"60\"");
         bAfter.Should().Contain("wal_level: logical");

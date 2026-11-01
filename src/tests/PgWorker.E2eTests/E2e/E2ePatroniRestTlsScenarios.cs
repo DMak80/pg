@@ -148,13 +148,10 @@ public sealed class E2ePatroniRestTlsScenarios(E2ePatroniRestTlsScenariosFx Ctx)
 
         await using (var p2 = await Fx.StartHostAsync("rtls-p2", extraEnv: extraEnv, ct: ct))
         {
-            // Статусная машина реплики гаснет: lease умер вместе с агентом.
-            var gone = await E2ePhase.WaitAsync(Fx, "rtls-status-gone",
-                async () => await GetOrNullAsync(
-                    $"/pgworker/nodes/{cluster}/shard1/{replica}/status") is null,
-                TimeSpan.FromSeconds(60), ct);
-            gone.Should().BeTrue("the status lease died with the removed agent");
-
+            // Статусная машина гаснет и перерождается в пределах секунд
+            // (lease TTL 15 c; пересоздание быстрое) — отдельное ожидание
+            // «ключа нет» флаково по построению; факт пересоздания проверяет
+            // StartedAt ниже, конвергенцию — ready статусной машины.
             var migrated = await E2ePhase.WaitAsync(Fx, "rtls-convergence",
                 async () =>
                 {
