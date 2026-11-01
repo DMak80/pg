@@ -9,7 +9,7 @@ arch/02 §9); все прочие операции записи в etcd/PG по-
 
 Стек: .NET 10 (Minimal API, warnings как ошибки, CPM, `.slnx`) + React/Vite/TS
 (Mantine, TanStack Query); снапшот-модель из etcd (тик 3 c), опциональные live-пробы
-Patroni REST/SQL (тик 15 c), 25 правил алертов.
+Patroni REST/SQL (тик 15 c), 48 правил алертов.
 
 ## Карта репозитория
 
@@ -18,7 +18,7 @@ Patroni REST/SQL (тик 15 c), 25 правил алертов.
 | [`arch/`](../../arch/adminpanel/README.md) | Контракт (источник истины): [архитектура](../../arch/adminpanel/01-architecture.md), [etcd-контракт](../../arch/adminpanel/02-etcd-contract.md), [панели/API](../../arch/adminpanel/03-panels.md), [dev-стенд](../../arch/adminpanel/04-local-stand.md), [roadmap](../../arch/adminpanel/roadmap/README.md) |
 | [`docs/`](INDEX.md) | Практические документы подсистем: чек-листы и грабли |
 | `src/AdminPanel.Api` | Host: Program.cs (модульная композиция), auth, REST `/api/*`, `/api/healthz`, раздача SPA |
-| `src/AdminPanel.Core` | Домен снапшота + `AlertEngine` (25 правил) |
+| `src/AdminPanel.Core` | Домен снапшота + `AlertEngine` (48 правил) |
 | `src/AdminPanel.Etcd` | etcd-клиент (общая сборка `Shared.Etcd`), парсеры, `SnapshotRefresher`/`SnapshotStore` |
 | `src/AdminPanel.Probes` | Live-пробы Patroni REST/SQL, `HostMapResolver` |
 | `src/Shared.Core` | Каркас из референса `Puzzle` (/common/): attribute-DI, CQRS, `Result`, health-checks |
