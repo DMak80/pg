@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 using EtcdWorker.App.Api.Operations;
 
 namespace EtcdWorker.App.Api;
@@ -39,6 +40,11 @@ public static class ApiModule
             metrics.Track("put-etcd-config", GetStatusCode(response));
             return response;
         });
+
+        // GET /api/config — эффективный конфиг установки (arch/25 §1.1):
+        // read-only, mTLS-зона /api, без etcd-чтений и секретов.
+        endpoints.MapGet("/api/config", (IOptions<EtcdWorkerOptions> options)
+            => Results.Ok(EtcdWorkerEffectiveConfig.From(options.Value)));
 
         // POST /api/restart — 202 graceful self-stop (arch/14 §1.1).
         endpoints.MapPost("/api/restart", (HttpRequest http, RestartHandler handler) =>
