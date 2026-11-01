@@ -117,8 +117,8 @@ echo "  rollback: 201 → key op=rollback → removal 204"
 # воркеров (паттерн шага 0).
 workers_up() {
   local port="$1"
-  curl -fsS -m 3 --cacert "$ROOT/deploy/tls/ca.pem" --cert "$ROOT/deploy/tls/healthcheck.crt" \
-    --key "$ROOT/deploy/tls/healthcheck.key" "https://localhost:${port}/healthz" >/dev/null 2>&1
+  curl -fsS -m 3 --cacert "$ROOT/deploy/tls/ca.pem" \
+    "https://localhost:${port}/healthz" >/dev/null 2>&1
 }
 pgw1_port="$(grep -E '^PGW_API_HOST_PORT=' "$ROOT/deploy/.env" | tail -1 | cut -d= -f2)"
 pgw2_port="$(grep -E '^PGW_API_HOST_PORT2=' "$ROOT/deploy/.env" | tail -1 | cut -d= -f2)"

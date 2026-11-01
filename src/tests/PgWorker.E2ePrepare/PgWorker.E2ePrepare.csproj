@@ -14,7 +14,7 @@
     <ItemGroup>
         <!-- build/analyzers отрезаны: без транзитивного xunit-генератора
              точки входа (конфликт CS7022 со своим Program). -->
-        <ProjectReference Include="..\PgWorker.IntegrationTests\PgWorker.IntegrationTests.csproj"
+        <ProjectReference Include="..\PgWorker.E2eTests\PgWorker.E2eTests.csproj"
                           ExcludeAssets="build;buildTransitive;analyzers" />
     </ItemGroup>
 

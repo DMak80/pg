@@ -43,7 +43,7 @@ public sealed class OwnS3 : IAsyncDisposable
 
     // Внешний образ owns3:dev (репозиторий ../OwnS3) — тот же, что у ноды
     // пула E2E-фикстуры.
-    private const string Image = E2eEnvironment.OwnS3Image;
+    private const string Image = "owns3:dev";
 
     private static readonly SemaphoreSlim ImageGate = new(1, 1);
     private static bool _imageReady;

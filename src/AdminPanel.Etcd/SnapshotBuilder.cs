@@ -24,7 +24,14 @@ public static class SnapshotBuilder
         (EtcdSnapshotExportInfo? Info, IReadOnlyList<KeyParseError> Errors)? etcdSnapshots = null,
         (EtcdDomainInfo? Domain, IReadOnlyList<KeyParseError> Errors)? etcdDomain = null,
         WorkerEndpointsParseResult? etcdWorkerEndpoints = null,
-        WorkerCertParseResult? etcdWorkerCert = null)
+        WorkerCertParseResult? etcdWorkerCert = null,
+        BackupsDisabledInfo? backupsDisabled = null,   // u10: /pgworker/backups-disabled
+        IReadOnlyList<WalAgentInfo>? walAgents = null, // u11: agent-ключи (ошибки — в backups.Errors)
+        EvacuationsParseResult? evacuations = null,    // u12: /pgworker/evacuations/
+        PgRotationsParseResult? pgRotations = null,    // u07: /pgworker/rotations/
+        WorkerCoordination? coordination = null,       // u14: leader/claims/instances
+        IReadOnlyList<KeyParseError>? coordinationErrors = null,
+        KeyParseError? backupsDisabledError = null)    // u10: битый ключ стопа бэкапов
         => new(
             time.GetUtcNow(),
             etcd,
@@ -43,13 +50,23 @@ public static class SnapshotBuilder
                 .. etcdSnapshots?.Errors ?? [],
                 .. etcdDomain?.Errors ?? [],
                 .. etcdWorkerEndpoints?.Errors ?? [],
-                .. WorkerCertParser.ErrorsOf(etcdWorkerCert ?? new WorkerCertParseResult(null, null))],
+                .. WorkerCertParser.ErrorsOf(etcdWorkerCert ?? new WorkerCertParseResult(null, null)),
+                .. evacuations?.Errors ?? [], // u12: битые журналы эвакуаций — key-malformed
+                .. pgRotations?.Errors ?? [], // u07: битые заявки ротаций — key-malformed
+                .. coordinationErrors ?? [], // u14: битые ключи координации — key-malformed
+                // u10: битый /pgworker/backups-disabled — key-malformed (не невидим)
+                .. backupsDisabledError is null ? Array.Empty<KeyParseError>() : [backupsDisabledError]],
             clusters.UnknownKeyCount + service.UnknownKeyCount,
-            backups.Storage, // /pgworker/backups/storage 
-            backups.Orphans, // /pgworker/backups/orphans 
-            null, // S3Storage вносит SnapshotRefresher из стора 
+            backups.Storage, // /pgworker/backups/storage
+            backups.Orphans, // /pgworker/backups/orphans
+            null, // S3Storage вносит SnapshotRefresher из стора
             workerCert?.Cert, // /workers/api_tls/pgworker (adminpanel/02 §9.9)
             etcdSnapshots?.Info, // /etcdworker/snapshots (adminpanel/02 §2.3.5)
+            backupsDisabled, // u10 (adminpanel/02 §2.3.1)
+            walAgents ?? [], // u11 (arch/19 §4)
+            evacuations?.Items ?? [], // u12 (arch/14 §3.2)
+            pgRotations?.Tickets ?? [], // u07 (arch/14 §3.3)
+            coordination, // u14 (adminpanel/02 §3)
             etcdDomain?.Domain, // /etcd/config + /etcd/nodes/ (02 §2.3.5)
             etcdWorkerEndpoints?.Endpoints ?? [], // /etcdworker/api/ (02 §2.3.5)
             [], // EtcdWorkerHealth вносит SnapshotRefresher из стора

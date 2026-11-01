@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 using S3Worker.App.Api.Operations;
 
 namespace S3Worker.App.Api;
@@ -304,6 +305,11 @@ public static class ApiModule
             metrics.Track("allow-node", GetStatusCode(response));
             return response;
         });
+
+        // GET /api/config — эффективный конфиг установки (arch/24 §1.1, u15):
+        // read-only, mTLS-зона /api, без снапшота и etcd.
+        endpoints.MapGet("/api/config", (IOptions<S3WorkerOptions> options)
+            => Results.Ok(S3WorkerEffectiveConfig.From(options.Value)));
 
         // POST /api/seed/demo — за флагом; 201/200 идемпотентно / 404 (флаг off).
         endpoints.MapPost("/api/seed/demo", async (SeedDemoHandler handler, CancellationToken ct) =>

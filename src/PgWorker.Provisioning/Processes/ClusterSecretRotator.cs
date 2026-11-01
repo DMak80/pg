@@ -311,7 +311,8 @@ public sealed partial class ClusterSecretRotator(
     // Мастер шарда: точное имя ноды из master-ключа → doorman-порт (уникален
     // per-node) → HA-лидер контура /service/<C>-<X>/leader → Patroni REST
     // (паттерн ShardEndpoints.ResolveMasterAsync). Совпадение master-ключа ПО
-    // ХОСТУ недопустимо: при EnableDoorman=false ключ вырождается в host:0,
+    // ХОСТУ недопустимо: вырожденное значение host:0 недискриминантно (S4;
+    // в штатном режиме невозможно — пулер обязателен, guard ниже — защита),
     // и все ноды одного хоста равнозначны — резолв вернул бы произвольную
     // (первую/случайный порядок portalloc) ноду, ALTER ROLE на реплике падает
     // 25006 (read-only) — ротация зацикливалась в фазе started (факт стенда).

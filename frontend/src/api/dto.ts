@@ -126,6 +126,12 @@ export interface ClusterWorkDto {
   phase: string;
   updatedUnix: number;
   lastError: string | null;
+  // u13: instance + fail-серия (зациклившийся отказ отличим от разового);
+  // nullable в хвосте — журналы старого формата дают null.
+  instance?: string | null;
+  failCount?: number | null;
+  failFirstUnix?: number | null;
+  retryNotBeforeUnix?: number | null;
 }
 
 // Строковый канон severity алертов (arch/03 §1).
@@ -151,6 +157,71 @@ export interface OverviewDto {
   s3: OverviewS3Dto | null;
   snapshotAgeMs: number;
   stale: boolean;
+  // u06: HA-сводка с сервера (клиентские доборы /api/ha удалены с дашборда).
+  ha?: OverviewHaDto | null;
+  // u06: бэкапы с сервера.
+  backups?: OverviewBackupsDto | null;
+  // u06: надёжность с сервера (перенос TS-агрегации ReliabilityCard).
+  reliability?: OverviewReliabilityDto | null;
+  // u07: активные операции всех доменов (kind — словарь сервера, UI не парсит).
+  operations?: OverviewOperationDto[];
+  // u08: свежесть per-домен (unix-секунды; null — домен ещё не тикал).
+  freshness?: OverviewFreshnessDto | null;
+  // u10: глобальный стоп бэкапов; null = работают.
+  backupsDisabled?: BackupsDisabledDto | null;
+}
+
+// u06: HA-сводка (без лидера считаются только matched).
+export interface OverviewHaDto {
+  scopesTotal: number;
+  withoutLeader: number;
+  unmatched: number;
+}
+
+// u06: бэкапы дашборда.
+export interface OverviewBackupsDto {
+  configured: boolean;
+  health: { apiOk: boolean; liveOk: boolean; clusterOk: boolean | null } | null;
+  storageState: 'OK' | 'WARN' | 'CRIT' | null;
+  usedBytes: number;
+  quotaBytes: number | null;
+  etcdSnapshots: { enabled: boolean; state: string | null } | null;
+}
+
+// u06: надёжность дашборда.
+export interface OverviewReliabilityDto {
+  worstRpoPotentialSec: number | null;
+  fullOnlyCount: number;
+  offCount: number;
+  lastFailover: { durationSec: number; atUnix: number } | null;
+}
+
+// u07: активная операция домена.
+export interface OverviewOperationDto {
+  domain: 'pg' | 'kafka' | 'valkey' | 's3';
+  kind: string;
+  cluster: string;
+  entity: string | null;
+  detail: string;
+  updatedUnix: number | null;
+}
+
+// u08: свежесть per-домен (unix-секунды; null — не тикал).
+export interface OverviewFreshnessDto {
+  etcd: { builtAtUnix: number } | null;
+  pg: { builtAtUnix: number } | null;
+  kafka: { builtAtUnix: number } | null;
+  valkey: { builtAtUnix: number } | null;
+  s3: { builtAtUnix: number } | null;
+  // Серверный интервал тика pg-домена (сек): порог stale бейджей — 3×ЭТО
+  // значение (синхронно с SnapshotStaleRule), не клиентский интервал опроса.
+  intervalSeconds?: number;
+}
+
+// u10: глобальный стоп бэкапов (/pgworker/backups-disabled).
+export interface BackupsDisabledDto {
+  updatedUnix: number;
+  updatedBy: string | null;
 }
 
 export interface OverviewKafkaDto {
@@ -285,6 +356,20 @@ export interface ClusterDto {
   standNodes: StandNodeDto[];
   // Журнал последнего процесса воркера (t07, arch/03 §2); null — журнала нет.
   work?: ClusterWorkDto | null;
+  // u12: журналы эвакуаций кластера (arch/14 §3.2); null — не тикали.
+  evacuations?: EvacuationDto[] | null;
+  // u07-бейдж: живая заявка ротации per-cluster секретов /pgworker/rotations/<C>.
+  secretsRotationPending?: boolean;
+}
+
+// Журнал эвакуации шарда (u12, arch/14 §3.2): buckets — старый → новый.
+export interface EvacuationDto {
+  shard: string;
+  evacuatedUnix: number;
+  reason: string;
+  buckets: Record<string, string>;
+  state: 'DONE' | 'QUARANTINED';
+  returnedUnix: number | null;
 }
 
 export interface ShardDto {
@@ -477,6 +562,10 @@ export interface KafkaClusterDto {
   groups: KafkaGroupDto[] | null;
   probeOk: boolean | null;
   probeError: string | null;
+  // u07: живая заявка admin-ротации (бейдж шапки + u17-отмена); null = нет.
+  adminRotation?: KafkaRotationTicketDto | null;
+  // u13: work-журнал кластера /kafkaworker/work/<C>; null = журнала нет.
+  work?: ClusterWorkDto | null;
 }
 
 export interface KafkaBrokerDto {
@@ -738,6 +827,8 @@ export interface ValkeyClusterDto {
   caRotation: ValkeyCaRotationDto | null;
   // Последний исход заявки (t10): null = исходов нет.
   ticketOutcome: TicketOutcomeDto | null;
+  // u13: work-журнал кластера /valkeyworker/work/<C>; null = журнала нет.
+  work?: ClusterWorkDto | null;
 }
 
 export interface ValkeyNodeDto {
@@ -854,6 +945,10 @@ export interface BackupShardSummaryDto {
   walSegmentCount: number;
   hasS3Only: boolean; // есть объекты без ключа
   orphan: boolean; // префикс без владельца
+  // u09-/events: restore/drill факты шарда (etcd-ключи /pgworker/backups/);
+  // null — факта нет.
+  restoreState?: string | null;
+  drillState?: string | null;
 }
 
 export interface BackupClusterStorageDto {
@@ -873,6 +968,8 @@ export interface BackupPolicyDto {
   fullMaxAgeSec: number | null;
   verifyOnCreate: boolean | null;
   drillIntervalDays: number | null;
+  // u16: возрастной гейт мусора (arch/19 §4); null — дефолт воркера 600 с.
+  garbageMinAgeSec: number | null;
   // t36: секция s3 policy (arch/19 §4); null — пул не выбран.
   s3: { pool: string; writeMaster: string[]; writeReplica: string[] } | null;
 }
@@ -941,6 +1038,8 @@ export interface BackupStorageDto {
   orphans: BackupOrphanDto[];
   inventoryUpdatedUnix: number;
   inventoryError: string | null;
+  // u10-баннер грани: null = бэкапы работают.
+  backupsDisabled?: BackupsDisabledDto | null;
 }
 
 // GET /api/backups/storage/{cluster}/{shard} — детали шарда.
@@ -981,6 +1080,21 @@ export interface BackupShardStorageDto {
   reconcileNote: string | null;
   // Последний/текущий дрилл шарда (reliability t02, arch/19 §3.6); null — ключа нет.
   drill: BackupDrillBadgeDto | null;
+  // u11: приёмники WAL per-node (arch/19 §4); null — не тикали.
+  agents?: WalAgentDto[] | null;
+}
+
+// Приёмник WAL ноды (u11, arch/19 §4): lease-ключ жив = приёмник жив.
+export interface WalAgentDto {
+  node: string;
+  role: string | null;
+  state: string;
+  lastDeliveredSegment: number | null;
+  lastDeliveredUnix: number | null;
+  poolExhausted: boolean;
+  tliJump: number | null;
+  error: string | null;
+  updatedUnix: number;
 }
 
 // Статус дрилла шарда (reliability t02): state/фаза/времена/LSN/error.
@@ -1033,6 +1147,21 @@ export interface WorkerViewDto {
   worker: string;
   instances: WorkerInstanceDto[];
   targetCert?: WorkerCertDto | null;
+  // u14: координация (лидер + claims «кто держит кластер»); null — не тикали.
+  coordination?: WorkerCoordinationDto | null;
+}
+
+// Координация воркера домена (u14, adminpanel/02 §3.7).
+export interface WorkerCoordinationDto {
+  leaderInstance: string | null;
+  claims: WorkerClaimDto[];
+  instances: string[];
+}
+
+export interface WorkerClaimDto {
+  cluster: string;
+  instance: string;
+  sinceUnix: number | null;
 }
 
 export interface WorkersViewDto {
@@ -1186,6 +1315,8 @@ export type S3ClusterDto = {
   connectivity: S3ConnectivityDto | null;
   sync: S3SyncDto | null;
   rotation: S3RotationDto | null;
+  // u13: work-журнал кластера /s3worker/work/<C>; null = журнала нет.
+  work?: ClusterWorkDto | null;
 };
 export type CreateS3ClusterRequestDto = {
   name: string;

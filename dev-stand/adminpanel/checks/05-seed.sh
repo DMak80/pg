@@ -15,11 +15,13 @@ ROOT="$(cd ../.. && pwd)"
 
 seed_kafka() {
   docker compose --profile kafka up -d kafkaworker >/dev/null 2>&1
-  # mTLS (t03): /healthz и сид — только с клиентской парой healthcheck + ca.pem
-  MTLS="curl -fsS -m 3 --cacert $ROOT/deploy/tls/ca.pem --cert $ROOT/deploy/tls/healthcheck.crt --key $ROOT/deploy/tls/healthcheck.key"
-  for i in $(seq 1 60); do $MTLS https://localhost:8082/healthz >/dev/null 2>&1 && break; sleep 1; done
-  $MTLS https://localhost:8082/healthz >/dev/null || { echo "❌ kafkaworker did not come alive (:8082/healthz via mTLS)"; exit 1; }
-  echo "  kafka seed: $($MTLS -X POST https://localhost:8082/api/seed/demo)"
+  # Открытая грань (arch/16 §1.1): /healthz — https без клиентского серта;
+  # мутации /api — клиентская пара сида seed (конвенция «чек = стендовый сид»).
+  HEALTH="curl -fsS -m 3 --cacert $ROOT/deploy/tls/ca.pem"
+  API="curl -fsS -m 3 --cacert $ROOT/deploy/tls/ca.pem --cert $ROOT/deploy/tls/seed.crt --key $ROOT/deploy/tls/seed.key"
+  for i in $(seq 1 60); do $HEALTH https://localhost:8082/healthz >/dev/null 2>&1 && break; sleep 1; done
+  $HEALTH https://localhost:8082/healthz >/dev/null || { echo "❌ kafkaworker did not come alive (:8082/healthz via https)"; exit 1; }
+  echo "  kafka seed: $($API -X POST https://localhost:8082/api/seed/demo)"
   # живой ключ доступа — его ждут и панель (WorkerEndpoints), и последующие
   # мутации чека 50; воркер остаётся Поднятым (безопасно: контейнеров брокеров
   # нет → пробы слепые → сидовые заявки не исполняются, arch/16 §5 C).
@@ -32,16 +34,19 @@ seed_kafka() {
 }
 seed_valkey() {
   docker compose --profile valkey up -d valkeyworker >/dev/null 2>&1
-  # mTLS-курл внутри образа воркера (curl установлен HEALTHCHECK'ом; серты /tls);
+  # Курл внутри образа воркера (curl установлен HEALTHCHECK'ом; серты /tls):
   # API-порт на хост не публикуется — ходим изнутри контейнера на localhost:8080.
-  vwk_curl() {
-    docker compose exec -T valkeyworker curl -fsS -m 3 \
-      --cacert /tls/ca.pem --cert /tls/healthcheck.crt --key /tls/healthcheck.key "$@"
+  vwk_health() {
+    docker compose exec -T valkeyworker curl -fsS -m 3 --cacert /tls/ca.pem "$@"
   }
-  for i in $(seq 1 60); do vwk_curl https://localhost:8080/healthz >/dev/null 2>&1 && break; sleep 1; done
-  vwk_curl https://localhost:8080/healthz >/dev/null \
-    || { echo "❌ valkeyworker did not come alive (:8080/healthz via mTLS from inside the container)"; exit 1; }
-  echo "  valkey seed: $(vwk_curl -X POST https://localhost:8080/api/seed/demo)"
+  vwk_api() {
+    docker compose exec -T valkeyworker curl -fsS -m 3 \
+      --cacert /tls/ca.pem --cert /tls/seed.crt --key /tls/seed.key "$@"
+  }
+  for i in $(seq 1 60); do vwk_health https://localhost:8080/healthz >/dev/null 2>&1 && break; sleep 1; done
+  vwk_health https://localhost:8080/healthz >/dev/null \
+    || { echo "❌ valkeyworker did not come alive (:8080/healthz via https from inside the container)"; exit 1; }
+  echo "  valkey seed: $(vwk_api -X POST https://localhost:8080/api/seed/demo)"
   # Заявка доигрывается Reconcile-циклом воркера: ждём Active-конфиг demo
   # (config без state) ≤ бюджета тиков (NodeBootSec-граница 120 c + запас).
   for i in $(seq 1 150); do

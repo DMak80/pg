@@ -8,7 +8,7 @@ using PgWorker.IntegrationTests.E2e;
 // artifacts/e2e/.prepared — тесты сверяют его со свежестью исходников.
 //
 // Запуск: dotnet run --project src/tests/PgWorker.E2ePrepare -c Release
-// Затем:  DOTNET_CLI_UI_LANGUAGE=en PGW_TEST_DOCKER=1 dotnet test … (серии,
+// Затем:  DOTNET_CLI_UI_LANGUAGE=en dotnet test … (серии,
 //         можно параллельно — ститика уже готова и не пересобирается).
 
 Console.WriteLine("[PHASE] e2e-prepare: building static assets (publish + docker images)…");

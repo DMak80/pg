@@ -291,6 +291,16 @@ public sealed class PasswordRotator(
         => RoleMutationLive(journalState, RotationRole.App)
            || RoleMutationLive(journalState, RotationRole.Admin);
 
+    // Гвард отмены заявок (App/Operations CancelRotationHandlers): ЕДИНЫЙ
+    // источник фаз мутации роли — литералы в App не дублируются (дрейф фазы
+    // ротатора молча разрешал бы отмену живой мутации). Public: App — другая
+    // сборка.
+    public static bool AppMutationLive(WorkState? journalState)
+        => RoleMutationLive(journalState, RotationRole.App);
+
+    public static bool AdminMutationLive(WorkState? journalState)
+        => RoleMutationLive(journalState, RotationRole.Admin);
+
     // Waiting-исход роли с экспирацией под гвардом : живая заявка старее
     // порога И гвард пройден (staging отсутствует — по построению ветки, т.к.
     // ca-window guard стоит РАНЬШЕ обеих waiting-cluster точек; mutationLive —

@@ -26,7 +26,7 @@ export function HaPage() {
 
   return (
     <Stack gap="md">
-      <Title order={2}>HA</Title>
+      <Title order={2}>Репликация</Title>
       {scopes.data.length === 0 ? (
         <Text c="dimmed">No HA scopes found</Text>
       ) : (
@@ -59,7 +59,12 @@ function ScopeRow({ scope }: { scope: HaScopeSummaryDto }) {
   return (
     <Table.Tr>
       <Table.Td>
-        <Anchor component={Link} to={`/ha/${scope.scope}`} size="sm" ff="monospace">
+        {/* u03/D3: matched — страница шарда; unmatched — детали /ha/:scope */}
+        <Anchor component={Link}
+          to={scope.matched && scope.cluster !== null && scope.shard !== null
+            ? `/clusters/${scope.cluster}/shards/${scope.shard}`
+            : `/ha/${scope.scope}`}
+          size="sm" ff="monospace">
           {scope.scope}
         </Anchor>
       </Table.Td>

@@ -6,7 +6,7 @@ using Xunit;
 namespace PgWorker.IntegrationTests.Docker;
 
 // Драйвер на живом docker (задача 16, spec §11.1 docker-серия): create/start/stop/rm,
-// идемпотентность EnsureNode/RemoveNode/StopNode, BusyPorts. Гейт: PGW_TEST_DOCKER=1.
+// идемпотентность EnsureNode/RemoveNode/StopNode, BusyPorts.
 [Collection(NonE2eCollection.Name)]
 public class DockerDriverTests
 {
@@ -31,7 +31,7 @@ public class DockerDriverTests
     }
 
     private static PlainClusterDriver NewDriver()
-        => new([new HostEndpoint(Host, "unix:///var/run/docker.sock")], Factory, enableDoorman: false,
+        => new([new HostEndpoint(Host, "unix:///var/run/docker.sock")], Factory,
             AlpineImage, restCertificates: RestCertificates);
 
     private static ShardTopology Topology(string cluster, NodeAddress addr) => new(
@@ -55,6 +55,33 @@ public class DockerDriverTests
     }
 
     private static string ContainerName(string cluster) => $"pgw-{cluster}-s1-n1";
+
+    // Динамическая тройка портов ноды (план 5432/8008/6432 — зонды свободных,
+    // arch-канон: тест не хардкодит хост-порты): листенеры держатся открытыми
+    // до отбора всех трёх — дубликаты внутри тройки невозможны.
+    private static NodePorts FreeNodePorts()
+    {
+        var listeners = new[]
+        {
+            new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0),
+            new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0),
+            new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0),
+        };
+        try
+        {
+            foreach (var l in listeners)
+                l.Start();
+            return new NodePorts(
+                ((System.Net.IPEndPoint)listeners[0].LocalEndpoint).Port,
+                ((System.Net.IPEndPoint)listeners[1].LocalEndpoint).Port,
+                ((System.Net.IPEndPoint)listeners[2].LocalEndpoint).Port);
+        }
+        finally
+        {
+            foreach (var l in listeners)
+                l.Stop();
+        }
+    }
 
     // Pull образа один раз на прогон (только при включённой серии): create не тянет образ сам.
     private static readonly Lazy<Task> ImageReady = new(async () =>
@@ -80,7 +107,6 @@ public class DockerDriverTests
     [Fact]
     public async Task CreateAndStart_AlpineSleepWithPublishPort_Listed()
     {
-        DockerTrait.SkipIfUnavailable();
         await ImageReady.Value;
 
         // Arrange — живой контейнер движком напрямую (Cmd — только у alpine-теста)
@@ -114,14 +140,13 @@ public class DockerDriverTests
     [Fact]
     public async Task EnsureNode_SecondCall_NoErrorSingleContainer()
     {
-        DockerTrait.SkipIfUnavailable();
         await ImageReady.Value;
 
         // Arrange
         var cluster = $"c2{Suffix}";
         await CleanupAsync(cluster);
         var driver = NewDriver();
-        var addr = new NodeAddress(Host, new NodePorts(25102, 25103, 25104));
+        var addr = new NodeAddress(Host, FreeNodePorts());
 
         // Act — повторный Ensure с тем же именем
         var first = await driver.EnsureNodeAsync(Topology(cluster, addr), "n1", addr, Secrets, Etcd, resources: null, tuning: null, syncStrict: false, restPassword: RestTestPassword, ct: CancellationToken.None);
@@ -140,14 +165,13 @@ public class DockerDriverTests
     [Fact]
     public async Task RemoveNode_ContainerAndVolumeGone_RepeatSucceeds()
     {
-        DockerTrait.SkipIfUnavailable();
         await ImageReady.Value;
 
         // Arrange
         var cluster = $"c3{Suffix}";
         await CleanupAsync(cluster);
         var driver = NewDriver();
-        var addr = new NodeAddress(Host, new NodePorts(25105, 25106, 25107));
+        var addr = new NodeAddress(Host, FreeNodePorts());
         await driver.EnsureNodeAsync(Topology(cluster, addr), "n1", addr, Secrets, Etcd, resources: null, tuning: null, syncStrict: false, restPassword: RestTestPassword, ct: CancellationToken.None);
 
         // Act — удаление и его повтор (все объекты уже исчезли)
@@ -167,7 +191,6 @@ public class DockerDriverTests
     [Fact]
     public async Task StopNode_ContainerExited_RepeatSucceeds()
     {
-        DockerTrait.SkipIfUnavailable();
         await ImageReady.Value;
 
         // Arrange — живой контейнер (sleep) с корректным именем ноды; volume bind
@@ -208,7 +231,6 @@ public class DockerDriverTests
     [Fact]
     public async Task BusyPorts_ReflectsPublishedPort()
     {
-        DockerTrait.SkipIfUnavailable();
         await ImageReady.Value;
 
         // Arrange — живой контейнер с publish-портом

@@ -485,26 +485,48 @@ public class BackupS3Tests
         ms.ToArray().Should().Equal(data);
     }
 
-    // AAA : несовпадающий sha256 — сервер отвергает put (BadDigest) → Failed.
-    // SKIP: продуктовый пробел ownS3 ВНЕ зоны — сервер не верифицирует
-    // x-amz-checksum-sha256 (пут проходит, BadDigest не возвращается).
-    // Возврат теста в строй — задача t91-owns3-checksum-verify
-    // (arch/roadmap/owns3.md).
-    [Fact(Skip = "t91-owns3-checksum-verify (arch/roadmap/owns3.md): the ownS3 server does not verify x-amz-checksum-sha256 (BadDigest) — a put with a wrong checksum passes")]
+    // AAA: несовпадающий sha256 — сервер OwnS3 отвергает put заголовочной
+    // сверкой x-amz-checksum-sha256 → 400 BadDigest. Клиент — прямой AWSSDK
+    // с UseChunkEncoding=false (канон OwnS3 AwsSdkSimpleScenarios): дефолтный
+    // путь SDK при заданном checksum-свойстве — STREAMING-чанковый, где
+    // заголовочные x-amz-checksum-* сервером игнорируются (авторитет —
+    // трейлер, пересчитанный SDK) — заголовочная верификация осталась бы
+    // непроверенной.
+    [Fact]
     public async Task PutObjectBrokenShaRejectedByServer()
     {
-        // Arrange
+        // Arrange: своё owns3-окружение + клиент с hex-подписью тела
+        // (не-чанковый путь).
         var ct = TestContext.Current.CancellationToken;
         await using var s3Node = await OwnS3.StartAsync("s3bad", ct);
-        await using var s3 = new BackupS3(s3Node.S3());
+        var options = s3Node.S3();
+        using var s3 = new AmazonS3Client(
+            new BasicAWSCredentials(options.AccessKey, options.SecretKey),
+            new AmazonS3Config { ServiceURL = options.Endpoint, ForcePathStyle = true });
         // 64-символьная hex-строка нулей — валидная длина, неверное значение
         const string wrongSha = "0000000000000000000000000000000000000000000000000000000000000000";
 
-        // Act
-        var put = await s3.PutObjectAsync("etcd/snapshot-test.db", [1, 2, 3], wrongSha, ct);
+        // Act: put с неверно заявленным заголовочным sha256 (base64 на границе).
+        var act = async () => await s3.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = options.Bucket,
+            Key = "etcd/snapshot-test.db",
+            InputStream = new MemoryStream([1, 2, 3]),
+            UseChunkEncoding = false,
+            ChecksumSHA256 = Convert.ToBase64String(Convert.FromHexString(wrongSha)),
+        }, ct);
 
-        // Assert — серверная проверка целостности отклонила (не Result.Success)
-        put.IsSuccess.Should().BeFalse("the server must reject a put with a wrong checksum");
+        // Assert — серверная проверка целостности: 400 BadDigest, объект не закоммичен.
+        var rejected = await act.Should().ThrowAsync<AmazonS3Exception>();
+        rejected.Which.StatusCode.Should().Be(System.Net.HttpStatusCode.BadRequest);
+        rejected.Which.ErrorCode.Should().Be("BadDigest");
+        (await s3.Invoking(x => x.GetObjectMetadataAsync(new GetObjectMetadataRequest
+            {
+                BucketName = options.Bucket, Key = "etcd/snapshot-test.db",
+            }, ct))
+            .Should().ThrowAsync<AmazonS3Exception>())
+            .Which.StatusCode.Should().Be(System.Net.HttpStatusCode.NotFound,
+                "a broken put must not commit the object");
     }
 
     private static string Sha256Hex(byte[] data)

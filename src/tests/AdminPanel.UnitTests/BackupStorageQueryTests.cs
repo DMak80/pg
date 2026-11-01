@@ -222,6 +222,45 @@ public class BackupStorageQueryTests
         s3.TtlLeftSec.Should().NotBeNull().And.BeLessThan(0, "expired — deletion on the next pass");
     }
 
+    // ——— маппер сводки: restore/drill факты per-shard (u09-/events) — AAA ———
+
+    // AAA: активный restore RUNNING + drill SUCCEEDED в etcd → сводка несёт
+    // RestoreState/DrillState шарда (клиентские диффы ленты /events); шард
+    // без фактов — null/null.
+    [Fact]
+    public void MapStorage_JoinsRestoreDrillFacts()
+    {
+        // Arrange — s1 с RUNNING-restore и SUCCEEDED-дриллом, s2 без фактов
+        var snapshot = SnapshotWithTree() with
+        {
+            Backups = [new ClusterBackupsInfo(
+                "demo", null, new Dictionary<string, long?>(),
+                ShardsRestores: new Dictionary<string, IReadOnlyList<RestoreOperationInfo>>
+                {
+                    ["s1"] = [new RestoreOperationInfo(
+                        "demo", "s1", "r1", "RUNNING", null, NowUnix - 10, NowUnix - 5, null, "recovering")],
+                },
+                ShardsDrills: new Dictionary<string, DrillInfo>
+                {
+                    ["s1"] = new DrillInfo(
+                        "demo", "s1", "d1", "SUCCEEDED", "b1", NowUnix - 100, NowUnix - 50, null, null, null),
+                })],
+        };
+
+        // Act
+        var dto = BackupStorageMappers.MapStorage(snapshot, TtlSec, NowUnix);
+
+        // Assert — джойн по кластеру×шарду; шард без фактов в etcd → null/null
+        var demo = dto.Clusters.Should().Contain(c => c.Cluster == "demo").Subject;
+        var s1 = demo.Shards.Should().Contain(s => s.Shard == "s1").Subject;
+        s1.RestoreState.Should().Be("RUNNING");
+        s1.DrillState.Should().Be("SUCCEEDED");
+        var ghost = dto.Clusters.Should().Contain(c => c.Cluster == "ghost-shard").Subject;
+        var s9 = ghost.Shards.Should().Contain(s => s.Shard == "s9").Subject;
+        s9.RestoreState.Should().BeNull();
+        s9.DrillState.Should().BeNull();
+    }
+
     // ——— маппер деталей шарда — AAA ———
 
     // AAA: etcd full COMPLETED+verify OK + S3-факт → Reconcile="Ok"; PLANNED-restore — бейдж
@@ -259,7 +298,66 @@ public class BackupStorageQueryTests
         dto.ActiveRestore.Phase.Should().Be("downloading");
     }
 
+    // u11/#15a: джойн приёмников WAL шарда (параметр walAgents MapShard —
+    // раньше с дефолтом null: старые тесты компилировались и молча не трогали).
+    [Fact]
+    public void MapShard_JoinsWalAgents_ByClusterAndShard()
+    {
+        // Arrange — S3/etcd-минимум + агенты двух шардов (чужой не должен попасть)
+        var s3 = Storage(ClusterNode("demo", ShardNode("demo", "s1")));
+        var etcdCluster = new ClusterBackupsInfo("demo", null, new Dictionary<string, long?>());
+        var reconcile = S3Reconciler.Reconcile(s3, [etcdCluster], [Cluster("demo", "s1")], null);
+        var agents = new List<WalAgentInfo>
+        {
+            new("demo", "s1", "s1a", "master", "streaming", 120, 1756500100,
+                PoolExhausted: false, TliJump: null, HistoryMissingTli: null, Error: null, UpdatedUnix: NowUnix),
+            new("demo", "s2", "s2a", "sync", "waiting_slot", null, null,
+                PoolExhausted: false, TliJump: 3, HistoryMissingTli: null, Error: "no slot", UpdatedUnix: NowUnix),
+        };
+
+        // Act
+        var dto = BackupStorageMappers.MapShard(
+            "demo", "s1", s3.Clusters[0].Shards[0], etcdCluster, reconcile, agents);
+
+        // Assert — только агенты ЭТОГО шарда, поля переносятся как есть
+        var agent = dto.Agents.Should().ContainSingle().Subject;
+        agent.Node.Should().Be("s1a");
+        agent.Role.Should().Be("master");
+        agent.State.Should().Be("streaming");
+        agent.LastDeliveredSegment.Should().Be(120);
+        agent.UpdatedUnix.Should().Be(NowUnix);
+    }
+
+    // ?cluster= (#28): сводка сужается до срезов ОДНОГО кластера; null — полный.
+    [Fact]
+    public async Task StorageHandler_ClusterFilter_NarrowsClusters()
+    {
+        // Arrange — дерево двух кластеров; хендлер с управляемым стором
+        var snapshot = SnapshotWithTree();
+        var options = Microsoft.Extensions.Options.Options.Create(
+            new AdminPanel.Core.Alerting.AlertsOptions
+            {
+                Backups = new AdminPanel.Core.Alerting.AlertsOptions.BackupsAlertsOptions { OrphanTtlSec = TtlSec },
+            });
+        var handler = new BackupStorageQueryHandler(new FixedReader(snapshot), options);
+        var ct = TestContext.Current.CancellationToken;
+
+        // Act
+        var filtered = (await handler.Handle(new BackupStorageQuery("demo"), ct)).Value;
+        var full = (await handler.Handle(new BackupStorageQuery(), ct)).Value;
+
+        // Assert — фильтр: только demo; полный ответ — оба кластера дерева
+        filtered!.Clusters.Select(c => c.Cluster).Should().Equal(["demo"]);
+        full!.Clusters.Select(c => c.Cluster).Should().BeEquivalentTo(["demo", "ghost-shard"]);
+    }
+
     // ——— фикстуры ———
+
+    // Управляемый читатель снапшота (unit-аналог TestSnapshotStore).
+    private sealed class FixedReader(EtcdSnapshot? snapshot) : ISnapshotReader
+    {
+        public EtcdSnapshot? Current => snapshot;
+    }
 
     private static EtcdSnapshot SnapshotWithTree(BackupOrphansInfo? registry = null) => TestSnapshots.Healthy(Now) with
     {

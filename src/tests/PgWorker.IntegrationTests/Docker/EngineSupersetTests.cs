@@ -28,7 +28,6 @@ public class EngineSupersetTests
     [Fact]
     public async Task CreateContainer_MissingImage_PullsAndRetries()
     {
-        DockerTrait.SkipIfUnavailable();
         var ct = TestContext.Current.CancellationToken;
         await using var engine = Factory.Create("unix:///var/run/docker.sock", hostAlias: "local");
         var name = "pgw-t07-superset-" + Suffix;
@@ -62,7 +61,6 @@ public class EngineSupersetTests
     [Fact]
     public async Task CreateContainer_ExistingImage_Succeeds()
     {
-        DockerTrait.SkipIfUnavailable();
         var ct = TestContext.Current.CancellationToken;
         await using var engine = Factory.Create("unix:///var/run/docker.sock", hostAlias: "local");
         var name = "pgw-t07-superset-ok-" + Suffix;

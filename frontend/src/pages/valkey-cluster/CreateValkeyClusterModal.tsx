@@ -7,21 +7,11 @@ import { useState } from 'react';
 import { ApiError } from '../../api/client';
 import { createValkeyCluster, valkeyQueryKeys } from '../../api/queries';
 import type { CreateValkeyClusterRequestDto } from '../../api/dto';
+import { VALKEY_POLICIES, validateCpu, validateDiskGi, validateMemGi, validateValkeyMaxmemory } from '../../utils/validation';
 
 // Границы — зеркало ValkeyLimits (arch/02 §11.3).
 const NAME_RE = /^[a-z][a-z0-9_]{0,62}$/;
-const KNOWN_POLICIES = [
-  'allkeys-lru',
-  'allkeys-lfu',
-  'volatile-lru',
-  'volatile-lfu',
-  'allkeys-random',
-  'volatile-random',
-  'volatile-ttl',
-  'noeviction',
-];
 const MIB = 1024 * 1024;
-const GIB = 1024 * MIB;
 
 interface FormState {
   name: string;
@@ -65,17 +55,20 @@ export function CreateValkeyClusterModal({ opened, onClose }: { opened: boolean;
   // в MiB (UI), в API уходит maxmemoryBytes = MiB * 1048576.
   function validate(): string | null {
     if (!NAME_RE.test(form.name)) return 'name: [a-z][a-z0-9_]{0,62} (lowercase, no hyphen)';
+    const maxmemoryError = validateValkeyMaxmemory(form.maxmemoryMib * MIB, form.memGi);
+    if (maxmemoryError !== null) return maxmemoryError;
     if (!Number.isInteger(form.maxmemoryMib) || form.maxmemoryMib < 1)
       return 'maxmemory: integer ≥ 1 MiB';
-    if (!KNOWN_POLICIES.includes(form.policy)) return 'maxmemoryPolicy: choose from the list';
-    if (form.cpu < 0.01 || form.cpu > 64) return 'cpu: 0.01..64 cores';
-    if (!Number.isInteger(form.memGi) || form.memGi < 1 || form.memGi > 65536)
-      return 'memGi: integer 1..65536';
-    if (!Number.isInteger(form.diskGi) || form.diskGi < 1 || form.diskGi > 65536)
-      return 'diskGi: integer 1..65536';
+    if (!(VALKEY_POLICIES as readonly string[]).includes(form.policy))
+      return 'maxmemoryPolicy: выберите значение из списка (8 значений канона arch/20 §2)';
+    // Границы — validation.ts (u02, arch/02 §11.3).
+    const cpuError = validateCpu(form.cpu);
+    if (cpuError !== null) return cpuError;
+    const memError = validateMemGi(form.memGi);
+    if (memError !== null) return memError;
+    const diskError = validateDiskGi(form.diskGi);
+    if (diskError !== null) return diskError;
     // Инвариант R3: maxmemoryBytes < mem-лимит (иначе OOM-килл контейнера).
-    if (form.maxmemoryMib * MIB >= form.memGi * GIB)
-      return 'maxmemory must be below the mem limit — otherwise OOM kill (R3)';
     return null;
   }
 
@@ -105,7 +98,7 @@ export function CreateValkeyClusterModal({ opened, onClose }: { opened: boolean;
         <Group grow>
           <NumberInput label="maxmemory, MiB" value={form.maxmemoryMib}
             min={1} onChange={(v) => set('maxmemoryMib', Number(v ?? 0))} />
-          <Select label="Eviction policy" data={KNOWN_POLICIES} value={form.policy}
+          <Select label="Eviction policy" data={[...VALKEY_POLICIES]} value={form.policy}
             onChange={(v) => set('policy', v ?? 'allkeys-lru')} />
         </Group>
         {formError !== null && !formError.startsWith('name') ? (

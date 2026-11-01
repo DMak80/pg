@@ -13,8 +13,8 @@ internal static partial class S3StartupChecks
     public static bool EtcdEndpoints(S3WorkerOptions o)
         => o.Etcd.Endpoints is { Length: > 0 };
 
-    // AdvertiseUrl: непустой; https:// (mTLS-only, arch/24 §1.1) либо AllowInsecureHttp
-    // (только WAF-тесты).
+    // AdvertiseUrl: непустой; https:// (HTTPS-грань, mTLS — только /api,
+    // arch/24 §1.1) либо AllowInsecureHttp (только WAF-тесты).
     public static bool AdvertiseUrl(S3WorkerOptions o)
         => !string.IsNullOrWhiteSpace(o.Api.AdvertiseUrl)
            && (o.Api.Tls.AllowInsecureHttp

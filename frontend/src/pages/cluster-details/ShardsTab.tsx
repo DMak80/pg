@@ -80,7 +80,8 @@ function ShardRow({ shard, cluster, canScale, bucketCount }: {
     <Table.Tr>
       <Table.Td>
         <Group gap={6}>
-          <Anchor component={Link} to={`/ha/${cluster}-${shard.name}`} size="sm" ff="monospace">
+          {/* u03: имя шарда — прямая ссылка на страницу шарда */}
+          <Anchor component={Link} to={`/clusters/${cluster}/shards/${shard.name}`} size="sm" ff="monospace">
             {shard.name}
           </Anchor>
           {shard.state === 'TO_REMOVE' ? (

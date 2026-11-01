@@ -720,7 +720,7 @@ public sealed class ProvisioningProcess(
         if (!schemas.IsSuccess)
             return schemas;
 
-        // P2.5: dsn = write-эндпоинт шарда — HAProxy :5432 каждой ноды (P2):
+        // P2.5: dsn = write-вход шарда — pg-порты нод напрямую (P2):
         // multi-host по нодам в порядке имени, pg-порты из portalloc.
         // Per-cluster credentials: user+password из config кластера.
         var nodes = shard.Nodes.OrderBy(n => n.Name, StringComparer.Ordinal).ToList();

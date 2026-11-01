@@ -8,15 +8,14 @@ namespace PgWorker.IntegrationTests.Docker;
 // заявка → первый тик ротатора фиксирует NEW в rest_pending → тики надзора
 // катят пересоздания (hash env != hash(pending)) → txn коммитит четвёрку и
 // сбрасывает pending; окно без PATCH конвергенции DCS; идемпотентность
-// повторной заявки; no-op тика без заявки. SQL — стаб рига. Гейт
-// PGW_TEST_DOCKER=1; окружение per-guid с ассертом чистоты (e2e-isolation).
+// повторной заявки; no-op тика без заявки. SQL — стаб рига. Окружение
+// per-guid с ассертом чистоты (e2e-isolation).
 [Collection(NonE2eCollection.Name)]
 public class RestRotationTests(Etcd.EtcdFixture fixture)
 {
     [Fact]
     public async Task Rotation_RollingWindow_CommitsAndIdempotent()
     {
-        DockerTrait.SkipIfUnavailable();
         var ct = TestContext.Current.CancellationToken;
         await using var c = await RestTlsDockerRig.BuildAsync(fixture);
 

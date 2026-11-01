@@ -22,6 +22,7 @@
     </ItemGroup>
 
     <ItemGroup>
+        <ProjectReference Include="..\Shared.TestInfra\Shared.TestInfra.csproj"/>
         <ProjectReference Include="..\..\S3Worker.Core\S3Worker.Core.csproj"/>
         <ProjectReference Include="..\..\S3Worker.Etcd\S3Worker.Etcd.csproj"/>
         <ProjectReference Include="..\..\S3Worker.Docker\S3Worker.Docker.csproj"/>

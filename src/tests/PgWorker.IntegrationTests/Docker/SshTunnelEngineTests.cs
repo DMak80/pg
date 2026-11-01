@@ -72,7 +72,6 @@ public class SshTunnelEngineTests
     {
         // Arrange: RSA-ключпар фикстуры → authorized_keys (openssh-формат);
         // sshd+socat контейнер; endpoint ssh://testuser@localhost:<mapped-2222>.
-        DockerTrait.SkipIfUnavailable();
         using var rsa = RSA.Create(2048);
         var keyPem = rsa.ExportPkcs8PrivateKeyPem();
         var authorizedKeys = OpenSshPublicKey(rsa, "pgw-test");
@@ -95,7 +94,6 @@ public class SshTunnelEngineTests
     public async Task SshTunnel_WrongFingerprintPin_Refused()
     {
         // Arrange: живой sshd, но pin заведомо неверный.
-        DockerTrait.SkipIfUnavailable();
         using var rsa = RSA.Create(2048);
         await using var sshd = await StartSshdAsync(OpenSshPublicKey(rsa, "pgw-test"));
         await sshd.StartAsync(TestContext.Current.CancellationToken);
@@ -111,7 +109,6 @@ public class SshTunnelEngineTests
     {
         // Arrange: первый туннель без pin читает фактический fingerprint (TOFU),
         // второй — с этим pin: подключение обязано пройти (строгая семантика).
-        DockerTrait.SkipIfUnavailable();
         using var rsa = RSA.Create(2048);
         var keyPem = rsa.ExportPkcs8PrivateKeyPem();
         await using var sshd = await StartSshdAsync(OpenSshPublicKey(rsa, "pgw-test"));

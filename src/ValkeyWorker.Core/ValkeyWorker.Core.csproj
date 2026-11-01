@@ -3,6 +3,7 @@
     <ItemGroup>
         <InternalsVisibleTo Include="ValkeyWorker.UnitTests"/>
         <InternalsVisibleTo Include="ValkeyWorker.IntegrationTests"/>
+        <InternalsVisibleTo Include="ValkeyWorker.E2eTests"/>
     </ItemGroup>
 
     <ItemGroup>

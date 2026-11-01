@@ -10,7 +10,7 @@ ROOT="$(cd ../.. && pwd)"
 BASE="${ADMINPANEL_URL:-http://localhost:5050}"
 PGW_API_HOST_PORT="${PGW_API_HOST_PORT:-8080}"
 PGW_API_HOST_PORT2="${PGW_API_HOST_PORT2:-8083}"
-MTLS="curl -fsS -m 5 --cacert $ROOT/deploy/tls/ca.pem --cert $ROOT/deploy/tls/healthcheck.crt --key $ROOT/deploy/tls/healthcheck.key"
+HEALTH="curl -fsS -m 5 --cacert $ROOT/deploy/tls/ca.pem"
 # etcdctl выполняется ВНУТРИ as-etcd-1 (default endpoint 127.0.0.1:2379 — сам узел);
 # все три узла адресуемся compose-DNS сети стенда (etcdN:2379 — клиентский порт
 # контейнера один): ХОСТОВЫЕ публикации localhost:2379/2381/2383 внутри контейнера
@@ -52,8 +52,8 @@ ECT put "$KEY" check43 >/dev/null \
 ECT get "$KEY" --print-value-only | grep -qx check43 \
   || { echo "❌ read-after-write does not converge"; exit 1; }
 ECT del "$KEY" >/dev/null
-$MTLS "https://localhost:${PGW_API_HOST_PORT}/healthz" >/dev/null \
-  && $MTLS "https://localhost:${PGW_API_HOST_PORT2}/healthz" >/dev/null \
+$HEALTH "https://localhost:${PGW_API_HOST_PORT}/healthz" >/dev/null \
+  && $HEALTH "https://localhost:${PGW_API_HOST_PORT2}/healthz" >/dev/null \
   || { echo "❌ PgWorker healthz (etcd-reachable) failed while quorum was alive"; exit 1; }
 api /api/healthz >/dev/null || { echo "❌ adminpanel not responding while quorum is alive"; exit 1; }
 api /api/clusters/demo | jq -e 'all(.shards[]; .masterLeaseAlive == true)' >/dev/null \

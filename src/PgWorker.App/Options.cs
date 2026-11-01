@@ -128,7 +128,8 @@ public sealed class ApiOptions
     public TlsOptions Tls { get; set; } = new();
 }
 
-/// <summary>mTLS HTTP API (arch/14 §1.1): PEM/PATH-дуализм env-секретов
+/// <summary>HTTPS HTTP API воркера (arch/14 §1.1; mTLS — только /api):
+/// PEM/PATH-дуализм env-секретов
 /// PGW_API_TLS_{CERT,KEY,CLIENT_CA}[_PATH] (env → конфиг — ApiTlsEndpoints).</summary>
 public sealed class TlsOptions
 {
@@ -179,9 +180,6 @@ public sealed class DockerOptions
     public PortRangeOptions PortRange { get; set; } = new();
 
     public DockerImagesOptions Images { get; set; } = new();
-
-    /// <summary>R1: false → узел без pg_doorman (порт 6432 не публикуется).</summary>
-    public bool EnableDoorman { get; set; } = true;
 
     /// <summary>
     /// Advertised-имя docker-хоста в записях etcd (portalloc/dsn): адреса нод
@@ -389,6 +387,7 @@ public sealed class SnapshotOptions
     public string Dir { get; set; } = "/snapshots";
 
     public int RetentionFiles { get; set; } = 10;
+
 }
 
 /// <summary>Дефолт значения ключа nodes/&lt;n&gt;/app_params (spec §3.1): libpq-строка

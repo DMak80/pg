@@ -47,10 +47,10 @@ public sealed class KafkaWorkerMetricsOptions : Shared.Metrics.MetricsOptions
 public sealed class ApiOptions
 {
     /// <summary>URL API, достижимый клиентами (панелью); пусто → fail-fast старта.
-    /// обязан начинаться с https:// (mTLS-only грань).</summary>
+    /// обязан начинаться с https:// (HTTPS-грань; mTLS — только /api).</summary>
     public string AdvertiseUrl { get; set; } = "";
 
-    /// <summary>mTLS-конфигурация HTTP API (arch/16 §1.1).</summary>
+    /// <summary>TLS-конфигурация HTTP API (arch/16 §1.1; mTLS — только /api).</summary>
     public TlsOptions Tls { get; set; } = new();
 
     /// <summary>Демо-сид-эндпоинт POST /api/seed/demo (стенд; default false).</summary>
@@ -58,9 +58,10 @@ public sealed class ApiOptions
 }
 
 /// <summary>
-/// mTLS HTTP API воркера (arch/16 §1.1): серверный серт+ключ и CA клиентских
-/// сертов per-install API-PKI; env KFW_API_TLS_{CERT,KEY,CLIENT_CA}[_PATH]
-/// (таблица TlsEndpoints.EnvBindings). AllowInsecureHttp — ТОЛЬКО WAF-тесты.
+/// HTTPS HTTP API воркера (arch/16 §1.1): серверный серт+ключ и CA клиентских
+/// сертов per-install API-PKI (mTLS — только /api); env
+/// KFW_API_TLS_{CERT,KEY,CLIENT_CA}[_PATH] (таблица TlsEndpoints.EnvBindings).
+/// AllowInsecureHttp — ТОЛЬКО WAF-тесты.
 /// </summary>
 public sealed class TlsOptions
 {

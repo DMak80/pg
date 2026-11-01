@@ -20,10 +20,46 @@ namespace PgWorker.IntegrationTests.Backups;
 //    (автозапуски не повторяются — состояние FATAL/EXITED стабильно).
 public class NodeWalReceiverTests
 {
-    // Per-worktree тег (канон E2eEnvironment): чужой/устаревший образ другой
-    // ветки в серию не попадает; свежесть гарантирует сборка на прогон (ниже).
-    private static readonly string NodeImage = $"pgworker-node:sanity-{E2eEnvironment.ImageTagSuffix}";
+    // Per-branch тег (канон Shared.TestInfra.E2eImageTags): чужой/устаревший
+    // образ другой ветки в серию не попадает; свежесть гарантирует сборка на
+    // прогон (ниже).
+    private static readonly string NodeImage =
+        $"pgworker-node:sanity-{Shared.TestInfra.E2eImageTags.SuffixFor(E2eFixture.FindRoot(AppContext.BaseDirectory))}";
     private const string EtcdImage = "quay.io/coreos/etcd:v3.5.21";
+
+    // Пин pg_doorman (arch/14 §2.1 R1): пулер — ОБЯЗАТЕЛЬНАЯ часть образа ноды,
+    // docker build без build-arg DOORMAN_IMAGE падает fail-fast. Пин — те же
+    // четыре рабочие точки, что в ранбуке («Обновить пин pg_doorman»):
+    // 00-up.sh, E2eEnvironment.DoormanImage, сам этот файл (DoormanImage —
+    // ниже им же собирается образ ноды с --build-arg DOORMAN_IMAGE), раздел
+    // ранбука; images.txt — отдельный шаг рутины.
+    private const string DoormanImage = "ghcr.io/ozontech/pg_doorman:v3.11.0";
+
+    // Пулер обязателен (arch/14 §8): entrypoint ноды без непустого DOORMAN_CONFIG
+    // гасит контейнер (fail-fast ДО supervisord) — контейнерам серии нужен YAML,
+    // который парсер фактического pg_doorman v3.11.0 принимает: general/pools
+    // с обязательными admin_username/admin_password (как в DoormanConfigBuilder;
+    // без них отказ парса, exit 78); auth_query не нужен — клиентов через :6432
+    // серия не пускает, проверяется walreceiver (бэкенда 127.0.0.1:5432 нет —
+    // pg_doorman его не трогает).
+    private const string DoormanConfigYaml =
+        """
+        general:
+          host: "0.0.0.0"
+          port: 6432
+          admin_username: "pgwd_admin"
+          admin_password: "pgwd_admin_password"
+          tls_mode: "require"
+          tls_certificate: "/etc/pg_doorman/tls.crt"
+          tls_private_key: "/etc/pg_doorman/tls.key"
+        pools:
+          stubdb:
+            server_host: "127.0.0.1"
+            server_port: 5432
+            server_database: stubdb
+            pool_mode: "transaction"
+            max_db_connections: 10
+        """;
     private static readonly TimeSpan Budget = TimeSpan.FromSeconds(90);
 
     private readonly ITestOutputHelper _output;
@@ -77,7 +113,8 @@ public class NodeWalReceiverTests
             [
                 "build", "-q", "-f", $"{root}/docker/node/Dockerfile",
                 "--build-arg", "WAL_PUBLISH_DIR=artifacts/node-wal-dev",
-                "--build-arg", "NODE_TOOLS_PUBLISH_DIR=artifacts/node-tools-dev", "-t", NodeImage, root,
+                "--build-arg", "NODE_TOOLS_PUBLISH_DIR=artifacts/node-tools-dev",
+                "--build-arg", $"DOORMAN_IMAGE={DoormanImage}", "-t", NodeImage, root,
             ], ct, timeout: TimeSpan.FromMinutes(10),
                 logFile: "/tmp/pgw-node-wal-dev-docker.log");
             Console.WriteLine($"[PHASE] node-image: {NodeImage} ready in {sw.Elapsed.TotalSeconds:F0} s");
@@ -120,7 +157,6 @@ public class NodeWalReceiverTests
     public async Task ReceiverRuns_StatusKeyAndMetrics_LeaseRecoversAfterKill()
     {
         // Arrange — своё окружение: сеть + etcd (alias) + нода pgworker-node:dev
-        DockerTrait.SkipIfUnavailable();
         var ct = TestContext.Current.CancellationToken;
         await EnsureNodeImageAsync(ct);
         var runId = Guid.NewGuid().ToString("N");
@@ -155,6 +191,7 @@ public class NodeWalReceiverTests
                 ["PGW_BACKUP_NODE"] = "s1a",
                 ["PGW_ETCD"] = "http://etcd-test:2379",
                 ["PGW_BACKUP_S3_BUCKET"] = "backups",
+                ["DOORMAN_CONFIG"] = DoormanConfigYaml,
             })
             .Build();
         await node.StartAsync(ct);
@@ -169,6 +206,13 @@ public class NodeWalReceiverTests
                 async () => (await SupervisordStatusAsync(node, "walreceiver", ct)).Contains("RUNNING"),
                 Budget,
                 async () => await SupervisordStatusAsync(node, "walreceiver", ct));
+
+            // Assert — пулер тоже жив: DOORMAN_CONFIG-стаб валиден и стартует
+            // не-root (user=postgres) — pg_doorman RUNNING под supervisord'ом.
+            await WaitUntilAsync(
+                async () => (await SupervisordStatusAsync(node, "pg_doorman", ct)).Contains("RUNNING"),
+                Budget,
+                async () => await SupervisordStatusAsync(node, "pg_doorman", ct));
 
             // Assert — статус-ключ агента в etcd: waiting_role (REST ноды не
             // поднят — роль none; гейты/пароль/policy отсутствуют — но роль
@@ -252,7 +296,6 @@ public class NodeWalReceiverTests
     public async Task SupervisorStop_AgentKeyGoesOutWithinTtl_StartBringsItBack()
     {
         // Arrange — окружение первого кейса: сеть + etcd + нода с приёмником
-        DockerTrait.SkipIfUnavailable();
         var ct = TestContext.Current.CancellationToken;
         await EnsureNodeImageAsync(ct);
         var runId = Guid.NewGuid().ToString("N");
@@ -287,6 +330,7 @@ public class NodeWalReceiverTests
                 ["PGW_BACKUP_NODE"] = "s1a",
                 ["PGW_ETCD"] = "http://etcd-test:2379",
                 ["PGW_BACKUP_S3_BUCKET"] = "backups",
+                ["DOORMAN_CONFIG"] = DoormanConfigYaml,
             })
             .Build();
         await node.StartAsync(ct);
@@ -359,7 +403,6 @@ public class NodeWalReceiverTests
     public async Task NoIdentityEnv_StartFails_NoRestartLoop()
     {
         // Arrange — нода без env идентичности (PGW_BACKUP_CLUSTER отсутствует)
-        DockerTrait.SkipIfUnavailable();
         var ct = TestContext.Current.CancellationToken;
         await EnsureNodeImageAsync(ct);
         var runId = Guid.NewGuid().ToString("N");
@@ -367,6 +410,9 @@ public class NodeWalReceiverTests
 
         await using var node = new ContainerBuilder(NodeImage)
             .WithName(nodeName)
+            // Идентичности бэкапов нет (суть теста), но entrypoint требует
+            // непустой DOORMAN_CONFIG (пулер обязателен, arch/14 §8).
+            .WithEnvironment("DOORMAN_CONFIG", DoormanConfigYaml)
             .Build();
         await node.StartAsync(ct);
 

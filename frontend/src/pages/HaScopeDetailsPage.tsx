@@ -4,7 +4,7 @@
 // мягко (switchover для лидера) или грубо (снос сразу, failover — Patroni).
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Accordion, Alert, Anchor, Badge, Button, Group, Modal, Radio, Select, Stack, Table, Text, Title, Tooltip } from '@mantine/core';
-import { Link, useParams } from 'react-router';
+import { Link, Navigate, useParams } from 'react-router';
 import { useState } from 'react';
 import type { HaMemberDto, RecreateMode } from '../api/dto';
 import { fetchHaScope, queryKeys, recreateNode } from '../api/queries';
@@ -61,6 +61,10 @@ export function HaScopeDetailsPage() {
     );
 
   const data = query.data;
+  // u03/D3: matched-скоп адресуем страницей шарда — редирект; страница
+  // остаётся деталями ТОЛЬКО unmatched-скопов (чужой service в общем etcd).
+  if (data.matched && data.cluster !== null && data.shard !== null)
+    return <Navigate to={`/clusters/${data.cluster}/shards/${data.shard}`} replace />;
   return (
     <Stack gap="md">
       <div>
@@ -127,7 +131,7 @@ export function HaScopeDetailsPage() {
 
 // Кнопка «Пересоздать»: открывает модалку с выбором ноды.
 // Недоступна если: 1 нода (последняя), или все остальные уже в REBUILDING/TO_RECREATE.
-function RecreateNodeButton({ scope, members }: { scope: string; members: HaMemberDto[] }) {
+export function RecreateNodeButton({ scope, members }: { scope: string; members: HaMemberDto[] }) {
   const [opened, setOpened] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
   const [mode, setMode] = useState<RecreateMode>('soft');

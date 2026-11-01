@@ -1,7 +1,10 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
+    <!-- Microsoft.Extensions.Configuration приходит транзитивно из
+         FrameworkReference Microsoft.AspNetCore.App (явный PackageReference —
+         NU1510 warning-as-error). -->
     <ItemGroup>
-        <PackageReference Include="Microsoft.Extensions.Configuration"/>
+        <FrameworkReference Include="Microsoft.AspNetCore.App" />
     </ItemGroup>
 
 </Project>

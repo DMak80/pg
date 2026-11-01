@@ -20,6 +20,13 @@ etcd_has() { docker compose exec -T etcd1 etcdctl get "$1" --print-value-only </
 # Arrange: сид через API живого воркера (поднимает valkeyworker, ждёт demo Active).
 "$PWD/checks/05-seed.sh" valkey
 
+# /api без клиентского серта — ровно 401 (mTLS-политика /api, arch/21 §1.1;
+# /healthz — открытая грань). API-порт на хост не публикуется — проба изнутри
+# контейнера (как healthz-пробы 05-seed). Без -f: 401 для curl — не ошибка.
+vwk_no_cert_code="$(docker compose exec -T valkeyworker curl -s -m 3 -o /dev/null -w '%{http_code}' --cacert /tls/ca.pem https://localhost:8080/api/valkey/clusters)"
+[ "$vwk_no_cert_code" = 401 ] \
+  || { echo "❌ valkeyworker /api without a client cert = $vwk_no_cert_code (expected 401)"; exit 1; }
+
 for i in $(seq 1 60); do curl -fsS "$BASE/api/healthz" >/dev/null 2>&1 && break; sleep 1; done
 curl -fsS -c "$JAR" -o /dev/null -X POST "$BASE/api/auth/login" \
   -H 'Content-Type: application/json' -d '{"username":"admin","password":"admin"}' \

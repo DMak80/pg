@@ -15,7 +15,7 @@ namespace PgWorker.IntegrationTests.Docker;
 // fork-демон жив, пока жив PID1-сессия sleep) с bind-mount self-contained
 // publish-вывода NodeTools.
 // Два ОДИНОЧНЫХ etcd-контейнера (не кластер): lease-скрипту безразличен кворум,
-// важен перебор transport-отказов. Гейт PGW_TEST_DOCKER=1 (DockerTrait).
+// важен перебор transport-отказов.
 [Collection(NonE2eCollection.Name)]
 public class MasterLeaseFailoverTests
 {
@@ -26,7 +26,6 @@ public class MasterLeaseFailoverTests
     [Fact]
     public async Task MasterLease_FailoverToSecondEndpoint_KeepaliveContinues()
     {
-        DockerTrait.SkipIfUnavailable();
         var ct = TestContext.Current.CancellationToken;
         var tag = Guid.NewGuid().ToString("N")[..8];
 

@@ -46,7 +46,9 @@ public sealed record KafkaClusterDto(
     string? ProbeError = null,
     KafkaRegenDto? Regen = null,
     KafkaCaRotationTicketDto? CaRotation = null, // живая заявка CA-ротации (бейдж UI)
-    TicketOutcomeDto? TicketOutcome = null);     // последний исход заявки
+    TicketOutcomeDto? TicketOutcome = null,      // последний исход заявки
+    KafkaRotationTicketDto? AdminRotation = null, // живая заявка admin-ротации (u07-бейдж UI)
+    WorkDto? Work = null);                        // u13: work-журнал кластера
 
 public sealed record KafkaBrokerDto(
     string Name,
@@ -152,7 +154,9 @@ public static class KafkaMappers
         IReadOnlyDictionary<string, KafkaClusterLive>? live = null,
         ProbeResult? probe = null,
         IReadOnlyList<KafkaCaRotationTicket>? caRotations = null,
-        IReadOnlyList<KafkaTicketOutcome>? ticketOutcomes = null)
+        IReadOnlyList<KafkaTicketOutcome>? ticketOutcomes = null,
+        IReadOnlyList<KafkaRotationTicket>? adminRotations = null,
+        IReadOnlyList<WorkJournalInfo>? workJournals = null)
     {
         live ??= new Dictionary<string, KafkaClusterLive>();
         regens ??= [];
@@ -162,6 +166,8 @@ public static class KafkaMappers
         var regen = regens.FirstOrDefault(r => r.Cluster == cluster.Name);
         var caRotation = (caRotations ?? []).FirstOrDefault(r => r.Cluster == cluster.Name);
         var outcome = (ticketOutcomes ?? []).FirstOrDefault(o => o.Cluster == cluster.Name);
+        var adminRotation = (adminRotations ?? []).FirstOrDefault(r => r.Cluster == cluster.Name);
+        var work = workJournals?.FirstOrDefault(w => w.Cluster == cluster.Name);
         var clusterLive = live.GetValueOrDefault(cluster.Name);
 
         // Мерж lifecycle-тикетов : delete/create — к существующей строке;
@@ -223,7 +229,12 @@ public static class KafkaMappers
                 : new KafkaCaRotationTicketDto(caRotation.RequestedUnix, caRotation.RequestedBy),
             TicketOutcome: outcome is null ? null : new TicketOutcomeDto(
                 outcome.Kind, outcome.Outcome, outcome.Reason,
-                outcome.RequestedUnix, outcome.RequestedBy, outcome.FinishedUnix));
+                outcome.RequestedUnix, outcome.RequestedBy, outcome.FinishedUnix),
+            AdminRotation: adminRotation is null
+                ? null
+                : new KafkaRotationTicketDto(adminRotation.RequestedUnix, adminRotation.RequestedBy),
+            Work: work is null ? null : new WorkDto(work.Op, work.Phase, work.UpdatedUnix, work.LastError,
+                work.Instance, work.FailCount, work.FailFirstUnix, work.RetryNotBeforeUnix));
     }
 
     private static TopicLifecycleDto? LifecycleDto(KafkaTopicLifecycleTicket? ticket)
@@ -285,7 +296,8 @@ public sealed class KafkaClusterDetailsQueryHandler(
             KafkaMappers.MapDetails(
                 cluster, snapshot.Rotations, snapshot.Rebalances, snapshot.Reassignments,
                 snapshot.Regens, readOnlyLive, probe,
-                snapshot.CaRotations, snapshot.TicketOutcomes)));
+                snapshot.CaRotations, snapshot.TicketOutcomes,
+                snapshot.AdminRotations, snapshot.WorkJournals)));
     }
 }
 

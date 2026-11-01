@@ -47,7 +47,7 @@ DockerEnvBindings.ApplyRestTlsEnvOverrides(builder.Configuration);
 
 // Конфигурация: appsettings.json + env-оверрайды PgWorker__* (пример — в корне проекта).
 builder.Services.Configure<PgWorkerOptions>(builder.Configuration.GetSection("PgWorker"));
-// Fail-fast: advertise без URL бессмысленен; http-advertise запрещён при mTLS-каноне (arch/14 §1.1).
+// Fail-fast: advertise без URL бессмысленен; http-advertise запрещён (HTTPS-грань, arch/14 §1.1).
 builder.Services.AddOptions<PgWorkerOptions>()
     .Validate(o => !string.IsNullOrWhiteSpace(o.Api.AdvertiseUrl),
         "PgWorker:Api:AdvertiseUrl is not set (API URL reachable by the panel; env PGW_API_ADVERTISE_URL)")
@@ -73,8 +73,8 @@ builder.Services.AddOptions<PgWorkerOptions>()
 var etcdEndpoints = builder.Configuration.GetSection("PgWorker:Etcd:Endpoints").Get<string[]>() ?? [];
 var managedCert = await WorkerApiCertReader.ReadAsync(etcdEndpoints, "pgworker", CancellationToken.None);
 
-// mTLS HTTP API (arch/14 §1.1): Kestrel с серверным сертом и требованием
-// клиентского серта per-install API-CA (порт — из ASPNETCORE_URLS/urls, иначе 8080).
+// HTTPS HTTP API (arch/14 §1.1): Kestrel с серверным сертом; клиентский серт
+// опционален, mTLS (401) — только /api (порт — из ASPNETCORE_URLS/urls, иначе 8080).
 var apiTls = ApiTlsEndpoints.ConfigureMtls(builder, managedCert);
 
 // Thumbprint применённого серта → дискавери-ключ (spec §3.2 п.3): панель
@@ -88,7 +88,7 @@ builder.Services.AddSingleton<HealthState>();
 // Прогресс-отметки долгих фаз reconcile в глубину процессов (Provisioning/Moves).
 builder.Services.AddSingleton<Shared.Core.Hosting.ILoopProgress>(sp => sp.GetRequiredService<HealthState>());
 
-// Метрики (arch/18 §3): /metrics на том же mTLS-Kestrel-порту, что /healthz.
+// Метрики (arch/18 §3): /metrics на том же HTTPS-Kestrel-порту, что /healthz.
 builder.Services.AddAppMetrics("PgWorker", builder.Configuration.GetSection("PgWorker:Metrics"));
 builder.Services.AddSingleton(sp =>
 {
@@ -322,7 +322,7 @@ builder.Services.AddSingleton<IClusterDriver>(sp =>
     {
         if (string.IsNullOrWhiteSpace(docker.SwarmManager))
             throw new ApplicationException("PgWorker:Docker:Mode=Swarm requires PgWorker:Docker:SwarmManager");
-        return new SwarmClusterDriver(docker.SwarmManager, factory, docker.EnableDoorman, docker.Images.Node,
+        return new SwarmClusterDriver(docker.SwarmManager, factory, docker.Images.Node,
             pgtuneExclude: pgtuneExclude,
             restCertificates: sp.GetRequiredService<RestCertificateCache>(),
             nodeBackupEnv: nodeBackupEnv);
@@ -333,7 +333,7 @@ builder.Services.AddSingleton<IClusterDriver>(sp =>
         .ToList();
     if (hosts.Count == 0)
         throw new ApplicationException("PgWorker:Docker:Mode=Plain requires a non-empty PgWorker:Docker:Hosts list");
-    return new PlainClusterDriver(hosts, factory, docker.EnableDoorman, docker.Images.Node, docker.AdvertisedHost,
+    return new PlainClusterDriver(hosts, factory, docker.Images.Node, docker.AdvertisedHost,
         pgtuneExclude: pgtuneExclude, scrapeNetwork: docker.ScrapeNetwork,
         contourNetwork: docker.ContourNetwork is { Length: > 0 } ? docker.ContourNetwork : null,
         restCertificates: sp.GetRequiredService<RestCertificateCache>(),
@@ -839,6 +839,9 @@ if (apiTls.Source is { } certSource)
     app.Logger.LogInformation("PgWorker:Api:Tls: API server certificate — source {Source}", certSource);
 if (apiTls.Warning is { } certWarning)
     app.Logger.LogWarning("PgWorker:Api:Tls: {Warning}", certWarning);
+// Открытая грань (arch/14 §1.1): клиентский серт опционален на хендшейке;
+// 401 без валидного серта — только на /api; /healthz и /metrics — без серта.
+app.UseMiddleware<Shared.Tls.ClientCertAuthMiddleware>();
 app.MapAppMetrics();
 app.MapHealthChecks("/healthz");
 app.MapWorkerApi();

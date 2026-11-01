@@ -171,20 +171,21 @@ public class NodeConfigBuildersTests
     }
 
     [Fact]
-    public void Secrets_AreInEnv_ButNeverInDoormanOrHaproxy()
+    public void Doorman_ConfigCarriesSuPassword_OtherSecretsNeverLeak()
     {
         // Arrange: секреты установки (Д7).
 
-        // Act: генерируем все три конфига.
+        // Act: генерируем оба конфига.
         var env = SpiloEnvBuilder.Build(Topology, Etcd, Secrets, syncStrict: false, "shard1a", TestRestTls());
-        var doorman = DoormanConfigBuilder.Build("shop", 55);
-        var haproxy = HaproxyConfigBuilder.Build(Topology);
+        var doorman = DoormanConfigBuilder.Build("shop", 55, "su-secret");
 
-        // Assert: секреты прокинуты в env контейнера (Spilo/bootstrap),
-        // но не попадают в тексты doorman/haproxy (их читаютvolume-маунты).
+        // Assert: секреты прокинуты в env контейнера (Spilo/bootstrap);
+        // su-secret ЛЕГИТИМНО входит в doorman — auth_query.password пула
+        // (допуск клиентов; экспозиция не расширяется: секрет уже в env
+        // того же контейнера); прочие секреты в конфиг пулера не попадают.
         env.Values.Should().Contain(new[] { "su-secret", "standby-secret", "admin-secret", "mover-secret" });
-        doorman.Should().NotContainAny("su-secret", "standby-secret", "admin-secret", "mover-secret");
-        haproxy.Should().NotContainAny("su-secret", "standby-secret", "admin-secret", "mover-secret");
+        doorman.Should().Contain("password: \"su-secret\"");
+        doorman.Should().NotContainAny("standby-secret", "admin-secret", "mover-secret");
     }
 
     [Fact]
@@ -214,13 +215,20 @@ public class NodeConfigBuildersTests
         // Arrange: dbname = имя кластера, бюджет 55 серверных соединений.
 
         // Act: генерируем конфиг пулера.
-        var config = DoormanConfigBuilder.Build("shop", 55);
+        var config = DoormanConfigBuilder.Build("shop", 55, "su-secret");
 
         // Assert: единственный пул shop → 127.0.0.1:5432, transaction-режим,
-        // бюджет 55 серверных соединений (P13/P14/P15).
-        config.Should().Contain("pool_mode = \"transaction\"");
-        config.Should().Contain("max_db_connections = 55");
-        config.Should().Contain("shop = host=127.0.0.1 port=5432 dbname=shop");
+        // бюджет 55 серверных соединений (P13/P14/P15); YAML фактического
+        // pg_doorman (general/pools).
+        config.Should().Contain("pool_mode: \"transaction\"");
+        config.Should().Contain("max_db_connections: 55");
+        config.Should().Contain("auth_query:");
+        config.Should().Contain("user: \"postgres\"");
+        config.Should().Contain("pools:");
+        config.Should().Contain("  \"shop\":");
+        config.Should().Contain("server_host: \"127.0.0.1\"");
+        config.Should().Contain("server_port: 5432");
+        config.Should().Contain("server_database: \"shop\"");
     }
 
     [Fact]
@@ -328,7 +336,7 @@ public class NodeConfigBuildersTests
         atFloor.Should().Be(10);
 
         // Assert: конфиг пулера несёт вычисленный бюджет.
-        DoormanConfigBuilder.Build("shop", 35).Should().Contain("max_db_connections = 35");
+        DoormanConfigBuilder.Build("shop", 35, "su-secret").Should().Contain("max_db_connections: 35");
     }
 
     [Fact]
@@ -357,22 +365,5 @@ public class NodeConfigBuildersTests
 
         // Assert
         spilo.Should().Contain(expected).And.Contain("synchronous_mode: true");
-    }
-
-    [Fact]
-    public void Haproxy_WriteFrontendWithAllNodesAndPatroniChecks()
-    {
-        // Arrange: шард из 2 нод на разных хостах с выделенными портами.
-
-        // Act: генерируем конфиг HAProxy.
-        var config = HaproxyConfigBuilder.Build(Topology);
-
-        // Assert: write-фронтенд :5432, health-check Patroni /primary (P2),
-        // все ноды шарда в бэкенде с check-port Patroni.
-        config.Should().Contain("bind *:5432");
-        config.Should().Contain("option httpchk GET /primary");
-        config.Should().Contain("http-check expect status 200");
-        config.Should().Contain("server shard1a h1:15432 check port 18008");
-        config.Should().Contain("server shard1b h2:15433 check port 18009");
     }
 }

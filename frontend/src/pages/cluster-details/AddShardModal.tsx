@@ -5,6 +5,7 @@ import { Alert, Button, Group, Modal, NumberInput, Stack, Text } from '@mantine/
 import { useState } from 'react';
 import { ApiError } from '../../api/client';
 import { addShard, queryKeys } from '../../api/queries';
+import { validateCpu, validateMemGi, validateReplicas, validateDiskGi } from '../../utils/validation';
 
 interface FormState {
   replicas: number;
@@ -39,15 +40,17 @@ export function AddShardModal({ cluster, strict, opened, onClose }: {
   // t06: strict-кластер — минимум 2 реплики (серверная — arch/14 §5 G).
   function validate(): boolean {
     const errors: Record<string, string> = {};
-    if (!Number.isInteger(form.replicas) || form.replicas < 1 || form.replicas > 26)
-      errors.replicas = 'integer 1..26 (1 = master only)';
+    // Границы — validation.ts (u02); strict-минимум 2 — зеркало серверной (arch/14 §5 G).
+    const replicasError = validateReplicas(form.replicas);
+    if (replicasError !== null) errors.replicas = replicasError;
     if (strict && form.replicas < 2)
       errors.replicas = 'strict cluster: at least 2 replicas';
-    if (form.requestCpu < 0.01 || form.requestCpu > 64) errors.requestCpu = '0.01..64';
-    if (!Number.isInteger(form.requestMem) || form.requestMem < 1 || form.requestMem > 65536)
-      errors.requestMem = 'integer 1..65536';
-    if (!Number.isInteger(form.requestDisk) || form.requestDisk < 1 || form.requestDisk > 65536)
-      errors.requestDisk = 'integer 1..65536';
+    const cpuError = validateCpu(form.requestCpu);
+    if (cpuError !== null) errors.requestCpu = cpuError;
+    const memError = validateMemGi(form.requestMem);
+    if (memError !== null) errors.requestMem = memError;
+    const diskError = validateDiskGi(form.requestDisk);
+    if (diskError !== null) errors.requestDisk = diskError;
     setFieldErrors(errors);
     return Object.keys(errors).length === 0;
   }

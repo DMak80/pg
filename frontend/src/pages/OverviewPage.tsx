@@ -15,9 +15,8 @@ import {
   Tooltip,
 } from '@mantine/core';
 import { Link } from 'react-router';
-import type { AlertSeverityName, BackupStorageDto, HaScopeSummaryDto, S3HealthDto, OverviewDto, ReliabilityDto } from '../api/dto';
-import { backupsQueryKeys, fetchAlerts, fetchBackupsStorage, fetchHaScopes, fetchOverview, fetchReliability, queryKeys, reliabilityQueryKeys } from '../api/queries';
-import { BucketStateBadge } from '../components/BucketStateBadge';
+import type { AlertSeverityName, OverviewBackupsDto, OverviewDto, OverviewHaDto, OverviewOperationDto, OverviewReliabilityDto } from '../api/dto';
+import { fetchAlerts, fetchOverview, queryKeys } from '../api/queries';
 import { AlertSeverityBadge } from '../components/AlertSeverityBadge';
 import { ErrorSection, LoadingSection } from '../components/LoadState';
 import { usePollingIntervalMs } from '../polling/PollingContext';
@@ -33,7 +32,7 @@ function sortAlertRows(a: { severity: string; sinceUnix: number | null }, b: { s
 
 export function OverviewPage() {
   const intervalMs = usePollingIntervalMs();
-  // Тот же ключ, что у StaleBadge — TanStack дедуплицирует опрос (t08 spec §3).
+  // Тот же ключ, что у FreshnessBadges — TanStack дедуплицирует опрос (t08 spec §3).
   const overview = useQuery({
     queryKey: queryKeys.overview,
     queryFn: fetchOverview,
@@ -44,26 +43,9 @@ export function OverviewPage() {
     queryFn: () => fetchAlerts(),
     refetchInterval: intervalMs,
   });
-  const haScopes = useQuery({
-    queryKey: queryKeys.haScopes,
-    queryFn: fetchHaScopes,
-    refetchInterval: intervalMs,
-  });
-  // Сводка бэкапов: клиентская агрегация GET /api/backups/storage (как HA —
-  // GET /api/ha); тот же ключ, что у страницы /backups-storage — TanStack
-  // дедуплицирует опрос.
-  const backups = useQuery({
-    queryKey: backupsQueryKeys.storage,
-    queryFn: fetchBackupsStorage,
-    refetchInterval: intervalMs,
-  });
-  // Сводка надёжности: клиентская агрегация GET /api/reliability (arch/03 §3);
-  // тот же ключ, что у страницы /reliability — TanStack дедуплицирует опрос.
-  const reliability = useQuery({
-    queryKey: reliabilityQueryKeys.all,
-    queryFn: fetchReliability,
-    refetchInterval: intervalMs,
-  });
+  // u06/D6: HA/бэкапы/надёжность — серверные поля OverviewDto; клиентские
+  // доборы /api/ha, /api/backups/storage, /api/reliability удалены (дашборд —
+  // ОДИН запрос /api/overview); сами эндпоинты остаются страницам-потребителям.
 
   if (overview.data === undefined)
     return overview.isError ? (
@@ -73,40 +55,47 @@ export function OverviewPage() {
     );
 
   const data = overview.data;
-  // Active-кластера для агрегаций карточек: кластерная сводка OverviewDto
-  // state-поля не несёт — прокси «активен» = не notInitialized.
-  const activeClusterNames = new Set(
-    data.clusters.filter((c) => !c.notInitialized).map((c) => c.name),
-  );
   return (
     <Stack gap="md">
-      <Title order={2}>Overview</Title>
+      <Title order={2}>Обзор</Title>
+      {/* u10: глобальный стоп бэкапов — жёлтый баннер над карточками */}
+      {data.backupsDisabled ? (
+        <Alert color="yellow" variant="light" title="Бэкапы остановлены (глобальный стоп)">
+          Ключ /pgworker/backups-disabled жив (поставлен {formatUnix(data.backupsDisabled.updatedUnix)}
+          {data.backupsDisabled.updatedBy ? `, кем: ${data.backupsDisabled.updatedBy}` : ''}) —
+          приёмники WAL всех кластеров замирают. Запуск — снять ключ или включить Backups:Enabled.
+        </Alert>
+      ) : null}
       {/* Мин. ширина карточки 330px = 1.5× проектного минимума старой 4-колоночной
           сетки (220px при lg); колонки перестраиваются auto-fill'ом по ширине. */}
       <SimpleGrid minColWidth={330}>
         <EtcdCard data={data} />
         <ClustersCard data={data} />
         <KafkaCard data={data} />
+        <ValkeyCard data={data} />
         <S3Card data={data} />
-        <BackupsCard
-          data={backups.data}
-          isPending={backups.isPending}
-          onRetry={() => void backups.refetch()}
-        />
-        <ReliabilityCard data={reliability.data} activeClusters={activeClusterNames} isPending={reliability.isPending} onRetry={() => void reliability.refetch()} />
+        {/* u06: карточки на серверных агрегатах /api/overview */}
+        <BackupsCard data={data.backups ?? null} />
+        <ReliabilityCard data={data.reliability ?? null} />
         <AlertsCard data={data} />
-        <HaCard
-          scopes={haScopes.data}
-          isPending={haScopes.isPending}
-          onRetry={() => void haScopes.refetch()}
-        />
+        <HaCard data={data.ha ?? null} />
       </SimpleGrid>
-      <MovesSection data={data} />
+      {/* u07: активные операции всех доменов (замена Active moves) */}
+      <OperationsSection operations={data.operations ?? []} />
       <AlertsFeedSection
         isPending={alerts.isPending}
         isError={alerts.isError}
         onRetry={() => void alerts.refetch()}
         rows={(alerts.data ?? []).filter((a) => a.severity !== 'info').sort(sortAlertRows)}
+        operatorOnly={false}
+      />
+      {/* u18-дашборд: «Требуют оператора» рядом с лентой */}
+      <AlertsFeedSection
+        isPending={alerts.isPending}
+        isError={alerts.isError}
+        onRetry={() => void alerts.refetch()}
+        rows={(alerts.data ?? []).filter((a) => a.remedy === 'operator-api' || a.remedy === 'operator-runbook').sort(sortAlertRows)}
+        operatorOnly
       />
     </Stack>
   );
@@ -115,68 +104,36 @@ export function OverviewPage() {
 // Карточка «Надёжность» (arch/03 §3): worst RPO-потенциал по Active-кластерам,
 // счётчики шардов mode=full («RPO держится только полным») и mode=off,
 // длительность последнего failover установки (клиентская агрегация GET /api/reliability).
-function ReliabilityCard({ data, activeClusters, isPending, onRetry }: {
-  data: ReliabilityDto | undefined;
-  activeClusters: Set<string>;
-  isPending: boolean;
-  onRetry: () => void;
-}) {
-  if (data === undefined)
-    return isPending ? (
-      <Card withBorder padding="md" radius="md">
-        <Text fw={600} mb="xs">Reliability</Text>
-        <Text c="dimmed" size="sm">Loading reliability…</Text>
-      </Card>
-    ) : (
-      <Card withBorder padding="md" radius="md">
-        <Text fw={600} mb="xs">Reliability</Text>
-        <Stack gap="xs" align="flex-start">
-          <Alert color="red">No reliability data</Alert>
-          <Anchor size="sm" onClick={onRetry}>Retry</Anchor>
-        </Stack>
-      </Card>
+// Карточка «Надёжность» (u06/D6): серверное поле OverviewDto.reliability —
+// перенос TS-агрегации ReliabilityCard 1:1 (worst RPO по Active-кластерам,
+// mode=full/off, самый недавний закрытый failover).
+function ReliabilityCard({ data }: { data: OverviewReliabilityDto | null }) {
+  let content;
+  if (data === null)
+    content = <Text c="dimmed" size="sm">Снапшот ещё не собран</Text>;
+  else
+    content = (
+      <Stack gap="xs">
+        <Text size="sm">
+          Worst RPO potential: {data.worstRpoPotentialSec === null ? '—' : formatAge(data.worstRpoPotentialSec * 1000)}
+        </Text>
+        <Text size="sm" c={data.fullOnlyCount > 0 ? 'orange' : undefined}>
+          RPO держится только полными: {data.fullOnlyCount}{data.offCount > 0 ? ` · off: ${data.offCount}` : ''}
+        </Text>
+        <Text size="sm" c="dimmed">
+          Последний failover: {data.lastFailover === null
+            ? '—'
+            : `${formatAge(data.lastFailover.durationSec * 1000)} (${formatUnixAge(data.lastFailover.atUnix)} назад)`}
+        </Text>
+      </Stack>
     );
-
-  // Агрегация — только Active-кластерам (spec §3.6): демонтируемые/не
-  // инициализированные не завышают счётчики и не задают worst.
-  const shards = (data.clusters ?? [])
-    .filter((c) => activeClusters.has(c.cluster))
-    .flatMap((c) => c.shards);
-  const potentials = shards
-    .filter((s) => s.rpo && s.rpo.mode !== 'off' && s.rpo.rpoPotentialSec !== null && s.rpo.rpoPotentialSec !== undefined)
-    .map((s) => s.rpo!.rpoPotentialSec!);
-  const worst = potentials.length > 0 ? Math.max(...potentials) : null;
-  const fullCount = shards.filter((s) => s.rpo?.mode === 'full').length;
-  const offCount = shards.filter((s) => s.rpo?.mode === 'off').length;
-  // «Последний failover установки» — самый НЕдавний закрытый факт (max
-  // resolvedUnix, fallback detectedUnix), а не самый длинный.
-  let lastFailover: { durationSec: number; atUnix: number } | null = null;
-  for (const s of shards) {
-    const f = s.rto?.lastFailover;
-    if (!f || f.durationSec === null || f.durationSec === undefined) continue;
-    const at = f.resolvedUnix ?? f.detectedUnix;
-    if (lastFailover === null || at > lastFailover.atUnix)
-      lastFailover = { durationSec: f.durationSec, atUnix: at };
-  }
   return (
     <Card withBorder padding="md" radius="md">
       <Group justify="space-between" mb="xs">
-        <Text fw={600}>Reliability</Text>
-        <Anchor size="sm" component={Link} to="/reliability">details</Anchor>
+        <Text fw={600}>Надёжность</Text>
+        <Anchor size="sm" component={Link} to="/reliability">Подробнее</Anchor>
       </Group>
-      <Stack gap="xs">
-        <Text size="sm">
-          Worst RPO potential: {worst === null ? '—' : formatAge(worst * 1000)}
-        </Text>
-        <Text size="sm" c={fullCount > 0 ? 'orange' : undefined}>
-          RPO held by fulls only: {fullCount} {offCount > 0 ? `· off: ${offCount}` : ''}
-        </Text>
-        <Text size="sm" c="dimmed">
-          Last failover: {lastFailover === null
-            ? '—'
-            : `${formatAge(lastFailover.durationSec * 1000)} (${formatUnixAge(lastFailover.atUnix)} ago)`}
-        </Text>
-      </Stack>
+      {content}
     </Card>
   );
 }
@@ -234,6 +191,8 @@ function ClustersCard({ data }: { data: OverviewDto }) {
           ))}
         </Stack>
       )}
+      {/* u08: возраст данных pg-домена */}
+      <DomainAgeLine data={data} domain="pg" />
     </Card>
   );
 }
@@ -263,6 +222,39 @@ function KafkaCard({ data }: { data: OverviewDto }) {
           </Group>
         </Group>
       )}
+      {/* u08: возраст данных домена */}
+      <DomainAgeLine data={data} domain="kafka" />
+    </Card>
+  );
+}
+
+// Карточка Valkey (u05/D2): порт KafkaCard — сводка из OverviewDto.valkey
+// (null до первого тика valkey-refresher'а).
+function ValkeyCard({ data }: { data: OverviewDto }) {
+  return (
+    <Card withBorder padding="md" radius="md">
+      <Group justify="space-between" wrap="nowrap" mb="xs">
+        <Text fw={600}>Valkey</Text>
+        <Anchor component={Link} to="/valkey" size="sm">все кластеры →</Anchor>
+      </Group>
+      {data.valkey === null ? (
+        <Text c="dimmed" size="sm">Снапшот valkey ещё не собран</Text>
+      ) : (
+        <Group gap="md">
+          <Group gap={5}>
+            <Text size="xl" fw={600}>{data.valkey.clustersTotal}</Text>
+            <Text size="sm" c="dimmed">кластеров</Text>
+          </Group>
+          <Group gap={5}>
+            <Text size="xl" fw={600} c={data.valkey.clustersCritical > 0 ? 'red' : undefined}>
+              {data.valkey.clustersCritical}
+            </Text>
+            <Text size="sm" c="dimmed">critical</Text>
+          </Group>
+        </Group>
+      )}
+      {/* u08: возраст данных домена */}
+      <DomainAgeLine data={data} domain="valkey" />
     </Card>
   );
 }
@@ -292,6 +284,8 @@ function S3Card({ data }: { data: OverviewDto }) {
           </Group>
         </Group>
       )}
+      {/* u08: возраст данных домена */}
+      <DomainAgeLine data={data} domain="s3" />
     </Card>
   );
 }
@@ -301,62 +295,60 @@ function S3Card({ data }: { data: OverviewDto }) {
 // клиентская агрегация GET /api/backups/storage (по образцу HA-агрегации,
 // arch/03 §3). Ошибка без данных — своя (не роняет остальные карточки),
 // паттерн HaCard.
-function BackupsCard({ data, isPending, onRetry }: {
-  data: BackupStorageDto | undefined;
-  isPending: boolean;
-  onRetry: () => void;
-}) {
+// Карточка «Бэкапы» (u06): серверное поле OverviewDto.backups (null — снапшот
+// pg не тикал); health S3 + место (etcd-ключ storage) + etcd-снапшоты.
+function BackupsCard({ data }: { data: OverviewBackupsDto | null }) {
   let content;
-  if (data === undefined)
-    content = isPending ? (
-      <Text c="dimmed" size="sm">Loading backups…</Text>
-    ) : (
-      <Stack gap="xs" align="flex-start">
-        <Alert color="red">No backup storage data</Alert>
-        <Anchor size="sm" onClick={onRetry}>Retry</Anchor>
-      </Stack>
-    );
+  if (data === null)
+    content = <Text c="dimmed" size="sm">Снапшот ещё не собран</Text>;
   else if (!data.configured)
-    content = <Text c="dimmed" size="sm">Backup storage is not configured</Text>;
+    content = <Text c="dimmed" size="sm">Хранилище бэкапов не настроено</Text>;
   else
     content = (
       <Stack gap="xs">
         <Group gap="xs" wrap="nowrap">
-          <HealthBadges health={data.health} />
-          {data.etcd === null ? null : (
-            <Badge
-              color={data.etcd.state === 'OK' ? 'green' : data.etcd.state === 'WARN' ? 'yellow' : 'red'}
-              variant="light"
-            >
-              {data.etcd.state}
+          {data.health === null ? (
+            <Text size="sm" c="dimmed">health: нет данных (первый тик)</Text>
+          ) : (
+            <>
+              <Badge color={data.health.apiOk ? 'teal' : 'red'} variant="light">
+                api {data.health.apiOk ? 'ok' : 'down'}
+              </Badge>
+              <Badge color={data.health.liveOk ? 'teal' : 'red'} variant="light">
+                live {data.health.liveOk ? 'ok' : 'down'}
+              </Badge>
+              {data.health.clusterOk === null || data.health.clusterOk === undefined ? (
+                <Badge color="gray" variant="light">cluster n/a</Badge>
+              ) : (
+                <Badge color={data.health.clusterOk ? 'teal' : 'red'} variant="light">
+                  cluster {data.health.clusterOk ? 'ok' : 'down'}
+                </Badge>
+              )}
+            </>
+          )}
+          {data.etcdSnapshots === null ? null : (
+            <Badge color={data.etcdSnapshots.state === 'OK' ? 'green' : data.etcdSnapshots.state === 'WARN' ? 'yellow' : 'red'} variant="light">
+              {data.etcdSnapshots.state ?? '—'}
             </Badge>
           )}
-          {data.inventoryError ? (
-            <Badge color="yellow" variant="light">inventory lagging</Badge>
+          {data.storageState !== null ? (
+            <Badge color={data.storageState === 'OK' ? 'green' : data.storageState === 'WARN' ? 'yellow' : 'red'} variant="light">
+              {data.storageState}
+            </Badge>
           ) : null}
         </Group>
-        {data.health?.apiError ? (
-          <Tooltip multiline label={data.health.apiError}>
-            <Text size="sm" c="red" lineClamp={1}>{data.health.apiError}</Text>
-          </Tooltip>
-        ) : null}
         <Text size="sm">
-          {data.etcd === null
-            ? 'Space: /pgworker/backups/storage key is missing in etcd'
-            : `Space: ${formatBytes(data.etcd.usedBytes)}${
-                data.etcd.quotaBytes === null ? '' : ` of ${formatBytes(data.etcd.quotaBytes)}`
-              }${data.etcd.usedPercent === null ? '' : ` (${data.etcd.usedPercent.toFixed(1)}%)`}`}
-        </Text>
-        <Text size="sm" c="dimmed">
-          Live inventory: {data.liveUsedBytes === null ? '—' : formatBytes(data.liveUsedBytes)}
+          {data.usedBytes === 0 && data.quotaBytes === null
+            ? 'Место: ключ /pgworker/backups/storage отсутствует в etcd'
+            : `Место: ${formatBytes(data.usedBytes)}${data.quotaBytes === null ? '' : ` из ${formatBytes(data.quotaBytes)}`}`}
         </Text>
       </Stack>
     );
   return (
     <Card withBorder padding="md" radius="md">
       <Group justify="space-between" wrap="nowrap" mb="xs">
-        <Text fw={600}>Backups</Text>
-        <Anchor component={Link} to="/backups-storage" size="sm">Details →</Anchor>
+        <Text fw={600}>Бэкапы</Text>
+        <Anchor component={Link} to="/backups-storage" size="sm">Подробнее →</Anchor>
       </Group>
       {content}
     </Card>
@@ -365,28 +357,12 @@ function BackupsCard({ data, isPending, onRetry }: {
 
 // Бейджи health S3 — цветовая логика 1:1 с HealthCard страницы
 // /backups-storage (api/live teal/red, cluster gray при n/a).
-function HealthBadges({ health }: { health: S3HealthDto | null }) {
-  if (health === null) return <Text size="sm" c="dimmed">health: no data (first tick)</Text>;
-  return (
-    <Group gap="xs">
-      <Badge color={health.apiOk ? 'teal' : 'red'} variant="light">
-        api {health.apiOk ? 'ok' : 'down'}
-      </Badge>
-      <Badge color={health.liveOk ? 'teal' : 'red'} variant="light">
-        live {health.liveOk ? 'ok' : 'down'}
-      </Badge>
-      <Badge color={health.clusterOk === null ? 'gray' : health.clusterOk ? 'teal' : 'red'} variant="light">
-        cluster {health.clusterOk === null ? 'n/a' : health.clusterOk ? 'ok' : 'degraded'}
-      </Badge>
-    </Group>
-  );
-}
 
 // Карточка алертов: счётчики severity, нули — приглушённо (t08 spec §4.3).
 function AlertsCard({ data }: { data: OverviewDto }) {
   return (
     <Card withBorder padding="md" radius="md">
-      <Text fw={600} mb="xs">Alerts</Text>
+      <Text fw={600} mb="xs">Алерты</Text>
       <Group gap="md">
         <Badge
           color={data.alertsCritical > 0 ? 'red' : 'gray'}
@@ -408,37 +384,48 @@ function AlertsCard({ data }: { data: OverviewDto }) {
   );
 }
 
-// Секция активных переездов: таблица не-ACTIVE бакетов всех кластеров (t08 spec §4.5).
-function MovesSection({ data }: { data: OverviewDto }) {
+// Секция «Активные операции» (u07): таблица data.operations всех доменов
+// (переезды — подмножество операций pg). kind — словарь сервера, UI не парсит.
+function OperationsSection({ operations }: { operations: OverviewOperationDto[] }) {
   return (
     <Card withBorder padding="md" radius="md">
-      <Text fw={600} mb="xs">Active moves</Text>
-      {data.activeMoves.length === 0 ? (
-        <Text c="dimmed" size="sm">No active moves</Text>
+      <Text fw={600} mb="xs">Активные операции</Text>
+      {operations.length === 0 ? (
+        <Text c="dimmed" size="sm">Нет активных операций</Text>
       ) : (
-        <Table.ScrollContainer minWidth={700}>
+        <Table.ScrollContainer minWidth={760}>
           <Table highlightOnHover>
             <Table.Thead>
               <Table.Tr>
-                <Table.Th>Cluster</Table.Th>
-                <Table.Th>Bucket</Table.Th>
-                <Table.Th>State</Table.Th>
-                <Table.Th>Route</Table.Th>
-                <Table.Th>Updated</Table.Th>
+                <Table.Th>Домен</Table.Th>
+                <Table.Th>Тип</Table.Th>
+                <Table.Th>Кластер</Table.Th>
+                <Table.Th>Сущность</Table.Th>
+                <Table.Th>Детали</Table.Th>
+                <Table.Th>Обновлено</Table.Th>
               </Table.Tr>
             </Table.Thead>
             <Table.Tbody>
-              {data.activeMoves.map((m) => (
-                <Table.Tr key={`${m.cluster}-${m.bucket}`}>
+              {operations.map((o) => (
+                <Table.Tr key={`${o.domain}-${o.kind}-${o.cluster}-${o.entity ?? ''}-${o.detail}`}>
                   <Table.Td>
-                    <Anchor component={Link} to={`/clusters/${m.cluster}`} size="sm">{m.cluster}</Anchor>
+                    <Badge color={DOMAIN_COLORS[o.domain] ?? 'gray'} variant="light">{o.domain}</Badge>
                   </Table.Td>
-                  <Table.Td>{m.bucket}</Table.Td>
-                  <Table.Td><BucketStateBadge state={m.state} /></Table.Td>
-                  <Table.Td>{m.owner ?? '—'} → {m.target ?? '—'}</Table.Td>
+                  <Table.Td><Text size="sm" ff="monospace">{o.kind}</Text></Table.Td>
                   <Table.Td>
-                    <Tooltip label={formatUnix(m.updatedUnix)}>
-                      <span>{formatUnixAge(m.updatedUnix)}</span>
+                    <Anchor component={Link} size="sm"
+                      to={o.domain === 'pg' ? `/clusters/${o.cluster}`
+                        : o.domain === 'kafka' ? `/kafka/${o.cluster}`
+                          : o.domain === 'valkey' ? `/valkey/${o.cluster}`
+                            : `/s3/${o.cluster}`}>
+                      {o.cluster}
+                    </Anchor>
+                  </Table.Td>
+                  <Table.Td>{o.entity ?? '—'}</Table.Td>
+                  <Table.Td><Text size="sm" ff="monospace">{o.detail}</Text></Table.Td>
+                  <Table.Td>
+                    <Tooltip label={o.updatedUnix === null ? '' : formatUnix(o.updatedUnix)}>
+                      <span>{o.updatedUnix === null ? '—' : formatUnixAge(o.updatedUnix)}</span>
                     </Tooltip>
                   </Table.Td>
                 </Table.Tr>
@@ -451,23 +438,54 @@ function MovesSection({ data }: { data: OverviewDto }) {
   );
 }
 
+// Цвет бейджа домена (фиксированный словарь карточек).
+const DOMAIN_COLORS: Record<string, string> = {
+  pg: 'teal',
+  kafka: 'blue',
+  valkey: 'orange',
+  s3: 'grape',
+};
+
+// u08: строка возраста данных домена в карточке — «данные: N назад», жёлтая
+// при старше 3×серверного интервала тика (freshness.intervalSeconds — та же
+// механика, что FreshnessBadges/SnapshotStaleRule; не клиентский интервал).
+function DomainAgeLine({ data, domain }: { data: OverviewDto; domain: 'pg' | 'kafka' | 'valkey' | 's3' | 'etcd' }) {
+  const item = data.freshness?.[domain] ?? null;
+  if (item === null || item === undefined) return null;
+  const serverIntervalSec = data.freshness?.intervalSeconds;
+  const staleThresholdSec = typeof serverIntervalSec === 'number' && serverIntervalSec > 0
+    ? serverIntervalSec * 3
+    : null;
+  const ageSec = Math.max(0, Date.now() / 1000 - item.builtAtUnix);
+  const stale = staleThresholdSec !== null && ageSec > staleThresholdSec;
+  return (
+    <Text size="xs" c={stale ? 'yellow' : 'dimmed'}>
+      данные: {formatAge(ageSec * 1000)} назад{stale ? ' (stale)' : ''}
+    </Text>
+  );
+}
+
 // Лента алертов: critical/warning, все (без топ-N); info отфильтрован (t08 spec §4.4).
-function AlertsFeedSection({ isPending, isError, onRetry, rows }: {
+function AlertsFeedSection({ isPending, isError, onRetry, rows, operatorOnly = false }: {
   isPending: boolean;
   isError: boolean;
   onRetry: () => void;
   rows: { id: string; severity: AlertSeverityName; kind: string; target: string; message: string; sinceUnix: number | null }[];
+  operatorOnly?: boolean;
 }) {
   let content;
-  if (isPending) content = <Text c="dimmed" size="sm">Loading alerts…</Text>;
+  if (isPending) content = <Text c="dimmed" size="sm">Загрузка алертов…</Text>;
   else if (isError)
     content = (
       <Stack gap="xs" align="flex-start">
-        <Alert color="red">No alerts data</Alert>
-        <Anchor size="sm" onClick={onRetry}>Retry</Anchor>
+        <Alert color="red">Нет данных алертов</Alert>
+        <Anchor size="sm" onClick={onRetry}>Повторить</Anchor>
       </Stack>
     );
-  else if (rows.length === 0) content = <Text c="teal" size="sm">No critical alerts</Text>;
+  else if (rows.length === 0)
+    content = operatorOnly
+      ? <Text c="dimmed" size="sm">Нет алертов, требующих оператора</Text>
+      : <Text c="teal" size="sm">Нет критичных алертов</Text>;
   else
     content = (
       <Stack gap={4}>
@@ -489,8 +507,8 @@ function AlertsFeedSection({ isPending, isError, onRetry, rows }: {
   return (
     <Card withBorder padding="md" radius="md">
       <Group justify="space-between" mb="xs">
-        <Text fw={600}>Alerts feed</Text>
-        <Anchor component={Link} to="/alerts" size="sm">All alerts →</Anchor>
+        <Text fw={600}>{operatorOnly ? 'Требуют оператора' : 'Лента алертов'}</Text>
+        <Anchor component={Link} to="/alerts" size="sm">Все алерты →</Anchor>
       </Group>
       {content}
     </Card>
@@ -501,59 +519,30 @@ function AlertsFeedSection({ isPending, isError, onRetry, rows }: {
 // на детали (t09 spec §4.13). «Без лидера» — только matched-скопы: согласовано
 // с алертом shard-no-leader, чтобы счётчик не расходился с лентой алертов.
 // Ошибка без данных — своя (не роняет остальные карточки); ошибка при данных
-// — тихо (StaleBadge сигнализирует), паттерн AlertsFeedSection (t08 §4.4).
-function HaCard({ scopes, isPending, onRetry }: {
-  scopes: HaScopeSummaryDto[] | undefined;
-  isPending: boolean;
-  onRetry: () => void;
-}) {
+// — тихо (FreshnessBadges сигнализирует), паттерн AlertsFeedSection (t08 §4.4).
+// Карточка HA (u06): серверное поле OverviewDto.ha (без лидера — только
+// matched, как в прежней TS-агрегации).
+function HaCard({ data }: { data: OverviewHaDto | null }) {
   let content;
-  if (scopes === undefined)
-    content = isPending ? (
-      <Text c="dimmed" size="sm">Loading HA…</Text>
-    ) : (
-      <Stack gap="xs" align="flex-start">
-        <Alert color="red">No HA data</Alert>
-        <Anchor size="sm" onClick={onRetry}>Retry</Anchor>
-      </Stack>
-    );
-  else if (scopes.length === 0) content = <Text c="dimmed" size="sm">No HA scopes found</Text>;
-  else {
-    const withoutLeader = scopes.filter((s) => s.matched && s.leaderName === null).length;
-    const unmatched = scopes.filter((s) => !s.matched).length;
+  if (data === null)
+    content = <Text c="dimmed" size="sm">Снапшот ещё не собран</Text>;
+  else if (data.scopesTotal === 0)
+    content = <Text c="dimmed" size="sm">HA-скопов нет</Text>;
+  else
     content = (
       <Stack gap={4}>
         <Group gap="xs" wrap="nowrap">
-          <Text size="sm" c="dimmed">scopes: {scopes.length}</Text>
-          <Badge color={withoutLeader > 0 ? 'red' : 'gray'} variant="light">
-            no leader: {withoutLeader}
+          <Text size="sm" c="dimmed">скопов: {data.scopesTotal}</Text>
+          <Badge color={data.withoutLeader > 0 ? 'red' : 'gray'} variant="light">
+            без лидера: {data.withoutLeader}
           </Badge>
-          <Badge color={unmatched > 0 ? 'yellow' : 'gray'} variant="light">
-            unmatched: {unmatched}
-          </Badge>
+          {data.unmatched > 0 ? (
+            <Badge color="yellow" variant="light">unmatched: {data.unmatched}</Badge>
+          ) : null}
         </Group>
-        {scopes.map((s) => (
-          <Group key={s.scope} justify="space-between" gap="xs" wrap="nowrap">
-            <Anchor
-              component={Link}
-              to={`/ha/${s.scope}`}
-              size="sm"
-              ff="monospace"
-              truncate="end"
-            >
-              {s.scope}
-            </Anchor>
-            <Group gap={5} wrap="nowrap">
-              {s.matched && s.leaderName === null ? (
-                <Badge color="red" variant="light">no leader</Badge>
-              ) : null}
-              {!s.matched ? <Badge color="yellow" variant="light">unmatched</Badge> : null}
-            </Group>
-          </Group>
-        ))}
+        <Anchor size="sm" component={Link} to="/ha">Репликация →</Anchor>
       </Stack>
     );
-  }
   return (
     <Card withBorder padding="md" radius="md">
       <Text fw={600} mb="xs">HA</Text>

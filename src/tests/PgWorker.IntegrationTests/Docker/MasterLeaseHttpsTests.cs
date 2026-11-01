@@ -14,7 +14,6 @@ namespace PgWorker.IntegrationTests.Docker;
 // 127.0.0.1:8008; CLI запускается без роли (ветка on_start → local_role);
 // etcd мёртв — демон не может писать ключ, факт распознавания роли —
 // pid-файл демона (master) либо тихий выход (replica/no-ca).
-// Гейт PGW_TEST_DOCKER=1 (DockerTrait).
 [Collection(NonE2eCollection.Name)]
 public class MasterLeaseHttpsTests
 {
@@ -112,7 +111,6 @@ public class MasterLeaseHttpsTests
     [Fact]
     public async Task LocalRole_HttpsPrimary200_MasterDaemonStarts()
     {
-        DockerTrait.SkipIfUnavailable();
         var ct = TestContext.Current.CancellationToken;
         var tag = Guid.NewGuid().ToString("N")[..8];
 
@@ -156,7 +154,6 @@ public class MasterLeaseHttpsTests
     [Fact]
     public async Task LocalRole_HttpsPrimary503_NoDaemon()
     {
-        DockerTrait.SkipIfUnavailable();
         var ct = TestContext.Current.CancellationToken;
         var tag = Guid.NewGuid().ToString("N")[..8];
 
@@ -190,7 +187,6 @@ public class MasterLeaseHttpsTests
     [Fact]
     public async Task LocalRole_WithoutCa_QuietExit()
     {
-        DockerTrait.SkipIfUnavailable();
         var ct = TestContext.Current.CancellationToken;
         var tag = Guid.NewGuid().ToString("N")[..8];
 

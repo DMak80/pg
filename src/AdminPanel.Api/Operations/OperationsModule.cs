@@ -163,7 +163,7 @@ public static class OperationsModule
             return Error(result);
         });
 
-        // PUT /api/etcd/config — декларация состава etcd-контура (02 §9.13):
+        // PUT /api/etcd/config — декларация состава etcd-контура (02 §9.14):
         // панель НЕ пишет в etcd — прокси в API EtcdWorker телом {"nodes":N}
         // (замещение целиком); 200 / 400 (N вне 0..7 — дубль для UX, истина —
         // воркер) / 409 кворум-гвард / 503 живых инстансов нет.
@@ -219,26 +219,38 @@ public static class OperationsModule
             string cluster, UpdateBackupsPolicyRequest request, ClaimsPrincipal user,
             IHandler handler, CancellationToken ct) =>
         {
-            if (request.RetentionDays < 1 || request.RetentionWeeks < 0 || request.RetentionMonths < 0
-                || request.FullMaxAgeSec < 600
-                || request.DrillIntervalDays is < 0 or > 3650)
+            if (PolicyBodyValidation.IsInvalid(request))
             {
                 return Results.Problem(
                     statusCode: StatusCodes.Status400BadRequest,
                     title: "Invalid body",
-                    detail: "retentionDays ≥ 1, weeks/months ≥ 0, fullMaxAgeSec ≥ 600, drillIntervalDays in [0..3650]");
+                    detail: PolicyBodyValidation.Hint);
             }
 
             var result = await handler.HandleCommand<UpdateBackupsPolicyCommand, string>(
                 new UpdateBackupsPolicyCommand(cluster, request.RetentionDays, request.RetentionWeeks,
                     request.RetentionMonths, request.FullMaxAgeSec, request.VerifyOnCreate,
-                    request.DrillIntervalDays, request.S3, user.Identity?.Name ?? "adminpanel"), ct);
+                    request.DrillIntervalDays, request.S3, user.Identity?.Name ?? "adminpanel",
+                    request.GarbageMinAgeSec), ct);
             return result.IsSuccess ? Results.Ok(result.Value) : Error(result);
         });
 
         // POST /api/backups/orphans/{cluster}/{shard}/hold — hold-флаг сироты
         // (02 §9.10): прокси в API PgWorker; 204 (ошибки — ProblemDetails
         // воркера как есть, недоступность API — 503).
+        // POST /api/clusters/{cluster}/shards/{shard}/restore — restore-заявка
+        // (u-restore, 02 §9.13): прокси POST API PgWorker; тело DTO воркера как
+        // есть; 202/400/404/409/503 зеркалятся 1:1; оператор — X-Requested-By.
+        endpoints.MapPost("/api/clusters/{cluster}/shards/{shard}/restore", async (
+            string cluster, string shard, RestoreShardRequestDto request, ClaimsPrincipal user,
+            IHandler handler, CancellationToken ct) =>
+        {
+            var result = await handler.HandleCommand<RestoreShardCommand, System.Text.Json.JsonElement>(
+                new RestoreShardCommand(cluster, shard, request.Confirm, request.TargetTime,
+                    user.Identity?.Name ?? "adminpanel"), ct);
+            return result.IsSuccess ? Results.Accepted((string?)null, result.Value) : Error(result);
+        });
+
         endpoints.MapPost("/api/backups/orphans/{cluster}/{shard}/hold", async (
             string cluster, string shard, ClaimsPrincipal user, IHandler handler, CancellationToken ct) =>
         {
@@ -287,4 +299,24 @@ public static class OperationsModule
             title: "Etcd write failed",
             detail: result.Error!.Message),
     };
+}
+// Тело restore-заявки (02 §9.13): confirm — имя шарда (мисматч → 400 воркера),
+// targetTime — PITR-точка RFC3339 (опционально, отсутствие = latest).
+public sealed record RestoreShardRequestDto(
+    [property: System.Text.Json.Serialization.JsonPropertyName("confirm")] string Confirm,
+    [property: System.Text.Json.Serialization.JsonPropertyName("targetTime")] string? TargetTime);
+
+// Валидация тела policy (02 §9.12, u16): статик — юнит-тесты границ
+// (400-ветка: retention/full_max_age/drill/garbage_min_age < 600).
+// Истина — сервер воркера; панель — дубль для UX.
+public static class PolicyBodyValidation
+{
+    public const string Hint = "retentionDays ≥ 1, weeks/months ≥ 0, fullMaxAgeSec ≥ 600, "
+        + "drillIntervalDays in [0..3650], garbageMinAgeSec ≥ 600";
+
+    public static bool IsInvalid(UpdateBackupsPolicyRequest request)
+        => request.RetentionDays < 1 || request.RetentionWeeks < 0 || request.RetentionMonths < 0
+           || request.FullMaxAgeSec < 600
+           || request.DrillIntervalDays is < 0 or > 3650
+           || request.GarbageMinAgeSec is < 600;
 }

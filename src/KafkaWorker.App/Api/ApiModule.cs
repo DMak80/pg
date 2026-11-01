@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.Options;
 using KafkaWorker.App.Api.Operations;
 
 using KafkaWorker.Core.Writing;
@@ -288,6 +289,44 @@ public static class ApiModule
             };
         });
 
+        // DELETE /api/kafka/clusters/{cluster}/app-password/rotate — отмена
+        // живой заявки ротации app-пароля (arch/02 §10.2-18, u17): del ключа
+        // /kafkaworker/rotations/<C> воркером; гвард «не начата» по work-журналу
+        // (409 «Rotation rejected»), заявки нет → 404.
+        endpoints.MapDelete("/api/kafka/clusters/{cluster}/app-password/rotate", async (
+            string cluster, HttpRequest http, CancelAppRotationHandler handler, CancellationToken ct) =>
+        {
+            var result = await handler.HandleAsync(cluster, RequestedBy(http), ct);
+            if (result.IsSuccess)
+                return Results.NoContent();
+
+            return MapCancelRotationError(result.Error!.Message, result.Error);
+        });
+
+        // DELETE /api/kafka/clusters/{cluster}/admin-password/rotate — отмена
+        // живой заявки ротации admin-пароля (arch/02 §10.2-19, u17).
+        endpoints.MapDelete("/api/kafka/clusters/{cluster}/admin-password/rotate", async (
+            string cluster, HttpRequest http, CancelAdminRotationHandler handler, CancellationToken ct) =>
+        {
+            var result = await handler.HandleAsync(cluster, RequestedBy(http), ct);
+            if (result.IsSuccess)
+                return Results.NoContent();
+
+            return MapCancelRotationError(result.Error!.Message, result.Error);
+        });
+
+        // DELETE /api/kafka/clusters/{cluster}/ca/rotate — отмена живой заявки
+        // ротации CA (arch/02 §10.2-20, u17; гвард MutationLive CaRotator).
+        endpoints.MapDelete("/api/kafka/clusters/{cluster}/ca/rotate", async (
+            string cluster, HttpRequest http, CancelCaRotationHandler handler, CancellationToken ct) =>
+        {
+            var result = await handler.HandleAsync(cluster, RequestedBy(http), ct);
+            if (result.IsSuccess)
+                return Results.NoContent();
+
+            return MapCancelRotationError(result.Error!.Message, result.Error);
+        });
+
         // POST /api/kafka/clusters/{cluster}/rebalance — заявка ребалансировки
         // партиций (§10.2-13); исполнение — PartitionReassigner воркера.
         // requested_by — заголовок X-Requested-By, fallback "api".
@@ -483,6 +522,11 @@ public static class ApiModule
             string cluster, string topic, CancelLifecycleHandler handler, CancellationToken ct) =>
             await CancelTopicLifecycleAsync(cluster, topic, "delete", handler, ct));
 
+        // GET /api/config — эффективный конфиг установки (arch/16 §1.1, u15):
+        // read-only, mTLS-зона /api, без снапшота и etcd.
+        endpoints.MapGet("/api/config", (IOptions<KafkaWorkerOptions> options)
+            => Results.Ok(KafkaWorkerEffectiveConfig.From(options.Value)));
+
         // POST /api/seed/demo — демо-сид kafka-домена (arch/16 §1.1.1, стенд):
         // перенос kafka-seed.sh 1:1; идемпотентен по /kafka/clusters/events/config.
         // Флаг EnableSeedEndpoint проверяет хендлер (выключен → 404).
@@ -520,6 +564,21 @@ public static class ApiModule
             && !string.IsNullOrWhiteSpace(by)
             ? by.ToString()
             : "api";
+
+    // Маппинг отмены живой заявки ротации (§10.2-18/19/20): порт существующих
+    // веток модуля — 404/409/503, дефолт 503.
+    private static IResult MapCancelRotationError(string message, Exception error)
+        => error switch
+        {
+            KafkaClusterNotFoundException or KafkaRotationNotFoundException => Results.Problem(
+                statusCode: StatusCodes.Status404NotFound, title: "Not found", detail: message),
+            KafkaRotationInProgressException => Results.Problem(
+                statusCode: StatusCodes.Status409Conflict, title: "Rotation rejected", detail: message),
+            EtcdWriteUnavailableException or InvalidKafkaConfigException => Results.Problem(
+                statusCode: StatusCodes.Status503ServiceUnavailable, title: "Etcd write unavailable", detail: message),
+            _ => Results.Problem(
+                statusCode: StatusCodes.Status503ServiceUnavailable, title: "Etcd write failed", detail: message),
+        };
 
     // Общий хендлер отмены lifecycle-заявок (§10.2-11/12): успех → 204.
     private static async Task<IResult> CancelTopicLifecycleAsync(

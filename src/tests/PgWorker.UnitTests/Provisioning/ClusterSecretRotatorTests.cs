@@ -237,11 +237,12 @@ public class ClusterSecretRotatorTests
             .Should().MatchRegex("^[A-Za-z0-9]{32}$");
     }
 
-    // Деградировавший кейс бага гейта (finding P1): при EnableDoorman=false
-    // master-ключ вырождается в <host>:0 — оба ноды шарда на одном хосте равнозначны,
-    // и старый host-match возвращал ПРОИЗВОЛЬНУЮ ноду (ALTER ROLE на реплике →
+    // Деградировавший кейс бага гейта (finding P1): вырожденный master-ключ
+    // <host>:0 делал бы обе ноды шарда на одном хосте равнозначными — старый
+    // host-match возвращал ПРОИЗВОЛЬНУЮ ноду (ALTER ROLE на реплике →
     // 25006 read-only, ротация зацикливалась). Резолв обязан идти по уникальному
-    // doorman-порту из ключа.
+    // doorman-порту из ключа (S4: вырожденные значения недискриминантны; в
+    // штатном режиме невозможны — пулер обязателен).
     [Fact]
     public async Task Tick_SharedHostMasterKey_ResolvesByDoormanPort()
     {

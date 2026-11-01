@@ -832,4 +832,98 @@ public void Parse_FullKey_UnknownState_Tolerated()
         // FullMaxAgeSec — прежнее поле модели не сломано.
         result.Clusters.Single(c => c.Cluster == "p1").FullMaxAgeSec.Should().Be(86400);
     }
+
+    // u11: agent-ключ приёмника WAL — валидный JSON (state streaming) → Agents.
+    [Fact]
+    public void Parse_AgentKeyStreaming_GoesToAgents()
+    {
+        // Arrange — приёмник в штатном стриме (arch/19 §4)
+        var kvs = new[]
+        {
+            new Kv("/pgworker/backups/demo/s1/agent/s1b",
+                """{"node":"s1b","role":"sync","state":"streaming","last_delivered_segment":88001,"last_delivered_unix":1761900000,"pool_exhausted":false,"updated_unix":1761900010}""", 1),
+        };
+
+        // Act
+        var result = BackupsParser.Parse(kvs);
+
+        // Assert — в Agents, ошибок нет (не unknownKeys и не parseError)
+        result.Errors.Should().BeEmpty();
+        var agent = result.Agents.Should().ContainSingle().Subject;
+        agent.Cluster.Should().Be("demo");
+        agent.Shard.Should().Be("s1");
+        agent.Node.Should().Be("s1b");
+        agent.Role.Should().Be("sync");
+        agent.State.Should().Be("streaming");
+        agent.LastDeliveredSegment.Should().Be(88001);
+        agent.PoolExhausted.Should().BeFalse();
+        agent.UpdatedUnix.Should().Be(1761900010);
+    }
+
+    // u11: waiting_slot + tli_jump/history_missing_tli/error — факт-поля читаются.
+    [Fact]
+    public void Parse_AgentKeyWaitingSlot_CarriesFacts()
+    {
+        // Arrange
+        var kvs = new[]
+        {
+            new Kv("/pgworker/backups/demo/s2/agent/s2a",
+                """{"node":"s2a","role":"none","state":"waiting_slot","pool_exhausted":false,"tli_jump":3,"history_missing_tli":2,"error":"waiting for slot","updated_unix":1761900020}""", 1),
+            new Kv("/pgworker/backups/demo/s2/agent/s2b",
+                """{"node":"s2b","role":"none","state":"failed_permanent","pool_exhausted":true,"error":"segment-size mismatch","updated_unix":1761900030}""", 2),
+        };
+
+        // Act
+        var result = BackupsParser.Parse(kvs);
+
+        // Assert
+        result.Errors.Should().BeEmpty();
+        result.Agents.Should().HaveCount(2);
+        var waiting = result.Agents.Single(a => a.Node == "s2a");
+        waiting.State.Should().Be("waiting_slot");
+        waiting.TliJump.Should().Be(3);
+        waiting.HistoryMissingTli.Should().Be(2);
+        waiting.Error.Should().Be("waiting for slot");
+        var failed = result.Agents.Single(a => a.Node == "s2b");
+        failed.State.Should().Be("failed_permanent");
+        failed.PoolExhausted.Should().BeTrue();
+    }
+
+    // u11: битый JSON agent-ключа → parseError (толерантно, тик не роняет).
+    [Fact]
+    public void Parse_BrokenAgentJson_ParseError()
+    {
+        // Arrange
+        var kvs = new[]
+        {
+            new Kv("/pgworker/backups/demo/s3/agent/s3a", "{broken", 1),
+        };
+
+        // Act
+        var result = BackupsParser.Parse(kvs);
+
+        // Assert
+        result.Agents.Should().BeEmpty();
+        result.Errors.Should().ContainSingle()
+            .Which.Key.Should().Be("/pgworker/backups/demo/s3/agent/s3a");
+    }
+
+    // u11: agent-ключ без обязательных state/updated_unix → parseError.
+    [Fact]
+    public void Parse_AgentKeyMissingState_ParseError()
+    {
+        // Arrange
+        var kvs = new[]
+        {
+            new Kv("/pgworker/backups/demo/s4/agent/s4a",
+                """{"node":"s4a","role":"sync"}""", 1),
+        };
+
+        // Act
+        var result = BackupsParser.Parse(kvs);
+
+        // Assert
+        result.Agents.Should().BeEmpty();
+        result.Errors.Should().ContainSingle().Which.Reason.Should().Contain("state");
+    }
 }

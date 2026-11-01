@@ -211,7 +211,7 @@ services:
       KafkaWorker__Etcd__Endpoints__1: http://etcd2:2379
       KafkaWorker__Etcd__Endpoints__2: http://etcd3:2379
       KafkaWorker__AdvertisedClientHost: host.docker.internal
-      # HTTP API воркера (arch/16 §1.1, t03): mTLS-only, панель ходит по
+      # HTTP API воркера (arch/16 §1.1, t03): HTTPS-грань, mTLS только на /api; панель ходит по
       # compose-DNS с клиентским сертом (lease-ключ /kafkaworker/api/<id> —
       # AdvertiseUrl https://), демо-сид включён (стенд).
       KafkaWorker__Api__AdvertiseUrl: https://kafkaworker:8080
@@ -336,7 +336,8 @@ services:
       # file_sd-таргеты реальных Patroni-нод — пишет sd-generator (t15, arch/18 §5.4).
       - prometheus-sd:/etc/prometheus/sd:ro
       - prometheus-data:/prometheus
-      # Скрейп воркеров за mTLS (t03, О4): TLS-пакет ro (tls_config prometheus.yml).
+      # Скрейп воркеров — https + tls_config только ca_file, без клиентского
+      # серта (arch/18 §5.2); bind-маунт пакета ro — ради ca.pem.
       - ../../deploy/tls:/tls:ro
     command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.retention.time=7d"]
 

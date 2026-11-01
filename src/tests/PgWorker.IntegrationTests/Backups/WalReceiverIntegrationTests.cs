@@ -147,7 +147,6 @@ public class WalReceiverIntegrationTests
     public async Task SegmentDeliveryAndContinuity()
     {
         // Arrange — своё окружение: PG (TLS+слот) + ownS3-нода, guid cluster/shard
-        DockerTrait.SkipIfUnavailable();
         var ct = TestContext.Current.CancellationToken;
         await using var postgres = await OwnPostgres.StartAsync("wal-it-delivery", ct);
         await using var s3Node = await OwnS3.StartAsync("wal-it-delivery", ct);
@@ -204,7 +203,6 @@ public class WalReceiverIntegrationTests
     public async Task RestartCatchesUpFromTail()
     {
         // Arrange — окружение; первый запуск доставляет ≥2 сегмента и останавливается
-        DockerTrait.SkipIfUnavailable();
         var ct = TestContext.Current.CancellationToken;
         await using var postgres = await OwnPostgres.StartAsync("wal-it-restart", ct);
         await using var s3Node = await OwnS3.StartAsync("wal-it-restart", ct);
@@ -251,7 +249,6 @@ public class WalReceiverIntegrationTests
     public async Task S3OutageBackpressureRecovery()
     {
         // Arrange — окружение; приёмник доставляет ≥1 сегмент
-        DockerTrait.SkipIfUnavailable();
         var ct = TestContext.Current.CancellationToken;
         await using var postgres = await OwnPostgres.StartAsync("wal-it-s3down", ct);
         await using var s3Node = await OwnS3.StartAsync("wal-it-s3down", ct);
@@ -324,7 +321,6 @@ public class WalReceiverIntegrationTests
         // Arrange — своё окружение: PG (TLS+слот) + ownS3-нода; ядро приёмника
         // (старт без TIMELINE) накатывает ≥3 закрытых сегмента и останавливается
         // отменой — дальше проверяется прямой транспорт tli-механики.
-        DockerTrait.SkipIfUnavailable();
         var ct = TestContext.Current.CancellationToken;
         await using var postgres = await OwnPostgres.StartAsync("wal-it-tli", ct);
         await using var s3Node = await OwnS3.StartAsync("wal-it-tli", ct);
@@ -400,7 +396,6 @@ public class WalReceiverIntegrationTests
     public async Task Permanent_segment_size_mismatch()
     {
         // Arrange — PG с несовместимым wal_segment_size=32MB
-        DockerTrait.SkipIfUnavailable();
         var ct = TestContext.Current.CancellationToken;
         await using var postgres = await OwnPostgres.StartAsync("wal-it-segsize", ct, initdbArgs: "--wal-segsize=32");
         await using var s3Node = await OwnS3.StartAsync("wal-it-segsize", ct);

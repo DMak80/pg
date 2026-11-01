@@ -143,7 +143,8 @@ internal static class Fakes
                         ? Store.TryGetValue(c.Key, out var ge) && ge.Version > c.Num // Exists 
                         : Store.TryGetValue(c.Key, out var e) ? e.Version == c.Num : c.Num == 0,
                     TxnTarget.Value => Store.TryGetValue(c.Key, out var e) && e.Value == c.Arg,
-                    TxnTarget.ModRevision => Store.TryGetValue(c.Key, out var e) && e.ModRevision == c.Num,
+                    // отсутствующий ключ — mod_revision 0 (etcd-семантика compare txn)
+                    TxnTarget.ModRevision => Store.TryGetValue(c.Key, out var e) ? e.ModRevision == c.Num : c.Num == 0,
                     _ => false,
                 });
                 if (succeeded)

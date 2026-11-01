@@ -27,20 +27,27 @@ public class ValkeyRefresherTests
 
         public IReadOnlyList<Kv> WorkerApiCertKv { get; set; } = [];
 
+        // u13/u14: данные новых префиксов valkey-тика (work/leader/claims/instances).
+        public Dictionary<string, IReadOnlyList<Kv>> ExtraKv { get; } = [];
+
+        public List<string> FailPrefixes { get; } = [];
+
         public List<string> FailEndpoints { get; } = [];
 
         public Task<Result<IReadOnlyList<Kv>>> RangeAsync(string endpoint, string prefix, CancellationToken ct)
-            => Task.FromResult(FailEndpoints.Contains(endpoint)
+            => Task.FromResult(FailEndpoints.Contains(endpoint) || FailPrefixes.Contains(prefix)
                 ? Result<IReadOnlyList<Kv>>.Failed(new EtcdUnreachableException(endpoint))
-                : Result<IReadOnlyList<Kv>>.Success(prefix switch
-                {
-                    "/valkey/clusters/" => ClustersKv,
-                    "/valkeyworker/rotations/" => RotationsKv,
-                    "/valkeyworker/ticket_outcomes/" => TicketOutcomesKv,
-                    "/valkeyworker/api/" => WorkerApiKv,
-                    "/workers/api_tls/valkeyworker" => WorkerApiCertKv,
-                    _ => [],
-                }));
+                : Result<IReadOnlyList<Kv>>.Success(ExtraKv.TryGetValue(prefix, out var extra)
+                    ? extra
+                    : prefix switch
+                    {
+                        "/valkey/clusters/" => ClustersKv,
+                        "/valkeyworker/rotations/" => RotationsKv,
+                        "/valkeyworker/ticket_outcomes/" => TicketOutcomesKv,
+                        "/valkeyworker/api/" => WorkerApiKv,
+                        "/workers/api_tls/valkeyworker" => WorkerApiCertKv,
+                        _ => [],
+                    }));
 
         // Не используются valkey-тиком — заглушки ради интерфейса.
         public Task<Result<EtcdStatusPayload>> StatusAsync(string endpoint, CancellationToken ct)
@@ -384,5 +391,58 @@ public class ValkeyRefresherTests
         live.Rotation!.Role.Should().Be("app");
         live.Rotation.RequestedBy.Should().Be("seed");
         store.Current.Clusters.Single(c => c.Name == "cache").Rotation.Should().BeNull();
+    }
+
+    // u13/u14: новые ключи valkey-тика → WorkJournals/Coordination в снапшоте.
+    [Fact]
+    public async Task Refresh_NewObservabilityKeys_SnapshotCarriesFields()
+    {
+        // Arrange
+        var gateway = DemoGateway();
+        gateway.ExtraKv["/valkeyworker/work/"] =
+            [new Kv("/valkeyworker/work/demo",
+                """{"op":"rotate","phase":"e1-added","instance":"vwk-1","updated_unix":1761900000}""", 1)];
+        gateway.ExtraKv["/valkeyworker/leader"] =
+            [new Kv("/valkeyworker/leader", """{"instance":"vwk-1"}""", 2)];
+        gateway.ExtraKv["/valkeyworker/claims/"] =
+            [new Kv("/valkeyworker/claims/demo", """{"instance":"vwk-1","since_unix":1761900000}""", 3)];
+        gateway.ExtraKv["/valkeyworker/instances/"] =
+            [new Kv("/valkeyworker/instances/vwk-1", "", 4)];
+        var store = new ValkeySnapshotStore();
+        var refresher = New(gateway, store, endpoints: "http://etcd1:2379");
+
+        // Act
+        var result = await refresher.RefreshOnceAsync(TestContext.Current.CancellationToken);
+
+        // Assert
+        result.IsSuccess.Should().BeTrue();
+        var snapshot = store.Current!;
+        snapshot.WorkJournals.Should().ContainSingle().Which.Phase.Should().Be("e1-added");
+        snapshot.Coordination!.LeaderInstance.Should().Be("vwk-1");
+        snapshot.Coordination.Claims.Should().ContainSingle().Which.SinceUnix.Should().Be(1761900000);
+        var instance = snapshot.Coordination.Instances.Should().ContainSingle().Subject;
+        instance.InstanceId.Should().Be("vwk-1");
+        instance.SinceUnix.Should().BeNull();
+    }
+
+    // u13/u14: транспортный провал нового range → отказ тика.
+    [Fact]
+    public async Task Refresh_NewRangeTransportFail_TickFails()
+    {
+        // Arrange — первый тик успешен
+        var gateway = DemoGateway();
+        var store = new ValkeySnapshotStore();
+        var refresher = New(gateway, store, endpoints: "http://etcd1:2379");
+        (await refresher.RefreshOnceAsync(TestContext.Current.CancellationToken)).IsSuccess.Should().BeTrue();
+        var first = store.Current!;
+
+        // Act
+        gateway.FailPrefixes.Add("/valkeyworker/leader");
+        var second = await refresher.RefreshOnceAsync(TestContext.Current.CancellationToken);
+
+        // Assert
+        second.IsSuccess.Should().BeFalse();
+        store.Current!.EtcdReachable.Should().BeFalse();
+        store.Current.BuiltAtUtc.Should().Be(first.BuiltAtUtc);
     }
 }

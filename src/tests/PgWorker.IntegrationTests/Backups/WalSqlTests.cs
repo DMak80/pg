@@ -29,7 +29,6 @@ public class WalSqlTests
     public async Task ProbeEnsureAliveRecreateIdempotentOnLiveAndMissingSlot()
     {
         // Arrange
-        DockerTrait.SkipIfUnavailable();
         var ct = TestContext.Current.CancellationToken;
         await using var postgres = new ContainerBuilder("postgres:18-alpine")
             .WithEnvironment("POSTGRES_PASSWORD", Password)
@@ -71,7 +70,6 @@ public class WalSqlTests
     public async Task LostSlotProbeSeesLostEnsureSlotAliveHealsIdempotently()
     {
         // Arrange — OwnPostgres: физический reserved-слот фикстуры при старте
-        DockerTrait.SkipIfUnavailable();
         var ct = TestContext.Current.CancellationToken;
         await using var postgres = await OwnPostgres.StartAsync("wal-sql-lost", ct);
         var sql = new NpgsqlWalSqlExecutor();

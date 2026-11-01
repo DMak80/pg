@@ -95,7 +95,23 @@ URL API — из etcd) URL воркера (§1.1)
 заявка ротации, ребалансировка, drain-прогресс; набор — 1:1 сид-фикстуры
 интеграционных тестов; флаг `KafkaWorker:Api:EnableSeedEndpoint`, default
 `false`; идемпотентен: живой `/kafka/clusters/events/config` → 200
-`{"seeded":false}`).
+`{"seeded":false}`). Плюс (adminpanel/02 §10.2-18/19/20): DELETE-отмена
+живых заявок ротаций — `DELETE /api/kafka/clusters/{c}/app-password/rotate`
+(ключ `/kafkaworker/rotations/<C>`), `DELETE /api/kafka/clusters/{c}/
+admin-password/rotate` (`/kafkaworker/admin_rotations/<C>`), `DELETE
+/api/kafka/clusters/{c}/ca/rotate` (`/kafkaworker/ca_rotations/<C>`): del
+ключа заявки воркером (txn compare по значению — гонка с клэймом ловится
+отказом txn), гвард «ротация не начата» по work-журналу `/kafkaworker/work/<C>`
+(`op=rotate` в переходных фазах A/B/C — PasswordRotator, `op=rotate-ca` в
+P/D/R/C — CaRotator: 409 «rotation is already executing»; терминальные/
+waiting-фазы и отсутствие журнала — отмена разрешена), заявки нет → 404
+(идемпотентность повтора отсутствует осознанно — порт 02 §9.7.5). Коды:
+204 / 404 / 409 / 503. Плюс read-only `GET /api/config` (adminpanel/02
+§2.3.5): эффективный конфиг установки — плоский JSON групп `thresholds`
+(BrokerBoot/NodeDead/ReassignSubmit/ReassignRetrySubmit/RotationTicketTimeout),
+`loops` (Scan/Keepalive/TopicSync/Reassign/ReassignBatch/Snapshot/ErrorDelay),
+`parallelism` (MaxClusters), пометка `source:"env"` — применяется рестартом
+воркера; БЕЗ секретов/TLS/endpoints; etcd не читается. Коды: 200.
 
 **Дискавери API**: ключ `/kafkaworker/api/<instanceId>` (lease TTL 15 с,
 паттерн `instances/<id>`; arch/15 §4) — value
@@ -111,13 +127,24 @@ URL API — из etcd) URL воркера (§1.1)
 живые ключи в kafka-снапшоте и зовёт любой живой (failover на следующий; все
 умерли — 503 + critical-алерт `worker-api-unreachable`).
 
-**Аутентификация — mTLS**: вся HTTP-грань воркера (вкл. `/healthz`)
-обслуживается только по TLS; клиенты (панель) аутентифицируются
-клиентским сертификатом, подписанным per-install API-CA. Клиент без
-валидного серта — 401 (TLS-хендшейк-отказ). `X-Api-Key`/`KFW_API_KEY`
+**Аутентификация — mTLS на `/api`**: грань — один HTTPS-порт `:8080`
+(серверный серт — ниже); клиентский сертификат на TLS-хендшейке
+опционален. Клиентский сертификат (mTLS) ОБЯЗАТЕЛЕН только для префикса
+`/api` — клиенты (панель, стендовый сид) аутентифицируются клиентским
+сертификатом, подписанным per-install API-CA; запрос `/api` без валидного
+клиентского серта — 401. `/healthz` и `/metrics` — открытая грань
+доверенной docker-сети И хост-публикаций портов API docker-хоста
+(`localhost:{PORT}`; публикации нужны панели — AdvertiseUrl
+`host.docker.internal` — и хостовым потребителям: чеки, скрейп), без
+клиентского серта (паттерн Patroni REST
+`:8008` — arch/13 §4); скрейп Prometheus — `https` + `ca_file`
+(arch/18 §5.2). Граница доверия грани — периметр docker-хоста, а не
+только docker-сеть; опциональное сужение (bind `127.0.0.1` отдельным
+env-флагом; ломает `host.docker.internal`-потребителей) — роадмап,
+каноном не предписывается. `X-Api-Key`/`KFW_API_KEY`
 удалён. Отключение TLS
 (`KafkaWorker:Api:Tls:AllowInsecureHttp`, default false) — только для
-in-memory WAF-тестов; в deploy/стенде всегда mTLS.
+in-memory WAF-тестов; в deploy/стенде грань всегда HTTPS.
 
 **Серверный серт API — источник etcd (перезапуск применяет)**: воркер при
 СТАРТЕ читает ключ `/workers/api_tls/kafkaworker` (JSON
@@ -388,7 +415,7 @@ placement constraint, `publish mode=host`. Объекты для сверок �
 | `/kafkaworker/ca_rotations/<C>` | заявка ротации per-cluster CA/сертов (K) |
 | `/kafka/clusters/<C>/ca_next_key` + `ca_next_pem` | staging НОВОЙ CA в окне ротации (K): подпись сертов фазы R, источник bundle `ca_pem`; вне ротации ключей нет |
 | `/kafkaworker/rebalances/<C>` | заявка ребалансировки партиций (I) |
-| `/workers/api_tls/kafkaworker` | серверный серт mTLS-грани API (§1.1): читает ТОЛЬКО при старте; пишет панель (adminpanel/02 §9.9) |
+| `/workers/api_tls/kafkaworker` | серверный серт HTTPS-грани API (§1.1; mTLS обязателен только на `/api`): читает ТОЛЬКО при старте; пишет панель (adminpanel/02 §9.9) |
 
 ### 3.2. Пишемые ключи
 
@@ -986,8 +1013,8 @@ KafkaWorker:AdvertisedClientHost=null # null → адрес docker-хоста н
 KafkaWorker:Api { AdvertiseUrl (https://…), EnableSeedEndpoint=false,
  Tls { ServerCertPem|ServerCertPath, ServerKeyPem|ServerKeyPath,
  ClientCaPem|ClientCaPath, AllowInsecureHttp=false } }
- # §1.1: mTLS HTTP API — серверный серт +
- # доверие клиентским (per-install API-CA);
+ # §1.1: HTTPS-грань, mTLS обязателен только на /api —
+ # серверный серт + доверие клиентским (per-install API-CA);
  # URL https:// в /kafkaworker/api/<id>
 # env-секреты (§1.1/§4): KFW_API_TLS_CERT / KFW_API_TLS_KEY /
 # KFW_API_TLS_CLIENT_CA (PEM) или KFW_API_TLS_{CERT,KEY,CLIENT_CA}_PATH

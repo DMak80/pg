@@ -131,8 +131,8 @@ internal static class RestTlsDockerRig
         // Portalloc: динамические порты (зонд свободных).
         var portalloc = new Dictionary<string, NodeAddress>
         {
-            ["shard1/shard1a"] = new("local", new NodePorts(FreePort(), FreePort(), 0)),
-            ["shard1/shard1b"] = new("local", new NodePorts(FreePort(), FreePort(), 0)),
+            ["shard1/shard1a"] = new("local", new NodePorts(FreePort(), FreePort(), FreePort())),
+            ["shard1/shard1b"] = new("local", new NodePorts(FreePort(), FreePort(), FreePort())),
         };
         await gateway.PutAsync(endpoint, $"/pgworker/portalloc/{cluster}",
             PgWorker.Core.Model.Portalloc.Serialize(portalloc), null, ct);
@@ -152,7 +152,6 @@ internal static class RestTlsDockerRig
         var driver = new PlainClusterDriver(
             [new HostEndpoint("local", "unix:///var/run/docker.sock")],
             new DockerEngineFactory(),
-            enableDoorman: false,
             nodeImage: stubImage,
             restCertificates: new RestCertificateCache(caPem, caKeyPem));
 
@@ -217,14 +216,13 @@ internal static class RestTlsDockerRig
 // REST-TLS-конвергенция живого контейнера (arch/14 §5 C): легаси-нода
 // пересоздаётся шагом надзора с REST-TLS env; volume/маркер на месте;
 // rest_password появился ensure'м; повторный тик no-op; окно миграции без
-// rebuild/UNREACHABLE (спека §5.5). Гейт PGW_TEST_DOCKER=1.
+// rebuild/UNREACHABLE (спека §5.5).
 [Collection(NonE2eCollection.Name)]
 public class RestTlsConvergenceTests(Etcd.EtcdFixture fixture)
 {
     [Fact]
     public async Task Convergence_LegacyContainer_RecreatedWithTlsEnv()
     {
-        DockerTrait.SkipIfUnavailable();
         var ct = TestContext.Current.CancellationToken;
         await using var c = await RestTlsDockerRig.BuildAsync(fixture);
         var startedAt = DateTime.UtcNow;

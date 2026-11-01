@@ -14,7 +14,7 @@
   кластера (без пары воркер ответит 422); подставляется в
   `/s3/clusters/<C>/secrets` ключом «backups».
 - **etcd-контур стенда** отдельно: `dev-stand/compose.yaml`.
-- **Тесты**: `dotnet test src/PgWorker.slnx`; docker-E2E — `PGW_TEST_DOCKER=1`
+- **Тесты**: `dotnet test src/PgWorker.slnx`; docker-E2E — прогон E2E-проектов
   (обязателен в мерж-гейте задач воркеров — см. AGENTS.md).
 
 ## Вторые инстансы воркеров
@@ -42,7 +42,8 @@ Prometheus видят оба инстанса.
   идентично. Уникальность инстанса — случайный InstanceId, env не задаётся.
 - **Проверка**: `dev-stand/adminpanel/checks/35-worker-second-instance.sh` —
   kill→takeover всех трёх воркеров с восстановлением; docker-E2E —
-  `PGW_TEST_DOCKER=1 dotnet test … --filter FullyQualifiedName~SecondInstance`.
+  `dotnet test src/tests/PgWorker.E2eTests … --filter
+  FullyQualifiedName~SecondInstance`.
 
 ## Потеря wal-слота (`wal_status='lost'`)
 
@@ -198,7 +199,18 @@ CA-сертификат registry должен быть доверен Docker и 
       --self-contained -o artifacts/node-tools
     docker build -f docker/node/Dockerfile \
       --build-arg WAL_PUBLISH_DIR=artifacts/node-wal \
-      --build-arg NODE_TOOLS_PUBLISH_DIR=artifacts/node-tools -t pgworker-node:dev .
+      --build-arg NODE_TOOLS_PUBLISH_DIR=artifacts/node-tools \
+      --build-arg DOORMAN_IMAGE=ghcr.io/ozontech/pg_doorman:v3.11.0 \
+      -t pgworker-node:dev .
+
+`DOORMAN_IMAGE` — ОБЯЗАТЕЛЬНЫЙ build-arg (пулер pg_doorman — неотъемлемая
+часть образа ноды, arch/14 §2.1 R1): мульти-арх (amd64+arm64) контейнер-образ
+проекта pg_doorman — docker выбирает архитектуру под платформу сборки
+автоматически (целевая платформа x64 — amd64-сборка; arm64 — платформа
+разработки, arch/03 §1). Сборка без build-arg падает fail-fast. Перед
+сборкой на офлайн-хосте — `dev-stand/images/pull-images.sh` (ретаг
+канонического имени из локального registry). Обновление версии пина —
+рутина ниже («Обновить пин pg_doorman»).
 
 Полный стенд собирает образ скриптом `dev-stand/adminpanel/checks/00-up.sh`
 (RID определяется по `uname -m` автоматически).
@@ -222,6 +234,23 @@ CA-сертификат registry должен быть доверен Docker и 
 3. Проверить: `docker manifest inspect --insecure 192.168.0.1:5000/<образ>` —
    в списке `amd64` и `arm64`.
 
+### Обновить пин pg_doorman
+
+1. Изменить пин `ghcr.io/ozontech/pg_doorman:v3.11.0` на новую версию
+   РОВНО в четырёх рабочих точках: `dev-stand/adminpanel/checks/00-up.sh`,
+   `src/tests/PgWorker.E2eTests/E2e/E2eEnvironment.cs` (константа
+   `DoormanImage`),
+   `src/tests/PgWorker.IntegrationTests/Backups/NodeWalReceiverTests.cs`
+   (константа `DoormanImage` — файл сам собирает образ ноды с
+   `--build-arg DOORMAN_IMAGE`), этот раздел (команда сборки + строка
+   каталога ниже).
+2. Обновить строку в `dev-stand/images/images.txt`.
+3. Перемirrorить: `dev-stand/images/mirror-image.sh ghcr.io/ozontech/pg_doorman:<новая версия>`,
+   затем `dev-stand/images/pull-images.sh`.
+4. Контроль полноты: `grep -rn "pg_doorman:v" dev-stand/ src/ docker/ docs/runbook.md`
+   — вхождений старой версии не осталось (grep заодно ловит упоминания пина
+   вне рабочих точек: комментарий в `docker/node/Dockerfile`, этот раздел).
+
 ### Известная особенность: TLS-сертификат registry и Go-клиенты
 
 Сертификат registry (самоподписанный, RSA-4096/SHA-256) отвергается новыми
@@ -236,6 +265,7 @@ Go-1.24-клиентами с ошибкой `x509: certificate is not standards
 |---|---|
 | `alpine:3.20` | тесты PgWorker (Docker/Exec/SshTunnel/TlsEngine), наполнение TLS-volume в `00-up.sh` |
 | `apache/kafka:4.0.0` | KafkaWorker: дефолт образа брокера (`Options`), интеграция-тесты, kafka-e2e чек стенда |
+| `ghcr.io/ozontech/pg_doorman:v3.11.0` | бинарник пулера в образе PG-ноды (обязательный build-arg DOORMAN_IMAGE, COPY --from) |
 | `ghcr.io/zalando/spilo-18:4.1-p2` | база образа PG-ноды `pgworker-node` (`docker/node/Dockerfile`) |
 | `grafana/grafana:13.0.8` | dev-стенд (метрики) |
 | `mcr.microsoft.com/dotnet/sdk:10.0` | build-стадии Dockerfile'ов PgWorker/KafkaWorker/AdminPanel |
@@ -495,20 +525,22 @@ POST `/switchover` и др.) — basic-auth per-cluster (`rest_password` из et
 
 ## Запуск docker-E2E серий
 
-Все E2E-серии (PgWorker, KafkaWorker, ValkeyWorker и docker-профиль драйверов)
-гейтятся одной переменной `PGW_TEST_DOCKER=1` — без неё тесты помечаются
-Skip (CI без docker остаётся зелёным). Сборка Release и запуск тестов —
-ВСЕГДА двумя ОТДЕЛЬНЫМИ командами: сначала сборка решения, затем тесты с
-`--no-build` и env-префиксом при самой команде (`DOTNET_CLI_UI_LANGUAGE=en
-PGW_TEST_DOCKER=1 dotnet test …`); сборка внутри команды тестов не
+Все тестовые проекты docker-обязательны: нет docker-демона/образов — тест
+падает с диагнозом, НЕ скип. «Запустил проект — ноль скипов»: отчёт штатного
+прогона любого тестового проекта — только из Passed/Failed (единственный
+допускаемый скип — условное предусловие TLI-сценария `_prepareSkip`).
+Сборка Release и запуск тестов — ВСЕГДА двумя ОТДЕЛЬНЫМИ командами: сначала
+сборка решения, затем тесты с `--no-build` и env-префиксом при самой команде
+(`DOTNET_CLI_UI_LANGUAGE=en dotnet test …`); сборка внутри команды тестов не
 используется — свежесть бинаря видна выводом отдельной команды сборки.
-E2E-окружения собирают свои docker-образы сами (publish на хосте +
-docker build, `[PHASE]`-метки); `PGW_TEST_E2E_NOBUILD=1` — только для
-бисекта/отладки конкретного бинаря. Двухфазность PgWorker-E2E: внешний Fact в
-сводке vstest всегда `Skipped` с сообщением «the class is executed in the
-runner» — это ШТАТНЫЙ релей; реальный сценарий исполняется в docker-контейнере
-раннера, вердикт серии — строка `=== TEST EXECUTION SUMMARY ===` в
-`…/pgw-e2e-artifacts-<guid>/runner.log` (путь — в сообщении скипа).
+Тесты разделены на интеграционные проекты (`<Имя>.IntegrationTests`) и
+E2E-проекты (`<Имя>.E2eTests`); PgWorker-E2E — хостовая модель: класс-фикстура
+сама поднимает и сама удаляет своё окружение (двухфазный раннер-контур
+упразднён — вердикт серии читается прямо в сводке прогона). E2E-образы
+PgWorker собирает подготовка `PgWorker.E2ePrepare` — обязательна ДО прогона
+`PgWorker.E2eTests` (без неё — мгновенный пачка-фейл с подсказкой);
+E2E-образы Kafka/Valkey/S3 их проекты собирают сами once-per-process;
+`PGW_TEST_E2E_NOBUILD=1` — только для бисекта/отладки конкретного бинаря.
 
 Полные серии (по одной, не поверх друг друга и не поверх поднятого dev-стенда;
 правила телеметрии и поведения при падении — [docs/e2e-launch.md](e2e-launch.md),
@@ -520,29 +552,40 @@ runner» — это ШТАТНЫЙ релей; реальный сценарий
 #    (обязательный шаг; все команды тестов ниже — строго с --no-build)
 DOTNET_CLI_UI_LANGUAGE=en dotnet build src/PgWorker.slnx -c Release --nologo
 
-# PgWorker — полная E2E-серия (E2e*Scenarios; канон параллелизма N=5 контуров,
-# ~19–22 мин; время и потолок — src/tests/PgWorker.IntegrationTests/xunit.runner.json)
-DOTNET_CLI_UI_LANGUAGE=en PGW_TEST_DOCKER=1 dotnet test src/tests/PgWorker.IntegrationTests \
-    -c Release --no-build --filter FullyQualifiedName~PgWorker.IntegrationTests.E2e
+# PgWorker — статическая подготовка E2E ДО прогона PgWorker.E2eTests
+# (per-branch образы e2e-{ветка}; конкурентные подготовки сериализуются локом)
+DOTNET_CLI_UI_LANGUAGE=en dotnet run --project src/tests/PgWorker.E2ePrepare -c Release
+
+# PgWorker — юниты (docker не нужен)
+DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/PgWorker.UnitTests -c Release --no-build
+
+# PgWorker — интеграционные (docker; Skipped: 0)
+DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/PgWorker.IntegrationTests -c Release --no-build
 
 # PgWorker — docker-профиль драйверов (ExecDriver/DockerDriver/RestTls/RestRotation/…)
-DOTNET_CLI_UI_LANGUAGE=en PGW_TEST_DOCKER=1 dotnet test src/tests/PgWorker.IntegrationTests \
+DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/PgWorker.IntegrationTests \
     -c Release --no-build --filter FullyQualifiedName~PgWorker.IntegrationTests.Docker
 
-# KafkaWorker — E2E (lifecycle + host-kill takeover, окружение Kfw-E2E)
-DOTNET_CLI_UI_LANGUAGE=en PGW_TEST_DOCKER=1 dotnet test src/tests/KafkaWorker.IntegrationTests \
-    -c Release --no-build --filter FullyQualifiedName~KafkaWorker.IntegrationTests.E2e
+# PgWorker — полная E2E-серия (класс-фикстуры; параллельность:
+# maxParallelThreads=5 + Guard ≤ 3 живых контуров, env PGW_E2E_MAX_CONTOURS)
+DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/PgWorker.E2eTests -c Release --no-build
 
-# ValkeyWorker — E2E (lifecycle + host-kill takeover)
-DOTNET_CLI_UI_LANGUAGE=en PGW_TEST_DOCKER=1 dotnet test src/tests/ValkeyWorker.IntegrationTests \
-    -c Release --no-build --filter FullyQualifiedName~ValkeyWorker.IntegrationTests.E2e
+# KafkaWorker / ValkeyWorker / S3Worker — E2E (образы e2e-{ветка} собирают сами)
+DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/KafkaWorker.E2eTests -c Release --no-build
+DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/ValkeyWorker.E2eTests -c Release --no-build
+DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/S3Worker.E2eTests -c Release --no-build
+
+# KafkaWorker / ValkeyWorker / S3Worker — интеграционные (docker; Skipped: 0)
+DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/KafkaWorker.IntegrationTests -c Release --no-build
+DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/ValkeyWorker.IntegrationTests -c Release --no-build
+DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/S3Worker.IntegrationTests -c Release --no-build
 ```
 
 Кейс-маркер быстрой проверки (мерж-гейт задач воркеров, см. AGENTS.md):
 
 ```bash
-DOTNET_CLI_UI_LANGUAGE=en PGW_TEST_DOCKER=1 dotnet test src/PgWorker.slnx \
-    -c Release --filter FullyQualifiedName~Scale_AddEmptyShard
+DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/PgWorker.E2eTests \
+    -c Release --no-build --filter FullyQualifiedName~Scale_AddEmptyShard
 ```
 
 После жёстких срезов серий проверять осиротевшие сети движка

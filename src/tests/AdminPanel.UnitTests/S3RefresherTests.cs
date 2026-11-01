@@ -25,19 +25,26 @@ public class S3RefresherTests
 
         public IReadOnlyList<Kv> WorkerApiCertKv { get; set; } = [];
 
+        // u13/u14: данные новых префиксов s3-тика (work/leader/claims/instances).
+        public Dictionary<string, IReadOnlyList<Kv>> ExtraKv { get; } = [];
+
+        public List<string> FailPrefixes { get; } = [];
+
         public List<string> FailEndpoints { get; } = [];
 
         public Task<Result<IReadOnlyList<Kv>>> RangeAsync(string endpoint, string prefix, CancellationToken ct)
-            => Task.FromResult(FailEndpoints.Contains(endpoint)
+            => Task.FromResult(FailEndpoints.Contains(endpoint) || FailPrefixes.Contains(prefix)
                 ? Result<IReadOnlyList<Kv>>.Failed(new EtcdUnreachableException(endpoint))
-                : Result<IReadOnlyList<Kv>>.Success(prefix switch
-                {
-                    "/s3/clusters/" => ClustersKv,
-                    "/s3worker/rotations/" => RotationsKv,
-                    "/s3worker/api/" => WorkerApiKv,
-                    "/workers/api_tls/s3worker" => WorkerApiCertKv,
-                    _ => [],
-                }));
+                : Result<IReadOnlyList<Kv>>.Success(ExtraKv.TryGetValue(prefix, out var extra)
+                    ? extra
+                    : prefix switch
+                    {
+                        "/s3/clusters/" => ClustersKv,
+                        "/s3worker/rotations/" => RotationsKv,
+                        "/s3worker/api/" => WorkerApiKv,
+                        "/workers/api_tls/s3worker" => WorkerApiCertKv,
+                        _ => [],
+                    }));
 
         // Не используются s3-тиком — заглушки ради интерфейса.
         public Task<Result<EtcdStatusPayload>> StatusAsync(string endpoint, CancellationToken ct)
@@ -211,5 +218,56 @@ public class S3RefresherTests
         snapshot!.WorkerEndpoints.Should().BeEmpty();
         snapshot.Alerts.Should().Contain(a => a.Kind == "worker-api-unreachable"
             && a.Severity == AlertSeverity.Critical && a.Target == "s3worker");
+    }
+
+    // u13/u14: новые ключи s3-тика → WorkJournals/Coordination в снапшоте.
+    [Fact]
+    public async Task Refresh_NewObservabilityKeys_SnapshotCarriesFields()
+    {
+        // Arrange
+        var gateway = DemoGateway();
+        gateway.ExtraKv["/s3worker/work/"] =
+            [new Kv("/s3worker/work/store",
+                """{"op":"sync-probe","phase":"running","instance":"s3w-1","updated_unix":1761900000}""", 1)];
+        gateway.ExtraKv["/s3worker/leader"] =
+            [new Kv("/s3worker/leader", """{"instance":"s3w-1","since_unix":1761900000}""", 2)];
+        gateway.ExtraKv["/s3worker/claims/"] =
+            [new Kv("/s3worker/claims/store", """{"instance":"s3w-1"}""", 3)];
+        gateway.ExtraKv["/s3worker/instances/"] =
+            [new Kv("/s3worker/instances/s3w-1", """{"since_unix":1761900000}""", 4)];
+        var store = new S3SnapshotStore();
+        var refresher = New(gateway, store, endpoints: "http://etcd1:2379");
+
+        // Act
+        var result = await refresher.RefreshOnceAsync(TestContext.Current.CancellationToken);
+
+        // Assert
+        result.IsSuccess.Should().BeTrue();
+        var snapshot = store.Current!;
+        snapshot.WorkJournals.Should().ContainSingle().Which.Cluster.Should().Be("store");
+        snapshot.Coordination!.LeaderInstance.Should().Be("s3w-1");
+        snapshot.Coordination.Claims.Should().ContainSingle().Which.Cluster.Should().Be("store");
+        snapshot.Coordination.Instances.Should().ContainSingle().Which.InstanceId.Should().Be("s3w-1");
+    }
+
+    // u13/u14: транспортный провал нового range → отказ тика.
+    [Fact]
+    public async Task Refresh_NewRangeTransportFail_TickFails()
+    {
+        // Arrange — первый тик успешен
+        var gateway = DemoGateway();
+        var store = new S3SnapshotStore();
+        var refresher = New(gateway, store, endpoints: "http://etcd1:2379");
+        (await refresher.RefreshOnceAsync(TestContext.Current.CancellationToken)).IsSuccess.Should().BeTrue();
+        var first = store.Current!;
+
+        // Act
+        gateway.FailPrefixes.Add("/s3worker/claims/");
+        var second = await refresher.RefreshOnceAsync(TestContext.Current.CancellationToken);
+
+        // Assert
+        second.IsSuccess.Should().BeFalse();
+        store.Current!.EtcdReachable.Should().BeFalse();
+        store.Current.BuiltAtUtc.Should().Be(first.BuiltAtUtc);
     }
 }

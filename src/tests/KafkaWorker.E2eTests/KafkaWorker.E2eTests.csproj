@@ -1,0 +1,48 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <!-- Канон параллелизма (t24; прецедент PgWorker-тестов): единственный
+         источник потолка — xunit.runner.json (maxParallelThreads=5;
+         xunit.v3 читает конфиг ТОЛЬКО из output — копирование обязательно;
+         коллекции параллельны по умолчанию, внутри коллекции один поток). -->
+    <ItemGroup>
+        <None Update="xunit.runner.json" CopyToOutputDirectory="PreserveNewest"/>
+    </ItemGroup>
+
+    <ItemGroup>
+        <Using Include="FluentAssertions"/>
+        <Using Include="Xunit"/>
+    </ItemGroup>
+
+    <ItemGroup>
+        <PackageReference Include="coverlet.collector">
+            <PrivateAssets>all</PrivateAssets>
+            <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+        </PackageReference>
+        <PackageReference Include="FluentAssertions"/>
+        <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing"/>
+        <PackageReference Include="Microsoft.NET.Test.Sdk"/>
+        <PackageReference Include="Testcontainers"/>
+        <PackageReference Include="xunit.runner.visualstudio">
+            <PrivateAssets>all</PrivateAssets>
+            <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+        </PackageReference>
+        <PackageReference Include="xunit.v3"/>
+    </ItemGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\Shared.TestInfra\Shared.TestInfra.csproj"/>
+        <ProjectReference Include="..\..\KafkaWorker.Core\KafkaWorker.Core.csproj"/>
+        <ProjectReference Include="..\..\KafkaWorker.Etcd\KafkaWorker.Etcd.csproj"/>
+        <ProjectReference Include="..\..\KafkaWorker.Docker\KafkaWorker.Docker.csproj"/>
+        <ProjectReference Include="..\..\KafkaWorker.Provisioning\KafkaWorker.Provisioning.csproj"/>
+        <ProjectReference Include="..\..\KafkaWorker.App\KafkaWorker.App.csproj"/>
+    </ItemGroup>
+
+    <ItemGroup>
+        <Using Include="Shared.Core"/>
+        <Using Include="Shared.Docker"/>
+        <Using Include="Shared.Core.Planning"/>
+        <Using Include="Shared.Etcd.Coordination"/>
+    </ItemGroup>
+
+</Project>

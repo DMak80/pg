@@ -65,9 +65,11 @@ bash "$ROOT/deploy/tls/gen.sh"
 # имя volume — с префиксом compose-проекта deploy (как его создаёт compose).
 docker volume create deploy_pgw-api-tls >/dev/null
 # ca.key — выпуск REST-сертов нод (R16: бэкап пакета — runbook)
+# healthcheck.* упразднены (открытая грань /healthz, arch/14 §1.1): из volume
+# удаляются — наследие живых стендов чистится этим же прогоном (gen.sh чистит deploy/tls).
 docker run --rm \
   -v "$ROOT/deploy/tls:/src:ro" -v deploy_pgw-api-tls:/tls alpine:3.20 \
-  sh -c "cp /src/ca.pem /src/ca.key /src/pgserver.crt /src/pgserver.key /src/server.crt /src/server.key /src/healthcheck.crt /src/healthcheck.key /tls/"
+  sh -c "cp /src/ca.pem /src/ca.key /src/pgserver.crt /src/pgserver.key /src/server.crt /src/server.key /tls/ && rm -f /tls/healthcheck.crt /tls/healthcheck.key"
 
 # SdGenerator (t15): publish НА ХОСТЕ → compose build пакует только вывод
 # (канон E2E-образов; сборка не «тихая» — [PHASE] и тайминг).
@@ -93,10 +95,13 @@ echo ">>> [PHASE] publish PgWorker.NodeTools self-contained $NODE_RID ($(date +%
 dotnet publish "$ROOT/src/PgWorker.NodeTools/PgWorker.NodeTools.csproj" \
   -c Release -r "$NODE_RID" --self-contained -o "$ROOT/artifacts/node-tools" --nologo \
   || { echo "❌ NodeTools publish failed"; exit 1; }
-echo ">>> [PHASE] pgworker-node:dev build (WAL_PUBLISH_DIR=artifacts/node-wal, NODE_TOOLS_PUBLISH_DIR=artifacts/node-tools) ($(date +%H:%M:%S))"
+# DOORMAN_IMAGE — пин мульти-арх образа pg_doorman (arch/14 §2.1 R1; пулер
+# обязателен); ретаг канонического имени делает pull-images.sh из registry.
+echo ">>> [PHASE] pgworker-node:dev build (WAL_PUBLISH_DIR=artifacts/node-wal, NODE_TOOLS_PUBLISH_DIR=artifacts/node-tools, DOORMAN_IMAGE=ghcr.io/ozontech/pg_doorman:v3.11.0) ($(date +%H:%M:%S))"
 docker build -q -f "$ROOT/docker/node/Dockerfile" \
   --build-arg "WAL_PUBLISH_DIR=artifacts/node-wal" \
-  --build-arg "NODE_TOOLS_PUBLISH_DIR=artifacts/node-tools" -t pgworker-node:dev "$ROOT" \
+  --build-arg "NODE_TOOLS_PUBLISH_DIR=artifacts/node-tools" \
+  --build-arg "DOORMAN_IMAGE=ghcr.io/ozontech/pg_doorman:v3.11.0" -t pgworker-node:dev "$ROOT" \
   || { echo "❌ image pgworker-node:dev build failed"; exit 1; }
 echo "  image pgworker-node:dev ready (walreceiver + pgwnodetool inside)"
 
@@ -209,13 +214,14 @@ echo "  etcd contour ready (3/3 started)"
 #     владелец сети adminpanel-stand-net (выше); deploy-контур подключается
 #     к ней external (contour-override). Здесь — проверки живости (нужен
 #     собранный etcd-кворум выше).
-MTLS=(curl -fsS -m 3 --cacert "$ROOT/deploy/tls/ca.pem" --cert "$ROOT/deploy/tls/healthcheck.crt" --key "$ROOT/deploy/tls/healthcheck.key")
-for i in $(seq 1 60); do "${MTLS[@]}" https://localhost:${PGW_API_HOST_PORT:-8080}/healthz >/dev/null 2>&1 && break; sleep 1; done
-"${MTLS[@]}" https://localhost:${PGW_API_HOST_PORT:-8080}/healthz >/dev/null \
-  || { echo "❌ pgworker did not come alive within 60 s (https :${PGW_API_HOST_PORT:-8080}/healthz via mTLS; docker logs deploy-pgworker-1)"; exit 1; }
-for i in $(seq 1 60); do "${MTLS[@]}" https://localhost:${PGW_API_HOST_PORT2:-8083}/healthz >/dev/null 2>&1 && break; sleep 1; done
-"${MTLS[@]}" https://localhost:${PGW_API_HOST_PORT2:-8083}/healthz >/dev/null \
-  || { echo "❌ pgworker-2 did not come alive within 60 s (https :${PGW_API_HOST_PORT2:-8083}/healthz via mTLS; docker logs deploy-pgworker-2-1)"; exit 1; }
+# Проба открытой грани: https без клиентского серта (healthz воркеров).
+HEALTH=(curl -fsS -m 3 --cacert "$ROOT/deploy/tls/ca.pem")
+for i in $(seq 1 60); do "${HEALTH[@]}" https://localhost:${PGW_API_HOST_PORT:-8080}/healthz >/dev/null 2>&1 && break; sleep 1; done
+"${HEALTH[@]}" https://localhost:${PGW_API_HOST_PORT:-8080}/healthz >/dev/null \
+  || { echo "❌ pgworker did not come alive within 60 s (https :${PGW_API_HOST_PORT:-8080}/healthz without a client certificate; docker logs deploy-pgworker-1)"; exit 1; }
+for i in $(seq 1 60); do "${HEALTH[@]}" https://localhost:${PGW_API_HOST_PORT2:-8083}/healthz >/dev/null 2>&1 && break; sleep 1; done
+"${HEALTH[@]}" https://localhost:${PGW_API_HOST_PORT2:-8083}/healthz >/dev/null \
+  || { echo "❌ pgworker-2 did not come alive within 60 s (https :${PGW_API_HOST_PORT2:-8083}/healthz without a client certificate; docker logs deploy-pgworker-2-1)"; exit 1; }
 # t07: оба инстанса публикуют свой lease-ключ дискавери (InstanceId = GUID,
 # уникальный per контейнер) — двухинстансовый надзор доказан ключами.
 pgw_api_keys=0
@@ -226,7 +232,7 @@ for i in $(seq 1 30); do
 done
 [ "${pgw_api_keys:-0}" -ge 2 ] \
   || { echo "❌ /pgworker/api/ contains ${pgw_api_keys:-0} keys (<2) — second instance does not publish AdvertiseUrl/keepalive (docker logs deploy-pgworker-2-1)"; exit 1; }
-echo "  pgworker alive ×2 (:${PGW_API_HOST_PORT:-8080} + :${PGW_API_HOST_PORT2:-8083}/healthz mTLS; /pgworker/api/ keys: ${pgw_api_keys})"
+echo "  pgworker alive ×2 (:${PGW_API_HOST_PORT:-8080} + :${PGW_API_HOST_PORT2:-8083}/healthz https; /pgworker/api/ keys: ${pgw_api_keys})"
 
 # 7) kafkaworker жив ×2 (t07): по два lease-ключа /kafkaworker/api/ и
 #    /kafkaworker/instances/ (два инстанса = два ключа каждого вида).
@@ -256,15 +262,15 @@ done
   || { echo "❌ /valkeyworker/instances/ has fewer than 2 keys"; exit 1; }
 echo "  valkeyworker alive ×2 (heartbeat /valkeyworker/{api,instances}/*: ${vwk_keys} each)"
 
-# 7c) s3worker жив ×2 (arch/24): healthz по mTLS healthcheck-парой
-#     (общий TLS-пакет pgw-api-tls, server-серт с SAN s3worker*) +
+# 7c) s3worker жив ×2 (arch/24): healthz по https без клиентского серта
+#     (открытая грань; общий TLS-пакет pgw-api-tls, server-серт с SAN s3worker*) +
 #     дискавери /s3worker/api/ по ключам (по образцу pgworker/kafkaworker).
-for i in $(seq 1 60); do "${MTLS[@]}" https://localhost:${S3W_API_HOST_PORT:-8086}/healthz >/dev/null 2>&1 && break; sleep 1; done
-"${MTLS[@]}" https://localhost:${S3W_API_HOST_PORT:-8086}/healthz >/dev/null \
-  || { echo "❌ s3worker did not come alive within 60 s (https :${S3W_API_HOST_PORT:-8086}/healthz via mTLS; docker logs deploy-s3worker-1)"; exit 1; }
-for i in $(seq 1 60); do "${MTLS[@]}" https://localhost:${S3W_API_HOST_PORT2:-8089}/healthz >/dev/null 2>&1 && break; sleep 1; done
-"${MTLS[@]}" https://localhost:${S3W_API_HOST_PORT2:-8089}/healthz >/dev/null \
-  || { echo "❌ s3worker-2 did not come alive within 60 s (https :${S3W_API_HOST_PORT2:-8089}/healthz via mTLS; docker logs deploy-s3worker-2-1)"; exit 1; }
+for i in $(seq 1 60); do "${HEALTH[@]}" https://localhost:${S3W_API_HOST_PORT:-8086}/healthz >/dev/null 2>&1 && break; sleep 1; done
+"${HEALTH[@]}" https://localhost:${S3W_API_HOST_PORT:-8086}/healthz >/dev/null \
+  || { echo "❌ s3worker did not come alive within 60 s (https :${S3W_API_HOST_PORT:-8086}/healthz without a client certificate; docker logs deploy-s3worker-1)"; exit 1; }
+for i in $(seq 1 60); do "${HEALTH[@]}" https://localhost:${S3W_API_HOST_PORT2:-8089}/healthz >/dev/null 2>&1 && break; sleep 1; done
+"${HEALTH[@]}" https://localhost:${S3W_API_HOST_PORT2:-8089}/healthz >/dev/null \
+  || { echo "❌ s3worker-2 did not come alive within 60 s (https :${S3W_API_HOST_PORT2:-8089}/healthz without a client certificate; docker logs deploy-s3worker-2-1)"; exit 1; }
 s3w_keys=0
 for i in $(seq 1 60); do
   s3w_keys="$(ect get /s3worker/api/ --prefix --keys-only 2>/dev/null | grep -c . || true)"
@@ -273,7 +279,7 @@ for i in $(seq 1 60); do
 done
 [ "${s3w_keys:-0}" -ge 2 ] \
   || { echo "❌ /s3worker/api/ contains ${s3w_keys:-0} keys (<2; docker compose logs s3worker s3worker-2)"; exit 1; }
-echo "  s3worker alive ×2 (:${S3W_API_HOST_PORT:-8086} + :${S3W_API_HOST_PORT2:-8089}/healthz mTLS; /s3worker/api/ keys: ${s3w_keys})"
+echo "  s3worker alive ×2 (:${S3W_API_HOST_PORT:-8086} + :${S3W_API_HOST_PORT2:-8089}/healthz https; /s3worker/api/ keys: ${s3w_keys})"
 
 # 7d) etcdworker жив ×2 (arch/25): healthz по mTLS healthcheck-парой +
 #     дискавери /etcdworker/api/ по ключам (по образцу s3worker 7c).

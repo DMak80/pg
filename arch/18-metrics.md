@@ -14,8 +14,12 @@ Prometheus + Grafana + Alertmanager (профиль `metrics` dev-стенда, 
   .NET 10) + официальный `OpenTelemetry.Exporter.Prometheus.AspNetCore`
   (эндпоинт `/metrics`); имена/типы/лейблы — единый словарь §2.
 - **Экспозиция** — тот же Kestrel-порт, что `/healthz` (воркеры `:8080`):
-  `/metrics` не попадает под `X-Api-Key` (middleware защищает только `/api`) и
-  под cookie-авторизацию панели — доверенная закрытая docker-сеть.
+  `/metrics` и `/healthz` — открытая грань доверенной закрытой docker-сети
+  И хост-публикаций портов API docker-хоста (граница доверия грани —
+  периметр docker-хоста, а не только docker-сеть; HTTPS без клиентского
+  серта; mTLS у воркеров обязателен только на `/api`, arch/14 §1.1);
+  у панели `/metrics` — без cookie-авторизации
+  (guard — только `/api/*`).
 - **Метрики — пассивные наблюдатели**: инструменты пишут в Meter, экспорт —
   pull (scrape Prometheus); сбор метрик никогда не влияет на поведение
   воркеров/панели (никаких throw наружу, никакой блокировки циклов).
@@ -273,9 +277,16 @@ Prometheus-алерты группы `backups` (rules.yml; severity — зерк
 
 ## 3. Экспозиция и безопасность
 
-- Воркеры: `/metrics` на том же Kestrel `:8080`, что `/healthz`;
-  `ApiKeyMiddleware` защищает только `/api` — метрики открыты в доверенной
-  docker-сети (порт /healthz-канона, симметрия панели).
+- Воркеры: `/metrics` на том же Kestrel `:8080`, что `/healthz` —
+  открытая грань доверенной docker-сети И хост-публикаций портов API
+  docker-хоста (`localhost:{PORT}`; публикации нужны панели — AdvertiseUrl
+  `host.docker.internal` — и хостовым потребителям: чеки, скрейп): HTTPS
+  без клиентского серта (mTLS у воркеров обязателен только на `/api`,
+  arch/14 §1.1; порт /healthz-канона, симметрия панели). Граница доверия
+  грани — периметр docker-хоста, а не только docker-сеть; опциональное
+  сужение (bind `127.0.0.1` отдельным env-флагом; ломает
+  `host.docker.internal`-потребителей) — роадмап, каноном не
+  предписывается.
 - Панель: `/metrics` без cookie-авторизации (guard — только `/api/*`);
   бандл SPA секретов не содержит.
 - Формат — Prometheus text/OpenMetrics (content-negotiation экспортёра);
@@ -351,12 +362,18 @@ TCP-проба (не тяжёлый AdminClient); лежачая нода сто
 тот же `tls_config {ca_file: /tls/ca.pem}` (без клиентского серта —
 `verify_client` у REST нет; серт нод выпускает воркер из per-install CA —
 arch/14 §2.1; REST-скрейп нод — по TLS одного per-install CA, §5.4).
-Джобы воркеров — `scheme: https` + `tls_config {ca_file: /tls/ca.pem,
-cert_file: /tls/prometheus.crt, key_file: /tls/prometheus.key}` (/metrics
-обоих воркеров — за mTLS, arch/14 §1.1/arch/16 §1.1; клиентский серт
-скрейпера `prometheus.crt` — из той же per-install API-CA; контейнер
+Джобы воркеров — `scheme: https` + `tls_config {ca_file: /tls/ca.pem}`
+(`/metrics` воркеров — открытая https-грань без клиентского серта,
+arch/14 §1.1/arch/16 §1.1/arch/21 §1.1/arch/24 §1.1; контейнер
 прометеуса монтирует TLS-пакет стенда ro; сетевой адрес не меняет
-транспорт). Джоба `adminpanel` — http (панель
+транспорт). Открытая грань (`/healthz`, `/metrics`) доступна в доверенной
+docker-сети И через хост-публикации портов API docker-хоста
+(`localhost:{PORT}`); хост-публикации нужны панели (AdvertiseUrl
+`host.docker.internal`) и хостовым потребителям (чеки, скрейп); граница
+доверия грани — периметр docker-хоста, а не только docker-сеть.
+Опциональное сужение (bind `127.0.0.1` отдельным env-флагом; ломает
+`host.docker.internal`-потребителей) — роадмап, каноном не
+предписывается. Джоба `adminpanel` — http (панель
 без TLS на стенде). extra_hosts (`host.docker.internal`,
 `local`) из as-prometheus удалены — все таргеты прометея сетевые (единая
 стендовая сеть контура, §5.4); SAN серверного серта покрывает
@@ -410,7 +427,8 @@ Prometheus. Граница: Kafka/Valkey-ноды без HTTP metrics-эндпо
   portalloc, дефолт интервала `<=0` → 30 (фейк `IValkeyConnection`).
 - **Integration**: `WebApplicationFactory` — `/metrics` отвечает 200
   text-format, содержит канонические имена §2 (фиксирует фактические
-  экспортированные имена против словаря); `/metrics` не требует ApiKey; valkey — все 15 имён §2.6 при живом демо-кластере (live-WAF
+  экспортированные имена против словаря); `/metrics` — открытая грань,
+  отвечает без авторизации (§3); valkey — все 15 имён §2.6 при живом демо-кластере (live-WAF
   с реальным docker), живая/остановленная нода — LastSuccess стоит, тик не падает.
 - **Unit (file_sd-генератор §5.4)**: маппинг portalloc → file_sd-группы
   (лейблы cluster/shard/node, `targets = alias:8008`, деградационно

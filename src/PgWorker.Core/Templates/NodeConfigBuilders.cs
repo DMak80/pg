@@ -12,8 +12,12 @@ public sealed record ShardTopology(string Cluster, string Shard, string Scope,
 
 /// <summary>
 /// Секреты установки (Д7, spec §10): per-install из env PgWorker, в etcd не
-/// пишутся. Прокидываются в контейнер ноды; НИКОГДА не попадают в конфиги
-/// doorman/haproxy (текстовые файлы томов).
+/// пишутся. Прокидываются в контейнер ноды. SuPassword дополнительно входит
+/// в DOORMAN_CONFIG (auth_query.password пула pg_doorman,
+/// DoormanConfigBuilder): класс экспозиции НЕ расширяется — секрет уже в
+/// env того же контейнера (PGPASSWORD_SUPERUSER Spilo-env, тот же docker
+/// inspect); в файлы volume'ов секреты не попадают (конфиг живёт в env,
+/// файл — внутри контейнера).
 /// </summary>
 public sealed record InstallSecrets(string SuPassword, string StandbyPassword,
     string BucketAdminPassword, string MoverPassword,
@@ -249,33 +253,51 @@ public static class SpiloEnvBuilder
 }
 
 /// <summary>
-/// Конфиг pg_doorman ноды (arch/11 §4): ЕДИНСТВЕННЫЙ пул &lt;dbname&gt; (P14) с
-/// бэкендом 127.0.0.1:5432 этой ноды, transaction-режим (P13), бюджет
-/// серверных соединений — синхронизирован от рассчитанного PGTune
-/// max_connections (P15: serverConnections = max(10, max_connections − 5);
-/// 60 = 55 + 2 админ/mover + 3 reserved). Клиентский вход — :6432 c TLS
-/// (sslmode=require, P17 — требование на стороне клиентских DSN); SCRAM
-/// passthrough к PG. Финальная сверка полей с релизом doorman — при сборке
-/// образа (задача 25).
+/// Конфиг pg_doorman ноды (arch/11 §4; формат фактического pg_doorman
+/// v3.11.0 — YAML general/pools, файл /etc/pg_doorman/pg_doorman.yaml):
+/// ЕДИНСТВЕННЫЙ пул &lt;dbname&gt; (P14) с бэкендом 127.0.0.1:5432 этой ноды,
+/// transaction-режим (P13), бюджет серверных соединений — синхронизирован
+/// от рассчитанного PGTune max_connections (P15: serverConnections =
+/// max(10, max_connections − 5); 60 = 55 + 2 админ/mover + 3 reserved).
+/// Клиентский вход — :6432 c TLS (sslmode=require, P17 — серты генерирует
+/// entrypoint ноды). Допуск клиентов — per-pool auth_query (единственный
+/// работающий механизм v3.11.0: без объявленных пользователей пулер
+/// отклоняет каждого клиента): пулер верифицирует клиентский SCRAM по
+/// verifier'у из pg_shadow и переиспользует клиентское доказательство к
+/// бэкенду — пароли клиентов в конфиге не хранятся. Роль исполнения
+/// auth_query — существующий superuser postgres (per-install SuPassword;
+/// алфавит DSN-safe [A-Za-z0-9._-] по InstallSecretsGuard — вставка в
+/// YAML-строку в двойных кавычках безопасна). admin_username/admin_password —
+/// обязательные поля general фактического v3.11.0 (без них отказ парса,
+/// exit 78); админ-консоль пулера продуктом не потребляется — литералы
+/// детерминированы (конфиг обязан быть стабильным между reconcile'ами,
+/// иначе вечное пересоздание контейнеров) и границей секьюрити не являются.
 /// </summary>
 public static class DoormanConfigBuilder
 {
-    public static string Build(string dbname, int serverConnections) =>
+    public static string Build(string dbname, int serverConnections, string suPassword) =>
         $"""
         # pg_doorman: single pool {dbname} per node (P13/P14/P15/P17).
-        # Clients connect on :6432 with sslmode=require (P17).
-
-        [pg_doorman]
-        listen = "0.0.0.0:6432"
-        pool_mode = "transaction"
-        max_client_connections = 1000
-        max_db_connections = {serverConnections}
-        default_pool_size = {serverConnections}
-        tls_mode = "require"
-
-        [databases]
-        # P14: dbname = cluster name, buckets are schemas; one pool for the whole node DB.
-        {dbname} = host=127.0.0.1 port=5432 dbname={dbname}
+        # Clients connect on :6432 with sslmode=require (P17); admission — auth_query.
+        general:
+          host: "0.0.0.0"
+          port: 6432
+          admin_username: "pgwd_admin"
+          admin_password: "pgwd_admin_password"
+          tls_mode: "require"
+          tls_certificate: "/etc/pg_doorman/tls.crt"
+          tls_private_key: "/etc/pg_doorman/tls.key"
+        pools:
+          "{dbname}":
+            server_host: "127.0.0.1"
+            server_port: 5432
+            server_database: "{dbname}"
+            pool_mode: "transaction"
+            max_db_connections: {serverConnections}
+            auth_query:
+              query: "SELECT passwd FROM pg_shadow WHERE usename = $1"
+              user: "postgres"
+              password: "{suPassword}"
         """;
 
     /// <summary>
@@ -292,55 +314,5 @@ public static class DoormanConfigBuilder
                 "pgtune: calculated tuning does not contain a numeric max_connections " +
                 "(the parameter is always emitted — §4.0 of the algorithm spec)");
         return Math.Max(10, maxConnections - 5);
-    }
-}
-
-/// <summary>
-/// Конфиг HAProxy ноды (arch/11 §4): только write-фронтенд :5432 — вход
-/// репликационного трафика переездов (P2). Бэкенды — Patroni-REST всех нод
-/// шарда (httpchk GET /primary); read-фронтенд и stats не нужны (арх/14 §2.1).
-/// </summary>
-public static class HaproxyConfigBuilder
-{
-    public static string Build(ShardTopology topology)
-    {
-        var sb = new StringBuilder();
-        sb.AppendLine("""
-            # haproxy: write-frontend :5432 to the current shard leader (P2).
-            # Health-check — Patroni REST /primary of each node (port patroni).
-
-            global
-                log stdout format raw local0
-                maxconn 4096
-
-            defaults
-                log     global
-                mode    tcp
-                option  tcplog
-                timeout connect 5s
-                timeout client  1m
-                timeout server  1m
-                retries 2
-
-            frontend ft_pg_write
-                bind *:5432
-                default_backend bk_pg_master
-
-            backend bk_pg_master
-                balance first
-                option httpchk GET /primary
-                http-check expect status 200
-                default-server inter 3s fall 3 rise 2
-            """);
-
-        // Бэкенды: все ноды шарда — host:pgPort с check-port Patroni.
-        foreach (var node in topology.Nodes.OrderBy(n => n.Key))
-        {
-            var addr = node.Value;
-            sb.AppendLine(
-                $"    server {node.Key} {addr.Host}:{addr.Ports.Pg} check port {addr.Ports.Patroni}");
-        }
-
-        return sb.ToString();
     }
 }
