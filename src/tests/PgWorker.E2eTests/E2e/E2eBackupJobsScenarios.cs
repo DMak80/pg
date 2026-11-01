@@ -241,9 +241,15 @@ public sealed class E2eBackupJobsScenarios(E2eBackupJobsScenariosFx Ctx) : IClas
         }, TimeSpan.FromSeconds(60), ct);
         connected.Should().BeTrue("backup_exec keeps working with the untouched password through the window");
 
-        // Assert 5 — wal-цепочка пережила окно (система бэкапов жива)
-        var wal = await GetOrNullAsync($"/pgworker/backups/{cluster}/shard1/wal");
-        wal.Should().NotBeNull("the wal chain survives the rotation window");
+        // Assert 5 — wal-цепочка пережила окно: после ротации G2 переснимает
+        // полный (§3.5 сброс цепочки — wal-ключ легитимно исчезает до пересъёма)
+        // — ждём ВОЗВРАТА ACTIVE, а не мгновенного наличия.
+        var walBack = await E2eFixture.WaitForAsync(async () =>
+        {
+            var walKv = await GetOrNullAsync($"/pgworker/backups/{cluster}/shard1/wal");
+            return walKv is not null && walKv.Value.Contains("ACTIVE");
+        }, TimeSpan.FromSeconds(90), ct);
+        walBack.Should().BeTrue("the wal chain is recreated after the rotation window (ACTIVE)");
     }
 
     // Воркер с включённой подсистемой бэкапов: пул — policy.s3 (etcd), bucket и
