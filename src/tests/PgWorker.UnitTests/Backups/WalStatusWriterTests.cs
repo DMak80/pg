@@ -377,6 +377,16 @@ public class WalStatusWriterTests
         public Task<Result<IReadOnlyList<EtcdMember>>> MemberListAsync(string endpoint, CancellationToken ct)
             => inner.MemberListAsync(endpoint, ct);
 
+        // Member-API этими тестами не используется — заглушки интерфейса.
+        public Task<Result<EtcdMember>> MemberAddAsync(string endpoint, IReadOnlyList<string> peerUrls, bool isLearner, CancellationToken ct)
+            => throw new NotSupportedException("member-API не поддерживается этим фейком");
+
+        public Task<Result> MemberRemoveAsync(string endpoint, ulong memberId, CancellationToken ct)
+            => throw new NotSupportedException("member-API не поддерживается этим фейком");
+
+        public Task<Result> MemberPromoteAsync(string endpoint, ulong memberId, CancellationToken ct)
+            => throw new NotSupportedException("member-API не поддерживается этим фейком");
+
         public Task<Result<IReadOnlyList<EtcdAlarm>>> AlarmAsync(string endpoint, CancellationToken ct)
             => inner.AlarmAsync(endpoint, ct);
 

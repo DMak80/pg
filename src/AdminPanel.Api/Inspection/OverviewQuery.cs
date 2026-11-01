@@ -42,7 +42,7 @@ public sealed record OverviewBackupsDto(
 
 public sealed record OverviewBackupsHealthDto(bool ApiOk, bool LiveOk, bool? ClusterOk);
 
-public sealed record OverviewEtcdSnapshotsDto(bool Enabled, string? State);
+public sealed record OverviewEtcdSnapshotsDto(string? State);
 
 // Надёжность (u06): перенос TS-агрегации ReliabilityCard (D6) — worst RPO по
 // Active-кластерам, mode=full/off, самый недавний закрытый failover.
@@ -166,7 +166,7 @@ public static class OverviewMapper
             storage?.State.ToString().ToUpperInvariant(),
             storage?.UsedBytes ?? 0,
             storage?.QuotaBytes,
-            export is null ? null : new OverviewEtcdSnapshotsDto(export.Enabled, export.State));
+            export is null ? null : new OverviewEtcdSnapshotsDto(export.State));
     }
 
     // Надёжность (u06): перенос TS ReliabilityCard 1:1 (D6) — только Active-

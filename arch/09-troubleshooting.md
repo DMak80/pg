@@ -136,7 +136,9 @@ etcdutl snapshot restore /backup/etcd.snap --data-dir=/data/etcd
 Если бэкапа etcd нет — Patroni можно «объяснить», что кластер уже инициализирован:
 см. процедуру `patroni reinit` для каждой ноды с `--force` на свежем DCS.
 
-> Поэтому **бэкап etcd** (`etcdctl snapshot save`) — обязателен, хотя бы раз в сутки; при `Snapshots:Export:Enabled=true` выгрузка уходит в S3 автоматически каждым слепком.
+> Поэтому **бэкап etcd** обязателен: EtcdWorker снимает слепки и выгружает их
+> в S3 (etcd-backup кластер) автоматически — плановый интервал + детекция
+> изменений ([25-etcdworker.md](25-etcdworker.md) §4).
 
 ---
 

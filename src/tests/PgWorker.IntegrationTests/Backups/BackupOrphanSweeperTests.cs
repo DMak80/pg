@@ -488,6 +488,16 @@ public class BackupOrphanSweeperTests(OwnedEtcdFixture fixture) : IClassFixture<
             => pending[prefix] = new Injection(skip,
                 kvs.Select(kv => new Kv(kv.Key, kv.Value, 1)).ToList());
 
+        // Member-API — прозрачный делегат внутреннему шлюзу.
+        public Task<Result<EtcdMember>> MemberAddAsync(string endpoint, IReadOnlyList<string> peerUrls, bool isLearner, CancellationToken ct)
+            => inner.MemberAddAsync(endpoint, peerUrls, isLearner, ct);
+
+        public Task<Result> MemberRemoveAsync(string endpoint, ulong memberId, CancellationToken ct)
+            => inner.MemberRemoveAsync(endpoint, memberId, ct);
+
+        public Task<Result> MemberPromoteAsync(string endpoint, ulong memberId, CancellationToken ct)
+            => inner.MemberPromoteAsync(endpoint, memberId, ct);
+
         public async Task<Result<IReadOnlyList<Kv>>> RangeAsync(
             string endpoint, string prefix, CancellationToken ct)
         {

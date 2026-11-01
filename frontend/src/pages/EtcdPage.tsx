@@ -1,27 +1,45 @@
-// Панель etcd: endpoints (+метка «активный»), members/лидер, alarms, lastRefresh,
-// баннер подозрения кворума (t08 spec §5).
-import { useQuery } from '@tanstack/react-query';
+// Панель etcd: endpoints (+метка «активный»), блок «Состав» контура
+// (декларация EtcdWorker, managed-узлы, форма «Поддерживать N узлов» — 02 §9.13),
+// members/лидер (+пометки managed/external), карточка DR-слепков, alarms,
+// lastRefresh, баннер подозрения кворума (t08 spec §5).
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Alert,
   Badge,
+  Button,
   Card,
+  Group,
+  Modal,
+  NumberInput,
   Stack,
   Table,
   Text,
   Title,
   Tooltip,
 } from '@mantine/core';
-import type { EtcdEndpointDto, EtcdStatusDto } from '../api/dto';
-import { fetchEtcdStatus, queryKeys } from '../api/queries';
+import { useState } from 'react';
+import type { EtcdDomainDto, EtcdEndpointDto, EtcdStatusDto } from '../api/dto';
+import { fetchEtcdDomain, fetchEtcdStatus, putEtcdConfig, queryKeys } from '../api/queries';
+import { ApiError } from '../api/client';
 import { ErrorSection, LoadingSection } from '../components/LoadState';
 import { usePollingIntervalMs } from '../polling/PollingContext';
-import { formatBytes, formatIso } from '../utils/format';
+import { formatBytes, formatIso, formatUnix, formatUnixAge } from '../utils/format';
+
+// Managed-члены контура — префикс имени etcdw (arch/25 §2; arch/03 §2).
+function isManagedMember(name: string | null): boolean {
+  return name !== null && name.startsWith('etcdw');
+}
 
 export function EtcdPage() {
   const intervalMs = usePollingIntervalMs();
   const query = useQuery({
     queryKey: queryKeys.etcdStatus,
     queryFn: fetchEtcdStatus,
+    refetchInterval: intervalMs,
+  });
+  const domainQuery = useQuery({
+    queryKey: queryKeys.etcdDomain,
+    queryFn: fetchEtcdDomain,
     refetchInterval: intervalMs,
   });
 
@@ -36,6 +54,7 @@ export function EtcdPage() {
     );
 
   const data = query.data;
+  const domain = domainQuery.data;
   return (
     <Stack gap="md">
       <Title order={2}>etcd</Title>
@@ -45,7 +64,9 @@ export function EtcdPage() {
         </Alert>
       ) : null}
       <EndpointsCard data={data} />
+      <ContourCard domain={domain} membersTotal={data.members.length} />
       <MembersCard data={data} />
+      <DrSnapshotsCard domain={domain} />
       <AlarmsCard data={data} />
       <Text c="dimmed" size="sm">Updated: {formatIso(data.lastRefreshUtc)}</Text>
     </Stack>
@@ -107,7 +128,149 @@ function EndpointRow({ endpoint }: { endpoint: EtcdEndpointDto }) {
   );
 }
 
-// Члены кластера etcd: id, имена, URL; лидер — меткой (t08 spec §5).
+// Блок «Состав» контура (arch/03 §2): заявлено N управляемых узлов или
+// «только наблюдение»; managed-узлы /etcd/nodes/<k>/; форма «Поддерживать N
+// узлов» — мутация через API воркера (PUT /api/etcd/config, 02 §9.13).
+function ContourCard({ domain, membersTotal }: { domain: EtcdDomainDto | undefined; membersTotal: number }) {
+  const [opened, setOpened] = useState(false);
+  return (
+    <Card withBorder padding="md" radius="md">
+      <Group justify="space-between" mb="xs">
+        <Text fw={600}>Contour membership</Text>
+        <Button size="xs" variant="light" onClick={() => setOpened(true)}>Maintain N nodes</Button>
+      </Group>
+      {domain === undefined ? (
+        <Text c="dimmed" size="sm">Loading…</Text>
+      ) : (
+        <Stack gap="xs">
+          <Group gap="xs">
+            <Text size="sm">Declared:</Text>
+            {domain.declaredNodes === null ? (
+              <Badge color="gray" variant="light">observation only (no /etcd/config)</Badge>
+            ) : (
+              <Badge color="blue" variant="light">{domain.declaredNodes} managed nodes</Badge>
+            )}
+            <Text size="sm" c="dimmed">actual members: {membersTotal}</Text>
+          </Group>
+          {domain.nodes.length === 0 ? (
+            <Text c="dimmed" size="sm">No managed nodes</Text>
+          ) : (
+            <Table.ScrollContainer minWidth={600}>
+              <Table highlightOnHover>
+                <Table.Thead>
+                  <Table.Tr>
+                    <Table.Th>K</Table.Th>
+                    <Table.Th>State</Table.Th>
+                    <Table.Th>Placed on</Table.Th>
+                  </Table.Tr>
+                </Table.Thead>
+                <Table.Tbody>
+                  {domain.nodes.map((n) => (
+                    <Table.Tr key={n.k}>
+                      <Table.Td ff="monospace">etcdw-node-{n.k}</Table.Td>
+                      <Table.Td><NodeStateBadge state={n.state} /></Table.Td>
+                      <Table.Td>{n.placedOn ?? '—'}</Table.Td>
+                    </Table.Tr>
+                  ))}
+                </Table.Tbody>
+              </Table>
+            </Table.ScrollContainer>
+          )}
+          <Text size="xs" c="dimmed">
+            Доводка состава асинхронна: EtcdWorker добавляет (learner → promote) / выводит
+            узлы по одному шагу за тик — прогресс виден по state выше.
+          </Text>
+        </Stack>
+      )}
+      <MaintainNodesModal opened={opened} onClose={() => setOpened(false)} domain={domain} />
+    </Card>
+  );
+}
+
+// Бейдж состояния managed-узла (NOT_INITIALIZED|PROVISIONING|RUNNING|UNREACHABLE|REMOVING).
+function NodeStateBadge({ state }: { state: string | null }) {
+  const color = state === 'RUNNING'
+    ? 'teal'
+    : state === 'PROVISIONING'
+      ? 'yellow'
+      : state === 'UNREACHABLE'
+        ? 'red'
+        : state === 'REMOVING'
+          ? 'orange'
+          : 'gray';
+  return <Badge color={color} variant="light">{state ?? '—'}</Badge>;
+}
+
+// Модал «Поддерживать N узлов» (02 §9.13): NumberInput 0..7, двойной клик
+// защищён (isPending); текст ошибки (400/409/503) — из ProblemDetails как есть.
+function MaintainNodesModal({
+  opened,
+  onClose,
+  domain,
+}: {
+  opened: boolean;
+  onClose: () => void;
+  domain: EtcdDomainDto | undefined;
+}) {
+  const queryClient = useQueryClient();
+  const [nodes, setNodes] = useState<number>(0);
+  const [lastOpenedDomain, setLastOpenedDomain] = useState<EtcdDomainDto | undefined>(undefined);
+  // При каждом открытии — стартовое значение из текущей декларации.
+  if (opened && lastOpenedDomain !== domain) {
+    setLastOpenedDomain(domain);
+    setNodes(domain?.declaredNodes ?? 0);
+  }
+  const mutation = useMutation({
+    mutationFn: () => putEtcdConfig(nodes),
+    onSuccess: async () => {
+      onClose();
+      await queryClient.invalidateQueries({ queryKey: queryKeys.etcdDomain });
+    },
+  });
+  const invalid = !Number.isInteger(nodes) || nodes < 0 || nodes > 7;
+  const serverError = mutation.error instanceof ApiError ? mutation.error : null;
+
+  return (
+    <Modal opened={opened} onClose={onClose} title="Maintain N nodes" centered>
+      <Stack gap="sm">
+        <Text size="sm">
+          Декларация замещается целиком: EtcdWorker доведёт состав контура до{' '}
+          <b>{Number.isInteger(nodes) ? nodes : '?'}</b> managed-узлов (кворум-гвард:
+          итоговое число членов ≥ 3).
+        </Text>
+        <NumberInput
+          value={nodes}
+          onChange={(v) => setNodes(typeof v === 'number' ? v : 0)}
+          min={0}
+          max={7}
+          step={1}
+          label="Managed nodes (0..7)"
+        />
+        {invalid ? (
+          <Text c="red" size="sm">nodes must be an integer in 0..7</Text>
+        ) : null}
+        {serverError !== null ? (
+          <Alert color="red" title={`HTTP ${serverError.status}`}>
+            {serverError.detail ?? serverError.title ?? serverError.message}
+          </Alert>
+        ) : null}
+        <Group justify="flex-end">
+          <Button variant="default" onClick={onClose}>Cancel</Button>
+          <Button
+            disabled={invalid}
+            loading={mutation.isPending}
+            onClick={() => void mutation.mutate()}
+          >
+            Apply
+          </Button>
+        </Group>
+      </Stack>
+    </Modal>
+  );
+}
+
+// Члены кластера etcd: id, имена, URL; лидер — меткой; managed/external —
+// по префиксу имени etcdw (arch/25 §2, arch/03 §2).
 function MembersCard({ data }: { data: EtcdStatusDto }) {
   return (
     <Card withBorder padding="md" radius="md">
@@ -134,13 +297,62 @@ function MembersCard({ data }: { data: EtcdStatusDto }) {
                   <Table.Td ff="monospace">{m.peerUrls.length === 0 ? '—' : m.peerUrls.join(', ')}</Table.Td>
                   <Table.Td ff="monospace">{m.clientUrls.length === 0 ? '—' : m.clientUrls.join(', ')}</Table.Td>
                   <Table.Td>
-                    {m.isLeader ? <Badge color="violet" variant="light">leader</Badge> : null}
+                    <Group gap={4}>
+                      {m.isLeader ? <Badge color="violet" variant="light">leader</Badge> : null}
+                      {m.name !== null ? (
+                        <Badge color={isManagedMember(m.name) ? 'blue' : 'gray'} variant="light">
+                          {isManagedMember(m.name) ? 'managed' : 'external'}
+                        </Badge>
+                      ) : null}
+                    </Group>
                   </Table.Td>
                 </Table.Tr>
               ))}
             </Table.Tbody>
           </Table>
         </Table.ScrollContainer>
+      )}
+    </Card>
+  );
+}
+
+// Карточка «DR-слепки» (arch/03 §2): статус выгрузки EtcdWorker
+// (/etcdworker/snapshots): состояние, возраст, sha-префикс, размер, ошибка.
+function DrSnapshotsCard({ domain }: { domain: EtcdDomainDto | undefined }) {
+  const snap = domain?.snapshots ?? null;
+  return (
+    <Card withBorder padding="md" radius="md" w={420}>
+      <Group justify="space-between" mb="xs">
+        <Text fw={600}>DR snapshots</Text>
+        {snap === null ? (
+          <Badge color="gray" variant="light">no key</Badge>
+        ) : (
+          <Badge color={snap.state === 'OK' ? 'green' : 'red'} variant="light">{snap.state ?? '?'}</Badge>
+        )}
+      </Group>
+      {snap === null ? (
+        <Text c="dimmed" size="sm">
+          No /etcdworker/snapshots key — the worker has not uploaded a snapshot yet
+          (check the etcd-backup S3 cluster and EtcdWorker logs)
+        </Text>
+      ) : (
+        <Stack gap="xs">
+          <Text size="sm">
+            Last upload:{' '}
+            {snap.lastUploadedUnix === null
+              ? '—'
+              : `${formatUnix(snap.lastUploadedUnix)} (${formatUnixAge(snap.lastUploadedUnix)} ago)`}
+          </Text>
+          <Text size="sm" c="dimmed" ff="monospace">
+            sha256: {snap.lastSha256 === null ? '—' : snap.lastSha256.slice(0, 12)}
+          </Text>
+          <Text size="sm" c="dimmed">
+            size: {snap.sizeBytes === null ? '—' : formatBytes(snap.sizeBytes)}
+          </Text>
+          {snap.error !== null ? (
+            <Text size="sm" c="red">{snap.error}</Text>
+          ) : null}
+        </Stack>
       )}
     </Card>
   );

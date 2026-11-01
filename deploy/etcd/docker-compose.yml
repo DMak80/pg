@@ -1,37 +1,50 @@
-# Узел HA-контура контроль-плейна воркер-инсталляции (t09, arch/04 §8).
-# ПОДНИМАЕТСЯ ОПЕРАТОРОМ на 3 РАЗНЫХ docker-хостах (анти-аффинити):
-#   sudo mkdir -p /opt/etcd && cd /opt/etcd
-#   # скопировать сюда docker-compose.yml + etcd.env (из etcd.env.example,
-#   # ОТРЕДАКТИРОВАТЬ NODE_NAME/NODE_IP под узел)
-#   docker compose --env-file etcd.env up -d   # первый старт — все 3 узла в пределах election-timeout
-# Проверка контура и перевод INITIAL_CLUSTER_STATE=existing — arch/04 §4/§5/§8.
+# Seed-узел etcd-контура контроль-плейна воркер-инсталляции (arch/04 §8 п.5,
+# arch/25 §1): ПОДНИМАЕТСЯ ОПЕРАТОРОМ ОДИН раз для бутстрапа контура; состав
+# до целевого доводит EtcdWorker (PUT /api/etcd/config nodes=N), после чего
+# seed рекомендуется вывести (runbook, arch/04 §8 п.4).
+#   docker network create etcdw-net            # перед первым стартом
+#   sudo mkdir -p /opt/etcd-seed && cd /opt/etcd-seed
+#   # скопировать docker-compose.yml + etcd.env (из etcd.env.example)
+#   docker compose --env-file etcd.env up -d
+# Адресация контура — ТОЛЬКО имена узлов в общей сети etcdw-net (arch/25 §2):
+# peer managed-узлов http://etcdw-node-<k>:2380, client host-порты из
+# PortRange EtcdWorker. Мультихост — Swarm (arch/04 §8 п.5, runbook).
 # ВАЖНО: env_file передаёт переменные ТОЛЬКО внутрь контейнера; интерполяция
-# ${…} в этом YAML (image/volumes/command) идёт из --env-file — поэтому запуск
-# всегда с --env-file etcd.env (без него up упадёт на пустом image).
+# ${…} в этом YAML (image/volumes/command) идёт из --env-file — запуск всегда
+# `docker compose --env-file etcd.env up -d`.
 services:
-  etcd:
+  etcd-seed:
     image: ${ETCD_IMAGE}
-    container_name: etcd
+    container_name: ${NODE_NAME}
     restart: unless-stopped
     env_file: etcd.env
-    network_mode: host          # peer/client работают «как есть» на IP хоста (arch/04 §3)
+    networks: [etcdw-net]        # общая сеть контура (external, arch/25 §2)
     logging:
       driver: json-file
       options: { max-size: "10m", max-file: "3" }
     volumes:
-      - ${DATA_DIR}:/data
+      - ${DATA_DIR}:/etcd-data
+    healthcheck:
+      test: ["CMD", "etcdctl", "--endpoints=http://localhost:2379", "endpoint", "health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     command:
       - /usr/local/bin/etcd
       - --name=${NODE_NAME}
-      - --data-dir=/data
+      - --data-dir=/etcd-data
       - --listen-peer-urls=http://0.0.0.0:2380
       - --listen-client-urls=http://0.0.0.0:2379
-      - --initial-advertise-peer-urls=http://${NODE_IP}:2380
-      - --advertise-client-urls=http://${NODE_IP}:2379
-      - --initial-cluster=${PEERS}
+      - --initial-advertise-peer-urls=http://${NODE_NAME}:2380
+      - --advertise-client-urls=http://${NODE_NAME}:2379
+      - --initial-cluster=${NODE_NAME}=http://${NODE_NAME}:2380
       - --initial-cluster-token=${CLUSTER_TOKEN}
-      - --initial-cluster-state=${INITIAL_CLUSTER_STATE}
+      - --initial-cluster-state=new
       - --heartbeat-interval=250
       - --election-timeout=2000
       - --auto-compaction-retention=1
       - --quota-backend-bytes=8589934592   # 8 ГБ (arch/04 §3)
+networks:
+  etcdw-net:
+    external: true

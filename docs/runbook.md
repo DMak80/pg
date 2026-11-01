@@ -279,36 +279,43 @@ Go-1.24-клиентами с ошибкой `x509: certificate is not standards
 | `prom/alertmanager:v0.28.1` | dev-стенд (метрики) |
 | `prom/prometheus:v3.14.0` | dev-стенд (метрики) |
 | `python:3.12-alpine` | сайдкар эмулятора Patroni (dev-stand) |
-| `quay.io/coreos/etcd:v3.5.21` | etcd-контур: стенд ×3 (HA), deploy/etcd ×3 (HA, по узлу на хост), E2E/интеграция-фикстуры (×5) |
+| `quay.io/coreos/etcd:v3.5.21` | etcd-контур: стенд ×3 (HA, external), deploy/etcd ×1 (seed; состав доводит EtcdWorker), E2E/интеграция-фикстуры (×5) |
 
 При смене версии образа в коде/компоузе — обновить строку в `images.txt` и
 перемазеркалировать (старую версию из registry можно удалить — см. «Удаление
 образа» в инструкции registry).
 
-## HA-etcd контур контроль-плейна
+## HA-etcd контур контроль-плейна (имена/сеть — arch/25)
 
-Канон — `arch/04-deploy-etcd.md` §8 (два применения одного рецепта; параметры,
+Канон — `arch/04-deploy-etcd.md` §8 (адресация по именам узлов в общей сети,
+бутстрап seed-узлом, состав доводит EtcdWorker — arch/25; параметры,
 advertised-правила потребителей, кворум-семантика, чек-лист). Кратко:
 
-- **Подъём (прод)**: скопировать `deploy/etcd/{docker-compose.yml,etcd.env}` на
-  3 РАЗНЫХ docker-хоста; в `etcd.env` каждого — свой `NODE_NAME/NODE_IP`
-  (`PEERS`/`CLUSTER_TOKEN` одинаковые; образ — `192.168.0.1:5000/quay.io/coreos/etcd:v3.5.21`).
-  Первый старт: `INITIAL_CLUSTER_STATE=new` на всех трёх,
-  `docker compose --env-file etcd.env up -d` (переменные узла интерполируются в
-  YAML из env-файла) в пределах election-timeout друг от друга; после сбора
-  кворума перевести в `existing` на всех узлах (arch/04 §5). Воркеры/панель
-  получают список `*_ETCD_ENDPOINT_0..2` / `AdminPanel__Etcd__Endpoints__0..2`.
-- **Стендовое зеркало**: дев-стенд всегда поднимает тот же 3-узловой контур,
-  что рецепт `deploy/etcd` (`as-etcd-1/2/3`, публикации 2379/2381/2383,
-  env `ETCD{1,2,3}_HOST_PORT`).
+- **Подъём (прод)**: `docker network create etcdw-net` (если нет) →
+  `deploy/etcd` — рецепт ОДНОГО seed-узла: в `etcd.env` — `NODE_NAME` (имя
+  узла в сети, peer `http://<NODE_NAME>:2380`), образ
+  `192.168.0.1:5000/quay.io/coreos/etcd:v3.5.21`;
+  `docker compose --env-file etcd.env up -d` (контур 1/1) → воркеры/панель
+  получают endpoints (`*_ETCD_ENDPOINT_0..2`,
+  `AdminPanel__Etcd__Endpoints__0..2`; на старте — адрес seed) → заявить
+  состав `PUT /api/etcd/config {"nodes":N}` (панель «etcd» → форма
+  «Поддерживать N узлов») → EtcdWorker доводит состав (learner + promote;
+  мультихост — Swarm: узлы разносятся по swarm-нодам) → вывести seed
+  (member remove + `docker compose down`) — контур полностью managed.
+- **Стендовое зеркало**: дев-стенд поднимает 3-узловой контур внешними
+  compose-узлами (`as-etcd-1/2/3`, peer по именам compose-сети, публикации
+  2379/2381/2383, env `ETCD{1,2,3}_HOST_PORT`); EtcdWorker стенда —
+  наблюдение (декларация не ставится).
 - **Чеки**: стендовый `dev-stand/adminpanel/checks/43-etcd-ha.sh` (member list
   3 started → stop узла: запись/healthz/master-ключ живы → start → 3/3);
-  прод-чек-лист — arch/04 §8 п.5 (`endpoint health --cluster`, панель
-  `/api/etcd/status` = 3 члена/единый leader).
-- **Потеря узла/кворума**: 1 узел — не-событие (кворум 2/3); 2 узла —
-  контроль-плейн заморожен, датаплейн живёт сам, восстановление — arch/09 §4;
-  замена узла навсегда — `member remove` + `member add` + data-dir заново
-  (arch/04 §8 п.4).
+  прод-чек-лист — arch/04 §8 п.6 (member list — все peer-URL имена;
+  `endpoint health --cluster`; панель `/api/etcd/status` = N членов/единый
+  leader).
+- **Потеря узла/кворума**: 1 узел — не-событие (кворум жив); большинство
+  недоступно — контроль-плейн заморожен, датаплейн живёт сам, восстановление
+  — arch/09 §4; managed-узел навсегда — авто-замена EtcdWorker
+  (member remove + learner + promote, arch/25 §3.1), seed/внешний —
+  `member remove` руками (peer-URL нового — имя в той же сети контура).
 
 ## Управление сертом API воркера из панели
 
@@ -423,10 +430,13 @@ CaRotator, arch/21 §5 K) по заявке `/valkeyworker/ca_rotations/<C>` —
 ## Восстановление etcd из S3-выгрузки
 
 Снапшоты etcd (контроль-плейн: декларации кластеров, маршрутизация, секреты,
-клэймы, portalloc) уходят в S3 каждым снятием при
-`PGW_SNAPSHOTS_EXPORT_ENABLED=true` (deploy/.env): bucket бэкапов, префикс
-`etcd/`, пары `snapshot-<id>.db` + `snapshot-<id>.meta.json` (sha256/размер/
-ревизия/instance). Потеря docker-хоста вместе с etcd — восстановимая авария.
+клэймы, portalloc) снимает и выгружает EtcdWorker (arch/25 §4) в
+фиксированный bucket `etcd-backups` на нодах etcd-backup S3-кластера
+(признак `etcd_backup=true` в `/s3/clusters/`, arch/23 §2; bucket создаёт
+S3Worker — arch/23 §5): префикс `etcd/`, пары `snapshot-<id>.db` +
+`snapshot-<id>.meta.json` (sha256/размер/ревизия/instance), каденс — плановый
+интервал + детекция изменений. Потеря docker-хоста вместе с etcd —
+восстановимая авария.
 
 1. **Диагностика**: подтвердить наличие выгрузок —
    `mc ls --recursive <alias>/<bucket>/etcd/` — выбрать новейший
@@ -452,16 +462,18 @@ CaRotator, arch/21 §5 K) по заявке `/valkeyworker/ca_rotations/<C>` —
    сами (poll-тик; клэймы переснимутся lease-механикой; R7 arch/14: journal
    мог откатиться к точке слепка — процессы идемпотентны и доводят фазы);
    панель видит кластеры, healthz воркеров зелёные. Статус-ключ
-   `/pgworker/etcd-snapshots` появится первым же слепком воркера.
-6. **Границы**: слепок = точка его снятия (RPO = точка последнего изменения
-   минус окно transient-отказа S3 — закрывается доводкой тика
-   `RetryIntervalSec`); локальные тома снапшотов (если пережили) —
-   альтернативный источник того же формата; WAL-данные PG-шардов живут в S3
-   бэкапов независимо (arch/19) — восстановление etcd их не касается.
-   Алерты панели: `etcd-snapshot-export-failed` (выгрузка провалилась —
-   проверить доступность S3/креды `PGW_BACKUP_S3_*`),
-   `etcd-snapshot-export-stale` (выгрузка молчит — обе инстанции воркера
-   лежат или вечный transient).
+   `/etcdworker/snapshots` появится первым же слепком EtcdWorker.
+6. **Границы**: слепок = точка его снятия (RPO = окно от последнего
+   изменения до выгрузки — детекция изменений закрывает ≈5 мин при
+   активности, транзиент S3 — доводкой тика `RetryIntervalSec`); локальные
+   тома снапшотов воркеров (если пережили) — альтернативный источник того
+   же формата; WAL-данные PG-шардов живут в S3 бэкапов независимо
+   (arch/19) — восстановление etcd их не касается. Алерты панели:
+   `etcd-snapshot-export-failed` (выгрузка провалилась — проверить
+   etcd-backup S3-кластер: заявлен признаком, ноды живы, secrets читаются),
+   `etcd-snapshot-export-stale` (выгрузка молчит — обе инстанции
+   EtcdWorker лежат или вечный transient), `etcd-backup-cluster-missing`
+   (кластер с признаком не заявлен).
 
 ## REST-TLS Patroni (REST `:8008` нод)
 

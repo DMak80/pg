@@ -11,7 +11,7 @@ public static class S3PoolMarkers
 
 /// <summary>Общая запись ОДНОЙ S3-цели : endpoint+bucket+креды+CA;
 /// потребитель — BackupS3 (второй конструктор), фабрика пула, слепочная пара
-/// (EtcdSnapshotSink), WalReceiver Program. Заменяет завязку BackupS3 на
+/// WalReceiver Program. Заменяет завязку BackupS3 на
 /// BackupsRuntimeOptions.</summary>
 public sealed record S3ClientOptions(
     string Endpoint, string Bucket, string AccessKey, string SecretKey,

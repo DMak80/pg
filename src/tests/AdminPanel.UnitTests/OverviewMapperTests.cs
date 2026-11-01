@@ -47,7 +47,7 @@ public class OverviewMapperTests
         var snapshot = TestSnapshots.Healthy(Now) with
         {
             BackupStorage = new BackupStorageInfo(1000, 2000, 50, BackupStorageState.Warn, 1761900000),
-            EtcdSnapshots = new EtcdSnapshotExportInfo(true, "OK", 1761900000, null, null, null, null, null),
+            EtcdSnapshots = new EtcdSnapshotExportInfo("OK", 1761900000, null, null, null, null, null),
         };
 
         // Act
@@ -60,7 +60,6 @@ public class OverviewMapperTests
         backups.UsedBytes.Should().Be(1000);
         backups.QuotaBytes.Should().Be(2000);
         backups.EtcdSnapshots.Should().NotBeNull();
-        backups.EtcdSnapshots!.Enabled.Should().BeTrue();
         backups.EtcdSnapshots.State.Should().Be("OK");
     }
 

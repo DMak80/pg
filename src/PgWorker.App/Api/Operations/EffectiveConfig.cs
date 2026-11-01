@@ -39,14 +39,11 @@ public static class PgWorkerEffectiveConfig
         backups = new { enabled = o.Backups.Enabled },
         snapshots = new
         {
-            export = new
-            {
-                enabled = o.Snapshots.Export.Enabled,
-                // Каденс выгрузки — интервал снапшот-цикла P12 (arch/14 §8:
-                // лидер снимает слепок и выгружает раз в SnapshotIntervalMin;
-                // отдельного IntervalMin в SnapshotExportOptions нет).
-                intervalMin = o.Loops.SnapshotIntervalMin,
-            },
+            // Локальные слепки P12 (arch/14 §8); выгрузка в S3 и обслуживание
+            // контура (compact/defrag) — зона EtcdWorker (arch/25 §4), секции
+            // Export у PgWorker нет.
+            dir = o.Snapshots.Dir,
+            retentionFiles = o.Snapshots.RetentionFiles,
         },
         pgtune = new
         {

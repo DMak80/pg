@@ -9,7 +9,6 @@ using Shared.Core.Hosting;
 using PgWorker.App.HealthChecks;
 using PgWorker.App.Loops;
 using PgWorker.Backups;
-using PgWorker.Backups.EtcdExport;
 using PgWorker.Backups.Sql;
 using PgWorker.Core;
 using PgWorker.Core.Model;
@@ -54,12 +53,7 @@ builder.Services.AddOptions<PgWorkerOptions>()
         "PgWorker:Api:AdvertiseUrl is not set (API URL reachable by the panel; env PGW_API_ADVERTISE_URL)")
     .Validate(o => o.Api.Tls.AllowInsecureHttp
         || o.Api.AdvertiseUrl.StartsWith("https://", StringComparison.Ordinal),
-        "PgWorker:Api:AdvertiseUrl must be https:// (HTTPS-only edge, mTLS on /api only; arch/14 §1.1)")
-    // Экспорт etcd-снапшотов в S3 (reliability): Enabled=true требует
-    // ПОЛНУЮ СОБСТВЕННУЮ пару PgWorker:Snapshots:Export:S3 (env
-    // PGW_SNAPSHOTS_S3_* — не креды пулов бэкапов); диапазоны — всегда.
-    .Validate(o => o.Snapshots.Export.IsValid(),
-        "PgWorker:Snapshots:Export: Enabled=true requires a complete pair PgWorker:Snapshots:Export:S3 (env PGW_SNAPSHOTS_S3_*); RetentionObjects>=1, RetryIntervalSec>0, TimeoutSec>0")
+        "PgWorker:Api:AdvertiseUrl must be https:// (mTLS-only API, arch/14 §1.1)")
     // Расчёт PGTune (spec.md §4.2): мусорный конфиг виден на старте, а не на
     // первом provision'е. desktop запрещён — его wal_level=minimal/max_wal_senders=0
     // несовместимы с P3 (логическое декодирование, переезды бакетов).
@@ -324,13 +318,6 @@ builder.Services.AddSingleton<IClusterDriver>(sp =>
         CaPem: BackupCaPem.ReadIfConfigured(opts.Backups.S3.CaBundlePath),
         StagingDir: string.IsNullOrWhiteSpace(opts.Backups.Staging.Dir) ? null : opts.Backups.Staging.Dir);
 
-    // CA слепочной пары DR-слепков (arch/14 §6/§8): симметрия CA пары бэкапов
-    // выше — путь задан конфигом установки, нечитаемый/пустой файл = дефект
-    // инсталляции → fail-fast старта воркера с диагностикой BackupCaPem.
-    // Осознанно НЕ зависит от Snapshots:Export:Enabled (та же связка:
-    // выключенная опция с корректным путём читает файл без последствий).
-    BackupCaPem.ReadIfConfigured(opts.Snapshots.Export.S3.CaBundlePath);
-
     if (string.Equals(docker.Mode, "Swarm", StringComparison.OrdinalIgnoreCase))
     {
         if (string.IsNullOrWhiteSpace(docker.SwarmManager))
@@ -370,43 +357,13 @@ builder.Services.AddSingleton(sp =>
     new ShardProbe(sp.GetRequiredService<IHttpClientFactory>().CreateClient("patroni")));
 builder.Services.AddSingleton<ISqlExecutor, DatabaseProvisioner>();
 
-// S3-sink экспорта — один синглтон на процесс; null при выключенной опции
-// (креды фиксируются на старте: env-секреты деплоя меняются recreate контейнера).
-// null! — осознанный контракт: GetService<EtcdSnapshotSink>() обязан вернуть null
-// при Enabled=false (потребители — SnapshotJob/SnapshotLoop).
-builder.Services.AddSingleton(sp =>
-{
-    var opts = sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value;
-    return opts.Snapshots.Export.Enabled
-        ? new EtcdSnapshotSink(
-            // цель слепков — ОТДЕЛЬНАЯ пара PgWorker:Snapshots:Export:S3
-            // (env PGW_SNAPSHOTS_S3_*; arch/14 §6/§8 — не креды пулов бэкапов):
-            // перебор целей до первого доступного — PoolBackupS3 (arch/19 §5),
-            // синглтон на процесс — breaker-стейт переживает попытки выгрузки.
-            EtcdSnapshotSinkFactory.Create(opts),
-            sp.GetRequiredService<IEtcdGateway>(),
-            opts.Etcd.Endpoints,
-            opts.Snapshots.Export.RetentionObjects,
-            opts.Snapshots.Export.TimeoutSec,
-            sp.GetRequiredService<ClaimStore>().InstanceId,
-            opts.Loops.SnapshotIntervalMin,
-            // Пульс S3-шагов выгрузки — канал snapshot (MarkSnapshotActivity,
-            // не reconcile): путь SnapshotLoop, arch/14 §6; период — полокна
-            // проверки watchdog (CheckIntervalSec-производный).
-            () => sp.GetRequiredService<HealthState>().MarkSnapshotActivity(),
-            TimeSpan.FromSeconds(Math.Max(1, opts.Loops.Watchdog.CheckIntervalSec / 2)))
-        : null!;
-});
-
-// Снапшоты P12 (SnapshotLoop-лидер + процессы в точках изменений) + опциональный
-// S3-sink : Enabled=false → sink null, поведение прежнее (§2.10).
+// Снапшоты P12 (SnapshotLoop-лидер + процессы в точках изменений).
 builder.Services.AddSingleton(sp =>
 {
     var opts = sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value;
     return new SnapshotJob(
         sp.GetRequiredService<IEtcdGateway>(), opts.Etcd.Endpoints,
-        opts.Snapshots.Dir, opts.Snapshots.RetentionFiles, opts.Snapshots.MaintenanceIntervalMin,
-        sp.GetService<EtcdSnapshotSink>());
+        opts.Snapshots.Dir, opts.Snapshots.RetentionFiles);
 });
 
 // Процессы-машины состояний (§6.4): снапшот передаётся делегатом от SnapshotJob.
@@ -825,8 +782,6 @@ builder.Services.AddHostedService(sp => sp.GetRequiredService<PgWorker.App.Loops
 // Регистрируются синглтонами — health-обёртки читают их состояние напрямую.
 builder.Services.AddSingleton<IClusterProcesses, ClusterProcesses>();
 builder.Services.AddSingleton<KeepaliveLoop>();
-// явная фабрика SnapshotLoop — последний параметр (sink) может быть null
-// при выключенной опции; sp.GetService вернёт null (это рабочий режим).
 builder.Services.AddSingleton(sp => new SnapshotLoop(
     sp.GetRequiredService<IOptionsMonitor<PgWorkerOptions>>(),
     sp.GetRequiredService<ClaimStore>(),
@@ -834,8 +789,7 @@ builder.Services.AddSingleton(sp => new SnapshotLoop(
     sp.GetRequiredService<ILogger<SnapshotLoop>>(),
     sp.GetRequiredService<HealthState>(),
     sp.GetRequiredService<TimeProvider>(),
-    sp.GetRequiredService<Shared.Metrics.Worker.WorkerMetricsInstrumentation>(),
-    sp.GetService<EtcdSnapshotSink>()));
+    sp.GetRequiredService<Shared.Metrics.Worker.WorkerMetricsInstrumentation>()));
 builder.Services.AddSingleton<ReconcileLoop>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<KeepaliveLoop>());
 builder.Services.AddHostedService(sp => sp.GetRequiredService<SnapshotLoop>());

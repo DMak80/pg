@@ -5,7 +5,7 @@ using Xunit;
 
 namespace AdminPanel.UnitTests;
 
-// Парсер /pgworker/etcd-snapshots (adminpanel/02 §2.3.1): полный формат,
+// Парсер /etcdworker/snapshots (adminpanel/02 §2.3.1): полный формат,
 // толерантность к отсутствующим полям, битый JSON — parseError (правила молчат).
 public class EtcdSnapshotsParserTests
 {
@@ -14,8 +14,8 @@ public class EtcdSnapshotsParserTests
     public void Parse_FullKey()
     {
         // Arrange
-        var kv = new Kv("/pgworker/etcd-snapshots",
-            """{"enabled":true,"state":"OK","last_uploaded_unix":1759330000,"last_object":"etcd/snapshot-20261001-120000.db","last_sha256":"abc","size_bytes":2048,"interval_min":360}""", 1);
+        var kv = new Kv("/etcdworker/snapshots",
+            """{"state":"OK","last_uploaded_unix":1759330000,"last_object":"etcd/snapshot-20261001-120000.db","last_sha256":"abc","size_bytes":2048,"interval_min":360}""", 1);
 
         // Act
         var (parsed, errors) = EtcdSnapshotsParser.Parse(kv);
@@ -23,7 +23,6 @@ public class EtcdSnapshotsParserTests
         // Assert
         errors.Should().BeEmpty();
         var info = parsed!; // Parse возвращает nullable-ссылку (не Nullable<T>): .Value нет
-        info.Enabled.Should().BeTrue();
         info.State.Should().Be("OK");
         info.LastUploadedUnix.Should().Be(1759330000);
         info.IntervalMin.Should().Be(360);
@@ -34,7 +33,7 @@ public class EtcdSnapshotsParserTests
     public void Parse_FailedCase_WithError()
     {
         // Arrange
-        var kv = new Kv("/pgworker/etcd-snapshots", """{"enabled":true,"state":"FAILED","error":"S3 unavailable"}""", 1);
+        var kv = new Kv("/etcdworker/snapshots", """{"state":"FAILED","error":"S3 unavailable"}""", 1);
 
         // Act
         var (parsed, errors) = EtcdSnapshotsParser.Parse(kv);
@@ -52,14 +51,14 @@ public class EtcdSnapshotsParserTests
     public void Parse_BrokenJson_ParseError()
     {
         // Arrange
-        var kv = new Kv("/pgworker/etcd-snapshots", "{not-json", 1);
+        var kv = new Kv("/etcdworker/snapshots", "{not-json", 1);
 
         // Act
         var (info, errors) = EtcdSnapshotsParser.Parse(kv);
 
         // Assert
         info.Should().BeNull();
-        errors.Should().ContainSingle(e => e.Key == "/pgworker/etcd-snapshots");
+        errors.Should().ContainSingle(e => e.Key == "/etcdworker/snapshots");
     }
 
     // AAA: ключа нет (null) — «выгрузка не включена», без ошибок

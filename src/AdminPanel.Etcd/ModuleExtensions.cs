@@ -64,6 +64,8 @@ public static class ModuleExtensions
                 thumbs.Add(vwk.Thumbprint);
             if (sp.GetRequiredService<IS3SnapshotStore>().Current?.WorkerApiCert is { } s3w)
                 thumbs.Add(s3w.Thumbprint);
+            if (sp.GetRequiredService<ISnapshotStore>().Current?.EtcdWorkerApiCert is { } etcdw)
+                thumbs.Add(etcdw.Thumbprint);
             return thumbs;
         };
         services.AddSingleton<WorkerApiGateway>();

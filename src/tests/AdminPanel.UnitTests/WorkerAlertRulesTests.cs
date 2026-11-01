@@ -50,4 +50,47 @@ public class WorkerAlertRulesTests
         // Act + Assert
         Evaluate(new WorkerUnhealthyRule(), snapshot).Should().BeEmpty();
     }
+
+    // AAA: инстанс EtcdWorker Degraded при живом lease — warning per-instance
+    // ряда etcdworker/<id> (adminpanel/03 §4).
+    [Fact]
+    public void WorkerUnhealthy_EtcdWorkerDegraded_WarningPerInstance()
+    {
+        // Arrange: pg-инстансы здоровы, один инстанс EtcdWorker Degraded.
+        var rule = new WorkerUnhealthyRule();
+        var snapshot = TestSnapshots.Healthy(Now) with
+        {
+            EtcdWorkerHealth = [new WorkerHealth("w2", "https://etcdworker:8080", WorkerHealthStatus.Degraded,
+                Now, "etcd endpoints unreachable")],
+        };
+
+        // Act
+        var alerts = Evaluate(rule, snapshot);
+
+        // Assert: warning на etcdworker/w2, Detail в Message.
+        var alert = alerts.Should().ContainSingle().Subject;
+        alert.Kind.Should().Be("worker-unhealthy");
+        alert.Target.Should().Be("etcdworker/w2");
+        alert.Severity.Should().Be(AlertSeverity.Warning);
+        alert.Message.Should().Contain("etcd endpoints unreachable");
+    }
+
+    // AAA: нет живых ключей /etcdworker/api/ при живом PgWorker — только ряд
+    // etcdworker-алерта (pg-ряд молчит, adminpanel/03 §4).
+    [Fact]
+    public void WorkerApiUnreachable_EtcdWorkerNoKeys_CriticalEtcdWorkerRowOnly()
+    {
+        // Arrange: здоровый снапшот (pg-ключ жив), ключи etcdworker пусты.
+        var rule = new WorkerApiUnreachableRule();
+        var snapshot = TestSnapshots.Healthy(Now) with { EtcdWorkerEndpoints = [] };
+
+        // Act
+        var alerts = Evaluate(rule, snapshot);
+
+        // Assert: единственный critical — target etcdworker.
+        var alert = alerts.Should().ContainSingle().Subject;
+        alert.Kind.Should().Be("worker-api-unreachable");
+        alert.Target.Should().Be("etcdworker");
+        alert.Severity.Should().Be(AlertSeverity.Critical);
+    }
 }

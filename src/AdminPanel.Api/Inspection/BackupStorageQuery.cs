@@ -73,9 +73,9 @@ public sealed record S3HealthDto(
 public sealed record BackupStorageEtcdDto(
     long UsedBytes, long? QuotaBytes, double? UsedPercent, string State, long UpdatedUnix);
 
-// Статус выгрузки etcd-снапшотов : ключ /pgworker/etcd-snapshots.
+// Статус DR-выгрузки etcd-слепков: ключ /etcdworker/snapshots.
 public sealed record EtcdSnapshotsDto(
-    bool Enabled, string? State, long? LastUploadedUnix, string? LastObject,
+    string? State, long? LastUploadedUnix, string? LastObject,
     string? LastSha256, long? SizeBytes, int? IntervalMin, string? Error);
 
 public sealed record BackupStorageDto(
@@ -85,7 +85,7 @@ public sealed record BackupStorageDto(
     S3HealthDto? Health,
     IReadOnlyList<string> Buckets, // бакеты установки (live-инвентарь, arch/03 §3)
     BackupStorageEtcdDto? Etcd, // ключ /pgworker/backups/storage (вердикт воркера)
-    EtcdSnapshotsDto? EtcdSnapshots, // ключ /pgworker/etcd-snapshots (read-only карточка)
+    EtcdSnapshotsDto? EtcdSnapshots, // ключ /etcdworker/snapshots (read-only карточка)
     long? LiveUsedBytes,        // live-инвентарь (снапшот S3Storage)
     IReadOnlyList<BackupClusterStorageDto> Clusters,
     IReadOnlyList<string> ForeignPrefixes, // корневые префиксы вне <C>/<X> — без вердикта
@@ -252,11 +252,11 @@ private static string WalStateName(WalStreamInfoState state) => state switch
             storage.UsedBytes, storage.QuotaBytes, storage.UsedPercent,
             storage.State.ToString().ToUpperInvariant(), storage.UpdatedUnix);
 
-    // Статус выгрузки etcd-снапшотов : карточка живёт в грани независимо
-    // от настроенности S3-грани панели — ключ etcd читается всегда.
+    // Статус DR-выгрузки слепков etcd: карточка живёт в грани независимо
+    // от настроенности S3-грани панели — ключ читается всегда.
     public static EtcdSnapshotsDto? MapEtcdSnapshots(EtcdSnapshotExportInfo? export)
         => export is null ? null : new EtcdSnapshotsDto(
-            export.Enabled, export.State, export.LastUploadedUnix, export.LastObject,
+            export.State, export.LastUploadedUnix, export.LastObject,
             export.LastSha256, export.SizeBytes, export.IntervalMin, export.Error);
 
     private static IReadOnlyList<BackupClusterStorageDto> MapClusters(

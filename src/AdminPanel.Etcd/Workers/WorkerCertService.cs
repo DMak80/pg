@@ -25,12 +25,13 @@ public sealed class WorkerCertAlreadyManagedException(string worker)
 public sealed class WorkerCertNotFoundException(string worker)
     : Exception($"key /workers/api_tls/{worker} not found");
 
-// 404: неизвестный воркер (worker ∈ pgworker|kafkaworker|valkeyworker|s3worker,
-// spec §3.3 п.4; valkeyworker, s3worker — arch/adminpanel/02 §9.9). Гвардится
+// 404: неизвестный воркер (worker ∈ pgworker|kafkaworker|valkeyworker|s3worker|etcdworker,
+// spec §3.3 п.4; s3worker — arch/adminpanel/02 §9.9, etcdworker —
+// 02 §2.3.5). Гвардится
 // сервисом ДО KeyOf во ВСЕХ write-методах (и рестарт-хендлером панели): мусорный
 // ключ /workers/api_tls/<foo> в etcd не пишется никогда.
 public sealed class WorkerNotFoundException(string worker)
-    : Exception($"unknown worker {worker} (expected pgworker|kafkaworker|valkeyworker|s3worker)");
+    : Exception($"unknown worker {worker} (expected pgworker|kafkaworker|valkeyworker|s3worker|etcdworker)");
 
 // Итог записи: воркер + метаданные записанного серта.
 public sealed record WorkerCertWriteResult(string Worker, WorkerApiCert Meta);
@@ -161,7 +162,7 @@ public sealed class WorkerCertService(
     public async Task<Result<WorkerCertWriteResult>> GenerateAndPutAsync(
         string worker, IReadOnlyList<string> advertiseHosts, string updatedBy, CancellationToken ct)
     {
-        if (worker is not ("pgworker" or "kafkaworker" or "valkeyworker" or "s3worker"))
+        if (worker is not ("pgworker" or "kafkaworker" or "valkeyworker" or "s3worker" or "etcdworker"))
             return Result<WorkerCertWriteResult>.Failed(new WorkerNotFoundException(worker)); // до KeyOf: мусорные ключи не пишем
         var (certPem, keyPem, meta) = Generate(worker, advertiseHosts);
         var value = SerializePayload(certPem, keyPem, updatedBy);
@@ -181,7 +182,7 @@ public sealed class WorkerCertService(
     public async Task<Result<WorkerCertWriteResult>> PutAsync(
         string worker, string certPem, string keyPem, string updatedBy, CancellationToken ct)
     {
-        if (worker is not ("pgworker" or "kafkaworker" or "valkeyworker" or "s3worker"))
+        if (worker is not ("pgworker" or "kafkaworker" or "valkeyworker" or "s3worker" or "etcdworker"))
             return Result<WorkerCertWriteResult>.Failed(new WorkerNotFoundException(worker)); // до KeyOf: мусорные ключи не пишем
         // Валидация §4.3 (400/422) — в Result (REST-контракт 03 §1), не исключением:
         // Error()-ветка модуля мапит тип ошибки на код ответа.
@@ -204,7 +205,7 @@ public sealed class WorkerCertService(
 
     public async Task<Result> DeleteAsync(string worker, CancellationToken ct)
     {
-        if (worker is not ("pgworker" or "kafkaworker" or "valkeyworker" or "s3worker"))
+        if (worker is not ("pgworker" or "kafkaworker" or "valkeyworker" or "s3worker" or "etcdworker"))
             return Result.Failed(new WorkerNotFoundException(worker)); // даже если мусорный ключ кем-то записан — не трогаем
         // Осознанная гонка (TOCTOU) Range→Delete: между проверкой наличия ключа
         // и удалением конкурентный generate (txn version==0) может создать ключ —

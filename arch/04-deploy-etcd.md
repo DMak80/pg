@@ -9,15 +9,18 @@ etcd — фундамент всего. Поднимаем **первым**, д�
 
 ## 0. Два применения одного рецепта
 
-Этот документ — рецепт etcd-контура ВООБЩЕ (3 узла, static bootstrap, кворум 2/3).
-Два применения различаются размещением и advertised-правилами:
+Этот документ — рецепт etcd-контура ВООБЩЕ (кворум 2/3, параметры §3). Два
+применения различаются моделью адресации и bootstrap:
 
 - **(а) DCS Patroni-стенда** (arch/01–13): etcd на тех же 3 нодах, что и PG
-  (pg1/pg2/pg3, host-network) — §1–7 ниже;
-- **(б) HA-контур контроль-плейна воркер-инсталляции** (arch/14+): etcd — внешний
-  контур, «запускается отдельно» (deploy/docker-compose.yml), потребители —
-  воркеры PgWorker/KafkaWorker/ValkeyWorker, панель AdminPanel и Patroni-ноды,
-  создаваемые воркером — §8.
+  (pg1/pg2/pg3, static bootstrap, host-network) — §1–7 ниже; локальный мир
+  01–13, вне воркер-инсталляции;
+- **(б) HA-контур контроль-плейна воркер-инсталляции** (arch/14+): адресация
+  ТОЛЬКО по именам узлов в общей docker-сети (мультихост — Swarm), бутстрап —
+  seed-узел, состав доводит EtcdWorker; потребители — воркеры
+  (PgWorker/KafkaWorker/ValkeyWorker/S3Worker/EtcdWorker), панель AdminPanel
+  и Patroni-ноды, создаваемые воркером — §8. Host-network-модель (IP хостов
+  в peer-URL) в этом применении НЕ используется.
 
 Параметры кластера одни (§3); процедура потери кворума — общая (09 §4).
 
@@ -194,57 +197,75 @@ docker compose --env-file etcd.env up -d      # применить (контей
 Контроль-плейн (декларации кластеров, координация воркеров, Patroni-DCS
 создаваемых нод, мастер-ключи) живёт в ОТДЕЛЬНОМ от PG-нод etcd-контуре.
 Отказ единственного etcd = заморозка надзора, панели и DCS (характеристика R,
-reliability-report) — контур обязан быть 3-узловым. Рецепт узла:
-`deploy/etcd/{docker-compose.yml,etcd.env.example}` (зона оператора);
-запуск — `docker compose --env-file etcd.env up -d` (интерполяция переменных
-узла в YAML — из env-файла, не из shell).
+reliability-report) — контур обязан быть 3-узловым. Бутстрап контура —
+оператор: ОДИН **seed-узел** (рецепт `deploy/etcd/` — compose-файл одного
+узла в общей сети, peer-URL по имени узла); состав до целевого (нечётное
+число, рекомендация 3) доводит оркестратор EtcdWorker по декларации
+`/etcd/config` ([25-etcdworker.md](25-etcdworker.md)).
 
-1. **Топология**: 3 узла, static bootstrap (`--initial-cluster`, токен один),
-   кворум 2/3, ПО ОДНОМУ узлу на docker-хосте — хосты РАЗНЫЕ (анти-аффинити:
-   потеря одного хоста ≠ потеря кворума; допустимо совмещение с docker-хостами
-   воркера, но не всех трёх на одном). Требования к хосту — как §2/03: SSD под
-   data-dir, стабильные IP/DNS, NTP.
+1. **Топология — адресация только по именам узлов** (IP хостов и
+   host-network в контуре воркер-инсталляции НЕ используются): peer-URL
+   каждого узла — `http://<имя-узла>:2380` в ОБЩЕЙ docker-сети контура
+   (`etcdw-net`; managed-узлы `etcdw-node-<k>`, seed — имя из env рецепта).
+   Мультихост — ТОЛЬКО Swarm (имена резолвятся overlay-сетью; managed-узлы —
+   сервисы, разносятся по swarm-нодам — анти-аффинити кворума: потеря
+   docker-ноды ≠ потеря кворума); plain docker — контур живёт на ОДНОМ
+   docker-хосте (имена резолвятся общей сетью). Требования к машине —
+   SSD под data-dir, NTP.
 2. **Параметры** — те же, что §3: `--heartbeat-interval=250`,
    `--election-timeout=2000`, `--auto-compaction-retention=1`,
    `--quota-backend-bytes=8GiB`, образ v3.5.21; `--initial-cluster-state=new`
-   только на первом старте, затем `existing` (§5 — общий).
-3. **Advertised-правила потребителей** (ключевое отличие от (а)):
-
-   | Потребитель | Откуда берёт адреса | Формат |
-   |---|---|---|
-   | Воркеры (deploy) | env `PGW/KFW/VWK_ETCD_ENDPOINT_0..2` | полные URL |
-   | Панель | `AdminPanel__Etcd__Endpoints__0..2` | полные URL |
-   | Patroni-ноды (Spilo) | `PgWorker:Etcd:AdvertisedEndpoints` (fallback `Endpoints`) → `ETCD3_HOSTS` | `host:port` без scheme, список |
-   | lease мастер-ключа нод | тот же источник → `PGW_ETCD` | полные URL, список через запятую |
-
-   Правило: клиенты контура всегда получают список ВСЕХ клиентских URL;
-   единственный endpoint допустим только для стендов/разработки. Advertise
-   каждого узла — адрес(а), резолвимые из КАЖДОЙ сети потребителей: etcd
-   допускает список в `--advertise-client-urls` (на стенде — compose-DNS для
-   сети стенда + `host.docker.internal:PORT` для per-cluster сетей воркера;
-   в проде — IP хоста узла, host-network как §3). В список включаются ТОЛЬКО
-   адреса, резолвимые для потребителей контура: внутрисетевой алиас,
+   — только seed на первом старте; managed-узлы всегда `existing`
+   (членство задаётся member-API до старта контейнера, arch/25 §3.1).
+3. **Advertised-правила потребителей** (таблица источников — под списком,
+   п.3а): клиенты контура всегда получают список ВСЕХ клиентских URL;
+   единственный endpoint допустим только для стендов/разработки.
+   Peer-адресация — имена сети (п.1); клиентская грань — host:port
+   публикаций (клиентский порт узла публикуется на хост — portalloc
+   EtcdWorker / публикации compose); `--advertise-client-urls` — СПИСОК:
+   `http://<имя-узла>:2379` (сеть контура) + `http://<advertised-host>:<port>`
+   (потребители вне сети — прецедент `as-etcd` стенда). В список включаются
+   ТОЛЬКО адреса, резолвимые для потребителей контура: внутрисетевой алиас,
    не существующий в сетях потребителей, в advertise НЕ включается — Patroni
    ретраит весь список целиком, недостижимый URL даёт постоянные
    NXDOMAIN-ретраи (`getaddrinfo` empty в логах нод) и ложную деградацию
    DCS-сессии.
 4. **Кворум-семантика**: 1 узел недоступен — всё работает (клиенты с failover
-   даже не обязаны переключаться); 2 узла — кворума нет: контроль-плейн
-   заморожен (надзор/панель/DCS), датаплейн живёт сам; восстановление —
-   09 §4. Потеря узла НАВСЕГДА (замена хоста): `member remove` + `member add`
-   + data-dir заново:
-   ```bash
-   etcdctl member remove <ID>                          # на живом члене
-   # на НОВОМ хосте: очистить data-dir, в etcd.env — INITIAL_CLUSTER_STATE=existing
-   etcdctl member add etcdN --peer-urls=http://<NEW_IP>:2380
-   # обновить PEERS на всех узлах (добавленный адрес) и перезапустить узел
-   ```
-5. **Чек-лист контура (прод)**: `member list` = 3 started; `endpoint health
-   --cluster` = 3 healthy; все воркеры/панель видят один и тот же список
-   endpoints; healthz воркеров `etcd-reachable` жив; панель `GET
-   /api/etcd/status` — 3 члена с единым leader/term.
-6. **Стендовое зеркало**: дев-стенд поднимает тот же 3-узловой контур
-   (`dev-stand/adminpanel/docker-compose.yml`, `etcd1/etcd2/etcd3`);
-   отказоустойчивость гоняет чек `43-etcd-ha.sh` на каждом прогоне стенда.
+   даже не обязаны переключаться); большинства нет — кворум потерян:
+   контроль-плейн заморожен (надзор/панель/DCS), датаплейн живёт сам;
+   восстановление — 09 §4. Потеря узла навсегда: managed-узел заменяет
+   автоматика EtcdWorker (member remove + add learner + promote, arch/25
+   §3.1); seed/внешние узлы — runbook (member remove/add — peer-URL по
+   имени узла той же сети контура). После доводки состава seed
+   рекомендуется вывести (контур полностью managed): `etcdctl member
+   remove <seed-ID>` + `docker compose down` — runbook-шаг.
+5. **Бутстрап (оператор)**: `docker network create etcdw-net` (если нет) →
+   `deploy/etcd`: `docker compose --env-file etcd.env up -d` (один узел,
+   `--initial-cluster-state=new`, peer `http://<NODE_NAME>:2380` в сети
+   `etcdw-net`) → EtcdWorker подключается (env endpoints), панель/API
+   заявляет `nodes=N` → EtcdWorker доводит состав (learner + promote,
+   managed-узлы в `etcdw-net` / Swarm-overlay) → seed выводится (п.4).
+   Swarm-контур: seed поднимается сервисом Swarm в overlay-сети
+   (`docker network create -d overlay etcdw-net`), далее — тот же путь
+   доводки.
+6. **Чек-лист контура (прод)**: `member list` = N started (все peer-URL —
+   имена, без IP); `endpoint health --cluster` = все healthy; все
+   воркеры/панель видят один и тот же список endpoints; healthz воркеров
+   `etcd-reachable` жив; панель `GET /api/etcd/status` — N членов с единым
+   leader/term.
+7. **Стендовое зеркало**: дев-стенд поднимает тот же 3-узловой контур
+   внешними compose-узлами (`dev-stand/adminpanel/docker-compose.yml`,
+   `etcd1/etcd2/etcd3` — peer по именам compose-сети); EtcdWorker стенда —
+   наблюдение (декларация не ставится, managed нет); отказоустойчивость
+   гоняет чек `43-etcd-ha.sh` на каждом прогоне стенда.
+
+Таблица к п.3 (источники адресов потребителей):
+
+| Потребитель | Откуда берёт адреса | Формат |
+|---|---|---|
+| Воркеры (deploy) | env `PGW/KFW/VWK/S3W/ETCDW_ETCD_ENDPOINT_0..2` | полные URL |
+| Панель | `AdminPanel__Etcd__Endpoints__0..2` | полные URL |
+| Patroni-ноды (Spilo) | `PgWorker:Etcd:AdvertisedEndpoints` (fallback `Endpoints`) → `ETCD3_HOSTS` | `host:port` без scheme, список |
+| lease мастер-ключа нод | тот же источник → `PGW_ETCD` | полные URL, список через запятую |
 
 Кластер DCS готов → [05-deploy-postgres.md](05-deploy-postgres.md).

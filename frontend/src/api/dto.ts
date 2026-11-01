@@ -185,7 +185,7 @@ export interface OverviewBackupsDto {
   storageState: 'OK' | 'WARN' | 'CRIT' | null;
   usedBytes: number;
   quotaBytes: number | null;
-  etcdSnapshots: { enabled: boolean; state: string | null } | null;
+  etcdSnapshots: { state: string | null } | null;
 }
 
 // u06: надёжность дашборда.
@@ -270,6 +270,26 @@ export interface EtcdStatusDto {
   alarms: EtcdAlarmDto[];
   quorumSuspected: boolean;
   lastRefreshUtc: string;
+}
+
+// GET /api/etcd/domain — домен EtcdWorker (adminpanel/02 §2.3.5):
+// декларация состава + managed-узлы + статус DR-выгрузки слепков.
+export interface EtcdDomainDto {
+  declaredNodes: number | null; // null — ключа /etcd/config нет («только наблюдение»)
+  createdUnix: number | null;
+  nodes: EtcdManagedNodeDto[];
+  snapshots: EtcdSnapshotsDto | null;
+}
+
+export interface EtcdManagedNodeDto {
+  k: number;
+  state: string | null;
+  placedOn: string | null;
+}
+
+// Ответ 200 PUT /api/etcd/config  зеркало тела воркера {"nodes":N}.
+export interface EtcdConfigUpdatedDto {
+  nodes: number;
 }
 
 export interface EtcdEndpointDto {
@@ -991,9 +1011,8 @@ export interface OrphanDeleteAcceptedDto {
   requestedBy: string;
 }
 
-// Статус выгрузки etcd-снапшотов (t08): ключ /pgworker/etcd-snapshots.
+// Статус DR-выгрузки etcd-слепков  ключ /etcdworker/snapshots.
 export interface EtcdSnapshotsDto {
-  enabled: boolean;
   state: string | null;
   lastUploadedUnix: number | null;
   lastObject: string | null;
