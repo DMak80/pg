@@ -27,6 +27,25 @@ public sealed record PgNodeStatus(
     public string ToJson() => JsonSerializer.Serialize(new Dto(
         State, AppliedRevision, Components, UpdatedUnix, Error), Options);
 
+    /// <summary>Парсинг значения статусного ключа (MR-#11: txn-переход сессии
+    /// обновляет in-memory _current разобранным значением). null — не парсится.</summary>
+    public static PgNodeStatus? FromJson(string json)
+    {
+        try
+        {
+            var dto = JsonSerializer.Deserialize<Dto>(json, Options);
+            return dto is null
+                ? null
+                : new PgNodeStatus(dto.State, dto.AppliedRevision,
+                    dto.Components ?? new Dictionary<string, string>(),
+                    dto.UpdatedUnix, dto.Error);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
     private static readonly JsonSerializerOptions Options = new()
     {
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
@@ -35,7 +54,7 @@ public sealed record PgNodeStatus(
     private sealed record Dto(
         [property: JsonPropertyName("state")] string State,
         [property: JsonPropertyName("applied_revision")] long? AppliedRevision,
-        [property: JsonPropertyName("components")] IReadOnlyDictionary<string, string> Components,
+        [property: JsonPropertyName("components")] IReadOnlyDictionary<string, string>? Components,
         [property: JsonPropertyName("updated_unix")] long UpdatedUnix,
         [property: JsonPropertyName("error")] string? Error);
 }

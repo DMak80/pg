@@ -365,6 +365,44 @@ public class ClusterSecretRotatorTests
         (await rig.Journal.ReadAsync("shop", CancellationToken.None)).Value!.Phase.Should().Be("done");
     }
 
+    // Т1 (MR-#7, П11.8): гвард waiting-nodes-ready — тик InProgress, ноль
+    // txn (гвард до R1/R2) и ноль доставок; готовность ноды → полный цикл до done.
+    [Fact]
+    public async Task Rotate_WaitingNodesReady_InProgress_ThenReady_Progress()
+    {
+        // Arrange: все ноды ready, КРОМЕ shard1b (initializing).
+        var rig = await NewRig();
+        rig.Etcd.Store["/pgworker/nodes/shop/shard1/shard1b/status"] =
+            new Fakes.FakeEtcd.Entry(
+                """{"state":"initializing","components":{"pg":"ready","doorman":"starting"},"updated_unix":1}""",
+                1, 1);
+        SeedTicket(rig.Etcd);
+        var txnBefore = rig.Etcd.Txns.Count;
+
+        // Act 1
+        var outcome = await rig.Rotator.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert 1: InProgress, journal-фаза waiting-nodes-ready, ноль txn/доставок.
+        outcome.IsSuccess.Should().BeTrue(outcome.Error?.ToString());
+        outcome.Value.Should().Be(ProcessOutcome.InProgress);
+        (await rig.Journal.ReadAsync("shop", CancellationToken.None)).Value!.Phase
+            .Should().Be("waiting-nodes-ready");
+        rig.Etcd.Txns.Skip(txnBefore).Should().BeEmpty("the guard is before R1/R2 — no txns at all");
+        rig.Channel.AppliedNodes.Should().BeEmpty();
+
+        // Act 2: погасить отставание — статус shard1b → ready.
+        rig.Etcd.Store["/pgworker/nodes/shop/shard1/shard1b/status"] =
+            new Fakes.FakeEtcd.Entry(
+                """{"state":"ready","components":{"pg":"ready","doorman":"ready"},"updated_unix":2}""",
+                2, 2);
+        var (done, failed) = await RunUntilDoneAsync(rig);
+
+        // Assert 2: done — окно прошло полный цикл.
+        done.Should().BeTrue("readiness unlocks the full ETCD-FIRST cycle");
+        failed.Should().BeFalse();
+        await AssertWindowClosedAsync(rig);
+    }
+
     // Первый тик ETCD-FIRST: txn-коммит + открытие окна (флаг true) + первая
     // доставка — реплика (≤1 нода/тик).
     [Fact]
@@ -635,10 +673,16 @@ public class ClusterSecretRotatorTests
     [Fact]
     public async Task Rotate_RestoreShard_DoesNotHoldRestWindow()
     {
-        // Arrange: shard1 — активная restore (демонтаж владеет restore-процессом);
-        // доставки идут только на shard2.
+        // Arrange (Т5, MR-#13): shard1 — активная restore; НОДЫ shard1 БЕЗ
+        // ready-статусов (реальный restore демонтаж гасит машины) — сид только
+        // not_initialized; активный шард shard2 — все ноды ready. Гвард «тихого
+        // окна» restore-шард НЕ ждёт (MR-#13: restore вне AllNodesReady).
         var etcd = new Fakes.FakeEtcd();
         SeedCluster(etcd);
+        foreach (var node in new[] { "shard1a", "shard1b" })
+            etcd.Store[$"/pgworker/nodes/shop/shard1/{node}/status"] =
+                new Fakes.FakeEtcd.Entry(
+                    """{"state":"not_initialized","components":{},"updated_unix":1}""", 1, 1);
         etcd.Seed("/pgworker/backups/shop/shard1/restore/r1",
             """{"state":"RUNNING","backup_id":"f1","source":"shard1","target":"shop-new","node":"pgw-r1","requested_unix":1755900000,"requested_by":"admin"}""");
         SeedTicket(etcd);
@@ -647,9 +691,12 @@ public class ClusterSecretRotatorTests
         // Act
         var (done, failed) = await RunUntilDoneAsync(rig);
 
-        // Assert: restore-шард пропущен гейтом — окно закрывается.
+        // Assert: restore-шард пропущен гвардом (первый тик открывает окно —
+        // txn есть, несмотря на погашенные машины shard1) — rolling только по
+        // shard2; окно закрывается.
         done.Should().BeTrue();
         failed.Should().BeFalse();
+        rig.Etcd.Txns.Should().NotBeEmpty("the guard does not wait for the restore shard");
         rig.Channel.AppliedNodes.Should().OnlyContain(n => n.StartsWith("shard2", StringComparison.Ordinal));
         await AssertWindowClosedAsync(rig);
     }

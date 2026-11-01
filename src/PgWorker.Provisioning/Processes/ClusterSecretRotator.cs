@@ -44,6 +44,10 @@ public sealed partial class ClusterSecretRotator(
 {
     private const string Op = "rotate-app-password";
 
+    /// <summary>MR-#2 (spec §8-24): порог тихих тиков rolling БЕЗ прогресса до
+    /// R4-ALTER (канон N=3 — образец триады оконных таймаутов §5 I).</summary>
+    internal const int QuietTicksThreshold = 3;
+
     // Имя mover-роли фиксировано (arch/14 §4); user-ключа mover нет.
     private const string MoverRole = "bucket_mover";
 
@@ -97,7 +101,11 @@ public sealed partial class ClusterSecretRotator(
             var addressesGuard = await ReadPortAllocAsync(cluster, ct);
             if (!addressesGuard.IsSuccess)
                 return await FailAsync(cluster, addressesGuard.Error!, "portalloc", ct);
-            var readiness = await AllNodesReadyAsync(cluster, snap, addressesGuard.Value, ct);
+            var restoringGuard = await ReadRestoringShardsAsync(cluster, ct);
+            if (!restoringGuard.IsSuccess)
+                return await FailAsync(cluster, restoringGuard.Error!, "backups-read", ct);
+            var readiness = await AllNodesReadyAsync(
+                cluster, snap, addressesGuard.Value, restoringGuard.Value, ct);
             if (!readiness.IsSuccess)
                 return await FailAsync(cluster, readiness.Error!, "nodes-status-read", ct);
             if (!readiness.Value)
@@ -128,12 +136,23 @@ public sealed partial class ClusterSecretRotator(
                 TxnCompare.ValueEqual(BucketAdminPasswordKey(cluster), creds.BucketAdmin.Password),
                 TxnCompare.ValueEqual(RestKey(cluster), creds.RestPassword),
             };
+            // MR-#3 (spec §8-25): флаг окна в ТОЙ ЖЕ txn — NEW×4 + dsn +
+            // del заявки + флаг неразделимы (коммит = окно открыто, атомарно).
+            var workPayload = System.Text.Json.JsonSerializer.Serialize(
+                new WorkJournalWindowPayload(
+                    "rotate-app-password", "rotate-etcd-committed", claims.InstanceId,
+                    DateTimeOffset.UtcNow.ToUnixTimeSeconds(), RestWindowOpen: true),
+                new System.Text.Json.JsonSerializerOptions
+                {
+                    DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
+                });
             var ops = new List<TxnOp>
             {
                 new TxnOp.Put(PasswordKey(cluster), newAppPassword, null),
                 new TxnOp.Put(MoverKey(cluster), newMoverPassword, null),
                 new TxnOp.Put(BucketAdminPasswordKey(cluster), newBucketAdminPassword, null),
                 new TxnOp.Put(RestKey(cluster), newRestPassword, null),
+                new TxnOp.Put(WorkKey(cluster), workPayload, null),
                 new TxnOp.Delete(TicketKey(cluster), Prefix: false),
             };
             foreach (var shard in snap.Shards.Where(s => s.Dsn is not null))
@@ -220,13 +239,87 @@ public sealed partial class ClusterSecretRotator(
                 await bootstrap.EnsureAsync(
                     topology, node.Name, addr, secrets, tuning, pgtune.ExcludeParams,
                     snap.Config.SyncStrict, newRest, isToolStart: false, ct);
+                // MR-#2: delivery = прогресс rolling — quiet-счётчик обнулён.
                 return await Finish(cluster,
-                    $"rotate-rest-rolling/{shard.Name}/{node.Name}", ProcessOutcome.Done, ct);
+                    $"rotate-rest-rolling/{shard.Name}/{node.Name}", ProcessOutcome.Done, ct,
+                    restWindowOpen: true, rotateQuietTicks: 0);
             }
         }
 
         // R4 (финальный ALTER — закрытие окна, «etcd — источник, PG следует»):
         // NEW читаются из etcd (не локальные переменные R2 — takeover).
+        // MR-#2 (spec §8-24) лайвлок-гвард R4: вход в ALTER — полное схождение
+        // (все канонические ноды IsOnRevision) ИЛИ (3+ тихих тика подряд БЕЗ
+        // прогресса rolling — любой delivery обнуляет счётчик) И неприменившие
+        // ноды — ТОЛЬКО initializing/not_initialized (меньшинство; ready-нода,
+        // не применившая NEW — refuse, НЕ меньшинство: её bootstrap-ключ не
+        // рендерится под NEW). При ALTER-входе ОКНО ОСТАЁТСЯ ОТКРЫТЫМ
+        // (флаг/гварды действуют), R3 продолжается до схождения; ALTER
+        // идемпотентен — повторяется тиком после схождения безвредно.
+        var allApplied = true;
+        var unappliedNotReady = true; // все неприменившие — не ready
+        var statusesRange = await RangeAsync($"/pgworker/nodes/{cluster}/", ct);
+        var statuses = new Dictionary<string, string>(StringComparer.Ordinal);
+        if (statusesRange.IsSuccess)
+            foreach (var kv in statusesRange.Value)
+            {
+                var seg = kv.Key.Split('/');
+                if (seg.Length == 7 && seg[6] == "status")
+                    statuses[$"{seg[4]}/{seg[5]}"] = PgNodeStatusFact.Parse(kv.Value)?.State ?? "";
+            }
+
+        foreach (var shard in snap.Shards.Where(s => s.Dsn is not null && !s.ToRemove))
+        {
+            var scopeKvs = await RangeAsync($"/service/{cluster}-{shard.Name}/", ct);
+            var leader = scopeKvs.IsSuccess
+                ? ClusterSnapshotParser.ParseService(scopeKvs.Value).FirstOrDefault()?.LeaderName
+                : null;
+            foreach (var node in shard.Nodes
+                     .Where(n => n.State is not (NodeState.Quarantined or NodeState.Removing))
+                     .OrderBy(n => n.Name == leader ? 1 : 0))
+            {
+                if (!addressMap.TryGetValue($"{shard.Name}/{node.Name}", out var addr)
+                    || addr.Object is not null)
+                    continue; // усыновлённая — вне rolling (R3-гейт)
+                var topology = new ShardTopology(cluster, shard.Name, $"{cluster}-{shard.Name}",
+                    addressMap.Where(p => p.Key.StartsWith($"{shard.Name}/", StringComparison.Ordinal))
+                        .ToDictionary(p => p.Key.Split('/')[1], p => p.Value));
+                if (await bootstrap.IsOnRevisionAsync(
+                        topology, node.Name, addr, pgtune.Create(
+                            await ReadShardResourcesAsync(cluster, shard.Name, ct)),
+                        pgtune.ExcludeParams, snap.Config.SyncStrict, newRest, ct))
+                    continue; // применила NEW
+
+                allApplied = false;
+                // Состояние ноды:Initializing/not_initialized/нет ключа —
+                // «не ready» (меньшинство-кандидат); ready без NEW — refuse.
+                var nodeState = statuses.TryGetValue($"{shard.Name}/{node.Name}", out var st)
+                    ? st
+                    : "unreachable";
+                if (nodeState != "initializing" && nodeState != "not_initialized")
+                    unappliedNotReady = false;
+            }
+        }
+
+        // QuietTicks: carry в WorkState (MR-#2): прогресс (delivery) обнуляет.
+        var quietTicks = (await journal.ReadAsync(cluster, ct)).Value?.RotateQuietTicks ?? 0;
+        if (!allApplied)
+        {
+            var quietAllowed = quietTicks >= QuietTicksThreshold && unappliedNotReady;
+            if (!quietAllowed)
+            {
+                await journal.WritePhaseAsync(cluster, Op,
+                    quietTicks >= QuietTicksThreshold
+                        ? "rotate-waiting-ready-refusal"
+                        : "rotate-waiting-unapplied", claims.InstanceId, null, ct,
+                    restWindowOpen: true, rotateQuietTicks: quietTicks + 1);
+                return Result<ProcessOutcome>.Success(ProcessOutcome.InProgress);
+            }
+            // ALTER выполняется ниже; окно остаётся открытым (флаг не гасится).
+        }
+        await journal.WritePhaseAsync(cluster, Op, "rotate-etcd-quiet-passed",
+            claims.InstanceId, null, ct, restWindowOpen: true, rotateQuietTicks: 0);
+
         var newApp = await GetAsync(PasswordKey(cluster), ct);
         var newMover = await GetAsync(MoverKey(cluster), ct);
         var newAdmin = await GetAsync(BucketAdminPasswordKey(cluster), ct);
@@ -265,7 +358,8 @@ public sealed partial class ClusterSecretRotator(
             if (!shot.IsSuccess)
                 return await FailAsync(cluster, shot.Error!, "snapshot", ct);
         }
-        return await Finish(cluster, "done", ProcessOutcome.Done, ct, restWindowOpen: false);
+        return await Finish(cluster, "done", ProcessOutcome.Done, ct,
+            restWindowOpen: false, rotateQuietTicks: 0);
     }
 
     // Замена password= в conninfo dsn-ключа (пароль bucket_admin внутри dsn).
@@ -274,6 +368,18 @@ public sealed partial class ClusterSecretRotator(
     private static partial Regex PasswordRegex();
 
     private static string TicketKey(string cluster) => $"/pgworker/rotations/{cluster}";
+
+    private static string WorkKey(string cluster) => $"/pgworker/work/{cluster}";
+
+    /// <summary>Тело work-ключа для txn-put R2 (MR-#3, spec §8-25): JSON
+    /// формата WorkState (op/phase/instance/updated_unix + rest_window_open)
+    /// — совместим с десериализацией WorkState/чтением панели.</summary>
+    private sealed record WorkJournalWindowPayload(
+        [property: System.Text.Json.Serialization.JsonPropertyName("op")] string Op,
+        [property: System.Text.Json.Serialization.JsonPropertyName("phase")] string Phase,
+        [property: System.Text.Json.Serialization.JsonPropertyName("instance")] string Instance,
+        [property: System.Text.Json.Serialization.JsonPropertyName("updated_unix")] long UpdatedUnix,
+        [property: System.Text.Json.Serialization.JsonPropertyName("rest_window_open")] bool RestWindowOpen);
 
     // Гвард «тихого окна» (arch/14 §5 I): все канонические ноды кластера
     // должны иметь статусную машину ready ДО мутаций ротации (R4 ALTER app
@@ -285,7 +391,8 @@ public sealed partial class ClusterSecretRotator(
     // QUARANTINED/REMOVING, усыновлённые (object), ноды без записи
     // portalloc — вне проверки.
     private async Task<Result<bool>> AllNodesReadyAsync(
-        string cluster, ClusterSnapshot snap, IReadOnlyDictionary<string, NodeAddress> addresses, CancellationToken ct)
+        string cluster, ClusterSnapshot snap, IReadOnlyDictionary<string, NodeAddress> addresses,
+        IReadOnlySet<string> restoring, CancellationToken ct)
     {
         var range = await RangeAsync($"/pgworker/nodes/{cluster}/", ct);
         if (!range.IsSuccess)
@@ -301,7 +408,11 @@ public sealed partial class ClusterSecretRotator(
                 statuses[$"{segments[4]}/{segments[5]}"] = fact;
         }
 
-        foreach (var shard in snap.Shards.Where(s => s.Dsn is not null && !s.ToRemove))
+        // MR-#13: restore-шарды исключены СИНХРОННО с R3-гейтом (их ноды вне
+        // rolling) — гвард не ждёт их готовности; в противном случае
+        // restore-шард с погашенными машинами вечно держал бы окно закрытым.
+        foreach (var shard in snap.Shards.Where(s => s.Dsn is not null && !s.ToRemove)
+                     .Where(s => !restoring.Contains(s.Name)))
         {
             foreach (var node in shard.Nodes)
             {
@@ -440,10 +551,10 @@ public sealed partial class ClusterSecretRotator(
 
     private async Task<Result<ProcessOutcome>> Finish(
         string cluster, string phase, ProcessOutcome outcome, CancellationToken ct,
-        bool? restWindowOpen = null)
+        bool? restWindowOpen = null, int? rotateQuietTicks = null)
     {
         var written = await journal.WritePhaseAsync(cluster, Op, phase, claims.InstanceId, null, ct,
-            restWindowOpen: restWindowOpen);
+            restWindowOpen: restWindowOpen, rotateQuietTicks: rotateQuietTicks);
         return written.IsSuccess
             ? Result<ProcessOutcome>.Success(outcome)
             : Result<ProcessOutcome>.Failed(written.Error!);

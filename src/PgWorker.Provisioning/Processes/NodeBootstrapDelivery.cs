@@ -54,10 +54,18 @@ public sealed class NodeBootstrapDelivery(
         PgTuneResult? tuning, IReadOnlySet<string>? excludeParams, bool syncStrict,
         string restPassword, bool isToolStart, CancellationToken ct)
     {
+        // 0) MR-#21: стабильность серта при рестарте воркера — cache процесса
+        // пуст после рестарта; перед выпуском НОВОГО серта перечитываем
+        // существующий bootstrap-ключ ноды: если парсится в валидную
+        // NodeBootstrapData — ПОВТОРЯЕМ её certPem/keyPem (нет дребезга
+        // put/apply после рестарта воркера); выпуск нового — только если
+        // ключа нет/он невалиден (первая доставка).
+        var (certPem, keyPem) = ReadExistingNodeCertificate(topology, nodeName)
+            ?? restCertificates.GetOrCreate(topology.Cluster, topology.Shard, nodeName);
+
         // 1) Построить ожидаемый JSON (детерминированный рендер) и сравнить с
         // хранимым: равен — put НЕ делаем (без дребезга mod_revision, spec
         // §3.7.2); иначе put → повторный GET (нужен актуальный ModRevision).
-        var (certPem, keyPem) = restCertificates.GetOrCreate(topology.Cluster, topology.Shard, nodeName);
         var expectedJson = NodeBootstrapBuilder.Build(
             topology, new EtcdEndpoints(endpoints), syncStrict, nodeName,
             certPem, keyPem, restPassword, tuning, excludeParams);
@@ -149,6 +157,43 @@ public sealed class NodeBootstrapDelivery(
     private async Task<Result<Kv?>> GetAsync(string key, CancellationToken ct)
         => await EtcdEndpointFailover.CallAsync(
             endpoints, (endpoint, token) => etcd.GetAsync(endpoint, key, token), ct);
+
+    // MR-#21: существующий bootstrap-ключ ноды (если валиден) — источник
+    // серта при рестарте воркера. null — ключа нет/он невалиден.
+    private (string CertPem, string KeyPem)? ReadExistingNodeCertificate(
+        ShardTopology topology, string nodeName)
+    {
+        try
+        {
+            var read = etcd.GetAsync(endpoints[0],
+                BootstrapKey(topology.Cluster, topology.Shard, nodeName),
+                CancellationToken.None).GetAwaiter().GetResult();
+            if (!read.IsSuccess || read.Value is null)
+                return null;
+            return ReadCertPair(read.Value.Value);
+            static (string CertPem, string KeyPem)? ReadCertPair(string json)
+            {
+                try
+                {
+                    using var doc = System.Text.Json.JsonDocument.Parse(json);
+                    if (!doc.RootElement.TryGetProperty("cert_pem", out var cert) ||
+                        !doc.RootElement.TryGetProperty("key_pem", out var key) ||
+                        cert.GetString() is not { Length: > 0 } certPem ||
+                        key.GetString() is not { Length: > 0 } keyPem)
+                        return null;
+                    return (certPem, keyPem);
+                }
+                catch (System.Text.Json.JsonException)
+                {
+                    return null;
+                }
+            }
+        }
+        catch
+        {
+            return null; // серт из etcd недоступен — кеш выпустит новый
+        }
+    }
 
     private static DeliveryOutcome Transient(string detail)
         => new(Delivered: false, Wait: false, Transient: true, detail);

@@ -49,6 +49,16 @@ public sealed class PgNodeMachine : IDisposable
     private ulong _bootstrapModRevision;
     private volatile X509Certificate2? _serverCertificate;
 
+    // MR-#22: замена серверного серта освобождает предыдущий экземпляр
+    // (rest-ротация перерендеривает ключ → новая пара P/512-объектов;
+    // без Dispose — утечка неуправляемых ключей на каждом apply).
+    private void SetServerCertificate(string certPem, string keyPem)
+    {
+        var previous = Interlocked.Exchange(ref _serverCertificate,
+            X509Certificate2.CreateFromPem(certPem, keyPem));
+        previous?.Dispose();
+    }
+
     // Машина состояний в памяти процесса: секреты и применённый материал
     // переживают только жизнь процесса (рестарт контейнера — lease гасит
     // статус, хендшейк заново, spec §3.6-5).
@@ -172,7 +182,7 @@ public sealed class PgNodeMachine : IDisposable
                 _bootstrapModRevision = mod;
             }
             // Серт листенера :8081 из bootstrap-ключа (volatile-публикация).
-            _serverCertificate = X509Certificate2.CreateFromPem(data.CertPem, data.KeyPem);
+            SetServerCertificate(data.CertPem, data.KeyPem);
 
             if (_status is null)
             {
@@ -223,6 +233,15 @@ public sealed class PgNodeMachine : IDisposable
             return HandshakeResult.Nop; // фазы в ходу — повторная команда ок-пинок
         try
         {
+            // MR-#11: гвард по ТЕКУЩЕМУ состоянию машины — повторный handshake
+            // при initializing/ready → Nop без второго запуска фаз (etcd-ключ
+            // не читается — txn-переход не повторяется).
+            if (_state != PgNodeStatus.NotInitialized)
+            {
+                Console.Error.WriteLine("pgnode: handshake nop (machine is not not_initialized)");
+                return HandshakeResult.Nop;
+            }
+
             var status = _status;
             if (status is null)
                 return HandshakeResult.EtcdError; // сессии нет — etcd-сторона не готова
@@ -304,7 +323,7 @@ public sealed class PgNodeMachine : IDisposable
                 _bootstrap = data;
                 _bootstrapModRevision = mod;
             }
-            _serverCertificate = X509Certificate2.CreateFromPem(data.CertPem, data.KeyPem);
+            SetServerCertificate(data.CertPem, data.KeyPem);
 
             if (mod == (ulong)(_appliedRevision ?? -1))
                 return new ApplyResult(Ok: true, AppliedRevision: _appliedRevision,
@@ -374,7 +393,11 @@ public sealed class PgNodeMachine : IDisposable
 
         _appliedSpiloMaterial = SpiloMaterial(data);
         _appliedDoormanConfig = DoormanMaterialOf(doormanConfig, data);
-        _appliedRevision = (long)mod;
+        // MR-#12: при ошибке рестарта ревизия НЕ фиксируется («полуприменённое»
+        // не маскируется) — повторный Apply по ТОМУ ЖЕ ключу не no-op: рестарты
+        // повторяются, applied обновляется после успеха.
+        if (error is null)
+            _appliedRevision = (long)mod;
         await PublishAsync(PgNodeStatus.Ready, mod,
             Components(pg: spiloChanged ? "starting" : "ready",
                 doorman: doormanChanged ? "starting" : "ready"),

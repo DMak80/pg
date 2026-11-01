@@ -86,9 +86,8 @@ internal partial class Program
                 https.ClientCertificateMode = ClientCertificateMode.RequireCertificate;
                 https.ServerCertificateSelector = (_, _) => machine.ServerCertificate;
                 https.ClientCertificateValidation = (certificate, _, _) =>
-                    certificate is { } client
-                    && NodeClientCa() is { } ca
-                    && Shared.Tls.TlsChain.ValidateChain(client, ca);
+                    NodeClientCa() is { } ca
+                    && ClientCertValidator.Validate(certificate, ca);
             }));
         });
         builder.Services.AddAppMetrics(WalReceiverMetrics.MeterName, builder.Configuration.GetSection("Metrics"));
@@ -186,8 +185,17 @@ internal partial class Program
     // Секреты в логи/ошибки не попадают.
     private static void MapBootstrapRoutes(WebApplication app, PgNodeMachine machine)
     {
-        app.MapPost("/api/bootstrap", async (WorkerPushRequest body, CancellationToken ct) =>
+        // Граница порта канала (spec §8-23): канальные роуты живут ТОЛЬКО на
+        // mTLS-листенере :8081; тот же путь на :8080 (открытая грань
+        // метрик/ops) — 404.
+        static IResult PortGate(HttpContext ctx) =>
+            ctx.Connection.LocalPort == 8081
+                ? null!
+                : Results.NotFound();
+
+        app.MapPost("/api/bootstrap", async (HttpContext ctx, WorkerPushRequest body, CancellationToken ct) =>
         {
+            if (PortGate(ctx) is { } gate) return gate;
             Console.Out.WriteLine("pgnode: POST /api/bootstrap received");
             var result = await machine.HandshakeAsync(
                 body.SuPassword ?? "", body.StandbyPassword ?? "", body.IsToolStart ?? false, ct);
@@ -201,8 +209,9 @@ internal partial class Program
             };
         });
 
-        app.MapPost("/api/bootstrap/apply", async (CancellationToken ct) =>
+        app.MapPost("/api/bootstrap/apply", async (HttpContext ctx, CancellationToken ct) =>
         {
+            if (PortGate(ctx) is { } gate) return gate;
             var result = await machine.ApplyAsync(ct);
             if (result.EtcdError)
                 return Results.Json(new ErrorResponse("etcd is unavailable"), JsonOpts, statusCode: 503);

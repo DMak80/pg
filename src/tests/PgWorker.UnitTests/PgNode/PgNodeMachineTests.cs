@@ -60,9 +60,18 @@ public class PgNodeMachineTests
             return Task.CompletedTask;
         }
 
+        private readonly Dictionary<string, int> _restartFailures = [];
+
+        public void FailRestartTimes(string program, int times) => _restartFailures[program] = times;
+
         public Task RestartAsync(string program, CancellationToken ct)
         {
             Commands.Add($"restart {program}");
+            if (_restartFailures.TryGetValue(program, out var left) && left > 0)
+            {
+                _restartFailures[program] = left - 1;
+                throw new ApplicationException($"supervisorctl restart {program}: exit 1 (fake)");
+            }
             return Task.CompletedTask;
         }
     }
@@ -513,6 +522,69 @@ public class PgNodeMachineTests
     }
 
     // (12) apply не из ready → NotReady.
+    // Т7а (MR-#11): повторный handshake при initializing → Nop РЕШАЕТСЯ по
+    // текущему состоянию (txn-переход не повторяется — Txn-счётчик фейка
+    // не вырос), фазы не запускаются второй раз.
+    [Fact]
+    public async Task Handshake_RepeatWhileInitializing_NopWithoutSecondRun()
+    {
+        // Arrange: полная машина через handshake → ready (риг ждёт фазы).
+        await using var rig = await Rig.CreateAsync(RealPemPair());
+        rig.ProbeAllReady();
+        (await rig.HandshakeAsync()).Should().Be(HandshakeResult.Started);
+        rig.Machine.State.Should().Be(PgNodeStatus.Ready);
+        var txnsAfterFirst = rig.Etcd.Txns.Count;
+        var commandsAfterFirst = rig.Supervisor.Commands.Count;
+
+        // Act: повторный handshake на ready-машине.
+        var repeat = await rig.HandshakeAsync();
+
+        // Assert: Nop решён по текущему состоянию (MR-#11: TryTransition
+        // обновляет _current) — txn-счётчик не вырос (повторного txn-перехода
+        // нет), фазы не запущены второй раз.
+        repeat.Should().Be(HandshakeResult.Nop);
+        rig.Etcd.Txns.Count.Should().Be(txnsAfterFirst);
+        rig.Supervisor.Commands.Count.Should().Be(commandsAfterFirst);
+    }
+
+    // Т7б (MR-#12): Apply с падающим supervisorctl — Ok=false, applied НЕ
+    // зафиксирован («полуприменённое» не маскируется); повторный Apply по ТОМУ
+    // ЖЕ ключу с рабочим supervisorctl — рестарты выполняются, applied обновлён.
+    [Fact]
+    public async Task Apply_RestartFailure_AppliedNotFixed_ThenRetryApplies()
+    {
+        // Arrange: нода ready; ключ перезаписан с новым YAML; supervisorctl
+        // restart бросает (реплика рестартует спило — «полуприменённое»).
+        await using var rig = await Rig.CreateAsync(RealPemPair());
+        rig.ProbeAllReady();
+        (await rig.HandshakeAsync()).Should().Be(HandshakeResult.Started);
+        var appliedBefore = rig.Machine.AppliedRevision;
+        rig.Etcd.Store[BootstrapKey] = new Fakes.FakeEtcd.Entry(
+            BootstrapJson(spilo: "spilo-yaml-fail", cert: rig.MachinePem.Cert, key: rig.MachinePem.Key), 8, 2);
+
+        // Act 1: apply с падающим restart.
+        rig.Supervisor.FailRestartTimes("spilo", 1);
+        var apply1 = await rig.Machine.ApplyAsync(CancellationToken.None);
+        await rig.Machine.ApplyTask!;
+
+        // Assert 1: команда принята (Ok=true), но applied НЕ зафиксирован
+        // (остался старый) — «полуприменённое» не маскируется (MR-#12).
+        apply1.Ok.Should().BeTrue("the command is accepted, the background apply failed");
+        rig.Machine.AppliedRevision.Should().Be(appliedBefore,
+            "MR-#12: the failed apply must NOT fix the applied revision");
+
+        // Act 2: повторный Apply по ТОМУ ЖЕ ключу с рабочим supervisorctl —
+        // не no-op: рестарты повторяются.
+        rig.Etcd.Store[BootstrapKey] = new Fakes.FakeEtcd.Entry(
+            BootstrapJson(spilo: "spilo-yaml-fail", cert: rig.MachinePem.Cert, key: rig.MachinePem.Key), 8, 2);
+        var apply2 = await rig.Machine.ApplyAsync(CancellationToken.None);
+        await rig.Machine.ApplyTask!;
+
+        // Assert 2: Ok=true; рестарты выполнены; applied обновлён.
+        apply2.Ok.Should().BeTrue("the retry applies the same key");
+        rig.Supervisor.Commands.Should().Contain("restart spilo");
+        rig.Machine.AppliedRevision.Should().Be(8);
+    }
     [Fact]
     public async Task Apply_NotReady_ReturnsNotReady()
     {

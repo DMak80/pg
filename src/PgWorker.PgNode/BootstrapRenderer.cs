@@ -24,6 +24,13 @@ public static class BootstrapRenderer
         NodeBootstrapData bootstrap, string suPassword, string standbyPassword,
         string doormanTemplate, string? rootDir = null)
     {
+        // MR-#23 fail-fast на агенте: пароль вне алфавита [A-Za-z0-9._-] —
+        // ArgumentException (в combine с catch рендера → start_failed), не
+        // молчаливая запись.
+        if (!EnvironmentFile.IsAlphabetSafe(suPassword))
+            throw new ArgumentException("suPassword is outside the DSN-safe alphabet");
+        if (!EnvironmentFile.IsAlphabetSafe(standbyPassword))
+            throw new ArgumentException("standbyPassword is outside the DSN-safe alphabet");
         var root = rootDir ?? Root;
         Directory.CreateDirectory(root + "/doorman");
         var mode = UnixFileMode.UserRead | UnixFileMode.UserWrite; // 0600
@@ -61,5 +68,11 @@ public static class BootstrapRenderer
         {
             writer.Write(content);
         }
+
+        // MR-#15: перерендер поверх ЧУЖОГО файла (созданного с иными правами)
+        // обязан возвращать 0600 — FileMode.Create обрезает содержимое, но не
+        // пересоздаёт права существующего файла.
+        if (!OperatingSystem.IsWindows())
+            File.SetUnixFileMode(path, mode);
     }
 }

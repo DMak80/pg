@@ -46,6 +46,11 @@ public sealed class NodeSupervisor(
     EtcdEndpoints? etcdForNodes = null,
     Action<string, IReadOnlyDictionary<string, (long? FailoverSec, long? RebuildSec)>>? haDurations = null)
 {
+    /// <summary>MR-#4 (spec §8-24): бюджет start_failed-пересозданий ноды
+    /// (канон N=3 — образец QuietTicks-триады окна); превышение — permanent
+    /// (персистентный старт-дефект не даёт вечного recreate-цикла).</summary>
+    internal const int MaxStartFailedRecreates = 3;
+
     /// <summary>
     /// Один тик надзора (не IClusterProcess: исход несёт мёртвые шарды).
     /// Мёртвые шарды возвращаются ЗНАЧЕНИЕМ, а не состоянием синглтона:
@@ -660,6 +665,31 @@ public sealed class NodeSupervisor(
                         // не сохраняются — живой шард восстанавливает реплику
                         // репликацией/бэкапом; restore/TO_REMOVE/object — вне (гварды
                         // выше). Клэйм фазы — claim-дисциплина мутаций.
+                        // MR-#4 (spec §8-24): для ЛИДЕРА — witness-гвард (нужен живой
+                        // свидетель-реплика: без него лидерство уйдёт в пустоту —
+                        // ускорение failover, образец RecreateMarked-hard) + счётчик
+                        // пересозданий с журналом (персистентный старт-дефект не
+                        // даёт вечного recreate-цикла; порог N=3 —QuietTicks-канон).
+                        var leaderKv = await GetAsync($"/service/{cluster}-{shard.Name}/leader", ct);
+                        var isLeader = leaderKv.IsSuccess && leaderKv.Value is { } lk &&
+                            System.Text.Json.JsonDocument.Parse(lk.Value)
+                                .RootElement.TryGetProperty("name", out var ln)
+                            && ln.GetString() == node.Name;
+                        if (isLeader)
+                        {
+                            var aliveWitness = shard.Nodes.Any(n =>
+                                n.Name != node.Name
+                                && n.State is NodeState.Running
+                                && addresses.ContainsKey($"{shard.Name}/{n.Name}"));
+                            if (!aliveWitness)
+                                return Fail(new ApplicationException(
+                                    $"supervise {cluster}: start_failed leader {node.Name} has no alive witness — failover first (retry on the next tick)"));
+                        }
+                        var recreateCount = (await journal.ReadAsync(cluster, ct))
+                            .Value?.StartFailedRecreateCount ?? 0;
+                        if (recreateCount >= MaxStartFailedRecreates)
+                            return Fail(new ApplicationException(
+                                $"supervise {cluster}: node {node.Name} exceeded start_failed recreate budget ({recreateCount} >= {MaxStartFailedRecreates}) — operator investigation"));
                         var claimed = await ClaimAliveAsync(
                             cluster, $"node-startfailed/{shard.Name}/{node.Name}", ct);
                         if (!claimed)
@@ -689,7 +719,8 @@ public sealed class NodeSupervisor(
                                 claims.InstanceId, outcome.Detail, ct);
                         await journal.WritePhaseAsync(cluster, "supervise",
                             $"node-startfailed-recreate/{shard.Name}/{node.Name}",
-                            claims.InstanceId, null, ct);
+                            claims.InstanceId, null, ct,
+                            startFailedRecreateCount: recreateCount + 1);
                         return Result.Success(); // ≤1 мутация на тик кластера
                     }
                 }

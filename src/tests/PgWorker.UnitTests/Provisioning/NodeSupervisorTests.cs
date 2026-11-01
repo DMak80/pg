@@ -495,9 +495,12 @@ public class NodeSupervisorTests
         // Arrange — оператор пометил ЛИДЕРА shard1a (TO_RECREATE, soft);
         // work-ключ: failure-фаза alter/shard1 + rest_window_open:true.
         var switchover = new List<string>();
+        var probeCalls = new List<string>();
         var rig = await NewRig(_ => Ok(), respondRaw: r =>
         {
             switchover.Add($"{r.Method} {r.RequestUri!.AbsolutePath}");
+            if (r.RequestUri!.AbsolutePath == "/config" && r.Method.Method == "PATCH")
+                probeCalls.Add($"{r.Method} {r.RequestUri.AbsolutePath}");
             return Ok();
         });
         rig.Etcd.Seed("/clusters/shop/shards/shard1/nodes/shard1a/state", "TO_RECREATE");
@@ -509,11 +512,13 @@ public class NodeSupervisorTests
         var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
 
         // Assert: switchover НЕ отправлен (RecreateMarked-soft подавлен);
-        // обе реакции окна пишут skip-фазы в один work-ключ — journal
-        // last-write-wins оставляет последнюю (наблюдаема одна из двух);
-        // нода сохранена (снос после закрытия окна); флаг перенесён.
+        // Т2 (MR-#8): PATCH-гвард того же тика тоже не пробит — probe-журнал
+        // НЕ содержит /config (удаление PATCH-гварда не замаскируется этим
+        // тестом); обе реакции окна пишут skip-фазы в один work-ключ —
+        // last-write-wins оставляет последнюю; нода сохранена; флаг перенесён.
         outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
         switchover.Should().NotContain("POST /switchover");
+        probeCalls.Should().BeEmpty("the same tick must not break the PATCH guard too (Т2)");
         var work = await rig.Journal.ReadAsync("shop", CancellationToken.None);
         work.Value!.Phase.Should().BeOneOf(
             "recreate-skipped-rest-window", "dcs-converge-skipped-rest-window",

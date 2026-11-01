@@ -11,6 +11,11 @@ public static class EnvironmentFile
     private static readonly Regex ShSafe = new("^[A-Za-z0-9._-]*$",
         RegexOptions.CultureInvariant | RegexOptions.Compiled);
 
+    /// <summary>Алфавит-чек значения секрета (MR-#23 fail-fast на агенте:
+    /// тот же алфавит, что у воркера — пароль вне [A-Za-z0-9._-] отвергается
+    /// рендером агента, не молча пишется).</summary>
+    public static bool IsAlphabetSafe(string value) => ShSafe.IsMatch(value);
+
     public static string GenerateEnvironmentVariable(string key, string value)
         => ShSafe.IsMatch(value)
             ? $"{key}={value}"

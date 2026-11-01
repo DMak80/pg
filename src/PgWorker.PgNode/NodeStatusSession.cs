@@ -164,6 +164,11 @@ public sealed class NodeStatusSession : INodeStatusWriter
             // PortAllocHealer.cs:361-362).
             var result = await EtcdEndpointFailover.CallAsync(
                 _endpoints, (endpoint, token) => _etcd.TxnAsync(endpoint, txn, token), ct);
+            // Успешный txn-переход обновляет in-memory _current (MR-#11):
+            // keepalive-put'ы сессии публикуют НОВОЕ значение, гвард повторного
+            // handshake решается по текущему состоянию без второго запуска фаз.
+            if (result.IsSuccess && result.Value.Succeeded)
+                _current = PgNodeStatus.FromJson(newValueJson);
             return result.IsSuccess && result.Value.Succeeded;
         }
         finally

@@ -609,6 +609,30 @@ internal sealed class FakeDriver : IClusterDriver
 
 /// <summary>No-op доставка bootstrap-данных (тесты процессов, не проверяющие
 /// t05-канал): EnsureAsync — Wait без действий, IsOnRevisionAsync — false.</summary>
+/// <summary>Т11 (MR-#18): recording-фейк доставки — журнал вызовов
+/// (кластер/шард/нода/rest-пара/is_tool_start); EnsureAsync — Delivered;
+/// IsOnRevisionAsync — false. Для кейсов Ensure-хвостов.</summary>
+internal sealed class RecordingDelivery : PgWorker.Provisioning.Processes.INodeBootstrapDelivery
+{
+    public readonly List<(string Cluster, string Shard, string Node, string RestPassword, bool IsToolStart)> Calls = [];
+
+    public Task<PgWorker.Provisioning.Processes.DeliveryOutcome> EnsureAsync(
+        ShardTopology topology, string nodeName, NodeAddress addr, InstallSecrets secrets,
+        PgTuneResult? tuning, IReadOnlySet<string>? excludeParams, bool syncStrict,
+        string restPassword, bool isToolStart, CancellationToken ct)
+    {
+        Calls.Add((topology.Cluster, topology.Shard, nodeName, restPassword, isToolStart));
+        return Task.FromResult(new PgWorker.Provisioning.Processes.DeliveryOutcome(
+            Delivered: true, Wait: false, Transient: false, null));
+    }
+
+    public Task<bool> IsOnRevisionAsync(
+        ShardTopology topology, string nodeName, NodeAddress addr,
+        PgTuneResult? tuning, IReadOnlySet<string>? excludeParams, bool syncStrict,
+        string restPassword, CancellationToken ct)
+        => Task.FromResult(false);
+}
+
 internal sealed class NoDelivery : PgWorker.Provisioning.Processes.INodeBootstrapDelivery
 {
     public static readonly NoDelivery Instance = new();

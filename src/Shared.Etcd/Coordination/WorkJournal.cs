@@ -20,7 +20,9 @@ public sealed record WorkState(
     [property: JsonPropertyName("retry_not_before_unix")] long? RetryNotBeforeUnix = null,
     [property: JsonPropertyName("last_failover")] HaSupervisionFact? LastFailover = null,
     [property: JsonPropertyName("last_rebuild")] HaSupervisionFact? LastRebuild = null,
-    [property: JsonPropertyName("rest_window_open")] bool? RestWindowOpen = null);
+    [property: JsonPropertyName("rest_window_open")] bool? RestWindowOpen = null,
+    [property: JsonPropertyName("rotate_quiet_ticks")] int? RotateQuietTicks = null,
+    [property: JsonPropertyName("start_failed_recreate_count")] int? StartFailedRecreateCount = null);
 
 /// <summary>Серия подряд идущих фейлов процесса (бэкофф ретраев, arch/14 §3.3/§5 A):
 /// живёт в {prefix}/work/&lt;C&gt;, пишется фейлом, переносится фазами, сбрасывается Done.</summary>
@@ -94,7 +96,8 @@ public sealed class WorkJournal(string keyPrefix, IEtcdGateway gateway, string[]
     public async Task<Result> WritePhaseAsync(
         string cluster, string op, string phase, string instance, string? lastError, CancellationToken ct,
         RetrySeries? series = null, IReadOnlyDictionary<string, long>? unreachable = null,
-        HaSupervisionFacts? facts = null, bool? restWindowOpen = null)
+        HaSupervisionFacts? facts = null, bool? restWindowOpen = null,
+        int? rotateQuietTicks = null, int? startFailedRecreateCount = null)
     {
         //  (унификация с Pg, фикс AC6): фазовая запись БЕЗ явного трека
         // сохраняет существующий (fix сброса порогов NodeDead/BrokerDead;
@@ -107,7 +110,9 @@ public sealed class WorkJournal(string keyPrefix, IEtcdGateway gateway, string[]
         HaSupervisionFact? carryFailover = facts?.LastFailover;
         HaSupervisionFact? carryRebuild = facts?.LastRebuild;
         bool? carryWindow = restWindowOpen;
-        if (track is null || carryWindow is null)
+        int? carryQuiet = rotateQuietTicks;
+        int? carryRecreate = startFailedRecreateCount;
+        if (track is null || carryWindow is null || carryQuiet is null || carryRecreate is null)
         {
             var current = await ReadAsync(cluster, ct);
             if (!current.IsSuccess)
@@ -118,11 +123,13 @@ public sealed class WorkJournal(string keyPrefix, IEtcdGateway gateway, string[]
             carryFailover ??= current.Value?.LastFailover;
             carryRebuild ??= current.Value?.LastRebuild;
             carryWindow ??= current.Value?.RestWindowOpen;
+            carryQuiet ??= current.Value?.RotateQuietTicks;
+            carryRecreate ??= current.Value?.StartFailedRecreateCount;
         }
 
         var payload = new WorkState(op, phase, instance, DateTimeOffset.UtcNow.ToUnixTimeSeconds(), lastError,
             track, series?.FailCount, series?.FailFirstUnix, series?.RetryNotBeforeUnix,
-            carryFailover, carryRebuild, carryWindow);
+            carryFailover, carryRebuild, carryWindow, carryQuiet, carryRecreate);
         var put = await WithFailoverAsync(endpoint => gateway.PutAsync(
             endpoint, WorkKey(cluster), JsonSerializer.Serialize(payload, Json), lease: null, ct));
         if (put.IsSuccess)
@@ -170,7 +177,9 @@ public sealed class WorkJournal(string keyPrefix, IEtcdGateway gateway, string[]
             JsonSerializer.Serialize(new WorkState("supervise", "supervising", instance,
                 DateTimeOffset.UtcNow.ToUnixTimeSeconds(), lastError, unreachable,
                 LastFailover: facts?.LastFailover, LastRebuild: facts?.LastRebuild,
-                RestWindowOpen: current.Value?.RestWindowOpen), Json),
+                RestWindowOpen: current.Value?.RestWindowOpen,
+                RotateQuietTicks: current.Value?.RotateQuietTicks,
+                StartFailedRecreateCount: current.Value?.StartFailedRecreateCount), Json),
             lease: null, ct));
     }
 

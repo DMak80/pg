@@ -113,7 +113,7 @@ public class AddShardProcessTests
     private static HttpResponseMessage DeadPatroni() => new(HttpStatusCode.InternalServerError);
 
     private sealed record Rig(Fakes.FakeEtcd Etcd, Fakes.FakeDriver Driver, Fakes.FakeSql Sql,
-        ClaimStore Claims, WorkJournal Journal, AddShardProcess Process);
+        ClaimStore Claims, WorkJournal Journal, AddShardProcess Process, RecordingDelivery Delivery);
 
     private static async Task<Rig> NewRig(
         Func<int, HttpResponseMessage> patroniResponse,
@@ -130,6 +130,7 @@ public class AddShardProcessTests
         if (busyPorts is not null)
             driver.BusyPorts = busyPorts;
         var sql = new Fakes.FakeSql();
+        var delivery = new RecordingDelivery();
         var process = new AddShardProcess(
             etcd, [Ep], driver, sql, Probe(patroniResponse), claims, journal,
             opts ?? new PlacementOptions(15000, 15100, PatroniBootSec: 600),
@@ -138,8 +139,8 @@ public class AddShardProcessTests
             new PortAllocIndex(etcd, [Ep], NullLogger<PortAllocIndex>.Instance),
             new PortAllocLock("/pgworker", [Ep], etcd, TimeProvider.System, claims.InstanceId),
             Fakes.PgtuneFactory(),
-            NoDelivery.Instance, snapshot: null);
-        return new Rig(etcd, driver, sql, claims, journal, process);
+            delivery, snapshot: null);
+        return new Rig(etcd, driver, sql, claims, journal, process, delivery);
     }
 
     // Порты живых нод (docker видит публикации контейнеров) — новые ноды уходят выше:
@@ -473,5 +474,13 @@ public class AddShardProcessTests
         var second = await rig.Process.TickAsync(await Snapshot(rig.Etcd), "shard3", CancellationToken.None);
         second.Value.Should().Be(ProcessOutcome.InProgress);
         rig.Etcd.Store["/pgworker/portalloc/shop"].Value.Should().Contain("shard3/");
+    }
+
+
+    private static void SeedShard3Nodes(Fakes.FakeEtcd etcd)
+    {
+        etcd.Seed("/clusters/shop/shards/shard3/replicas", "2");
+        etcd.Seed("/clusters/shop/shards/shard3/nodes/shard3a/state", "RUNNING");
+        etcd.Seed("/clusters/shop/shards/shard3/nodes/shard3b/state", "RUNNING");
     }
 }
