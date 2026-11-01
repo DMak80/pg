@@ -20,7 +20,7 @@ S3-пулы) создаются вручную через панель. Патт
 
 Полный подъём `00-up.sh` поднимает ТОЛЬКО ядро и панель: etcd-контур,
 панель, воркеры (стендовые `kafkaworker`/`valkeyworker` профилями +
-deploy-контур `pgworker`/`s3worker` ×2) и мониторинг (профиль `metrics`).
+deploy-контур `pgworker`/`s3worker`/`etcdworker` ×2) и мониторинг (профиль `metrics`).
 Ресурсы — кластеры всех доменов (PG/Kafka/Valkey), S3-пулы, ownS3 —
 стендом НЕ создаются и никакие сиды штатным подъёмом не наливаются:
 ресурс создаёт оператор вручную через панель (API воркеров). Сервис
@@ -56,6 +56,7 @@ external через override `docker-compose.contour.yml`.
 | `pgw-<C>-*` (движок; ноды кластеров после их создания вручную) | 5432 / 8008 | portalloc `:15xxx` / `:18xxx` |
 | `s3w-<C>-<I>` (движок S3Worker; ноды кластеров `/s3/`) | 9000 | portalloc `:18xxx` (ряд S3W) |
 | `vwk-<C>-node<k>` (движок ValkeyWorker) | 6379 | portalloc `:17xxx` |
+| `deploy-etcdworker-1/-2` (deploy-контур ×2) | 8080 (API mTLS) | 8087/8088 (env `ETCDW_API_HOST_PORT/2`) |
 
 Панель получает env грани «Хранилище бэкапов»: только
 `AdminPanel__Backups__S3__Bucket=pgworker-backups` (path-style — дефолт
@@ -155,6 +156,16 @@ config → no-op. Воркер в `valkey`-профиле продолжает �
 `vwk-demo-node1` удаляется сценарием teardown — restart-политика
 `unless-stopped` не переживает удаление).
 
+### 2.5. `etcdworker` (deploy-контур ×2)
+
+Сервис deploy-compose `etcdworker`/`etcdworker-2` (образ publish-COPY
+`etcdworker:dev`, собирает `00-up.sh` на хосте; env — якорь `x-etcdworker-env`):
+оркестратор etcd-контура (arch/25). Стендовый контур `as-etcd-1/2/3` для него
+ВНЕШНИЙ: ключа `/etcd/config` нет — режим «только наблюдение/слепки»
+(arch/25 §3; `/api/etcd/domain` отдаёт `declaredNodes:null`). HTTP API — mTLS
+(порты 8087/8088, `ETCDW_API_HOST_PORT/2`), дискавери — lease-ключи
+`/etcdworker/api/`; стенд поднимает 2 инстанса.
+
 ## 3. Проверки (`dev-stand/adminpanel/checks/*.sh`, стиль `arch/stand/checks/`)
 
 | Скрипт | Сценарий | Ожидание |
@@ -166,6 +177,7 @@ config → no-op. Воркер в `valkey`-профиле продолжает �
 | `30-failover.sh` | kill мастера по leader-ключу `/clusters/demo/shards/shard1/master` (`docker kill pgw-demo-shard1-<node>`) → Patroni (DCS etcd) промотит реплику — wait нового мастера (leader-ключ сменился, lease жив) → надзор движка rejoin'ит убитую ноду (wait RUNNING) | цикл алерт→успокоение; финал — оба члена RUNNING, master-ключ жив |
 | `40-live-probes.sh` | панель (в докере, стендовая сеть): Patroni/SQL-пробы — advertised portalloc-адреса нод (из `/api/clusters/demo`: patroni `:18xxx`, pg `:15xxx` через `host.docker.internal`); `/api/ha/demo-shard1` lag/state заполнены, инвентарь ACTIVE-схем сверен | поля не null, probe-ошибок нет, `inventory-mismatch` нет |
 | `43-etcd-ha.sh` | кворум/health/member list; stop as-etcd-2 → запись/healthz/master-ключ живы; start → снова 3/3 | каждый шаг ≤ бюджета |
+| `44-etcdworker.sh` | read-only чек etcdworker-грани: `/api/workers` — ряд etcdworker ≥1 инстанса, health healthy; `/api/etcd/domain` — 200, стендовый инвариант внешнего контура (declaredNodes null, узлов нет, snapshots отсутствует или OK); `/api/etcd/status` — members ≥ 3, все external | без мутаций; чистка — сессионный JAR |
 | `45-backups-storage.sh` | грань «Хранилище бэкапов» против ownS3 (контур: `owns3:9000` внутри / `:9010` снаружи): гвард healthz `:9010`, идемпотентный mc-налив снаружи (`demo/shard1`), дерево — реальные бэкапы demo + налив, `clusterOk == true` | `configured=true`, health api/live ok, дерево `demo/shard1` с полными |
 | `51-valkey-api.sh` | valkey-домен против живого воркера (профиль `valkey`): сид `demo` → панель видит кластер (список/детали/нода RUNNING/endpoints), live-PING `live=true`; полный цикл мутаций через панель→прокси→API воркера: create (RunTag-имя) → NOT_INITIALIZED → RUNNING ≤ бюджета тиков, config-мутация (maxmemory converge), resources (пересоздание контейнера), ротации app+admin (заявки 202, исполнение окном двух паролей), delete → контейнера и ключей нет; 409-ветки (имя занято, двойная ротация) | каждый шаг ≤ бюджета; после delete — ни контейнера `vwk-<tag>-*`, ни ключей `/valkey/clusters/<tag>/` |
 | `52-valkey-contour.sh` | приёмка контурного режима сетей ValkeyWorker (arch/21 §2, ручной чек): логин в панель → создание valkey-кластера (уникальное имя) ЧЕРЕЗ панель → wait Active/нода RUNNING → инспект контейнера `vwk-<C>-*`: сеть `adminpanel-stand-net`; `endpoints` — advertised `host:port` (portalloc, формат не изменился) → удаление кластера через панель → ассерт чистоты (контейнера и ключей `/valkey/clusters/<C>/` нет) | контейнер ноды — в стендовой сети; advertised-формат прежний; после чека следов нет |
@@ -174,7 +186,7 @@ config → no-op. Воркер в `valkey`-профиле продолжает �
 
 Скрипты — bash+jq (как в pg (этот монорепозиторий)), гоняются вручную;
 CI не требуют (интеграционные тесты используют Testcontainers,
-не стенд). Полный e2e-прогон — последовательность `00 → 10 → 20 → 30 → 40`
+не стенд). Полный e2e-прогон — последовательность `00 → 10 → 20 → 30 → 40 → 43 → 44`
 (панель — сервис стенда, поднимается шагом 00; порядок важен: 30-й меняет
 топологию demo (Patroni-failover)
 и возвращает её в консистентный вид rejoin'ом надзора; 40-й рассчитан на неё);
