@@ -1,17 +1,24 @@
-// Детали s3-кластера: шапка (state-бейджи, endpoints, etcd-признак, кнопки
-// зонд/ротация/удаление) + вкладки Ноды/Репликация/Связность и синхронность
-// (arch/03 §12.3). Порт ValkeyClusterDetailsPage; canMutate = ACTIVE.
+// Детали s3-кластера (u01/u13): единый шаблон DomainPageLayout — вкладки
+// Ноды|Репликация|Связность и синхронность|Журнал; шапка — state-бейджи
+// (серым), etcd-признак, endpoints, живая ротация; canMutate = ACTIVE.
 import { useQuery } from '@tanstack/react-query';
-import { Badge, Card, Group, SimpleGrid, Stack, Tabs, Text, Title, Tooltip } from '@mantine/core';
+import { Badge, Card, Group, SimpleGrid, Stack, Text, Tooltip } from '@mantine/core';
 import { useParams } from 'react-router';
-import { fetchS3ClusterDetails, s3QueryKeys } from '../../api/queries';
+import {
+  deleteS3Cluster,
+  fetchS3ClusterDetails,
+  rotateS3Secrets,
+  s3QueryKeys,
+} from '../../api/queries';
 import { ErrorSection, LoadingSection } from '../../components/LoadState';
+import { DomainPageLayout, Field } from '../../components/DomainPageLayout';
+import { WorkJournalBlock } from '../../components/WorkJournalBlock';
 import { usePollingIntervalMs } from '../../polling/PollingContext';
 import { ConnectivitySyncTab } from './ConnectivitySyncTab';
-import { DeleteS3ClusterButton } from './DeleteS3ClusterButton';
+import { DeleteEntityButton } from '../../components/actions/DeleteEntityButton';
 import { NodesTab } from './NodesTab';
 import { ReplicationTab } from './ReplicationTab';
-import { RotateSecretsButton } from './RotateSecretsButton';
+import { RotateSecretButton } from '../../components/actions/RotateSecretButton';
 import { SyncProbeButton } from './SyncProbeButton';
 
 export function S3ClusterDetailsPage() {
@@ -37,114 +44,140 @@ export function S3ClusterDetailsPage() {
 
   return (
     <Stack gap="md">
-      <Group justify="space-between">
-        <Group gap="sm">
-          <Title order={2}>S3: {c.name}</Title>
-          {c.state === 'TO_REMOVE' ? (
-            <Tooltip label="the worker tears down instances and etcd keys">
-              <Badge color="red" variant="light">to remove</Badge>
-            </Tooltip>
-          ) : c.state === 'NOT_INITIALIZED' ? (
-            <Badge color="gray" variant="light">not initialized</Badge>
-          ) : null}
-          {c.rotation !== null ? (
-            <Tooltip label="secrets rotation ticket is live: the worker re-issues the cluster credentials via rolling recreation">
-              <Badge color="blue" variant="light">
-                secrets rotation · {c.rotation.requestedBy ?? '—'}
-              </Badge>
-            </Tooltip>
-          ) : null}
-        </Group>
-        {canMutate ? (
-          <Group gap="sm">
-            <SyncProbeButton cluster={c.name} />
-            <RotateSecretsButton cluster={c.name} disabled={c.rotation !== null} />
-            <DeleteS3ClusterButton cluster={c.name} />
-          </Group>
-        ) : null}
-      </Group>
-
-      <Card withBorder padding="md" radius="md">
-        <SimpleGrid cols={{ base: 2, md: 4 }}>
-          <Field label="Platform">{c.platform}</Field>
-          <Field label="Etcd backup">{c.etcdBackup ? 'yes' : 'no'}</Field>
-          <Field label="Endpoints">
-            <Text size="sm" ff="monospace">{c.endpoints ?? '—'}</Text>
-          </Field>
-          <Field label="Created">
-            {c.createdUnix !== null ? new Date(c.createdUnix * 1000).toLocaleString() : '—'}
-          </Field>
-        </SimpleGrid>
-      </Card>
-
-      {/* Креды клиентской грани (arch/23 §2): состав без значений — их в API нет. */}
-      <Card withBorder padding="md" radius="md">
-        <Group justify="space-between" mb="xs">
-          <Text size="sm" fw={500}>Client credentials</Text>
-          {c.etcdBackup ? (
-            <Tooltip label="the backups key of this cluster is external: the etcd backup special key (per-install env pair)">
-              <Badge color="violet" variant="light">backups key is external</Badge>
-            </Tooltip>
-          ) : null}
-        </Group>
-        {c.rootUser === null ? (
-          <Text c="dimmed">Not provisioned yet</Text>
-        ) : (
-          <SimpleGrid cols={{ base: 1, md: 2 }}>
-            <Field label="Root user">
-              <Text size="sm" ff="monospace">{c.rootUser}</Text>
-            </Field>
-            <Field label="Access keys">
-              <Stack gap={2}>
-                {(c.accessKeys ?? []).map((k) => (
-                  <Text key={k.name} size="sm" ff="monospace">{k.name} ({k.policy})</Text>
-                ))}
+      <DomainPageLayout
+        title={`S3: ${c.name}`}
+        statusBadges={
+          <>
+            {/* Штатная тишина серым (arch/03 §12.3) */}
+            {c.state === 'TO_REMOVE' ? (
+              <Tooltip label="the worker tears down instances and etcd keys">
+                <Badge color="gray" variant="light">TO_REMOVE</Badge>
+              </Tooltip>
+            ) : c.state === 'NOT_INITIALIZED' ? (
+              <Badge color="gray" variant="light">NOT_INITIALIZED</Badge>
+            ) : null}
+          </>
+        }
+        modeBadges={
+          <>
+            {/* u10-стиль бейджа etcdBackup (режим кластера) */}
+            {c.etcdBackup ? (
+              <Tooltip label="backups key of this cluster is external (etcd backup special key)">
+                <Badge color="violet" variant="light">etcd-backup</Badge>
+              </Tooltip>
+            ) : null}
+            {c.rotation !== null ? (
+              <Tooltip label="secrets rotation ticket is live: the worker re-issues the cluster credentials via rolling recreation">
+                <Badge color="blue" variant="light">ротация… · {c.rotation.requestedBy ?? '—'}</Badge>
+              </Tooltip>
+            ) : null}
+          </>
+        }
+        endpoints={c.endpoints}
+        actions={
+          canMutate ? (
+            <Group gap="sm">
+              <SyncProbeButton cluster={c.name} />
+              <RotateSecretButton
+                title="Ротация секретов"
+                warningText={'Воркер выполняет rolling-пересоздание инстансов с новым env профиля '
+                  + `${c.name}: на время пересоздания каждого инстанса ёмкость хранилища деградирует. `
+                  + 'PKI переиспользуется — ключи нод переживают пересоздание; заявка не отменяется '
+                  + '(снятие — только воркером).'}
+                onRotate={() => rotateS3Secrets(c.name)}
+                invalidateKeys={[s3QueryKeys.clusters, s3QueryKeys.cluster(c.name)]}
+                disabled={!canMutate || c.rotation !== null}
+              />
+              <DeleteEntityButton
+                title={`Удалить S3-кластер ${c.name}`}
+                confirmText={`Снос уничтожает данные бэкапов на дисках всех инстансов — осознанное действие; демонтаж асинхронный (воркер). Обратного перехода нет.`}
+                onConfirm={() => deleteS3Cluster(c.name)}
+                invalidateKeys={[s3QueryKeys.clusters, s3QueryKeys.cluster(c.name)]}
+                label="Удалить кластер"
+              />
+            </Group>
+          ) : null
+        }
+        infoFields={[
+          { label: 'Platform', value: c.platform },
+          { label: 'Etcd backup', value: c.etcdBackup ? 'yes' : 'no' },
+          {
+            label: 'Created',
+            value: c.createdUnix !== null ? new Date(c.createdUnix * 1000).toLocaleString() : '—',
+          },
+        ]}
+        tabs={[
+          {
+            value: 'nodes',
+            label: 'Ноды',
+            content:
+              c.nodesList.length === 0 && c.state === 'NOT_INITIALIZED' ? (
+                <Card withBorder padding="md" radius="md">
+                  <Text c="dimmed">No nodes declared — the cluster is a declaration without deployment</Text>
+                </Card>
+              ) : (
+                <Card withBorder padding="md" radius="md">
+                  <NodesTab cluster={c} canMutate={canMutate} />
+                </Card>
+              ),
+          },
+          {
+            value: 'replication',
+            label: 'Репликация',
+            content: (
+              <Card withBorder padding="md" radius="md">
+                <ReplicationTab cluster={c} canMutate={canMutate} />
+              </Card>
+            ),
+          },
+          {
+            value: 'probes',
+            label: 'Связность и синхронность',
+            content: (
+              <Card withBorder padding="md" radius="md">
+                <ConnectivitySyncTab cluster={c} />
+              </Card>
+            ),
+          },
+          {
+            value: 'journal',
+            label: 'Журнал',
+            // u13: work-журнал /s3worker/work/<C>
+            content: (
+              <Stack gap="md">
+                <WorkJournalBlock work={c.work} />
+                {/* Креды клиентской грани (arch/23 §2): состав без значений */}
+                <Card withBorder padding="md" radius="md">
+                  <Group justify="space-between" mb="xs">
+                    <Text size="sm" fw={500}>Креды клиентской грани</Text>
+                    {c.etcdBackup ? (
+                      <Tooltip label="the backups key of this cluster is external: the etcd backup special key (per-install env pair)">
+                        <Badge color="violet" variant="light">backups key is external</Badge>
+                      </Tooltip>
+                    ) : null}
+                  </Group>
+                  {c.rootUser === null ? (
+                    <Text c="dimmed">Не провижинены</Text>
+                  ) : (
+                    <SimpleGrid cols={{ base: 1, md: 2 }}>
+                      <Field label="Root user">
+                        <Text size="sm" ff="monospace">{c.rootUser}</Text>
+                      </Field>
+                      <Field label="Access keys">
+                        <Stack gap={2}>
+                          {(c.accessKeys ?? []).map((k) => (
+                            <Text key={k.name} size="sm" ff="monospace">{k.name} ({k.policy})</Text>
+                          ))}
+                        </Stack>
+                      </Field>
+                    </SimpleGrid>
+                  )}
+                </Card>
               </Stack>
-            </Field>
-          </SimpleGrid>
-        )}
-      </Card>
-
-      <Tabs defaultValue="nodes" keepMounted={false}>
-        <Tabs.List>
-          <Tabs.Tab value="nodes">Nodes</Tabs.Tab>
-          <Tabs.Tab value="replication">Replication</Tabs.Tab>
-          <Tabs.Tab value="probes">Connectivity and sync</Tabs.Tab>
-        </Tabs.List>
-
-        <Tabs.Panel value="nodes" pt="md">
-          {c.nodesList.length === 0 && c.state === 'NOT_INITIALIZED' ? (
-            <Card withBorder padding="md" radius="md">
-              <Text c="dimmed">No nodes declared — the cluster is a declaration without deployment</Text>
-            </Card>
-          ) : (
-            <Card withBorder padding="md" radius="md">
-              <NodesTab cluster={c} canMutate={canMutate} />
-            </Card>
-          )}
-        </Tabs.Panel>
-
-        <Tabs.Panel value="replication" pt="md">
-          <Card withBorder padding="md" radius="md">
-            <ReplicationTab cluster={c} canMutate={canMutate} />
-          </Card>
-        </Tabs.Panel>
-
-        <Tabs.Panel value="probes" pt="md">
-          <Card withBorder padding="md" radius="md">
-            <ConnectivitySyncTab cluster={c} />
-          </Card>
-        </Tabs.Panel>
-      </Tabs>
-    </Stack>
-  );
-}
-
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <Stack gap={2}>
-      <Text size="xs" c="dimmed" tt="uppercase">{label}</Text>
-      {typeof children === 'string' ? <Text>{children}</Text> : children}
+            ),
+          },
+        ]}
+      />
     </Stack>
   );
 }

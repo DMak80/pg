@@ -16,7 +16,9 @@ public sealed record S3Snapshot(
     IReadOnlyList<Alert> Alerts,                     // S3AlertEngine (arch/03 §12.4)
     IReadOnlyList<KeyParseError> ParseErrors,        // битые JSON s3-ключей (arch/23 §2)
     int UnknownKeyCount,
-    WorkerApiCert? WorkerApiCert = null);            // целевой серт /workers/api_tls/s3worker (arch/02 §9.9)
+    WorkerApiCert? WorkerApiCert = null,            // целевой серт /workers/api_tls/s3worker (arch/02 §9.9)
+    IReadOnlyList<WorkJournalInfo>? WorkJournals = null, // /s3worker/work/ (u13, arch/23 §8)
+    WorkerCoordination? Coordination = null);  // leader/claims/instances (u14, adminpanel/02 §2.3.4)
 
 // Кластер /s3/clusters/<C>/ (arch/23 §2): config + ноды + граф + факты;
 // креды кластера — per-cluster secrets-ключ etcd (/s3/clusters/<C>/secrets,

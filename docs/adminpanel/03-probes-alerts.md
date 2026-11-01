@@ -23,20 +23,25 @@
  `host__port` (`:` в ключах режут конфиг-провайдеры .NET); в памяти/ENV —
  канонический `host:port`, он приоритетен при наличии обоих.
 
-## AlertEngine — 25 правил
+## AlertEngine — 47 правил
 
 `Core/Alerting/Rules/*` — все `[InjectAsSingleton(typeof(IAlertRule))]`, движок
 (`AlertEngine`, `[InjectAsSingleton(typeof(IAlertEngine))]`) собирает
 `IEnumerable<IAlertRule>` через DI. Id = `kind:target` (стабилен), `SinceUnix`
 переносится из предыдущего снапшота («присутствует с…»), сортировка: severity ↓,
 затем kind/target (Ordinal). Пороги — `AdminPanel:Alerts` (`AlertsOptions`).
+Полный перечень ниже — сверяется с кодом правил; условие/severity каждого kind —
+arch/03 §4 (источник истины каталога).
 
 | Группа | Правила (kind) |
 |---|---|
-| etcd-здоровье (5) | `etcd-unreachable`, `etcd-endpoint-down`, `etcd-no-quorum`, `etcd-alarm`, `snapshot-stale` |
+| etcd-здоровье (7) | `etcd-unreachable`, `etcd-endpoint-down`, `etcd-no-quorum`, `etcd-alarm`, `etcd-snapshot-export-failed`, `etcd-snapshot-export-stale`, `snapshot-stale` |
 | шардирование/переезды (12) | `cluster-not-initialized`, `cluster-incomplete`, `key-malformed`, `shard-no-master`, `bucket-no-routing`, `bucket-lost`, `bucket-out-of-range`, `move-stale`, `move-frozen-long`, `move-aborting`, `move-flipped-status-stuck`, `inventory-mismatch` |
 | HA/слоты (7) | `shard-no-leader`, `ha-member-not-streaming`, `replica-lag-high`, `sync-standby-missing`, `slot-lag-high`, `slot-invalidation-risk`, `slot-wal-lost` |
 | пробы (1) | `probe-failed` (sql→critical, patroni→warning, весь скоп молчит→critical один на скоп; lifecycle-цели NOT_INITIALIZED/TO_REMOVE подавлены — arch/03 §4) |
+| бэкапы/S3/WAL (16) | `backup-chain-broken`, `backup-deleting-stuck`, `backup-drill-failed`, `backup-drill-stale`, `backup-full-stale`, `backup-orphan`, `backup-pool-missing`, `backup-pool-unreachable`, `backup-s3-unreachable`, `backup-storage-quota`, `backup-verify-failed`, `backup-wal-tli-gap`, `restore-failed`, `wal-chain-broken`, `wal-stream-lag`, `wal-stream-stopped` |
+| процессы/доступность воркера (3) | `provision-stuck`, `worker-api-unreachable`, `worker-unhealthy` |
+| глобальный стоп (1) | `backups-disabled` (warning: ключ `/pgworker/backups-disabled` — Remedy OperatorRunbook «запуск — снять ключ /pgworker/backups-disabled или включить Backups:Enabled») |
 
 (`inventory-mismatch` сверяет инвентарь SQL-пробы с routing, только ACTIVE-бакеты.)
 

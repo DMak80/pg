@@ -1,23 +1,15 @@
 import { useState } from 'react';
-import { Badge, Button, Checkbox, Group, Modal, Select, Stack, Text } from '@mantine/core';
+import { Badge, Button, Checkbox, Group, Modal, NumberInput, Select, Stack, Switch, Text } from '@mantine/core';
 import { updateBackupsPolicy } from '../../api/queries';
-import type { S3PoolDto } from '../../api/dto';
+import type { BackupPolicyDto, S3PoolDto } from '../../api/dto';
 
-// Модал «Пул бэкапов» (t36, arch/adminpanel/03 §3.8): Select пула + два
-// упорядоченных списка нод (мастер/реплика) — чекбоксы (добавление в КОНЕЦ
-// массива — приоритет) + кнопки ↑/↓; сохранение — полный policy (замещение
-// целиком, 02 §9.12); «Не выбрано» — валидный сброс (policy без s3).
+// Единая форма «Policy бэкапов кластера» (u16/D14, arch/adminpanel/03 §3.8):
+// retention + full_max_age_sec + verify + drill + garbage_min_age_sec + секция
+// s3 — ОДНИМ телом (канон замещения целиком, 02 §9.12); кнопка на
+// /backups-storage per-кластер и на вкладке «Бэкапы (срез)» pg-кластера.
 interface Props {
   cluster: string;
-  policy: {
-    retentionDays: number | null;
-    retentionWeeks: number | null;
-    retentionMonths: number | null;
-    fullMaxAgeSec: number | null;
-    verifyOnCreate: boolean | null;
-    drillIntervalDays: number | null;
-    s3: { pool: string; writeMaster: string[]; writeReplica: string[] } | null;
-  } | null;
+  policy: BackupPolicyDto | null;
   pools: S3PoolDto[];
   onClose: () => void;
   onSaved: () => void;
@@ -74,10 +66,19 @@ function OrderedList({
   );
 }
 
-export function BackupsPoolModal({ cluster, policy, pools, onClose, onSaved }: Props) {
+export function PolicyBackupsModal({ cluster, policy, pools, onClose, onSaved }: Props) {
   const [pool, setPool] = useState<string | null>(policy?.s3?.pool ?? null);
   const [master, setMaster] = useState<string[]>(policy?.s3?.writeMaster ?? []);
   const [replica, setReplica] = useState<string[]>(policy?.s3?.writeReplica ?? []);
+  // u16: полный набор policy-полей (из policy-ключа или дефолты формы).
+  const [retentionDays, setRetentionDays] = useState(policy?.retentionDays ?? 1);
+  const [retentionWeeks, setRetentionWeeks] = useState(policy?.retentionWeeks ?? 1);
+  const [retentionMonths, setRetentionMonths] = useState(policy?.retentionMonths ?? 1);
+  const [fullMaxAgeSec, setFullMaxAgeSec] = useState(policy?.fullMaxAgeSec ?? 86400);
+  const [verifyOnCreate, setVerifyOnCreate] = useState(policy?.verifyOnCreate ?? true);
+  const [drillIntervalDays, setDrillIntervalDays] = useState(policy?.drillIntervalDays ?? 1);
+  const [garbageMinAgeSec, setGarbageMinAgeSec] = useState<number | null>(
+    policy?.garbageMinAgeSec ?? null);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
@@ -87,15 +88,23 @@ export function BackupsPoolModal({ cluster, policy, pools, onClose, onSaved }: P
     setSaving(true);
     setError(null);
     try {
-      // Полный policy (замещение целиком): retention/full_max_age/verify/drill —
-      // из текущего значения; s3 — только при выбранном пуле (сброс — БЕЗ секции).
+      // Полный policy (замещение целиком — 02 §9.12): все поля формы; s3 —
+      // только при выбранном пуле (сброс — БЕЗ секции); garbageMinAgeSec null —
+      // поле не шлётся (дефолт воркера 600 с). Валидация ≥600 — граница A1
+      // (зеркало панели, истина — сервер воркера).
+      if (fullMaxAgeSec < 600) { setError('fullMaxAgeSec ≥ 600'); return; }
+      if (garbageMinAgeSec !== null && garbageMinAgeSec < 600) {
+        setError('garbageMinAgeSec ≥ 600');
+        return;
+      }
       await updateBackupsPolicy(cluster, {
-        retentionDays: policy?.retentionDays ?? 1,
-        retentionWeeks: policy?.retentionWeeks ?? 1,
-        retentionMonths: policy?.retentionMonths ?? 1,
-        fullMaxAgeSec: policy?.fullMaxAgeSec ?? 86400,
-        verifyOnCreate: policy?.verifyOnCreate ?? true,
-        drillIntervalDays: policy?.drillIntervalDays ?? 1,
+        retentionDays,
+        retentionWeeks,
+        retentionMonths,
+        fullMaxAgeSec,
+        verifyOnCreate,
+        drillIntervalDays,
+        garbageMinAgeSec,
         s3: pool
           ? { pool, writeMaster: master, writeReplica: replica }
           : null,
@@ -111,11 +120,34 @@ export function BackupsPoolModal({ cluster, policy, pools, onClose, onSaved }: P
   };
 
   return (
-    <Modal opened onClose={onClose} title={`Backup pool — ${cluster}`} size="lg">
+    <Modal opened onClose={onClose} title={`Policy бэкапов — ${cluster}`} size="lg">
       <Stack gap="md">
+        {/* u16/D14: полный набор policy-полей одним телом (замещение целиком) */}
+        <Group grow>
+          <NumberInput label="Retention, дней" min={1} value={retentionDays}
+            onChange={(v) => setRetentionDays(Number(v ?? 1))} />
+          <NumberInput label="Retention, недель" min={0} value={retentionWeeks}
+            onChange={(v) => setRetentionWeeks(Number(v ?? 0))} />
+          <NumberInput label="Retention, месяцев" min={0} value={retentionMonths}
+            onChange={(v) => setRetentionMonths(Number(v ?? 0))} />
+        </Group>
+        <Group grow>
+          <NumberInput label="Полный не старше (сек, ≥600)" min={600} value={fullMaxAgeSec}
+            onChange={(v) => setFullMaxAgeSec(Number(v ?? 86400))} />
+          <NumberInput label="Дрилл каждые N суток (0 — выкл)" min={0} max={3650} value={drillIntervalDays}
+            onChange={(v) => setDrillIntervalDays(Number(v ?? 0))} />
+          <NumberInput label="Мин. возраст мусора (сек, ≥600)" min={600} value={garbageMinAgeSec ?? ''}
+            onChange={(v) => setGarbageMinAgeSec(v === '' ? null : Number(v))}
+            description="пусто — дефолт воркера (600 с)" />
+        </Group>
+        <Switch
+          label="Verify при создании (on_create)"
+          checked={verifyOnCreate}
+          onChange={(e) => setVerifyOnCreate(e.currentTarget.checked)}
+        />
         <Select
-          label="Pool"
-          placeholder="Not selected (backups disabled)"
+          label="Пул"
+          placeholder="Не выбрано (бэкапы кластера выключены)"
           data={pools.map((p) => ({
             value: p.name,
             label: `${p.name} (${p.nodes.length} ${p.nodes.length === 1 ? 'node' : 'nodes'})`,

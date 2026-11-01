@@ -31,22 +31,29 @@ public class KafkaRefresherTests
 
         public IReadOnlyList<Kv> WorkerApiKv { get; set; } = [];
 
+        // u13/u14: данные новых префиксов kafka-тика (work/leader/claims/instances).
+        public Dictionary<string, IReadOnlyList<Kv>> ExtraKv { get; } = [];
+
+        public List<string> FailPrefixes { get; } = [];
+
         public List<string> FailEndpoints { get; } = [];
 
         public Task<Result<IReadOnlyList<Kv>>> RangeAsync(string endpoint, string prefix, CancellationToken ct)
-            => Task.FromResult(FailEndpoints.Contains(endpoint)
+            => Task.FromResult(FailEndpoints.Contains(endpoint) || FailPrefixes.Contains(prefix)
                 ? Result<IReadOnlyList<Kv>>.Failed(new EtcdUnreachableException(endpoint))
-                : Result<IReadOnlyList<Kv>>.Success(prefix switch
-                {
-                    "/kafka/clusters/" => ClustersKv,
-                    "/kafkaworker/rotations/" => RotationsKv,
-                    "/kafkaworker/rebalances/" => RebalancesKv,
-                    "/kafkaworker/reassignments/" => ReassignmentsKv,
-                    "/kafkaworker/ca_rotations/" => CaRotationsKv,
-                    "/kafkaworker/ticket_outcomes/" => TicketOutcomesKv,
-                    "/kafkaworker/api/" => WorkerApiKv,
-                    _ => [],
-                }));
+                : Result<IReadOnlyList<Kv>>.Success(ExtraKv.TryGetValue(prefix, out var extra)
+                    ? extra
+                    : prefix switch
+                    {
+                        "/kafka/clusters/" => ClustersKv,
+                        "/kafkaworker/rotations/" => RotationsKv,
+                        "/kafkaworker/rebalances/" => RebalancesKv,
+                        "/kafkaworker/reassignments/" => ReassignmentsKv,
+                        "/kafkaworker/ca_rotations/" => CaRotationsKv,
+                        "/kafkaworker/ticket_outcomes/" => TicketOutcomesKv,
+                        "/kafkaworker/api/" => WorkerApiKv,
+                        _ => [],
+                    }));
 
         // Не используются kafka-тиком — заглушки ради интерфейса.
         public Task<Result<EtcdStatusPayload>> StatusAsync(string endpoint, CancellationToken ct)
@@ -472,6 +479,56 @@ public class KafkaRefresherTests
         result.IsSuccess.Should().BeFalse();
         store.Current!.WorkerHealth.Should().ContainSingle()
             .Which.Status.Should().Be(WorkerHealthStatus.Degraded);
+    }
+    // u13/u14: новые ключи kafka-тика → WorkJournals/Coordination в снапшоте.
+    [Fact]
+    public async Task Refresh_NewObservabilityKeys_SnapshotCarriesFields()
+    {
+        // Arrange — gateway с новыми префиксами домена
+        var gateway = DemoGateway();
+        gateway.ExtraKv["/kafkaworker/work/"] =
+            [new Kv("/kafkaworker/work/events",
+                """{"op":"rotate","phase":"phase-a","instance":"kfw-1","updated_unix":1761900000}""", 1)];
+        gateway.ExtraKv["/kafkaworker/leader"] =
+            [new Kv("/kafkaworker/leader", """{"instance":"kfw-1","since_unix":1761900000}""", 2)];
+        gateway.ExtraKv["/kafkaworker/claims/"] =
+            [new Kv("/kafkaworker/claims/events", """{"instance":"kfw-1"}""", 3)];
+        gateway.ExtraKv["/kafkaworker/instances/"] =
+            [new Kv("/kafkaworker/instances/kfw-1", """{"since_unix":1761900000}""", 4)];
+        var store = new KafkaSnapshotStore();
+        var refresher = New(gateway, store, "http://etcd1:2379");
+
+        // Act
+        var result = await refresher.RefreshOnceAsync(TestContext.Current.CancellationToken);
+
+        // Assert
+        result.IsSuccess.Should().BeTrue();
+        var snapshot = store.Current!;
+        snapshot.WorkJournals.Should().ContainSingle().Which.Op.Should().Be("rotate");
+        snapshot.Coordination!.LeaderInstance.Should().Be("kfw-1");
+        snapshot.Coordination.Claims.Should().ContainSingle().Which.Cluster.Should().Be("events");
+        snapshot.Coordination.Instances.Should().ContainSingle().Which.InstanceId.Should().Be("kfw-1");
+    }
+
+    // u13/u14: транспортный провал нового range → отказ тика (данные прежние).
+    [Fact]
+    public async Task Refresh_NewRangeTransportFail_TickFails()
+    {
+        // Arrange — первый тик успешен
+        var gateway = DemoGateway();
+        var store = new KafkaSnapshotStore();
+        var refresher = New(gateway, store, "http://etcd1:2379");
+        (await refresher.RefreshOnceAsync(TestContext.Current.CancellationToken)).IsSuccess.Should().BeTrue();
+        var first = store.Current!;
+
+        // Act — второй тик: work-диапазон отказал
+        gateway.FailPrefixes.Add("/kafkaworker/work/");
+        var second = await refresher.RefreshOnceAsync(TestContext.Current.CancellationToken);
+
+        // Assert — отказ тика, прежние данные
+        second.IsSuccess.Should().BeFalse();
+        store.Current!.EtcdReachable.Should().BeFalse();
+        store.Current.BuiltAtUtc.Should().Be(first.BuiltAtUtc);
     }
 }
 

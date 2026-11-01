@@ -1,10 +1,19 @@
-// Грань «Воркеры» (arch/adminpanel/03 §3.7): карточки PgWorker/KafkaWorker —
-// инстансы, целевой серт API, статус применения, действия с сертом и рестарт.
+// Грань «Воркеры» (arch/adminpanel/03 §3.7): карточки 4 воркеров
+// (PgWorker/KafkaWorker/ValkeyWorker/S3Worker) — инстансы, целевой серт API,
+// статус применения, действия с сертом и рестарт; координация домена
+// (лидер, «кто держит кластер») и эффективный конфиг (read-only, u14/u15).
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Alert, Badge, Button, Card, Group, Modal, Stack, Table, Text, Title, Tooltip } from '@mantine/core';
 import { useState } from 'react';
 import { ApiError } from '../api/client';
-import { deleteWorkerApiCert, fetchWorkers, generateWorkerApiCert, restartWorker, workerQueryKeys } from '../api/queries';
+import {
+  deleteWorkerApiCert,
+  fetchWorkerEffectiveConfig,
+  fetchWorkers,
+  generateWorkerApiCert,
+  restartWorker,
+  workerQueryKeys,
+} from '../api/queries';
 import type { WorkerApplyStatus, WorkerInstanceDto, WorkerViewDto } from '../api/dto';
 import { ErrorSection, LoadingSection } from '../components/LoadState';
 import { formatUnix, formatUnixAge } from '../utils/format';
@@ -12,9 +21,10 @@ import { usePollingIntervalMs } from '../polling/PollingContext';
 import { UploadWorkerCertModal } from './workers/UploadWorkerCertModal';
 
 const WORKER_TITLES: Record<string, string> = {
-  pgworker: 'PgWorker (DB)',
+  pgworker: 'PgWorker (PostgreSQL)',
   kafkaworker: 'KafkaWorker (Kafka)',
-  s3worker: 'S3Worker (S3 storage)',
+  valkeyworker: 'ValkeyWorker (Valkey)',
+  s3worker: 'S3Worker (S3)',
 };
 
 // Действия с confirm-модалом (тексты предупреждений — arch/adminpanel/03 §3.7).
@@ -215,6 +225,11 @@ function WorkerCard({ view, onGenerate, onUpload, onDelete, onRestart }: {
           </Table>
         </Table.ScrollContainer>
 
+        {/* u14: координация — лидер домена + claims «кто держит кластер» */}
+        <CoordinationBlock view={view} />
+        {/* u15: эффективный конфиг — read-only, on-demand (без polling) */}
+        <EffectiveConfigBlock worker={view.worker} />
+
         {cert !== null && cert !== undefined && (
           <Stack gap={4}>
             <Text size="sm" fw={600}>Target certificate</Text>
@@ -248,5 +263,138 @@ function InstanceRow({ instance }: { instance: WorkerInstanceDto }) {
       <Table.Td><Thumb value={instance.certThumbprint} /></Table.Td>
       <Table.Td><ApplyStatusBadge status={instance.applyStatus} /></Table.Td>
     </Table.Tr>
+  );
+}
+
+// ——— Координация (u14, read-only): лидер домена + claims «кто держит кластер». ———
+function CoordinationBlock({ view }: { view: WorkerViewDto }) {
+  const coordination = view.coordination;
+  if (coordination === null || coordination === undefined) return null;
+  return (
+    <Stack gap={4}>
+      <Text size="sm" fw={600}>Координация</Text>
+      <Text size="sm">
+        Лидер:{' '}
+        {coordination.leaderInstance === null
+          ? <Text span c="dimmed">—</Text>
+          : <Text span ff="monospace">{coordination.leaderInstance}</Text>}
+      </Text>
+      <Table.ScrollContainer minWidth={480}>
+        <Table>
+          <Table.Thead>
+            <Table.Tr>
+              <Table.Th>Кластер</Table.Th>
+              <Table.Th>Кто держит (instance)</Table.Th>
+              <Table.Th>Since</Table.Th>
+            </Table.Tr>
+          </Table.Thead>
+          <Table.Tbody>
+            {coordination.claims.length === 0 ? (
+              <Table.Tr><Table.Td colSpan={3}><Text c="dimmed" size="sm">claims нет (домен простаивает)</Text></Table.Td></Table.Tr>
+            ) : (
+              coordination.claims.map((claim) => (
+                <Table.Tr key={claim.cluster}>
+                  <Table.Td><Text size="sm" ff="monospace">{claim.cluster}</Text></Table.Td>
+                  <Table.Td><Text size="sm" ff="monospace">{claim.instance}</Text></Table.Td>
+                  <Table.Td>
+                    {claim.sinceUnix === null || claim.sinceUnix === undefined
+                      ? '—'
+                      : `${formatUnix(claim.sinceUnix)} (${formatUnixAge(claim.sinceUnix)} ago)`}
+                  </Table.Td>
+                </Table.Tr>
+              ))
+            )}
+          </Table.Tbody>
+        </Table>
+      </Table.ScrollContainer>
+    </Stack>
+  );
+}
+
+// ——— Эффективный конфиг (u15, read-only, on-demand): кнопка «Показать конфиг»
+// → GET /api/workers/{worker}/effective-config → дерево групп ключ-значение;
+// пометка «env, применяется рестартом воркера» (source === 'env'); форм ввода
+// НЕТ; живых инстансов нет (503) → «Живые инстансы не найдены».
+function EffectiveConfigBlock({ worker }: { worker: string }) {
+  const [opened, setOpened] = useState(false);
+  const config = useQuery({
+    queryKey: workerQueryKeys.effectiveConfig(worker),
+    queryFn: () => fetchWorkerEffectiveConfig(worker),
+    enabled: opened,
+    retry: false,
+    staleTime: 30_000,
+  });
+
+  if (!opened) {
+    return (
+      <Button size="xs" variant="light" onClick={() => setOpened(true)}>
+        Показать конфиг
+      </Button>
+    );
+  }
+
+  let content: React.ReactNode;
+  if (config.isPending) content = <Text size="sm" c="dimmed">Загрузка…</Text>;
+  else if (config.isError) {
+    // 503 не маскируется фиксированной строкой: detail воркера различает
+    // «ключей дискавери нет» и «инстансы есть, но не отвечают» (#24) —
+    // показываем текст как есть.
+    const message = config.error instanceof ApiError
+      ? (config.error.detail ?? config.error.message)
+      : String(config.error);
+    content = (
+      <Text size="sm" c={config.error instanceof ApiError && config.error.status === 503 ? 'dimmed' : 'red'}>
+        {message}
+      </Text>
+    );
+  } else {
+    content = <ConfigTree config={config.data} />;
+  }
+
+  return (
+    <Stack gap={4}>
+      <Group justify="space-between">
+        <Text size="sm" fw={600}>Эффективный конфиг</Text>
+        <Group gap="xs">
+          <Badge color="gray" variant="light" size="xs">env, применяется рестартом воркера</Badge>
+          <Button size="xs" variant="default" onClick={() => setOpened(false)}>Скрыть</Button>
+        </Group>
+      </Group>
+      {content}
+    </Stack>
+  );
+}
+
+// Дерево групп ключ-значение: source-группа и плоские словари (thresholds/loops/…).
+function ConfigTree({ config }: { config: Record<string, unknown> }) {
+  const entries = Object.entries(config).filter(([k]) => k !== 'source');
+  return (
+    <Stack gap={6}>
+      {entries.map(([group, value]) => (
+        <Stack key={group} gap={2}>
+          <Text size="xs" c="dimmed" tt="uppercase">{group}</Text>
+          {value !== null && typeof value === 'object' && !Array.isArray(value) ? (
+            <Table.ScrollContainer minWidth={420}>
+              <Table>
+                <Table.Tbody>
+                  {Object.entries(value as Record<string, unknown>).map(([k, v]) => (
+                    <Table.Tr key={k}>
+                      <Table.Td w={220}><Text size="sm" ff="monospace">{k}</Text></Table.Td>
+                      <Table.Td>
+                        <Text size="sm" ff="monospace">
+                          {v !== null && typeof v === 'object' ? JSON.stringify(v) : String(v)}
+                        </Text>
+                      </Table.Td>
+                    </Table.Tr>
+                  ))}
+                </Table.Tbody>
+              </Table>
+            </Table.ScrollContainer>
+          ) : (
+            <Text size="sm" ff="monospace">{String(value)}</Text>
+          )}
+        </Stack>
+      ))}
+    </Stack>
   );
 }

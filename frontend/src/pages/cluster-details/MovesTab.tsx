@@ -17,9 +17,12 @@ function truncateText(text: string, limit: number): string {
   return text.length > limit ? `${text.slice(0, limit)}…` : text;
 }
 
-export function MovesTab({ cluster, canScale, buckets, pendingMoves, work }: {
+export function MovesTab({ cluster, canScale, buckets, pendingMoves, work,
+  highlightBucket = null }: {
   cluster: string; canScale: boolean; buckets: BucketDto[];
   pendingMoves: MoveTicketDto[]; work?: ClusterWorkDto | null;
+  // u04: подсветка строки переезда конкретного бакета (переход из «Бакетов»).
+  highlightBucket?: number | null;
 }) {
   const queryClient = useQueryClient();
   // Только реальные переезды: NOT_INITIALIZED — начальное состояние, не перемещение (spec t12 §3.8).
@@ -73,7 +76,10 @@ export function MovesTab({ cluster, canScale, buckets, pendingMoves, work }: {
             </Table.Thead>
             <Table.Tbody>
               {moves.map((b) => (
-                <Table.Tr key={b.id}>
+                <Table.Tr key={b.id}
+                  style={highlightBucket === b.id
+                    ? { backgroundColor: 'var(--mantine-color-yellow-1)' }
+                    : undefined}>
                   <Table.Td>{b.id}</Table.Td>
                   <Table.Td><BucketStateBadge state={b.state} /></Table.Td>
                   <Table.Td>{b.move === null ? '—' : `${b.move.owner ?? '—'} → ${b.move.target ?? '—'}`}</Table.Td>

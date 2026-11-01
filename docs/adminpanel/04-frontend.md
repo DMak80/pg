@@ -22,7 +22,15 @@
   refetchOnWindowFocus: false) → `PollingProvider` → `RouterProvider`;
   `@mantine/core/styles.css` импортируется первым.
 - `layout/AppLayout.tsx`: guard через session-query (`GET /api/auth/me`), AppShell,
-  StaleBadge, PollingToggle; страницы `pages/`.
+  FreshnessBadges (5 бейджей свежести из `/api/overview`: порог stale
+  3×`freshness.intervalSeconds`), PollingToggle; страницы `pages/`.
+- `components/actions/`: общие компоненты действий (`DeleteEntityButton`,
+  `RotateSecretButton`, `ResourcesForm`, `ConfirmModal`) — единые замены
+  доменных дубликатов; `utils/validation.ts` — единый модуль границ валидации
+  (зеркало arch/02 §9.3/§10.3/§11.3/§12.3).
+- `events/`: клиентский событийный слой ленты `/events`  — подписка на
+  query-кэш TanStack Query, диффы prev→next снимков, in-memory store (cap 500,
+  без persistence).
 
 ## Чек-лист «добавить страницу/эндпоинт-клиент»
 

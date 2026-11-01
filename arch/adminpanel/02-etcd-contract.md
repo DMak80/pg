@@ -16,19 +16,23 @@ kafka-домена — воркер сам валидирует и записы�
 Мутации pg-домена (исполняет PgWorker API, arch/14 §1.1): создание кластера
 (§9), перевод кластера в TO_REMOVE (§9.4), добавление шарда (§9.5), маркер
 демонтажа шарда (§9.6), заявки на переезды бакетов — move/rollback/finalize/abort
-и отмена стоящих заявок (§9.7), заявка ротации app-пароля (§9.8). Существует
+и отмена стоящих заявок (§9.7), заявка ротации per-cluster секретов (§9.8),
+restore-заявка восстановления шарда из бэкапа (§9.13). Существует
 также мутация пересоздания ноды —
 `POST /api/ha/{scope}/nodes/{node}/recreate` ставит маркеры
 `nodes/<n>/state=TO_RECREATE` + `nodes/<n>/recreate=soft|hard` (исполняет
 NodeSupervisor PgWorker); она зафиксирована кодом ранее и контрактно ведёт
 себя как §9.6-подобный маркер. Отдельный домен **Kafka** (§10): чтение
-`/kafka/clusters/` + `/kafkaworker/{rotations,admin_rotations,ca_rotations,rebalances,reassignments}/` и
-14 мутаций декларативной модели (исполняет KafkaWorker API, arch/16 §1.1) + мутация №15 ресурсов брокера + мутация №16 ротации admin-пароля + мутация №17 ротации CA/сертов. Отдельный домен **Valkey** (§11):
-чтение `/valkey/clusters/` + `/valkeyworker/{rotations,api}/` и 5 мутаций
-декларативной модели (исполняет ValkeyWorker API, arch/21 §1.1). Отдельный
-домен **S3** (§12): чтение `/s3/clusters/` + `/s3worker/{api,rotations}/` и
+`/kafka/clusters/` + `/kafkaworker/{rotations,admin_rotations,ca_rotations,rebalances,reassignments,work,leader,claims,instances}/` и
+14 мутаций декларативной модели (исполняет KafkaWorker API, arch/16 §1.1) + мутация №15 ресурсов брокера + мутация №16 ротации admin-пароля + мутация №17 ротации CA/сертов + мутации №18–20 — DELETE-отмена живых заявок ротаций (§10.2). Отдельный домен **Valkey** (§11):
+чтение `/valkey/clusters/` + `/valkeyworker/{rotations,ca_rotations,api,work,leader,claims,instances}/` и 6 мутаций
+декларативной модели (исполняет ValkeyWorker API, arch/21 §1.1) + мутации №7/№8 —
+DELETE-отмена живых заявок ротаций (§11.2). Отдельный
+домен **S3** (§12): чтение `/s3/clusters/` + `/s3worker/{api,rotations,work,leader,claims,instances}/` и
 10 мутаций через API S3Worker (arch/24 §1.1) — панель в etcd домена S3 не
-пишет ничего.
+пишет ничего. Read-only on-demand прокси эффективного конфига воркеров —
+`GET /api/workers/{worker}/effective-config` → `GET /api/config` API воркера
+(§2.3.5): без снапшота и etcd, живых инстансов нет → 503.
 
 ## 1. Транспорт: HTTP JSON gateway `/v3/*`
 
@@ -112,9 +116,11 @@ Scope = `<C>-<X>`, глобально уникален. Связь со шард
 
 ### 2.3.1. `/pgworker/…` — координация воркеров (читается избирательно)
 
-Префикс координации PgWorker (`arch/14` §3.3) панель читает точечно —
-шесть ключа-семейства, остальные ключи префикса (`leader`, `claims`,
-`evacuations`, `instances`) панель НЕ читает и не пишет:
+Префикс координации PgWorker (`arch/14` §3.3) панель читает избирательно —
+семейства из таблицы ниже (координация `leader`/`claims/`/`instances/`,
+эвакуации `evacuations/`, живые заявки ротаций `rotations/`, глобальный
+стоп бэкапов `backups-disabled`; форматы — `arch/14` §3.3); остальные ключи
+префикса (`portalloc`-подобные служебные, `locks`, `probes`) панель НЕ читает и не пишет:
 
 | Ключ | Формат значения | В модель | Примечания |
 |---|---|---|---|
@@ -128,6 +134,13 @@ Scope = `<C>-<X>`, глобально уникален. Связь со шард
 | `/pgworker/backups/orphan-deletes/<C>/<X>` | JSON `{"requested_unix":<unix>,"requested_by":"operator"\|"panel"}` (канон — arch/19 §4) | `BackupOrphansInfo.DeleteRequests` (§3) | заявки явного удаления сирот: панель читает (индикация «к удалению» до прохода sweeper'а) и ставит через confirm-мутацию §9.10 (API PgWorker); исполняет sweeper воркера ближайшим проходом, заявка гасится вместе с записью |
 | `/pgworker/backups/<C>/<X>/drill` | JSON-статус дрилла шарда `{"state":"RUNNING"\|"SUCCEEDED"\|"FAILED","id","backup_id","started_unix","finished_unix"?,"phase"?,"restored_to_lsn"?,"error"?}` (канон — arch/19 §4) | `DrillInfo` (§3) | панель читает, пишет только PgWorker (держатель клэйма `<C>`); кормит алерты `backup-drill-failed`/`backup-drill-stale` (03 §4) и per-shard статус грани «Хранилище бэкапов»; `phase` — `downloading\|recovering` (фазы джоба) \| `cleaning` (идёт снос тестового контура); снятая фаза у терминального ключа = контур подтверждённо снесён; ключ перезаписывается каждым новым дриллом; битый JSON — parseError-запись (толерантный читатель: нет ключей — правила дрилла молчат) |
 | `/pgworker/etcd-snapshots` | JSON `{"enabled":bool,"state":"OK"\|"FAILED","last_uploaded_unix"?<unix>,"last_object"?,"last_sha256"?,"size_bytes"?<n>,"interval_min"?<n>,"error"?}` (канон — arch/14 §3.3) | `EtcdSnapshotExportInfo` (§3) | статус выгрузки etcd-снапшотов в S3: пишет ТОЛЬКО PgWorker (инстанс-исполнитель экспорта), панель читает; кормит алерты `etcd-snapshot-export-failed`/`etcd-snapshot-export-stale` (03 §4) и карточку «etcd-снапшоты» грани «Хранилище бэкапов»; `enabled=false`/отсутствие ключа — правила молчат (толерантный читатель: битый JSON — parseError-запись) |
+| `/pgworker/backups-disabled` | JSON `{"updated_unix":<unix>,"updated_by"?:"<кто>"}` (канон — arch/19 §4) | `BackupsDisabledInfo?` (§3) | глобальный стоп бэкапов установки: ключ есть = подсистема бэкапов остановлена целиком; пишет операция/конфиг воркера; панель читает ТОЧЕЧНЫМ range-запросом того же pg-тика (ключ НЕ входит в range `/pgworker/backups/` — байтовое сравнение `-` < `/`); кормит warning-алерт `backups-disabled` (03 §4) и жёлтый баннер дашборда/грани «Хранилище бэкапов»; ключа нет = бэкапы работают (толерантный читатель: битый JSON — parseError-запись) |
+| `/pgworker/backups/<C>/<X>/agent/<N>` | JSON-статус приёмника WAL ноды `{"node","role":"master\|sync\|none","state":"starting\|waiting_role\|waiting_password\|waiting_policy\|waiting_slot\|waiting_disabled\|streaming\|paused\|failed_permanent","last_delivered_segment"?,"last_delivered_unix"?,"pool_exhausted":bool,"tli_jump"?,"history_missing_tli"?,"error"?,"updated_unix"}` (канон — arch/19 §4) | `WalAgentInfo[]` (§3) | per-node статусы приёмников WAL: ключи уже внутри читаемого range `/pgworker/backups/`; панель парсит их в отдельный список (не unknownKeys); UI-блок «Приёмники WAL» деталей шарда бэкапов (03 §3.8); пишет ТОЛЬКО PgWorker; битый JSON — parseError-запись |
+| `/pgworker/evacuations/<C>/<X>` | JSON `{"evacuated_unix":<unix>,"reason","buckets":{"<старый>":"<новый>",…},"state":"DONE\|QUARANTINED","returned_unix"?}` (канон — arch/14 §3.2/§5 D) | `EvacuationInfo[]` (§3) | журналы аварийной эвакуации шарда (BucketEvacuator): панель читает range `/pgworker/evacuations/` в pg-тике; UI-блок «Эвакуации» вкладки «Журнал» кластера (03 §3) + события ленты; пишет ТОЛЬКО PgWorker; битый JSON — parseError-запись |
+| `/pgworker/rotations/<C>` | JSON `{"requested_unix":<unix>,"requested_by"?:"<username>"}` (канон — arch/14 §3.3/§5 I) | `PgRotationTicket[]` (§3) | живая заявка ротации per-cluster секретов (§9.8): панель читает range `/pgworker/rotations/` в pg-тике — источник бейджа «ротация…» шапки/вкладки «Секреты» кластера и строки «Активные операции» дашборда; снятие заявки — только PgWorker (после исполнения) или DELETE-мутации отмены живых заявок ротаций kafka/valkey-доменов (pg-отмены из панели нет) |
+| `/pgworker/leader` | JSON `{"instance":"<id>","since_unix"?}` (канон — arch/14 §3.3) | `WorkerCoordination.LeaderInstance` (§3) | координация: текущий лидер pg-домена; панель читает точечно в pg-тике («координация воркеров», 03 §3.7); ключа нет → LeaderInstance=null (толерантно, не ошибка) |
+| `/pgworker/claims/<C>` | JSON `{"instance":"<id>","since_unix"?}` (канон — arch/14 §3.3) | `WorkerCoordination.Claims[]` (§3) | «кто держит кластер»: клэйм кластера инстансом воркера; панель читает range `/pgworker/claims/` (таблица claims на грани «Воркеры») |
+| `/pgworker/instances/<id>` | JSON `{"since_unix"?}` или пустое значение (канон — arch/14 §3.3) | `WorkerCoordination.Instances[]` (§3) | живые (lease) инстансы pg-домена; панель читает range `/pgworker/instances/`; пустое тело — инстанс без since (SinceUnix=null) |
 
 ### 2.3.2. `/kafkaworker/api/…` — дискавери API KafkaWorker
 
@@ -155,7 +168,12 @@ PgWorker-инстансов §2.3.1, — `AdminPanel:Workers:HealthIntervalSec`)
 `KafkaSnapshot.WorkerHealth` (модель §3), warning-алерт `worker-unhealthy`
 (03 §4). Degraded/unhealthy воркер виден
 панели ≤ 2 тиков поллера, после восстановления алерт гаснет — панель и
-docker-health больше не расходятся.
+docker-health больше не расходятся. Кроме `api/`, kafka-refresher-тик того же
+контура читает (03 §3/§7): work-журналы `/kafkaworker/work/<C>`
+(канон arch/15 §4 — op/phase/instance/updated/last_error; панельная
+модель — тот же `WorkJournalInfo`, факт-поля pg `last_failover`/`last_rebuild`
+отсутствуют — парсер толерантен) и координацию `/kafkaworker/{leader,claims/<C>,instances/<id>}`
+(§3 `WorkerCoordination`); транспортный провал любого из чтений роняет тик.
 
 ### 2.3.3. `/valkeyworker/api/…` — дискавери API ValkeyWorker
 
@@ -170,7 +188,11 @@ pg/kafka-инстансов) пробит живые инстансы ValkeyWork
 `ValkeySnapshot.WorkerHealth`, warning-алерт `worker-unhealthy`. Отсутствие
 живых ключей → 503 мутаций + critical-алерт `worker-api-unreachable`
 (03 §8.4). Остальные ключи `/valkeyworker/` панель не читает и не пишет
-(кроме `rotations/` — §11.1).
+(кроме `rotations/`, `ca_rotations/`, `ticket_outcomes/` — §11.1, и
+семейств наблюдаемости : work-журналы `/valkeyworker/work/<C>`
+(канон arch/20 §3) и координация
+`/valkeyworker/{leader,claims/<C>,instances/<id>}` — §3 `WorkerCoordination`;
+транспортный провал любого из чтений роняет тик).
 
 ### 2.3.4. `/s3worker/api/…` — дискавери API S3Worker
 
@@ -185,7 +207,22 @@ pg/kafka/valkey-инстансов) пробит живые инстансы S3W
 в `S3Snapshot.WorkerHealth`, warning-алерт `worker-unhealthy` (03 §12.4).
 Отсутствие живых ключей → 503 мутаций + critical-алерт
 `worker-api-unreachable` (03 §12.4). Остальные ключи `/s3worker/` панель
-не читает и не пишет (кроме `rotations/` — §12.1).
+не читает и не пишет (кроме `rotations/` — §12.1, и семейств наблюдаемости
+: work-журналы `/s3worker/work/<C>` (канон arch/23 §8) и
+координация `/s3worker/{leader,claims/<C>,instances/<id>}` — §3
+`WorkerCoordination`; транспортный провал любого из чтений роняет тик).
+
+### 2.3.5. On-demand обращения к API воркеров (прокси панели)
+
+Мутации всех доменов и read-only `GET /api/workers/{worker}/effective-config`
+панель отправляет НАПРЯМУЮ живому инстансу воркера (по lease-ключам
+дискавери §2.3.1–§2.3.4), БЕЗ снапшота и etcd: запрос идёт on-demand в момент
+вызова. Эффективный конфиг — прокси `GET /api/workers/{worker}/effective-config`
+→ `GET /api/config` API воркера (контракт тела — arch/14/16/21/24 §1.1:
+группы Thresholds/Loops/Moves/Parallelism/Backups/Snapshots/Pgtune — по
+воркеру; БЕЗ секретов/TLS/endpoints; ответ отдаётся как есть, camelCase) —
+параметры эффективного конфига, 03 §3.7; живых ключей дискавери нет → 503. Отдельного
+механизма нет — тот же паттерн, что у мутаций и тика `/healthz`.
 
 ### 2.4. Кластерные метаданные etcd (не KV)
 
@@ -245,7 +282,43 @@ sealed record EtcdSnapshot(
     S3StorageInfo? S3Storage,   // §2.5: live-S3-инвентарь, null — грань не настроена
     IReadOnlyList<ProbeResult> Probes,     // результаты live-проб §6
     IReadOnlyList<Alert> Alerts,           // вычислено AlertEngine (03-panels §4)
-    int UnknownKeyCount);                  // диагностика «неизвестных» ключей
+    int UnknownKeyCount,                   // диагностика «неизвестных» ключей
+    BackupsDisabledInfo? BackupsDisabled = null, // §2.3.1: глобальный стоп бэкапов
+    IReadOnlyList<WalAgentInfo>? WalAgents = null, // §2.3.1: приёмники WAL /pgworker/backups/…/agent/<N>
+    IReadOnlyList<EvacuationInfo>? Evacuations = null, // §2.3.1: журналы /pgworker/evacuations/
+    IReadOnlyList<PgRotationTicket>? PgRotations = null, // §2.3.1: живые заявки /pgworker/rotations/
+    WorkerCoordination? Coordination = null); // §2.3.1: leader/claims/instances pg-домена
+
+// Глобальный стоп бэкапов (§2.3.1; канон arch/19 §4): null = ключа нет
+// (бэкапы работают).
+sealed record BackupsDisabledInfo(long UpdatedUnix, string? UpdatedBy);
+
+// Приёмник WAL ноды (§2.3.1; канон arch/19 §4): lease-ключ жив = приёмник жив.
+sealed record WalAgentInfo(
+    string Cluster, string Shard, string Node, string? Role, string State,
+    long? LastDeliveredSegment, long? LastDeliveredUnix, bool PoolExhausted,
+    long? TliJump, long? HistoryMissingTli, string? Error, long UpdatedUnix);
+
+// Журнал аварийной эвакуации шарда (§2.3.1; канон arch/14 §3.2/§5 D):
+// buckets — словарь «старый шард → новый шард»; ReturnedUnix — при возврате
+// (state=QUARANTINED, arch/14 §5 D).
+sealed record EvacuationInfo(
+    string Cluster, string Shard, long EvacuatedUnix, string Reason,
+    IReadOnlyDictionary<string, string> Buckets, string State, long? ReturnedUnix);
+
+// Живая заявка ротации per-cluster секретов (§2.3.1/§9.8).
+sealed record PgRotationTicket(string Cluster, long RequestedUnix, string? RequestedBy);
+
+// Координация воркера домена (§2.3.1 pg и доменные §2.3.2–§2.3.4; ):
+// leader/claims/instances; отсутствие ключей — пустая координация, не ошибка.
+sealed record WorkerCoordination(
+    string? LeaderInstance,
+    IReadOnlyList<WorkerClaim> Claims,
+    IReadOnlyList<WorkerInstanceInfo> Instances);
+
+sealed record WorkerClaim(string Cluster, string Instance, long? SinceUnix);
+
+sealed record WorkerInstanceInfo(string InstanceId, long? SinceUnix);
 
 // Живой инстанс API воркера (§2.3.1/§2.3.2; arch/14 §1.1, arch/16 §1.1):
 // lease-ключ дискавери; URL — куда панель отправляет мутации.
@@ -254,6 +327,11 @@ sealed record WorkerEndpoint(string InstanceId, string Url, long SinceUnix);
 // Запись журнала /pgworker/work/<C> (§2.3.1; формат — arch/14 §3.3):
 // живая фаза процесса воркера + серия фейлов (fail_count/fail_first_unix/
 // retry_not_before_unix — бэкофф ретраев provision, arch/14 §5 A).
+// Тот же тип — work-журналы доменов : KafkaSnapshot.WorkJournals
+// (/kafkaworker/work/<C>, arch/15 §4), ValkeySnapshot.WorkJournals
+// (/valkeyworker/work/<C>, arch/20 §3), S3Snapshot.WorkJournals
+// (/s3worker/work/<C>, arch/23 §8) — факт-поля pg last_failover/last_rebuild
+// у доменов отсутствуют (null); Cluster = лист ключа.
 sealed record WorkJournalInfo(
     string Cluster, string Op, string Phase, string Instance,
     long UpdatedUnix, string? LastError,
@@ -959,7 +1037,7 @@ UI грани «Хранилище бэкапов»: в строке сирот�
 защищённые — «удаление только явной командой» (Remedy OperatorRunbook),
 незащищённые — прежний остаток TTL.
 
-### 9.12. Мутация policy бэкапов: интервал дрилов
+### 9.12. Мутация policy бэкапов (retention + full_max_age_sec + verify + drill + garbage_min_age_sec + секция s3)
 
 Панель НЕ пишет в etcd — мутация интервала дрилов шардов кластера
 (`policy.drill.interval_days`, arch/19 §4) — прокси в policy-API воркера:
@@ -967,12 +1045,15 @@ UI грани «Хранилище бэкапов»: в строке сирот�
 `PUT /api/clusters/{c}/backups/policy` (панель) → команда
 `UpdateBackupsPolicyCommand` → `POST /api/clusters/{c}/backups/policy`
 API PgWorker (arch/14 §1.1, приём BackupsPolicyHandler) ПОЛНЫМ телом —
-retention + full_max_age_sec + verify + drill (канон замещения целиком:
-панель в своей форме всегда шлёт полный набор полей, включая текущее
-значение drill, прочитанное из policy-ключа/дефолта). Поле «Дрилл каждые
-N суток» (0 = выкл, диапазон валидации 0..3650; истина валидации —
-сервер воркера, панель дублирует для UX) — в грани «Хранилище бэкапов»
-кластера. Полное тело формы дополняется секцией
+retention + full_max_age_sec + verify + drill + garbage_min_age_sec (канон
+замещения целиком: панель в своей форме всегда шлёт полный набор полей,
+включая текущее значение drill, прочитанное из policy-ключа/дефолта). Поле
+«Дрилл каждые N суток» (0 = выкл, диапазон валидации 0..3650; истина
+валидации — сервер воркера, панель дублирует для UX) — в грани «Хранилище
+бэкапов» кластера. Поле `garbage_min_age_sec` : long ≥ 600 (отсутствие —
+поле в policy НЕ кладётся: кластер живёт на дефолте конфига воркера 600 с;
+панельная валидация дублирует границу «минимум 600 сек» для UX, истина —
+сервер воркера). Полное тело формы дополняется секцией
 `s3 { pool, write_master, write_replica }` (выбор пула и упорядоченные
 списки нод записи — модал «Пул бэкапов», arch/19 §4); сброс секции —
 отправкой policy БЕЗ `s3` (выключение бэкапов кластера, «только явный
@@ -982,6 +1063,25 @@ N суток» (0 = выкл, диапазон валидации 0..3650; ис�
 воркера нет, 404 кластера нет. Панель парсер policy — толерантен:
 policy без секций `drill`/`s3` читается без ошибок (дефолт), drill-ключей нет —
 правила дрилла молчат, секции `s3` нет — правила `backup-pool-*` молчат.
+
+### 9.13. Restore-заявка (прокси)
+
+Восстановление шарда из бэкапа (u-restore, 06 §4.3) — панель НЕ пишет в etcd:
+прокси существующего эндпоинта API PgWorker `POST /api/clusters/{c}/shards/
+{x}/restore` (arch/19 §3.5; воркер уже реализован — `RestoreShardHandler`,
+гварды и протокол записи статуса `/pgworker/backups/<C>/<X>/restore/<id>` —
+там же: клэйм `<C>`, кластер Active, шард заявлен, максимум один активный
+restore на шард). Панельный эндпоинт — тот же путь
+`POST /api/clusters/{cluster}/shards/{shard}/restore`, тело
+`{ "confirm": "<shard>", "targetTime"?: "<RFC3339>" }` (confirm — имя шарда,
+мисматч → 400 воркера; targetTime — PITR-точка, отсутствие = latest). `requested_by`
+— username сессии панели (заголовок `X-Requested-By`, аудит). Коды маппятся
+1:1: 202 (заявка поставлена, исполнение асинхронно — джоб воркера) / 400
+(валидация, мисматч confirm) / 404 (кластер/шард не найдены) / 409 (кластер
+не Active / активный restore уже идёт) / 503 (живых инстансов PgWorker нет).
+UI — кнопка «Восстановить из бэкапа» в деталях шарда бэкапов
+(03 §3.8-блок, подтверждение вводом имени шарда, предупреждение о
+разрушающей и долгой операции).
 
 ## 10. Kafka (чтение + записи панели)
 
@@ -1004,7 +1104,8 @@ read-only). Отдельный домен-снапшот `KafkaSnapshot` (не `
 | `/kafka/clusters/<C>/app_user`, `app_password` | internal-словарь стора (не в `KafkaClusterInfo`, не в UI/API) | значение пароля наружу не отдаётся; панель не подключается к Kafka с app-кредом (роль приложений, ACL — arch/16 §2.3) |
 | `/kafka/clusters/<C>/admin_user`, `admin_password`, `ca_pem` | internal-словарь стора (не в `KafkaClusterInfo`, не в UI/API) | читаются ТОЛЬКО для SASL_SSL-проб (admin-кред + truststore из CA-серта кластера, arch/16 §2.3); значение пароля наружу не отдаётся |
 | `/kafka/clusters/<C>/topics/<T>` | `KafkaTopicInfo` | гибрид автосинк+desired, формат arch/15 §3; `__`-топиков в etcd не бывает. + leaf-ключи заявок `topics/<T>/desired.{create,delete}` (arch/15 §3.1) → `KafkaTopicLifecycleTicket` |
-| `/kafkaworker/rotations/<C>`, `/kafkaworker/admin_rotations/<C>`, `/kafkaworker/ca_rotations/<C>` | `KafkaRotationTicket` | читаемые из `/kafkaworker/` — только `rotations/`, `admin_rotations/`, `ca_rotations/`, `rebalances/`, `reassignments/`, `regens/`, `ticket_outcomes/` (arch/15 §4); остальные ключи префикса панель не читает и не пишет |
+| `/kafkaworker/rotations/<C>`, `/kafkaworker/admin_rotations/<C>`, `/kafkaworker/ca_rotations/<C>` | `KafkaRotationTicket` | читаемые из `/kafkaworker/`: `rotations/`, `admin_rotations/`, `ca_rotations/`, `rebalances/`, `reassignments/`, `regens/`, `ticket_outcomes/` (arch/15 §4) + семейства наблюдаемости — `work/<C>` (work-журналы, тот же `WorkJournalInfo`), `leader`, `claims/<C>`, `instances/<id>` (`WorkerCoordination`, §2.3.2); остальные ключи префикса (`locks/`, `portalloc/`, `api/` — §2.3.2) панель не читает и не пишет |
+| `/kafkaworker/work/<C>`, `/kafkaworker/leader`, `/kafkaworker/claims/<C>`, `/kafkaworker/instances/<id>` | `WorkJournalInfo` / `WorkerCoordination` (§3) | work-журналы/координация (канон arch/15 §4): вкладка «Журнал» kafka-страницы + координация на грани «Воркеры» (03 §3.7/§7.3); транспортный провал любого чтения роняет тик |
 | `/kafkaworker/rebalances/<C>` | `KafkaRebalanceTicket` | заявка ребалансировки партиций (жива = очередь в UI) |
 | `/kafkaworker/ticket_outcomes/<C>` | `KafkaTicketOutcome` | последний исход заявки — expired (снята возрастным таймаутом воркера) или done (успешный финал); формат — arch/15 §4; алерт `kafka-ticket-expired` |
 | `/kafkaworker/reassignments/<C>` | `KafkaReassignmentProgress` | прогресс текущего reassignment воркера (drain/balance: остаток партиций, режим); отсутствие ключа = операции нет |
@@ -1013,7 +1114,7 @@ read-only). Отдельный домен-снапшот `KafkaSnapshot` (не `
 Неизвестные ключи внутри `/kafka/` — лог + счётчик `unknownKeys`; битый JSON —
 parseError-запись + warning-алерт `kafka-key-malformed` (arch/15 §6).
 
-### 10.2. Мутации панели (15; исполняет KafkaWorker API)
+### 10.2. Мутации панели (17 + отмена ротаций №18–20; исполняет KafkaWorker API)
 
 Все 16 мутаций панель отправляет в **API KafkaWorker** (arch/16 §1.1; URL —
 живой `/kafkaworker/api/<id>`, §2.3.2); воркер сам валидирует и пишет в etcd.
@@ -1043,6 +1144,9 @@ parseError-запись + warning-алерт `kafka-key-malformed` (arch/15 §6)
 | 15 | **Изменение ресурсов брокера** `PUT /api/kafka/clusters/{c}/brokers/{b}/resources` | тело `{cpu?, memGi?, diskGi?}` (null = не менять; хотя бы одно — обязательно; границы §10.3, уменьшение разрешено — риск OOM на операторе, arch/16 R7); put ключа `brokers/<b>/resources` каноническим JSON (перезапись целиком). Применение — автоматическое: NodeRegenerator воркера (arch/16 §5 J) сверяет лимиты живого контейнера и rolling-ит по одному за тик; `disk` меняет только декларацию (действий нет). Идемпотентен (повтор — та же запись) | 400 (§10.3 / пустое тело), 404 (кластер/брокер), 409 (не Active / state `TO_REMOVE`/`REMOVING`), 503 |
 | 16 | **Ротация admin-пароля** `POST /api/kafka/clusters/{c}/admin-password/rotate` | клэйм-txn `/kafkaworker/admin_rotations/<C>` `version==0` + put `{"requested_unix","requested_by"}` — протокол ротаций §9.8 один в один; исполнение — PasswordRotator KafkaWorker (фазы A/B/C, роль admin, arch/16 §5 H); UI-модалка предупреждает о rolling-перезапуске брокеров | 404, 409 (не Active / уже запрошена), 503 |
 | 17 | **Ротация CA/сертов** `POST /api/kafka/clusters/{c}/ca/rotate` | клэйм-txn `/kafkaworker/ca_rotations/<C>` `version==0` + put `{"requested_unix","requested_by"}` — протокол ротаций §9.8 один в один; исполнение — CaRotator KafkaWorker (фазы P/D/R/C, arch/16 §5 K: staging `ca_next_*` → bundle `ca_pem` → rolling-пересоздание брокеров с сертами NEW CA → атомарный коммит); UI-модалка предупреждает о rolling-пересоздании брокеров и окне двойного доверия (клиенты перечитывают `ca_pem` из etcd) | 404, 409 (не Active / уже запрошена), 503 |
+| 18 | **Отмена заявки ротации app-пароля** `DELETE /api/kafka/clusters/{c}/app-password/rotate` — без тела; оператор (username сессии) уходит воркеру заголовком `X-Requested-By` — воркер пишет исход отмены (op/кластер/результат/оператор) в host-лог (аудит отмен; etcd при del ничего не пишет) | del ключа `/kafkaworker/rotations/<C>` выполняет ТОЛЬКО воркер (арх-канон: воркер — единственный писатель своих префиксов; панель — прокси, 02 §9.7.5-порт). Гвард «ротация не начата»: work-журнал `/kafkaworker/work/<C>` с `op=rotate` в переходной фазе исполнения (предикат PasswordRotator — константы фаз ротатора, arch/16 §5 H) → 409 «ротация уже исполняется» (начатая доедет — остановка невозможна, D13); терминальные (`done`/aborted) и waiting-фазы, отсутствие журнала/чужой op — «не начата», отмена разрешена. Del — условный txn с ДВУМЯ compare: значение заявки (чужая/перезаписанная заявка не удаляется) И mod_revision журнала, снятые при гварде (0 = журнала нет): клэйм ротатора — первая журнальная запись мутационной фазы — между гвардом и txn делает compare несходящимся → перечитанный гвард отвечает 409 (гонка с клэймом ловится отказом txn; compare по значению тикета — только против перезаписи заявки). Идемпотентность повтора отсутствует осознанно (образец §9.7.5) | 204, 404 (заявки нет), 409 (ротация уже исполняется), 503 (etcd/API недоступны; compare не сошёлся дважды) |
+| 19 | **Отмена заявки ротации admin-пароля** `DELETE /api/kafka/clusters/{c}/admin-password/rotate` — без тела; оператор — `X-Requested-By` (аудит — host-лог воркера, как №18) | del `/kafkaworker/admin_rotations/<C>` — протокол мутации №18 один в один (гвард по `op=rotate` admin-фаз PasswordRotator) | 204, 404, 409, 503 |
+| 20 | **Отмена заявки ротации CA** `DELETE /api/kafka/clusters/{c}/ca/rotate` — без тела; оператор — `X-Requested-By` (аудит — host-лог воркера, как №18) | del `/kafkaworker/ca_rotations/<C>` — протокол мутации №18, гвард по `op=rotate-ca` в фазах P/D/R/C (CaRotator, arch/16 §5 K) | 204, 404, 409, 503 |
 
 ### 10.3. Валидация создания/конфиг-мутации (сервер — источник истины)
 
@@ -1124,16 +1228,16 @@ v1-упрощение домена: топология standalone `nodes=1` — 
 | `/valkey/clusters/<C>/endpoints` | `ValkeyClusterInfo.Endpoints` | точка дискавери клиентов (arch/20 §2); отсутствие у Active — critical-алерт |
 | `/valkey/clusters/<C>/app_user`, `app_password` | — (парсер пропускает молча, без `unknownKeys`) | панель НЕ читает и не отображает: app-креды — роль приложений, панель к нодам с ними не ходит |
 | `/valkey/clusters/<C>/admin_user`, `admin_password`, `ca_pem` | internal-словарь стора (не в `ValkeyClusterInfo`, не в UI/API) | читаются ТОЛЬКО для live-проб PING (arch/20 §2: «панель читает для проб»; `ca_pem` — TLS-доверие пробы); значения наружу не отдаются. Live-пробы PING — по TLS (SslStream + доверие `ca_pem` кластера + SAN-хост); ошибки чтения/валидации PEM — толерантность как у кредов (проба невозможна — failed-результат, без падения тика). Примечание: Active-кластер без `ca_pem` → critical-алерт `valkey-security-missing` (arch/20 §5; миграция TLS не доиграна / ключ потерян) |
-| `/valkeyworker/rotations/<C>` | `ValkeyRotationTicket` | очередь ротаций в UI (читаемое из `/valkeyworker/` кроме `api/`, `ca_rotations/`, `ticket_outcomes/`); формат `{"role":"app"\|"admin","requested_unix","requested_by"}`; снятие — только воркером (после исполнения или возрастным таймаутом не-начатой); отмена из панели НЕТ (арх/20 §3) |
-| `/valkeyworker/ca_rotations/<C>` | `ValkeyCaRotationTicket` | очередь ротаций CA в UI; формат `{"requested_unix","requested_by"}` (§9.8-паттерн без role); снятие — только воркером (атомарно коммиту фазы C CaRotator, arch/21 §5 K, или возрастным таймаутом не-начатой); отмена из панели НЕТ |
+| `/valkeyworker/rotations/<C>` | `ValkeyRotationTicket` | очередь ротаций в UI; формат `{"role":"app"\|"admin","requested_unix","requested_by"}`; снятие — воркером (после исполнения или возрастным таймаутом не-начатой) либо мутацией №7 — DELETE-отмена живой заявки (§11.2; del без тела — оператор уходит `X-Requested-By`, воркер пишет исход отмены в host-лог) |
+| `/valkeyworker/ca_rotations/<C>` | `ValkeyCaRotationTicket` | очередь ротаций CA в UI; формат `{"requested_unix","requested_by"}` (§9.8-паттерн без role); снятие — воркером (атомарно коммиту фазы C CaRotator, arch/21 §5 K, или возрастным таймаутом не-начатой) либо мутацией №8 — DELETE-отмена живой заявки (§11.2; del без тела — оператор уходит `X-Requested-By`, воркер пишет исход отмены в host-лог) |
 | `/valkeyworker/ticket_outcomes/<C>` | `ValkeyTicketOutcome` | последний исход заявки: expired/done — формат arch/20 §3; алерт `valkey-ticket-expired` |
+| `/valkeyworker/work/<C>`, `/valkeyworker/leader`, `/valkeyworker/claims/<C>`, `/valkeyworker/instances/<id>` | `WorkJournalInfo` / `WorkerCoordination` (§3) | work-журналы/координация (канон arch/20 §3): вкладка «Журнал» valkey-страницы + координация на грани «Воркеры» (03 §3.7/§8.3); транспортный провал любого чтения роняет тик |
 
 Неизвестные ключи внутри `/valkey/` — лог + счётчик `unknownKeys`; битый JSON —
 parseError-запись + warning-алерт `valkey-key-malformed` (arch/20 §5).
-Остальные ключи `/valkeyworker/` (leader, claims, work, portalloc, locks,
-instances) панель не читает и не пишет.
+Остальные ключи `/valkeyworker/` (portalloc, locks, api) панель не читает и не пишет.
 
-### 11.2. Мутации панели (6; исполняет ValkeyWorker API, arch/21 §1.1)
+### 11.2. Мутации панели (6 + отмена ротаций №7/№8; исполняет ValkeyWorker API, arch/21 §1.1)
 
 Все мутации панель отправляет в **API ValkeyWorker** (URL — живой
 `/valkeyworker/api/<id>`, §2.3.3); воркер сам валидирует и пишет в etcd.
@@ -1148,8 +1252,10 @@ instances) панель не читает и не пишет.
 | 2 | **Удаление кластера** `DELETE /api/valkey/clusters/{c}` | RMW-txn `config.state=TO_REMOVE` с сохранением остальных полей (§9.4-паттерн; уже TO_REMOVE → 202 без записи); демонтаж — процесс B воркера | 404, 503 |
 | 3 | **Изменение конфига** `PUT /api/valkey/clusters/{c}/config` | RMW-txn по `mod_revision`: обновить `maxmemory_bytes`/`maxmemory_policy` (остальные поля, вкл. `state`, — как прочитаны); применяет converge D (`CONFIG SET`, без рестартов); инвариант R3 сверяется с текущими `resources` etcd; проигрыш compare → 503 (retry клиентом) | 400, 404, 503 |
 | 4 | **Ресурсы ноды** `PUT /api/valkey/clusters/{c}/nodes/{node}/resources` | put ключа `nodes/node<k>/resources` каноническим JSON (перезапись целиком; null-поля → дефолты, v1 node1); применяет автоконверге надзора C (arch/21 §5 C: сверка лимитов → пересоздание контейнера, одно за тик — кеш восполним) | 400, 404 (кластер/нода), 503 |
-| 5 | **Заявка ротации пароля** `POST /api/valkey/clusters/{c}/password/rotate` | клэйм-txn `/valkeyworker/rotations/<C>` `version==0` + put `{"role":"app"\|"admin","requested_unix","requested_by"}` — §9.8-паттерн; исполнение — PasswordRotator (окно двух паролей E1–E3, arch/21 §5 E, без рестартов); state-гейта нет (заявка легальна для любого существующего кластера); отмена из панели НЕТ | 400 (role), 404, 409 (уже запрошена), 503 |
-| 6 | **Заявка ротации CA/сертов** `POST /api/valkey/clusters/{c}/ca/rotate` | клэйм-txn `/valkeyworker/ca_rotations/<C>` `version==0` + put `{"requested_unix","requested_by"}` — §9.8-паттерн; исполнение — CaRotator воркера (окно двойного доверия P→D→R→C, arch/21 §5 K: staging `ca_next_*`, bundle `ca_pem`, одно пересоздание ноды с перевыпуском серта от NEW CA); state-гейт: `state≠Active` (NOT_INITIALIZED/TO_REMOVE) → 409 (ротация не поднятого/демонтируемого кластера бессмысленна — образец kafka); отмена из панели НЕТ | 404, 409 (уже запрошена / не Active), 503 |
+| 5 | **Заявка ротации пароля** `POST /api/valkey/clusters/{c}/password/rotate` | клэйм-txn `/valkeyworker/rotations/<C>` `version==0` + put `{"role":"app"\|"admin","requested_unix","requested_by"}` — §9.8-паттерн; исполнение — PasswordRotator (окно двух паролей E1–E3, arch/21 §5 E, без рестартов); state-гейта нет (заявка легальна для любого существующего кластера) | 400 (role), 404, 409 (уже запрошена), 503 |
+| 6 | **Заявка ротации CA/сертов** `POST /api/valkey/clusters/{c}/ca/rotate` | клэйм-txn `/valkeyworker/ca_rotations/<C>` `version==0` + put `{"requested_unix","requested_by"}` — §9.8-паттерн; исполнение — CaRotator воркера (окно двойного доверия P→D→R→C, arch/21 §5 K: staging `ca_next_*`, bundle `ca_pem`, одно пересоздание ноды с перевыпуском серта от NEW CA); state-гейт: `state≠Active` (NOT_INITIALIZED/TO_REMOVE) → 409 (ротация не поднятого/демонтируемого кластера бессмысленна — образец kafka) | 404, 409 (уже запрошена / не Active), 503 |
+| 7 | **Отмена заявки ротации пароля** `DELETE /api/valkey/clusters/{c}/password/rotate` — без тела; оператор (username сессии) — заголовком `X-Requested-By`, воркер пишет исход отмены в host-лог (аудит; etcd при del ничего не пишет) | del ключа `/valkeyworker/rotations/<C>` (ключ один на обе роли app\|admin) выполняет ТОЛЬКО воркер (панель — прокси, порт §10.2-18). Гвард «не начата» — по work-журналу `/valkeyworker/work/<C>` (op=rotate в переходных фазах E, предикат PasswordRotator, arch/21 §5 E) И по СТЕЙТУ доигрывания `/valkeyworker/work/<C>/rotation` (фазы `e1-pending`/`e1-added`/`e2-committed` — живая мутация: стейт `e1-pending` пишется ДО SETUSER >NEW, точка невозврата E1) → 409 «ротация уже исполняется»; терминальные/waiting-фазы, отсутствие журнала/стейта/чужой op — отмена разрешена. Del — условный txn: compare значение заявки + mod_revision журнала И стейта (0 = ключа нет) — клэйм между гвардом и txn (первая запись старта E-ротации — стейт) делает compare несходящимся → перечитанный гвард → 409. Идемпотентность повтора отсутствует осознанно (образец §9.7.5) | 204, 404 (заявки нет), 409, 503 (etcd/API недоступны; compare не сошёлся дважды) |
+| 8 | **Отмена заявки ротации CA** `DELETE /api/valkey/clusters/{c}/ca/rotate` — без тела; оператор — `X-Requested-By` (аудит — host-лог воркера, как №7) | del `/valkeyworker/ca_rotations/<C>` — протокол мутации №7 (без стейт-compare: CA-ротация стейта доигрывания не ведёт — journal phase-p пишется до staging), гвард по `op=rotate-ca` в фазах P/D/R/C (CaRotator, arch/21 §5 K) | 204, 404, 409, 503 |
 
 `requested_by` — username сессии панели (заголовок `X-Requested-By`, аудит).
 
@@ -1189,6 +1295,7 @@ S3Worker ([24-s3worker.md](../24-s3worker.md)); панель никогда не
 | `/s3/clusters/<C>/connectivity` | `S3ConnectivityInfo` (state, checked_unix, links-матрица, probe_error?) | зонд |
 | `/s3/clusters/<C>/sync` | `S3SyncInfo` (state, checked_unix, pairs, last_error?) | зонд |
 | `/s3worker/rotations/<C>` | `S3RotationTicket` | живая заявка ротации клиентских кредов |
+| `/s3worker/work/<C>`, `/s3worker/leader`, `/s3worker/claims/<C>`, `/s3worker/instances/<id>` | `WorkJournalInfo` / `WorkerCoordination` (§3) | work-журналы/координация (канон arch/23 §8): вкладка «Журнал» s3-страницы + координация на грани «Воркеры» (03 §3.7/§12.3); транспортный провал любого чтения роняет тик |
 | `pki/*`, `nodes/<I>/pki` | — (парсер пропускает молча, без unknownKeys) | PKI репликации — только воркеру |
 
 Неизвестные ключи внутри `/s3/` — лог + `unknownKeys`; битый JSON —

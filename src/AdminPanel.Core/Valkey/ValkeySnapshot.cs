@@ -19,7 +19,9 @@ public sealed record ValkeySnapshot(
     int UnknownKeyCount,
     IReadOnlyList<ValkeyCaRotationTicket>? CaRotations = null, // /valkeyworker/ca_rotations/ (02 §11.1)
     IReadOnlyList<ValkeyTicketOutcome>? TicketOutcomes = null, // /valkeyworker/ticket_outcomes/ (arch/20 §3)
-    WorkerApiCert? WorkerApiCert = null);              // целевой серт /workers/api_tls/valkeyworker (arch/02 §9.9)
+    WorkerApiCert? WorkerApiCert = null,              // целевой серт /workers/api_tls/valkeyworker (arch/02 §9.9)
+    IReadOnlyList<WorkJournalInfo>? WorkJournals = null, // /valkeyworker/work/ (u13, arch/20 §3)
+    WorkerCoordination? Coordination = null);  // leader/claims/instances (u14, adminpanel/02 §2.3.3)
 
 // Кластер /valkey/clusters/<C>/ (arch/20 §2): config + state + факт (nodes/endpoints).
 public sealed record ValkeyClusterInfo(

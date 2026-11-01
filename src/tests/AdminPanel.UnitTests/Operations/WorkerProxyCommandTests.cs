@@ -273,4 +273,44 @@ public class WorkerProxyCommandTests
         result.Error.Should().BeOfType<WorkerProblemDetails>()
             .Which.StatusCode.Should().Be(409);
     }
+
+    // u15: effective-config прокси — тело воркера как есть (JsonElement), GET
+    // без requestedBy (read-only, заявки нет).
+    [Fact]
+    public async Task EffectiveConfig_200WithBody_ReturnsWorkerJson()
+    {
+        // Arrange
+        var api = new StubWorkerApi
+        {
+            Respond = _ => new WorkerApiResult(200,
+                """{"source":"env","thresholds":{"nodeDeadSec":90},"loops":{},"parallelism":{"maxClusters":4}}"""),
+        };
+        var handler = new GetWorkerEffectiveConfigCommandHandler(api);
+
+        // Act
+        var result = await handler.Handle(new GetWorkerEffectiveConfigCommand("pgworker"), CancellationToken.None);
+
+        // Assert
+        result.IsSuccess.Should().BeTrue();
+        result.Value.GetProperty("source").GetString().Should().Be("env");
+        result.Value.GetProperty("thresholds").GetProperty("nodeDeadSec").GetInt32().Should().Be(90);
+        api.Calls.Should().ContainSingle().Which.Should().Match<StubWorkerApi.Call>(c =>
+            c.Worker == "pgworker" && c.Method == HttpMethod.Get && c.Path == "/api/config"
+            && c.RequestedBy == null);
+    }
+
+    // u15: живых инстансов нет — WorkerApiUnavailableException → 503-семантика модуля.
+    [Fact]
+    public async Task EffectiveConfig_NoLiveInstances_503Exception()
+    {
+        // Arrange
+        var api = new StubWorkerApi { Throw = new WorkerApiUnavailableException("no live pgworker instances") };
+        var handler = new GetWorkerEffectiveConfigCommandHandler(api);
+
+        // Act
+        var result = await handler.Handle(new GetWorkerEffectiveConfigCommand("pgworker"), CancellationToken.None);
+
+        // Assert
+        result.Error.Should().BeOfType<WorkerApiUnavailableException>();
+    }
 }

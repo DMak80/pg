@@ -73,11 +73,28 @@ public sealed class S3SnapshotRefresher(
             ? _activeEndpoint
             : endpoints[0];
 
-        var clustersKv = await RangeWithFailoverAsync(endpoints, active, Prefixes.Clusters, ct);
-        var rotationsKv = await RangeWithFailoverAsync(endpoints, active, Prefixes.Rotations, ct);
-        var workerApiKv = await RangeWithFailoverAsync(endpoints, active, Prefixes.WorkerApi, ct);
-        var certKv = await RangeWithFailoverAsync(endpoints, active, Prefixes.WorkerApiCert, ct);
-        if (!clustersKv.IsSuccess || !rotationsKv.IsSuccess || !workerApiKv.IsSuccess || !certKv.IsSuccess)
+        // Чтения тика — ПАРАЛЛЕЛЬНО (образец pg-цикла SnapshotRefresher):
+        // длина тика = max латентностей, а не сумма; частичный провал любого
+        // чтения = отказ тика (механика без изменений).
+        var clustersTask = RangeWithFailoverAsync(endpoints, active, Prefixes.Clusters, ct);
+        var rotationsTask = RangeWithFailoverAsync(endpoints, active, Prefixes.Rotations, ct);
+        var workerApiTask = RangeWithFailoverAsync(endpoints, active, Prefixes.WorkerApi, ct);
+        var certTask = RangeWithFailoverAsync(endpoints, active, Prefixes.WorkerApiCert, ct);
+        // u13/u14: work-журналы и координация s3-домена (arch/23 §8).
+        var workTask = RangeWithFailoverAsync(endpoints, active, Prefixes.Work, ct);
+        var leaderTask = RangeWithFailoverAsync(endpoints, active, Prefixes.Leader, ct);
+        var claimsTask = RangeWithFailoverAsync(endpoints, active, Prefixes.Claims, ct);
+        var instancesTask = RangeWithFailoverAsync(endpoints, active, Prefixes.Instances, ct);
+        var clustersKv = await clustersTask;
+        var rotationsKv = await rotationsTask;
+        var workerApiKv = await workerApiTask;
+        var certKv = await certTask;
+        var workKv = await workTask;
+        var leaderKv = await leaderTask;
+        var claimsKv = await claimsTask;
+        var instancesKv = await instancesTask;
+        if (!clustersKv.IsSuccess || !rotationsKv.IsSuccess || !workerApiKv.IsSuccess || !certKv.IsSuccess
+            || !workKv.IsSuccess || !leaderKv.IsSuccess || !claimsKv.IsSuccess || !instancesKv.IsSuccess)
             return FailTick(previous, now, "etcd KV reads failed");
 
         _activeEndpoint = active;
@@ -87,6 +104,9 @@ public sealed class S3SnapshotRefresher(
         var workerApi = WorkerEndpointsParser.Parse(workerApiKv.Value);
         // Префикс-запрос точечный: ровно один ключ /workers/api_tls/s3worker.
         var certParsed = WorkerCertParser.Parse(Prefixes.WorkerApiCert, certKv.Value.FirstOrDefault());
+        // u13/u14: журналы и координация (факт-поля pg у домена отсутствуют).
+        var workParsed = WorkJournalParser.Parse(workKv.Value);
+        var coordinationParsed = CoordinationParser.Parse(leaderKv.Value.FirstOrDefault(), claimsKv.Value, instancesKv.Value);
 
         var rotationsByCluster = rotations.Tickets
             .GroupBy(t => t.Cluster, StringComparer.Ordinal)
@@ -105,9 +125,12 @@ public sealed class S3SnapshotRefresher(
             workerHealthStore.Current ?? [],   // health-проб воркера вносит успешный тик (arch/02 §2.3.4)
             Alerts: [],
             [.. clusters.Errors, .. rotations.Errors,
-                .. workerApi.Errors, .. WorkerCertParser.ErrorsOf(certParsed)],
+                .. workerApi.Errors, .. WorkerCertParser.ErrorsOf(certParsed),
+                .. workParsed.Errors, .. coordinationParsed.Errors],
             clusters.UnknownKeyCount,
-            WorkerApiCert: certParsed.Cert);
+            WorkerApiCert: certParsed.Cert,
+            WorkJournals: workParsed.Items,
+            Coordination: coordinationParsed.Coordination);
 
         store.Replace(built with { Alerts = alertEngine.Evaluate(built, previous) });
         return Result.Success();
@@ -156,5 +179,10 @@ public sealed class S3SnapshotRefresher(
         public const string Rotations = "/s3worker/rotations/";
         public const string WorkerApi = "/s3worker/api/";
         public const string WorkerApiCert = "/workers/api_tls/s3worker";
+        // u13/u14 (arch/23 §8, adminpanel/02 §2.3.4).
+        public const string Work = "/s3worker/work/";
+        public const string Leader = "/s3worker/leader";
+        public const string Claims = "/s3worker/claims/";
+        public const string Instances = "/s3worker/instances/";
     }
 }

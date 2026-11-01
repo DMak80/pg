@@ -24,11 +24,24 @@ public sealed record ClusterDto(
     IReadOnlyList<MoveTicketDto> PendingMoves,   // очередь заявок переездов кластера (arch/03 §2)
     IReadOnlyList<HealDto> Heals,
     IReadOnlyList<StandNodeDto> StandNodes,
-    WorkDto? Work);
+    WorkDto? Work,
+    IReadOnlyList<EvacuationDto>? Evacuations = null, // u12: журналы эвакуаций кластера
+    bool SecretsRotationPending = false); // u07-бейдж: живая заявка /pgworker/rotations/<C>
+
+// Журнал эвакуации шарда (u12, arch/14 §3.2): buckets — словарь «старый → новый».
+public sealed record EvacuationDto(
+    string Shard, long EvacuatedUnix, string Reason,
+    IReadOnlyDictionary<string, string> Buckets, string State, long? ReturnedUnix);
 
 // Журнал последнего процесса воркера кластера /pgworker/work/<C> (arch/03 §2):
-// op/phase/возраст/lastError — результат исполненной/отвергнутой заявки переездов.
-public sealed record WorkDto(string Op, string Phase, long UpdatedUnix, string? LastError);
+// op/phase/instance/возраст/lastError/fail-серия — результат исполненной/
+// отвергнутой заявки переездов; зациклившийся отказ (failCount/failFirstUnix/
+// retryNotBeforeUnix) отличим от разового (u13). Nullable-поля в конце —
+// DTO-совместимость со старыми потребителями.
+public sealed record WorkDto(
+    string Op, string Phase, long UpdatedUnix, string? LastError,
+    string? Instance = null, int? FailCount = null,
+    long? FailFirstUnix = null, long? RetryNotBeforeUnix = null);
 
 // arch/03 §2: masterLeaseAlive — семантика lease (arch/02 §1); hosts — multi-host из DsnParser.
 public sealed record ShardDto(
@@ -135,7 +148,9 @@ public static class ClusterDetailsMapper
     public static ClusterDto Map(
         ClusterInfo cluster, long nowUnix, string? owner, BucketState? state,
         IReadOnlyList<StandNode> standNodes, IReadOnlyList<HaScope> haScopes,
-        IReadOnlyList<MoveTicket> moveTickets, WorkJournalInfo? work)
+        IReadOnlyList<MoveTicket> moveTickets, WorkJournalInfo? work,
+        IReadOnlyList<EvacuationInfo>? evacuations = null,
+        IReadOnlyList<PgRotationTicket>? pgRotations = null)
     {
         var buckets = cluster.Buckets
             .Where(b => owner is null || b.Owner == owner)
@@ -183,7 +198,16 @@ public static class ClusterDetailsMapper
                 .OrderByDescending(h => h.TsUnix) // журнал: новые сверху; null — в конец (spec §3.3)
                 .Select(h => new HealDto(h.Bucket, h.Was, h.Now, h.Reason, h.TsUnix))],
             [.. standNodes.Select(n => new StandNodeDto(n.Name, n.Address))],
-            work is null ? null : new WorkDto(work.Op, work.Phase, work.UpdatedUnix, work.LastError));
+            work is null ? null : new WorkDto(work.Op, work.Phase, work.UpdatedUnix, work.LastError,
+                work.Instance, work.FailCount, work.FailFirstUnix, work.RetryNotBeforeUnix),
+            // u12: эвакуации кластера (шард/причина/план/state); u07: бейдж живой
+            // заявки ротации per-cluster секретов — источник шапки и вкладки «Секреты».
+            [.. (evacuations ?? [])
+                .Where(e => e.Cluster == cluster.Name)
+                .OrderBy(e => e.EvacuatedUnix)
+                .Select(e => new EvacuationDto(
+                    e.Shard, e.EvacuatedUnix, e.Reason, e.Buckets, e.State, e.ReturnedUnix))],
+            (pgRotations ?? []).Any(r => r.Cluster == cluster.Name));
     }
 
     // Маппинг runtime — по стабильной модели; поля arch/03 §2 (spec §3.14).
@@ -215,6 +239,7 @@ public sealed class ClusterDetailsQueryHandler(ISnapshotStore store, TimeProvide
             ? Result<ClusterDto>.Failed(new InspectionModule.ClusterNotFoundException(query.Cluster))
             : Result<ClusterDto>.Success(ClusterDetailsMapper.Map(
                 cluster, time.GetUtcNow().ToUnixTimeSeconds(), query.Owner, query.State, snapshot.StandNodes,
-                snapshot.HaScopes, snapshot.MoveTickets, work)));
+                snapshot.HaScopes, snapshot.MoveTickets, work,
+                snapshot.Evacuations, snapshot.PgRotations)));
     }
 }

@@ -14,7 +14,8 @@ namespace AdminPanel.Api.Operations;
 public sealed record UpdateBackupsPolicyRequest(
     int RetentionDays, int RetentionWeeks, int RetentionMonths,
     long FullMaxAgeSec, bool VerifyOnCreate, int DrillIntervalDays,
-    S3PolicyBody? S3); // null — сброс секции (policy без s3)
+    S3PolicyBody? S3,      // null — сброс секции (policy без s3)
+    long? GarbageMinAgeSec = null); // u16: null — поле в policy не шлётся (дефолт воркера 600 с)
 
 /// <summary>Секция s3 формы «Пул бэкапов» (arch/02 §9.12): null-поля —
 /// валидация на воркере; весь body null — секция не шлётся (выключение).</summary>
@@ -24,7 +25,7 @@ public sealed record S3PolicyBody(
 public sealed record UpdateBackupsPolicyCommand(
     string Cluster, int RetentionDays, int RetentionWeeks, int RetentionMonths,
     long FullMaxAgeSec, bool VerifyOnCreate, int DrillIntervalDays,
-    S3PolicyBody? S3, string RequestedBy)
+    S3PolicyBody? S3, string RequestedBy, long? GarbageMinAgeSec = null)
     : ICommand<string>;
 
 [InjectAsScoped]
@@ -50,6 +51,10 @@ public sealed class UpdateBackupsPolicyCommandHandler(IWorkerApiGateway api)
         };
         if (c.S3 is { } s3)
             body["s3"] = new { pool = s3.Pool, write_master = s3.WriteMaster, write_replica = s3.WriteReplica };
+        // u16 (arch/02 §9.12): поле задано → canonical policy-ключ; null —
+        // поле НЕ шлётся (замещение целиком снимает пер-кластерный гейт).
+        if (c.GarbageMinAgeSec is { } garbage)
+            body["garbage_min_age_sec"] = garbage;
         return body;
     }
 }

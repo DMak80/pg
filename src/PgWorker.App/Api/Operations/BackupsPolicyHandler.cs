@@ -24,7 +24,11 @@ public sealed partial class BackupsPolicyHandler(IEtcdGateway gateway, string[] 
         [property: JsonPropertyName("drill")] DrillBody? Drill,
         //  (arch/19 §4): секция s3 — пул + списки роли источника;
         // отсутствие секции → в policy не кладётся (выключение бэкапов).
-        [property: JsonPropertyName("s3")] BackupsPolicyS3Body? S3);
+        [property: JsonPropertyName("s3")] BackupsPolicyS3Body? S3,
+        //  (u16, arch/19 §4): возрастной гейт мусора супервизора; поле
+        // отсутствует → в policy НЕ кладётся (кластер живёт на дефолте
+        // конфига супервизора 600 с).
+        [property: JsonPropertyName("garbage_min_age_sec")] long? GarbageMinAgeSec);
 
     // reliability (arch/19 §4/§14 §1.1): interval_days — период дрилов
     // шардов кластера в сутках; null/отсутствие секции → поля в policy нет.
@@ -88,6 +92,10 @@ public sealed partial class BackupsPolicyHandler(IEtcdGateway gateway, string[] 
             errors.Add(new("retention.months", "monthly granularity — integer in [0..120]"));
         if (maxAge < 600)
             errors.Add(new("full_max_age_sec", "minimum 600 sec"));
+        //  (u16): garbage_min_age_sec — long ≥ 600 (решение A1, единообразно
+        // с full_max_age_sec); поле отсутствует — проверка пропускается.
+        if (body.GarbageMinAgeSec is < 600)
+            errors.Add(new("garbage_min_age_sec", "minimum 600 sec"));
         // reliability : период дрилов — целое в [0..3650]; 0 — дрилл
         // кластера выключен; поле отсутствует → секции drill в policy не будет.
         var drillDays = body.Drill?.IntervalDays;
@@ -114,6 +122,10 @@ public sealed partial class BackupsPolicyHandler(IEtcdGateway gateway, string[] 
         };
         if (drillDays is { } d)
             policyBody["drill"] = new Dictionary<string, object> { ["interval_days"] = d };
+        //  (u16): поле задано → канонический ключ policy; отсутствие →
+        // поле не кладётся (замещение целиком снимает пер-кластерный гейт).
+        if (body.GarbageMinAgeSec is { } g)
+            policyBody["garbage_min_age_sec"] = g;
         // секция задана → канонический JSON spec §5 (списки как пришли).
         if (body.S3 is { } s3)
             policyBody["s3"] = new Dictionary<string, object>

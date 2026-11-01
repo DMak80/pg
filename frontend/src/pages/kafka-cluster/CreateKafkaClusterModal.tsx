@@ -4,6 +4,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Alert, Button, Group, Modal, NumberInput, Stack, TextInput } from '@mantine/core';
 import { useState } from 'react';
 import { ApiError } from '../../api/client';
+import { validateKafkaBrokers, validateKafkaRf, validateMinIsr, validatePartitions, validateRetentionMs } from '../../utils/validation';
 import { createKafkaCluster } from '../../api/queries';
 import type { CreateKafkaClusterRequestDto } from '../../api/dto';
 
@@ -57,15 +58,17 @@ export function CreateKafkaClusterModal({ opened, onClose }: { opened: boolean; 
 
   function validate(): string | null {
     if (!NAME_RE.test(form.name)) return 'name: ^[a-z][a-z0-9_]{0,62}$ (no hyphen)';
-    if (form.brokers < 1 || form.brokers > 9) return 'brokers: 1..9';
-    if (form.replicationFactor < 1 || form.replicationFactor > 9
-      || form.replicationFactor > form.brokers)
-      return 'replicationFactor: 1..9 and not greater than brokers';
-    if (form.minInSyncReplicas < 1 || form.minInSyncReplicas > form.replicationFactor)
-      return 'minInSyncReplicas: 1..replicationFactor';
-    if (form.defaultPartitions < 1 || form.defaultPartitions > 1000)
-      return 'default partitions: 1..1000';
-    if (form.retentionDays < 1) return 'retention: at least 1 day';
+    // Границы — validation.ts (u02, arch/02 §10.3).
+    const brokersError = validateKafkaBrokers(form.brokers);
+    if (brokersError !== null) return brokersError;
+    const rfError = validateKafkaRf(form.replicationFactor, form.brokers);
+    if (rfError !== null) return rfError;
+    const minIsrError = validateMinIsr(form.replicationFactor, form.minInSyncReplicas);
+    if (minIsrError !== null) return minIsrError;
+    const partitionsError = validatePartitions(form.defaultPartitions);
+    if (partitionsError !== null) return partitionsError;
+    const retentionError = validateRetentionMs(Math.round(form.retentionDays * DAY_MS));
+    if (retentionError !== null) return retentionError;
     if (form.cpu < 0.01 || form.cpu > 64) return 'cpu: 0.01..64 cores';
     if (form.memGi < 1 || form.memGi > 65536) return 'memory: 1..65536 GiB';
     if (form.diskGi < 1 || form.diskGi > 65536) return 'disk: 1..65536 GiB';

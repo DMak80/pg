@@ -22,10 +22,13 @@ const STATE_FILTERS = [
   { value: 'NOT_INITIALIZED', label: 'NOT_INITIALIZED' },
 ];
 
-export function BucketsTab({ cluster, canScale, shards, buckets, pendingMoves }: {
+export function BucketsTab({ cluster, canScale, shards, buckets, pendingMoves,
+  highlightBucket = null, onBucketClick }: {
   cluster: string; canScale: boolean; shards: ShardDto[];
   buckets: BucketDto[]; pendingMoves: MoveTicketDto[];
-}) {
+  highlightBucket?: number | null;
+  // u04: клик по не-ACTIVE бакету — переход к вкладке «Переезды» с подсветкой.
+  onBucketClick?: (id: number) => void;}) {
   const [stateFilter, setStateFilter] = useState('all');
   const [ownerFilter, setOwnerFilter] = useState('all');
   const [moveOpened, setMoveOpened] = useState(false);
@@ -107,7 +110,8 @@ export function BucketsTab({ cluster, canScale, shards, buckets, pendingMoves }:
           <Table.Tbody>
             {rows.map((b) => (
               <BucketRow key={b.id} bucket={b} canScale={canScale} ticketOp={claimed.get(b.id) ?? null}
-                onRollback={() => setRollbackId(b.id)} onFinalize={() => setFinalizeId(b.id)} />
+                onRollback={() => setRollbackId(b.id)} onFinalize={() => setFinalizeId(b.id)}
+                highlight={highlightBucket === b.id} onBucketClick={onBucketClick} />
             ))}
           </Table.Tbody>
         </Table>
@@ -121,9 +125,12 @@ export function BucketsTab({ cluster, canScale, shards, buckets, pendingMoves }:
   );
 }
 
-function BucketRow({ bucket, canScale, ticketOp, onRollback, onFinalize }: {
+function BucketRow({ bucket, canScale, ticketOp, onRollback, onFinalize,
+  highlight = false, onBucketClick }: {
   bucket: BucketDto; canScale: boolean; ticketOp: string | null;
   onRollback: () => void; onFinalize: () => void;
+  // u04: подсветка выделенного бакета + клик по не-ACTIVE → вкладка «Переезды».
+  highlight?: boolean; onBucketClick?: (id: number) => void;
 }) {
   // Жёлтый фон — только реальные переезды (SYNCING/FROZEN/ABORTING);
   // NOT_INITIALIZED — нейтральный серый: это начальное состояние
@@ -134,12 +141,16 @@ function BucketRow({ bucket, canScale, ticketOp, onRollback, onFinalize }: {
   const lastError = bucket.move?.lastError ?? null;
   return (
     <Table.Tr
+      onClick={moveRow && onBucketClick ? () => onBucketClick(bucket.id) : undefined}
       style={{
-        backgroundColor: moveRow
-          ? 'var(--mantine-color-yellow-light)'
-          : notInitialized
-            ? 'var(--mantine-color-gray-light)'
-            : undefined,
+        cursor: moveRow && onBucketClick ? 'pointer' : undefined,
+        backgroundColor: highlight
+          ? 'var(--mantine-color-yellow-1)'
+          : moveRow
+            ? 'var(--mantine-color-yellow-light)'
+            : notInitialized
+              ? 'var(--mantine-color-gray-light)'
+              : undefined,
       }}
     >
       <Table.Td>{bucket.id}</Table.Td>

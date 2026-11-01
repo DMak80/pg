@@ -127,6 +127,7 @@ critical-алерт).
 | `POST /api/s3/clusters/{c}/nodes/{n}/allow` | снятие отзыва (имя из `denylist`) → 202 |
 | `POST /api/s3/clusters/{c}/rotations` | заявка ротации клиентских кредов кластера (`/s3worker/rotations/<C>`, клэйм-txn — §9.8-паттерн) |
 | `POST /api/s3/clusters/{c}/sync-probe` | внеплановый зонд синхронности/связности (202 — заявка `/s3worker/probes/<C>` put-if-absent, already → 202 идемпотентно; исполняет зонд F, результат — ключи arch/23 §3) |
+| `GET /api/config` | эффективный конфиг установки (read-only,; adminpanel/02 §2.3.5; mTLS-зона `/api`): плоский JSON групп `thresholds`/`loops`/`parallelism` (фактические поля POCO Options), пометка `source:"env"` — применяется рестартом воркера; БЕЗ секретов/TLS/endpoints; etcd не читается → 200 `application/json` |
 
 **Валидация** (сервер — источник истины): `name` кластера — паттерн
 arch/23; `platform` — единственное значение `owns3`; инстансы — 0..9

@@ -77,6 +77,8 @@ export const queryKeys = {
   cluster: (name: string) => ['clusters', name] as const,
   haScopes: ['ha-scopes'] as const,
   haScope: (scope: string) => ['ha-scopes', scope] as const,
+  // u03: HA-данные страницы шарда (scope = <cluster>-<shard>).
+  shardHa: (cluster: string, shard: string) => ['ha-scopes', `${cluster}-${shard}`] as const,
   alerts: (severity?: string, kind?: string) => ['alerts', { severity, kind }] as const,
 };
 
@@ -336,6 +338,26 @@ export function requestKafkaRebalance(cluster: string): Promise<KafkaRebalanceRe
     { method: 'POST' });
 }
 
+// ===== u17: DELETE-отмена живых заявок ротаций kafka/valkey (arch/02
+// §10.2-18/19/20, §11.2-7/8): воркер удаляет ключ заявки (del — только
+// воркер, D13); 204/404 (заявки нет)/409 (ротация начата)/503. =====
+
+export type KafkaRotationKind = 'app-password/rotate' | 'admin-password/rotate' | 'ca/rotate';
+
+export function cancelKafkaRotation(cluster: string, kind: KafkaRotationKind): Promise<void> {
+  return apiFetch<void>(
+    `/api/kafka/clusters/${encodeURIComponent(cluster)}/${kind}`,
+    { method: 'DELETE' });
+}
+
+export type ValkeyRotationKind = 'password/rotate' | 'ca/rotate';
+
+export function cancelValkeyRotation(cluster: string, kind: ValkeyRotationKind): Promise<void> {
+  return apiFetch<void>(
+    `/api/valkey/clusters/${encodeURIComponent(cluster)}/${kind}`,
+    { method: 'DELETE' });
+}
+
 // DELETE /api/kafka/clusters/{cluster}/rebalance — отмена ребалансировки
 // (t02, arch/02 §10.2-10): новые батчи не подаются, поданные Kafka доиграет.
 export async function cancelKafkaRebalance(cluster: string): Promise<void> {
@@ -469,13 +491,24 @@ export function rotateValkeyCa(cluster: string): Promise<ValkeyCaRotatedDto> {
 // ===== Грань «Хранилище бэкапов» (t08, arch/03 §1) =====
 
 export const backupsQueryKeys = {
+  // Полная сводка грани (страница /backups-storage).
   storage: ['backups-storage'] as const,
+  // Срез одного кластера (?cluster= — серверная фильтрация, arch/03 §1):
+  // вкладка «Бэкапы (срез)» pg-страницы и формы деталей шарда бэкапов.
+  storageCluster: (cluster: string) => ['backups-storage', cluster] as const,
   shard: (cluster: string, shard: string) => ['backups-storage', cluster, shard] as const,
-  objects: (prefix: string, token: string | null) => ['backups-storage', 'objects', prefix, token] as const,
+  // u16: пулы для формы Policy (02 §12.4).
+  pools: ['backups-storage', 's3-pools'] as const,
 };
 
-export function fetchBackupsStorage(): Promise<BackupStorageDto> {
-  return apiFetch<BackupStorageDto>('/api/backups/storage');
+export function fetchBackupsStorage(cluster?: string): Promise<BackupStorageDto> {
+  // Опциональный ?cluster= — серверная фильтрация срезов одного кластера
+  // (arch/03 §1): вкладка «Бэкапы (срез)» и формы деталей шарда не тянут
+  // сводку всей установки.
+  return apiFetch<BackupStorageDto>(
+    cluster !== undefined
+      ? `/api/backups/storage?cluster=${encodeURIComponent(cluster)}`
+      : '/api/backups/storage');
 }
 
 // POST /api/backups/orphans/{cluster}/{shard}/hold — hold-флаг сироты
@@ -513,6 +546,8 @@ export interface UpdateBackupsPolicyRequestDto {
   fullMaxAgeSec: number;
   verifyOnCreate: boolean;
   drillIntervalDays: number;
+  // u16 (02 §9.12): null — поле в policy не шлётся (дефолт воркера 600 с).
+  garbageMinAgeSec?: number | null;
   // t36 (02 §9.12): null — сброс секции (policy без s3 — выключение бэкапов).
   s3: { pool: string; writeMaster: string[]; writeReplica: string[] } | null;
 }
@@ -530,6 +565,17 @@ export function updateBackupsPolicy(
   return apiFetch<void>(
     `/api/clusters/${encodeURIComponent(cluster)}/backups/policy`,
     { method: 'PUT', body });
+}
+
+// POST /api/clusters/{cluster}/shards/{shard}/restore — restore-заявка
+// (u-restore, 02 §9.13): прокси в API PgWorker; 202 (заявка поставлена) /
+// 400 (мисматч confirm) / 404 / 409 (активный restore уже идёт) / 503.
+export function restoreShard(
+  cluster: string, shard: string, confirm: string, targetTime?: string,
+): Promise<unknown> {
+  return apiFetch<unknown>(
+    `/api/clusters/${encodeURIComponent(cluster)}/shards/${encodeURIComponent(shard)}/restore`,
+    { method: 'POST', body: { confirm, targetTime } });
 }
 
 export function fetchBackupShardStorage(cluster: string, shard: string): Promise<BackupShardStorageDto> {
@@ -555,10 +601,20 @@ export function fetchBackupObjectsPage(
 
 export const workerQueryKeys = {
   workers: ['workers'] as const,
+  // u15: эффективный конфиг воркера (on-demand прокси — не polling-ключ).
+  effectiveConfig: (worker: string) => ['workers', 'effective-config', worker] as const,
 };
 
 export function fetchWorkers(): Promise<WorkersViewDto> {
   return apiFetch<WorkersViewDto>('/api/workers');
+}
+
+// GET /api/workers/{worker}/effective-config (u15, adminpanel/02 §2.3.5):
+// on-demand прокси GET /api/config воркера; тело — JSON воркера как есть.
+export async function fetchWorkerEffectiveConfig(worker: string): Promise<Record<string, unknown>> {
+  const json = await apiFetch<unknown>(
+    `/api/workers/${encodeURIComponent(worker)}/effective-config`);
+  return (json ?? {}) as Record<string, unknown>;
 }
 
 // POST /api/workers/{worker}/api-cert/generate — self-signed лист (SAN по живым

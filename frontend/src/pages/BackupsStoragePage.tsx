@@ -2,7 +2,7 @@
 // дерево «Кластеры → шарды» с пометками сверки, блок сирот с защитой (t04) и
 // кнопками Hold/Unhold/Delete. Данные — снапшот (live-инвентарь S3-хранилища вносится тиком).
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { BackupsPoolModal } from './backups-storage/BackupsPoolModal';
+import { PolicyBackupsModal } from './backups-storage/PolicyBackupsModal';
 import {
   Alert,
   Badge,
@@ -29,13 +29,15 @@ export function BackupsStoragePage() {
   const intervalMs = usePollingIntervalMs();
   const query = useQuery({
     queryKey: backupsQueryKeys.storage,
-    queryFn: fetchBackupsStorage,
+    queryFn: () => fetchBackupsStorage(),
     refetchInterval: intervalMs,
   });
   // t36 (arch/adminpanel/03 §3): бейджи пула + модал «Пул бэкапов».
   const [poolModalCluster, setPoolModalCluster] = useState<string | null>(null);
   const poolsQuery = useQuery({
-    queryKey: ['backups', 's3-pools'],
+    // Один queryKey на endpoint (backupsQueryKeys.pools): второй ключ давал
+    // двойной поллинг и мимо инвалидации формы policy.
+    queryKey: backupsQueryKeys.pools,
     queryFn: fetchS3Pools,
     refetchInterval: intervalMs,
   });
@@ -63,11 +65,19 @@ export function BackupsStoragePage() {
   return (
     <Stack gap="md">
       <Group gap="sm">
-        <Title order={2}>Backup Storage</Title>
+        <Title order={2}>Бэкапы</Title>
         <Text c="dimmed" size="sm" ff="monospace">
           {data.endpoints.join(', ')} / {data.bucket}
         </Text>
       </Group>
+      {/* u10: глобальный стоп бэкапов — жёлтый баннер грани */}
+      {data.backupsDisabled ? (
+        <Alert color="yellow" title="Бэкапы остановлены (глобальный стоп)">
+          Ключ /pgworker/backups-disabled жив (поставлен {formatUnix(data.backupsDisabled.updatedUnix)}
+          {data.backupsDisabled.updatedBy !== null ? `, кем: ${data.backupsDisabled.updatedBy}` : ''}) —
+          приёмники WAL всех кластеров замирают. Запуск — снять ключ или включить Backups:Enabled.
+        </Alert>
+      ) : null}
       {data.inventoryError ? (
         <Alert color="yellow" title="Inventory lagging">
           The last successful S3 storage inventory tick has not been updated:{' '}
@@ -82,7 +92,7 @@ export function BackupsStoragePage() {
       </Group>
       <ClustersTable data={data} onOpenPool={(cluster) => setPoolModalCluster(cluster)} />
       {poolModalCluster ? (
-        <BackupsPoolModal
+        <PolicyBackupsModal
           cluster={poolModalCluster}
           policy={data.clusters.find((c) => c.cluster === poolModalCluster)?.policy ?? null}
           pools={poolsQuery.data ?? []}

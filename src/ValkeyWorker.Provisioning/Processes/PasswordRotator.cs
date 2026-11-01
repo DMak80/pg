@@ -49,6 +49,38 @@ public sealed class PasswordRotator(
     private const string PhaseE1 = "e1-added";
     private const string PhaseE2 = "e2-committed";
 
+    // Гвард отмены заявки (App/Operations CancelRotationHandlers): ЕДИНЫЙ
+    // источник мутационных фаз E — литералы в App не дублируются (дрейф фазы
+    // ротатора молча разрешал бы отмену живой мутации). Public: App — другая
+    // сборка. Журнал: e1-added/e2-committed (e1-pending в журнал не пишется).
+    public static bool MutationLive(WorkState? journalState)
+        => journalState is { Op: Op } j && (j.Phase == PhaseE1 || j.Phase == PhaseE2);
+
+    // Тот же гвард по СТЕЙТУ доигрывания (work/<C>/rotation, значение поля
+    // "phase"): e1-pending — ТОЖЕ живая мутация (SETUSER >NEW уже применён или
+    // применится доигрыванием — точка невозврата E1, заявка сниматься не должна).
+    public static bool StateMutationLive(string? statePhase)
+        => statePhase is PhaseE1Pending or PhaseE1 or PhaseE2;
+
+    // Значение поля "phase" стейта доигрывания (camelCase-канон arch/20 §3);
+    // битое/непустое не-JSON — null (гвард не блокирует отмену по мусору).
+    public static string? StatePhaseOf(string stateJson)
+    {
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(stateJson);
+            return doc.RootElement.ValueKind == System.Text.Json.JsonValueKind.Object
+                   && doc.RootElement.TryGetProperty("phase", out var p)
+                   && p.ValueKind == System.Text.Json.JsonValueKind.String
+                ? p.GetString()
+                : null;
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return null;
+        }
+    }
+
     // экспирация не-начатых заявок + исходы финалов.
     private readonly TicketExpirator _tickets = new(gateway, endpoints);
     private readonly int _timeoutSec = rotationTicketTimeoutSec;

@@ -355,4 +355,70 @@ public class ClustersMappersTests
         ClustersMapper.Map([TestSnapshots.FullCluster()]).Single()
             .SynchronousModeStrict.Should().BeTrue();
     }
+
+    // #15a: джойны u12/u07 (параметры с дефолтом null — старые тесты молча не
+    // трогали новое): эвакуации и живые заявки ротаций фильтруются по кластеру.
+    [Fact]
+    public void Map_JoinsEvacuationsAndPgRotations_ByCluster()
+    {
+        // Arrange — кластер demo; факты demo и ЧУЖОГО кластера other
+        var cluster = TestSnapshots.FullCluster();
+        var evacuations = new List<EvacuationInfo>
+        {
+            new("demo", "s1", 1756000100, "dead",
+                new Dictionary<string, string> { ["bucket_3"] = "shard1" }, "DONE", 1756000200),
+            new("other", "s9", 1756000300, "dead", new Dictionary<string, string>(), "QUARANTINED", null),
+        };
+        var rotations = new List<PgRotationTicket>
+        {
+            new("demo", 1756000400, "ops"),
+            new("other", 1756000500, "ops"),
+        };
+
+        // Act
+        var dto = ClusterDetailsMapper.Map(
+            cluster, NowUnix, null, null, [], [], [], null, evacuations, rotations);
+
+        // Assert — только факты этого кластера; бейдж живой ротации — true
+        dto.Evacuations.Should().ContainSingle().Which.Should().Match<EvacuationDto>(e =>
+            e.Shard == "s1" && e.State == "DONE" && e.ReturnedUnix == 1756000200
+            && e.Buckets.Count == 1 && e.Buckets["bucket_3"] == "shard1");
+        dto.SecretsRotationPending.Should().BeTrue();
+    }
+
+    // #15a: фактов нет → evacuations пусты, бейдж ротации false (дефолт-путь).
+    [Fact]
+    public void Map_WithoutEvacuationsAndRotations_DefaultsAreEmpty()
+    {
+        // Arrange
+        var cluster = TestSnapshots.FullCluster();
+
+        // Act — новые параметры не заданы (старые вызовы — тот же путь)
+        var dto = ClusterDetailsMapper.Map(cluster, NowUnix, null, null, [], [], [], null);
+
+        // Assert
+        dto.Evacuations.Should().BeEmpty();
+        dto.SecretsRotationPending.Should().BeFalse();
+    }
+
+    // #6: WorkDto переносит instance/fail-серию из модели журнала (u13).
+    [Fact]
+    public void Map_WorkDtoCarriesInstanceAndFailSeries()
+    {
+        // Arrange — журнал с серией ретраев
+        var cluster = TestSnapshots.FullCluster();
+        var work = new WorkJournalInfo(
+            "demo", "abort", "phase-a", "pgw-1", 1756000123, "conn refused",
+            FailCount: 3, FailFirstUnix: 1756000000, RetryNotBeforeUnix: 1756000183);
+
+        // Act
+        var dto = ClusterDetailsMapper.Map(cluster, NowUnix, null, null, [], [], [], work);
+
+        // Assert — зациклившийся отказ отличим от разового
+        dto.Work.Should().NotBeNull();
+        dto.Work!.Instance.Should().Be("pgw-1");
+        dto.Work.FailCount.Should().Be(3);
+        dto.Work.FailFirstUnix.Should().Be(1756000000);
+        dto.Work.RetryNotBeforeUnix.Should().Be(1756000183);
+    }
 }
