@@ -97,37 +97,44 @@ public sealed class E2eStrictScenarios(E2eStrictScenariosFx Ctx) : IClassFixture
             // же, StartedAt не свежее момента PUT); журнал несёт фазу
             // dcs-converge с патчем по strict. Patroni-проба — ТОЛЬКО условие
             // фазы (т29 §3.10: в тиках — etcd-чтения, гигиена нагрузки).
-            // Журнал фаз — JSON (WorkJournal): фаза dcs-converge перезаписывается
-            // следующим тиком (supervising) — снимок журнала снимается В МОМЕНТ
-            // конвергенции внутри опроса; вложенный diff-патч лежит в строковом
-            // поле last_error (кавычки экранированы внешней сериализацией) —
-            // ищем strict в распакованном значении.
+            // Журнал фаз — JSON (WorkJournal): фаза dcs-converge живёт ОДИН тик
+            // (перезаписывается следующим supervising), и флип strict Patroni
+            // может наблюдаться ПОЗЖЕ этой фазы — журнал наблюдается
+            // НЕПРЕРЫВНО с момента PUT, фаза/патч ловятся при первом появлении;
+            // конвергенция = strict==false + пойманное свидетельство фазы.
             string? convergePhase = null, convergeError = null;
+            var strictFalse = false;
             var converged = await E2ePhase.WaitAsync(Fx, "strict-dcs-converged", async () =>
             {
-                if (await PatroniSyncStrictAsync(shard1a.Patroni, ct) != false) // localhost:{порт из portalloc}
-                    return false;
                 var work = (await GetOrNullAsync($"/pgworker/work/{Cluster}"))?.Value;
-                if (work is null)
-                    return false;
-                try
+                if (work is not null)
                 {
-                    using var doc = JsonDocument.Parse(work);
-                    var root = doc.RootElement;
-                    convergePhase = root.TryGetProperty("phase", out var p) ? p.GetString() : null;
-                    convergeError = root.TryGetProperty("last_error", out var e) ? e.GetString() : null;
-                }
-                catch (JsonException)
-                {
-                    return false;
+                    try
+                    {
+                        using var doc = JsonDocument.Parse(work);
+                        var root = doc.RootElement;
+                        if (root.TryGetProperty("phase", out var p)
+                            && p.GetString() is "dcs-converge")
+                        {
+                            convergePhase = "dcs-converge";
+                            convergeError = root.TryGetProperty("last_error", out var e)
+                                ? e.GetString() : null;
+                        }
+                    }
+                    catch (JsonException)
+                    {
+                        // переходный рендер журнала — не свидетельство
+                    }
                 }
 
-                return convergePhase == "dcs-converge"
-                    || (convergeError ?? "").Contains("synchronous_mode_strict", StringComparison.Ordinal);
+                if (!strictFalse
+                    && await PatroniSyncStrictAsync(shard1a.Patroni, ct) == false) // localhost:{порт из portalloc}
+                    strictFalse = true;
+                return strictFalse && convergePhase == "dcs-converge";
             }, TimeSpan.FromSeconds(90), ct);
-            converged.Should().BeTrue($"the DCS convergence brought /config back to false (phase={convergePhase}, err={convergeError})");
-            (convergePhase == "dcs-converge"
-                || (convergeError ?? "").Contains("\"synchronous_mode_strict\":false", StringComparison.Ordinal))
+            converged.Should().BeTrue(
+                $"the DCS convergence brought /config back to false (strictFalse={strictFalse}, phase={convergePhase}, err={convergeError})");
+            (convergeError ?? "").Contains("\"synchronous_mode_strict\":false", StringComparison.Ordinal)
                 .Should().BeTrue("the strict patch went through the dcs-converge phase");
 
             var startedAtAfter = await StartedAtAsync(nodes, ct);

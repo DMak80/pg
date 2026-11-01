@@ -1140,13 +1140,18 @@ public sealed class E2eTliSwitchScenarios(TliSwitchContext Ctx) : IClassFixture<
                 "after-cut rows are restored — restore reached the end of the TLI2 chain");
 
             // Assert 3 — контур: ноды RUNNING, dsn-ключ не изменился
-            // (эталон DsnBefore фиксации шага 1; образец rs-latest).
-            var nodeA = await Ctx.GetOrNullAsync(
-                $"/clusters/{Ctx.Cluster}/shards/shard1/nodes/shard1a/state");
-            var nodeB = await Ctx.GetOrNullAsync(
-                $"/clusters/{Ctx.Cluster}/shards/shard1/nodes/shard1b/state");
-            nodeA!.Value.Should().Be("RUNNING");
-            nodeB!.Value.Should().Be("RUNNING");
+            // (эталон DsnBefore фиксации шага 1; образец rs-latest). RUNNING —
+            // через ожидание: сразу после COMPLETED догружающаяся нода может
+            // секунды числиться UNREACHABLE (живые пробы надзора на буте).
+            var running = await Ctx.WaitPhaseAsync("nodes-running", async () =>
+            {
+                var a = await Ctx.GetOrNullAsync(
+                    $"/clusters/{Ctx.Cluster}/shards/shard1/nodes/shard1a/state");
+                var b = await Ctx.GetOrNullAsync(
+                    $"/clusters/{Ctx.Cluster}/shards/shard1/nodes/shard1b/state");
+                return a is { Value: "RUNNING" } && b is { Value: "RUNNING" };
+            }, TimeSpan.FromSeconds(90), ct);
+            running.Should().BeTrue("both nodes settle RUNNING after the restore rejoin");
             var dsnAfter = await Ctx.GetOrNullAsync(
                 $"/clusters/{Ctx.Cluster}/shards/shard1/dsn");
             dsnAfter!.Value.Should().Be(Ctx.DsnBefore, "restore does not touch portalloc/dsn (AC2)");

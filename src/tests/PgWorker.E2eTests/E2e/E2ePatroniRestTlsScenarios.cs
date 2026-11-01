@@ -142,9 +142,24 @@ public sealed class E2ePatroniRestTlsScenarios(E2ePatroniRestTlsScenariosFx Ctx)
         // канонический объект на месте → пересоздания нет (EnsureDeclared),
         // статуса нет → шаг конвергенции молчит (arch/14 §5 C) — не сценарий.
         var legacy = $"pgw-{cluster}-shard1-{replica}";
-        var startedAtBefore = await Fx.RunDockerAsync(
-            ["inspect", "-f", "{{.State.StartedAt}}", legacy], ct);
-        await Fx.RunDockerAsync(["rm", "-f", legacy], ct);
+
+        // StartedAt-снапшот/снос — толерантно к отсутствию объекта: воркер p1
+        // мог быть остановлен посреди собственного recreate ноды (Remove→Ensure
+        // одним тиком) — контейнер в этот миг отсутствует, и это не сценарий.
+        async Task<string?> StartedAtOrNullAsync(string name, CancellationToken token)
+        {
+            var names = await Fx.RunDockerAsync(
+                ["ps", "-a", "--format", "{{.Names}}", "--filter", $"name={name}"], token);
+            if (!names.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                    .Contains(name, StringComparer.Ordinal))
+                return null;
+            return (await Fx.RunDockerAsync(
+                ["inspect", "-f", "{{.State.StartedAt}}", name], token)).Trim();
+        }
+
+        var startedAtBefore = await StartedAtOrNullAsync(legacy, ct);
+        if (startedAtBefore is not null)
+            await Fx.RunDockerAsync(["rm", "-f", legacy], ct);
 
         await using (var p2 = await Fx.StartHostAsync("rtls-p2", extraEnv: extraEnv, ct: ct))
         {
@@ -165,11 +180,13 @@ public sealed class E2ePatroniRestTlsScenarios(E2ePatroniRestTlsScenariosFx Ctx)
                 TimeSpan.FromSeconds(150), ct);
             migrated.Should().BeTrue("the supervisor recreates the node (BuildSpec) and the bootstrap convergence brings it to ready");
 
-            // Нода пересоздана надзором (StartedAt сменился), лидер НЕ тронут.
-            var startedAtAfter = await Fx.RunDockerAsync(
-                ["inspect", "-f", "{{.State.StartedAt}}", legacy], ct);
-            startedAtAfter.Trim().Should().NotBe(startedAtBefore.Trim(),
-                "the supervisor recreated the removed node");
+            // Нода пересоздана надзором (StartedAt сменился; была и отсутствует —
+            // стала существующей с новым StartedAt), лидер НЕ тронут.
+            var startedAtAfter = await StartedAtOrNullAsync(legacy, ct);
+            startedAtAfter.Should().NotBeNullOrEmpty("the supervisor recreated the removed node");
+            if (startedAtBefore is { } before)
+                startedAtAfter!.Should().NotBe(before,
+                    "the supervisor recreated the removed node");
             var leaderKv = await GetOrNullAsync($"/service/{cluster}-shard1/leader");
             leaderKv!.Value.Should().NotContain(replica,
                 "the leader must not be the recreated replica");

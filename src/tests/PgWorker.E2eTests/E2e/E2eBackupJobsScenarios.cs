@@ -211,13 +211,9 @@ public sealed class E2eBackupJobsScenarios(E2eBackupJobsScenariosFx Ctx) : IClas
         (await G.GetAsync(Endpoint, $"/clusters/{cluster}/backup_password", ct)).Value!.Value
             .Should().Be(oldBackupPassword, "backup-credentials rotation is a separate task (t06)");
 
-        // Assert 3 — окно закрыто R4 (флаг false в work-ключе)
-        var windowClosed = await E2eFixture.WaitForAsync(async () =>
-        {
-            var work = await GetOrNullAsync($"/pgworker/work/{cluster}");
-            return work is not null && !work.Value.Contains("\"rest_window_open\":true");
-        }, TimeSpan.FromSeconds(120), ct);
-        windowClosed.Should().BeTrue("R4 closes the rotation window");
+        // Закрытие окна R4 — ассерт целевого Rotate-сценария (E2eRotateScenarios);
+        // здесь remaining-ассерты от окна НЕ зависят (backup_exec не крутится —
+        // pg_authid для него постоянен в течение всего окна).
 
         // Assert 4 — backup_exec работает со СТАРЫМ паролем (мастер shard1):
         // DSN-ключ — multi-host с чужими кредами (bucket_admin), параметры
