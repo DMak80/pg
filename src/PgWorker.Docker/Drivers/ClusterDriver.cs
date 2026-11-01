@@ -610,7 +610,12 @@ public sealed class PlainClusterDriver(
             Env: env,
             VolumeName: VolumeName(topology.Cluster, topology.Shard, nodeName),
             VolumeDest: "/home/postgres/pgdata", // дефолтный PGDATA-корень Spilo (pgroot ломает bootstrap)
-            Tmpfs: new Dictionary<string, string> { ["/run/pgw"] = "rw,noexec,nosuid,size=16m" },
+            // mode=1777 ЯВНО: без него docker run даёт tmpfs 1777, а ПЕРЕСОЗДАНИЕ
+            // маунта при container restart — root:755 (факт стенда: рестарт
+            // мастера → рендер агентом (postgres) «Access to the path
+            // '/run/pgw/doorman' is denied» → start_failed). 1777+sticky —
+            // как /tmp: tmpfs приватна ноде, файлы агент кладёт 0600.
+            Tmpfs: new Dictionary<string, string> { ["/run/pgw"] = "rw,noexec,nosuid,size=16m,mode=1777" },
             CpuCores: resources?.CpuCores,
             MemoryBytes: resources?.MemoryBytes,
             LabelKey: LabelKey,

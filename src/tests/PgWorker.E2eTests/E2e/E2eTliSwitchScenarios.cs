@@ -1224,14 +1224,19 @@ public sealed class E2eTliSwitchScenarios(TliSwitchContext Ctx) : IClassFixture<
                 "pre + pre-wal + post-switch are restored — both sides of the TLI boundary through the mixed segment");
             parts[1].Should().Be("0", "commits after T_cut did not roll forward — PITR stops at the target");
 
-            // Assert 3 — контур: ноды RUNNING (rejoin второй заявки — тот же
-            // RestoreProcess), dsn жив.
-            var nodeA = await Ctx.GetOrNullAsync(
-                $"/clusters/{Ctx.Cluster}/shards/shard1/nodes/shard1a/state");
-            var nodeB = await Ctx.GetOrNullAsync(
-                $"/clusters/{Ctx.Cluster}/shards/shard1/nodes/shard1b/state");
-            nodeA!.Value.Should().Be("RUNNING");
-            nodeB!.Value.Should().Be("RUNNING");
+            // Assert 3 — контур: ноды RUNNING ЧЕРЕЗ ОЖИДАНИЕ (rejoin второй
+            // заявки — тот же RestoreProcess; сразу после COMPLETED
+            // догружающаяся нода секунды числится UNREACHABLE живыми пробами
+            // надзора — прецедент Latest-Assert-3).
+            var running = await Ctx.WaitPhaseAsync("nodes-running", async () =>
+            {
+                var a = await Ctx.GetOrNullAsync(
+                    $"/clusters/{Ctx.Cluster}/shards/shard1/nodes/shard1a/state");
+                var b = await Ctx.GetOrNullAsync(
+                    $"/clusters/{Ctx.Cluster}/shards/shard1/nodes/shard1b/state");
+                return a is { Value: "RUNNING" } && b is { Value: "RUNNING" };
+            }, TimeSpan.FromSeconds(90), ct);
+            running.Should().BeTrue("both nodes settle RUNNING after the rejoin");
         }
         catch
         {

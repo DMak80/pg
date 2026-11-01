@@ -190,13 +190,16 @@ public class NodeSupervisorBootstrapStepTests
         rig.Delivery.Calls[0].Should().Be(("shard1", "shard1a"));
     }
 
-    // start_failed → RemoveNodeAsync + EnsureNodeAsync (новый диск), delivery после.
+    // start_failed НЕ-лидера → RemoveNodeAsync + EnsureNodeAsync (новый диск),
+    // delivery после. «Не-лидер» доказан сидом leader-ключа (shard1b) — кейс
+    // не зависит от отсутствия сееда (§8-27 failover-first).
     [Fact]
     public async Task Tick_StartFailed_RecreatesNodeWithNewDisk()
     {
-        // Arrange: статус start_failed ноды shard1a.
+        // Arrange: статус start_failed ноды shard1a; лидер — shard1b.
         var rig = await NewRig();
         SeedStatus(rig.Etcd, "shard1a", "start_failed");
+        rig.Etcd.Seed("/service/shop-shard1/leader", "shard1b");
 
         // Act
         var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
@@ -214,35 +217,59 @@ public class NodeSupervisorBootstrapStepTests
             "the stale status of the removed agent must not outlive RemoveNode");
     }
 
-    // start_failed ЛИДЕРА (leader-ключ — голое имя Patroni, arch/14 §5 F) при
-    // живом свидетеле → пересоздание штатно. Регресс: JSON-парс значения
-    // валил тик исключением ('s' is an invalid start of a value) — recreate
-    // не выполнялся никогда (факт E2E StartFailed).
+    // Т13а (§8-27): start_failed ЛИДЕРА — failover-first. Act-1: лидерство
+    // ещё у ноды (leader-ключ — её голое имя, arch/14 §5 F) → СНОСА НЕТ при
+    // живом свидетеле (witness необходим, не достаточен), фаза
+    // start-failed-waiting-quorum, delivery не зван. Act-2: сим DCS-failover
+    // (leader-ключ сменил владельца) → бывший лидер сносится с новым диском.
+    // Регресс-контекст: прежний код сносил лидера ДО failover (уничтожал
+    // авторитетную копию); ещё раньше JSON-парс leader-ключа валил тик.
     [Fact]
-    public async Task Tick_StartFailedLeader_AliveWitness_BareNameKey_Recreates()
+    public async Task Tick_StartFailedLeader_FailoverFirst_NoRecreateUntilLeaderChanged()
     {
-        // Arrange: статус start_failed ноды shard1a; leader-ключ — её ГОЛОЕ имя.
+        // Arrange: статус start_failed ноды shard1a; лидерство — ещё у неё.
         var rig = await NewRig();
         SeedStatus(rig.Etcd, "shard1a", "start_failed");
         rig.Etcd.Seed("/service/shop-shard1/leader", "shard1a");
 
-        // Act
-        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
+        // Act-1: тик до failover.
+        var outcome1 = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
 
-        // Assert: свидетель (b/c живы в portalloc) есть → пересоздание + доставка.
-        outcome.IsSuccess.Should().BeTrue(outcome.Error?.ToString());
+        // Assert-1: сноса нет (свидетель b/c живы, но факта failover нет),
+        // журнальная фаза ожидания, доставка не звана.
+        outcome1.IsSuccess.Should().BeTrue(outcome1.Error?.ToString());
+        rig.Driver.RemovedNodes.Should().BeEmpty("no recreate before the leadership moves");
+        rig.Driver.EnsuredNodes.Should().BeEmpty();
+        rig.Delivery.Calls.Should().BeEmpty();
+        rig.Etcd.Store["/pgworker/work/shop"].Value
+            .Should().Contain("start-failed-waiting-quorum", "the tick waits (§8-27 failover-first)");
+
+        // Act-2: DCS-failover — leader-ключ сменил владельца; следующий тик.
+        rig.Etcd.Seed("/service/shop-shard1/leader", "shard1b");
+        var outcome2 = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
+
+        // Assert-2: бывший лидер снесён с НОВЫМ диском, delivery-хвост после;
+        // факт recreate — бюджет-счётчик инкрементирован (фаза recreate в
+        // work-ключе — last-write-wins: следующий шаг тика (DCS-converge)
+        // перезаписывает её, канон наблюдаемости — счётчик).
+        outcome2.IsSuccess.Should().BeTrue(outcome2.Error?.ToString());
         rig.Driver.RemovedNodes.Should().Contain("shard1/shard1a");
         rig.Driver.EnsuredNodes.Should().Contain("shard1/shard1a");
         rig.Delivery.Calls.Should().HaveCount(1);
+        rig.Delivery.Calls[0].Should().Be(("shard1", "shard1a"));
+        rig.Etcd.Store["/pgworker/work/shop"].Value
+            .Should().Contain("\"start_failed_recreate_count\":1");
     }
 
-    // MR-#4 (spec §8-24): start_failed ЛИДЕРА без живого свидетеля — фейл тика
-    // «failover first» (лидерство уйдёт в пустоту), мутаций нет; тик повторится.
+    // Т13б (§8-27): start_failed лидера БЕЗ живых реплик/свидетеля
+    // (одноузловой шард — частный случай) — снос «в пустоту» ЗАПРЕЩЁН:
+    // идемпотентное ожидание (start-failed-waiting-quorum) оба тика,
+    // восстановление одноузлового — restore-контур (arch/19 §3.5), не надзор.
     [Fact]
-    public async Task Tick_StartFailedLeader_NoAliveWitness_FailsWithoutMutations()
+    public async Task Tick_StartFailedLeader_NoWitness_WaitsQuorum()
     {
         // Arrange: лидер shard1a start_failed; b/c живы по state, но ВНЕ
-        // portalloc — живого свидетеля нет.
+        // portalloc — живого свидетеля нет (одноузловой эквивалент).
         var rig = await NewRig();
         SeedStatus(rig.Etcd, "shard1a", "start_failed");
         rig.Etcd.Seed("/service/shop-shard1/leader", "shard1a");
@@ -251,25 +278,65 @@ public class NodeSupervisorBootstrapStepTests
             ["shard1/shard1a"] = new("h1", new NodePorts(15000, 18000, 16500)),
         }));
 
-        // Act
+        // Act: два последовательных тика.
+        var outcome1 = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
+        var outcome2 = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
+
+        // Assert: оба — успех (ожидание, не фейл), БЕЗ сноса/доставки;
+        // фаза waiting повторяется (идемпотентная сигнализация).
+        outcome1.IsSuccess.Should().BeTrue(outcome1.Error?.ToString());
+        outcome2.IsSuccess.Should().BeTrue(outcome2.Error?.ToString());
+        rig.Driver.RemovedNodes.Should().BeEmpty("recreating into the void is forbidden (§8-27)");
+        rig.Delivery.Calls.Should().BeEmpty();
+        rig.Etcd.Store["/pgworker/work/shop"].Value
+            .Should().Contain("start-failed-waiting-quorum");
+    }
+
+    // Т13в (§8-27 (2)): снос start_failed НЕ-лидера НЕ трогает Patroni-scope
+    // живого кластера (initialize/leader/members остаются — драйвер side-
+    // удалений etcd не делает, чистка scope только D2/S3): новая нода
+    // бутстрапается репликой по существующему scope, пара восстановима.
+    [Fact]
+    public async Task Tick_StartFailedRecreate_DoesNotTouchScopeKeys()
+    {
+        // Arrange: start_failed НЕ-лидера (leader=shard1b — снос разрешён
+        // сразу); scope-ключи живого кластера в Store.
+        var rig = await NewRig();
+        SeedStatus(rig.Etcd, "shard1a", "start_failed");
+        rig.Etcd.Seed("/service/shop-shard1/leader", "shard1b");
+        rig.Etcd.Seed("/service/shop-shard1/initialize", "7703046869944660071");
+        rig.Etcd.Seed("/service/shop-shard1/members/shard1a",
+            """{"conn_url":"postgres://h1:15000/postgres","api_url":"https://shard1a:8008/patroni","state":"running","role":"secondary"}""");
+        rig.Etcd.Seed("/service/shop-shard1/members/shard1b",
+            """{"conn_url":"postgres://h2:15002/postgres","api_url":"https://shard1b:8008/patroni","state":"running","role":"leader"}""");
+
+        // Act: тик (снос+ensure+delivery).
         var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
 
-        // Assert: фейл до мутаций; формула причины — failover first.
-        outcome.IsSuccess.Should().BeFalse();
-        outcome.Error!.Message.Should().Contain("failover first");
-        rig.Driver.RemovedNodes.Should().BeEmpty();
-        rig.Delivery.Calls.Should().BeEmpty();
+        // Assert: реакция исполнена; ВСЕ scope-ключи ЖИВЫ (RemoveNode
+        // старт-реакции scope не чистит).
+        outcome.IsSuccess.Should().BeTrue(outcome.Error?.ToString());
+        rig.Driver.RemovedNodes.Should().Contain("shard1/shard1a");
+        rig.Etcd.Store.Should().ContainKey("/service/shop-shard1/initialize",
+            "the live cluster scope survives the node recreate");
+        rig.Etcd.Store.Should().ContainKey("/service/shop-shard1/leader");
+        rig.Etcd.Store["/service/shop-shard1/leader"].Value.Should().Be("shard1b");
+        rig.Etcd.Store.Should().ContainKey("/service/shop-shard1/members/shard1a");
+        rig.Etcd.Store.Should().ContainKey("/service/shop-shard1/members/shard1b");
     }
 
     // MR-#4 (spec §8-24): персистентный старт-дефект не даёт вечного
     // recreate-цикла — бюджет исчерпан (start_failed_recreate_count >= 3) →
-    // фейл «operator investigation» без мутаций.
+    // фейл «operator investigation» без мутаций. Счётчик тикает ТОЛЬКО на
+    // пути сноса (waiting §8-27 его не двигает) — нода не-лидер со свидетелем.
     [Fact]
     public async Task Tick_StartFailed_BudgetExhausted_FailsWithoutMutations()
     {
-        // Arrange: счётчик пересозданий в work-журнале на пороге.
+        // Arrange: счётчик пересозданий в work-журнале на пороге; лидер —
+        // shard1b (shard1a сносится сразу — путь сноса достижим).
         var rig = await NewRig();
         SeedStatus(rig.Etcd, "shard1a", "start_failed");
+        rig.Etcd.Seed("/service/shop-shard1/leader", "shard1b");
         rig.Etcd.Store["/pgworker/work/shop"] = new Fakes.FakeEtcd.Entry(
             """{"op":"supervise","phase":"supervising","instance":"i1","updated_unix":1,"start_failed_recreate_count":3}""",
             7, 1);

@@ -102,7 +102,10 @@ public sealed class E2eRestoreNewClusterScenarios(E2eRestoreNewClusterScenariosF
         // Часть 2 — ct2 (независимый бюджет 3 мин).
         using var cts2 = CancellationTokenSource.CreateLinkedTokenSource(
             TestContext.Current.CancellationToken);
-        cts2.CancelAfter(TimeSpan.FromMinutes(3)); // потолок части 2 — 3 мин
+        // Потолок части 2 — 4 мин (замер: restore latest = демонтаж + download
+        // ~60-65 с + recovering + rejoin с t05-доставкой (хендшейк/бут агента)
+        // 100-135 с; ×1.2 ≈ 160-215 с — приказ владельца: от замера).
+        cts2.CancelAfter(TimeSpan.FromMinutes(4));
         var ct2 = cts2.Token;
         await RunScenarioAsync(async fx =>
         {

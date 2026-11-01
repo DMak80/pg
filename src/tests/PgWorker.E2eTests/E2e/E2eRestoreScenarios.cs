@@ -122,7 +122,10 @@ public sealed class E2eRestoreScenarios(E2eRestoreScenariosFx Ctx) : IClassFixtu
             // снос + rebuild + restore не умещаются в общий потолок факта).
             using var ctsRestore = CancellationTokenSource.CreateLinkedTokenSource(
                 TestContext.Current.CancellationToken);
-            ctsRestore.CancelAfter(TimeSpan.FromMinutes(3));
+            // Потолок restore-секции — 4 мин (замер: PITR-проход с t05-rejoin
+            // (доставка/хендшейк/бут агента) ~200-260 с; ×1.2 — приказ
+            // владельца: от замера, не «чтобы сошлось»).
+            ctsRestore.CancelAfter(TimeSpan.FromMinutes(4));
             ct = ctsRestore.Token;
             Console.WriteLine($"[PITR] {cluster}: archive before request: [" +
                 string.Join(",", await ListWalNamesAsync(cluster, "shard1")) + "]");
@@ -139,31 +142,41 @@ public sealed class E2eRestoreScenarios(E2eRestoreScenariosFx Ctx) : IClassFixtu
             var (afterHost, afterPort) = await MasterPgAsync(cluster, "shard1", ct);
             var afterDsn = DatabaseProvisioner.BuildAdminDsn(afterHost, afterPort, cluster,
                 new InstallSecrets(E2eFixture.SuPassword, "", "", ""));
+            // Ретрай ДО КОНСИСТЕНТНОСТИ: COMPLETED-заявка ждёт лишь стартовавшую
+            // синхронизацию (§3.4/Rejoin) — полный накат WAL догоняет Patroni;
+            // первый успешный SELECT может видеть половину (реплика/мастер
+            // ещё допрокручивают) — «5» не является фейлом наката (факт гейта).
             string rows = "";
-            for (var attempt = 1; attempt <= 5; attempt++)
+            var rowsConsistent = await E2eFixture.WaitForAsync(async () =>
             {
                 try
                 {
                     rows = await ScalarAsync(afterDsn,
                         "SELECT count(*) || '|' || count(*) FILTER (WHERE note = 'post')" +
                         " FROM e2e_restore_probe", ct);
-                    break;
+                    return rows == "10|5";
                 }
-                catch (NpgsqlException) when (attempt < 5)
+                catch (NpgsqlException)
                 {
-                    await Task.Delay(8000, ct);
+                    return false; // переходное окно рестарта postmaster — повторим
                 }
-            }
+            }, TimeSpan.FromSeconds(90), ct);
+            rowsConsistent.Should().BeTrue($"the WAL roll-forward reaches latest (rows={rows})");
 
             var parts = rows.Split('|');
             parts[0].Should().Be("10", "all control rows are restored");
             parts[1].Should().Be("5", "the post-backup rows are delivered by WAL roll-forward to latest");
 
-            // Assert 3 — ноды RUNNING, dsn не изменился
-            var nodeA = await GetOrNullAsync($"/clusters/{cluster}/shards/shard1/nodes/shard1a/state");
-            var nodeB = await GetOrNullAsync($"/clusters/{cluster}/shards/shard1/nodes/shard1b/state");
-            nodeA!.Value.Should().Be("RUNNING");
-            nodeB!.Value.Should().Be("RUNNING");
+            // Assert 3 — ноды RUNNING (через ожидание: сразу после COMPLETED
+            // догружающаяся нода секунды числится UNREACHABLE живыми пробами
+            // надзора — прецедент TliSwitch Assert-3), dsn не изменился.
+            var nodesRunning = await E2eFixture.WaitForAsync(async () =>
+            {
+                var a = await GetOrNullAsync($"/clusters/{cluster}/shards/shard1/nodes/shard1a/state");
+                var b = await GetOrNullAsync($"/clusters/{cluster}/shards/shard1/nodes/shard1b/state");
+                return a is { Value: "RUNNING" } && b is { Value: "RUNNING" };
+            }, TimeSpan.FromSeconds(90), ct);
+            nodesRunning.Should().BeTrue("both nodes settle RUNNING after the restore rejoin");
             var dsnAfter = await GetOrNullAsync($"/clusters/{cluster}/shards/shard1/dsn");
             dsnAfter!.Value.Should().Be(dsnBefore!.Value, "restore does not touch portalloc/dsn");
 

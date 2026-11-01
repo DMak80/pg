@@ -213,7 +213,11 @@ public sealed class E2eNodeSecretsScenarios(E2eNodeSecretsFx Ctx) : IClassFixtur
             .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)[0];
         pgnodePid.Should().NotBeEmpty("the pgnode process is running");
         await E2eFixture.RunDockerAsync(["exec", container, "kill", "-9", pgnodePid], ct);
-
+        // Граница свежести: доставка тиком успевает прогнать машину
+        // (not_initialized → initializing → ready) быстрее первого полла —
+        // признак перепубликации — updated_unix ПОСЛЕ kill (любое состояние
+        // машины; требовать застоявшийся not_initialized — гонка по построению).
+        var killUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         var restarted = await E2eFixture.WaitForAsync(async () =>
         {
             var statuses = (await G.RangeAsync(Endpoint,
@@ -226,7 +230,9 @@ public sealed class E2eNodeSecretsScenarios(E2eNodeSecretsFx Ctx) : IClassFixtur
             try
             {
                 using var doc = JsonDocument.Parse(status.Value);
-                return doc.RootElement.GetProperty("state").GetString() == "not_initialized";
+                return doc.RootElement.TryGetProperty("updated_unix", out var u)
+                    && u.TryGetInt64(out var updatedUnix)
+                    && updatedUnix > killUnix; // свежая публикация нового процесса
             }
             catch (JsonException)
             {
@@ -234,7 +240,7 @@ public sealed class E2eNodeSecretsScenarios(E2eNodeSecretsFx Ctx) : IClassFixtur
             }
         }, TimeSpan.FromSeconds(30), ct);
         restarted.Should().BeTrue(
-            "the restarted agent republishes the machine (lease gone / not_initialized)");
+            "the restarted agent republishes the machine (fresh updated_unix after the kill)");
 
         // Assert: конвергенция тиком — статус снова ready, SELECT жив
         // (хендшейк заново; статус-ключ агента бэкапов жив, §6.7).
@@ -407,6 +413,7 @@ public sealed class E2eNodeSecretsScenarios(E2eNodeSecretsFx Ctx) : IClassFixtur
         }, TimeSpan.FromSeconds(120), ct);
         startFailed.Should().BeTrue("the node reaches start_failed (doorman start fails ×3)");
 
+        var UnixNow = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         // Assert (spec §6.2b/§9.6): пересоздание — контейнер новый (id и
         // StartedAt изменились), хендшейк заново (машина агента у новой ноды
         // началась), volume новый (маркер исчез). Готовность pg-компонента
@@ -414,8 +421,20 @@ public sealed class E2eNodeSecretsScenarios(E2eNodeSecretsFx Ctx) : IClassFixtur
         // живого кластера): вне приёмки кейса — отдельный разбор.
         var recreated = await E2eFixture.WaitForAsync(async () =>
         {
-            var id = (await E2eFixture.RunDockerAsync(
-                ["inspect", "-f", "{{.Id}}", container], ct)).Trim();
+            // «no such object» — окно Remove→Ensure одного тика (старый контейнер
+            // снесён, новый ещё не создан) — «ещё не пересоздана», не ошибка.
+            string id;
+            try
+            {
+                id = (await E2eFixture.RunDockerAsync(
+                    ["inspect", "-f", "{{.Id}}", container], ct)).Trim();
+            }
+            catch (ApplicationException e) when (
+                e.Message.Contains("no such object", StringComparison.Ordinal))
+            {
+                return false;
+            }
+
             return id != idBefore;
         }, TimeSpan.FromSeconds(150), ct);
         recreated.Should().BeTrue("the supervisor recreated the node (new container id)");
@@ -429,8 +448,15 @@ public sealed class E2eNodeSecretsScenarios(E2eNodeSecretsFx Ctx) : IClassFixtur
             try
             {
                 using var doc = JsonDocument.Parse(status.Value);
-                var state = doc.RootElement.GetProperty("state").GetString();
-                return state is "not_initialized" or "initializing";
+                // Быстрая машина проходит фазы быстрее первого полла —
+                // fresh-хендшейк доказывает ЛЮБОЕ состояние после recreate
+                // (not_initialized/initializing/ready) со свежим updated_unix.
+                if (doc.RootElement.GetProperty("state").GetString() is
+                    "not_initialized" or "initializing" or "ready")
+                    return doc.RootElement.TryGetProperty("updated_unix", out var u)
+                        && u.TryGetInt64(out var updatedUnix)
+                        && updatedUnix > UnixNow - 120; // окно recreate-реакции
+                return false;
             }
             catch (JsonException)
             {
@@ -438,7 +464,7 @@ public sealed class E2eNodeSecretsScenarios(E2eNodeSecretsFx Ctx) : IClassFixtur
             }
         }, TimeSpan.FromSeconds(60), ct);
         handshakeAgain.Should().BeTrue(
-            "the recreated node started a fresh handshake (not_initialized)");
+            "the recreated node started a fresh handshake (fresh machine state)");
 
         var startedAfter = (await E2eFixture.RunDockerAsync(
             ["inspect", "-f", "{{.State.StartedAt}}", container], ct)).Trim();

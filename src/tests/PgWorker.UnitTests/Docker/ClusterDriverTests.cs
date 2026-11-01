@@ -1065,7 +1065,9 @@ public class ClusterDriverTests
         spec.Env.Should().ContainKey("DOORMAN_CONFIG_TEMPLATE");
         spec.Env.Should().ContainKey("PGW_AGENT_CLIENT_CA");
         spec.Tmpfs!.Should().NotBeNull();
-        spec.Tmpfs!["/run/pgw"].Should().Be("rw,noexec,nosuid,size=16m");
+        // mode=1777 ЯВНО: пересоздание tmpfs при container restart без mode —
+        // root:755 (факт стенда) → рендер агентом (postgres) denied → start_failed.
+        spec.Tmpfs!["/run/pgw"].Should().Be("rw,noexec,nosuid,size=16m,mode=1777");
     }
 
     [Fact]

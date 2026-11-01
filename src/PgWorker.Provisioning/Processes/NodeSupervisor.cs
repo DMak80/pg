@@ -142,7 +142,12 @@ public sealed class NodeSupervisor(
         // пересоздание ноды С НОВЫМ ДИСКОМ. Недоступность канала — transient
         // тика (journal с адресом), статус ноды не портится. Пересоздание по
         // СЕКРЕТАМ не выполняется — замены применяются доставкой.
-        var bootstrapConverged = await EnsureBootstrapConvergenceAsync(
+        // waitQuorum (§8-27): start_failed-лидер без факта failover/свидетеля —
+        // сноса нет, тик ждёт. Фаза start-failed-waiting-quorum переустанавливается
+        // ФИНАЛЬНЫМ писателем тика (после WriteSupervisionAsync) — наблюдаема из
+        // etcd; реакции тика (в т.ч. доставка живым нодам — рестарт-нутая
+        // реплика конвергируется, пока лидер ждёт) продолжаются штатно.
+        var (bootstrapConverged, waitQuorum) = await EnsureBootstrapConvergenceAsync(
             cluster, snap, addresses.Value, restoring, restPassword, ct);
         if (!bootstrapConverged.IsSuccess)
             return Fail(bootstrapConverged.Error!);
@@ -258,6 +263,16 @@ public sealed class NodeSupervisor(
                 snap.Config.SyncStrict, track, haFacts, restPassword, restRotationWindowOpen, ct);
             if (!converged.IsSuccess)
                 return Fail(converged.Error!);
+        }
+
+        if (waitQuorum)
+        {
+            // §8-27: start-failed-waiting-quorum — ПОСЛЕДНЯЯ фаза тика
+            // (шаг 4 DCS-converge — последний писатель; waiting переустанав-
+            // ливается финалом — сигнализация наблюдаема из etcd).
+            await journal.WritePhaseAsync(cluster, "supervise",
+                "start-failed-waiting-quorum", claims.InstanceId, null, ct,
+                unreachable: track, facts: haFacts.ToRecord());
         }
 
         // Надзор не имеет терминальной фазы: успешный тик = Done (цикл повторит);
@@ -570,21 +585,27 @@ public sealed class NodeSupervisor(
     // TO_REMOVE-шарды и object-ноды пропускаются; QUARANTINED/REMOVING — вне.
     // ≤1 мутация на тик кластера. start_failed → RemoveNodeAsync (kill+rm
     // контейнера+volume) + EnsureNodeAsync (новый volume) + доставка.
-    private async Task<Result> EnsureBootstrapConvergenceAsync(
+    // waitQuorum (§8-27) — start_failed-лидер ждёт failover/кворума: фаза
+    // start-failed-waiting-quorum записана, тик надзора завершается (фаза —
+    // последняя в журнале, сигнализация наблюдаема из etcd).
+    private async Task<(Result Outcome, bool WaitQuorum)> EnsureBootstrapConvergenceAsync(
         string cluster, ClusterSnapshot snap,
         IReadOnlyDictionary<string, NodeAddress> addresses,
         HashSet<string> restoring, string restPassword, CancellationToken ct)
     {
         // Живая сверка клэйма перед шагом реакций (arch/17 S5).
         if (!await ClaimAliveAsync(cluster, "bootstrap-convergence", ct))
-            return Fail(new ApplicationException(
-                $"supervise {cluster}: claim lost before bootstrap-convergence step"));
+            return (Fail(new ApplicationException(
+                $"supervise {cluster}: claim lost before bootstrap-convergence step")), false);
 
         // Один range статусных ключей кластера → карта "<shard>/<node>" → факт.
         var range = await RangeAsync($"/pgworker/nodes/{cluster}/", ct);
         if (!range.IsSuccess)
-            return Fail(range.Error!);
+            return (Fail(range.Error!), false);
         var statuses = new Dictionary<string, PgNodeStatusFact>();
+        // §8-27: любой start_failed-узел в waiting (лидер без факта failover /
+        // без свидетеля) — тик завершится пере-фазой start-failed-waiting-quorum.
+        var waitQuorum = false;
         foreach (var kv in range.Value)
         {
             // "/pgworker/nodes/<C>/<X>/<N>/status" → ["", "pgworker", "nodes", <C>, <X>, <N>, "status"]
@@ -630,7 +651,7 @@ public sealed class NodeSupervisor(
                             await journal.WritePhaseAsync(cluster, "supervise",
                                 $"bootstrap-delivery/{shard.Name}/{node.Name}",
                                 claims.InstanceId, outcome.Detail, ct);
-                        return Result.Success(); // ≤1 мутация на тик кластера
+                        return (Result.Success(), false); // ≤1 мутация на тик кластера
                     }
 
                     case "ready":
@@ -642,7 +663,7 @@ public sealed class NodeSupervisor(
                         var keyRead = await GetAsync(
                             $"/clusters/{cluster}/shards/{shard.Name}/nodes/{node.Name}/bootstrap", ct);
                         if (!keyRead.IsSuccess)
-                            return Fail(keyRead.Error!);
+                            return (Fail(keyRead.Error!), false);
                         if (keyRead.Value is null || status.AppliedRevision == (long)keyRead.Value.ModRevision)
                             continue; // ключ ещё не доставлен / нода на ревизии — мутаций нет
 
@@ -656,46 +677,74 @@ public sealed class NodeSupervisor(
                             await journal.WritePhaseAsync(cluster, "supervise",
                                 $"bootstrap-apply/{shard.Name}/{node.Name}",
                                 claims.InstanceId, outcome.Detail, ct);
-                        return Result.Success(); // ≤1 мутация на тик кластера
+                        return (Result.Success(), false); // ≤1 мутация на тик кластера
                     }
 
                     case "start_failed":
                     {
-                        // Пересоздание ноды С НОВЫМ ДИСКОМ (spec §3.7.3): данные ноды
-                        // не сохраняются — живой шард восстанавливает реплику
-                        // репликацией/бэкапом; restore/TO_REMOVE/object — вне (гварды
-                        // выше). Клэйм фазы — claim-дисциплина мутаций.
-                        // MR-#4 (spec §8-24): для ЛИДЕРА — witness-гвард (нужен живой
-                        // свидетель-реплика: без него лидерство уйдёт в пустоту —
-                        // ускорение failover, образец RecreateMarked-hard) + счётчик
-                        // пересозданий с журналом (персистентный старт-дефект не
-                        // даёт вечного recreate-цикла; порог N=3 —QuietTicks-канон).
+                        // Пересоздание ноды С НОВЫМ ДИСКОМ (spec §3.7.3, §8-27):
+                        // данные ноды не сохраняются — живой шард восстанавливает
+                        // реплику репликацией/бэкапом; restore/TO_REMOVE/object —
+                        // вне (гварды выше). Клэйм фазы — claim-дисциплина мутаций.
+                        // §8-27 (1) failover-first: ЛИДЕР (владелец leader-ключа
+                        // DCS) сносится ТОЛЬКО после ФАКТА перехода лидерства —
+                        // leader-ключ сменил владельца (witness-гвард необходим,
+                        // но не достаточен); failover невозможен — сноса НЕТ:
+                        // тик ждёт (журнальная фаза start-failed-waiting-quorum,
+                        // идемпотентная сигнализация). Одноузловой шард — сам
+                        // себе лидер → вечно waiting: снос только через
+                        // restore-контур (arch/19 §3.5), не «в пустоту».
+                        // §8-27 (2) RemoveNode НЕ чистит Patroni-scope живого
+                        // кластера (initialize/leader/смежные остаются — драйвер
+                        // side-удалений etcd не делает; чистка scope только
+                        // D2/S3) — новая нода бутстрапается репликой по
+                        // существующему scope, пара восстановима.
                         // Значение leader-ключа — ИМЯ лидера (arch/14 §5 F, шаг 2
                         // резолва): голое имя Patroni (JSON-обёртка демо-сидов —
                         // легаси; обе формы — LeaderKeyName).
                         var leaderKv = await GetAsync($"/service/{cluster}-{shard.Name}/leader", ct);
-                        var isLeader = leaderKv.IsSuccess &&
-                            PgWorker.Provisioning.Endpoints.LeaderKeyName.From(leaderKv.Value?.Value) == node.Name;
-                        if (isLeader)
+                        var leaderName = leaderKv.IsSuccess
+                            ? PgWorker.Provisioning.Endpoints.LeaderKeyName.From(leaderKv.Value?.Value)
+                            : null;
+                        // Живой свидетель — НЕОБХОДИМОЕ условие любого сноса
+                        // (источник basebackup и приёмник лидерства).
+                        var aliveWitness = shard.Nodes.Any(n =>
+                            n.Name != node.Name
+                            && n.State is NodeState.Running
+                            && addresses.ContainsKey($"{shard.Name}/{n.Name}"));
+                        // ФАКТ перехода лидерства: leader-ключ указывает на ДРУГУЮ
+                        // ноду. Ключа нет (leaderName null) — лидерства в scope
+                        // не зафиксировано, «смена владельца» не доказана — ждём
+                        // (Patroni ставит нового лидера в пределах loop_wait).
+                        var isCurrentLeader = leaderName == node.Name;
+                        var leadershipMoved = leaderName is not null && !isCurrentLeader;
+                        if (!leadershipMoved || !aliveWitness)
                         {
-                            var aliveWitness = shard.Nodes.Any(n =>
-                                n.Name != node.Name
-                                && n.State is NodeState.Running
-                                && addresses.ContainsKey($"{shard.Name}/{n.Name}"));
-                            if (!aliveWitness)
-                                return Fail(new ApplicationException(
-                                    $"supervise {cluster}: start_failed leader {node.Name} has no alive witness — failover first (retry on the next tick)"));
+                            await journal.WritePhaseAsync(cluster, "supervise",
+                                "start-failed-waiting-quorum", claims.InstanceId,
+                                $"{shard.Name}/{node.Name}: leader={(leaderName ?? "<none>")}, " +
+                                $"aliveWitness={aliveWitness} — §8-27 failover-first (no recreate)", ct);
+                            // §8-27: сноса нет; обход нод ПРОДОЛЖАЕТСЯ —
+                            // доставка живым/рестарт-нутым нодам работает;
+                            // фаза waiting переустанавливается финалом тика.
+                            waitQuorum = true;
+                            continue;
                         }
+
+                        // Счётчик пересозданий с журналом (MR-#4, spec §8-24):
+                        // персистентный старт-дефект не даёт вечного
+                        // recreate-цикла; порог N=3 — QuietTicks-канон. В
+                        // waiting-ветке счётчик не тикает (сноса нет).
                         var recreateCount = (await journal.ReadAsync(cluster, ct))
                             .Value?.StartFailedRecreateCount ?? 0;
                         if (recreateCount >= MaxStartFailedRecreates)
-                            return Fail(new ApplicationException(
-                                $"supervise {cluster}: node {node.Name} exceeded start_failed recreate budget ({recreateCount} >= {MaxStartFailedRecreates}) — operator investigation"));
+                            return (Fail(new ApplicationException(
+                                $"supervise {cluster}: node {node.Name} exceeded start_failed recreate budget ({recreateCount} >= {MaxStartFailedRecreates}) — operator investigation")), false);
                         var claimed = await ClaimAliveAsync(
                             cluster, $"node-startfailed/{shard.Name}/{node.Name}", ct);
                         if (!claimed)
-                            return Fail(new ApplicationException(
-                                $"supervise {cluster}: claim lost before node-startfailed step"));
+                            return (Fail(new ApplicationException(
+                                $"supervise {cluster}: claim lost before node-startfailed step")), false);
 
                         // Причина старт-дефекта — в журнал ДО сноса: контейнер
                         // (и его логи) удаляется — без этой записи разбор
@@ -709,7 +758,7 @@ public sealed class NodeSupervisor(
                         var removed = await driver.RemoveNodeAsync(
                             cluster, shard.Name, node.Name, ct);
                         if (!removed.IsSuccess)
-                            return removed;
+                            return (removed, false);
                         // Статус-ключ ноды сносится вместе с машиной: lease
                         // прежнего агента жив до 15 c ПОСЛЕ RemoveNode — без
                         // удаления следующий тик видит протухший start_failed
@@ -720,7 +769,7 @@ public sealed class NodeSupervisor(
                         var delStatus = await DeleteAsync(
                             $"/pgworker/nodes/{cluster}/{shard.Name}/{node.Name}/status", ct);
                         if (!delStatus.IsSuccess)
-                            return delStatus;
+                            return (delStatus, false);
 
                         var resources = await ReadShardResourcesAsync(cluster, shard.Name, ct);
                         var tuning = pgtune.Create(resources);
@@ -729,7 +778,7 @@ public sealed class NodeSupervisor(
                             etcdForNodes ?? new EtcdEndpoints(endpoints), resources, tuning,
                             snap.Config.SyncStrict, ct);
                         if (!ensuredNode.IsSuccess)
-                            return ensuredNode;
+                            return (ensuredNode, false);
 
                         var outcome = await bootstrap.EnsureAsync(
                             topology, node.Name, addr, secrets, tuning,
@@ -742,13 +791,13 @@ public sealed class NodeSupervisor(
                             $"node-startfailed-recreate/{shard.Name}/{node.Name}",
                             claims.InstanceId, null, ct,
                             startFailedRecreateCount: recreateCount + 1);
-                        return Result.Success(); // ≤1 мутация на тик кластера
+                        return (Result.Success(), false); // ≤1 мутация на тик кластера
                     }
                 }
             }
         }
 
-        return Result.Success();
+        return (Result.Success(), waitQuorum);
     }
 
     // Operator-triggered recreate (TO_RECREATE): оператор панелью просит
