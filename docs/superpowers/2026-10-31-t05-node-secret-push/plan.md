@@ -1,4 +1,4 @@
-# t05-node-secret-push — план реализации (Фаза 3 dev-flow, рев. 8)
+# t05-node-secret-push — план реализации (Фаза 3 dev-flow, рев. 9)
 
 > **Для исполнителя (субагент coder):** работать по шагам, следом за заголовком
 > «Глобальные ограничения». Каждый шаг: Вход → Действие → Выход → Проверка →
@@ -204,8 +204,8 @@ src/tests/Shared.Etcd.UnitTests -c Release --no-build` → зелёные;
 `DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/PgWorker.UnitTests -c
 Release --no-build` → зелёные; `DOTNET_CLI_UI_LANGUAGE=en dotnet test
 src/tests/PgWorker.IntegrationTests -c Release --no-build --filter
-"FullyQualifiedName~RestRotation|FullyQualifiedName~RestoreProcessTests"`
-→ зелёные.
+"FullyQualifiedName~RestRotation|FullyQualifiedName~RestoreProcessTests|`
+`FullyQualifiedName~BootstrapApi"` → зелёные; после П11.8 — фильтры Т12.
 
 **Связь со spec:** §3.7.4, §6.3, §8-19a (ETCD-FIRST + флаг)/§8-19b (backup
 вне тикета); arch/14 §3.3 (`rest_window_open`), §5 I (R0–R4, гварды от
@@ -595,6 +595,237 @@ src/tests/PgWorker.IntegrationTests -c Release --no-build --filter
   переименовать тест в `RejoinRotationWindowEnsureCarriesWindowFlag` (или
   оставить имя, обновив только сид/комментарий — ассертов по pending-строке
   в тесте нет).
+- П11.8. **Тестовая доработка MR-ревью (Т1–Т12)** — отдельный вход после
+  impl-правок MR (решения spec §8-23…26 уже в arch/spec; здесь только
+  тесты). Каждый пункт — полная спецификация.
+
+  **Т1 (MR-#7) — юнит гварда waiting-nodes-ready.** Файл
+  `src/tests/PgWorker.UnitTests/Provisioning/ClusterSecretRotatorTests.cs`
+  (новый тест рядом с ETCD-FIRST-серией):
+  `Rotate_WaitingNodesReady_InProgress_ThenReady_Progress` — Arrange:
+  `NewRig()` + `SeedTicket`; ВСЕ ноды — ready-статусы, КРОМЕ одной
+  (`SeedStatusAsync`-аналог рига: статусный ключ
+  `/pgworker/nodes/shop/shard1/shard1a` со значением
+  `{"state":"initializing","applied_revision":null,"components":{...},
+  "updated_unix":1}`). Act: первый `TickAsync`. Assert: `outcome.Value ==
+  ProcessOutcome.InProgress`; journal-фаза `waiting-nodes-ready`;
+  `rig.Etcd.Txns` пуст ПОСЛЕ claim-отсечения (ни txn-коммита, ни чего-либо
+  ещё — гвард до R1/R2); `rig.Channel.AppliedNodes` пуст. Act-2: погасить
+  отставание — перезаписать статусный ключ ноды на ready — и
+  `RunUntilDoneAsync(rig)`. Assert-2: done достигнут, окно прошло полный
+  цикл (заявка снята, `AssertWindowClosedAsync`).
+
+  **Т2 (MR-#8) — усиление RecreateMarked-soft-юнита.** Файл
+  `src/tests/PgWorker.UnitTests/Provisioning/NodeSupervisorTests.cs`, тест
+  `Tick_RestWindowOpen_RecreateMarkedSoft_SwitchoverSkipped` (П11.6б): ДОБАВИТЬ
+  ассерт «PATCH-гвард не пробит тем же тиком»: журнал вызовов фейка ShardProbe
+  НЕ содержит обращений с путём `/config` (реальный PATCH ходил бы через
+  ConvergeDcsConfigAsync того же тика — его отсутствие доказывает, что
+  удаление PATCH-гварда не замаскируется этим тестом). Если фейк probe не
+  пишет путь — дополнить фейк полем `List<string> Calls` (запись
+  `$"{method} {path}"`), не меняя остальных потребителей.
+
+  **Т3 (MR-#9) — E2E Rotate: StartedAt на ВСЁМ окне.** Файл
+  `src/tests/PgWorker.E2eTests/E2e/E2eRotateScenarios.cs`: повторный снимок
+  `startedAtAfter` (`StartedAtMapAsync`, :95) выполнять ТОЛЬКО ПОСЛЕ
+  явного ожидания закрытия окна — `WaitForAsync` по etcd: журнальная фаза
+  `done` ИЛИ `rest_window_open != true` (после текущего ожидания снятия
+  заявки — окно может жить дольше заявки, ETCD-FIRST); ассерт поэлементного
+  равенства с `startedAtBefore` остаётся — теперь «без пересоздания»
+  проверено на полном окне R2→R4.
+
+  **Т4 (MR-#10) — тест-призрак Rejoin.** Файл
+  `src/tests/PgWorker.IntegrationTests/Backups/RestoreProcessTests.cs:1337`
+  `RejoinRotationWindowEnsureCarriesWindowFlag`: выбрать СОДЕРЖАТЕЛЬНЫЙ
+  вариант — дополнить ассертами (не ограничиваться переименованием):
+  Arrange-дополнение — сид NEW-пары в etcd
+  (`/clusters/c1/rest_password` = "New0Rest…" — окно ETCD-FIRST несёт NEW в
+  etcd); Act прежний (TickAsync restore-процесса); Assert-дополнения:
+  (1) перечитать work-ключ — `rest_window_open:true` ПЕРЕЖИЛ EnsureNode-путь
+  restore (окно не расширено и не погашено); (2) recording-фейк доставки
+  (TestDriver/INodeBootstrapDelivery-обёртка процесса, если есть — иначе
+  добавить delegating-фейк с журналом `(nodeName, restPassword)`) получил
+  вызов с restPassword == NEW-значению ключа etcd (нода поднимается с NEW);
+  прежние ассерты (`result.IsSuccess`, `op` NotNull) сохранить.
+
+  **Т5 (MR-#13-тест) — Rotate_RestoreShard реалистичный сид.** Файл
+  `src/tests/PgWorker.UnitTests/Provisioning/ClusterSecretRotatorTests.cs`,
+  `Rotate_RestoreShard_DoesNotHoldRestWindow` (:578+): привести сид к
+  фактике «restore-шарды исключены из гварда all-ready»: restore-шард shard1
+  (заявка `/pgworker/backups/shop/shard1/restore/r1` RUNNING) сеется БЕЗ
+  ready-статусов его нод (погасшие/отсутствующие статусные ключи — при
+  реальном restore демонтаж гасит машины), активный шард shard2 — все ноды
+  ready. Assert: гвард НЕ ждёт shard1 (первый тик сразу открывает окно —
+  txn в `rig.Etcd.Txns`), rolling идёт только по нодам shard2
+  (`AppliedNodes` все `shard2*`), `RunUntilDoneAsync` → done,
+  `AssertWindowClosedAsync`. Существующие ассерты :651–654 сохранить.
+
+  **Т6 (MR-#16) — PgNodeMachineTests: фейковый TimeProvider.** Файл
+  `src/tests/PgWorker.UnitTests/PgNode/PgNodeMachineTests.cs`: риг
+  (`Rig.CreateAsync`) передаёт в ctor `PgNodeMachine` фейковый TimeProvider
+  (сим уже есть в тест-проекте — `FakeTimeProvider`/`Microsoft.Extensions.
+  TimeProvider.Testing`; если нет — минимальный собственный класс по образцу
+  фейков проекта). Кейс 6a `Handshake_ProbeFalseWaits_ThenTrueReachesReady`
+  (:340+): цикл фазы (б) переводится на `timeProvider.Advance(5s)` вместо
+  реального Task.Delay-поллинга — тест перестаёт ждать реальные 5 с × 11+
+  циклов; цикл ожидания готовности (:365 `for … Task.Delay(50)…`) заменить
+  на advance-цикл с потолком итераций; НЕВЕРНЫЙ комментарий «clock рига
+  мгновенный — пробы циклятся быстро» (:358) исправить на фактический:
+  «время рига управляемое: каждый цикл фазы (б) — Advance(5 c), реального
+  ожидания нет».
+
+  **Т7 (MR-#11/12) — негатив-юниты машины/сессии.** Файл
+  `src/tests/PgWorker.UnitTests/PgNode/PgNodeMachineTests.cs` (или новый
+  `NodeStatusSessionTests.cs` в том же каталоге — по месту реализации):
+  (а) `TryTransition_UpdatesCurrent_RepeatHandshakeIsNop`: после успешного
+  handshake (машина initializing/ready) повторный `HandshakeAsync` →
+  `HandshakeResult.Nop` решается по ТЕКУЩЕМУ состоянию без второго запуска
+  фаз (Assert: счётчик `RunInitializingAsync`-запусков рига == 1; txn
+  сессии не вызывается повторно — счётчик Txns фейка etcd не вырос);
+  подтверждает контракт `TryTransitionAsync` обновлять `_current` сессии;
+  (б) `Apply_Failure_DoesNotFixAppliedRevision`: Apply с падающим
+  supervisorctl (фейк настроен на исключение) → `ApplyResult.Ok == false`;
+  `AppliedRevision` НЕ зафиксирован (машина ready со СТАРЫМ applied);
+  повторный Apply с рабочим supervisorctl по ТОМУ ЖЕ ключу — НЕ no-op
+  (рестарты выполняются, applied обновляется) — «полуприменённое» не
+  маскируется.
+
+  **Т8 (§9-негативы) — порт-граница и клиент-серт канала.**
+  (а) `src/tests/PgWorker.IntegrationTests/PgNode/BootstrapApiTests.cs`
+  (или новый файл `ChannelBoundaryTests.cs` рядом): интеграционный тест с
+  РЕАЛЬНЫМ Kestrel-стартапом агента (не TestServer): поднять Program
+  (WebApplicationFactory не годится — она не bind'ит листенеры; использовать
+  `Program.Main`-подобный старт в отдельном процессе/порте по образцу
+  существующих живых интеграционных тестов NodePgNodeTests) и выполнить
+  `POST /api/bootstrap` по `http://127.0.0.1:8080/api/bootstrap` → ответ
+  `404` (роут только на :8081, spec §3.4/§8-23). Имя:
+  `Bootstrap_Post_Plaintext8080_Returns404`.
+  (б) `src/tests/PgWorker.UnitTests/PgNode/NodeClientValidatorTests.cs`
+  (новый; валидатор — по impl-части MR, отдельный клиентский валидатор
+  канала): серверный серт ноды (выпущен тестовым CA: `IssueNodeCertificate`)
+  отвергается как клиентский (EKU только ServerAuth и/или CN != pgworker) →
+  `Valid == false`; валидный клиентский (`IssueWorkerClientCertificate(…,
+  "pgworker")`) → `true`; серт чужого CA → `false`. Имя-контейнер:
+  `NodeClientValidator_RejectsServerCerts_AcceptsWorkerCert`.
+
+  **Т9 (MR-#6) — три E2E-сценария под новый контракт.**
+  (а) `src/tests/PgWorker.E2eTests/E2e/E2ePgtuneScenarios.cs`,
+  `Pgtune_Provision_EnvCarriesMergedParamsAndSyncedDoorman` (:32): источник
+  параметров — НЕ env контейнера: ассерты переписать на чтение
+  `spilo_configuration` bootstrap-ключа etcd
+  `/clusters/<C>/shards/<X>/nodes/<n>/bootstrap` (parse YAML: pgtune-параметры
+  в `bootstrap.dcs.postgresql.parameters` — merge(PGTune ∪ канон) минус
+  ExcludeParams) + doorman-бюджет из env контейнера
+  `DOORMAN_CONFIG_TEMPLATE` (docker inspect: `max_db_connections` в шаблоне).
+  Имя сохранить или уточнить:
+  `Pgtune_Provision_BootstrapCarriesMergedParamsAndTemplateBudget`.
+  (б) `src/tests/PgWorker.E2eTests/E2e/E2eStrictScenarios.cs:37`
+  `Strict_BootstrapCarriesStrict_MutationConvergesWithoutRestarts`:
+  ассерт strict — из `spilo_configuration` bootstrap-ключа (env SPILO_
+  CONFIGURATION больше не существует). (в) `src/tests/PgWorker.E2eTests/E2e/
+  E2ePatroniRestTlsScenarios.cs`, блок (е) (:129+ «конвергенция легаси»):
+  легаси-env-механизм удалён — блок ПЕРЕПИСАТЬ под статусную конвергенцию
+  (выбранный вариант — сохранить ценность сценария): пересоздать контейнер
+  реплики «с нуля» (без env-секретов — штатный BuildSpec), `docker restart`
+  живой реплики → статусный ключ гаснет (lease) → конвергенция тиком →
+  `ready` по статусному ключу + Patroni-проба жива + StartedAt этой ноды
+  изменился, лидер НЕ тронут (проверка границы: только рестарт-нутая нода
+  проходит хендшейк). Блоки (а)–(д) сценария не трогать.
+
+  **Т10 (MR-#17) — RestRotationTests: finally + мёртвый StubDriver.** Файл
+  `src/tests/PgWorker.IntegrationTests/Docker/RestRotationTests.cs`:
+  тело теста обернуть `try { …asserts… } finally { …чистка… }` — блок
+  DeleteAsync-чистки (:149–154) перенести в finally (сегодня падение
+  ассерта выше пропускает чистку — префиксы протухают в etcd фикстуры);
+  `private sealed class StubDriver : IClusterDriver` (:268) — удалить,
+  если риг больше его не использует (grep по файлу; при использовании в
+  ctor ротатора заменить на уже имеющийся реальный/иной драйвер-фейк либо
+  оставить с комментарием-причиной).
+
+  **Т11 (MR-#18) — recording-фейк доставки + кейс Ensure-хвостов.** Файл
+  `src/tests/PgWorker.UnitTests/Provisioning/Fakes.cs`: рядом с `NoDelivery`
+  (:612) добавить `RecordingDelivery : INodeBootstrapDelivery` с журналом
+  `List<(string Cluster, string Shard, string Node, string RestPassword)>
+  Calls` (EnsureAsync записывает вызов, возвращает `Delivered:true`;
+  IsOnRevisionAsync — false). Новые кейсы (по одному на процесс):
+  `ProvisioningProcessTests` — после `EnsureNodesAsync` (создание ноды)
+  хвост вызвал доставку с restPassword == эффективной паре сида (Calls
+  содержит запись ноды; порядок — после create); `AddShardProcessTests`
+  (:141/:172/:359 — заменить NoDelivery) — аналогично для A3; `
+  AdoptionProcessTests` (:89) — каноническая нода после ensured получает
+  доставку, object-нода — НЕ получает (Calls не содержит её). Имена:
+  `EnsureNodes_AfterCreate_DeliveryTailInvoked` (суффикс процесса в имени
+  класса теста).
+
+  **Т12 — проверки шага.** После Т1–Т11: прогон точечных фильтров —
+  `DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/PgWorker.UnitTests -c
+  Release --no-build --filter "FullyQualifiedName~Rotate_|FullyQualifiedName~
+  Tick_RestWindowOpen|FullyQualifiedName~PgNodeMachine|FullyQualifiedName~
+  NodeClientValidator|FullyQualifiedName~Tick_StartFailed"` и интеграций
+  `… src/tests/PgWorker.IntegrationTests -c Release --no-build --filter
+  "FullyQualifiedName~RestRotation|FullyQualifiedName~RestoreProcessTests|
+  FullyQualifiedName~BootstrapApi"` → зелёные; E2E-сценарии Т3/Т9/Т10 —
+  полным прогоном шага 14.
+
+  **Т13 (арх-канон §8-27) — start_failed: failover-first для лидера +
+  scope живого кластера неприкосновенен** (spec §3.7.3: лидер сносится
+  ТОЛЬКО после ФАКТА перехода лидерства — leader-ключ сменил владельца,
+  witness-гвард необходим, но не достаточен; failover невозможен — сноса
+  нет, фаза `start-failed-waiting-quorum`; одноузловой шард — снос только
+  через restore-контур; RemoveNode НЕ чистит Patroni-scope живого кластера
+  — `initialize`/`leader`/смежные остаются, чистка scope только D2/S3;
+  новая нода бутстрапается по существующему scope репликой). Файл
+  `src/tests/PgWorker.UnitTests/Provisioning/NodeSupervisorBootstrapStepTests.cs`
+  (риг и `SeedStatus` — существующие; leader-сеедление — по образцу
+  `etcd.Seed("/service/shop-shard1/leader", …)`, NodeSupervisorTests:285):
+
+  - **Т13а — `Tick_StartFailedLeader_FailoverFirst_NoRecreateUntilLeaderChanged`**:
+    Arrange: статус `start_failed` ноды shard1a; leader-ключ
+    `/service/shop-shard1/leader` = shard1a (голое имя — формат по факту
+    impl); вторая нода shard1b — живой свидетель (ready-статус; probe-фейк
+    жив). Act-1: тик надзора. Assert-1: `RemoveNodeAsync` НЕ вызван
+    (свидетель есть, но ФАКТА failover нет — witness необходим, не
+    достаточен); журнальная фаза `start-failed-waiting-quorum` (или
+    фактическое имя impl-фазы ожидания — по коду ветки после impl-правки);
+    delivery не зван. Act-2: сим DCS-failover — перезаписать leader-ключ
+    значением shard1b — и следующий тик. Assert-2: `RemoveNodeAsync` +
+    `EnsureNodeAsync` вызваны (бывший лидер снесён с новым диском),
+    delivery-хвост после, фаза `node-startfailed-recreate/shard1/shard1a`.
+  - **Т13б — `Tick_StartFailedLeader_NoWitness_WaitsQuorum`**: Arrange:
+    статус `start_failed` лидера shard1a; реплик/свидетелей нет (шард
+    одноузловой ИЛИ вторая нода недоступна по probe-фэйку/без статуса).
+    Act: два последовательных тика. Assert: оба — БЕЗ `RemoveNodeAsync`;
+    фаза `start-failed-waiting-quorum` повторяется (идемпотентное
+    ожидание, сигнализация); для одноузлового шарда — та же семантика
+    (снос «в пустоту» запрещён: восстановление — restore-контур
+    arch/19 §3.5, НЕ надзор).
+  - **Т13в — `Tick_StartFailedRecreate_DoesNotTouchScopeKeys`**: Arrange:
+    start_failed НЕ-лидера (leader-ключ = shard1b — снос разрешён сразу);
+    сид scope-ключей `/service/shop-shard1/initialize`,
+    `/service/shop-shard1/leader`, members-ключи. Act: тик (снос+ensure).
+    Assert: после реакции ВСЕ scope-ключи ЖИВЫ в Store (RemoveNode
+    старт-реакции scope НЕ чистит — новая нода бутстрапается по
+    существующему scope, пара восстановима); чистка scope — только
+    D2/S3-путь: контрольной ссылкой на существующие deprovision-кейсы
+    (`DeprovisioningProcessTests` — демонтаж кластера/шарда чистит
+    `/service/<scope>/` префиксом; имена по факту файла). Дополнительно:
+    RemoveNodeAsync-фейк драйвера не получает side-вызовов удаления
+    etcd-ключей (чистка scope — не его домен).
+  - **Адаптация существующих start_failed-кейсов под failover-first**
+    (по факту файла — оба в NodeSupervisorBootstrapStepTests.cs):
+    (1) `Tick_StartFailed_RecreatesNodeWithNewDisk` (:195) — НЕ-лидер:
+    добавить в Arrange явный leader-ключ = shard1b (чтобы кейс не зависел
+    от отсутствия leader-сееда — «не-лидер» должен быть доказан сидом);
+    ассерты без изменений. (2) `Tick_StartFailedLeader_AliveWitness_
+    BareNameKey_Recreates` (:222) — ПРОТИВОРЕЧИТ канону (снос лидера при
+    живом свидетеле без факта failover): поглощается Т13а — переписать по
+    Т13а (переименовать в `…FailoverFirst_NoRecreateUntilLeaderChanged`
+    либо удалить в пользу нового теста; комментарий «факт E2E StartFailed»
+    обновить: факт закрыт failover-first-правилом §8-27). E2E
+    `NodeSecrets_StartFailed_RecreatesNodeWithNewDisk` — сверить по
+    прогону шага 14: инжекция делала start_failed на реплике/не-лидере —
+    если сценарий сеет сбой лидера, добавить в Act ожидание смены
+    leader-ключа (etcd) перед ожиданием пересоздания.
 
 ## Шаг 12. Образ ноды — выполнен
 
@@ -648,6 +879,37 @@ E2E не меняют; StartedAt-ассерт валиден — ETCD-FIRST не
 ---
 
 ## Самопроверка плана (выполнена plan-writer'ом)
+
+- **Рев. 9 (текущая, тестовая часть MR-ревью):** новый П11.8 (Т1–Т12) —
+  полные спецификации: Т1 юнит гварда waiting-nodes-ready (InProgress/ноль
+  txn/доставок → готовность → done); Т2 усиление RecreateMarked-soft-юнита
+  (ассерт «probe-журнал без /config»); Т3 E2E Rotate — StartedAt-снимок
+  ПОСЛЕ закрытия окна (done/флаг false); Т4 содержательное дополнение
+  Rejoin-теста (флаг пережил тик + recording-фейк доставки с NEW из etcd);
+  Т5 реалистичный сид Rotate_RestoreShard (restore-шард без статусов не
+  держит гвард); Т6 фейковый TimeProvider в риге машины (кейс 6a без
+  реальных 5 с × 11; комментарий исправлен); Т7 негатив-юниты
+  TryTransition/_current (повторный handshake — Nop без второго старта
+  фаз) и apply-error (applied не зафиксирован — повтор не no-op); Т8
+  негативы §8-23/§8-26 (POST /api/bootstrap по :8080 → 404 на реальном
+  Kestrel; клиентский валидатор канала: серверный серт ноды отвергается,
+  воркерский принимается); Т9 три E2E-сценария под контракт bootstrap-ключа
+  (Pgtune/Strict — источники из bootstrap-ключа и DOORMAN_CONFIG_TEMPLATE;
+  RestTls (е)-блок — переписан под статусную конвергенцию рестарта реплики);
+  Т10 RestRotationTests — чистка в finally, мёртвый StubDriver удалён;
+  Т11 RecordingDelivery-фейк + кейсы Ensure-хвостов Provisioning/AddShard/
+  Adoption (object-нода без доставки); Т12 точечные фильтры проверок;
+  Т13 (арх-канон §8-27, финальное дополнение) — failover-first для
+  start_failed-лидера (свидетель необходим, но не достаточен — снос
+  только после смены владельца leader-ключа; без failover — фаза
+  start-failed-waiting-quorum, сноса нет, одноузловой шард —
+  restore-контур), неприкосновенность Patroni-scope живого кластера
+  (RemoveNode старт-реакции scope-ключи не трогает; чистка — только
+  D2/S3), адаптация двух существующих кейсов (:195 — доказать «не-лидер»
+  сидом; :222 — противоречит канону, поглощается Т13а) и сверка E2E
+  StartFailed-инжекции по шагу 14. Выборы вариантов зафиксированы:
+  Т4 — дополнение ассертами (не переименование), Т9(в) — переписать
+  (не удалять).
 
 - **Рев. 8 (текущая, фиксы целевого ревью шага 11):** (MAJOR) П11.5 — полный
   список `ClusterSecretRotatorTests` (фактические имена/строки: :216–280,
