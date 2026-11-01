@@ -1,5 +1,5 @@
-// Грань «Воркеры» (arch/adminpanel/03 §3.7): карточки 4 воркеров
-// (PgWorker/KafkaWorker/ValkeyWorker/S3Worker) — инстансы, целевой серт API,
+// Грань «Воркеры» (arch/adminpanel/03 §3.7): карточки 5 воркеров
+// (PgWorker/KafkaWorker/ValkeyWorker/S3Worker/EtcdWorker) — инстансы, целевой серт API,
 // статус применения, действия с сертом и рестарт; координация домена
 // (лидер, «кто держит кластер») и эффективный конфиг (read-only, u14/u15).
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';

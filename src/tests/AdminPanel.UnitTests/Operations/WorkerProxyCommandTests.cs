@@ -315,6 +315,30 @@ public class WorkerProxyCommandTests
         result.Error.Should().BeOfType<WorkerApiUnavailableException>();
     }
 
+    // etcdworker в гварде эффективного конфига (arch/25 §1.1): прокси GET
+    // /api/config живого инстанса — не 404 «неизвестный воркер».
+    [Fact]
+    public async Task EffectiveConfig_EtcdWorker_ProxiesToWorkerConfig()
+    {
+        // Arrange
+        var api = new StubWorkerApi
+        {
+            Respond = _ => new WorkerApiResult(200,
+                """{"source":"env","thresholds":{"nodeBootSec":90}}"""),
+        };
+        var handler = new GetWorkerEffectiveConfigCommandHandler(api);
+
+        // Act
+        var result = await handler.Handle(new GetWorkerEffectiveConfigCommand("etcdworker"), CancellationToken.None);
+
+        // Assert
+        result.IsSuccess.Should().BeTrue();
+        result.Value.GetProperty("source").GetString().Should().Be("env");
+        api.Calls.Should().ContainSingle().Which.Should().Match<StubWorkerApi.Call>(c =>
+            c.Worker == "etcdworker" && c.Method == HttpMethod.Get && c.Path == "/api/config"
+            && c.RequestedBy == null);
+    }
+
     // Мутация состава etcd-контура (02 §9.14): прокси PUT /api/etcd/config в
     // API EtcdWorker; оператора нет (декларация, не заявка) — requestedBy null.
     [Fact]

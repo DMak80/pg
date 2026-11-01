@@ -39,7 +39,7 @@ public sealed class GetWorkerEffectiveConfigCommandHandler(IWorkerApiGateway api
     {
         // Неизвестный воркер — 404 (гвард как у рестарт-хендлера): иначе
         // WorkerApiGateway.ResolveEndpoints отвечал ArgumentOutOfRangeException → 500.
-        if (command.Worker is not ("pgworker" or "kafkaworker" or "valkeyworker" or "s3worker"))
+        if (command.Worker is not ("pgworker" or "kafkaworker" or "valkeyworker" or "s3worker" or "etcdworker"))
             return ValueTask.FromResult(
                 Result<System.Text.Json.JsonElement>.Failed(new WorkerNotFoundException(command.Worker)));
 
