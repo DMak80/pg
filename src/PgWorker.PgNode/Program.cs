@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Server.Kestrel.Https;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using PgWorker.Etcd.S3;
 using PgWorker.PgNode;
 using PgWorker.PgNode.Operations;
@@ -68,12 +69,14 @@ internal partial class Program
         // машины не зависят (spec §3.6-6). Применение ротаций — ПО МАТЕРИАЛУ
         // (arch/14 §5 I, spec §8-29, П11.9): пароль — reload Patroni, серт —
         // рестарт Patroni-программы (реплика), пулер — supervisorctl.
+        // Машина строится ПОСЛЕ Build: её диагностика идёт через ILogger
+        // хоста (строки гарантированно попадают в docker-лог контейнера;
+        // прецедент «молчащего stderr» красного прогона окна ротации:
+        // Console.Error-строки применителя в лог не попали при
+        // redirect_stderr=true). Kestrel-лямбды захватывают машину ссылкой —
+        // исполняются на запросах, когда машина уже построена.
         var supervisor = new SupervisorCommands(new ProcessRunner());
-        var machine = new PgNodeMachine(
-            identity, etcd, endpoints,
-            supervisor,
-            Environment.GetEnvironmentVariable("DOORMAN_CONFIG_TEMPLATE") ?? "",
-            patroniApply: new PatroniApplyCommands(supervisor));
+        PgNodeMachine? machineRef = null;
 
         var builder = WebApplication.CreateBuilder(args);
         builder.WebHost.ConfigureKestrel(o =>
@@ -88,7 +91,7 @@ internal partial class Program
                 // Валидация клиента — ClientCertificateValidation (фактический
                 // колбэк-хук HttpsConnectionAdapterOptions текущего TFM).
                 https.ClientCertificateMode = ClientCertificateMode.RequireCertificate;
-                https.ServerCertificateSelector = (_, _) => machine.ServerCertificate;
+                https.ServerCertificateSelector = (_, _) => machineRef?.ServerCertificate;
                 https.ClientCertificateValidation = (certificate, _, _) =>
                     NodeClientCa() is { } ca
                     && ClientCertValidator.Validate(certificate, ca);
@@ -134,6 +137,18 @@ internal partial class Program
                 stagingDir, sp.GetRequiredService<OpsOperationRegistry>()));
 
         var app = builder.Build();
+
+        // Логгеры готового хоста: машина + apply-команды печатают в
+        // консольный провайдер хоста (docker-лог контейнера).
+        var loggerFactory = app.Services.GetRequiredService<ILoggerFactory>();
+        var machine = new PgNodeMachine(
+            identity, etcd, endpoints,
+            supervisor,
+            Environment.GetEnvironmentVariable("DOORMAN_CONFIG_TEMPLATE") ?? "",
+            patroniApply: new PatroniApplyCommands(
+                supervisor, loggerFactory.CreateLogger("pgnode.patroni-apply")),
+            logger: loggerFactory.CreateLogger<PgNodeMachine>());
+        machineRef = machine;
         _ = machine.RunAsync(app.Lifetime.ApplicationStopping);
         app.MapAppMetrics();
         MapNodeRoutes(app);

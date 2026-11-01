@@ -1,6 +1,8 @@
 using System.Diagnostics;
 using System.Net.Http.Headers;
 using System.Text;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using PgWorker.PgNode.Operations;
 
 namespace PgWorker.PgNode;
@@ -19,9 +21,13 @@ public interface IPatroniApplyCommands
     /// (аутентификация reload-запроса: сервер сверяет с in-memory конфигом —
     /// факт пробы t05probe: NEW до применения даёт 401); restPasswordNew —
     /// применяемая пара (fallback, если in-memory уже NEW после рестарта
-    /// процесса). Ожидание — 202.</summary>
+    /// процесса); pgSuPassword/pgStandbyPassword — per-install пароли PG для
+    /// env регенерации (PGPASSWORD_*: без них configure_spilo пишет секцию
+    /// postgresql.authentication дефолтами шаблона — zalando/standby; пустые
+    /// не прокидываются — путь без доставки паролей). Ожидание — 202.</summary>
     Task ApplyRestPairAsync(string spiloConfigurationYaml, string restPasswordCurrent,
-        string restPasswordNew, CancellationToken ct);
+        string restPasswordNew, string pgSuPassword, string pgStandbyPassword,
+        CancellationToken ct);
 
     /// <summary>Рестарт Patroni-программы (supervisorctl restart spilo) —
     /// применение REST-серта на реплике (рестарт покрывает и rest-пароль —
@@ -32,11 +38,19 @@ public interface IPatroniApplyCommands
 /// <summary>Прод-реализация: configure_spilo.py (child-процесс через
 /// IProcessRunner, ArgumentList-канон) + REST POST /reload (HttpClient по
 /// образцу PatroniRoleProbe: доверие CA из env SSL_RESTAPI_CA, SAN-пиннинг
-/// loopback 127.0.0.1; таймаут 10 c — единый с клиентом канала).</summary>
-public sealed class PatroniApplyCommands(ISupervisorCommands supervisor) : IPatroniApplyCommands
+/// loopback 127.0.0.1; таймаут 10 c — единый с клиентом канала).
+/// Диагностика — через ILogger хоста (строки гарантированно попадают в
+/// docker-лог контейнера; прецедент «молчащего stderr» красного прогона
+/// окна ротации: error-статус публиковался, а Console.Error-строки
+/// применителя в лог не попали).</summary>
+public sealed class PatroniApplyCommands(
+    ISupervisorCommands supervisor, ILogger? logger = null) : IPatroniApplyCommands
 {
     private const int RestPort = 8008;
     private const string PatroniUser = "patroni";
+
+    // Логгер хоста (docker-лог контейнера); NullLogger — юниты/без DI.
+    private readonly ILogger _log = logger ?? NullLogger.Instance;
 
     // REST-клиент reload'а: один на процесс (демон-lifetime; CA-кеш по PEM —
     // как у PatroniRoleProbe). Таймаут 10 c — единый с клиентом канала
@@ -73,9 +87,10 @@ public sealed class PatroniApplyCommands(ISupervisorCommands supervisor) : IPatr
     /// reload OLD → 202, PATCH OLD → 400, GET / → 200, применение NEW
     /// подтверждено (OLD → 401, NEW → 400).</summary>
     public async Task ApplyRestPairAsync(string spiloConfigurationYaml, string restPasswordCurrent,
-        string restPasswordNew, CancellationToken ct)
+        string restPasswordNew, string pgSuPassword, string pgStandbyPassword, CancellationToken ct)
     {
-        await RegeneratePatroniConfigAsync(spiloConfigurationYaml, restPasswordNew, ct);
+        await RegeneratePatroniConfigAsync(
+            spiloConfigurationYaml, restPasswordNew, pgSuPassword, pgStandbyPassword, ct);
 
         var attempts = new[] { restPasswordCurrent, restPasswordNew }
             .Where(p => !string.IsNullOrEmpty(p))
@@ -93,10 +108,11 @@ public sealed class PatroniApplyCommands(ISupervisorCommands supervisor) : IPatr
             // (как внешние пробы): расхождение кодов reload-vs-patch
             // локализует отказ (эндпоинт/пароль/канал).
             if (code == 401)
-                Console.Error.WriteLine(
-                    $"pgnode: reload 401 diagnostic: password length={password!.Length}, " +
-                    $"is-current={password == restPasswordCurrent}, is-new={password == restPasswordNew}, " +
-                    $"patch-same-password={await PatchConfigProbeAsync(password!, ct)}");
+                _log.LogWarning(
+                    "pgnode: reload 401 diagnostic: password length={Len}, is-current={IsCurrent}, " +
+                    "is-new={IsNew}, patch-same-password={PatchCode}",
+                    password!.Length, password == restPasswordCurrent, password == restPasswordNew,
+                    await PatchConfigProbeAsync(password!, ct));
             else
                 break; // не аутентификация (5xx/транспорт) — ретрай пароля бессмыслен
         }
@@ -128,28 +144,26 @@ public sealed class PatroniApplyCommands(ISupervisorCommands supervisor) : IPatr
         => supervisor.RestartAsync("spilo", ct);
 
     // configure_spilo.py patroni --force: child-процесс; env = env агента +
-    // SPILO_CONFIGURATION = применяемый YAML + SSL_RESTAPI_CERTIFICATE_FILE/
-    // SSL_RESTAPI_PRIVATE_KEY_FILE = пути пер-инсталл рест-серт ноды
-    // (/run/certs/*, материализованы bootstrap'ом; спило-константы
-    // configure_spilo get_placeholders для env SSL_RESTAPI_CERTIFICATE/
-    // PRIVATE_KEY). Без env-путей placeholders пусты (env сертов у агента
-    // нет — секреты не покидают память/tmpfs), шаблон restapi теряет
+    // RegenerationEnvironment (SPILO_CONFIGURATION, env-пути рест-серт ноды
+    // и per-install пароли PG — имена те же, что spilo-supervised.sh
+    // экспортирует launch'у из spilo-env: без PGPASSWORD_* configure_spilo
+    // собирает секцию postgresql.authentication ДЕФОЛТАМИ шаблона
+    // (zalando/standby — факт t05probe3a), из-за чего перечитывание конфига
+    // опускает фактические пароли в Patroni-память; с per-install env
+    // регенерация сохраняет их в /run/postgres.yml). Без env-путей сертов
+    // placeholders SSL_RESTAPI_*_FILE пусты (env сертов у агента нет —
+    // секреты не покидают память/tmpfs), шаблон restapi теряет
     // certfile/keyfile и первое перечитывание конфига пересоздаёт
-    // REST-листенер в plain HTTP (t05probe2). Побочный факт (t05probe3a):
-    // env PGPASSWORD_* у агента НЕТ — configure_spilo пишет секцию
-    // postgresql.authentication ДЕФОЛТАМИ шаблона (zalando/standby),
-    // per-install пароли в /run/postgres.yml не сохраняются; роли в живом
-    // PG не трогаются, Patroni к своему PG ходит unix-socket'ом,
-    // pgpass реплики восстанавливается рестартом Patroni-программы.
-    // Exit-код НЕ является
+    // REST-листенер в plain HTTP (t05probe2). Exit-код НЕ является
     // критерием: скрипт штатно завершается sys.exit(int(not USE_WALG)) —
     // exit 1 при выключенном WAL-G (факт образа spilo-18:4.1-p2; файл
     // /run/postgres.yml при этом записан). Критерий применения —
-    // содержимое файла: новый restapi-пароль присутствует. Пустой
-    // restPasswordNew — дефект данных (RestPasswordOf не нашёл пароль в
-    // YAML) — явный отказ, не успех.
+    // содержимое файла: новый restapi-пароль присутствует (+ per-install
+    // пароли, если заданы). Пустой restPasswordNew — дефект данных
+    // (RestPasswordOf не нашёл пароль в YAML) — явный отказ, не успех.
     private async Task RegeneratePatroniConfigAsync(
-        string yaml, string restPasswordNew, CancellationToken ct)
+        string yaml, string restPasswordNew, string pgSuPassword, string pgStandbyPassword,
+        CancellationToken ct)
     {
         if (string.IsNullOrEmpty(restPasswordNew))
             throw new ApplicationException("restapi password not found in YAML — regeneration refused");
@@ -157,24 +171,54 @@ public sealed class PatroniApplyCommands(ISupervisorCommands supervisor) : IPatr
         psi.ArgumentList.Add("/scripts/configure_spilo.py");
         psi.ArgumentList.Add("patroni");
         psi.ArgumentList.Add("--force");
-        psi.Environment["SPILO_CONFIGURATION"] = yaml;
-        psi.Environment["SSL_RESTAPI_CERTIFICATE_FILE"] = RestCertFilePath;
-        psi.Environment["SSL_RESTAPI_PRIVATE_KEY_FILE"] = RestKeyFilePath;
+        foreach (var (name, value) in RegenerationEnvironment(
+                     yaml, pgSuPassword, pgStandbyPassword))
+            psi.Environment[name] = value;
         var runner = new ProcessRunner();
         var (exit, _, error) = await runner.RunAsync(psi, ct);
         var config = await File.ReadAllTextAsync(PatroniConfigPath, ct);
-        if (!config.Contains(restPasswordNew, StringComparison.Ordinal))
+        var missingSu = pgSuPassword.Length > 0
+            && !config.Contains(pgSuPassword, StringComparison.Ordinal);
+        var missingStandby = pgStandbyPassword.Length > 0
+            && !config.Contains(pgStandbyPassword, StringComparison.Ordinal);
+        if (!config.Contains(restPasswordNew, StringComparison.Ordinal) || missingSu || missingStandby)
         {
-            // Диагностика (разбор по логам, прецедент pgnode-печатей): ПОЛНЫЙ
-            // stderr child-процесса — в stderr агента (он попадает в docker-лог
-            // контейнера и в teardown-артефакты).
-            Console.Error.WriteLine("pgnode: configure_spilo stdout/stderr begin");
-            Console.Error.WriteLine(error);
-            Console.Error.WriteLine("pgnode: configure_spilo stdout/stderr end");
+            // Диагностика (разбор по логам): ПОЛНЫЙ stderr child-процесса —
+            // в лог агента (docker-лог контейнера и teardown-артефакты).
+            _log.LogError("pgnode: configure_spilo stdout/stderr begin\n{Stderr}\n" +
+                "pgnode: configure_spilo stdout/stderr end", error);
             throw new ApplicationException(
-                $"configure_spilo.py: exit {exit}, /run/postgres.yml has no new rest password " +
-                $"(stderr: {FirstLineOf(error)})");
+                $"configure_spilo.py: exit {exit}, /run/postgres.yml misses expected credentials " +
+                $"(rest={config.Contains(restPasswordNew, StringComparison.Ordinal)}, " +
+                $"su={!missingSu}, standby={!missingStandby}; stderr: {FirstLineOf(error)})");
         }
+    }
+
+    // env регенерации configure_spilo (юнит-seam): применяемый YAML +
+    // env-пути пер-инсталл рест-серт ноды + per-install пароли PG (имена —
+    // как в spilo-env, который spilo-supervised.sh экспортирует launch'у).
+    // Пустые пароли НЕ прокидываются (путь без доставки per-install паролей
+    // — configure_spilo подставит дефолты шаблона, прежнее поведение).
+    internal static IReadOnlyDictionary<string, string> RegenerationEnvironment(
+        string yaml, string pgSuPassword, string pgStandbyPassword)
+    {
+        var env = new Dictionary<string, string>
+        {
+            ["SPILO_CONFIGURATION"] = yaml,
+            ["SSL_RESTAPI_CERTIFICATE_FILE"] = RestCertFilePath,
+            ["SSL_RESTAPI_PRIVATE_KEY_FILE"] = RestKeyFilePath,
+        };
+        if (pgSuPassword.Length > 0)
+        {
+            env["PGUSER_SUPERUSER"] = "postgres";
+            env["PGPASSWORD_SUPERUSER"] = pgSuPassword;
+        }
+        if (pgStandbyPassword.Length > 0)
+        {
+            env["PGUSER_STANDBY"] = "standby";
+            env["PGPASSWORD_STANDBY"] = pgStandbyPassword;
+        }
+        return env;
     }
 
     private const string PatroniConfigPath = "/run/postgres.yml";

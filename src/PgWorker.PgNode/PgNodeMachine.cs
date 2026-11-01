@@ -1,5 +1,6 @@
 using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
+using Microsoft.Extensions.Logging;
 using Shared.Core;
 using Shared.Etcd.Client;
 
@@ -26,6 +27,9 @@ public sealed class PgNodeMachine : IDisposable
     private readonly string[] _endpoints;
     private readonly ISupervisorCommands _supervisor;
     private readonly IPatroniApplyCommands _patroniApply;
+
+    // Логгер хоста (docker-лог контейнера); NullLogger — юниты/без DI.
+    private readonly ILogger _log;
     private readonly string _doormanTemplate;
     private readonly TimeProvider _clock;
 
@@ -131,18 +135,22 @@ public sealed class PgNodeMachine : IDisposable
 
     public PgNodeMachine(PgNodeIdentity identity, IEtcdGateway etcd, string[] endpoints,
         ISupervisorCommands supervisor, string doormanTemplate, TimeProvider? clock = null,
-        IPatroniApplyCommands? patroniApply = null)
+        IPatroniApplyCommands? patroniApply = null, ILogger? logger = null)
         : this(identity, etcd, endpoints, supervisor, doormanTemplate,
-            statusWriter: null, clock, patroniApply)
+            statusWriter: null, clock, patroniApply, logger)
     {
     }
 
     // Internal-конструктор с фейком писателя статуса (юнит-тесты машины:
     // сессия lease не гоняется — переходы эмулируются словарём etcd-фейка).
+    // logger — ILogger хоста: диагностика машины (вкл. применителя)
+    // гарантированно попадает в docker-лог контейнера (прецедент
+    // «молчащего stderr» красного прогона окна ротации: Console.Error-строки
+    // применителя в docker-лог не попали при redirect_stderr=true).
     internal PgNodeMachine(PgNodeIdentity identity, IEtcdGateway etcd, string[] endpoints,
         ISupervisorCommands supervisor, string doormanTemplate,
         Func<INodeStatusWriter>? statusWriter, TimeProvider? clock = null,
-        IPatroniApplyCommands? patroniApply = null)
+        IPatroniApplyCommands? patroniApply = null, ILogger? logger = null)
     {
         _identity = identity;
         _etcd = etcd;
@@ -151,7 +159,8 @@ public sealed class PgNodeMachine : IDisposable
         _doormanTemplate = doormanTemplate;
         _statusWriterFactory = statusWriter;
         _clock = clock ?? TimeProvider.System;
-        _patroniApply = patroniApply ?? new PatroniApplyCommands(supervisor);
+        _patroniApply = patroniApply ?? new PatroniApplyCommands(supervisor, logger);
+        _log = logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance;
         _bootstrapKey = $"/clusters/{identity.Cluster}/shards/{identity.Shard}/nodes/{identity.Node}/bootstrap";
         _statusKey = $"/pgworker/nodes/{identity.Cluster}/{identity.Shard}/{identity.Node}/status";
     }
@@ -189,14 +198,13 @@ public sealed class PgNodeMachine : IDisposable
         if (bootstrap is null)
         {
             if (_bootstrapLogged)
-                Console.Error.WriteLine("pgnode: bootstrap key not ready yet (retry in 5 s)");
+                _log.LogWarning("pgnode: bootstrap key not ready yet (retry in 5 s)");
             _bootstrapLogged = false;
         }
         if (bootstrap is { Data: { } data, ModRevision: { } mod })
         {
             if (!_bootstrapLogged)
-                Console.Error.WriteLine(
-                    $"pgnode: bootstrap key read (mod={mod}) — publishing not_initialized");
+                _log.LogInformation("pgnode: bootstrap key read (mod={Mod}) — publishing not_initialized", mod);
             _bootstrapLogged = true;
             lock (_dataGate)
             {
@@ -217,12 +225,12 @@ public sealed class PgNodeMachine : IDisposable
                     : new NodeStatusSession(_etcd, _endpoints, _statusKey);
                 if (await writer.StartAsync(NotInitializedStatus(), ct))
                 {
-                    Console.Error.WriteLine("pgnode: not_initialized published (status session up)");
+                    _log.LogInformation("pgnode: not_initialized published (status session up)");
                     _status = writer;
                 }
                 else
                 {
-                    Console.Error.WriteLine("pgnode: status session start failed — retry");
+                    _log.LogWarning("pgnode: status session start failed — retry");
                 }
             }
         }
@@ -246,8 +254,8 @@ public sealed class PgNodeMachine : IDisposable
         if (string.IsNullOrEmpty(suPassword) || string.IsNullOrEmpty(standbyPassword)
             || bootstrap is not { } valid || !valid.IsValidForStart())
         {
-            Console.Error.WriteLine(
-                $"pgnode: handshake invalid (bootstrap cached: {bootstrap is not null})");
+            _log.LogWarning(
+                "pgnode: handshake invalid (bootstrap cached: {BootstrapCached})", bootstrap is not null);
             return HandshakeResult.Invalid;
         }
 
@@ -260,7 +268,7 @@ public sealed class PgNodeMachine : IDisposable
             // не читается — txn-переход не повторяется).
             if (_state != PgNodeStatus.NotInitialized)
             {
-                Console.Error.WriteLine("pgnode: handshake nop (machine is not not_initialized)");
+                _log.LogInformation("pgnode: handshake nop (machine is not not_initialized)");
                 return HandshakeResult.Nop;
             }
 
@@ -278,12 +286,12 @@ public sealed class PgNodeMachine : IDisposable
             var currentJson = current.Value?.Value;
             if (currentJson is null)
             {
-                Console.Error.WriteLine("pgnode: handshake: status key is absent yet");
+                _log.LogWarning("pgnode: handshake: status key is absent yet");
                 return HandshakeResult.EtcdError; // ключа нет — сессия ещё не опубликовала
             }
             if (!IsNotInitialized(currentJson))
             {
-                Console.Error.WriteLine("pgnode: handshake nop (state is not not_initialized)");
+                _log.LogInformation("pgnode: handshake nop (state is not not_initialized)");
                 return HandshakeResult.Nop; // «пинок состоялся» — без действий
             }
 
@@ -293,10 +301,10 @@ public sealed class PgNodeMachine : IDisposable
             var transitioned = await status.TryTransitionAsync(initializing, currentJson, ct);
             if (!transitioned)
             {
-                Console.Error.WriteLine("pgnode: handshake txn lost (parallel writer)");
+                _log.LogInformation("pgnode: handshake txn lost (parallel writer)");
                 return HandshakeResult.Nop; // параллельный писатель изменил значение
             }
-            Console.Error.WriteLine("pgnode: handshake accepted — starting initializing phases");
+            _log.LogInformation("pgnode: handshake accepted — starting initializing phases");
 
             _suPassword = suPassword;
             _standbyPassword = standbyPassword;
@@ -433,7 +441,7 @@ public sealed class PgNodeMachine : IDisposable
         var fresh = await ReadBootstrapAsync(ct);
         if (fresh is null || fresh.Data is not { } data || fresh.ModRevision is not { } mod)
         {
-            Console.Error.WriteLine(
+            _log.LogWarning(
                 "pgnode: apply converger: bootstrap key unreadable — exiting (worker re-pins on delivery failure)");
             return true; // ключ/etcd недоступны — применителя нет; пин повторит воркер при сбое доставки
         }
@@ -456,7 +464,7 @@ public sealed class PgNodeMachine : IDisposable
         {
             // Ошибка рендера на ready-ноде — start_failed с диагностикой
             // (значения секретов в текст не включаются).
-            Console.Error.WriteLine($"pgnode: apply render failed (mod={mod}): {FirstLine(e.Message)}");
+            _log.LogError(e, "pgnode: apply render failed (mod={Mod})", mod);
             await PublishAsync(PgNodeStatus.StartFailed, mod,
                 Components(pg: "stopped", doorman: "stopped"), FirstLine(e.Message), ct);
             _state = PgNodeStatus.StartFailed;
@@ -510,14 +518,17 @@ public sealed class PgNodeMachine : IDisposable
             {
                 // Пароль — reload'ом (если серт уже применён рестартом
                 // программы, reload избыточен — рестарт покрыл оба материала).
-                // Пути рест-серт ноды (env configure_spilo) — внутри команды:
-                // без них перегенерация теряет restapi certfile/keyfile
-                // (t05probe2) и первое перечитывание пересоздаёт REST-листенер
-                // в plain — mTLS-канал агента умирает.
+                // Пути рест-серт ноды и per-install пароли PG (env
+                // configure_spilo) — внутри команды: без путей перегенерация
+                // теряет restapi certfile/keyfile (t05probe2) и первое
+                // перечитывание пересоздаёт REST-листенер в plain —
+                // mTLS-канал агента умирает; без паролей postgresql.
+                // authentication собирается дефолтами шаблона (t05probe3a).
                 await _patroniApply.ApplyRestPairAsync(
                     data.SpiloConfiguration,
                     RestPasswordOf(_appliedSpiloYaml) ?? RestPasswordOf(data.SpiloConfiguration) ?? "",
                     RestPasswordOf(data.SpiloConfiguration) ?? "",
+                    _suPassword ?? "", _standbyPassword ?? "",
                     ct);
             }
         }
@@ -528,8 +539,9 @@ public sealed class PgNodeMachine : IDisposable
         catch (Exception e)
         {
             error = FirstLine(e.Message);
-            Console.Error.WriteLine(
-                $"pgnode: apply attempt failed (mod={mod}): {error} — retry after {ApplyRetryCooldownSec} s");
+            _log.LogError(e,
+                "pgnode: apply attempt failed (mod={Mod}): {Error} — retry after {Cooldown} s",
+                mod, error, ApplyRetryCooldownSec);
             // Факт неудавшегося применения — в анти-дребезг (гейт по
             // МАТЕРИАЛУ: повтор того же материала отложен на коулдаун;
             // самоповтор — виток применителя после паузы).
@@ -544,7 +556,7 @@ public sealed class PgNodeMachine : IDisposable
         if (error is null && !certDeferredToWorker)
         {
             // Успех: применённые материалы зафиксированы, applied — ревизия ключа.
-            Console.Error.WriteLine($"pgnode: apply converged (mod={mod}, pg={pgComponent})");
+            _log.LogInformation("pgnode: apply converged (mod={Mod}, pg={Pg})", mod, pgComponent);
             _appliedSpiloYaml = data.SpiloConfiguration;
             _appliedCertMaterial = CertMaterial(data);
             _appliedDoormanConfig = DoormanMaterialOf(doormanConfig, data);
@@ -634,7 +646,7 @@ public sealed class PgNodeMachine : IDisposable
     {
         // Фаза (а), шаг 1 — рендер tmpfs (ошибка → start_failed, компоненты
         // не запускаются).
-        Console.Error.WriteLine($"pgnode: initializing: rendering tmpfs (mod={modRevision})");
+        _log.LogInformation("pgnode: initializing: rendering tmpfs (mod={Mod})", modRevision);
         var doormanConfig = RenderedDoormanConfig(bootstrap);
         try
         {
@@ -643,14 +655,14 @@ public sealed class PgNodeMachine : IDisposable
         }
         catch (Exception e)
         {
-            Console.Error.WriteLine($"pgnode: render failed: {FirstLine(e.Message)}");
+            _log.LogError(e, "pgnode: render failed");
             await PublishAsync(PgNodeStatus.StartFailed, modRevision,
                 Components(pg: "stopped", doorman: "stopped"), FirstLine(e.Message), ct);
             _state = PgNodeStatus.StartFailed;
             return;
         }
 
-        Console.Error.WriteLine("pgnode: tmpfs rendered — starting components");
+        _log.LogInformation("pgnode: tmpfs rendered — starting components");
         if (_isToolStart)
         {
             // tool-контур: терминальный успех — ПОДГОТОВЛЕННОСТЬ ПАРАМЕТРОВ
@@ -763,8 +775,8 @@ public sealed class PgNodeMachine : IDisposable
             catch (Exception e)
             {
                 // Провал попытки — перезапуск (до 3); значения в текст не идут.
-                Console.Error.WriteLine(
-                    $"pgnode: start {program} attempt {attempt} failed: {FirstLine(e.Message)}");
+                _log.LogWarning(e,
+                    "pgnode: start {Program} attempt {Attempt} failed", program, attempt);
             }
         }
         return false;

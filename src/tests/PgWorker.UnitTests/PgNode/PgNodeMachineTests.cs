@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging;
 using PgWorker.PgNode;
 using PgWorker.UnitTests.Provisioning;
 using Shared.Core;
@@ -84,17 +85,18 @@ public class PgNodeMachineTests
         public List<string> Commands { get; } = commands;
 
         public int ReloadCalls;
-        public readonly List<(string Yaml, string Current, string New)> ReloadArgs = [];
+        public readonly List<(string Yaml, string Current, string New, string Su, string Standby)> ReloadArgs = [];
         public int RestartProgramCalls;
         private readonly Dictionary<int, int> _reloadFailures = [];
 
         public void FailReloadTimes(int times) => _reloadFailures[1] = times;
 
         public Task ApplyRestPairAsync(string spiloConfigurationYaml, string restPasswordCurrent,
-            string restPasswordNew, CancellationToken ct)
+            string restPasswordNew, string pgSuPassword, string pgStandbyPassword, CancellationToken ct)
         {
             ReloadCalls++;
-            ReloadArgs.Add((spiloConfigurationYaml, restPasswordCurrent, restPasswordNew));
+            ReloadArgs.Add((spiloConfigurationYaml, restPasswordCurrent, restPasswordNew,
+                pgSuPassword, pgStandbyPassword));
             Commands.Add("reload rest-pair");
             if (_reloadFailures.TryGetValue(1, out var left) && left > 0)
             {
@@ -110,6 +112,22 @@ public class PgNodeMachineTests
             Commands.Add("restart spilo(program)");
             return Task.CompletedTask;
         }
+    }
+
+    // Коллектор логов (ХВОСТ «молчащего stderr»): диагностика машины/применителя
+    // обязана идти через ILogger хоста — тест фиксирует факт записей.
+    public sealed class TestLogger : ILogger
+    {
+        public readonly List<(LogLevel Level, string Message)> Entries = [];
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter)
+            => Entries.Add((logLevel, formatter(state, exception)));
     }
 
     // Фейк-писатель статусного ключа поверх словаря etcd-фейка: StartAsync —
@@ -175,6 +193,7 @@ public class PgNodeMachineTests
         public FakePatroniApply PatroniApply { get; }
         public FakeStatusWriter Status { get; }
         public PgNodeMachine Machine { get; }
+        public TestLogger Logger { get; } = new();
 
         // Роль ноды для серт-ветки apply (гвард П11.9: Master → reload без
         // фиксации ревизии; не-Master → рестарт программы). По умолчанию —
@@ -190,7 +209,8 @@ public class PgNodeMachineTests
                 Identity, Etcd, ["http://e1:2379"], Supervisor,
                 doormanTemplate: "pooler ${PGW_SU_PASSWORD} template",
                 statusWriter: () => Status,
-                patroniApply: PatroniApply);
+                patroniApply: PatroniApply,
+                logger: Logger);
             Machine.RenderRootDirOverride = RenderDir;
             Machine.RoleProbeOverride = _ => Task.FromResult(Role);
             Etcd.Store[BootstrapKey] = new Fakes.FakeEtcd.Entry(
@@ -516,13 +536,55 @@ public class PgNodeMachineTests
         await rig.Machine.ApplyTask!; // применение — фоновая задача: дождаться её
 
         // Assert: Ok с новой ревизией; rest-пара — reload'ом (фейк), рестарт
-        // программы НЕ вызывался, рестартов supervisor'а нет.
+        // программы НЕ вызывался, рестартов supervisor'а нет; per-install
+        // пароли PG (хендшейк) переданы команде — env регенерации
+        // configure_spilo собирает postgresql.authentication с фактическими
+        // паролями (ХВОСТ t05probe3a: без них секция пишется дефолтами).
         apply.Ok.Should().BeTrue();
         apply.AppliedRevision.Should().Be(8);
         rig.PatroniApply.ReloadCalls.Should().Be(1);
         rig.PatroniApply.ReloadArgs.Single().Yaml.Should().Be("spilo-yaml-v2");
+        rig.PatroniApply.ReloadArgs.Single().Su.Should().Be("su-secret",
+            "per-install su password is passed through to the regeneration env");
+        rig.PatroniApply.ReloadArgs.Single().Standby.Should().Be("standby-secret",
+            "per-install standby password is passed through to the regeneration env");
         rig.PatroniApply.RestartProgramCalls.Should().Be(0);
         rig.Supervisor.Commands.Should().NotContain(c => c.StartsWith("restart", StringComparison.Ordinal));
+    }
+
+    // (9b) неудачный виток применителя — диагностика через ILogger хоста
+    // («молчащий stderr» красного прогона: Console.Error-строки применителя в
+    // docker-лог не попали; с ILogger факт ошибки гарантированно логируется).
+    [Fact]
+    public async Task Apply_FailedAttempt_LogsErrorThroughLogger()
+    {
+        // Arrange: нода ready; ключ перезаписан; reload падает ОДИН раз
+        // (первый виток — ошибка с логом, самоповтор — успех).
+        PgNodeMachine.ApplyRetryCooldownSec = 0;
+        await using var rig = await Rig.CreateAsync(RealPemPair());
+        rig.ProbeAllReady();
+        (await rig.HandshakeAsync()).Should().Be(HandshakeResult.Started);
+        rig.Etcd.Store[BootstrapKey] = new Fakes.FakeEtcd.Entry(
+            BootstrapJson(spilo: "spilo-yaml-log", cert: rig.MachinePem.Cert, key: rig.MachinePem.Key), 8, 2);
+
+        // Act: пин — применитель: виток-ошибка (лог) + ретрай-успех.
+        rig.PatroniApply.FailReloadTimes(1);
+        var apply = await rig.Machine.ApplyAsync(CancellationToken.None);
+        await rig.Machine.ApplyTask!;
+
+        // Assert: ошибка витка зафиксирована В ЛОГГЕРЕ (уровень Error,
+        // текст факта); успешный итог тоже логируется (converged).
+        apply.Ok.Should().BeTrue();
+        rig.Machine.AppliedRevision.Should().Be(8, "the self-retry converged the material");
+        rig.Logger.Entries.Should().Contain(e =>
+                e.Level == LogLevel.Error
+                && e.Message.Contains("apply attempt failed", StringComparison.Ordinal)
+                && e.Message.Contains("patroni reload: 401 (fake)", StringComparison.Ordinal),
+            "the failed applier attempt is logged through the host logger (docker-лог контейнера)");
+        rig.Logger.Entries.Should().Contain(e =>
+                e.Level == LogLevel.Information
+                && e.Message.Contains("apply converged", StringComparison.Ordinal),
+            "the converged outcome is logged as well");
     }
 
     // (10) apply с изменённым только doorman-материалом (подстановка пары в
