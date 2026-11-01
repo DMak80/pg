@@ -697,6 +697,15 @@ public sealed class NodeSupervisor(
                             return Fail(new ApplicationException(
                                 $"supervise {cluster}: claim lost before node-startfailed step"));
 
+                        // Причина старт-дефекта — в журнал ДО сноса: контейнер
+                        // (и его логи) удаляется — без этой записи разбор
+                        // «почему машина не стартовала» невозможен (факт
+                        // стенда: логи снесённого контейнера невосстановимы).
+                        await journal.WritePhaseAsync(cluster, "supervise",
+                            $"node-startfailed-reason/{shard.Name}/{node.Name}",
+                            claims.InstanceId,
+                            $"agent reported: {status.Error ?? "<no diagnostics>"}", ct);
+
                         var removed = await driver.RemoveNodeAsync(
                             cluster, shard.Name, node.Name, ct);
                         if (!removed.IsSuccess)
