@@ -1403,6 +1403,38 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
             .Should().Contain("done/shard1/");
     }
 
+    // AAA: t05 bootstrap-доставка rejoin-нод (spec §3.6-3а): надзор шард в
+    // restore пропускает («restore in progress») — пин хендшейка делает
+    // restore-процесс; кластерные ноды — is_tool_start=false (полный старт
+    // компонентов). Без доставки ноды навсегда ждут handshake и состав
+    // Patroni не сходится (факт E2E PitrRollback: rejoin-wait выгорел бюджет).
+    [Fact]
+    public async Task RejoinDeliversBootstrapToBothNodesWithClusterStart()
+    {
+        // Arrange — REJOINING; пробы Patroni healthy (лидер + реплика)
+        var ct = TestContext.Current.CancellationToken;
+        await SeedAsync("c1");
+        await SeedTwoNodeAllocAsync();
+        var delivery = new FakeToolDelivery(fixture);
+        var driver = new TestDriver(new StubScaleDriver(), new FakeBackupEngine());
+        var process = BuildProcess(new FakeBackupS3(), driver,
+            patroni: new PatroniHandler { Ready = true }, bootstrap: delivery);
+        var op = await SeedRestoreAsync("c1", "shard1", "20260911122003Z",
+            backupId: "20260910120000Z", state: RestoreStatus.Rejoining);
+        (await _claims.TryClaimClusterAsync("c1", ct)).Value.Should().BeTrue();
+
+        // Act
+        (await process.TickAsync(BuildTwoNodeSnap(), await BackupsFromEtcdAsync("c1"), ct))
+            .IsSuccess.Should().BeTrue();
+
+        // Assert: обе ноды получили доставку кластерного старта (не tool);
+        // заявка доведена до COMPLETED — rejoin не висит в ожидании handshake.
+        delivery.Calls.Should().BeEquivalentTo([
+            (false, "shard1a"), (false, "shard1b")]);
+        (await ReadRestoresAsync("c1", "shard1")).Single(r => r.Id == op.Id)
+            .State.Should().Be(RestoreStatus.Completed);
+    }
+
     [Fact]
     public async Task RejoinSetsInitializeShieldSystemIdBeforeNodeEnsure()
     {

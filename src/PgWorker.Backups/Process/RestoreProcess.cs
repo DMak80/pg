@@ -900,6 +900,19 @@ public sealed class RestoreProcess(
             return await TransientAsync(cluster, $"docker-unavailable/{shard.Name}/{op.Id}",
                 firstEnsure.Error!.Message, ct);
 
+        // t05 bootstrap-доставка rejoin-нод (spec §3.6-3а): EnsureNode создаёт
+        // контейнер БЕЗ секретов в env — агент ждёт пина хендшейка. Надзор шард
+        // в restore пропускает («restore in progress») — доставку делает
+        // restore-процесс, иначе ноды навсегда ждут handshake и Patroni-состав
+        // не сходится (rejoin-wait выгорает бюджет). Тюнинг null: bootstrap-ключ
+        // ноды в etcd жив (provisioning) — рендер не нужен, ensure повторяет его.
+        var rejoinDelivery = await bootstrap.EnsureAsync(
+            topology, first, firstAddr, secrets, null, null,
+            snap.Config.SyncStrict, creds.Value.RestPassword, isToolStart: false, ct);
+        if (!rejoinDelivery.Delivered)
+            return await TransientAsync(cluster, $"bootstrap-rejoin/{shard.Name}/{first}",
+                rejoinDelivery.Detail ?? "bootstrap delivery is not complete (waiting)", ct);
+
         // Идентифицирующая Patroni-проба (P2.2-образец): лидер восстановленного
         // шарда должен быть ВЫБРАН (role primary) до подъёма реплик. state=running
         // недостаточно: джоба промоутила PG до Patroni, «running» бывает мгновенно,
@@ -935,6 +948,16 @@ public sealed class RestoreProcess(
             if (!ensured.IsSuccess)
                 return await TransientAsync(cluster, $"docker-unavailable/{shard.Name}/{op.Id}",
                     ensured.Error!.Message, ct);
+
+            // t05 bootstrap-доставка реплики rejoin (см. выше — надзор шард в
+            // restore пропускает): пин хендшейка → агент стартует компоненты →
+            // реплика догоняет лидера.
+            var replicaDelivery = await bootstrap.EnsureAsync(
+                topology, node, addr, secrets, null, null,
+                snap.Config.SyncStrict, creds.Value.RestPassword, isToolStart: false, ct);
+            if (!replicaDelivery.Delivered)
+                return await TransientAsync(cluster, $"bootstrap-rejoin/{shard.Name}/{node}",
+                    replicaDelivery.Detail ?? "bootstrap delivery is not complete (waiting)", ct);
         }
 
         // Пробы всех нод (тот же трекер-бюджет). Контракт (решение, 2026-09-12):
