@@ -18,7 +18,7 @@ namespace PgWorker.IntegrationTests.Backups;
 //    (падение ≠ exit 0), ключ возвращается свежим lease-put'ом нового процесса.
 // 2. Без env идентичности — старт-отказ процесса (exit 1), supervisord НЕ лупит
 //    (автозапуски не повторяются — состояние FATAL/EXITED стабильно).
-public class NodeWalReceiverTests
+public class NodePgNodeTests
 {
     // Per-branch тег (канон Shared.TestInfra.E2eImageTags): чужой/устаревший
     // образ другой ветки в серию не попадает; свежесть гарантирует сборка на
@@ -65,12 +65,12 @@ public class NodeWalReceiverTests
 
     private readonly ITestOutputHelper _output;
 
-    public NodeWalReceiverTests(ITestOutputHelper output) => _output = output;
+    public NodePgNodeTests(ITestOutputHelper output) => _output = output;
 
     // 9.5 (ревью): серия зелёная на чистом хосте и всегда на свежем бинаре —
     // образ собирается ДВУХШАГОВО на КАЖДЫЙ прогон серии (один раз за ран, канон
     // «publish на хосте, в контейнер — только артефакты»): (1) self-contained
-    // publish WalReceiver/NodeTools (RID хоста, без trimming; инкрементальный)
+    // publish pgnode/NodeTools (RID хоста, без trimming; инкрементальный)
     // в artifacts/node-wal-dev и artifacts/node-tools-dev; (2) docker build ноды
     // с publish-аргументами (docker-кэш слоёв делает ребилд быстрым).
     // inspect-гейта нет: `docker image inspect` отсутствующего образа даёт
@@ -94,7 +94,7 @@ public class NodeWalReceiverTests
             var toolsDir = Path.Combine(root, "artifacts", "node-tools-dev");
             var rid = System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture
                 == System.Runtime.InteropServices.Architecture.Arm64 ? "linux-arm64" : "linux-x64";
-            Console.WriteLine($"[PHASE] node-image: host publish WalReceiver ({rid})…");
+            Console.WriteLine($"[PHASE] node-image: host publish pgnode ({rid})…");
             var sw = System.Diagnostics.Stopwatch.StartNew();
             await E2eFixture.RunProcessAsync("dotnet",
             [
@@ -152,6 +152,68 @@ public class NodeWalReceiverTests
     {
         var result = await node.ExecAsync(["supervisorctl", "status", program], ct: ct);
         return $"{result.ExitCode}|{result.Stdout}|{result.Stderr}";
+    }
+
+    // Т8a (MR-#1, spec §8-23): граница порта канала — POST /api/bootstrap по
+    // :8080 (открытая грань) → 404 (роут канала живёт ТОЛЬКО на mTLS :8081);
+    // контроль открытой грани — GET /metrics по :8080 → 200.
+    [Fact]
+    public async Task Bootstrap_Post_Plaintext8080_Returns404()
+    {
+        // Arrange — своё окружение: сеть + etcd + нода (ключ не нужен:
+        // роуты канала замаплены при старте, гвард срабатывает до агента).
+        var ct = TestContext.Current.CancellationToken;
+        await EnsureNodeImageAsync(ct);
+        var runId = Guid.NewGuid().ToString("N");
+        var netName = $"pgw-node-net-{runId}";
+        var etcdName = $"pgw-node-etcd-{runId}";
+        var nodeName = $"pgw-node-{runId}";
+
+        await using var network = new NetworkBuilder().WithName(netName).Build();
+        await network.CreateAsync(ct);
+        await using var etcd = new ContainerBuilder(EtcdImage)
+            .WithName(etcdName)
+            .WithNetwork(network)
+            .WithNetworkAliases("etcd-test")
+            .WithCommand(
+                "etcd", "--name=e2e", "--data-dir=/etcd-data",
+                "--listen-client-urls=http://0.0.0.0:2379",
+                "--advertise-client-urls=http://etcd-test:2379")
+            .WithPortBinding(2379, assignRandomHostPort: true)
+            .Build();
+        await etcd.StartAsync(ct);
+
+        await using var node = new ContainerBuilder(NodeImage)
+            .WithName(nodeName)
+            .WithNetwork(network)
+            .WithEnvironment(new Dictionary<string, string>
+            {
+                ["PGW_BACKUP_CLUSTER"] = "c404",
+                ["PGW_BACKUP_SHARD"] = "shard1",
+                ["PGW_BACKUP_NODE"] = "s1a",
+                ["PGW_ETCD"] = "http://etcd-test:2379",
+                ["PGW_BACKUP_S3_BUCKET"] = "backups",
+                ["DOORMAN_CONFIG_TEMPLATE"] = DoormanConfigYaml,
+            })
+            .Build();
+        await node.StartAsync(ct);
+        var httpPort = node.GetMappedPublicPort(8080);
+
+        // pgnode RUNNING (агент слушает :8080 открытой гранью).
+        await WaitUntilAsync(
+            async () => (await SupervisordStatusAsync(node, "pgnode", ct)).Contains("RUNNING"),
+            Budget,
+            async () => await SupervisordStatusAsync(node, "pgnode", ct));
+
+        // Act/Assert: POST /api/bootstrap по :8080 → 404 (гвард порта).
+        var post = await node.ExecAsync(["sh", "-c",
+            "curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8080/api/bootstrap"], ct: ct);
+        post.Stdout.Trim().Should().Be("404", "the channel route is gated to the mTLS listener only");
+
+        // Контроль открытой грани: GET /metrics → 200.
+        var metrics = await node.ExecAsync(["sh", "-c",
+            "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/metrics"], ct: ct);
+        metrics.Stdout.Trim().Should().Be("200", "the open plane (metrics) stays on :8080");
     }
 
     [Fact]
@@ -420,7 +482,7 @@ public class NodeWalReceiverTests
         await using var node = new ContainerBuilder(NodeImage)
             .WithName(nodeName)
             // Идентичности бэкапов нет (суть теста), но entrypoint требует
-            // непустой DOORMAN_CONFIG (пулер обязателен, arch/14 §8).
+            // непустой DOORMAN_CONFIG_TEMPLATE (пулер обязателен, arch/14 §8).
             .WithEnvironment("DOORMAN_CONFIG_TEMPLATE", DoormanConfigYaml)
             .Build();
         await node.StartAsync(ct);

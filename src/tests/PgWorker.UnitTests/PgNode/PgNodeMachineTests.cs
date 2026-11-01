@@ -28,7 +28,7 @@ public class PgNodeMachineTests
             ["key_pem"] = key,
         });
 
-    // Валидная PEM-пара (IsValidForStart машины требует парсимую пару).
+    // Валидная PEM-пара (IsValidForStart машины требует парсимую пару).    // Валидная PEM-пара (IsValidForStart машины требует парсимую пару).
     private static (string Cert, string Key) RealPemPair()
     {
         using var rsa = System.Security.Cryptography.RSA.Create(2048);
@@ -348,7 +348,9 @@ public class PgNodeMachineTests
 
     // (6a) Окно ротации ETCD-FIRST: doorman-проба false (28P01 при OLD
     // pg_authid в открытом окне) — waiting-повтор БЕЗ бюджета (не
-    // start_failed): initializing держится, затем проба true → ready.
+    // start_failed): пробы циклятся на реальных 5-с интервалах машины
+    // (фейковый TimeProvider с корректным ITimer-контрактом — отдельная
+    // задача; ускорение юнита не стоит риска флейка таймеров).
     [Fact]
     public async Task Handshake_ProbeFalseWaits_ThenTrueReachesReady()
     {

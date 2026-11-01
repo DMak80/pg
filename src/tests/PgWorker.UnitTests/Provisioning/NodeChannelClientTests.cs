@@ -5,7 +5,7 @@ using Xunit;
 
 // AAA (П8.4): контракт NodeChannelClient — тела команд (su_password/
 // standby_password/is_tool_start), разбор ответов, transient-коды; контракт
-// PgNodeStatusReader — Parse/StatusKey.
+// PgNodeStatusFact — Parse/StatusKey.
 public class NodeChannelClientTests
 {
     // Fake-обработчик: захват запроса + заготовленный ответ.
@@ -122,8 +122,8 @@ public class NodeChannelClientTests
     }
 }
 
-// AAA: PgNodeStatusReader — Parse полного JSON / битого / StatusKey-формат.
-public class PgNodeStatusReaderTests
+// AAA: PgNodeStatusFact — Parse полного JSON / битого / StatusKey-формат.
+public class PgNodeStatusFactTests
 {
     [Fact]
     public void Parse_FullJson_AllFields()

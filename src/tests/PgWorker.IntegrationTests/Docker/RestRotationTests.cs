@@ -89,6 +89,10 @@ public class RestRotationTests(Etcd.EtcdFixture fixture)
 
         var snapshot = await SnapshotAsync(gateway, endpoint, ct);
 
+        // Т10 (MR-#17): чистка etcd-префиксов в finally — падение ассерта
+        // выше НЕ пропускает чистку (префиксы не протухают в etcd фикстуры).
+        try
+        {
         // Регрессия: тик ДО заявки — мутаций нет.
         var before = await rotator.TickAsync(snapshot, ct);
         before.IsSuccess.Should().BeTrue(before.Error?.ToString());
@@ -145,6 +149,9 @@ public class RestRotationTests(Etcd.EtcdFixture fixture)
         var key2 = (await gateway.GetAsync(endpoint, $"/clusters/{Cluster}/rest_password", ct)).Value!.Value;
         key2.Should().NotBe(oldPassword, "a repeated pass — a fresh pair");
 
+        }
+        finally
+        {
         // Teardown: etcd-префиксы кластера + узлы (по образцу DisposeAsync рига).
         await gateway.DeleteAsync(endpoint, $"/clusters/{Cluster}/", prefix: true, ct);
         await gateway.DeleteAsync(endpoint, $"/pgworker/nodes/{Cluster}/", prefix: true, ct);
@@ -152,6 +159,7 @@ public class RestRotationTests(Etcd.EtcdFixture fixture)
         await gateway.DeleteAsync(endpoint, $"/pgworker/rotations/{Cluster}", prefix: false, ct);
         await gateway.DeleteAsync(endpoint, $"/pgworker/claims/{Cluster}", prefix: false, ct);
         await gateway.DeleteAsync(endpoint, $"/service/{Scope}/", prefix: true, ct);
+        }
     }
 
     // Цикл тиков ротатора до journal-фазы done (окно закрыто ETCD-FIRST-порядком).
@@ -261,32 +269,6 @@ public class RestRotationTests(Etcd.EtcdFixture fixture)
             DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(3650));
         return new RestCertificateCache(
             ca.ExportCertificatePem(), ca.GetRSAPrivateKey()!.ExportPkcs8PrivateKeyPem());
-    }
-
-    // Фейк IClusterDriver: R2-rest доставку делает delivery — драйвер ротатором
-    // не вызывается; методы — NotSupportedException (fail-fast при касании).
-    private sealed class StubDriver : IClusterDriver
-    {
-        public bool SupportsRunningInspection => false;
-        public Task<Result> EnsureNodeAsync(ShardTopology topology, string nodeName, NodeAddress addr,
-            EtcdEndpoints etcd, NodeResources? resources, PgTuneResult? tuning,
-            bool syncStrict, CancellationToken ct) => throw new NotSupportedException();
-        public Task<Result> RemoveNodeAsync(string cluster, string shard, string nodeName, CancellationToken ct)
-            => throw new NotSupportedException();
-        public Task<Result> StopNodeAsync(string cluster, string shard, string nodeName, CancellationToken ct)
-            => throw new NotSupportedException();
-        public Task<Result<IReadOnlyDictionary<string, DiscoveredNode>>> InspectNodesAsync(
-            string cluster, IReadOnlyCollection<string> nodeNames, CancellationToken ct)
-            => throw new NotSupportedException();
-        public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, CancellationToken ct)
-            => throw new NotSupportedException();
-        public Task<Result> RemoveBackupAgentsAsync(string cluster, string? shard, CancellationToken ct)
-            => throw new NotSupportedException();
-        public IDockerEngine? EngineFor(string host) => null;
-        public Task<Result<IReadOnlyList<HostInfo>>> GetHostsAsync(CancellationToken ct)
-            => throw new NotSupportedException();
-        public Task<Result<IReadOnlySet<(string Host, int Port)>>> GetBusyPortsAsync(CancellationToken ct)
-            => throw new NotSupportedException();
     }
 
     private sealed class StubSql : ISqlExecutor

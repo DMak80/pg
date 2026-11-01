@@ -90,6 +90,16 @@ public sealed class E2eRotateScenarios(E2eRotateScenariosFx Ctx) : IClassFixture
         var newDsn = (await GetOrNullAsync($"/clusters/{Cluster}/shards/shard1/dsn"))!.Value;
         newDsn.Should().Contain($"password={newAdmin}").And.NotContain(oldAdmin);
 
+        // Т3 (MR-#9): StartedAt-снимок ПОСЛЕ закрытия окна (окно может жить
+        // дольше заявки — ETCD-FIRST); StartedAtMapAsync выполняется только
+        // после закрытия — «без пересоздания» проверено на полном окне R2→R4.
+        var windowClosed = await E2eFixture.WaitForAsync(async () =>
+        {
+            var work = await GetOrNullAsync($"/pgworker/work/{Cluster}");
+            return work is not null && !work.Value.Contains("\"rest_window_open\":true");
+        }, TimeSpan.FromSeconds(120), ct);
+        windowClosed.Should().BeTrue("R4 closes the rotation window");
+
         // Assert 1c (spec §6.3/§9.6): ротация rest_password БЕЗ пересоздания —
         // StartedAt каждого контейнера нод НЕ изменился.
         var startedAtAfter = await StartedAtMapAsync(Cluster, ct);
@@ -105,14 +115,7 @@ public sealed class E2eRotateScenarios(E2eRotateScenariosFx Ctx) : IClassFixture
         // 28P01 транзиент (pg_authid OLD до R4, arch/14 §5 I); живой клиент
         // ретраит вставки до перечитывания — writer повторяет попытки тем же
         // бюджетом (поведение клиента по arch/14).
-        // Ожидание закрытия окна (R4): pg_authid выровнен с etcd — вставки
-        // writer'а проходят сразу (канон §5 I: клиенты ретраят до закрытия).
-        var windowClosed = await E2eFixture.WaitForAsync(async () =>
-        {
-            var work = await GetOrNullAsync($"/pgworker/work/{Cluster}");
-            return work is not null && work.Value.Contains("\"rest_window_open\":false");
-        }, TimeSpan.FromSeconds(120), ct);
-        windowClosed.Should().BeTrue("R4 closes the rotation window (final ALTER)");
+        // Окно уже закрыто (Т3-ожидание выше) — вставки writer'а проходят.
         var inserts = 0;
         string? lastError = null;
         var wrote = await E2eFixture.WaitForAsync(async () =>
