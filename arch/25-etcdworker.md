@@ -89,6 +89,7 @@ lease-ключ `/etcdworker/api/<id>`; URL — из `EtcdWorker:Api:AdvertiseUrl
 |---|---|
 | `PUT /api/etcd/config` | декларация состава: тело `{"nodes":N}` → put `/etcd/config` (замещение целиком; 0 — managed-узлов нет, только наблюдение). Валидация: `N` — целое 0..7; гвард кворума — итоговое число членов (external + N) ≥ 3, иначе 409 «состав ниже безопасного»; понижение N запускает rolling-вывод managed-узлов (по одному за тик, §3.1) |
 | `POST /api/restart` | graceful self-stop инстанса (паттерн arch/14 §1.1) |
+| `GET /api/config` | эффективный конфиг установки (read-only; on-demand прокси панели — adminpanel/02 §2.3.5; та же mTLS-грань `/api`): тело-объект `source:"env"` + группы camelCase (фактические поля POCO Options; применяется рестартом воркера): `thresholds{nodeBootSec,nodeDeadSec,healthIntervalSec}`, `loops{scanIntervalSec,keepaliveSec,watchdog{enabled,multiplier,checkIntervalSec}}`, `snapshots{intervalMin,minIntervalSec,maintenanceIntervalMin,retentionFiles,retentionObjects,retryIntervalSec,timeoutSec}`, `docker{mode,network,advertisedHost,portRange{from,to},images{etcd}}`. Наружу НЕ выходят: Etcd-endpoints, секция Api/TLS, Docker Tls/Ssh, Snapshots.Dir → 200 `application/json` |
 
 `/healthz` — `etcd-reachable`, `docker-hosts`, `loops-alive`, `snapshot-export`
 (последняя выгрузка: OK/FAILED/возраст). `/metrics` — каркас arch/18 §2.2
@@ -165,7 +166,7 @@ lease-ключ `/etcdworker/api/<id>`; URL — из `EtcdWorker:Api:AdvertiseUrl
   NodeSupervisor (§3.2). Если мёртв ЛИДЕР — сначала выборы etcd (сам), замена —
   после смены лидера.
 - **External-члены**: в доводке не участвуют; member list парсится, члены без
-  peer-URL-паттерна `/etcdw-node-<k>:` отображаются панелью как external
+  peer-URL-паттерна `http://etcdw-node-<k>:2380` отображаются панелью как external
   (seed, стендовые `etcdN`).
 - Journal — `/etcdworker/work` (journal-before-manipulations, фазы
   `add-learner/promoting/removing/replacing/cleanup-orphans`; `cleanup-orphans`

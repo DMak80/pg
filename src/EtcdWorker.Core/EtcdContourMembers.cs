@@ -5,8 +5,14 @@ namespace EtcdWorker.Core;
 /// <summary>Managed-член контура: номер узла из peer-URL-паттерна + исходный член.</summary>
 public sealed record ManagedMember(int K, EtcdMember Member);
 
-/// <summary>Разбор member list (arch/25 §2): managed — peerURL содержит
-/// "/etcdw-node-<k>:" (имя члена не дискриминант); прочие — external.</summary>
+/// <summary>Разбор member list (arch/25 §2/§3.1): каноническая форма peer-URL
+/// managed-узла — константа http://etcdw-node-<k>:2380 (по ней панель
+/// классифицирует managed/external); чек стенда матчит по host-префиксу
+/// "http://etcdw-node-" — намеренно шире канона (ловит managed-looking URL
+/// с отклонившимся портом); сам парсер намеренно консервативен — берёт подстроку
+/// "/etcdw-node-<k>:" с любым scheme/портом, это механика ДООВОДКИ состава
+/// (член, отклонившийся от канонической адресации, воркер всё равно обслужит),
+/// имя члена не дискриминант; прочие — external.</summary>
 public static class EtcdContourMembers
 {
     public const string NamePrefix = "etcdw-node-";

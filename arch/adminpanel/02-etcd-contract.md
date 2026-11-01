@@ -217,7 +217,7 @@ pg/kafka/valkey-инстансов) пробит живые инстансы S3W
 панель отправляет НАПРЯМУЮ живому инстансу воркера (по lease-ключам
 дискавери §2.3.1–§2.3.4), БЕЗ снапшота и etcd: запрос идёт on-demand в момент
 вызова. Эффективный конфиг — прокси `GET /api/workers/{worker}/effective-config`
-→ `GET /api/config` API воркера (контракт тела — arch/14/16/21/24 §1.1:
+→ `GET /api/config` API воркера (контракт тела — arch/14/16/21/24/25 §1.1:
 группы Thresholds/Loops/Moves/Parallelism/Backups/Snapshots/Pgtune — по
 воркеру; БЕЗ секретов/TLS/endpoints; ответ отдаётся как есть, camelCase) —
 параметры эффективного конфига, 03 §3.7; живых ключей дискавери нет → 503. Отдельного
@@ -227,14 +227,14 @@ pg/kafka/valkey-инстансов) пробит живые инстансы S3W
 
 Etcd-контур установки (канон — arch/25): панель читает декларацию состава и
 статусы managed-узлов, мутацию состава (число узлов) отправляет в HTTP API
-воркера (§9.13); в etcd домена не пишет ничего.
+воркера (§9.14); в etcd домена не пишет ничего.
 
 | Ключ | Формат значения | В модель | Примечания |
 |---|---|---|---|
-| `/etcd/config` | JSON `{"nodes":N,"created_unix":<unix>}` (канон — arch/25 §5) | `EtcdDomain.Config` (§3) | декларация числа managed-узлов контура; отсутствие ключа = 0 (только наблюдение, external-контур); мутация — API воркера (§9.13), панель читает |
+| `/etcd/config` | JSON `{"nodes":N,"created_unix":<unix>}` (канон — arch/25 §5) | `EtcdDomain.Config` (§3) | декларация числа managed-узлов контура; отсутствие ключа = 0 (только наблюдение, external-контур); мутация — API воркера (§9.14), панель читает |
 | `/etcd/nodes/<k>/state` | строка `NOT_INITIALIZED\|PROVISIONING\|RUNNING\|UNREACHABLE\|REMOVING` | `EtcdDomain.ManagedNode` (§3) | жизненный цикл managed-узла; + `placed_on` (имя docker-хоста); отображается на странице «etcd» рядом с member list (03 §2) |
 | `/etcdworker/snapshots` | JSON `{"state":"OK"\|"FAILED","last_uploaded_unix"?<unix>,"last_object"?,"last_sha256"?,"size_bytes"?<n>,"interval_min"?<n>,"error"?}` (канон — arch/25 §5) | `EtcdSnapshotExportInfo` (§3) | статус DR-выгрузки слепков etcd: пишет ТОЛЬКО EtcdWorker (инстанс-исполнитель выгрузки), панель читает; кормит алерты `etcd-snapshot-export-failed`/`-stale` (03 §4) и карточку «etcd-снапшоты» грани «Хранилище бэкапов»; отсутствие ключа — правила молчат (толерантный читатель: битый JSON — parseError-запись) |
-| `/etcdworker/api/<id>` | lease TTL 15 c, JSON `{"url","instance","since_unix","cert_thumbprint"?}` | `WorkerEndpoint[]` (§3) | дискавери API EtcdWorker — источник URL для мутации состава §9.13; серверный серт — ключ `/workers/api_tls/etcdworker` (§9.9); по тем же URL тик `/healthz` (общий поллер) → warning-алерт `worker-unhealthy`; отсутствие живых ключей → 503 мутаций + critical `worker-api-unreachable` |
+| `/etcdworker/api/<id>` | lease TTL 15 c, JSON `{"url","instance","since_unix","cert_thumbprint"?}` | `WorkerEndpoint[]` (§3) | дискавери API EtcdWorker — источник URL для мутации состава §9.14; серверный серт — ключ `/workers/api_tls/etcdworker` (§9.9); по тем же URL тик `/healthz` (общий поллер) → warning-алерт `worker-unhealthy`; отсутствие живых ключей → 503 мутаций + critical `worker-api-unreachable` |
 
 Координационные ключи `/etcdworker/{leader,locks,instances,portalloc,work}`
 панель не читает (вне контракта; work — journal фаз, оператор читает etcdctl'ом).

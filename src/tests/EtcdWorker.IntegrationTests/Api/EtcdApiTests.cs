@@ -139,4 +139,23 @@ public sealed class EtcdApiTests(EtcdApiFixture fx)
         // Assert
         response.StatusCode.Should().Be(HttpStatusCode.Accepted);
     }
+
+    // AAA: GET /api/config — 200 в mTLS-зоне /api (arch/25 §1.1): JSON
+    // эффективного конфига с source:"env"; секретных секций в теле нет.
+    [Fact]
+    public async Task GetConfig_200_WithSourceAndNoSecrets()
+    {
+        DockerTrait.SkipIfUnavailable();
+        using var client = fx.Factory.CreateClient();
+
+        // Act
+        using var response = await client.GetAsync("/api/config", TestContext.Current.CancellationToken);
+        var text = await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
+
+        // Assert — маршрутизация/mTLS-группа залочены; тело read-only без секретов
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        text.Should().Contain("\"source\":\"env\"");
+        text.Should().NotContain("endpoints");
+        text.Should().NotContain("tls");
+    }
 }

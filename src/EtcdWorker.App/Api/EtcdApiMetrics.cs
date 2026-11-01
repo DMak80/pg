@@ -9,8 +9,7 @@ public sealed class EtcdApiMetrics(Meter meter, string name = "etcdworker_api_op
 {
     private readonly Counter<long> _counter = meter.CreateCounter<long>(name);
 
-    // operation ∈ create-cluster | delete-cluster | add-node | delete-node |
-    // update-node-resources | post-rotation | sync-probe | seed-demo.
+    // operation ∈ put-etcd-config | get-config.
     public void Track(string operation, int statusCode)
         => _counter.Add(1, new KeyValuePair<string, object?>("operation", operation),
             new KeyValuePair<string, object?>("code", statusCode.ToString(System.Globalization.CultureInfo.InvariantCulture)));

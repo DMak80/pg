@@ -23,7 +23,7 @@
  `host__port` (`:` в ключах режут конфиг-провайдеры .NET); в памяти/ENV —
  канонический `host:port`, он приоритетен при наличии обоих.
 
-## AlertEngine — 47 правил
+## AlertEngine — 48 правил
 
 `Core/Alerting/Rules/*` — все `[InjectAsSingleton(typeof(IAlertRule))]`, движок
 (`AlertEngine`, `[InjectAsSingleton(typeof(IAlertEngine))]`) собирает
@@ -35,7 +35,7 @@ arch/03 §4 (источник истины каталога).
 
 | Группа | Правила (kind) |
 |---|---|
-| etcd-здоровье (7) | `etcd-unreachable`, `etcd-endpoint-down`, `etcd-no-quorum`, `etcd-alarm`, `etcd-snapshot-export-failed`, `etcd-snapshot-export-stale`, `snapshot-stale` |
+| etcd-здоровье (8) | `etcd-unreachable`, `etcd-endpoint-down`, `etcd-no-quorum`, `etcd-alarm`, `etcd-snapshot-export-failed`, `etcd-snapshot-export-stale`, `snapshot-stale`, `etcd-backup-cluster-missing` |
 | шардирование/переезды (12) | `cluster-not-initialized`, `cluster-incomplete`, `key-malformed`, `shard-no-master`, `bucket-no-routing`, `bucket-lost`, `bucket-out-of-range`, `move-stale`, `move-frozen-long`, `move-aborting`, `move-flipped-status-stuck`, `inventory-mismatch` |
 | HA/слоты (7) | `shard-no-leader`, `ha-member-not-streaming`, `replica-lag-high`, `sync-standby-missing`, `slot-lag-high`, `slot-invalidation-risk`, `slot-wal-lost` |
 | пробы (1) | `probe-failed` (sql→critical, patroni→warning, весь скоп молчит→critical один на скоп; lifecycle-цели NOT_INITIALIZED/TO_REMOVE подавлены — arch/03 §4) |

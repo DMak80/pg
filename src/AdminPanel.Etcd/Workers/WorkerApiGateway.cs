@@ -126,6 +126,8 @@ public sealed class WorkerApiGateway(
 
     // Ключи доступа из снапшота соответствующего воркера (valkey; s3;
     // etcdworker — живые ключи лежат в основном EtcdSnapshot, 02 §2.3.5).
+    // Валидность имён — единый набор WorkerNames.All (гварды прокси-модулей
+    // отсекают неизвестные имена до шлюза).
     private IReadOnlyList<WorkerEndpoint>? ResolveEndpoints(string worker) => worker switch
     {
         "pgworker" => pgStore.Current?.PgWorkerEndpoints,
@@ -133,6 +135,6 @@ public sealed class WorkerApiGateway(
         "valkeyworker" => valkeyStore.Current?.WorkerEndpoints,
         "s3worker" => s3Store.Current?.WorkerEndpoints,
         "etcdworker" => pgStore.Current?.EtcdWorkerEndpoints,
-        _ => throw new ArgumentOutOfRangeException(nameof(worker), worker, "expected pgworker|kafkaworker|valkeyworker|s3worker|etcdworker"),
+        _ => throw WorkerNames.Unknown(worker),
     };
 }

@@ -11,7 +11,7 @@ import { useEffect } from 'react';
 import type { Query } from '@tanstack/react-query';
 import {
   diffBackupsStorage, diffClusterDetails, diffClusterExtras, diffClusters,
-  diffHa, diffKafka, diffOverview, diffS3, diffValkey,
+  diffEtcdDomain, diffHa, diffKafka, diffOverview, diffS3, diffValkey,
 } from './eventsDiff';
 
 // Снимки prev по queryKey (строковый ключ) — храним сами: у SuccessAction в
@@ -64,6 +64,10 @@ export function EventsProvider({ children }: { children: React.ReactNode }) {
           diffClusters(prev as never, next as never);
         } else if (id === keyId(['ha-scopes'])) {
           diffHa(prev as never, next as never);
+        } else if (id === keyId(['etcd-domain'])) {
+          // etcd-домен (02 §2.3.5): состав контура/DR-слепки/декларация —
+          // события, пока запрос etcdDomain опрашивается (страница /etcd).
+          diffEtcdDomain(prev as never, next as never);
         } else if (id === keyId(['overview'])) {
           // arch/03 §3 «События» перечисляет overview среди наблюдаемых —
           // диффим переключение глобального стопа бэкапов (u10).

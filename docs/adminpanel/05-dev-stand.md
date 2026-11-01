@@ -7,8 +7,9 @@
 Стенд — ОДИН контур в одной сети `adminpanel-stand-net`: etcd (3 узла), панель,
 канонический PG-demo-кластер (создаёт `00-up.sh` через `POST /api/clusters` —
 движок провижинит Spilo/Patroni-ноды `pgw-demo-*` в той же сети), kafkaworker и
-valkeyworker, PgWorker + ownS3 (deploy-контур подключается external;
-`owns3:9000` внутри контура, `:9010` — хост-публикация наружу), мониторинг.
+valkeyworker, PgWorker + S3Worker + EtcdWorker ×2 + ownS3 (deploy-контур
+подключается external; `owns3:9000` внутри контура, `:9010` — хост-публикация
+наружу), мониторинг.
 Профили compose: quick (etcd + панель), full (+ as-minio — переходный
 read-only-архив), kafka/valkey/metrics. Эмуляторов Patroni, усыновлённых
 as-нод и HostMap-словаря на стенде нет.
@@ -19,8 +20,9 @@ as-нод и HostMap-словаря на стенде нет.
 cd dev-stand/adminpanel
 checks/90-down.sh -v                      # чистое состояние (обязательно)
 checks/00-up.sh && checks/10-smoke-api.sh && checks/20-alerts.sh \
-  && checks/30-failover.sh && checks/40-live-probes.sh && checks/60-move-ops.sh \
-  && checks/65-metrics.sh
+  && checks/30-failover.sh && checks/40-live-probes.sh \
+  && checks/43-etcd-ha.sh && checks/44-etcdworker.sh \
+  && checks/60-move-ops.sh && checks/65-metrics.sh
 checks/90-down.sh -v                      # разбор
 ```
 

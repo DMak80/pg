@@ -216,6 +216,9 @@ echo "  etcd contour ready (3/3 started)"
 #     собранный etcd-кворум выше).
 # Проба открытой грани: https без клиентского серта (healthz воркеров).
 HEALTH=(curl -fsS -m 3 --cacert "$ROOT/deploy/tls/ca.pem")
+# Проба mTLS-грани (healthz etcdworker, arch/25 §1.1): клиентская пара seed
+# (пакет kfw-install-ca; тот же паттерн, что 05-seed/75-s3worker).
+MTLS=(curl -fsS -m 3 --cacert "$ROOT/deploy/tls/ca.pem" --cert "$ROOT/deploy/tls/seed.crt" --key "$ROOT/deploy/tls/seed.key")
 for i in $(seq 1 60); do "${HEALTH[@]}" https://localhost:${PGW_API_HOST_PORT:-8080}/healthz >/dev/null 2>&1 && break; sleep 1; done
 "${HEALTH[@]}" https://localhost:${PGW_API_HOST_PORT:-8080}/healthz >/dev/null \
   || { echo "❌ pgworker did not come alive within 60 s (https :${PGW_API_HOST_PORT:-8080}/healthz without a client certificate; docker logs deploy-pgworker-1)"; exit 1; }

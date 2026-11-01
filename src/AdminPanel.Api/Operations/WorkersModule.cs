@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using AdminPanel.Core;
@@ -18,6 +19,8 @@ namespace AdminPanel.Api.Operations;
 // (arch/adminpanel/02 §9.9, вторая категория после §9) + рестарт-прокси.
 public static class WorkersModule
 {
+    private const string ProblemContentType = "application/problem+json";
+
     public static IEndpointRouteBuilder MapWorkersApi(this IEndpointRouteBuilder endpoints)
     {
         endpoints.MapGet("/api/workers", async (IHandler handler, CancellationToken ct) =>
@@ -106,6 +109,10 @@ public static class WorkersModule
             statusCode: StatusCodes.Status503ServiceUnavailable,
             title: "Worker API unavailable",
             detail: unavailable.Message),
+        // ProblemDetails воркера (эффективный конфиг, adminpanel/02 §2.3.5) —
+        // статус/тело 1:1, как у прочих прокси (OperationsModule).
+        WorkerProblemDetails problem => Results.Text(
+            problem.Body, ProblemContentType, Encoding.UTF8, problem.StatusCode),
         _ => Results.Problem(
             statusCode: StatusCodes.Status503ServiceUnavailable,
             title: "Etcd write failed",

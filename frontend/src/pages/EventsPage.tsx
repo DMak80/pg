@@ -14,14 +14,15 @@ import { getDiffErrorCount } from '../events/EventsProvider';
 import { alertRoute } from '../utils/alertRoutes';
 import type { EventDomain, EventEntityKind, EventItem } from '../events/eventsStore';
 
-// Домены ленты = домены, которые диффы реально эмитят (pg/kafka/valkey/s3;
-// etcd-домен диффы не эмитят — ключи etcd-контура в ленту не наблюдаются).
+// Домены ленты = домены, которые диффы реально эмитят (pg/kafka/valkey/s3/etcd —
+// etcd-домен из ответа /api/etcd/domain, пока опрашивается страница /etcd).
 const DOMAIN_OPTIONS = [
   { value: 'all', label: 'Все' },
   { value: 'pg', label: 'pg' },
   { value: 'kafka', label: 'kafka' },
   { value: 'valkey', label: 'valkey' },
   { value: 's3', label: 's3' },
+  { value: 'etcd', label: 'etcd' },
 ];
 
 const ENTITY_KIND_OPTIONS: { value: string; label: string }[] = [
@@ -40,6 +41,8 @@ const ENTITY_KIND_OPTIONS: { value: string; label: string }[] = [
   { value: 'restore', label: 'restore' },
   { value: 'drill', label: 'drill' },
   { value: 'orphan', label: 'orphan' },
+  { value: 'snapshot', label: 'snapshot' },
+  { value: 'config', label: 'config' },
 ];
 
 // Строк на страницу (пагинация вместо виртуализации: сотни строк — не тысячи,
@@ -136,6 +139,9 @@ const EventRow = memo(function EventRow({ event: e }: { event: EventItem }) {
           : e.domain === 'kafka' ? 'kafka-rotation-pending'
             : e.domain === 'valkey' ? 'valkey-rotation-pending'
               : e.domain === 's3' ? 's3-rotation-pending'
+              // etcd-домен: все etcd-* kind'ы алерт-маршрутов ведут на /etcd
+              // (иначе fallback cluster-incomplete ушёл бы на /clusters/… — 404)
+              : e.domain === 'etcd' ? 'etcd-alarm'
                 : 'cluster-incomplete';
   const route = alertRoute(fakeKind, e.entity);
   const change = e.type === 'state-change' && e.from !== undefined && e.to !== undefined
