@@ -510,6 +510,10 @@ public sealed class PgNodeMachine : IDisposable
             {
                 // Пароль — reload'ом (если серт уже применён рестартом
                 // программы, reload избыточен — рестарт покрыл оба материала).
+                // Пути рест-серт ноды (env configure_spilo) — внутри команды:
+                // без них перегенерация теряет restapi certfile/keyfile
+                // (t05probe2) и первое перечитывание пересоздаёт REST-листенер
+                // в plain — mTLS-канал агента умирает.
                 await _patroniApply.ApplyRestPairAsync(
                     data.SpiloConfiguration,
                     RestPasswordOf(_appliedSpiloYaml) ?? RestPasswordOf(data.SpiloConfiguration) ?? "",

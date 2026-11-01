@@ -316,7 +316,12 @@ P15 и формат v3.11.0 — без изменений; InstallSecretsGuard �
    точечное применение ПО МАТЕРИАЛУ (решение 29): `spilo_configuration`
    изменился → rest-пара: reload Patroni (SIGHUP процессу patroni ИЛИ
    REST POST /reload — эквивалентны; PG не останавливается, рестарт
-   Patroni-процесса/контейнера для пароля запрещён); rest-серт:
+   Patroni-процесса/контейнера для пароля запрещён); перегенерация
+   /run/postgres.yml идёт с env SSL_RESTAPI_CERTIFICATE_FILE/
+   SSL_RESTAPI_PRIVATE_KEY_FILE = пути рест-серт ноды /run/certs/* —
+   без них configure_spilo теряет restapi certfile/keyfile и первое
+   перечитывание пересоздаёт REST-листенер в plain (t05probe2, arch/14
+   §5 I); rest-серт:
    рестарт Patroni-программы (reload SSL-материал не применяет —
    patroni 4.1.0; PG ноды останавливается на секунды рестарта, Patroni
    усыновляет локальный PG по DCS) — только на РЕПЛИКЕ; мастер сертом

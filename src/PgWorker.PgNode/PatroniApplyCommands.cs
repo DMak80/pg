@@ -45,10 +45,17 @@ public sealed class PatroniApplyCommands(ISupervisorCommands supervisor) : IPatr
     private static string? _clientCaPem;
     private static HttpClient? _client;
 
-    /// <summary>Применение rest-пары: (1) configure_spilo.py patroni --force
-    /// (env процесса = env агента + SPILO_CONFIGURATION = применяемый YAML;
-    /// факт образа spilo-18:4.1-p2: БЕЗ --force существующий
-    /// /run/postgres.yml не перезаписывается); (2) POST /reload.
+    /// <summary>Применение rest-пары: (1) configure_spilo.py patroni --force —
+    /// env процесса = env агента + SPILO_CONFIGURATION = применяемый YAML +
+    /// SSL_RESTAPI_CERTIFICATE_FILE/SSL_RESTAPI_PRIVATE_KEY_FILE = пути
+    /// пер-инсталл рест-серт ноды /run/certs/ (материализованы bootstrap'ом
+    /// из тех же env сертов, что spilo-supervised.sh передаёт в launch; факт
+    /// образа spilo-18:4.1-p2: БЕЗ --force существующий /run/postgres.yml не
+    /// перезаписывается; БЕЗ env-путей placeholders SSL_RESTAPI_*_FILE пусты
+    /// — у агента (user=postgres) SSL_RESTAPI_CERTIFICATE/PRIVATE_KEY env НЕТ
+    /// (секреты — только tmpfs/память), шаблон restapi ТЕРЯЕТ certfile/keyfile
+    /// и первое перечитывание пересоздаёт REST-листенер В PLAIN HTTP —
+    /// mTLS-канал агента умирает, факт t05probe2); (2) POST /reload.
     /// Аутентификация reload-запроса — по конфигу Patroni В ПАМЯТИ; к моменту
     /// apply возможны ровно два состояния: S1 = OLD (первое применение новой
     /// ревизии: валиден OLD, NEW даёт 401) и S2 = NEW (идемпотентный повтор:
@@ -58,7 +65,11 @@ public sealed class PatroniApplyCommands(ISupervisorCommands supervisor) : IPatr
     /// состояний (не подбор); 202 от любой = успех; 401 от обеих / 5xx /
     /// транспорт — отказ с фактом (повтор по коулдауну apply-ветки).
     /// Факт живой пробы S1 (t05probe-s1): NEW до применения → 401;
-    /// POST /reload OLD → 202; postmaster не останавливался.</summary>
+    /// POST /reload OLD → 202; postmaster не останавливался. ОТКРЫТОЕ
+    /// ПРОТИВОРЕЧИЕ (разрешается владельцу): E2E-зонд t05 — POST /reload
+    /// 401 на валидный in-memory OLD при PATCH /config тем же клиентом и
+    /// заголовком = 400 (аутентификация пройдена); в изолированной пробе
+    /// reload OLD = 202 — контуры чем-то различаются, механика НЕ менялась.</summary>
     public async Task ApplyRestPairAsync(string spiloConfigurationYaml, string restPasswordCurrent,
         string restPasswordNew, CancellationToken ct)
     {
@@ -75,12 +86,36 @@ public sealed class PatroniApplyCommands(ISupervisorCommands supervisor) : IPatr
             if (code == 202)
                 return;
             codes.Add(code);
-            if (code != 401)
+            // Диагностика (разбор по логам, без значений секретов): зонд
+            // немедленно повторяет тот же пароль МУТИРУЮЩИМ PATCH /config
+            // (как внешние пробы): расхождение кодов reload-vs-patch
+            // локализует отказ (эндпоинт/пароль/канал).
+            if (code == 401)
+                Console.Error.WriteLine(
+                    $"pgnode: reload 401 diagnostic: password length={password!.Length}, " +
+                    $"is-current={password == restPasswordCurrent}, is-new={password == restPasswordNew}, " +
+                    $"patch-same-password={await PatchConfigProbeAsync(password!, ct)}");
+            else
                 break; // не аутентификация (5xx/транспорт) — ретрай пароля бессмыслен
         }
 
         throw new ApplicationException(
             $"patroni reload: no credentials applied the configuration (codes: {string.Join(", ", codes)})");
+    }
+
+    // Диагностический зонд: PATCH /config с тем же паролем ({} — при
+    // пройденной аутентификации Patroni отвечает 400, при отвергнутой — 401).
+    private static async Task<int> PatchConfigProbeAsync(string password, CancellationToken ct)
+    {
+        var client = await GetClientAsync(ct);
+        using var request = new HttpRequestMessage(HttpMethod.Patch, $"https://127.0.0.1:{RestPort}/config")
+        {
+            Content = new StringContent("{}", Encoding.UTF8, "application/json"),
+        };
+        request.Headers.Authorization = new AuthenticationHeaderValue(
+            "Basic", Convert.ToBase64String(Encoding.UTF8.GetBytes($"{PatroniUser}:{password}")));
+        using var response = await client.SendAsync(request, ct);
+        return (int)response.StatusCode;
     }
 
     /// <summary>Рестарт Patroni-программы — supervisorctl restart spilo
@@ -91,13 +126,20 @@ public sealed class PatroniApplyCommands(ISupervisorCommands supervisor) : IPatr
         => supervisor.RestartAsync("spilo", ct);
 
     // configure_spilo.py patroni --force: child-процесс; env = env агента +
-    // SPILO_CONFIGURATION = применяемый YAML (upstream-скрипт собирает
-    // postgres.yml из этой переменной). Exit-код НЕ является критерием:
-    // скрипт штатно завершается sys.exit(int(not USE_WALG)) — exit 1 при
-    // выключенном WAL-G (факт образа spilo-18:4.1-p2; файл /run/postgres.yml
-    // при этом записан). Критерий применения — содержимое файла: новый
-    // restapi-пароль присутствует. Пустой restPasswordNew — дефект данных
-    // (RestPasswordOf не нашёл пароль в YAML) — явный отказ, не успех.
+    // SPILO_CONFIGURATION = применяемый YAML + SSL_RESTAPI_CERTIFICATE_FILE/
+    // SSL_RESTAPI_PRIVATE_KEY_FILE = пути пер-инсталл рест-серт ноды
+    // (/run/certs/*, материализованы bootstrap'ом; спило-константы
+    // configure_spilo get_placeholders для env SSL_RESTAPI_CERTIFICATE/
+    // PRIVATE_KEY). Без env-путей placeholders пусты (env сертов у агента
+    // нет — секреты не покидают память/tmpfs), шаблон restapi теряет
+    // certfile/keyfile и первое перечитывание конфига пересоздаёт
+    // REST-листенер в plain HTTP (t05probe2). Exit-код НЕ является
+    // критерием: скрипт штатно завершается sys.exit(int(not USE_WALG)) —
+    // exit 1 при выключенном WAL-G (факт образа spilo-18:4.1-p2; файл
+    // /run/postgres.yml при этом записан). Критерий применения —
+    // содержимое файла: новый restapi-пароль присутствует. Пустой
+    // restPasswordNew — дефект данных (RestPasswordOf не нашёл пароль в
+    // YAML) — явный отказ, не успех.
     private async Task RegeneratePatroniConfigAsync(
         string yaml, string restPasswordNew, CancellationToken ct)
     {
@@ -108,16 +150,33 @@ public sealed class PatroniApplyCommands(ISupervisorCommands supervisor) : IPatr
         psi.ArgumentList.Add("patroni");
         psi.ArgumentList.Add("--force");
         psi.Environment["SPILO_CONFIGURATION"] = yaml;
+        psi.Environment["SSL_RESTAPI_CERTIFICATE_FILE"] = RestCertFilePath;
+        psi.Environment["SSL_RESTAPI_PRIVATE_KEY_FILE"] = RestKeyFilePath;
         var runner = new ProcessRunner();
         var (exit, _, error) = await runner.RunAsync(psi, ct);
         var config = await File.ReadAllTextAsync(PatroniConfigPath, ct);
         if (!config.Contains(restPasswordNew, StringComparison.Ordinal))
+        {
+            // Диагностика (разбор по логам, прецедент pgnode-печатей): ПОЛНЫЙ
+            // stderr child-процесса — в stderr агента (он попадает в docker-лог
+            // контейнера и в teardown-артефакты).
+            Console.Error.WriteLine("pgnode: configure_spilo stdout/stderr begin");
+            Console.Error.WriteLine(error);
+            Console.Error.WriteLine("pgnode: configure_spilo stdout/stderr end");
             throw new ApplicationException(
                 $"configure_spilo.py: exit {exit}, /run/postgres.yml has no new rest password " +
                 $"(stderr: {FirstLineOf(error)})");
+        }
     }
 
     private const string PatroniConfigPath = "/run/postgres.yml";
+
+    // Пер-инсталл рест-серт ноды (спило-константы get_placeholders для env
+    // SSL_RESTAPI_CERTIFICATE/PRIVATE_KEY): материализованы bootstrap'ом
+    // (write_restapi_certificates из env сертов spilo-supervised.sh) — те же
+    // PEM, что в bootstrap-ключе ноды.
+    private const string RestCertFilePath = "/run/certs/rest-api-server.crt";
+    private const string RestKeyFilePath = "/run/certs/restapi-api-server.key";
 
     private static string FirstLineOf(string text)
         => text.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
