@@ -1,5 +1,5 @@
 // Панель etcd: endpoints (+метка «активный»), блок «Состав» контура
-// (декларация EtcdWorker, managed-узлы, форма «Поддерживать N узлов» — 02 §9.13),
+// (декларация EtcdWorker, managed-узлы, форма «Поддерживать N узлов» — 02 §9.14),
 // members/лидер (+пометки managed/external), карточка DR-слепков, alarms,
 // lastRefresh, баннер подозрения кворума (t08 spec §5).
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -25,9 +25,11 @@ import { ErrorSection, LoadingSection } from '../components/LoadState';
 import { usePollingIntervalMs } from '../polling/PollingContext';
 import { formatBytes, formatIso, formatUnix, formatUnixAge } from '../utils/format';
 
-// Managed-члены контура — префикс имени etcdw (arch/25 §2; arch/03 §2).
-function isManagedMember(name: string | null): boolean {
-  return name !== null && name.startsWith('etcdw');
+// Managed-члены контура — peer-URL-паттерн http://etcdw-node-<k>:2380
+// (arch/25 §3.1: адресация ТОЛЬКО по именам узлов); имя члена пусто у
+// unstarted-learner'а — классификация по peerUrls, не по имени.
+function isManagedMember(member: { peerUrls: string[] }): boolean {
+  return member.peerUrls.some((u) => /^http:\/\/etcdw-node-\d+:2380$/.test(u));
 }
 
 export function EtcdPage() {
@@ -130,7 +132,7 @@ function EndpointRow({ endpoint }: { endpoint: EtcdEndpointDto }) {
 
 // Блок «Состав» контура (arch/03 §2): заявлено N управляемых узлов или
 // «только наблюдение»; managed-узлы /etcd/nodes/<k>/; форма «Поддерживать N
-// узлов» — мутация через API воркера (PUT /api/etcd/config, 02 §9.13).
+// узлов» — мутация через API воркера (PUT /api/etcd/config, 02 §9.14).
 function ContourCard({ domain, membersTotal }: { domain: EtcdDomainDto | undefined; membersTotal: number }) {
   const [opened, setOpened] = useState(false);
   return (
@@ -201,7 +203,7 @@ function NodeStateBadge({ state }: { state: string | null }) {
   return <Badge color={color} variant="light">{state ?? '—'}</Badge>;
 }
 
-// Модал «Поддерживать N узлов» (02 §9.13): NumberInput 0..7, двойной клик
+// Модал «Поддерживать N узлов» (02 §9.14): NumberInput 0..7, двойной клик
 // защищён (isPending); текст ошибки (400/409/503) — из ProblemDetails как есть.
 function MaintainNodesModal({
   opened,
@@ -270,7 +272,8 @@ function MaintainNodesModal({
 }
 
 // Члены кластера etcd: id, имена, URL; лидер — меткой; managed/external —
-// по префиксу имени etcdw (arch/25 §2, arch/03 §2).
+// по peer-URL-паттерну http://etcdw-node-<k>:2380 (arch/25 §3.1; бейдж
+// показывается всем членам, включая unstarted-learner'а без имени).
 function MembersCard({ data }: { data: EtcdStatusDto }) {
   return (
     <Card withBorder padding="md" radius="md">
@@ -299,11 +302,9 @@ function MembersCard({ data }: { data: EtcdStatusDto }) {
                   <Table.Td>
                     <Group gap={4}>
                       {m.isLeader ? <Badge color="violet" variant="light">leader</Badge> : null}
-                      {m.name !== null ? (
-                        <Badge color={isManagedMember(m.name) ? 'blue' : 'gray'} variant="light">
-                          {isManagedMember(m.name) ? 'managed' : 'external'}
-                        </Badge>
-                      ) : null}
+                      <Badge color={isManagedMember(m) ? 'blue' : 'gray'} variant="light">
+                        {isManagedMember(m) ? 'managed' : 'external'}
+                      </Badge>
                     </Group>
                   </Table.Td>
                 </Table.Tr>
