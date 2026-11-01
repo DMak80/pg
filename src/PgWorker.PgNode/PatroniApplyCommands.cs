@@ -65,11 +65,13 @@ public sealed class PatroniApplyCommands(ISupervisorCommands supervisor) : IPatr
     /// состояний (не подбор); 202 от любой = успех; 401 от обеих / 5xx /
     /// транспорт — отказ с фактом (повтор по коулдауну apply-ветки).
     /// Факт живой пробы S1 (t05probe-s1): NEW до применения → 401;
-    /// POST /reload OLD → 202; postmaster не останавливался. ОТКРЫТОЕ
-    /// ПРОТИВОРЕЧИЕ (разрешается владельцу): E2E-зонд t05 — POST /reload
-    /// 401 на валидный in-memory OLD при PATCH /config тем же клиентом и
-    /// заголовком = 400 (аутентификация пройдена); в изолированной пробе
-    /// reload OLD = 202 — контуры чем-то различаются, механика НЕ менялась.</summary>
+    /// POST /reload OLD → 202; postmaster не останавливался. Бывшее
+    /// «противоречие» (reload 401 при PATCH 400 тем же паролем) РАЗРЕШЕНО:
+    /// reload отправлялся PostAsync(uri, content) — Authorization терялся
+    /// (401 на любой пароль), PATCH-зонд ходил SendAsync (заголовок доходит,
+    /// 400 = auth пройдена); изолированная проба полного YAML (t05probe3a):
+    /// reload OLD → 202, PATCH OLD → 400, GET / → 200, применение NEW
+    /// подтверждено (OLD → 401, NEW → 400).</summary>
     public async Task ApplyRestPairAsync(string spiloConfigurationYaml, string restPasswordCurrent,
         string restPasswordNew, CancellationToken ct)
     {
@@ -133,7 +135,13 @@ public sealed class PatroniApplyCommands(ISupervisorCommands supervisor) : IPatr
     // PRIVATE_KEY). Без env-путей placeholders пусты (env сертов у агента
     // нет — секреты не покидают память/tmpfs), шаблон restapi теряет
     // certfile/keyfile и первое перечитывание конфига пересоздаёт
-    // REST-листенер в plain HTTP (t05probe2). Exit-код НЕ является
+    // REST-листенер в plain HTTP (t05probe2). Побочный факт (t05probe3a):
+    // env PGPASSWORD_* у агента НЕТ — configure_spilo пишет секцию
+    // postgresql.authentication ДЕФОЛТАМИ шаблона (zalando/standby),
+    // per-install пароли в /run/postgres.yml не сохраняются; роли в живом
+    // PG не трогаются, Patroni к своему PG ходит unix-socket'ом,
+    // pgpass реплики восстанавливается рестартом Patroni-программы.
+    // Exit-код НЕ является
     // критерием: скрипт штатно завершается sys.exit(int(not USE_WALG)) —
     // exit 1 при выключенном WAL-G (факт образа spilo-18:4.1-p2; файл
     // /run/postgres.yml при этом записан). Критерий применения —
@@ -184,13 +192,19 @@ public sealed class PatroniApplyCommands(ISupervisorCommands supervisor) : IPatr
 
     // POST https://127.0.0.1:8008/reload (basic-auth) — код ответа; транспорт —
     // по образцу PatroniRoleProbe (CA из env SSL_RESTAPI_CA, SAN loopback).
+    // Отправка — SendAsync(request): заголовок Authorization живёт В
+    // HttpRequestMessage; PostAsync(uri, content) строит НОВЫЙ запрос без
+    // заголовков сущности/запроса — Authorization терялся, Patroni отвечал
+    // «no auth header received» 401 на ЛЮБОЙ пароль (корень «codes: 401, 401»
+    // окна ротации; факт пробы t05probe3a: reload с корректно отправленным
+    // заголовком = 202; PATCH-зонд всегда ходил SendAsync — отсюда его 400).
     private static async Task<int> PostReloadAsync(string password, CancellationToken ct)
     {
         var client = await GetClientAsync(ct);
         using var request = new HttpRequestMessage(HttpMethod.Post, $"https://127.0.0.1:{RestPort}/reload");
         request.Headers.Authorization = new AuthenticationHeaderValue(
             "Basic", Convert.ToBase64String(Encoding.UTF8.GetBytes($"{PatroniUser}:{password}")));
-        using var response = await client.PostAsync(request.RequestUri, request.Content, ct);
+        using var response = await client.SendAsync(request, ct);
         return (int)response.StatusCode;
     }
 

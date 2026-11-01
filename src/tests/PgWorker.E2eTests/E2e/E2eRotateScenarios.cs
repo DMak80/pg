@@ -114,7 +114,8 @@ public sealed class E2eRotateScenarios(E2eRotateScenariosFx Ctx) : IClassFixture
         Regex.IsMatch(newPassword, "^[A-Za-z0-9]{32}$").Should().BeTrue();
         Console.WriteLine(
             $"[REST-DIAG] window opened: NEW rest password (from etcd, rotator-generated) length={newRest.Length}; " +
-            $"OLD is the constant {OldRestPasswordConstant}; expectations: PATCH/config OLD 401→NEW 200 per node as R3 applies");
+            $"OLD is the constant {OldRestPasswordConstant}; expectations: PATCH/config OLD 401→NEW 400 " +
+            "(400 = auth ok on empty-patch body) per node as R3 applies");
 
         // Assert 1b : mover/bucket_admin тоже сменились (32 симв [A-Za-z0-9]);
         // dsn-ключи шардов перезаписаны новым bucket_admin-паролем.
@@ -167,9 +168,13 @@ public sealed class E2eRotateScenarios(E2eRotateScenariosFx Ctx) : IClassFixture
         {
             var patchNew = await PatchPatroniConfigAsync(addr.Patroni, newRest, ct);
             Console.WriteLine(
-                $"[REST-DIAG] {key}: sent=NEW(etcd, len={newRest.Length}) expect=200 got={patchNew}");
-            patchNew.Should().Be(200,
-                $"the NEW rest password (etcd, rotator-generated) is accepted by patroni on {key}");
+                $"[REST-DIAG] {key}: sent=NEW(etcd, len={newRest.Length}) expect=400 got={patchNew}");
+            // 400 — аутентификация NEW ПРОЙДЕНА (тело {} — пустой патч, Patroni
+            // 4.1.0 отвергает его как Bad request ПОСЛЕ auth; 401 = пара не
+            // принята; 200 при {} невозможен — факт пробы t05probe3a).
+            patchNew.Should().Be(400,
+                $"the NEW rest password (etcd, rotator-generated) is accepted by patroni on {key} " +
+                "(400 = auth ok, empty-patch body is rejected after authentication)");
             var patchOld = await PatchPatroniConfigAsync(addr.Patroni, oldRest, ct);
             Console.WriteLine(
                 $"[REST-DIAG] {key}: sent=OLD(const {oldRest}) expect=401 got={patchOld}");
@@ -353,8 +358,8 @@ public sealed class E2eRotateScenarios(E2eRotateScenariosFx Ctx) : IClassFixture
         {
             var oldCode = await PatchPatroniConfigAsync(addr.Patroni, OldRestPasswordConstant, ct);
             var newCode = await PatchPatroniConfigAsync(addr.Patroni, newRest, ct);
-            parts.Add($"{key} sent=OLD(const) expect=200-until-R3-then-401 got={oldCode}" +
-                      $" | sent=NEW(etcd) expect=401-until-R3-then-200 got={newCode}");
+            parts.Add($"{key} sent=OLD(const) expect=400-until-R3-then-401 got={oldCode}" +
+                      $" | sent=NEW(etcd) expect=401-until-R3-then-400(auth-ok) got={newCode}");
         }
         return string.Join("; ", parts);
     }
