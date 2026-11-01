@@ -830,7 +830,7 @@ AdminPanel (UI) PgWorker (оркестратор бэкапов)
 | `/pgworker/backups/<C>/policy` | per-cluster политика: `{"retention":{"days":1,"weeks":1,"months":1},"full_max_age_sec":86400,"verify":{"on_create":true,"interval_sec":604800},"drill":{"interval_days":N}}` (§3.6: `interval_days` — период дрилов шардов кластера в сутках, `N=0` — дрилл кластера выключен; поле отсутствует → дефолт конфига `PgWorker:Backups:Drill:IntervalDays`); `garbage_min_age_sec` — возрастной гейт мусора супервизора (§4): минимальный возраст самого старого объекта S3-префикса `full/<id>/`, прежде чем префикс без etcd-ключа сочтётся удаляемым мусором (защита заливающегося полного от устаревшего снапшота сверяющего прохода; поле отсутствует → дефолт конфига 600 с); секция `"s3":{"pool":"<C пула>","write_master":["<I>",…],"write_replica":["<I>",…]}` (ниже); пишет воркер (приём через API); отсутствует → дефолт `PgWorker:Backups:Policy` |
 | `/pgworker/backups/<C>/<X>/full/<id>` | статус полного: `{"state":"PLANNED\|RUNNING\|UPLOADING\|COMPLETED\|FAILED\|DELETING","node":"<n>","role":"replica\|master","started_unix","finished_unix"?,"wal_start_segment"?,"size_bytes"?,"error"?,"verify":{"state":"PENDING\|OK\|FAILED","checked_unix"?,"error"?}}`; `wal_start_segment` заполняется с фазы UPLOADING (из `backup_label` операции приёмника; для рано упавших FAILED может отсутствовать — до этого неизвестен); `verify` — результат проверки (§5): PENDING в т.ч. «идёт», `error` — причина невалидности (checksums/цепочка с границами) |
 | `/pgworker/backups/<C>/<X>/wal` | состояние WAL-потока шарда: `{"state":"ACTIVE\|DEGRADED\|STOPPED\|WAL_CHAIN_ERROR","slot":"<slot>","master_node","chain_start_segment","last_received_segment","last_uploaded_segment","last_uploaded_unix","lag_segments"?,"error"?,"agents"?":[{"node":"<n>","state":"running\|exited\|absent"}],"gap"?}`; `agents` — факты приёмников по ВСЕМ нодам шарда с приёмником (приёмник живёт в контейнере каждой ноды, §3; состав шире нод-источников двойной архивации — наблюдаемость: async-реплика с живым приёмником видна как `running`, не-стримящие ноды — в тех же фактах): `running` = живой статус-ключ приёмника ноды (lease), `absent` = ключа нет (приёмник не жив/нода без приёмника), `exited` —legacy-значение, новыми записями не пишется (парсеры панели толерантны); поле опционально; `gap` — опциональное поле `{"from":"<seg>","to":"<seg>","tli":<N>}` — границы RPO-зазора tli-прыжка приёмника (58P01, §3); пишет контроль по факту `tli_jump` статус-ключа мастер-приёмника, снимает покрытием — COMPLETED-полный с `wal_start_segment` ≥ `to` (сравнение имён), либо исчезновением профиля зазора из листинга — ретенция срезала нижележащие TLI; `error` при живом `gap` несёт префикс `tli-gap:`; парсеры панели читают известные поля, старые ключи без `gap` — без ошибок |
-| `/pgworker/backups/<C>/<X>/agent/<N>` | статус приёмника WAL ноды `<N>` (§3): lease TTL 15 с (ключ жив = приёмник жив), пишет САМ приёмник; `{"node":"<N>","role":"master\|sync\|none","state":"starting\|waiting_role\|waiting_password\|waiting_policy\|waiting_slot\|waiting_disabled\|streaming\|paused\|failed_permanent","last_delivered_segment"?,"last_delivered_unix"?,"pool_exhausted":bool,"tli_jump"?,"history_missing_tli"?,"error"?,"updated_unix"}`; `history_missing_tli` — TLI-число факта «`.history` перехода не добыта ни из рантайма репликации, ни из ФС ноды» (§3 «`.history` при TLI-переходе»; диагностика PITR-защищённости перехода, воркер ничего не докладывает); `waiting_*` — ожидание условий (роль/креды/policy/слот/стоп-ключ), `paused` — стоп-семантика приёмника (wal-ключ STOPPED/WAL_CHAIN_ERROR / `/pgworker/backups-disabled`), `failed_permanent` — несъёмное условие (segment-size mismatch, разрыв LSN протокола), причина в `error`; воркер читает для agents-фактов, маркеров `s3-pool-exhausted`/`tli_jump` и диагностики (метрики работы приёмника — Prometheus, arch/18 §2.8); панель ключ не читает (парсер толерантен) |
+| `/pgworker/backups/<C>/<X>/agent/<N>` | статус приёмника WAL ноды `<N>` (§3): lease TTL 15 с (ключ жив = приёмник жив), пишет САМ приёмник; `{"node":"<N>","role":"master\|sync\|none","state":"starting\|waiting_role\|waiting_password\|waiting_policy\|waiting_slot\|waiting_disabled\|streaming\|paused\|failed_permanent","last_delivered_segment"?,"last_delivered_unix"?,"pool_exhausted":bool,"tli_jump"?,"history_missing_tli"?,"error"?,"updated_unix"}`; `history_missing_tli` — TLI-число факта «`.history` перехода не добыта ни из рантайма репликации, ни из ФС ноды» (§3 «`.history` при TLI-переходе»; диагностика PITR-защищённости перехода, воркер ничего не докладывает); `waiting_*` — ожидание условий (роль/креды/policy/слот/стоп-ключ), `paused` — стоп-семантика приёмника (wal-ключ STOPPED/WAL_CHAIN_ERROR / `/pgworker/backups-disabled`), `failed_permanent` — несъёмное условие (segment-size mismatch, разрыв LSN протокола), причина в `error`; воркер читает для agents-фактов, маркеров `s3-pool-exhausted`/`tli_jump` и диагностики (метрики работы приёмника — Prometheus, arch/18 §2.8); панель читает ключ в снапшот (наблюдаемость «Приёмники WAL»: `WalAgentInfo`/`agents[]` — adminpanel/02 §2.3.1/§3; битый JSON — parseError-запись, толерантно) |
 | `/pgworker/backups-disabled` | глобальный ключ-стоп WAL-архивации: пишет/стирает PgWorker: держатель глобального лидера при `Enabled=false` — периодический put `{"updated_unix":T}` на каждом тике лидера, при `Enabled=true` — идемпотентный del в КАЖДОМ тике лидера (stale-ключ от прежнего лидера/режима не выживает takeover/reload); вдобавок любой живой инстанс при старте с `Enabled=true` снимает ключ (del); ключ есть ⇒ приёмники всех кластеров замирают (стоп-семантика приёмника §3); ключ ГЛОБАЛЬНЫЙ (вне per-cluster префиксов, D2-чистки не касается: появление/удаление ключа не меняет «пустоту» префикса кластера — панельные правила «подсистема не включена» не затрагиваются); смерть всех инстансов воркера при `Enabled=false` ключ оставляет (стрим стоит — конфиг так велит), при `Enabled=true` ключа нет с первого старта инстанса |
 | `/pgworker/backups/storage` | занятость хранилища установки: `{"used_bytes":…,"quota_bytes"?,"used_percent"?,"state":"OK\|WARN\|CRIT","updated_unix":…}`; ключ ГЛОБАЛЬНЫЙ (вне per-cluster префиксов, D2-чистки не касается); пишет ретенционный проход (см. «Ретенция» ниже) — любой живой клэйм пишет одно и то же свежее значение (идемпотентно); `quota_bytes` не задан (0) → пишется только `used_bytes`, `state=OK` |
 | `/pgworker/backups/orphans` | реестр осиротевших S3-префиксов (DR-hold): `{"orphans":[{"prefix":"<C>/<X>","kind":"shard\|cluster","size_bytes":N,"first_seen_unix":T,"state":"OBSERVED\|DELETING","has_valid_full":bool}],"updated_unix":T}`; ключ ГЛОБАЛЬНЫЙ (вне per-cluster префиксов, D2-чистки не касается); пишет ТОЛЬКО глобальный лидер-проход `/pgworker/leader` (паттерн storage/supervisor). Живость лидер-прохода наблюдаема серией `worker_loop_last_success_timestamp_seconds{loop="orphan-sweep"}` (тик цикла по итогам прохода; алерт OrphanSweepStalled — [18](18-metrics.md) §2.2). `first_seen_unix` переносится из предыдущей записи (merge — TTL от первого наблюдения); `has_valid_full` пересчитывается каждым проходом из уже снятого list bucket (в префиксе есть объект `full/<id>/backup_manifest` — критерий валидного полного, тот же, что у DR-выбора §3.5; ненаблюдаемый сирота сохраняет прежнее значение — защита переживает transient list). Владелец воскрес (кластер/шард появился в `/clusters/`) → запись удаляется, идущая DELETING-доводка отменяется, hold-ключ гасится; воскресение проверяется и при merge (по снимку `/clusters/` прохода), и повторно перед удалением объектов (снимок мог устареть — тогда вместо объектов гасится запись/hold/заявка); **DR-hold**: TTL-кандидатом становится OBSERVED старше `Supervisor:OrphanTtlSec` ТОЛЬКО при `has_valid_full=false` И без живого hold-ключа (`orphan-holds` ниже) — сирота с валидным полным автоматикой НЕ удаляется никогда (последний DR-источник; осознанное удаление — только заявкой `orphan-deletes`); кандидат → DELETING (фаза orphan-journal) → batch-delete префикса → list-подтверждение → del записи; один префикс за проход (приоритет: доводка DELETING → заявка orphan-deletes → TTL-кандидат); `OrphanTtlSec=0` — авто-удаление выключено, только алерт панели (заявки orphan-deletes работают) |
@@ -1032,17 +1032,23 @@ s3://<bucket>/<C>/<X>/
  verify), и копией в `wal/` (общий префикс — стартовая точка цепочки);
  перезапись одного и того же сегмента идемпотентна.
 - **Служебный префикс `etcd/`**: выгрузка снапшотов etcd
- (контроль-плейн) — `etcd/snapshot-<id>.db` 1:1 + `etcd/snapshot-<id>.meta.json`
- (sha256/size/revision?/taken_unix/uploaded_unix/instance; `uploaded_unix` —
- фактическое время put'а объекта, в отличие от «покрытия» в статус-ключе).
- Каждый снятый слепок выгружается; статус-ключ покрытия
- `/pgworker/etcd-snapshots` (arch/14 §3) обновляется после каждой выгрузки.
- Вне per-cluster layout: не форма `<C>/<X>/` → реестр сирот его не группирует (ключи короче
- 3 сегментов); ретенция и sweeper к `etcd/` не прикасаются (их пути
- адресны: `full/<id>/`, `wal/`, `<C>/<X>/`). Единственный удаляющий — ретенция
- самого экспорта (N последних пар, guard ≥1 полная пара). Объекты `etcd/`
- входят в `used_bytes` ключа `/pgworker/backups/storage` (list всего bucket —
- занятость bucket, корректно).
+  (контроль-плейн) — `etcd/snapshot-<id>.db` 1:1 + `etcd/snapshot-<id>.meta.json`
+  (sha256/size/revision?/taken_unix/uploaded_unix/instance; `uploaded_unix` —
+  фактическое время put'а объекта, в отличие от «покрытия» в статус-ключе).
+  Экспортёр — EtcdWorker (arch/25 §4): цель — фиксированный etcd-слепковый
+  bucket `etcd-backups` на нодах etcd-backup кластера `/s3/clusters/`
+  (признак `etcd_backup=true`, arch/23 §2; bucket создаёт S3Worker — arch/23
+  §5; креды — ключ `backups` secrets-ключа кластера), каденс — плановый
+  интервал + детекция изменений; каждый снятый слепок выгружается;
+  статус-ключ покрытия `/etcdworker/snapshots` (arch/25 §5) обновляется
+  после каждой выгрузки.
+  Вне per-cluster layout: не форма `<C>/<X>/` → реестр сирот t07 его не группирует (ключи короче
+  3 сегментов); ретенция t06 и sweeper t07 к `etcd/` не прикасаются (их пути
+  адресны: `full/<id>/`, `wal/`, `<C>/<X>/`). Единственный удаляющий — ретенция
+  самого экспорта (N последних пар, guard ≥1 полная пара). Слепковый bucket
+  `etcd-backups` — отдельный от per-install bucket'а бэкапов: объекты `etcd/`
+  в `used_bytes` ключа `/pgworker/backups/storage` не входят (list
+  per-install bucket'а пула; объём слепков — собственная ретенция N пар).
 - **Ретенционная чистка (§4)**: удаление полного = delete всего
  префикса `full/<id>/` (list + batch-delete, идемпотентно; 404/пустой
  префикс = уже удалён); чистка WAL = delete сегментов `wal/<segment>` со
@@ -1179,14 +1185,17 @@ s3://<bucket>/<C>/<X>/
  transient-отказ резолва с маркером `s3-pool-exhausted` у процессов,
  ретраи тиком, НЕ краш тика — §4); единого
  `PGW_BACKUP_S3_ENDPOINT/REGION/ACCESS_KEY/SECRET_KEY/ADVERTISED_ENDPOINT`
-больше нет — цели даёт пул per-cluster (§4); (в) **etcd-слепки —
-ОТДЕЛЬНАЯ per-install env-пара** `PgWorker:Snapshots:Export:S3`
-(env `PGW_SNAPSHOTS_S3_ENDPOINTS/BUCKET/ACCESS_KEY/SECRET_KEY`) —
-обязательна при `Snapshots:Export:Enabled=true` (fail-fast старта,
-[14-pgworker.md](14-pgworker.md) §8); цели — запятая-список URI,
-перебор до первого доступного (§5); `PGW_BACKUP_S3_*` для слепков НЕ
- переиспользуется: источник правды о DR-слепках не живёт в
- восстанавливаемом etcd. Приёмник WAL целей/кредов в env НЕ получает —
+ больше нет — цели даёт пул per-cluster (§4); (в) **etcd-слепки — зона
+  EtcdWorker** ([25-etcdworker.md](25-etcdworker.md) §4): цель —
+  фиксированный bucket `etcd-backups` на нодах etcd-backup кластера
+  `/s3/clusters/` (признак `etcd_backup=true`, arch/23 §2; bucket создаёт
+  S3Worker, arch/23 §5), креды — ключ `backups` его secrets-ключа (значение —
+  спец-ключ из env S3Worker, arch/23 §6: per-install ключ бэкапа etcd живёт у
+  S3Worker и материализуется в secrets при provisioning кластера); источник
+  правды о DR-слепках не живёт в восстанавливаемом etcd — резолв живой на
+  каждом проходе. У PgWorker env-пары слепков НЕТ. Передача агенту/джобу — env контейнера (t02/t03:
+  bucket + списки endpoints по роли + креды read-write из secrets пула).
+  Приёмник WAL целей/кредов в env НЕ получает —
  резолвит сам из etcd
  живым резолвом (§3 «Агент»: policy.s3 → пул → secrets; пароль
  `backup_exec` из `/clusters/<C>/backup_password`) — тем же резолвом
@@ -1306,9 +1315,7 @@ s3://<bucket>/<C>/<X>/
  `Enabled=true` → непустой `S3:Bucket` (env `PGW_BACKUP_S3_BUCKET`)
  — fail-fast (проверок наличия кредов пулов в etcd на старте НЕ вводится:
  креды появляются/исчезают динамически, резолв — живой, §7);
- `Snapshots:Export:Enabled=true` → полная
- слепочная пара `PgWorker:Snapshots:Export:S3` (env `PGW_SNAPSHOTS_S3_*`)
- — fail-fast; отрицательные
+ отрицательные
  таймауты/TTL супервизора — fail-fast; отрицательные
  `Drill:IntervalDays`/`Drill:TimeoutSec` — fail-fast (`0` интервала
  валиден — глобальное выключение новых запусков).

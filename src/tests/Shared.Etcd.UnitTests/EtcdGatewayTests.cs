@@ -25,6 +25,13 @@ public class EtcdGatewayTests
         Content = new StringContent(body, Encoding.UTF8, "application/json"),
     };
 
+    // Ответ с произвольным статус-кодом — ошибочные кейсы etcd API.
+    private static HttpResponseMessage Http(int code, string body) => new()
+    {
+        StatusCode = (HttpStatusCode)code,
+        Content = new StringContent(body, Encoding.UTF8, "application/json"),
+    };
+
     private static EtcdGateway NewGateway(FakeHandler handler) => new(new HttpClient(handler));
 
     [Fact]
@@ -532,5 +539,117 @@ public class EtcdGatewayTests
         var put = body.GetProperty("success")[0].GetProperty("request_put");
         put.GetProperty("key").GetString().Should().Be("L2s=");
         put.GetProperty("value").GetString().Should().Be("dg==");
+    }
+
+    // --- Кейсы member add/remove/promote (динамический рост etcd-кластера) ---
+
+    [Fact]
+    public async Task MemberAdd_BodyHasPeerUrlsAndIsLearner_ResponseMapped()
+    {
+        // Arrange — peerURLs в member-запросах — plain URL-строки (base64 — только
+        // kv-операции); добавленный член — поле "member" (порядок "members"
+        // недетерминирован: etcd может вернуть добавленного и не первым)
+        var handler = new FakeHandler(_ => Json(
+            """{"header":{},"member":{"ID":"123","name":"","peerURLs":["http://etcdw-node-1:2380"],"clientURLs":[],"isLearner":true},"members":[{"ID":"900","name":"seed","peerURLs":["http://127.0.0.1:2380"],"clientURLs":["http://127.0.0.1:2379"],"isLearner":false},{"ID":"123","name":"","peerURLs":["http://etcdw-node-1:2380"],"clientURLs":[],"isLearner":true}]}"""));
+        var gateway = NewGateway(handler);
+
+        // Act
+        var result = await gateway.MemberAddAsync(
+            "http://etcd:2379", ["http://etcdw-node-1:2380"], true, CancellationToken.None);
+
+        // Assert: путь /v3/cluster/member/add, тело с peerURLs+isLearner; в
+        // EtcdMember смаплен ДОБАВЛЕННЫЙ (поле member), а не seed из members[0]
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Id.Should().Be(123UL);
+        result.Value.IsLearner.Should().BeTrue();
+        result.Value.PeerUrls.Should().Contain("http://etcdw-node-1:2380");
+        var request = handler.Requests.Should().ContainSingle().Subject;
+        request.Url.Should().Be("http://etcd:2379/v3/cluster/member/add");
+        var body = JsonDocument.Parse(request.Body).RootElement;
+        body.GetProperty("peerURLs")[0].GetString().Should().Be("http://etcdw-node-1:2380");
+        body.GetProperty("isLearner").GetBoolean().Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task MemberAdd_NoMemberField_MapsFirstOfMembers()
+    {
+        // Arrange — устаревший/усечённый ответ без "member": берётся первый из members
+        var handler = new FakeHandler(_ => Json(
+            """{"header":{},"members":[{"ID":"123","name":"","peerURLs":["http://etcdw-node-1:2380"],"clientURLs":[],"isLearner":true}]}"""));
+        var gateway = NewGateway(handler);
+
+        // Act
+        var result = await gateway.MemberAddAsync(
+            "http://etcd:2379", ["http://etcdw-node-1:2380"], true, CancellationToken.None);
+
+        // Assert
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Id.Should().Be(123UL);
+        result.Value.IsLearner.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task MemberAdd_EmptyMembers_Failed()
+    {
+        // Arrange — ответ без добавленного члена (members отсутствует)
+        var handler = new FakeHandler(_ => Json("""{"header":{}}"""));
+        var gateway = NewGateway(handler);
+
+        // Act
+        var result = await gateway.MemberAddAsync(
+            "http://etcd:2379", ["http://etcdw-node-1:2380"], true, CancellationToken.None);
+
+        // Assert: Failed, исключение наружу не летит
+        result.IsSuccess.Should().BeFalse();
+        result.Error.Should().BeOfType<EtcdHttpException>();
+    }
+
+    [Fact]
+    public async Task MemberRemove_BodyHasDecimalId()
+    {
+        // Arrange — remove/promote получают ID десятичным числом (protojson int64)
+        var handler = new FakeHandler(_ => Json("""{"header":{}}"""));
+        var gateway = NewGateway(handler);
+
+        // Act
+        var result = await gateway.MemberRemoveAsync("http://etcd:2379", 42, CancellationToken.None);
+
+        // Assert
+        result.IsSuccess.Should().BeTrue();
+        var request = handler.Requests.Should().ContainSingle().Subject;
+        request.Url.Should().Be("http://etcd:2379/v3/cluster/member/remove");
+        JsonDocument.Parse(request.Body).RootElement.GetProperty("ID").GetUInt64().Should().Be(42UL);
+    }
+
+    [Fact]
+    public async Task MemberPromote_BodyHasDecimalId()
+    {
+        // Arrange — симметрично remove: promote learner'а по decimal-ID
+        var handler = new FakeHandler(_ => Json("""{"header":{}}"""));
+        var gateway = NewGateway(handler);
+
+        // Act
+        var result = await gateway.MemberPromoteAsync("http://etcd:2379", 42, CancellationToken.None);
+
+        // Assert
+        result.IsSuccess.Should().BeTrue();
+        var request = handler.Requests.Should().ContainSingle().Subject;
+        request.Url.Should().Be("http://etcd:2379/v3/cluster/member/promote");
+        JsonDocument.Parse(request.Body).RootElement.GetProperty("ID").GetUInt64().Should().Be(42UL);
+    }
+
+    [Fact]
+    public async Task MemberRemove_HttpError_Failed()
+    {
+        // Arrange — etcd отклонил вывод члена (400)
+        var handler = new FakeHandler(_ => Http(400, """{"error":"etcdserver: member not found"}"""));
+        var gateway = NewGateway(handler);
+
+        // Act
+        var result = await gateway.MemberRemoveAsync("http://etcd:2379", 42, CancellationToken.None);
+
+        // Assert
+        result.IsSuccess.Should().BeFalse();
+        result.Error.Should().BeOfType<EtcdHttpException>();
     }
 }

@@ -6,6 +6,7 @@ import { Alert, Button, Group, Modal, NumberInput, Stack, Text, TextInput } from
 import { useState } from 'react';
 import { ApiError } from '../../api/client';
 import { createKafkaTopic } from '../../api/queries';
+import { validateKafkaRf, validateMinIsr, validatePartitions, validateRetentionMs } from '../../utils/validation';
 
 const DAY_MS = 86_400_000;
 const TOPIC_PATTERN = /^[a-zA-Z0-9._-]{1,249}$/;
@@ -42,10 +43,12 @@ export function TopicCreateModal({
 
   // Клиентская валидация-зеркало (§10.3): сервер — источник истины.
   const nameInvalid = !TOPIC_PATTERN.test(name.trim()) || name.trim().startsWith('__');
-  const rfInvalid = rf !== '' && (rf < 1 || rf > 9 || rf > defaults.brokers);
-  const partitionsInvalid = partitions !== '' && (partitions < 1 || partitions > 1000);
-  const retentionInvalid = retentionDays !== '' && (retentionDays < 1 || Math.round(retentionDays * DAY_MS) > 2_147_483_647);
-  const minIsrInvalid = minIsr !== '' && (minIsr < 1 || (rf !== '' && minIsr > rf));
+  const rfInvalid = rf !== '' && validateKafkaRf(rf, defaults.brokers) !== null;
+  const partitionsInvalid = partitions !== '' && validatePartitions(partitions) !== null;
+  const retentionInvalid = retentionDays !== ''
+    && validateRetentionMs(Math.round(retentionDays * DAY_MS)) !== null;
+  // Границы — validation.ts (u02, arch/02 §10.3).
+  const minIsrInvalid = minIsr !== '' && validateMinIsr(rf === '' ? 1 : rf, minIsr) !== null;
 
   const serverError = mutation.error instanceof ApiError ? mutation.error : null;
 

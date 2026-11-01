@@ -78,8 +78,9 @@ public static class WorkJournalParser
 
     private static long? Long(JsonElement root, string name)
         => root.TryGetProperty(name, out var el) && el.ValueKind == JsonValueKind.Number
-            ? el.GetInt64()
-            : null;
+            && el.TryGetInt64(out var value)
+                ? value
+                : null;
 
     // Факт-поле (last_failover/last_rebuild): отсутствует/null → факт null (старый
     // ключ); битое (не объект / нет обязательных shard/node/cause/detected_unix) —
@@ -95,7 +96,8 @@ public static class WorkJournalParser
             || !el.TryGetProperty("shard", out var shardEl) || shardEl.ValueKind != JsonValueKind.String
             || !el.TryGetProperty("node", out var nodeEl) || nodeEl.ValueKind != JsonValueKind.String
             || !el.TryGetProperty("cause", out var causeEl) || causeEl.ValueKind != JsonValueKind.String
-            || !el.TryGetProperty("detected_unix", out var detectedEl) || detectedEl.ValueKind != JsonValueKind.Number)
+            || !el.TryGetProperty("detected_unix", out var detectedEl) || detectedEl.ValueKind != JsonValueKind.Number
+            || !detectedEl.TryGetInt64(out var detectedUnix))
         {
             errors.Add(new(key, $"field {name} is broken: expected shard/node/cause/detected_unix object"));
             return false;
@@ -103,11 +105,11 @@ public static class WorkJournalParser
 
         fact = new HaSupervisionInfo(
             shardEl.GetString()!, nodeEl.GetString()!, causeEl.GetString()!,
-            detectedEl.GetInt64(),
+            detectedUnix,
             el.TryGetProperty("resolved_unix", out var resolved) && resolved.ValueKind == JsonValueKind.Number
-                ? resolved.GetInt64() : null,
+                && resolved.TryGetInt64(out var resolvedUnix) ? resolvedUnix : null,
             el.TryGetProperty("duration_sec", out var duration) && duration.ValueKind == JsonValueKind.Number
-                ? duration.GetInt64() : null);
+                && duration.TryGetInt64(out var durationSec) ? durationSec : null);
         return true;
     }
 }

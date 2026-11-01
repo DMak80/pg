@@ -36,6 +36,14 @@ public static class InspectionModule
             return ResultToHttp(result);
         });
 
+        // GET /api/etcd/domain — домен EtcdWorker (adminpanel/02 §2.3.5):
+        // декларация состава + managed-узлы + статус DR-выгрузки слепков.
+        endpoints.MapGet("/api/etcd/domain", async (IHandler handler, CancellationToken ct) =>
+        {
+            var result = await handler.HandleQuery<EtcdDomainQuery, EtcdDomainDto>(new EtcdDomainQuery(), ct);
+            return ResultToHttp(result);
+        });
+
         // GET /api/backups/s3-pools (adminpanel/02 §12.4): пулы — из единого
         // домена S3 (S3Snapshot, тот же тик) — Select модала «Пул бэкапов»
         // (без ключей/секретов).
@@ -230,11 +238,13 @@ public static class InspectionModule
     // детали — из снапшота; objects — on-demand list-v2 (единственный выход в ownS3).
     public static IEndpointRouteBuilder MapBackupsInspectionApi(this IEndpointRouteBuilder endpoints)
     {
-        // GET /api/backups/storage — сводка (configured=false → 200 с одним полем+причиной).
-        endpoints.MapGet("/api/backups/storage", async (IHandler handler, CancellationToken ct) =>
+        // GET /api/backups/storage — сводка (configured=false → 200 с одним полем+причиной);
+        // опциональный ?cluster= сужает ответ срезами одного кластера (arch/03 §1).
+        endpoints.MapGet("/api/backups/storage", async (
+            string? cluster, IHandler handler, CancellationToken ct) =>
         {
             var result = await handler.HandleQuery<BackupStorageQuery, BackupStorageDto>(
-                new BackupStorageQuery(), ct);
+                new BackupStorageQuery(cluster), ct);
             return ResultToHttp(result);
         });
 

@@ -53,6 +53,13 @@
         <Project Path="S3Worker.Provisioning/S3Worker.Provisioning.csproj" />
         <Project Path="S3Worker.App/S3Worker.App.csproj" />
     </Folder>
+    <Folder Name="/etcdw/">
+        <Project Path="EtcdWorker.Core/EtcdWorker.Core.csproj" />
+        <Project Path="EtcdWorker.Etcd/EtcdWorker.Etcd.csproj" />
+        <Project Path="EtcdWorker.Docker/EtcdWorker.Docker.csproj" />
+        <Project Path="EtcdWorker.Provisioning/EtcdWorker.Provisioning.csproj" />
+        <Project Path="EtcdWorker.App/EtcdWorker.App.csproj" />
+    </Folder>
     <Folder Name="/admin/">
         <Project Path="AdminPanel.Api/AdminPanel.Api.csproj" />
         <Project Path="AdminPanel.Core/AdminPanel.Core.csproj" />
@@ -82,6 +89,7 @@
         <Project Path="tests/ValkeyWorker.E2eTests/ValkeyWorker.E2eTests.csproj" />
         <Project Path="tests/S3Worker.UnitTests/S3Worker.UnitTests.csproj" />
         <Project Path="tests/S3Worker.IntegrationTests/S3Worker.IntegrationTests.csproj" />
-        <Project Path="tests/S3Worker.E2eTests/S3Worker.E2eTests.csproj" />
+        <Project Path="tests/EtcdWorker.UnitTests/EtcdWorker.UnitTests.csproj" />
+        <Project Path="tests/EtcdWorker.IntegrationTests/EtcdWorker.IntegrationTests.csproj" />
     </Folder>
 </Solution>

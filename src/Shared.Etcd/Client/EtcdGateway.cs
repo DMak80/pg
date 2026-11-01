@@ -159,8 +159,41 @@ public sealed class EtcdGateway(HttpClient httpClient) : IEtcdGateway
         var result = await Result<MemberListResponse>.FromAsync(
             async () => await PostAsync<MemberListResponse>(endpoint, "/v3/cluster/member/list", new { }, ct));
         return result.Map(r => (IReadOnlyList<EtcdMember>)(r.Members ?? [])
-            .Select(m => new EtcdMember(m.Id, m.Name, m.PeerUrls ?? [], m.ClientUrls ?? []))
+            .Select(m => new EtcdMember(m.Id, m.Name, m.PeerUrls ?? [], m.ClientUrls ?? [], m.IsLearner))
             .ToList());
+    }
+
+    public async Task<Result<EtcdMember>> MemberAddAsync(
+        string endpoint, IReadOnlyList<string> peerUrls, bool isLearner, CancellationToken ct)
+    {
+        var body = new { peerURLs = peerUrls, isLearner };
+        var result = await Result<MemberAddResponse>.FromAsync(
+            async () => await PostAsync<MemberAddResponse>(endpoint, "/v3/cluster/member/add", body, ct));
+        // Добавленный член — поле "member" (порядок "members" в ответе
+        // недетерминирован: etcd может вернуть его и не первым).
+        return result.Bind(r =>
+        {
+            var added = r.Member ?? (r.Members ?? []).FirstOrDefault();
+            return added is { }
+                ? Result<EtcdMember>.Success(new EtcdMember(
+                    added.Id, added.Name, added.PeerUrls ?? [], added.ClientUrls ?? [], added.IsLearner))
+                : Result<EtcdMember>.Failed(new EtcdHttpException(
+                    endpoint, 500, "member/add response has no added member"));
+        });
+    }
+
+    public async Task<Result> MemberRemoveAsync(string endpoint, ulong memberId, CancellationToken ct)
+    {
+        var body = new { ID = memberId };
+        return await Result.FromAsync(
+            async () => await PostAsync<RemoveMemberResponse>(endpoint, "/v3/cluster/member/remove", body, ct));
+    }
+
+    public async Task<Result> MemberPromoteAsync(string endpoint, ulong memberId, CancellationToken ct)
+    {
+        var body = new { ID = memberId };
+        return await Result.FromAsync(
+            async () => await PostAsync<PromoteMemberResponse>(endpoint, "/v3/cluster/member/promote", body, ct));
     }
 
     public async Task<Result<IReadOnlyList<EtcdAlarm>>> AlarmAsync(string endpoint, CancellationToken ct)
@@ -366,6 +399,28 @@ public sealed class EtcdGateway(HttpClient httpClient) : IEtcdGateway
         public List<MemberDto>? Members { get; set; }
     }
 
+    private sealed class MemberAddResponse
+    {
+        // Добавленный член — авторитетное поле ответа member/add.
+        [JsonPropertyName("member")]
+        public MemberDto? Member { get; set; }
+
+        [JsonPropertyName("members")]
+        public List<MemberDto>? Members { get; set; }
+    }
+
+    private sealed class RemoveMemberResponse
+    {
+        [JsonPropertyName("header")]
+        public object? Header { get; set; }
+    }
+
+    private sealed class PromoteMemberResponse
+    {
+        [JsonPropertyName("header")]
+        public object? Header { get; set; }
+    }
+
     private sealed class MemberDto
     {
         [JsonPropertyName("ID")]
@@ -379,6 +434,9 @@ public sealed class EtcdGateway(HttpClient httpClient) : IEtcdGateway
 
         [JsonPropertyName("clientURLs")]
         public List<string>? ClientUrls { get; set; }
+
+        [JsonPropertyName("isLearner")]
+        public bool IsLearner { get; set; }
     }
 
     private sealed class AlarmResponse

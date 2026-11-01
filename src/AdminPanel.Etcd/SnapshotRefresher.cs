@@ -1,8 +1,10 @@
 using System.Diagnostics;
 using AdminPanel.Core;
 using AdminPanel.Core.Alerting;
+using AdminPanel.Core.S3;
 using Shared.Etcd.Client;
 using AdminPanel.Etcd.Parsing;
+using AdminPanel.Etcd.Workers;
 using Shared.Core.DI;
 using Shared.Core.HealthChecks;
 using Microsoft.Extensions.Hosting;
@@ -21,6 +23,8 @@ public sealed class SnapshotRefresher(
     IProbeStateStore probeStateStore,
     IWorkerHealthStore workerHealthStore,
     IS3InventoryStore inventoryStore,
+    IEtcdWorkerHealthStore etcdWorkerHealthStore,
+    IS3SnapshotReader s3SnapshotStore,
     IOptions<EtcdOptions> options,
     TimeProvider time,
     ILogger<SnapshotRefresher> logger) : BackgroundService, IHealthCheckService
@@ -83,18 +87,32 @@ public sealed class SnapshotRefresher(
         _activeEndpoint = active.Url;
 
         // 3. Чтения на активном — параллельно; транспортный провал → failover по кругу живых (spec §3.10).
-        var clustersTask = WithFailoverAsync(alive, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.Clusters, t), ct);
-        var serviceTask = WithFailoverAsync(alive, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.Service, t), ct);
-        var nodesTask = WithFailoverAsync(alive, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.Nodes, t), ct);
-        var portAllocTask = WithFailoverAsync(alive, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.PortAlloc, t), ct);
-        var movesTask = WithFailoverAsync(alive, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.Moves, t), ct);
-        var backupsTask = WithFailoverAsync(alive, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.Backups, t), ct);
-        var pgApiTask = WithFailoverAsync(alive, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.PgWorkerApi, t), ct);
-        var pgCertTask = WithFailoverAsync(alive, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.WorkerApiCert, t), ct);
-        var etcdSnapshotsTask = WithFailoverAsync(alive, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.EtcdSnapshots, t), ct);
-        var workTask = WithFailoverAsync(alive, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.PgWorkerWork, t), ct);
-        var membersTask = WithFailoverAsync(alive, active, (ep, t) => gateway.MemberListAsync(ep, t), ct);
-        var alarmsTask = WithFailoverAsync(alive, active, (ep, t) => gateway.AlarmAsync(ep, t), ct);
+        // URL живых endpoints — один массив на тик (не пересобирается в каждом WithFailoverAsync).
+        var aliveUrls = alive.Select(e => e.Url).ToArray();
+        var clustersTask = WithFailoverAsync(aliveUrls, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.Clusters, t), ct);
+        var serviceTask = WithFailoverAsync(aliveUrls, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.Service, t), ct);
+        var nodesTask = WithFailoverAsync(aliveUrls, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.Nodes, t), ct);
+        var portAllocTask = WithFailoverAsync(aliveUrls, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.PortAlloc, t), ct);
+        var movesTask = WithFailoverAsync(aliveUrls, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.Moves, t), ct);
+        var backupsTask = WithFailoverAsync(aliveUrls, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.Backups, t), ct);
+        var pgApiTask = WithFailoverAsync(aliveUrls, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.PgWorkerApi, t), ct);
+        var pgCertTask = WithFailoverAsync(aliveUrls, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.WorkerApiCert, t), ct);
+        var etcdSnapshotsTask = WithFailoverAsync(aliveUrls, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.EtcdSnapshots, t), ct);
+        var etcdConfigTask = WithFailoverAsync(aliveUrls, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.EtcdConfig, t), ct);
+        var etcdNodesTask = WithFailoverAsync(aliveUrls, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.EtcdNodes, t), ct);
+        var etcdwApiTask = WithFailoverAsync(aliveUrls, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.EtcdWorkerApi, t), ct);
+        var etcdwCertTask = WithFailoverAsync(aliveUrls, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.EtcdWorkerCert, t), ct);
+        var workTask = WithFailoverAsync(aliveUrls, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.PgWorkerWork, t), ct);
+        // u10–u14: стоп бэкапов (точечный range — образец WorkerApiCert),
+        // эвакуации, живые заявки ротаций, координация leader/claims/instances.
+        var backupsDisabledTask = WithFailoverAsync(aliveUrls, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.BackupsDisabled, t), ct);
+        var evacuationsTask = WithFailoverAsync(aliveUrls, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.Evacuations, t), ct);
+        var pgRotationsTask = WithFailoverAsync(aliveUrls, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.PgRotations, t), ct);
+        var leaderTask = WithFailoverAsync(aliveUrls, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.Leader, t), ct);
+        var claimsTask = WithFailoverAsync(aliveUrls, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.Claims, t), ct);
+        var instancesTask = WithFailoverAsync(aliveUrls, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.Instances, t), ct);
+        var membersTask = WithFailoverAsync(aliveUrls, active, (ep, t) => gateway.MemberListAsync(ep, t), ct);
+        var alarmsTask = WithFailoverAsync(aliveUrls, active, (ep, t) => gateway.AlarmAsync(ep, t), ct);
 
         var clustersKv = await clustersTask;
         var serviceKv = await serviceTask;
@@ -104,6 +122,10 @@ public sealed class SnapshotRefresher(
         var backupsKv = await backupsTask;
         var pgApiKv = await pgApiTask;
         var workKv = await workTask;
+        var etcdConfigKv = await etcdConfigTask;
+        var etcdNodesKv = await etcdNodesTask;
+        var etcdwApiKv = await etcdwApiTask;
+        var etcdwCertKv = await etcdwCertTask;
         var members = await membersTask;
         var alarms = await alarmsTask;
 
@@ -112,12 +134,21 @@ public sealed class SnapshotRefresher(
         var pgCertKv = await pgCertTask;
         var etcdSnapshotsKv = await etcdSnapshotsTask;
 
-        // Частичный KV-провал = неполный снапшот: консервативно отказ тика, данные прежние
-        // (уточнение к spec §7.2 п.5: пустой префикс — валидные данные, транспортный отказ — нет).
+        var backupsDisabledKv = await backupsDisabledTask;
+        var evacuationsKv = await evacuationsTask;
+        var pgRotationsKv = await pgRotationsTask;
+        var leaderKv = await leaderTask;
+        var claimsKv = await claimsTask;
+        var instancesKv = await instancesTask;
+
         if (!clustersKv.IsSuccess || !serviceKv.IsSuccess || !nodesKv.IsSuccess
             || !portAllocKv.IsSuccess || !movesKv.IsSuccess || !backupsKv.IsSuccess
             || !pgApiKv.IsSuccess || !workKv.IsSuccess || !pgCertKv.IsSuccess
-            || !etcdSnapshotsKv.IsSuccess)
+            || !etcdSnapshotsKv.IsSuccess || !etcdConfigKv.IsSuccess || !etcdNodesKv.IsSuccess
+            || !etcdwApiKv.IsSuccess || !etcdwCertKv.IsSuccess
+            || !backupsDisabledKv.IsSuccess
+            || !evacuationsKv.IsSuccess || !pgRotationsKv.IsSuccess
+            || !leaderKv.IsSuccess || !claimsKv.IsSuccess || !instancesKv.IsSuccess)
             return FailTick(previous, statuses, now, "etcd KV reads failed");
 
         // 4. Парсеры → модель (чистые функции, arch/02 §4 п.3).
@@ -130,9 +161,21 @@ public sealed class SnapshotRefresher(
         var pgApiParsed = WorkerEndpointsParser.Parse(pgApiKv.Value);
         // Префикс-запрос точечный: ровно один ключ /workers/api_tls/pgworker.
         var pgCertParsed = WorkerCertParser.Parse(Prefixes.WorkerApiCert, pgCertKv.Value.FirstOrDefault());
-        // Префикс-запрос точечный: ровно один ключ /pgworker/etcd-snapshots (паттерн WorkerApiCert).
+        // Префикс-запрос точечный: ровно один ключ /etcdworker/snapshots
+        // (паттерн WorkerApiCert; arch/25 §5).
         var etcdSnapshotsParsed = EtcdSnapshotsParser.Parse(etcdSnapshotsKv.Value.FirstOrDefault());
+        // Домен EtcdWorker (adminpanel/02 §2.3.5): декларация + managed-узлы,
+        // живые ключи /etcdworker/api/, целевой серт /workers/api_tls/etcdworker.
+        var etcdDomainParsed = EtcdDomainParser.Parse(etcdConfigKv.Value.FirstOrDefault(), etcdNodesKv.Value);
+        var etcdwApiParsed = WorkerEndpointsParser.Parse(etcdwApiKv.Value);
+        var etcdwCertParsed = WorkerCertParser.Parse(Prefixes.EtcdWorkerCert, etcdwCertKv.Value.FirstOrDefault());
         var workParsed = WorkJournalParser.Parse(workKv.Value);
+        // u10–u14: точечный ключ стопа бэкапов (образец WorkerApiCert),
+        // эвакуации, живые заявки ротаций pg, координация pg-домена.
+        var backupsDisabledParsed = BackupsDisabledParser.Parse(backupsDisabledKv.Value.FirstOrDefault());
+        var evacuationsParsed = EvacuationsParser.Parse(evacuationsKv.Value);
+        var pgRotationsParsed = RotationsParser.Parse(pgRotationsKv.Value);
+        var coordinationParsed = CoordinationParser.Parse(leaderKv.Value.FirstOrDefault(), claimsKv.Value, instancesKv.Value);
 
         // 5. Кворум-эвристика (spec §3.11) + мягкие метаданные member/alarm (ошибка не роняет тик).
         var quorumSuspected = alive.All(a => a.LeaderMemberId is not > 0 || a.RaftTerm is not > 0)
@@ -166,7 +209,15 @@ public sealed class SnapshotRefresher(
         // алерты + атомарная замена (arch/02 §4 п.4–5; Alerts на обоих путях тика, spec §5; spec §3.1).
         var builtBase = SnapshotBuilder.Build(
             time, clustersParsed, serviceParsed, nodes, movesParsed, backupsParsed, pgApiParsed, workParsed,
-            etcd.Members, etcd.Alarms, etcd, pgCertParsed, etcdSnapshotsParsed);
+            etcd.Members, etcd.Alarms, etcd, pgCertParsed, etcdSnapshotsParsed,
+            etcdDomainParsed, etcdwApiParsed, etcdwCertParsed,
+            backupsDisabledParsed.Info,
+            backupsParsed.Agents ?? [],
+            evacuationsParsed,
+            pgRotationsParsed,
+            coordinationParsed.Coordination,
+            coordinationParsed.Errors,
+            backupsDisabledParsed.Error);
         var enrichedBase = ProbeEnricher.Apply(builtBase, probeStateStore.Current)
             with
         {
@@ -174,6 +225,11 @@ public sealed class SnapshotRefresher(
             // live-S3-инвентарь — готовым состоянием из стора (по образцу
             // WorkerHealth: poller пишет независимо, KV-тик не блокируется).
             S3Storage = inventoryStore.Current,
+ // health etcdworker-инстансов — готовым из стора общего
+            // поллера (паттерн S3WorkerHealthStore); факт etcd-backup
+            // S3-кластера — агрегатом из S3-домена (adminpanel/03 §4).
+            EtcdWorkerHealth = etcdWorkerHealthStore.Current ?? [],
+            EtcdBackupTarget = ResolveEtcdBackupTarget(s3SnapshotStore.Current),
         };
         store.Replace(enrichedBase with
         {
@@ -197,14 +253,14 @@ public sealed class SnapshotRefresher(
     // Failover: один проход по живым endpoints по кругу от активного; смена цели, не повтор
     // (retry внутри тика запрещён arch/02 §4; failover — §3.10).
     private static async Task<Result<T>> WithFailoverAsync<T>(
-        EtcdEndpoint[] alive,
+        string[] aliveUrls,
         EtcdEndpoint active,
         Func<string, CancellationToken, Task<Result<T>>> call,
         CancellationToken ct)
     {
         var result = await EtcdEndpointFailover.CallAsync(
-            alive.Select(e => e.Url).ToArray(), call, ct,
-            Math.Max(Array.IndexOf(alive, active), 0));
+            aliveUrls, call, ct,
+            Math.Max(Array.IndexOf(aliveUrls, active.Url), 0));
         return result.IsSuccess
             ? result
             : Result<T>.Failed(new EtcdUnreachableException(
@@ -247,7 +303,17 @@ public sealed class SnapshotRefresher(
             previous?.BackupOrphans, // реестр сирот переживает отказный тик — как storage 
             previous?.S3Storage, // S3-инвентарь переживает отказ etcd (как WorkerHealth)
             null, // WorkerApiCert — прежнее поведение отказного тика (серт не переносится)
-            previous?.EtcdSnapshots); // статус выгрузки etcd-снапшотов переживает отказный тик 
+            previous?.EtcdSnapshots, // статус DR-выгрузки слепков переживает отказный тик
+            previous?.BackupsDisabled, // стоп бэкапов переживает отказный тик (u10)
+            previous?.WalAgents ?? [], // приёмники WAL переживают отказный тик (u11)
+            previous?.Evacuations ?? [], // эвакуации переживают отказный тик (u12)
+            previous?.PgRotations ?? [], // живые заявки ротаций переживают отказный тик (u07)
+            previous?.Coordination, // координация переживает отказный тик (u14)
+            previous?.EtcdDomain, // домен EtcdWorker переживает отказный тик
+            previous?.EtcdWorkerEndpoints, // «не читались» переживает отказный тик (null ≠ пусто)
+            previous?.EtcdWorkerHealth ?? [], // health etcdworker — независимый поллер
+            previous?.EtcdBackupTarget, // факт etcd-backup S3-кластера — из S3-домена
+            previous?.EtcdWorkerApiCert); // целевой серт etcdworker (не переносится только при отсутствии)
 
         // Алерты вычисляются и на отказном тике: etcd-unreachable/snapshot-stale
         // живут именно здесь (spec §3.5); data-алерты пересчитываются по прежним данным.
@@ -295,6 +361,30 @@ public sealed class SnapshotRefresher(
         public const string PgWorkerApi = "/pgworker/api/";
         public const string PgWorkerWork = "/pgworker/work/";
         public const string WorkerApiCert = "/workers/api_tls/pgworker";
-        public const string EtcdSnapshots = "/pgworker/etcd-snapshots";
+        public const string EtcdSnapshots = "/etcdworker/snapshots"; // статус DR-слепков EtcdWorker (arch/25 §5)
+        public const string EtcdConfig = "/etcd/config";             // декларация состава контура (02 §2.3.5)
+        public const string EtcdNodes = "/etcd/nodes/";              // managed-узлы контура (02 §2.3.5)
+        public const string EtcdWorkerApi = "/etcdworker/api/";      // живые ключи EtcdWorker (02 §2.3.5)
+        public const string EtcdWorkerCert = "/workers/api_tls/etcdworker"; // целевой серт EtcdWorker (02 §9.9)
+        // u10–u14 (adminpanel/02 §2.3.1): глобальный стоп бэкапов — ТОЧЕЧНЫЙ
+        // range (ключ НЕ входит в /pgworker/backups/ — '-' < '/' байтово);
+        // остальные — обычные range-чтения того же тика.
+        public const string BackupsDisabled = "/pgworker/backups-disabled";
+        public const string Evacuations = "/pgworker/evacuations/";
+        public const string PgRotations = "/pgworker/rotations/";
+        public const string Leader = "/pgworker/leader";
+        public const string Claims = "/pgworker/claims/";
+        public const string Instances = "/pgworker/instances/";
     }
+
+    // Факт etcd-backup S3-кластера (adminpanel/03 §4): из S3-домена готовым
+    // агрегатом (паттерн live-инвентаря S3Storage); null — домен ещё не читался
+    // (алерт etcd-backup-cluster-missing молчит), Cluster=null — кластера нет.
+    private static EtcdBackupTargetInfo? ResolveEtcdBackupTarget(S3Snapshot? s3)
+        => s3 is { EtcdReachable: true }
+            ? new(s3.Clusters
+                .Where(c => c.EtcdBackup && c.State != S3ClusterState.ToRemove)
+                .Select(c => c.Name)
+                .FirstOrDefault())
+            : null;
 }

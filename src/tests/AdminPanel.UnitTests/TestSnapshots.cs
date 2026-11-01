@@ -7,9 +7,9 @@ namespace AdminPanel.UnitTests;
 // healthy-базис и модификации through with.
 internal static class TestSnapshots
 {
-    // Здоровый снапшот: 3 живых endpoints, полный кластер demo, живой ключ API
-    // воркера (канон task etcd-via-worker-api: здоровая система = воркер жив),
-    // без алертов/ошибок.
+    // Здоровый снапшот: 3 живых endpoints, полный кластер demo, живые ключи API
+    // воркеров (канон task etcd-via-worker-api: здоровая система = воркеры живы;
+ // etcdworker — хозяин контура, живой ключ обязателен), без алертов/ошибок.
     public static EtcdSnapshot Healthy(DateTimeOffset builtAt) => new(
         builtAt,
         HealthyEtcd(builtAt),
@@ -24,7 +24,8 @@ internal static class TestSnapshots
         [],
         [],
         [],
-        0);
+        0,
+        EtcdWorkerEndpoints: [new WorkerEndpoint("w2", "https://etcdworker:8080", builtAt.ToUnixTimeSeconds())]);
 
     // Все endpoints живые; alive < total — хвост мёртвый с ошибкой транспорта.
     public static EtcdStatus HealthyEtcd(DateTimeOffset at, int alive = 3, int total = 3) => new(

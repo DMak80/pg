@@ -13,7 +13,11 @@ namespace AdminPanel.Api.Inspection;
 // единственный прямой выход в ownS3 на запрос. Креды S3 в DTO не отдаются
 // никогда (AC8): только endpoint/bucket.
 
-public sealed record BackupStorageQuery : IQuery<BackupStorageDto>;
+// Опциональный ?cluster= (arch/03 §1): ответ сужается до срезов ОДНОГО
+// кластера (clusters/шарды/джойны) — вкладка «Бэкапы (срез)» не тянет сводку
+// всей установки; полный ответ (null) — прежний. Reconcile на сервере
+// остаётся полным (сверка по всему бакету — дешёвая чистая функция).
+public sealed record BackupStorageQuery(string? Cluster = null) : IQuery<BackupStorageDto>;
 
 public sealed record BackupShardStorageQuery(string Cluster, string Shard) : IQuery<BackupShardStorageDto>;
 
@@ -69,9 +73,9 @@ public sealed record S3HealthDto(
 public sealed record BackupStorageEtcdDto(
     long UsedBytes, long? QuotaBytes, double? UsedPercent, string State, long UpdatedUnix);
 
-// Статус выгрузки etcd-снапшотов : ключ /pgworker/etcd-snapshots.
+// Статус DR-выгрузки etcd-слепков: ключ /etcdworker/snapshots.
 public sealed record EtcdSnapshotsDto(
-    bool Enabled, string? State, long? LastUploadedUnix, string? LastObject,
+    string? State, long? LastUploadedUnix, string? LastObject,
     string? LastSha256, long? SizeBytes, int? IntervalMin, string? Error);
 
 public sealed record BackupStorageDto(
@@ -81,12 +85,13 @@ public sealed record BackupStorageDto(
     S3HealthDto? Health,
     IReadOnlyList<string> Buckets, // бакеты установки (live-инвентарь, arch/03 §3)
     BackupStorageEtcdDto? Etcd, // ключ /pgworker/backups/storage (вердикт воркера)
-    EtcdSnapshotsDto? EtcdSnapshots, // ключ /pgworker/etcd-snapshots (read-only карточка)
+    EtcdSnapshotsDto? EtcdSnapshots, // ключ /etcdworker/snapshots (read-only карточка)
     long? LiveUsedBytes,        // live-инвентарь (снапшот S3Storage)
     IReadOnlyList<BackupClusterStorageDto> Clusters,
     IReadOnlyList<string> ForeignPrefixes, // корневые префиксы вне <C>/<X> — без вердикта
     IReadOnlyList<BackupOrphanDto> Orphans, // реестр воркера + сверка панели, слитые
-    long InventoryUpdatedUnix, string? InventoryError);
+    long InventoryUpdatedUnix, string? InventoryError,
+    BackupsDisabledDto? BackupsDisabled = null); // u10-баннер: null = бэкапы работают
 
 public sealed record BackupClusterStorageDto(
     string Cluster, long SizeBytes, IReadOnlyList<BackupShardSummaryDto> Shards,
@@ -102,7 +107,11 @@ public sealed record BackupPolicyDto(
 
 public sealed record BackupShardSummaryDto(
     string Cluster, string Shard, long SizeBytes,
-    int FullsCount, long WalSegmentCount, bool HasS3Only, bool Orphan); // пометки сверки
+    int FullsCount, long WalSegmentCount, bool HasS3Only, bool Orphan, // пометки сверки
+    // u09-/events: restore/drill факты шарда из etcd-ключей /pgworker/backups/
+    // (state активного restore и последнего drill) — источник клиентских
+    // диффов ленты событий; null = факта нет.
+    string? RestoreState = null, string? DrillState = null);
 
 // Сирота грани «Хранилище бэкапов» ( защита — reliability, arch/19 §4):
 // HasValidFull — автозащита (валидный полный), Held — hold-флаг, DeleteRequested
@@ -120,7 +129,15 @@ public sealed record BackupShardStorageDto(
     BackupWalDto? Wal,
     BackupRestoreBadgeDto? ActiveRestore, // state/phase/error (без кнопок — arch/19 §3.5)
     string? ReconcileNote,                // сводная пометка (напр. «объекты без ключа: 2»)
-    BackupDrillBadgeDto? Drill = null);   // последний/текущий дрилл (reliability)
+    BackupDrillBadgeDto? Drill = null,    // последний/текущий дрилл (reliability)
+    IReadOnlyList<WalAgentDto>? Agents = null); // u11: приёмники WAL per-node
+
+// Приёмник WAL ноды (u11, arch/19 §4): lease-ключ agent/<N> жив = приёмник жив;
+// state-бейджи UI: streaming=green, waiting_*=yellow, failed_permanent=red.
+public sealed record WalAgentDto(
+    string Node, string? Role, string State,
+    long? LastDeliveredSegment, long? LastDeliveredUnix,
+    bool PoolExhausted, long? TliJump, string? Error, long UpdatedUnix);
 
 // Статус дрилла шарда (reliability, arch/19 §3.6): state/фаза/времена/LSN/error.
 public sealed record BackupDrillBadgeDto(
@@ -193,7 +210,8 @@ private static string WalStateName(WalStreamInfoState state) => state switch
                 Endpoints: [], Bucket: null, Health: null, Buckets: [], Etcd: null,
                 EtcdSnapshots: MapEtcdSnapshots(snapshot.EtcdSnapshots),
                 LiveUsedBytes: null, Clusters: [], ForeignPrefixes: [], Orphans: [],
-                InventoryUpdatedUnix: 0, InventoryError: null);
+                InventoryUpdatedUnix: 0, InventoryError: null,
+                BackupsDisabled: DisabledOf(snapshot));
         }
 
         var reconcile = S3Reconciler.Reconcile(
@@ -213,8 +231,15 @@ private static string WalStateName(WalStreamInfoState state) => state switch
             ForeignPrefixes: s3.ForeignPrefixes,
             Orphans: MergeOrphans(reconcile.OrphanPrefixes, snapshot.BackupOrphans, orphanTtlSec, nowUnix),
             InventoryUpdatedUnix: s3.UpdatedAtUnix,
-            InventoryError: s3.LastError);
+            InventoryError: s3.LastError,
+            BackupsDisabled: DisabledOf(snapshot));
     }
+
+    // u10-баннер грани: значение /pgworker/backups-disabled (null = работают).
+    private static BackupsDisabledDto? DisabledOf(EtcdSnapshot snapshot)
+        => snapshot.BackupsDisabled is { } disabled
+            ? new BackupsDisabledDto(disabled.UpdatedUnix, disabled.UpdatedBy)
+            : null;
 
     public static S3HealthDto? MapHealth(S3Health? health)
         => health is null ? null : new S3HealthDto(
@@ -227,11 +252,11 @@ private static string WalStateName(WalStreamInfoState state) => state switch
             storage.UsedBytes, storage.QuotaBytes, storage.UsedPercent,
             storage.State.ToString().ToUpperInvariant(), storage.UpdatedUnix);
 
-    // Статус выгрузки etcd-снапшотов : карточка живёт в грани независимо
-    // от настроенности S3-грани панели — ключ etcd читается всегда.
+    // Статус DR-выгрузки слепков etcd: карточка живёт в грани независимо
+    // от настроенности S3-грани панели — ключ читается всегда.
     public static EtcdSnapshotsDto? MapEtcdSnapshots(EtcdSnapshotExportInfo? export)
         => export is null ? null : new EtcdSnapshotsDto(
-            export.Enabled, export.State, export.LastUploadedUnix, export.LastObject,
+            export.State, export.LastUploadedUnix, export.LastObject,
             export.LastSha256, export.SizeBytes, export.IntervalMin, export.Error);
 
     private static IReadOnlyList<BackupClusterStorageDto> MapClusters(
@@ -248,20 +273,40 @@ private static string WalStateName(WalStreamInfoState state) => state switch
             .ToHashSet();
 
         var policies = etcdBackups.ToDictionary(b => b.Cluster, b => b.Policy);
-        return [.. clusters.Select(c => new BackupClusterStorageDto(
-            c.Cluster,
-            c.SizeBytes,
-            [.. c.Shards.Select(s => new BackupShardSummaryDto(
-                s.Cluster,
-                s.Shard,
-                s.SizeBytes,
-                s.Fulls.Count,
-                s.Wal?.SegmentCount ?? 0,
-                HasS3Only: s3OnlyByShard.Contains((s.Cluster, s.Shard)),
-                Orphan: orphanPrefixes.Contains($"{s.Cluster}/{s.Shard}")))],
-            policies.TryGetValue(c.Cluster, out var policy)
-                ? MapPolicy(policy)
-                : null))];
+        return [.. clusters.Select(c =>
+        {
+            // u09-/events: restore/drill факты шарда (активный restore — первый
+            // не-терминальный; drill — последний ключ per-shard, перезаписывается).
+            var etcd = etcdBackups.FirstOrDefault(b => b.Cluster == c.Cluster);
+            var restoreByShard = etcd?.ShardsRestores
+                ?? (IReadOnlyDictionary<string, IReadOnlyList<RestoreOperationInfo>>)
+                    new Dictionary<string, IReadOnlyList<RestoreOperationInfo>>();
+            var drillByShard = etcd?.ShardsDrills
+                ?? (IReadOnlyDictionary<string, DrillInfo>)new Dictionary<string, DrillInfo>();
+            return new BackupClusterStorageDto(
+                c.Cluster,
+                c.SizeBytes,
+                [.. c.Shards.Select(s => new BackupShardSummaryDto(
+                    s.Cluster,
+                    s.Shard,
+                    s.SizeBytes,
+                    s.Fulls.Count,
+                    s.Wal?.SegmentCount ?? 0,
+                    HasS3Only: s3OnlyByShard.Contains((s.Cluster, s.Shard)),
+                    Orphan: orphanPrefixes.Contains($"{s.Cluster}/{s.Shard}"),
+                    RestoreState: restoreByShard.TryGetValue(s.Shard, out var restores)
+                        ? restores
+                            .Where(r => r.State is not ("COMPLETED" or "FAILED"))
+                            .OrderByDescending(r => r.StartedUnix ?? r.RequestedUnix)
+                            .FirstOrDefault()?.State
+                        : null,
+                    DrillState: drillByShard.TryGetValue(s.Shard, out var drill)
+                        ? drill.State
+                        : null))],
+                policies.TryGetValue(c.Cluster, out var policy)
+                    ? MapPolicy(policy)
+                    : null);
+        })];
     }
 
     // Полная policy → DTO (reliability): null-поля как есть — фронт дефолтирует.
@@ -338,7 +383,8 @@ private static string WalStateName(WalStreamInfoState state) => state switch
         string cluster, string shard,
         S3ShardNode? s3Shard,
         ClusterBackupsInfo? etcdCluster,
-        BackupReconcileInfo reconcile)
+        BackupReconcileInfo reconcile,
+        IReadOnlyList<WalAgentInfo>? walAgents = null)
     {
         var fulls = reconcile.Fulls
             .Where(f => f.Cluster == cluster && f.Shard == shard)
@@ -360,8 +406,13 @@ private static string WalStateName(WalStreamInfoState state) => state switch
             S3LastModifiedUnix: s3Shard?.Wal?.LastModifiedUnix ?? 0,
             S3LastObject: walEntry?.S3LastObject);
 
+        // Активный restore — ПОСЛЕДНИЙ по started/requested (нештатный случай
+        // двух активных: сводка от новейшей, не по порядку Id-Ordinal).
         var restore = etcdCluster?.ShardsRestores?.TryGetValue(shard, out var restores) == true
-            ? restores.FirstOrDefault(r => r.State is not ("COMPLETED" or "FAILED"))
+            ? restores
+                .Where(r => r.State is not ("COMPLETED" or "FAILED"))
+                .OrderByDescending(r => r.StartedUnix ?? r.RequestedUnix)
+                .FirstOrDefault()
             : null;
 
         // Сводная пометка сверки (для шапки деталей шарда).
@@ -389,7 +440,14 @@ private static string WalStateName(WalStreamInfoState state) => state switch
                 ? null
                 : new BackupRestoreBadgeDto(restore.State, restore.Phase, restore.Error),
             notes.Count > 0 ? string.Join("; ", notes) : null,
-            drill);
+            drill,
+            // u11: приёмники WAL шарда (джойн снапшота по кластеру×шарду).
+            [.. (walAgents ?? [])
+                .Where(a => a.Cluster == cluster && a.Shard == shard)
+                .Select(a => new WalAgentDto(
+                    a.Node, a.Role, a.State,
+                    a.LastDeliveredSegment, a.LastDeliveredUnix,
+                    a.PoolExhausted, a.TliJump, a.Error, a.UpdatedUnix))]);
     }
 }
 
@@ -407,11 +465,18 @@ public sealed class BackupStorageQueryHandler(ISnapshotReader reader, IOptions<A
             return ValueTask.FromResult(Result<BackupStorageDto>.Failed(
                 new InspectionModule.SnapshotNotReadyException()));
 
-        return ValueTask.FromResult(Result<BackupStorageDto>.Success(
-            BackupStorageMappers.MapStorage(
-                snapshot,
-                alertsOptions.Value.Backups.OrphanTtlSec,
-                DateTimeOffset.UtcNow.ToUnixTimeSeconds())));
+        var dto = BackupStorageMappers.MapStorage(
+            snapshot,
+            alertsOptions.Value.Backups.OrphanTtlSec,
+            DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+
+        // ?cluster= — серверная фильтрация среза одного кластера (архив: полный
+        // reconcile не сужается — сверка считается по всему бакету сразу).
+        var filtered = query.Cluster is null
+            ? dto
+            : dto with { Clusters = [.. dto.Clusters.Where(c => c.Cluster == query.Cluster)] };
+
+        return ValueTask.FromResult(Result<BackupStorageDto>.Success(filtered));
     }
 }
 
@@ -454,7 +519,8 @@ public sealed class BackupShardStorageQueryHandler(ISnapshotReader reader)
                 s3, snapshot.Backups, snapshot.Clusters, snapshot.BackupOrphans);
 
         return ValueTask.FromResult(Result<BackupShardStorageDto>.Success(
-            BackupStorageMappers.MapShard(query.Cluster, query.Shard, s3Shard, etcdCluster, reconcile)));
+            BackupStorageMappers.MapShard(query.Cluster, query.Shard, s3Shard, etcdCluster, reconcile,
+                snapshot.WalAgents)));
     }
 }
 

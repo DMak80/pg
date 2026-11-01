@@ -193,15 +193,15 @@ public class BackupsStorageInventoryApiTests(
 
     public async ValueTask DisposeAsync() => await _factory.DisposeAsync();
 
-    // AAA : ключ /pgworker/etcd-snapshots попадает в DTO грани (панель
-    // читает, пишет только PgWorker); карточка живёт независимо от инвентаря.
+    // AAA : ключ /etcdworker/snapshots попадает в DTO грани (панель
+    // читает, пишет только EtcdWorker); карточка живёт независимо от инвентаря.
     [Fact]
     public async Task Storage_EtcdSnapshots_InDto()
     {
         _factory.EnsureBuilt(); // до любого Services — иначе ленивый build без очистки кеша
         // Arrange — свой etcd-класс серии: сид статус-ключа + тик снапшота
-        await EtcdSeed.PutAsync(etcd.Endpoint, "/pgworker/etcd-snapshots",
-            """{"enabled":true,"state":"OK","last_uploaded_unix":1759330000,"last_object":"etcd/snapshot-20261001-120000.db","last_sha256":"abc123","size_bytes":2048,"interval_min":360}""",
+        await EtcdSeed.PutAsync(etcd.Endpoint, "/etcdworker/snapshots",
+            """{"state":"OK","last_uploaded_unix":1759330000,"last_object":"etcd/snapshot-20261001-120000.db","last_sha256":"abc123","size_bytes":2048,"interval_min":360}""",
             TestContext.Current.CancellationToken);
         var refresher = _factory.Services.GetRequiredService<SnapshotRefresher>();
         (await refresher.RefreshOnceAsync(TestContext.Current.CancellationToken))
@@ -217,7 +217,6 @@ public class BackupsStorageInventoryApiTests(
         var dto = await response.Content.ReadFromJsonAsync<JsonElement>(
             TestContext.Current.CancellationToken);
         var export = dto.GetProperty("etcdSnapshots");
-        export.GetProperty("enabled").GetBoolean().Should().BeTrue();
         export.GetProperty("state").GetString().Should().Be("OK");
         export.GetProperty("lastUploadedUnix").GetInt64().Should().Be(1759330000);
         export.GetProperty("lastSha256").GetString().Should().Be("abc123");

@@ -143,7 +143,8 @@ internal static class Fakes
                         ? Store.TryGetValue(c.Key, out var ge) && ge.Version > c.Num // Exists 
                         : Store.TryGetValue(c.Key, out var e) ? e.Version == c.Num : c.Num == 0,
                     TxnTarget.Value => Store.TryGetValue(c.Key, out var e) && e.Value == c.Arg,
-                    TxnTarget.ModRevision => Store.TryGetValue(c.Key, out var e) && e.ModRevision == c.Num,
+                    // отсутствующий ключ — mod_revision 0 (etcd-семантика compare txn)
+                    TxnTarget.ModRevision => Store.TryGetValue(c.Key, out var e) ? e.ModRevision == c.Num : c.Num == 0,
                     _ => false,
                 });
                 if (succeeded)
@@ -194,6 +195,16 @@ internal static class Fakes
 
         public Task<Result<IReadOnlyList<EtcdMember>>> MemberListAsync(string endpoint, CancellationToken ct)
             => Task.FromResult(Result<IReadOnlyList<EtcdMember>>.Success([]));
+
+        // Member-API этими тестами не используется — заглушки интерфейса.
+        public Task<Result<EtcdMember>> MemberAddAsync(string endpoint, IReadOnlyList<string> peerUrls, bool isLearner, CancellationToken ct)
+            => throw new NotSupportedException("member-API не поддерживается этим фейком");
+
+        public Task<Result> MemberRemoveAsync(string endpoint, ulong memberId, CancellationToken ct)
+            => throw new NotSupportedException("member-API не поддерживается этим фейком");
+
+        public Task<Result> MemberPromoteAsync(string endpoint, ulong memberId, CancellationToken ct)
+            => throw new NotSupportedException("member-API не поддерживается этим фейком");
 
         public Task<Result<IReadOnlyList<EtcdAlarm>>> AlarmAsync(string endpoint, CancellationToken ct)
             => Task.FromResult(Result<IReadOnlyList<EtcdAlarm>>.Success([]));

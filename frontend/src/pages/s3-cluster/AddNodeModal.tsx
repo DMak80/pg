@@ -16,6 +16,7 @@ import { useState } from 'react';
 import { ApiError } from '../../api/client';
 import { addS3Node, s3QueryKeys } from '../../api/queries';
 import type { S3PlacementDto } from '../../api/dto';
+import { validateCpu, validateDiskGi, validateMemGi } from '../../utils/validation';
 
 const NAME_RE = /^[a-z][a-z0-9_]{0,62}$/;
 const RESERVED_NAME = 'orchestrator';
@@ -93,11 +94,12 @@ export function AddNodeModal({
     if (mode === 'swarmNode' && swarmNode.trim() === '') return void setError('specify swarm_node');
     if (mode === 'swarmLabels' && !labels.some((l) => l.key.trim() !== ''))
       return void setError('add at least one swarm_labels label');
-    if (cpu !== '' && (Number(cpu) < 0.01 || Number(cpu) > 64)) return void setError('cpu 0.01..64');
-    if (memGi !== '' && (!Number.isInteger(Number(memGi)) || Number(memGi) < 1 || Number(memGi) > 65536))
-      return void setError('memGi — integer 1..65536');
-    if (diskGi !== '' && (!Number.isInteger(Number(diskGi)) || Number(diskGi) < 1 || Number(diskGi) > 65536))
-      return void setError('diskGi — integer 1..65536');
+    // Границы — validation.ts (u02, arch/02 §12.3).
+    if (cpu !== '' && validateCpu(Number(cpu)) !== null) return void setError('cpu: 0.01..64 ядер');
+    if (memGi !== '' && validateMemGi(Number(memGi)) !== null)
+      return void setError('memGi — целое 1..65536 GiB');
+    if (diskGi !== '' && validateDiskGi(Number(diskGi)) !== null)
+      return void setError('diskGi — целое 1..65536 GiB');
     setError(null);
     mutation.mutate();
   }

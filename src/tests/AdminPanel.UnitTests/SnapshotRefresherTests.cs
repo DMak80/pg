@@ -41,9 +41,18 @@ internal static class RefresherTestHarness
             probes ?? new SettableProbeStateStore(),
             new WorkerHealthStore(),
             s3 ?? new S3InventoryStore(),
+            new EtcdWorkerHealthStore(),
+            new SettableS3SnapshotReader(),
             Options.Create(new EtcdOptions { Endpoints = endpoints }),
             new FixedTimeProvider(),
             NullLogger<SnapshotRefresher>.Instance);
+}
+
+// Управляемый читатель S3-домена (конструктор refresher'а): null — домен
+// не читался (алерт etcd-backup-cluster-missing молчит).
+internal sealed class SettableS3SnapshotReader : IS3SnapshotReader
+{
+    public AdminPanel.Core.S3.S3Snapshot? Current { get; set; }
 }
 
 // Управляемый стор состояния проб (unit-аналог TestSnapshotStore; spec §10.8).
@@ -75,6 +84,10 @@ internal sealed class FakeEtcdGateway : IEtcdGateway
 
     public IReadOnlyList<Kv> WorkKv { get; set; } = [];
 
+    // u10–u14: данные новых префиксов pg-тика (backups-disabled/evacuations/
+    // rotations/leader/claims/instances) — точные данные теста вместо fallback.
+    public Dictionary<string, IReadOnlyList<Kv>> ExtraKv { get; } = [];
+
     public IReadOnlyList<EtcdMember> Members { get; init; } = [];
 
     public IReadOnlyList<EtcdAlarm> Alarms { get; init; } = [];
@@ -88,15 +101,17 @@ internal sealed class FakeEtcdGateway : IEtcdGateway
         RangeCalls++;
         return Task.FromResult(RangeFailEndpoints.Contains(endpoint) || RangeFailPrefixes.Contains(prefix)
             ? Result<IReadOnlyList<Kv>>.Failed(new EtcdUnreachableException(endpoint))
-            : Result<IReadOnlyList<Kv>>.Success(prefix switch
-            {
-                "/clusters/" => ClustersKv,
-                "/service/" => ServiceKv,
-                "/pgworker/moves/" => MovesKv,
-                "/pgworker/api/" => PgApiKv,
-                "/pgworker/work/" => WorkKv,
-                _ => NodesKv,
-            }));
+            : Result<IReadOnlyList<Kv>>.Success(ExtraKv.TryGetValue(prefix, out var extra)
+                ? extra
+                : prefix switch
+                {
+                    "/clusters/" => ClustersKv,
+                    "/service/" => ServiceKv,
+                    "/pgworker/moves/" => MovesKv,
+                    "/pgworker/api/" => PgApiKv,
+                    "/pgworker/work/" => WorkKv,
+                    _ => NodesKv,
+                }));
     }
 
     public Task<Result<EtcdStatusPayload>> StatusAsync(string endpoint, CancellationToken ct)
@@ -109,6 +124,16 @@ internal sealed class FakeEtcdGateway : IEtcdGateway
 
     public Task<Result<IReadOnlyList<EtcdMember>>> MemberListAsync(string endpoint, CancellationToken ct)
         => Task.FromResult(Result<IReadOnlyList<EtcdMember>>.Success(Members));
+
+    // Member-API этими тестами не используется — заглушки интерфейса.
+    public Task<Result<EtcdMember>> MemberAddAsync(string endpoint, IReadOnlyList<string> peerUrls, bool isLearner, CancellationToken ct)
+        => throw new NotSupportedException("member-API не поддерживается этим фейком");
+
+    public Task<Result> MemberRemoveAsync(string endpoint, ulong memberId, CancellationToken ct)
+        => throw new NotSupportedException("member-API не поддерживается этим фейком");
+
+    public Task<Result> MemberPromoteAsync(string endpoint, ulong memberId, CancellationToken ct)
+        => throw new NotSupportedException("member-API не поддерживается этим фейком");
 
     public Task<Result<IReadOnlyList<EtcdAlarm>>> AlarmAsync(string endpoint, CancellationToken ct)
         => Task.FromResult(Result<IReadOnlyList<EtcdAlarm>>.Success(Alarms));
@@ -309,10 +334,12 @@ public class SnapshotRefresherTests
         await refresher.RefreshOnceAsync(CancellationToken.None);
 
         // Assert: key-malformed от битого ключа + 5 move-алертов сида demo (spec §3.15, §10.4)
-        // + worker-api-unreachable (живых ключей /pgworker/api/ в фикстуре нет, arch/03 §4.1).
+        // + worker-api-unreachable ×2: pgworker и etcdworker (живых ключей /pgworker/api/
+        // и /etcdworker/api/ в фикстуре нет, arch/03 §4.1).
         var alerts = store.Current!.Alerts;
-        alerts.Should().HaveCount(7);
+        alerts.Should().HaveCount(8);
         alerts.Should().Contain(a => a.Id == "worker-api-unreachable:pgworker");
+        alerts.Should().Contain(a => a.Id == "worker-api-unreachable:etcdworker");
         alerts.Should().Contain(a => a.Id == "key-malformed:/clusters/demo/buckets/status/bucket_9");
         alerts.Should().Contain(a => a.Id == "move-stale:demo/bucket_3");
         alerts.Should().Contain(a => a.Id == "move-stale:demo/bucket_7");
@@ -561,5 +588,107 @@ public class SnapshotRefresherTests
         store.Current!.Etcd.Reachable.Should().BeFalse();
         store.Current.S3Storage.Should().NotBeNull();
         store.Current.S3Storage!.UsedBytes.Should().Be(152);
+    }
+
+    // u10–u14: новые ключи в ответах gateway → новые поля снапшота (один кейс
+    // на набор: стоп бэкапов, приёмники WAL, эвакуации, заявки ротаций, координация).
+    [Fact]
+    public async Task Refresh_NewObservabilityKeys_SnapshotCarriesFields()
+    {
+        // Arrange — gateway с новыми ключами (FakeEtcdGateway.ExtraKv)
+        var gateway = DemoGateway();
+        gateway.ExtraKv["/pgworker/backups-disabled"] =
+            [new Kv("/pgworker/backups-disabled", """{"updated_unix":1761900000,"updated_by":"ops"}""", 1)];
+        gateway.ExtraKv["/pgworker/backups/"] =
+        [
+            new Kv("/pgworker/backups/demo/s1/agent/s1b",
+                """{"node":"s1b","role":"sync","state":"streaming","pool_exhausted":false,"updated_unix":1761900010}""", 2),
+        ];
+        gateway.ExtraKv["/pgworker/evacuations/"] =
+        [
+            new Kv("/pgworker/evacuations/demo/s2",
+                """{"evacuated_unix":1761900000,"reason":"dead","buckets":{"bucket_3":"shard1"},"state":"DONE"}""", 3),
+        ];
+        gateway.ExtraKv["/pgworker/rotations/"] =
+        [
+            new Kv("/pgworker/rotations/demo", """{"requested_unix":1761900100,"requested_by":"ops"}""", 4),
+        ];
+        gateway.ExtraKv["/pgworker/leader"] =
+            [new Kv("/pgworker/leader", """{"instance":"pgw-1","since_unix":1761900000}""", 5)];
+        gateway.ExtraKv["/pgworker/claims/"] =
+            [new Kv("/pgworker/claims/demo", """{"instance":"pgw-1","since_unix":1761900100}""", 6)];
+        gateway.ExtraKv["/pgworker/instances/"] =
+            [new Kv("/pgworker/instances/pgw-1", """{"since_unix":1761900000}""", 7)];
+        var store = new SnapshotStore();
+        var refresher = RefresherTestHarness.New(gateway, store, "http://etcd1:2379");
+
+        // Act
+        var result = await refresher.RefreshOnceAsync(TestContext.Current.CancellationToken);
+
+        // Assert — все новые поля в снапшоте
+        result.IsSuccess.Should().BeTrue();
+        var snapshot = store.Current!;
+        snapshot.BackupsDisabled!.UpdatedUnix.Should().Be(1761900000);
+        snapshot.BackupsDisabled.UpdatedBy.Should().Be("ops");
+        snapshot.WalAgents.Should().ContainSingle()
+            .Which.Node.Should().Be("s1b");
+        snapshot.Evacuations.Should().ContainSingle()
+            .Which.State.Should().Be("DONE");
+        snapshot.PgRotations.Should().ContainSingle()
+            .Which.Cluster.Should().Be("demo");
+        snapshot.Coordination!.LeaderInstance.Should().Be("pgw-1");
+        snapshot.Coordination.Claims.Should().ContainSingle()
+            .Which.Cluster.Should().Be("demo");
+        snapshot.Coordination.Instances.Should().ContainSingle()
+            .Which.InstanceId.Should().Be("pgw-1");
+    }
+
+    // u10: битый JSON /pgworker/backups-disabled — parseError-запись в снапшоте
+    // (key-malformed), BackupsDisabled == null: стоп бэкапов с битым значением
+    // НЕ невидим (алерт key-malformed собирается по ParseErrors снапшота).
+    [Fact]
+    public async Task Refresh_BrokenBackupsDisabled_KeyMalformedRecorded()
+    {
+        // Arrange — точечный ключ с повреждённым значением
+        var gateway = DemoGateway();
+        gateway.ExtraKv["/pgworker/backups-disabled"] =
+            [new Kv("/pgworker/backups-disabled", "not-a-json{", 1)];
+        var store = new SnapshotStore();
+        var refresher = RefresherTestHarness.New(gateway, store, "http://etcd1:2379");
+
+        // Act
+        var result = await refresher.RefreshOnceAsync(TestContext.Current.CancellationToken);
+
+        // Assert — тик успешен (толерантный парсер), ошибка ключа — в ParseErrors
+        result.IsSuccess.Should().BeTrue();
+        var snapshot = store.Current!;
+        snapshot.BackupsDisabled.Should().BeNull("битое значение не даёт факта стопа");
+        snapshot.ParseErrors.Should().Contain(e =>
+            e.Key == "/pgworker/backups-disabled"
+            && e.Reason.Contains("broken backups-disabled JSON", StringComparison.Ordinal));
+    }
+
+    // u10–u14: транспортный провал НОВОГО range → отказ тика, данные прежние
+    // (инвариант «неполный снапшот хуже прежнего», adminpanel/02 §4).
+    [Fact]
+    public async Task Refresh_NewRangeTransportFail_TickFailsDataPreserved()
+    {
+        // Arrange — первый тик успешен (данных нет, поля дефолтны)
+        var gateway = DemoGateway();
+        var store = new SnapshotStore();
+        var refresher = RefresherTestHarness.New(gateway, store, "http://etcd1:2379");
+        (await refresher.RefreshOnceAsync(TestContext.Current.CancellationToken)).IsSuccess.Should().BeTrue();
+        var first = store.Current!;
+        first.Etcd.Reachable.Should().BeTrue();
+
+        // Act — второй тик: новый range /pgworker/leader отказал
+        gateway.RangeFailPrefixes.Add("/pgworker/leader");
+        var second = await refresher.RefreshOnceAsync(TestContext.Current.CancellationToken);
+
+        // Assert — тик отказан, прежние данные/BuiltAtUtc сохранены
+        second.IsSuccess.Should().BeFalse();
+        store.Current!.Etcd.Reachable.Should().BeFalse();
+        store.Current.BuiltAtUtc.Should().Be(first.BuiltAtUtc);
+        store.Current.Clusters.Should().Equal(first.Clusters);
     }
 }

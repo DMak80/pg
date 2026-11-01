@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Per-install API TLS-пакет (t03, arch/14 §1.1 / arch/16 §1.1 / arch/21 §1.1):
 # ЕДИНАЯ CA kfw-install-ca на воркеров. Серверные серты: server (kafkaworker +
-# valkeyworker — один серт, SAN покрывает обоих), pgserver (pgworker); клиентские:
+# valkeyworker + s3worker + etcdworker — один серт, SAN покрывает всех),
+# pgserver (pgworker); клиентские:
 # panel, seed. Идемпотентен: при существующем ca.pem не
 # делает ничего, КРОМЕ перегенерации server-серта старых пакетов без DNS:valkeyworker
 # (t03). Ротация CA — вручную: rm ca.* и перезапуск. Файлы в git не попадают
@@ -9,7 +10,7 @@
 set -euo pipefail
 DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$DIR"
-SERVER_SAN="DNS:kafkaworker,DNS:kafkaworker-2,DNS:valkeyworker,DNS:valkeyworker-2,DNS:s3worker,DNS:s3worker-2,DNS:localhost,DNS:host.docker.internal,IP:127.0.0.1"
+SERVER_SAN="DNS:kafkaworker,DNS:kafkaworker-2,DNS:valkeyworker,DNS:valkeyworker-2,DNS:s3worker,DNS:s3worker-2,DNS:etcdworker,DNS:etcdworker-2,DNS:localhost,DNS:host.docker.internal,IP:127.0.0.1"
 DAYS=3650
 
 if [ ! -f ca.pem ]; then
@@ -46,6 +47,12 @@ if [ ! -f server.crt ] || ! openssl x509 -in server.crt -noout -text 2>/dev/null
   issue server kafkaworker serverAuth "$SERVER_SAN"
 fi
 
+# Сетевые таргеты etcdworker/etcdworker-2 (arch/25 §1.1) — серт без
+# DNS:etcdworker-2 перегенерируем (CA жив).
+if [ ! -f server.crt ] || ! openssl x509 -in server.crt -noout -text 2>/dev/null | grep -q 'DNS:etcdworker-2'; then
+  issue server kafkaworker serverAuth "$SERVER_SAN"
+fi
+
 # t15: сетевой таргет pgworker-2:8080 (единая сеть контура) верифицируется
 # Prometheus'ом против SAN — серт без DNS:pgworker-2 перегенерируем (CA жив).
 if [ ! -f pgserver.crt ] || ! openssl x509 -in pgserver.crt -noout -text 2>/dev/null | grep -q 'DNS:pgworker-2'; then
@@ -73,4 +80,4 @@ fi
 # идемпотентен и вызывается каждым 00-up.sh.
 rm -f prometheus.crt prometheus.key healthcheck.crt healthcheck.key
 chmod 600 ca.key ./*.key
-echo "✓ kfw-install-ca TLS package: ca.pem, server.* (kafkaworker+valkeyworker+s3worker), pgserver.*, hc.*, panel.*, seed.*, owns3.*"
+echo "✓ kfw-install-ca TLS package: ca.pem, server.* (kafkaworker+valkeyworker+s3worker+etcdworker), pgserver.*, hc.*, panel.*, seed.*, owns3.*"

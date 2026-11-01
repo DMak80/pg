@@ -1,13 +1,12 @@
-// Модалка «Изменить ресурсы брокера» (t06, arch/02 §10.2-15): PUT декларации
-// через мутацию №15; применяется NodeRegenerator'ом воркера rolling-ит.
-// Предупреждение при уменьшении CPU/памяти — риск OOM на операторе (arch/16 R7).
+// Модалка «Изменить ресурсы брокера» (t06, arch/02 §10.2-15) — обёртка над
+// общим ResourcesForm (u02): валидация границ — validation.ts (единый модуль);
+// мутация/нотификация — здесь. Предупреждение при уменьшении CPU/памяти —
+// риск OOM на операторе (arch/16 R7); применяется NodeRegenerator rolling-ит.
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { Alert, Button, Group, Modal, NumberInput, Stack, Text } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
-import { useState } from 'react';
-import { ApiError } from '../../api/client';
 import { kafkaQueryKeys, updateKafkaBrokerResources } from '../../api/queries';
 import type { KafkaBrokerDto } from '../../api/dto';
+import { ResourcesForm } from '../../components/actions/ResourcesForm';
 
 export function EditBrokerResourcesModal({
   cluster,
@@ -21,12 +20,11 @@ export function EditBrokerResourcesModal({
   onClose: () => void;
 }) {
   const queryClient = useQueryClient();
-  const [cpu, setCpu] = useState<number>(broker.cpu ?? 2);
-  const [memGi, setMemGi] = useState<number>(broker.memGi ?? 2);
-  const [diskGi, setDiskGi] = useState<number>(broker.diskGi ?? 20);
+  const initial = { cpu: broker.cpu ?? 2, memGi: broker.memGi ?? 2, diskGi: broker.diskGi ?? 20 };
 
   const mutation = useMutation({
-    mutationFn: () => updateKafkaBrokerResources(cluster, broker.name, { cpu, memGi, diskGi }),
+    mutationFn: (v: { cpu?: number; memGi?: number; diskGi?: number }) =>
+      updateKafkaBrokerResources(cluster, broker.name, v),
     onSuccess: async () => {
       onClose();
       notifications.show({
@@ -40,43 +38,22 @@ export function EditBrokerResourcesModal({
     },
   });
 
-  const serverError = mutation.error instanceof ApiError ? mutation.error : null;
-
-  // Кнопка дизейблена, пока значения не менялись (мутация №15 требует хотя бы одно поле).
-  const unchanged = cpu === (broker.cpu ?? 2)
-    && memGi === (broker.memGi ?? 2)
-    && diskGi === (broker.diskGi ?? 20);
-  // Предупреждение: уменьшение CPU/памяти может привести к OOM/деградации (arch/16 R7).
-  const decreasing = cpu < (broker.cpu ?? 2) || memGi < (broker.memGi ?? 2);
+  // Предупреждение об уменьшении CPU/памяти (arch/16 R7) — в подписи формы.
+  const applyNote = 'Применяется автоматически: rolling-пересоздание брокера, по одному за тик; '
+    + 'данные сохраняются. Disk — информационное поле (без квот).'
+    + (initial.cpu !== undefined && initial.memGi !== undefined
+      ? ' Уменьшение CPU/памяти может привести к OOM/деградации брокера — риск на операторе.'
+      : '');
 
   return (
-    <Modal opened={opened} onClose={onClose}
-      title={`Resources of ${broker.name} — ${cluster}`} centered>
-      <Stack gap="sm">
-        <Group grow>
-          <NumberInput label="CPU" value={cpu} step={0.5} min={0.01} max={64}
-            onChange={(v) => setCpu(Number(v ?? 0))} />
-          <NumberInput label="Memory, GiB" value={memGi} min={1} max={65536}
-            onChange={(v) => setMemGi(Number(v ?? 0))} />
-          <NumberInput label="Disk, GiB" value={diskGi} min={1} max={65536}
-            onChange={(v) => setDiskGi(Number(v ?? 0))} />
-        </Group>
-        {decreasing ? (
-          <Alert color="yellow" variant="light">
-            Decreasing CPU/memory may cause OOM or broker degradation
-            (the risk is on the operator).
-          </Alert>
-        ) : null}
-        <Text size="sm" c="dimmed">
-          Applied automatically: rolling broker recreation, one per tick; data is
-          preserved. Disk is an advisory field (no quotas).
-        </Text>
-        {serverError ? <Alert color="red" variant="light">{serverError.message}</Alert> : null}
-        <Group justify="flex-end">
-          <Button variant="default" onClick={onClose}>Cancel</Button>
-          <Button disabled={unchanged} loading={mutation.isPending}>Apply</Button>
-        </Group>
-      </Stack>
-    </Modal>
+    <ResourcesForm
+      title={`Ресурсы ${broker.name} — ${cluster}`}
+      initial={initial}
+      applyNote={applyNote}
+      opened={opened}
+      onClose={onClose}
+      onSubmit={(v) => mutation.mutateAsync(v)}
+      error={mutation.error}
+    />
   );
 }

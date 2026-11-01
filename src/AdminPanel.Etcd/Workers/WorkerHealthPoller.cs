@@ -19,6 +19,7 @@ public sealed class WorkerHealthPoller(
     IValkeyWorkerHealthStore valkeyStore,
     IS3SnapshotReader s3SnapshotReader,
     IS3WorkerHealthStore s3Store,
+    IEtcdWorkerHealthStore etcdwStore,
     IHttpClientFactory factory,
     IOptions<WorkerApiOptions> options,
     TimeProvider time,
@@ -73,6 +74,14 @@ public sealed class WorkerHealthPoller(
         var s3At = time.GetUtcNow();
         var s3Results = await Task.WhenAll(s3Endpoints.Select(e => ProbeAsync(e, s3At, ct)));
         s3Store.Replace([.. s3Results.OrderBy(r => r.InstanceId, StringComparer.Ordinal)]);
+
+        // EtcdWorker-инстансы (arch/02 §2.3.5): тот же тик/клиент/семантика;
+        // живые ключи — /etcdworker/api/ основного снапшота, результаты вносит
+        // pg-refresher (паттерн S3WorkerHealthStore).
+        var etcdwEndpoints = snapshotReader.Current?.EtcdWorkerEndpoints ?? [];
+        var etcdwAt = time.GetUtcNow();
+        var etcdwResults = await Task.WhenAll(etcdwEndpoints.Select(e => ProbeAsync(e, etcdwAt, ct)));
+        etcdwStore.Replace([.. etcdwResults.OrderBy(r => r.InstanceId, StringComparer.Ordinal)]);
     }
 
     private async Task<WorkerHealth> ProbeAsync(WorkerEndpoint endpoint, DateTimeOffset at, CancellationToken ct)

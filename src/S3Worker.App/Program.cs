@@ -14,10 +14,6 @@ using Shared.Etcd.Client;
 // (mTLS — только /api; /healthz — открытая грань), конфигурация appsettings+env, DI. Per-install
 // env-секреты — TLS API (S3W_API_TLS_*), docker-транспорт (S3W_DOCKER_*),
 // спец-ключ бэкапа etcd (S3W_ETCD_BACKUP_{ACCESSKEY,SECRETKEY}, arch/23 §6).
-// Каркас Task 3: координация/циклы — Task 4, драйвер docker — Task 6,
-// процессы — Tasks 10–13, API-эндпоинты — Task 14 (каждая задача правит свой
-// блок DI; инкрементальный рост Program).
-
 var builder = WebApplication.CreateBuilder(args);
 
 // Конфигурация: appsettings.json + env-оверрайды S3Worker__*.

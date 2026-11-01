@@ -25,6 +25,29 @@ public sealed record DeleteWorkerApiCertCommand(string Worker) : ICommand<Worker
 
 public sealed record RestartWorkerCommand(string Worker, string RequestedBy) : ICommand<WorkerRestartDto>;
 
+// Эффективный конфиг воркера (u15, adminpanel/02 §2.3.5): on-demand прокси
+// GET /api/config живого инстанса — БЕЗ снапшота и etcd (D12); тело —
+// JSON воркера как есть (camelCase, read-only).
+public sealed record GetWorkerEffectiveConfigCommand(string Worker) : ICommand<System.Text.Json.JsonElement>;
+
+[InjectAsScoped]
+public sealed class GetWorkerEffectiveConfigCommandHandler(IWorkerApiGateway api)
+    : ICommandHandler<GetWorkerEffectiveConfigCommand, System.Text.Json.JsonElement>
+{
+    public ValueTask<Result<System.Text.Json.JsonElement>> Handle(
+        GetWorkerEffectiveConfigCommand command, CancellationToken ct)
+    {
+        // Неизвестный воркер — 404 (гвард как у рестарт-хендлера): иначе
+        // WorkerApiGateway.ResolveEndpoints отвечал ArgumentOutOfRangeException → 500.
+        if (command.Worker is not ("pgworker" or "kafkaworker" or "valkeyworker" or "s3worker"))
+            return ValueTask.FromResult(
+                Result<System.Text.Json.JsonElement>.Failed(new WorkerNotFoundException(command.Worker)));
+
+        return WorkerProxy.SendElementAsync(
+            api, command.Worker, HttpMethod.Get, "/api/config", body: null, requestedBy: null, ct);
+    }
+}
+
 public sealed record WorkerApiCertDto(
     string Worker, string Thumbprint, long UpdatedUnix, string UpdatedBy,
     bool RestartRequired, string? Warning = null);
@@ -35,7 +58,20 @@ public sealed record WorkerApiCertDeletedDto(string Worker);
 
 public sealed record WorkersViewDto(IReadOnlyList<WorkerViewDto> Workers);
 
-public sealed record WorkerViewDto(string Worker, IReadOnlyList<WorkerInstanceDto> Instances, WorkerCertDto? TargetCert);
+public sealed record WorkerViewDto(
+    string Worker,
+    IReadOnlyList<WorkerInstanceDto> Instances,
+    WorkerCertDto? TargetCert,
+    WorkerCoordinationDto? Coordination = null); // u14: лидер + claims «кто держит кластер»
+
+// Координация воркера (u14, adminpanel/02 §3.7): leaderInstance null — лидера нет;
+// claims — таблица «Кто держит кластер»; instances — live-инстансы домена.
+public sealed record WorkerCoordinationDto(
+    string? LeaderInstance,
+    IReadOnlyList<WorkerClaimDto> Claims,
+    IReadOnlyList<string> Instances);
+
+public sealed record WorkerClaimDto(string Cluster, string Instance, long? SinceUnix);
 
 public sealed record WorkerInstanceDto(
     string Instance, string Url, long SinceUnix, string? Health, string? CertThumbprint,
@@ -77,6 +113,7 @@ public sealed class GenerateWorkerApiCertCommandHandler(
             "kafkaworker" => kafka?.WorkerEndpoints ?? [],
             "valkeyworker" => valkey?.WorkerEndpoints ?? [],
             "s3worker" => s3?.WorkerEndpoints ?? [],
+            "etcdworker" => pg?.EtcdWorkerEndpoints ?? [], // домен в основном снапшоте
             _ => [], // 404 даст сервис (гвард до KeyOf)
         })
         .Select(e => WorkerCertService.HostOf(e.Url))
@@ -126,7 +163,7 @@ public sealed class RestartWorkerCommandHandler(IWorkerApiGateway api)
 {
     public async ValueTask<Result<WorkerRestartDto>> Handle(RestartWorkerCommand c, CancellationToken ct)
     {
-        if (c.Worker is not ("pgworker" or "kafkaworker" or "valkeyworker" or "s3worker"))
+        if (c.Worker is not ("pgworker" or "kafkaworker" or "valkeyworker" or "s3worker" or "etcdworker"))
             return Result<WorkerRestartDto>.Failed(new WorkerNotFoundException(c.Worker));
         IReadOnlyList<WorkerApiInstanceResult> results;
         try

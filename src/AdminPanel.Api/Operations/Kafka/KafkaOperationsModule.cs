@@ -127,6 +127,49 @@ public static class KafkaOperationsModule
             return Error(result);
         });
 
+        // DELETE /api/kafka/clusters/{cluster}/app-password/rotate — отмена
+        // живой заявки ротации app-пароля (u17, 02 §10.2-18): прокси DELETE
+        // воркера (del ключа — только воркер, D13); 204/404/409/503.
+        endpoints.MapDelete("/api/kafka/clusters/{cluster}/app-password/rotate", async (
+            string cluster, ClaimsPrincipal user, IHandler handler, CancellationToken ct) =>
+        {
+            var result = await handler.HandleCommand<CancelKafkaRotationCommand, KafkaRotationCancelledDto>(
+                new CancelKafkaRotationCommand(
+                    cluster, "app-password/rotate", user.Identity?.Name ?? "adminpanel"), ct);
+            if (result.IsSuccess)
+                return Results.NoContent();
+
+            return Error(result);
+        });
+
+        // DELETE /api/kafka/clusters/{cluster}/admin-password/rotate — отмена
+        // живой заявки admin-ротации (02 §10.2-19).
+        endpoints.MapDelete("/api/kafka/clusters/{cluster}/admin-password/rotate", async (
+            string cluster, ClaimsPrincipal user, IHandler handler, CancellationToken ct) =>
+        {
+            var result = await handler.HandleCommand<CancelKafkaRotationCommand, KafkaRotationCancelledDto>(
+                new CancelKafkaRotationCommand(
+                    cluster, "admin-password/rotate", user.Identity?.Name ?? "adminpanel"), ct);
+            if (result.IsSuccess)
+                return Results.NoContent();
+
+            return Error(result);
+        });
+
+        // DELETE /api/kafka/clusters/{cluster}/ca/rotate — отмена живой заявки
+        // ротации CA (02 §10.2-20).
+        endpoints.MapDelete("/api/kafka/clusters/{cluster}/ca/rotate", async (
+            string cluster, ClaimsPrincipal user, IHandler handler, CancellationToken ct) =>
+        {
+            var result = await handler.HandleCommand<CancelKafkaRotationCommand, KafkaRotationCancelledDto>(
+                new CancelKafkaRotationCommand(
+                    cluster, "ca/rotate", user.Identity?.Name ?? "adminpanel"), ct);
+            if (result.IsSuccess)
+                return Results.NoContent();
+
+            return Error(result);
+        });
+
         // POST /api/kafka/clusters/{cluster}/ca/rotate — заявка ротации CA/сертов
         // (02 §10.2-17); исполнение — CaRotator воркера (окно двойного
         // доверия P/D/R/C, 16 §5 K). Оператор сессии — X-Requested-By (spec §3.7).

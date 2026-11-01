@@ -186,7 +186,8 @@ docker-restart-политики (не deploy-канон) процесс оста
 | `POST /api/clusters/{c}/secrets/rotate` | заявка ротации per-cluster секретов (app + bucket_admin + mover + `rest_password`) | 02 §9.8 |
 | `PUT /api/clusters/{c}/config` | мутация per-cluster опции `synchronous_mode_strict` | 02 §9.10: RMW-txn по mod_revision; гварды — кластер Active |
 | `POST /api/clusters/{c}/shards/{x}/restore` | заявка восстановления шарда из бэкапа (PITR latest/target_time, source-override; `confirm` = имя шарда; опциональное `source_pool` — имя пула `/s3/clusters/` DR-источника: данные старого кластера лежат в другом пуле; отсутствие — собственный пул кластера policy.s3; валидация поля — живое чтение `/s3/clusters/<C>/config`: пул существует и не `TO_REMOVE`, иначе 400 по полю `source_pool`) | пишет статус `/pgworker/backups/<C>/<X>/restore/<id>` сам (клэйм `<C>`; arch/19 §3.5): гварды — кластер Active, шард заявлен, максимум один активный restore на шард |
-| `POST /api/clusters/{c}/backups/policy` | приём per-cluster политики бэкапов (замещение целиком — arch/19 §4); тело дополнительно принимает `"drill":{"interval_days":int}` (валидация [0..3650]; поле отсутствует → секция `drill` в записываемую policy не кладётся — кластер живёт на глобальном дефолте; замещение целиком сохраняется); тело дополнительно принимает `"s3":{"pool","write_master","write_replica"}` (arch/19 §4; замещение целиком — как drill): валидация — 400 по полям: `pool` существует в `/s3/clusters/` (живое чтение) и не `TO_REMOVE`, имена списков — инстансы пула (существует `nodes/<I>/placement`), без дублей внутри списка, списки непустые (пустой список = «не выбрано» — это отсутствие секции целиком), `pool` обязателен при заданных списках; отсутствие секции `s3` — удаление из policy (бэкапы кластера выключаются) | пишет ключ `/pgworker/backups/<C>/policy` сам (клэйм `<C>`; arch/19 §4) |
+| `POST /api/clusters/{c}/backups/policy` | приём per-cluster политики бэкапов (замещение целиком — arch/19 §4); тело дополнительно принимает `"drill":{"interval_days":int}` (валидация [0..3650]; поле отсутствует → секция `drill` в записываемую policy не кладётся — кластер живёт на глобальном дефолте; замещение целиком сохраняется); тело дополнительно принимает `"s3":{"pool","write_master","write_replica"}` (arch/19 §4; замещение целиком — как drill): валидация — 400 по полям: `pool` существует в `/s3/clusters/` (живое чтение) и не `TO_REMOVE`, имена списков — инстансы пула (существует `nodes/<I>/placement`), без дублей внутри списка, списки непустые (пустой список = «не выбрано» — это отсутствие секции целиком), `pool` обязателен при заданных списках; отсутствие секции `s3` — удаление из policy (бэкапы кластера выключаются); тело дополнительно принимает `"garbage_min_age_sec":long` (валидация ≥ 600 — иначе 400 по полю; поле отсутствует → в policy НЕ кладётся — кластер живёт на дефолте конфига супервизора бэкапов 600 с, arch/19 §4) | пишет ключ `/pgworker/backups/<C>/policy` сам (клэйм `<C>`; arch/19 §4) |
+| `GET /api/config` | эффективный конфиг установки (read-only,; mTLS-зона `/api` — обычный доступ панели): плоский JSON групп `thresholds` (NodeDead/ShardDead/PatroniBoot/CutoverTimeout/ConnFailBudget/ProvisionRetry*), `loops` (Scan/Keepalive/Snapshot/ErrorDelay), `moves` (Poll/FreezeWait/FreezeLock*/AbortMinAge), `parallelism` (MaxClusters), `backups` (только `enabled`), `snapshots.export` (enabled/intervalMin), `pgtune` (входы профиля DbVersion/DbType/HdType/DbSize/Connections); каждое поле — значение env при старте, пометка группы `source:"env"` — применяется рестартом воркера; БЕЗ секретов/TLS/endpoints (секреты env наружу не выходят никогда); etcd не читается, отдельного DI не требуется | 200 `application/json`; etcd НЕ пишет |
 | `POST /api/ha/{scope}/nodes/{node}/recreate` | маркеры `TO_RECREATE`+`recreate=soft\|hard` | как §9.6-подобный маркер (02 §9, 03 §2): guards по `/service/<scope>/members` |
 | `POST /api/restart` | graceful self-stop инстанса (перезапуск контейнера — docker-политикой) | etcd НЕ пишет: 202 → `StopApplication` (§1.1 выше); применение серверного серта из `/workers/api_tls/pgworker` — при следующем старте |
 | `POST /api/seed/demo` | стендовый демо-сид pg-контура | §1.1.1 |
@@ -1732,40 +1733,15 @@ MR3 journal op=repair (сколько/какие статусы диспатче
  ≤15 с, следующий инстанс продолжает с записанной фазы. Двойной контроллер
  невозможен: операции над кластером — только под живым lease-клэймом.
 - **Атомарность etcd**: flip-подобные переходы — txn с compare (routing,
- config.mod_revision, `version==0` для клэймов); «нет ключа = ACTIVE» —
- инвариант (status-ключи снимаются пакетами после создания схем).
-- **Снапшоты P12**: регулярные (лидер, раз в 6 ч) + в точках изменений
- (provisioning/deprovisioning/эвакуация — до и после). Restore — внешний
- рецепт (`restore-cluster.sh`), PgWorker только снимает.
-- **Экспорт слепков в S3**: каждый снятый слепок (плановый
- и внеочередной) уезжает в bucket ОТДЕЛЬНОЙ per-install env-пары
-`PgWorker:Snapshots:Export:S3` (env `PGW_SNAPSHOTS_S3_*` — не
-креды/bucket пулов бэкапов: источник правды о DR-слепках не живёт в
-восстанавливаемом etcd; обязательна при `Export:Enabled=true` — fail-fast
-старта). Цель выгрузки — СПИСОК endpoints env-пары
-(`PGW_SNAPSHOTS_S3_ENDPOINTS`, запятая; одиночный адрес — частный
-случай), перебор целей до первого доступного — по канону arch/19 §5
-(per-попыточный таймаут, breaker-окно, «быстрый отказ/успех»);
-bucket, креды, Region, CA — одни на все цели пары; клиентские ретраи
-AWSSDK на per-целях выключены (`MaxErrorRetry=0` — перебор целей несёт
-пул, внутренние ретраи клиента на мёртвой цели съедали бы бюджет
-экспорта); дубликаты URI в списке схлопываются (дедуп с сохранением
-порядка первого вхождения); отказ всех целей —
-transient (FAILED-статус + доводка CatchUp тем же тиком лидера
-`RetryIntervalSec`, как сегодня для любого S3-отказа). Служебный
-префикс `etcd/`, пара `.db`+`.meta.json` (sha256-мета; arch/19 §5) —
- слепок выгружается целиком, статус-ключ покрытия
- `/pgworker/etcd-snapshots` обновляется после каждой выгрузки
- (`last_uploaded_unix` продвигается к метке покрытого слепка; §3).
- Экспортёр — PgWorker (единственный владелец
- S3-кредов per-install); выгружает держатель глобального клэйма снапшотов
- `/pgworker/leader` и процессы в точках изменений (слепок любого воркера =
- весь etcd). Сбой выгрузки НЕ роняет снятие: ошибка — в ключе
- `/pgworker/etcd-snapshots`, доводка — тиком лидера `RetryIntervalSec`
- (re-export новейшего локального слепка). Ретенция S3 — N
- последних пар (guard ≥1). Восстановление — операторский runbook
- (docs/runbook.md, arch/09 §4): etcd без воркера не живёт,
- автоматизировать некому.
+  config.mod_revision, `version==0` для клэймов); «нет ключа = ACTIVE» —
+  инвариант (status-ключи снимаются пакетами после создания схем).
+- **Снапшоты P12 (локальные)**: регулярные (лидер, раз в 6 ч) + в точках изменений
+  (provisioning/deprovisioning/эвакуация — до и после); ретенция
+  `RetentionFiles` в локальном томе. Restore — внешний
+  рецепт (`restore-cluster.sh`), PgWorker только снимает. Выгрузки в S3 НЕТ:
+  DR-слепки контура и его обслуживание (compact/defrag) — зона EtcdWorker
+  ([25-etcdworker.md](25-etcdworker.md) §4); PgWorker не владеет
+  S3-целями слепков и статусом выгрузки.
 - **Ретраи**: короткие сетевые/SQL — Polly jitter-политики; долгие ожидания
  (Patroni-подъём, догоняние) — транзиент-толерантные циклы с бюджетом;
  ошибка тика → journal.last_error + продолжение со следующего тика.
@@ -1923,28 +1899,13 @@ PgWorker:Moves { RepairStaleSec=600, RepairFrozenSec=120 } # репарация 
  # режет запись — чиним быстрее, живой cutover межтиков
  # невозможен: непрерывный блок одного тика)
 PgWorker:Parallelism { MaxClusters=4 }
-PgWorker:Snapshots { Dir="/snapshots", RetentionFiles=10,
- MaintenanceIntervalMin=60,
- Export { Enabled=false, RetentionObjects=28,
- RetryIntervalSec=300, TimeoutSec=30,
- S3 { Endpoints, Bucket, AccessKey, SecretKey,
- Region?, CaBundlePath? } } }
- # выгрузка слепков в S3, префикс etcd/ (в СВОЁМ
- # bucket отдельной пары, не bucket бэкапов);
- # S3-комплект — СОБСТВЕННАЯ env-пара
- # PgWorker:Snapshots:Export:S3 (env PGW_SNAPSHOTS_S3_*),
- # источник правды о DR-слепках не живёт в восстанавливаемом
- # etcd и не переиспользует креды пулов бэкапов
- # (Backups:Enabled НЕ требуется — контроль-плейн не зависит от
- # подсистемы бэкапов PG); Endpoints — запятая-список URI
- # (перебор до первого доступного, arch/19 §5); TimeoutSec —
- # общий бюджет ОДНОЙ попытки экспорта (ExportAsync целиком,
- # не шага); Enabled=true при неполной паре S3 (Endpoints
- # (после сплита пуст)/Bucket/AccessKey/SecretKey пусты) и
- # диапазоны RetentionObjects>=1 /
- # RetryIntervalSec>0 / TimeoutSec>0 — fail-fast старта
-PgWorker:AppParams { Default="sslmode=require" } # per-node ключ
- # shards/<X>/nodes/<n>/app_params (P2.5'/A5/C; P17)
+PgWorker:Snapshots { Dir="/snapshots", RetentionFiles=10 }
+                # Локальные слепки P12 (§6): регулярные + точки изменений,
+                # ретенция файлов в томе. Выгрузка в S3 и обслуживание
+                # контура (compact/defrag) — EtcdWorker (arch/25 §4):
+                # секции Export и MaintenanceIntervalMin у PgWorker нет.
+PgWorker:AppParams { Default="sslmode=require" }  # per-node ключ
+                  # shards/<X>/nodes/<n>/app_params (P2.5'/A5/C; P17)
 PgWorker:Pgtune { DbVersion=18, DbType="oltp", HdType="ssd", DbSize="mid_ram",
  Connections=60, ExcludeParams=["io_method","io_workers"] }
  # входы PGTune (§2.1): DbVersion 10..18; DbType web|oltp|dw|mixed —

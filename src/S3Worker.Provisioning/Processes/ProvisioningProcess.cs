@@ -372,13 +372,21 @@ public sealed class ProvisioningProcess(
         OwnS3NodeSecrets nodeSecrets,
         CancellationToken ct)
     {
+        // P3 (arch/23 §5): per-install bucket на каждой ноде; для etcd-backup
+        // кластера — ДОПОЛНИТЕЛЬНО фиксированный etcd-слепковый bucket
+        // (создаёт EtcdWorker'у цель выгрузки; идемпотентно: exists → пропуск).
+        var buckets = S3ProcessCommon.BucketsForInstance(
+            options.Bucket, snap.Config?.EtcdBackup ?? false);
         foreach (var node in snap.Nodes.OrderBy(n => n.Node, StringComparer.Ordinal))
         {
             var addr = addresses[node.Node];
-            var ensured = await nodeClient.EnsureBucketAsync(
-                options.AdvertisedHost ?? addr.Host, addr.S3Port, nodeSecrets, options.Bucket, ct);
-            if (!ensured.IsSuccess)
-                return Result.Failed(ensured.Error!);
+            foreach (var bucket in buckets)
+            {
+                var ensured = await nodeClient.EnsureBucketAsync(
+                    options.AdvertisedHost ?? addr.Host, addr.S3Port, nodeSecrets, bucket, ct);
+                if (!ensured.IsSuccess)
+                    return Result.Failed(ensured.Error!);
+            }
         }
 
         return Result.Success();

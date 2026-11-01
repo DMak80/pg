@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using System.Text.Json;
 using System.Text.Json.Serialization;
 using AdminPanel.Core;
 using AdminPanel.Core.Kafka;
@@ -59,6 +60,17 @@ public static class WorkersModule
             var result = await handler.HandleCommand<RestartWorkerCommand, WorkerRestartDto>(
                 new(worker, user.Identity?.Name ?? "adminpanel"), ct);
             return result.IsSuccess ? Results.Accepted((string?)null, result.Value) : Error(result);
+        });
+
+        // GET /api/workers/{worker}/effective-config — read-only on-demand прокси
+        // GET /api/config воркера (u15, adminpanel/02 §2.3.5): тело отдаётся как
+        // есть (JSON воркера camelCase); живых инстансов нет → 503.
+        endpoints.MapGet("/api/workers/{worker}/effective-config", async (
+            string worker, IHandler handler, CancellationToken ct) =>
+        {
+            var result = await handler.HandleCommand<GetWorkerEffectiveConfigCommand, JsonElement>(
+                new(worker), ct);
+            return result.IsSuccess ? Results.Ok(result.Value) : Error(result);
         });
 
         return endpoints;
@@ -139,24 +151,40 @@ public sealed class GetWorkersQueryHandler(
             c.NotBefore.ToUnixTimeSeconds(), c.NotAfter.ToUnixTimeSeconds(),
             c.UpdatedUnix, c.UpdatedBy);
 
+        // u14: координация домена (leader/claims/instances) — read-only.
+        static WorkerCoordinationDto? Coordination(WorkerCoordination? c) => c is null ? null : new(
+            c.LeaderInstance,
+            [.. c.Claims.Select(cl => new WorkerClaimDto(cl.Cluster, cl.Instance, cl.SinceUnix))],
+            [.. c.Instances.Select(i => i.InstanceId)]);
+
         return ValueTask.FromResult(Result<WorkersViewDto>.Success(new WorkersViewDto(
         [
             new("pgworker",
                 (p?.PgWorkerEndpoints ?? []).Select(e => Instance(e, p?.WorkerApiCert,
                     p?.WorkerHealth?.FirstOrDefault(h => h.InstanceId == e.InstanceId))).ToList(),
-                Cert(p?.WorkerApiCert)),
+                Cert(p?.WorkerApiCert),
+                Coordination(p?.Coordination)),
             new("kafkaworker",
                 (k?.WorkerEndpoints ?? []).Select(e => Instance(e, k?.WorkerApiCert,
                     k?.WorkerHealth?.FirstOrDefault(h => h.InstanceId == e.InstanceId))).ToList(),
-                Cert(k?.WorkerApiCert)),
+                Cert(k?.WorkerApiCert),
+                Coordination(k?.Coordination)),
             new("valkeyworker",
                 (v?.WorkerEndpoints ?? []).Select(e => Instance(e, v?.WorkerApiCert,
                     v?.WorkerHealth?.FirstOrDefault(h => h.InstanceId == e.InstanceId))).ToList(),
-                Cert(v?.WorkerApiCert)),
+                Cert(v?.WorkerApiCert),
+                Coordination(v?.Coordination)),
             new("s3worker",
                 (s?.WorkerEndpoints ?? []).Select(e => Instance(e, s?.WorkerApiCert,
                     s?.WorkerHealth?.FirstOrDefault(h => h.InstanceId == e.InstanceId))).ToList(),
-                Cert(s?.WorkerApiCert)),
+                Cert(s?.WorkerApiCert),
+                Coordination(s?.Coordination)),
+            // ряд etcdworker (arch/02 §2.3.5) — ключи/health/серт из
+            // основного EtcdSnapshot (домен живёт в pg-тике).
+            new("etcdworker",
+                (p?.EtcdWorkerEndpoints ?? []).Select(e => Instance(e, p?.EtcdWorkerApiCert,
+                    p?.EtcdWorkerHealth?.FirstOrDefault(h => h.InstanceId == e.InstanceId))).ToList(),
+                Cert(p?.EtcdWorkerApiCert)),
         ])));
     }
 }

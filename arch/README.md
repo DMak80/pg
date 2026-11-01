@@ -121,6 +121,9 @@ arch/
 ├── 24-s3worker.md             ← ★ S3Worker: оркестратор S3-кластеров
 │                                  (provisioning/deprovisioning/надзор/изменение состава/
 │                                   зонд синхронности)
+├── 25-etcdworker.md           ← ★ EtcdWorker: оркестратор etcd-контура установки
+│                                  (поддержание состава managed-узлов, кворум,
+│                                   DR-слепки etcd в etcd-backup S3-кластер)
 ├── configs/
 │   ├── etcd/
 │   │   ├── docker-compose.yml
@@ -232,3 +235,7 @@ arch/
 20. [24-s3worker.md](24-s3worker.md) — оркестратор S3Worker: декларативный
     жизненный цикл S3-кластеров (provisioning/надзор/изменение состава, зонд
     синхронности; задачи — [roadmap/s3.md](roadmap/s3.md)).
+21. [25-etcdworker.md](25-etcdworker.md) — оркестратор EtcdWorker:
+    поддержание состава etcd-контура установки (managed-узлы, кворум,
+    авто-замена мёртвого члена) и DR-слепки etcd в S3 (etcd-backup кластер;
+    восстановление — runbook).

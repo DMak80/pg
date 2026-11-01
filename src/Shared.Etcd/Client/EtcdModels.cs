@@ -12,11 +12,13 @@ public sealed record EtcdStatusPayload(
     ulong? Revision);
 
 // Член etcd-кластера из /v3/cluster/member/list (isLeader в DTO вычисляет API по EtcdStatus).
+// IsLearner — из поля "isLearner" ответа (3.5); отсутствие поля = false (voting-член).
 public sealed record EtcdMember(
     ulong Id,
     string? Name,
     IReadOnlyList<string> PeerUrls,
-    IReadOnlyList<string> ClientUrls);
+    IReadOnlyList<string> ClientUrls,
+    bool IsLearner = false);
 
 // Активная тревога из /v3/maintenance/alarm.
 public sealed record EtcdAlarm(ulong MemberId, EtcdAlarmType Type);

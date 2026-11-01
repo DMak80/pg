@@ -351,7 +351,7 @@ public class DockerEngineTests
         doc.RootElement.GetProperty("name")[0].GetString().Should().Be("s3w-c1-");
     }
 
-    //  (arch/23 §4): placement-селекторы swarm_labels — парсинг node.Spec.Labels
+    // Placement-селекторы swarm_labels (arch/23 §4) — парсинг node.Spec.Labels
     // из GET /nodes; у ноды без labels — пустой словарь (не null).
     [Fact]
     public async Task ListNodes_ParsesSpecLabels_UnknownNodeGetsEmpty()

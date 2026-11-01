@@ -18,6 +18,7 @@ import {
 } from '@mantine/core';
 import { useState } from 'react';
 import { ApiError } from '../../api/client';
+import { validateBuckets, validateReplicas, validateShards } from '../../utils/validation';
 import { createCluster } from '../../api/queries';
 import type { CreateClusterRequestDto } from '../../api/dto';
 
@@ -73,12 +74,14 @@ export function ClusterCreateModal({ opened, onClose }: { opened: boolean; onClo
     const errors: Record<string, string> = {};
     if (!NAME_RE.test(form.name)) errors.name = 'a-z, 0-9, _; starts with a letter; no hyphen';
     if (form.sharded) {
-      if (!Number.isInteger(form.buckets) || form.buckets < 1 || form.buckets > 8192)
-        errors.buckets = 'integer 1..8192';
-      if (!Number.isInteger(form.shards) || form.shards < 1 || form.shards > 128 || form.shards > form.buckets)
-        errors.shards = 'integer 1..128 and not greater than buckets';
+      // Границы — единый модуль validation.ts (D17, arch/02 §9.3).
+      const bucketsError = validateBuckets(form.buckets);
+      if (bucketsError !== null) errors.buckets = bucketsError;
+      const shardsError = validateShards(form.shards, form.buckets);
+      if (shardsError !== null) errors.shards = shardsError;
     }
-    if (!Number.isInteger(form.replicas) || form.replicas < 1 || form.replicas > 26)
+    const replicasError = validateReplicas(form.replicas);
+    if (replicasError !== null)
       errors.replicas = 'integer 1..26 (1 = master only)';
     // t06: strict + replicas=1 → ошибка у поля реплик (зеркало серверной 02 §9.3);
     // при выключенном strict ограничений нет.

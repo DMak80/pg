@@ -20,6 +20,7 @@ import { useState } from 'react';
 import { ApiError } from '../../api/client';
 import { createS3Cluster, s3QueryKeys } from '../../api/queries';
 import type { CreateS3ClusterRequestDto, S3PlacementDto, S3ResourcesDto } from '../../api/dto';
+import { validateCpu, validateDiskGi, validateMemGi, validateS3Instances } from '../../utils/validation';
 
 // Границы — зеркало валидаций воркера (arch/24 §1.1; 02 §12.3).
 const NAME_RE = /^[a-z][a-z0-9_]{0,62}$/;
@@ -136,7 +137,9 @@ export function CreateS3ClusterModal({ opened, onClose }: { opened: boolean; onC
   // Валидация-зеркало 02 §12.3 (сервер — источник истины, это UX).
   function validate(): string | null {
     if (!NAME_RE.test(form.name)) return 'cluster name: [a-z][a-z0-9_]{0,62} (lowercase, no hyphen)';
-    if (form.instances.length > 9) return 'at most 9 instances';
+    // Границы — validation.ts (u02, arch/02 §12.3); placement-валидация — в компоненте (решение re-плана).
+    const instancesError = validateS3Instances(form.instances.length);
+    if (instancesError !== null) return instancesError;
     for (const [i, inst] of form.instances.entries()) {
       if (!NAME_RE.test(inst.name))
         return `instance ${i + 1}: name [a-z][a-z0-9_]{0,62}`;
@@ -150,19 +153,19 @@ export function CreateS3ClusterModal({ opened, onClose }: { opened: boolean; onC
       if (inst.mode === 'swarmLabels' && !inst.labels.some((l) => l.key.trim() !== ''))
         return `instance ${i + 1}: add at least one swarm_labels label`;
       // resources — cpu 0.01..64, mem/disk 1..65536 GiB (пусто = fallback).
-      if (inst.cpu !== '' && (Number(inst.cpu) < 0.01 || Number(inst.cpu) > 64))
+      if (inst.cpu !== '' && validateCpu(Number(inst.cpu)) !== null)
         return `instance ${i + 1}: cpu 0.01..64`;
-      if (inst.memGi !== '' && (!Number.isInteger(Number(inst.memGi)) || Number(inst.memGi) < 1 || Number(inst.memGi) > 65536))
-        return `instance ${i + 1}: memGi — integer 1..65536`;
-      if (inst.diskGi !== '' && (!Number.isInteger(Number(inst.diskGi)) || Number(inst.diskGi) < 1 || Number(inst.diskGi) > 65536))
-        return `instance ${i + 1}: diskGi — integer 1..65536`;
+      if (inst.memGi !== '' && validateMemGi(Number(inst.memGi)) !== null)
+        return `instance ${i + 1}: memGi — целое 1..65536 GiB`;
+      if (inst.diskGi !== '' && validateDiskGi(Number(inst.diskGi)) !== null)
+        return `instance ${i + 1}: diskGi — целое 1..65536 GiB`;
     }
 
     if (form.commonCpu !== '' && (Number(form.commonCpu) < 0.01 || Number(form.commonCpu) > 64))
       return 'common resources: cpu 0.01..64';
-    if (form.commonMemGi !== '' && (!Number.isInteger(Number(form.commonMemGi)) || Number(form.commonMemGi) < 1 || Number(form.commonMemGi) > 65536))
-      return 'common resources: memGi — integer 1..65536';
-    if (form.commonDiskGi !== '' && (!Number.isInteger(Number(form.commonDiskGi)) || Number(form.commonDiskGi) < 1 || Number(form.commonDiskGi) > 65536))
+    if (form.commonMemGi !== '' && validateMemGi(Number(form.commonMemGi)) !== null)
+      return 'общие ресурсы: memGi — целое 1..65536 GiB';
+    if (form.commonDiskGi !== '' && validateDiskGi(Number(form.commonDiskGi)) !== null)
       return 'common resources: diskGi — integer 1..65536';
     return null;
   }
