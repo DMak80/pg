@@ -25,6 +25,7 @@ public sealed class PgNodeMachine : IDisposable
     private readonly IEtcdGateway _etcd;
     private readonly string[] _endpoints;
     private readonly ISupervisorCommands _supervisor;
+    private readonly IPatroniApplyCommands _patroniApply;
     private readonly string _doormanTemplate;
     private readonly TimeProvider _clock;
 
@@ -61,10 +62,13 @@ public sealed class PgNodeMachine : IDisposable
 
     // Машина состояний в памяти процесса: секреты и применённый материал
     // переживают только жизнь процесса (рестарт контейнера — lease гасит
-    // статус, хендшейк заново, spec §3.6-5).
+    // статус, хендшейк заново, spec §3.6-5). Применённый материал — ПО
+    // МАТЕРИАЛУ (arch/14 §5 I, spec §3.6-4): YAML и серт применяются
+    // раздельно (reload против рестарта) — и трекаются раздельно.
     private string _state = PgNodeStatus.NotInitialized;
     private long? _appliedRevision;
-    private string? _appliedSpiloMaterial;
+    private string? _appliedSpiloYaml;
+    private string? _appliedCertMaterial;
     private string? _appliedDoormanConfig;
     private string? _suPassword;
     private string? _standbyPassword;
@@ -125,9 +129,10 @@ public sealed class PgNodeMachine : IDisposable
     public string State => _state;
 
     public PgNodeMachine(PgNodeIdentity identity, IEtcdGateway etcd, string[] endpoints,
-        ISupervisorCommands supervisor, string doormanTemplate, TimeProvider? clock = null)
+        ISupervisorCommands supervisor, string doormanTemplate, TimeProvider? clock = null,
+        IPatroniApplyCommands? patroniApply = null)
         : this(identity, etcd, endpoints, supervisor, doormanTemplate,
-            statusWriter: null, clock)
+            statusWriter: null, clock, patroniApply)
     {
     }
 
@@ -135,7 +140,8 @@ public sealed class PgNodeMachine : IDisposable
     // сессия lease не гоняется — переходы эмулируются словарём etcd-фейка).
     internal PgNodeMachine(PgNodeIdentity identity, IEtcdGateway etcd, string[] endpoints,
         ISupervisorCommands supervisor, string doormanTemplate,
-        Func<INodeStatusWriter>? statusWriter, TimeProvider? clock = null)
+        Func<INodeStatusWriter>? statusWriter, TimeProvider? clock = null,
+        IPatroniApplyCommands? patroniApply = null)
     {
         _identity = identity;
         _etcd = etcd;
@@ -144,6 +150,7 @@ public sealed class PgNodeMachine : IDisposable
         _doormanTemplate = doormanTemplate;
         _statusWriterFactory = statusWriter;
         _clock = clock ?? TimeProvider.System;
+        _patroniApply = patroniApply ?? new PatroniApplyCommands(supervisor);
         _bootstrapKey = $"/clusters/{identity.Cluster}/shards/{identity.Shard}/nodes/{identity.Node}/bootstrap";
         _statusKey = $"/pgworker/nodes/{identity.Cluster}/{identity.Shard}/{identity.Node}/status";
     }
@@ -367,14 +374,19 @@ public sealed class PgNodeMachine : IDisposable
                 return new ApplyResult(Ok: false, AppliedRevision: null, NotReady: false, EtcdError: false);
             }
 
-            var spiloChanged = _appliedSpiloMaterial != SpiloMaterial(data);
+            // Применение ПО МАТЕРИАЛУ (arch/14 §5 I, spec §3.6-4, решение 29):
+            // rest-пара (YAML) и серт трекаются и применяются раздельно —
+            // пароль reload'ом, серт рестартом программы (только реплика).
+            var restConfigChanged = _appliedSpiloYaml != data.SpiloConfiguration;
+            var certChanged = _appliedCertMaterial != CertMaterial(data);
             var doormanChanged = _appliedDoormanConfig != DoormanMaterialOf(doormanConfig, data);
 
-            // Рестарты — фоновая задача ПРОЦЕССА (RequestAborted запроса умирает
-            // по таймауту клиента и рвал рестарт посреди); машина остаётся ready,
+            // Применение — фоновая задача ПРОЦЕССА (RequestAborted запроса умирает
+            // по таймауту клиента и рвал применение посреди); машина остаётся ready,
             // факт применения — публикация статусного ключа (arch/14 §5 I).
             _applyTask = Task.Run(
-                () => ApplyRestartsAsync(data, mod, doormanConfig, spiloChanged, doormanChanged),
+                () => ApplyMaterialsAsync(data, mod, doormanConfig,
+                    restConfigChanged, certChanged, doormanChanged),
                 _loopCts.Token);
             return new ApplyResult(Ok: true, AppliedRevision: (long)mod,
                 NotReady: false, EtcdError: false);
@@ -385,23 +397,57 @@ public sealed class PgNodeMachine : IDisposable
         }
     }
 
-    // Фоновая часть применения: рестарты компонентов (≤ выключения-бюджеты
-    // supervisord'а) → публикация ready с applied_revision=mod. Рестарт упал —
-    // факт в error, машина остаётся ready, ревизия фиксируется (контейнер
-    // жив, компонент поднимет supervisord/следующий apply).
-    private async Task ApplyRestartsAsync(
+    // Фоновая часть применения ПО МАТЕРИАЛУ (arch/14 §5 I, spec §3.6-4,
+    // решение 29; план П11.9): порядок — сначала пулер (рестарты пулера
+    // допустимы всегда), затем spilo-материал. rest-ПАРОЛЬ — reload Patroni
+    // (PG не останавливается; рестарт Patroni-процесса/контейнера для пароля
+    // запрещён); REST-СЕРТ — рестарт Patroni-программы ТОЛЬКО на реплике
+    // (рестарт покрывает оба материала — reload не выполняется); на мастере
+    // серт агентом НЕ применяется (мастера пересоздаёт воркер — R3-СЕРТ вне
+    // тикета): applied_revision НЕ фиксируется — конвергенция повторит
+    // применение после пересоздания; пароль при этом применяется reload'ом.
+    // Сбой любой команды — error-факт, материалы НЕ фиксируются, ready со
+    // СТАРОЙ ревизией, коулдаун (MR-#12 «полуприменённое не маскируется»).
+    private async Task ApplyMaterialsAsync(
         NodeBootstrapData data, ulong mod, string doormanConfig,
-        bool spiloChanged, bool doormanChanged)
+        bool restConfigChanged, bool certChanged, bool doormanChanged)
     {
         var ct = _loopCts.Token;
         string? error = null;
+        var certDeferredToWorker = false; // серт мастера — воркеру (R3-СЕРТ)
         try
         {
-            // Оба → сначала пулер, затем spilo (spec §3.6-4).
             if (doormanChanged)
                 await _supervisor.RestartAsync("pg_doorman", ct);
-            if (spiloChanged)
-                await _supervisor.RestartAsync("spilo", ct);
+
+            if (certChanged)
+            {
+                var role = await ProbeRoleAsync(ct);
+                if (role == WalReceiverRole.Master)
+                {
+                    // Мастер сертом агентом не применяется: пересоздание
+                    // контейнера воркером (failover на обновлённую реплику).
+                    // Пароль ниже применяется reload'ом — он от роли не зависит.
+                    certDeferredToWorker = true;
+                }
+                else
+                {
+                    // Реплика/переходное окно: рестарт Patroni-программы —
+                    // покрывает И серт, И rest-пароль (reload не выполняется).
+                    await _patroniApply.RestartProgramAsync(ct);
+                }
+            }
+
+            if (restConfigChanged && !(certChanged && !certDeferredToWorker))
+            {
+                // Пароль — reload'ом (если серт уже применён рестартом
+                // программы, reload избыточен — рестарт покрыл оба материала).
+                await _patroniApply.ApplyRestPairAsync(
+                    data.SpiloConfiguration,
+                    RestPasswordOf(_appliedSpiloYaml) ?? RestPasswordOf(data.SpiloConfiguration) ?? "",
+                    RestPasswordOf(data.SpiloConfiguration) ?? "",
+                    ct);
+            }
         }
         catch (OperationCanceledException)
         {
@@ -416,30 +462,80 @@ public sealed class PgNodeMachine : IDisposable
             _failedApplyUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         }
 
-        if (error is null)
+        var pgComponent = restConfigChanged || (certChanged && !certDeferredToWorker)
+            ? "starting"
+            : "ready";
+
+        if (error is null && !certDeferredToWorker)
         {
-            // Успех: материалы зафиксированы, applied — новая ревизия.
-            _appliedSpiloMaterial = SpiloMaterial(data);
+            // Успех: применённые материалы зафиксированы, applied — новая ревизия.
+            _appliedSpiloYaml = data.SpiloConfiguration;
+            _appliedCertMaterial = CertMaterial(data);
             _appliedDoormanConfig = DoormanMaterialOf(doormanConfig, data);
             _appliedRevision = (long)mod;
             _failedApplyRevision = null;
             await PublishAsync(PgNodeStatus.Ready, mod,
-                Components(pg: spiloChanged ? "starting" : "ready",
+                Components(pg: pgComponent,
                     doorman: doormanChanged ? "starting" : "ready"),
                 null, ct);
             return;
         }
 
-        // MR-#12 (усилено ревью 2): при ошибке рестарта «полуприменённое» не
-        // маскируется — материалы НЕ фиксируются (рестарты повторятся),
-        // Ready публикуется со СТАРОЙ ревизией (applied_revision ≠ mod →
-        // ротатор/доставка честно повторяют Apply, проба с NEW-паролью честно
-        // отражает OLD pg_authid), факт — в error.
+        // Публикация со СТАРОЙ ревизией: (1) сбой команды — «полуприменённое»
+        // не маскируется (MR-#12), ротатор/доставка честно повторяют Apply;
+        // (2) серт мастера отложен воркеру (R3-СЕРТ): пароль применён
+        // reload'ом, но applied_revision НЕ фиксируется — конвергенция
+        // повторит применение после пересоздания; факт — в error.
         await PublishAsync(PgNodeStatus.Ready,
             _appliedRevision is { } appliedOld ? (ulong)appliedOld : null,
-            Components(pg: spiloChanged ? "starting" : "ready",
+            Components(pg: pgComponent,
                 doorman: doormanChanged ? "starting" : "ready"),
-            error, ct);
+            error ?? "rest cert on master is deferred to worker recreation (R3-СЕРТ); password applied via reload",
+            ct);
+    }
+
+    // Роль ноды для серт-ветки: прод — PatroniRoleProbe (CA из env
+    // SSL_RESTAPI_CA); юнит-seam — RoleProbeOverride.
+    internal Func<CancellationToken, Task<WalReceiverRole>>? RoleProbeOverride;
+
+    private Task<WalReceiverRole> ProbeRoleAsync(CancellationToken ct)
+        => RoleProbeOverride is { } probe
+            ? probe(ct)
+            : PatroniRoleProbe.ProbeAsync(
+                Environment.GetEnvironmentVariable("SSL_RESTAPI_CA") ?? "", ct);
+
+    // restapi-пароль из применяемого/применённого YAML (restapi.authentication.
+    // password; кавычки значений срезаются). null — секция не найдена
+    // (распарсить не удалось — reload-пара недоступна, команда доложит).
+    private static string? RestPasswordOf(string? yaml)
+    {
+        if (string.IsNullOrEmpty(yaml))
+            return null;
+        var inRest = false;
+        var inAuth = false;
+        foreach (var raw in yaml.Split('\n'))
+        {
+            if (string.IsNullOrWhiteSpace(raw))
+                continue;
+            var indent = raw.Length - raw.TrimStart().Length;
+            var line = raw.Trim();
+            if (indent == 0)
+            {
+                inRest = line.StartsWith("restapi:", StringComparison.Ordinal);
+                inAuth = false;
+                continue;
+            }
+            if (!inRest)
+                continue;
+            if (line.StartsWith("authentication:", StringComparison.Ordinal))
+            {
+                inAuth = true;
+                continue;
+            }
+            if (inAuth && line.StartsWith("password:", StringComparison.Ordinal))
+                return line["password:".Length..].Trim().Trim('"', '\'');
+        }
+        return null;
     }
 
     // ── Фазы initializing (spec §3.6-3) ──
@@ -473,7 +569,8 @@ public sealed class PgNodeMachine : IDisposable
             // tool-контур: терминальный успех — ПОДГОТОВЛЕННОСТЬ ПАРАМЕТРОВ
             // (spec §3.6-3а is_tool_start): компоненты не запускаются, фаза
             // (б) select 1 не выполняется (зона tool-команды).
-            _appliedSpiloMaterial = SpiloMaterial(bootstrap);
+            _appliedSpiloYaml = bootstrap.SpiloConfiguration;
+            _appliedCertMaterial = CertMaterial(bootstrap);
             _appliedDoormanConfig = DoormanMaterialOf(doormanConfig, bootstrap);
             _appliedRevision = (long)modRevision;
             await PublishAsync(PgNodeStatus.Ready, modRevision,
@@ -499,7 +596,8 @@ public sealed class PgNodeMachine : IDisposable
         {
             // Исчерпание попыток фазы (а) — start_failed (машина терминальна,
             // второй компонент не отменяется — spec §8.18).
-            _appliedSpiloMaterial = SpiloMaterial(bootstrap);
+            _appliedSpiloYaml = bootstrap.SpiloConfiguration;
+            _appliedCertMaterial = CertMaterial(bootstrap);
             _appliedDoormanConfig = DoormanMaterialOf(doormanConfig, bootstrap);
             var failed = !pgOk ? "spilo" : "pg_doorman";
             await PublishAsync(PgNodeStatus.StartFailed, modRevision, components,
@@ -510,7 +608,8 @@ public sealed class PgNodeMachine : IDisposable
 
         // Фаза (б): ожидание готовности SELECT 1 — БЕЗ бюджета (живой процесс
         // может инициализироваться долго, восстановление из бэкапа).
-        _appliedSpiloMaterial = SpiloMaterial(bootstrap);
+        _appliedSpiloYaml = bootstrap.SpiloConfiguration;
+        _appliedCertMaterial = CertMaterial(bootstrap);
         _appliedDoormanConfig = DoormanMaterialOf(doormanConfig, bootstrap);
         while (!ct.IsCancellationRequested)
         {
@@ -685,10 +784,10 @@ public sealed class PgNodeMachine : IDisposable
         => _doormanTemplate.Replace(
             BootstrapRenderer.SuPasswordPlaceholder, _suPassword ?? "", StringComparison.Ordinal);
 
-    // Материал diff'а применения (spec §3.6-4): spilo — YAML+серт/ключ,
-    // doorman — отрендеренный конфиг+серт (смена серта триггерит оба).
-    private static string SpiloMaterial(NodeBootstrapData bootstrap)
-        => bootstrap.SpiloConfiguration + "\n" + bootstrap.CertPem + "\n" + bootstrap.KeyPem;
+    // Материал REST-серта (spec §3.6-4, П11.9): применяемость ПО МАТЕРИАЛУ —
+    // серт трекается отдельно от YAML (пароль reload'ом, серт рестартом).
+    private static string CertMaterial(NodeBootstrapData bootstrap)
+        => bootstrap.CertPem + "\n" + bootstrap.KeyPem;
 
     private static string DoormanMaterialOf(string doormanConfig, NodeBootstrapData bootstrap)
         => doormanConfig + "\n" + bootstrap.CertPem + "\n" + bootstrap.KeyPem;

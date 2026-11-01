@@ -1,3 +1,5 @@
+using System.Text;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using Npgsql;
 using Shared.Etcd.Client;
@@ -41,6 +43,10 @@ public sealed class E2eRotateScenarios(E2eRotateScenariosFx Ctx) : IClassFixture
         var oldPassword = await Fx.GetAppPasswordAsync(Cluster, ct);
         var oldMover = (await GetOrNullAsync($"/clusters/{Cluster}/mover_password"))!.Value;
         var oldAdmin = (await GetOrNullAsync($"/clusters/{Cluster}/bucket_admin_password"))!.Value;
+        var oldRest = (await GetOrNullAsync($"/clusters/{Cluster}/rest_password"))!.Value;
+        // Т3 (усиление): постмастер-снимок ДО ротации (после provisioned) —
+        // сверка неизменности start_time после reload-применения (П11.9).
+        var postmasterBefore = await PostmasterStartTimesAsync(Cluster, ct);
 
         // Адреса shard1 из dsn (multi-host, пары host:port) + мульти-хост строка
         // (Npgsql принимает Target Session Attributes только списком хостов).
@@ -87,6 +93,7 @@ public sealed class E2eRotateScenarios(E2eRotateScenariosFx Ctx) : IClassFixture
             });
         rotated.Should().BeTrue("the request is executed: the password changed, the request key is removed");
         var newPassword = await Fx.GetAppPasswordAsync(Cluster, ct);
+        var newRest = (await GetOrNullAsync($"/clusters/{Cluster}/rest_password"))!.Value;
         Regex.IsMatch(newPassword, "^[A-Za-z0-9]{32}$").Should().BeTrue();
 
         // Assert 1b : mover/bucket_admin тоже сменились (32 симв [A-Za-z0-9]);
@@ -124,6 +131,28 @@ public sealed class E2eRotateScenarios(E2eRotateScenariosFx Ctx) : IClassFixture
         foreach (var (name, startedAt) in startedAtAfter)
             startedAt.Should().Be(startedAtBefore[name],
                 $"the container {name} was not recreated by the rotation");
+
+        // Т3 (усиление, П11.9): применённость rest-пароля на Patroni —
+        // мутирующий эндпоинт PATCH /config (GET / публичен и доказательством
+        // аутентификации НЕ является): старая пара 401, новая 200; postmaster
+        // PID/start_time каждой ноды НЕИЗМЕННЫ (применение reload'ом — PG не
+        // останавливался).
+        var addressesAfter = await PortallocAsync(Cluster);
+        foreach (var (key, addr) in addressesAfter.OrderBy(p => p.Key, StringComparer.Ordinal))
+        {
+            var patchNew = await PatchPatroniConfigAsync(addr.Patroni, newRest, ct);
+            patchNew.Should().Be(200,
+                $"the NEW rest password is accepted by patroni on {key}");
+            var patchOld = await PatchPatroniConfigAsync(addr.Patroni, oldRest, ct);
+            patchOld.Should().Be(401,
+                $"the OLD rest password is rejected by patroni on {key}");
+        }
+        var postmasterAfter = await PostmasterStartTimesAsync(Cluster, ct);
+        postmasterAfter.Keys.Should().BeEquivalentTo(postmasterBefore.Keys,
+            "all nodes are probed after the rotation");
+        foreach (var (key, startTime) in postmasterAfter)
+            startTime.Should().Be(postmasterBefore[key],
+                $"the postmaster of {key} was not restarted (reload does not touch PG)");
 
         // Assert 2b (критерий «без остановки записи»): writer — DSN-точка
         // входа bucket_admin — стартует ПОСЛЕ закрытия окна (R4: pg_authid
@@ -228,6 +257,56 @@ public sealed class E2eRotateScenarios(E2eRotateScenariosFx Ctx) : IClassFixture
 
     private async Task<Kv?> GetOrNullAsync(string key)
         => (await G.GetAsync(Endpoint, key, TestContext.Current.CancellationToken)).Value;
+
+    // portalloc кластера (адреса нод: pg/patroni/doorman — хост-публикации).
+    private sealed record NodeAddr(string Host, int Pg, int Patroni, int Doorman);
+
+    private static readonly JsonSerializerOptions Json = new() { PropertyNameCaseInsensitive = true };
+
+    private async Task<Dictionary<string, NodeAddr>> PortallocAsync(string cluster)
+    {
+        var kv = await GetOrNullAsync($"/pgworker/portalloc/{cluster}");
+        if (kv is null)
+            return [];
+        return JsonSerializer.Deserialize<Dictionary<string, NodeAddr>>(kv.Value, Json) ?? [];
+    }
+
+    // Т3 (усиление): postmaster_start_time нод (GET / публичен — auth не нужен).
+    private async Task<Dictionary<string, string>> PostmasterStartTimesAsync(
+        string cluster, CancellationToken ct)
+    {
+        var addresses = await PortallocAsync(cluster);
+        var map = new Dictionary<string, string>();
+        foreach (var (key, addr) in addresses.OrderBy(p => p.Key, StringComparer.Ordinal))
+        {
+            using var response = await Fx.NewPatroniHttpClient().GetAsync(
+                $"https://localhost:{addr.Patroni}/", ct);
+            var body = await response.Content.ReadAsStringAsync(ct);
+            map[key] = JsonSerializer
+                .Deserialize<Dictionary<string, JsonElement>>(body, Json)?
+                .TryGetValue("postmaster_start_time", out var t) == true
+                ? t.GetString() ?? ""
+                : "";
+        }
+        return map;
+    }
+
+    // PATCH /config (мутирующий эндпоинт — доказательство аутентификации);
+    // тело {} — валидация пустого патча даёт 400 ПРИ пройденной аутентификации,
+    // 401 — при непринятой паре.
+    private async Task<int> PatchPatroniConfigAsync(
+        int patroniPort, string password, CancellationToken ct)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Patch,
+            $"https://localhost:{patroniPort}/config")
+        {
+            Content = new StringContent("{}", Encoding.UTF8, "application/json"),
+        };
+        request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue(
+            "Basic", Convert.ToBase64String(Encoding.UTF8.GetBytes($"patroni:{password}")));
+        using var response = await Fx.NewPatroniHttpClient().SendAsync(request, ct);
+        return (int)response.StatusCode;
+    }
 
     // Компактный срез статусных ключей нод (forensic-телеметрия прогресса
     // ротации: state/applied_revision каждой ноды одной строкой).

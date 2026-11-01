@@ -20,8 +20,9 @@ public sealed class PatroniRoleProbe
 
     /// <summary>CA сертификата: материализация PEM в temp-файл → загрузка →
     /// удаление файла. Кеш по содержимому PEM (env ноды стабилен за процесс);
-    /// подмена PEM (дрейф) — перезагрузка сертификата.</summary>
-    private static async Task<System.Security.Cryptography.X509Certificates.X509Certificate2?> GetCaAsync(
+    /// подмена PEM (дрейф) — перезагрузка сертификата. Internal-доступ для
+    /// PatroniApplyCommands (reload POST — тот же REST-канал :8008).</summary>
+    internal static async Task<System.Security.Cryptography.X509Certificates.X509Certificate2?> LoadCaAsync(
         string caPem, CancellationToken ct)
     {
         if (_ca is not null && _caPemSource == caPem)
@@ -150,7 +151,7 @@ public sealed class PatroniRoleProbe
             return WalReceiverRole.None;
         }
 
-        var ca = await GetCaAsync(caPem, ct);
+        var ca = await LoadCaAsync(caPem, ct);
         if (ca is null)
         {
             LogCaState(false, "CA material failed — role stays none");
@@ -213,7 +214,8 @@ public sealed class PatroniRoleProbe
     // расширения subjectAltName (OID 2.5.29.17) — соседние loopback-адреса
     // (127.0.0.2, ::1) валидным пиннингом не считаются. Мини-разбор DER:
     // SEQUENCE { GeneralName* }, [7] IMPLICIT OCTET STRING — iPAddress.
-    private static bool SanContainsLoopback(
+    // Internal-доступ для PatroniApplyCommands (reload POST :8008).
+    internal static bool SanContainsLoopback(
         System.Security.Cryptography.X509Certificates.X509Certificate2 cert)
     {
         foreach (var ext in cert.Extensions)

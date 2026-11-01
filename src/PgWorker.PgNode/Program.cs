@@ -65,11 +65,14 @@ internal partial class Program
 
         // Статусная машина агента (arch/14 §3.3/§4, spec §3.6): mTLS-канал
         // :8081 и хендшейк живут этим же процессом; стрим/операции бэкапов от
-        // машины не зависят (spec §3.6-6).
+        // машины не зависят (spec §3.6-6). Применение ротаций — ПО МАТЕРИАЛУ
+        // (arch/14 §5 I, spec §8-29, П11.9): пароль — reload Patroni, серт —
+        // рестарт Patroni-программы (реплика), пулер — supervisorctl.
         var machine = new PgNodeMachine(
             identity, etcd, endpoints,
             new SupervisorCommands(new ProcessRunner()),
-            Environment.GetEnvironmentVariable("DOORMAN_CONFIG_TEMPLATE") ?? "");
+            Environment.GetEnvironmentVariable("DOORMAN_CONFIG_TEMPLATE") ?? "",
+            patroniApply: new PatroniApplyCommands(new SupervisorCommands(new ProcessRunner())));
 
         var builder = WebApplication.CreateBuilder(args);
         builder.WebHost.ConfigureKestrel(o =>
