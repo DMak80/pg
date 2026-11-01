@@ -101,13 +101,21 @@ public class EffectiveConfigTests
         var o = Sample();
 
         // Act
-        var text = JsonSerializer.Serialize(EtcdWorkerEffectiveConfig.From(o), Json);
+        using var doc = JsonDocument.Parse(
+            JsonSerializer.Serialize(EtcdWorkerEffectiveConfig.From(o), Json));
 
-        // Assert — секретные секции и эндпоинты наружу не выходят (по JSON-тексту)
+        // Assert — ровно 5 ключей верхнего уровня канона (arch/25 §1.1):
+        // любой ЛИШНИЙ ( unmapped-поле Options, добавленное «для диагностики»)
+        // валит тест — секретные секции наружу не выходят по whitelist, а здесь
+        // лочится сам состав тела.
+        var topKeys = doc.RootElement.EnumerateObject().Select(p => p.Name).OrderBy(n => n).ToList();
+        topKeys.Should().Equal("docker", "loops", "snapshots", "source", "thresholds");
+
+        // Секретные секции не выходят и по JSON-тексту (защита в глубину).
+        var text = doc.RootElement.GetRawText();
         text.Should().NotContain("\"tls\"");
         text.Should().NotContain("\"ssh\"");
         text.Should().NotContain("\"endpoints\"");
-        text.Should().NotContain("\"apiKey\"");
         text.Should().NotContain("\"dir\"");
         text.Should().NotContain("\"hosts\"");
         text.Should().NotContain("secret");

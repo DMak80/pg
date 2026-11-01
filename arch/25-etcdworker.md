@@ -166,7 +166,7 @@ lease-ключ `/etcdworker/api/<id>`; URL — из `EtcdWorker:Api:AdvertiseUrl
   NodeSupervisor (§3.2). Если мёртв ЛИДЕР — сначала выборы etcd (сам), замена —
   после смены лидера.
 - **External-члены**: в доводке не участвуют; member list парсится, члены без
-  peer-URL-паттерна `/etcdw-node-<k>:` отображаются панелью как external
+  peer-URL-паттерна `http://etcdw-node-<k>:2380` отображаются панелью как external
   (seed, стендовые `etcdN`).
 - Journal — `/etcdworker/work` (journal-before-manipulations, фазы
   `add-learner/promoting/removing/replacing/cleanup-orphans`; `cleanup-orphans`

@@ -54,4 +54,23 @@ public class EtcdDomainApiTests
         nodes[1].GetProperty("placedOn").ValueKind.Should().Be(JsonValueKind.Null);
         dto.GetProperty("snapshots").GetProperty("state").GetString().Should().Be("OK");
     }
+
+    [Fact]
+    public async Task PutEtcdConfig_NodesOutOfRange_400WithoutGateway()
+    {
+        // Arrange — nodes вне 0..7: панельная валидация (OperationsModule)
+        // отвечает 400 ProblemDetails ДО похода в воркер (хост без docker —
+        // живых ключей нет; 400 должен прийти именно от гварда панели, а не
+        // 503 «живых инстансов нет»).
+        using var client = await LoginAsync();
+
+        // Act
+        using var response = await client.PutAsJsonAsync("/api/etcd/config", new { nodes = -1 },
+            TestContext.Current.CancellationToken);
+        var body = await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
+
+        // Assert — 400 с телом ProblemDetails панели
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        body.Should().Contain("Invalid body").And.Contain("nodes must be an integer in 0..7");
+    }
 }

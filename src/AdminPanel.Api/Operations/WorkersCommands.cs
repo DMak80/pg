@@ -39,7 +39,7 @@ public sealed class GetWorkerEffectiveConfigCommandHandler(IWorkerApiGateway api
     {
         // Неизвестный воркер — 404 (гвард как у рестарт-хендлера): иначе
         // WorkerApiGateway.ResolveEndpoints отвечал ArgumentOutOfRangeException → 500.
-        if (command.Worker is not ("pgworker" or "kafkaworker" or "valkeyworker" or "s3worker" or "etcdworker"))
+        if (!WorkerNames.IsKnown(command.Worker))
             return ValueTask.FromResult(
                 Result<System.Text.Json.JsonElement>.Failed(new WorkerNotFoundException(command.Worker)));
 
@@ -163,7 +163,7 @@ public sealed class RestartWorkerCommandHandler(IWorkerApiGateway api)
 {
     public async ValueTask<Result<WorkerRestartDto>> Handle(RestartWorkerCommand c, CancellationToken ct)
     {
-        if (c.Worker is not ("pgworker" or "kafkaworker" or "valkeyworker" or "s3worker" or "etcdworker"))
+        if (!WorkerNames.IsKnown(c.Worker))
             return Result<WorkerRestartDto>.Failed(new WorkerNotFoundException(c.Worker));
         IReadOnlyList<WorkerApiInstanceResult> results;
         try

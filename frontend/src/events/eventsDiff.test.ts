@@ -528,4 +528,40 @@ describe('diffEtcdDomain', () => {
     diffEtcdDomain(domain(), domain());
     expect(eventsSince(mark)).toEqual([]);
   });
+
+  it('появление ключа слепков: snapshots null→OK (from «—»)', () => {
+    // Arrange — в prev ключа /etcdworker/snapshots нет
+    const prev = domain({ snapshots: null });
+    const next = domain({ snapshots: { state: 'OK', lastUploadedUnix: null, lastObject: null, lastSha256: null, sizeBytes: null, intervalMin: null, error: null } });
+    const mark = getEvents().length;
+
+    // Act
+    diffEtcdDomain(prev, next);
+
+    // Assert — null отображается «—» (arch/03 §3)
+    const ev = eventsSince(mark);
+    expect(ev).toHaveLength(1);
+    expect(ev[0]).toMatchObject({
+      domain: 'etcd', entityKind: 'snapshot', entity: 'etcd',
+      type: 'state-change', from: '—', to: 'OK',
+    });
+  });
+
+  it('декларация null→3 (только наблюдение → поддерживать 3)', () => {
+    // Arrange — в prev ключа /etcd/config нет
+    const prev = domain({ declaredNodes: null });
+    const next = domain({ declaredNodes: 3 });
+    const mark = getEvents().length;
+
+    // Act
+    diffEtcdDomain(prev, next);
+
+    // Assert
+    const ev = eventsSince(mark);
+    expect(ev).toHaveLength(1);
+    expect(ev[0]).toMatchObject({
+      domain: 'etcd', entityKind: 'config', entity: 'etcd',
+      type: 'state-change', from: '—', to: '3',
+    });
+  });
 });

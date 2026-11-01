@@ -8,9 +8,10 @@ using EtcdWorker.App.Api.Operations;
 namespace EtcdWorker.App.Api;
 
 // HTTP API воркера etcd-домена (arch/25 §1.1, фаза 5): мутации состава
-// принимает исполнитель. Каждый эндпоинт в финале инкрементирует
-// etcdworker_api_operations_total фактическим кодом (EtcdApiMetrics.Track —
-// успех и ошибки).
+// принимает исполнитель. PUT /api/etcd/config и GET /api/config в финале
+// инкрементируют etcdworker_api_operations_total фактическим кодом
+// (EtcdApiMetrics.Track — успех и ошибки); POST /api/restart счётчик
+// не инкрементирует (self-stop — вне диагностики операций API).
 public static class ApiModule
 {
     public static IEndpointRouteBuilder MapWorkerApi(this IEndpointRouteBuilder endpoints)
@@ -44,7 +45,11 @@ public static class ApiModule
         // GET /api/config — эффективный конфиг установки (arch/25 §1.1):
         // read-only, mTLS-зона /api, без etcd-чтений и секретов.
         endpoints.MapGet("/api/config", (IOptions<EtcdWorkerOptions> options)
-            => Results.Ok(EtcdWorkerEffectiveConfig.From(options.Value)));
+            => {
+                var response = Results.Ok(EtcdWorkerEffectiveConfig.From(options.Value));
+                metrics.Track("get-config", GetStatusCode(response));
+                return response;
+            });
 
         // POST /api/restart — 202 graceful self-stop (arch/14 §1.1).
         endpoints.MapPost("/api/restart", (HttpRequest http, RestartHandler handler) =>

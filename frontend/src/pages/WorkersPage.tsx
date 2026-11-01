@@ -383,7 +383,8 @@ function ConfigTree({ config }: { config: Record<string, unknown> }) {
                       <Table.Td w={220}><Text size="sm" ff="monospace">{k}</Text></Table.Td>
                       <Table.Td>
                         <Text size="sm" ff="monospace">
-                          {v !== null && typeof v === 'object' ? JSON.stringify(v) : String(v)}
+                          {/* nullable-скаляр (advertisedHost без env) — «—», не литеральный null */}
+                          {v !== null && typeof v === 'object' ? JSON.stringify(v) : v === null ? '—' : String(v)}
                         </Text>
                       </Table.Td>
                     </Table.Tr>

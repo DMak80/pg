@@ -276,9 +276,15 @@ public class WorkerProxyCommandTests
     }
 
     // u15: effective-config прокси — тело воркера как есть (JsonElement), GET
-    // без requestedBy (read-only, заявки нет).
-    [Fact]
-    public async Task EffectiveConfig_200WithBody_ReturnsWorkerJson()
+    // без requestedBy (read-only, заявки нет); все имена набора WorkerNames —
+    // проксируются в /api/config (гвард не отсекает ни одно).
+    [Theory]
+    [InlineData("pgworker")]
+    [InlineData("kafkaworker")]
+    [InlineData("valkeyworker")]
+    [InlineData("s3worker")]
+    [InlineData("etcdworker")]
+    public async Task EffectiveConfig_200WithBody_ReturnsWorkerJson(string worker)
     {
         // Arrange
         var api = new StubWorkerApi
@@ -289,15 +295,36 @@ public class WorkerProxyCommandTests
         var handler = new GetWorkerEffectiveConfigCommandHandler(api);
 
         // Act
-        var result = await handler.Handle(new GetWorkerEffectiveConfigCommand("pgworker"), CancellationToken.None);
+        var result = await handler.Handle(new GetWorkerEffectiveConfigCommand(worker), CancellationToken.None);
 
         // Assert
         result.IsSuccess.Should().BeTrue();
         result.Value.GetProperty("source").GetString().Should().Be("env");
         result.Value.GetProperty("thresholds").GetProperty("nodeDeadSec").GetInt32().Should().Be(90);
         api.Calls.Should().ContainSingle().Which.Should().Match<StubWorkerApi.Call>(c =>
-            c.Worker == "pgworker" && c.Method == HttpMethod.Get && c.Path == "/api/config"
+            c.Worker == worker && c.Method == HttpMethod.Get && c.Path == "/api/config"
             && c.RequestedBy == null);
+    }
+
+    // 404-ветка гварда: неизвестный воркер — WorkerNotFoundException, шлюз НЕ вызван
+    // (иначе ResolveEndpoints ответил бы ArgumentOutOfRangeException → 500).
+    [Fact]
+    public async Task EffectiveConfig_UnknownWorker_404AndGatewayNotCalled()
+    {
+        // Arrange
+        var api = new StubWorkerApi
+        {
+            Respond = _ => new WorkerApiResult(200, """{"source":"env"}"""),
+        };
+        var handler = new GetWorkerEffectiveConfigCommandHandler(api);
+
+        // Act
+        var result = await handler.Handle(new GetWorkerEffectiveConfigCommand("unknownworker"), CancellationToken.None);
+
+        // Assert
+        result.IsSuccess.Should().BeFalse();
+        result.Error.Should().BeOfType<WorkerNotFoundException>();
+        api.Calls.Should().BeEmpty();
     }
 
     // u15: живых инстансов нет — WorkerApiUnavailableException → 503-семантика модуля.
@@ -313,30 +340,6 @@ public class WorkerProxyCommandTests
 
         // Assert
         result.Error.Should().BeOfType<WorkerApiUnavailableException>();
-    }
-
-    // etcdworker в гварде эффективного конфига (arch/25 §1.1): прокси GET
-    // /api/config живого инстанса — не 404 «неизвестный воркер».
-    [Fact]
-    public async Task EffectiveConfig_EtcdWorker_ProxiesToWorkerConfig()
-    {
-        // Arrange
-        var api = new StubWorkerApi
-        {
-            Respond = _ => new WorkerApiResult(200,
-                """{"source":"env","thresholds":{"nodeBootSec":90}}"""),
-        };
-        var handler = new GetWorkerEffectiveConfigCommandHandler(api);
-
-        // Act
-        var result = await handler.Handle(new GetWorkerEffectiveConfigCommand("etcdworker"), CancellationToken.None);
-
-        // Assert
-        result.IsSuccess.Should().BeTrue();
-        result.Value.GetProperty("source").GetString().Should().Be("env");
-        api.Calls.Should().ContainSingle().Which.Should().Match<StubWorkerApi.Call>(c =>
-            c.Worker == "etcdworker" && c.Method == HttpMethod.Get && c.Path == "/api/config"
-            && c.RequestedBy == null);
     }
 
     // Мутация состава etcd-контура (02 §9.14): прокси PUT /api/etcd/config в

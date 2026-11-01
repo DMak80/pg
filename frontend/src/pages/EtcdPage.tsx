@@ -24,13 +24,7 @@ import { ApiError } from '../api/client';
 import { ErrorSection, LoadingSection } from '../components/LoadState';
 import { usePollingIntervalMs } from '../polling/PollingContext';
 import { formatBytes, formatIso, formatUnix, formatUnixAge } from '../utils/format';
-
-// Managed-члены контура — peer-URL-паттерн http://etcdw-node-<k>:2380
-// (arch/25 §3.1: адресация ТОЛЬКО по именам узлов); имя члена пусто у
-// unstarted-learner'а — классификация по peerUrls, не по имени.
-function isManagedMember(member: { peerUrls: string[] }): boolean {
-  return member.peerUrls.some((u) => /^http:\/\/etcdw-node-\d+:2380$/.test(u));
-}
+import { isManagedMember } from '../utils/etcdMembers';
 
 export function EtcdPage() {
   const intervalMs = usePollingIntervalMs();
