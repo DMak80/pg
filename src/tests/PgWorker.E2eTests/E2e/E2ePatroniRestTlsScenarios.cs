@@ -32,11 +32,9 @@ public sealed class E2ePatroniRestTlsScenarios(E2ePatroniRestTlsScenariosFx Ctx)
     {
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(
             TestContext.Current.CancellationToken);
-        // Потолок 4 мин (замер полного (а)-(е) прохода: provisioning ~50 с +
-        // блоки (а)-(д) ~25 с + старт p2 ~10 с + конвергенция рестарта по
-        // статусной машине 40-90 с = 124-174 с; ×1.2 ≈ 210 с — приказ
-        // владельца о бюджета: изменение от замера, не «чтобы сошлось»).
-        cts.CancelAfter(TimeSpan.FromMinutes(4));
+        // Потолок 3 мин (исходный; возврат после tmpfs mode=1777 + (е)-рестарта
+        // реплики: фактический замер полного прохода 88 с; ×1.2 ≈ 106 с < 180 с).
+        cts.CancelAfter(TimeSpan.FromMinutes(3));
         var ct = cts.Token;
         var cluster = $"rtls{Fx.ClusterTag}";
         try

@@ -122,10 +122,10 @@ public sealed class E2eRestoreScenarios(E2eRestoreScenariosFx Ctx) : IClassFixtu
             // снос + rebuild + restore не умещаются в общий потолок факта).
             using var ctsRestore = CancellationTokenSource.CreateLinkedTokenSource(
                 TestContext.Current.CancellationToken);
-            // Потолок restore-секции — 4 мин (замер: PITR-проход с t05-rejoin
-            // (доставка/хендшейк/бут агента) ~200-260 с; ×1.2 — приказ
-            // владельца: от замера, не «чтобы сошлось»).
-            ctsRestore.CancelAfter(TimeSpan.FromMinutes(4));
+            // Потолок restore-секции — 3 мин (исходный; возврат после §8-28
+            // параллельной доставки: фактический замер 135 с; ×1.2 ≈ 162 с
+            // < 180 с).
+            ctsRestore.CancelAfter(TimeSpan.FromMinutes(3));
             ct = ctsRestore.Token;
             Console.WriteLine($"[PITR] {cluster}: archive before request: [" +
                 string.Join(",", await ListWalNamesAsync(cluster, "shard1")) + "]");
