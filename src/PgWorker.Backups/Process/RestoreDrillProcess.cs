@@ -329,6 +329,19 @@ public sealed class RestoreDrillProcess(
 
             case "succeeded":
             {
+                // Контракт операции (строка докстринга процесса): успех ДОКАЗАН
+                // стартом postgres и выходом из recovery — restored_to_lsn обязателен.
+                // SUCCEEDED без lsn — фантомный статус (факт E2E: под нагрузкой
+                // приёмник отвечал финалом за ~2 с без восстановления), success
+                // по нему ложный: тик повторяется, drill-timeout — страховка.
+                if (snapshot.RestoredToLsn is not { Length: > 0 })
+                {
+                    logger.LogWarning(
+                        "{Op} {cluster}/{shard}: drill {id} — succeeded WITHOUT restored_to_lsn (phantom status); waiting for a proved snapshot",
+                        Op, cluster, shard, drill.Id);
+                    return; // тик повторится: либо доказанный снапшот, либо drill-timeout
+                }
+
                 // старт postgres + выход из recovery доказаны (restored_to_lsn);
                 // scratch чистит приёмник — ключ сразу чистый терминальный итог.
                 var terminal = drill with
