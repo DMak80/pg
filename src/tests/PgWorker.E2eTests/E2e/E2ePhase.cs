@@ -79,6 +79,12 @@ internal static class E2ePhase
         // (spec §4.4 — контейнеры ещё живые, teardown ещё не мутировал);
         // CollectDiagnosticsAsync глотает свои ошибки сам.
         await fx.CollectDiagnosticsAsync($"failed-phase-{phase}");
+        // Провал окна = фейл факта (все канонические вызовы завершаются
+        // Should().BeTrue): помечаем окружение сразу — teardown остановит
+        // контейнеры, не удалит (e2e-launch §3), даже если у сценария нет
+        // собственного catch-MarkFailed (e2e-факт: NodeSecrets-ассерт без
+        // пометки — teardown разобрал упавшее окружение как «успешное»).
+        fx.MarkFailed();
         lastSnapshot ??= progress is null ? null : await SafeSnapshotAsync(progress);
         Emit(fx, FinalLine(phase, ok: false, sw.Elapsed, budget, lastSnapshot));
         return false;

@@ -107,10 +107,13 @@ public sealed class TliSwitchContext : IAsyncLifetime
     private async Task PrepareAsync(CancellationToken ct)
     {
         // Шаг 1 — контур: окружение (сеть/etcd/ownS3 по guid, динамические
-        // порты), сид кластера tlsw<тег> (2 шарда × 2 реплики — как образцы),
-        // воркер с ОБЪЕДИНЁННЫМ бэкап-комплектом (полные + WAL-агенты +
-        // restore одновременно — spec §3.1); provisioning DONE ≤ 360 с.
-        Fx = await E2eEnvironment.StartAsync("tlsw", withS3Node: true, ct: ct);
+        // порты) УЖЕ ПОДНЯТО InitializeAsync (один StartAsync на класс);
+        // здесь — только сид кластера tlsw<тег> (2 шарда × 2 реплики — как
+        // образцы) и воркер с ОБЪЕДИНЁННЫМ бэкап-комплектом (полные +
+        // WAL-агенты + restore одновременно — spec §3.1); provisioning
+        // DONE ≤ 360 с. Второй StartAsync здесь затирал Fx и УТЕЧКАЛ первый
+        // контур целиком (e2e-факт полного прогона: осиротевшие
+        // pgw-en/ee1/eo/em без teardown, etcd пуст).
         Cluster = $"tlsw{Fx.ClusterTag}";
         await SeedClusterAsync(Cluster);
         await StartTliSwitchHostAsync("tlsw", ct);

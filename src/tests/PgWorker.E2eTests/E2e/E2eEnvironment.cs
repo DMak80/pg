@@ -874,12 +874,35 @@ public sealed class E2eEnvironment : IAsyncDisposable
                 $"[PHASE] e2e-env {slug}: environment raised (network {netName}, window {portFrom}–{portTo})");
             return env;
         }
-        catch
+        catch (Exception startError)
         {
+            // Частично поднятое окружение не оставляем (лучшими усилиями).
+            // Телеметрия упавшего старта ДО сноса: маркер + docker-логи
+            // созданных контейнеров (etcd/eo/em подняты docker run — их логи
+            // после rm недоступны, а DisposeAsync окружения уже не случится:
+            // InitializeAsync бросил — xUnit DisposeAsync фикстуры не зовёт).
+            try
+            {
+                await WriteStartFailureAsync(artifactsDir, slug, runId, etcdNames, startError);
+            }
+            catch
+            {
+                // телеметрия старта — лучшими усилиями, не маскирует причину
+            }
 
-            // частично поднятое окружение не оставляем (лучшими усилиями):
-            // контейнер, чей StartAsync упал, чистит сам testcontainers; живые
-            // узлы etcd/ownS3 — здесь; сеть — здесь.
+            // Контейнеры частичного контура — по собственным именам (own-only:
+            // guid/runId этой попытки). etcdNodes/s3Node testcontainers-объектов
+            // НЕ заполняются (docker run) — чистим docker rm напрямую.
+            foreach (var name in etcdNames.Append($"pgw-eo-{runId}").Append($"pgw-em-{runId}"))
+                try
+                {
+                    await E2eFixture.RunProcessAsync("docker", ["rm", "-f", name]);
+                }
+                catch
+                {
+                    // уже нет/не создан — не важно
+                }
+
             if (s3Node is not null)
                 try
                 {
@@ -887,7 +910,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
                 }
                 catch
                 {
-                    // guid-имя, чужие прогоны не заденем; добьёт ассерт/ryuk
+                    // guid-имя, чужие прогоны не заденем
                 }
 
             foreach (var node in etcdNodes)
@@ -900,20 +923,38 @@ public sealed class E2eEnvironment : IAsyncDisposable
                     // аналогично
                 }
 
-            // Сеть окружения — создана здесь (StartOnceCoreAsync): сносим
-            // частично поднятое окружение целиком.
-            if (net is not null)
-                try
-                {
-                    await net.DeleteAsync();
-                }
-                catch
-                {
-                    // аналогично
-                }
+            // Сеть окружения — ПОСЛЕ контейнеров (docker не снимает сеть с
+            // живыми endpoints); force-disconnect + ретраи — DeleteClassNetworkAsync.
+            await DeleteClassNetworkAsync(netName, CancellationToken.None);
 
             throw;
         }
+    }
+
+    // Телеметрия упавшего старта окружения: маркер start-failed (причина) +
+    // docker-логи контейнеров частичного контура в его ArtifactsDir
+    // («лучшими усилиями» — не роняет повторный throw причины старта).
+    private static async Task WriteStartFailureAsync(
+        string artifactsDir, string slug, string runId,
+        IReadOnlyList<string> etcdNames, Exception error)
+    {
+        Directory.CreateDirectory(artifactsDir);
+        var stamp = DateTime.UtcNow.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture);
+        await File.WriteAllTextAsync(
+            Path.Combine(artifactsDir, $"{stamp}-start-failed.txt"),
+            $"reason=start-failed\nslug={slug}\nrun={runId}\nutc={DateTime.UtcNow:O}\n"
+            + $"error={error.Message}\n");
+        foreach (var name in etcdNames.Append($"pgw-eo-{runId}").Append($"pgw-em-{runId}"))
+            try
+            {
+                var logs = await E2eFixture.RunDockerLogsAsync(["--timestamps", name]);
+                await File.WriteAllTextAsync(
+                    Path.Combine(artifactsDir, $"container-{name}.log"), logs);
+            }
+            catch
+            {
+                // контейнера нет / логи недоступны — лучшими усилиями
+            }
     }
 
     /// <summary>Фактический динамический хост-порт публикации контейнера

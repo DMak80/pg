@@ -85,32 +85,62 @@ public static class E2eFixture
     }
 
     // Хелпер ожидания условия (полл 500 мс). Авто-[TIMING]: выражение условия
-    // (CallerArgumentExpression) + длительность + исход — все серии получают
-    // хронометраж ожиданий без правки вызовов.
+    // (CallerArgumentExpression) + длительность + исход (ok=True/ok=False с
+    // бюджетом/cancelled) — все серии получают хронометраж ожиданий без правки
+    // вызовов; длительные ожидания каждые 5 с пишут [TIMING-TICK] (живой
+    // прогресс полла — «что происходило» видно между итоговыми строками,
+    // docs/e2e-launch.md §1).
     public static async Task<bool> WaitForAsync(
         Func<Task<bool>> condition, TimeSpan timeout, CancellationToken ct = default,
         [System.Runtime.CompilerServices.CallerArgumentExpression(nameof(condition))] string? what = null)
     {
         var sw = Stopwatch.StartNew();
+        var head = WaitHead(what);
+        var nextTick = TimeSpan.FromSeconds(5);
         try
         {
             while (sw.Elapsed < timeout)
             {
                 if (await condition())
+                {
+                    Timing(WaitLine(head, sw, "ok=True"));
                     return true;
+                }
+
+                if (sw.Elapsed >= nextTick)
+                {
+                    Timing($"{DateTime.UtcNow:HH:mm:ss'Z'} [TIMING-TICK] wait({head}): " +
+                           $"t={sw.Elapsed.TotalSeconds:F1}s not met yet");
+                    nextTick += TimeSpan.FromSeconds(5);
+                }
+
                 await Task.Delay(500, ct);
             }
 
+            // Истечение бюджета: исход и потолок — в самой строке (читается из
+            // timing.log без vstest-вывода).
+            Timing(WaitLine(head, sw, $"ok=False (budget {timeout.TotalSeconds:0.#}s)"));
             return false;
         }
-        finally
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
-            var head = (what ?? "wait").Replace("\r", "").Replace("\n", " ").Trim();
-            if (head.Length > 90)
-                head = head[..90] + "…";
-            Timing($"{DateTime.UtcNow:HH:mm:ss'Z'} [TIMING] wait({head}): {sw.Elapsed.TotalSeconds:F1}s");
+            // Внешний потолок факта/остановка хоста: исключение не глотается
+            // (семантика прежняя), но след «на каком ожидании закончились» остаётся.
+            Timing(WaitLine(head, sw, $"cancelled (budget {timeout.TotalSeconds:0.#}s)"));
+            throw;
         }
     }
+
+    // Голова условия для меток ожидания: выражение источника, однострочник, ≤90.
+    private static string WaitHead(string? what)
+    {
+        var head = (what ?? "wait").Replace("\r", "").Replace("\n", " ").Trim();
+        return head.Length > 90 ? head[..90] + "…" : head;
+    }
+
+    // Итоговая строка ожидания: длительность + исход.
+    private static string WaitLine(string head, Stopwatch sw, string outcome)
+        => $"{DateTime.UtcNow:HH:mm:ss'Z'} [TIMING] wait({head}): {sw.Elapsed.TotalSeconds:F1}s {outcome}";
 
     public static Task<string> RunDockerAsync(string[] args, CancellationToken ct = default)
         => RunProcessAsync("docker", args, ct);

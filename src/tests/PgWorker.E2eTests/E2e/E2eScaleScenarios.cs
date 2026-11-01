@@ -43,8 +43,9 @@ public sealed class E2eScaleScenarios(E2eScaleScenariosFx Ctx) : IClassFixture<E
             await SeedClusterAsync(cluster);
             await using var p1 = await Fx.StartHostAsync("s1", ct: ct);
 
-            var provisioned = await E2eFixture.WaitForAsync(
-                E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(90), ct);
+            var provisioned = await E2ePhase.WaitAsync(Fx, $"{cluster}-provisioning",
+                E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(90), ct,
+                progress: () => WorkDumpAsync(cluster, ct));
             provisioned.Should().BeTrue("provisioning of the cluster must reach Active (dsn/RUNNING/no status)");
 
             // DDL-сид: bucket_0 у shard1 и bucket_1/bucket_3 у shard2 (INSERT-пробы
@@ -64,8 +65,10 @@ public sealed class E2eScaleScenarios(E2eScaleScenariosFx Ctx) : IClassFixture<E
             await SeedAddDeclarationAsync(cluster, "shard3", ct);
 
             // Assert: шард поднят и зарегистрирован; контейнеры живы.
-            var added = await E2eFixture.WaitForAsync(() => ShardRegisteredAsync(cluster, "shard3"),
-                TimeSpan.FromSeconds(90), ct);
+            var added = await E2ePhase.WaitAsync(Fx, $"{cluster}-shard3-registered",
+                () => ShardRegisteredAsync(cluster, "shard3"),
+                TimeSpan.FromSeconds(90), ct,
+                progress: () => WorkDumpAsync(cluster, ct));
             added.Should().BeTrue($"AddShardProcess must raise shard3 (dsn/RUNNING); work={await WorkDumpAsync(cluster, ct)}");
 
             var containers = await ListContainerNamesAsync($"pgw-{cluster}-shard3-");
@@ -88,8 +91,9 @@ public sealed class E2eScaleScenarios(E2eScaleScenariosFx Ctx) : IClassFixture<E
             await EnableSyncModeAsync(cluster, "shard3", ct);
             await PutMoveRequestAsync(cluster, "bucket_1",
                 $$"""{"op":"move","to":"shard3","requested_unix":{{NowUnix()}}}""", ct);
-            var moved = await E2eFixture.WaitForAsync(
-                () => RoutingIsAsync(cluster, "bucket_1", "shard3", ct), TimeSpan.FromSeconds(90), ct);
+            var moved = await E2ePhase.WaitAsync(Fx, $"{cluster}-bucket1-moved",
+                () => RoutingIsAsync(cluster, "bucket_1", "shard3", ct), TimeSpan.FromSeconds(90), ct,
+                progress: () => MovesDumpAsync(cluster, ct));
             moved.Should().BeTrue($"move bucket_1 → shard3 must finish; work={await WorkDumpAsync(cluster, ct)}");
 
             // Act: маркер демонтажа на shard1 (на нём ещё 3 бакета: 0, 2, 4).
@@ -129,11 +133,12 @@ public sealed class E2eScaleScenarios(E2eScaleScenariosFx Ctx) : IClassFixture<E
                 $$"""{"op":"move","to":"shard2","requested_unix":{{NowUnix()}}}""", ct);
             await EnableSyncModeAsync(cluster, "shard2", ct);
 
-            var allMoved = await E2eFixture.WaitForAsync(async () =>
+            var allMoved = await E2ePhase.WaitAsync(Fx, $"{cluster}-all-moved", async () =>
                 await RoutingIsAsync(cluster, "bucket_0", "shard3", ct)
                 && await RoutingIsAsync(cluster, "bucket_2", "shard2", ct)
                 && await RoutingIsAsync(cluster, "bucket_4", "shard2", ct),
-                TimeSpan.FromSeconds(90), ct);
+                TimeSpan.FromSeconds(90), ct,
+                progress: () => MovesDumpAsync(cluster, ct));
             allMoved.Should().BeTrue($"all buckets of shard1 must move away; work={await WorkDumpAsync(cluster, ct)}, " +
                                      $"requests={await MovesDumpAsync(cluster, ct)}");
 
@@ -141,15 +146,17 @@ public sealed class E2eScaleScenarios(E2eScaleScenariosFx Ctx) : IClassFixture<E
                 await PutMoveRequestAsync(cluster, bucket,
                     $$"""{"op":"finalize","old_shard":"shard1","requested_unix":{{NowUnix()}}}""", ct);
 
-            var finalized = await E2eFixture.WaitForAsync(
-                () => MovesEmptyAsync(cluster, ct), TimeSpan.FromSeconds(90), ct);
+            var finalized = await E2ePhase.WaitAsync(Fx, $"{cluster}-finalize-done",
+                () => MovesEmptyAsync(cluster, ct), TimeSpan.FromSeconds(90), ct,
+                progress: () => MovesDumpAsync(cluster, ct));
             finalized.Should().BeTrue($"the finalize requests must be processed; requests={await MovesDumpAsync(cluster, ct)}, " +
                                       $"work={await WorkDumpAsync(cluster, ct)}");
 
             // Assert: демонтаж дошёл сам (маркер не повторяли): контейнеры/volumes
             // удалены, ключи/порталы вычищены, кластер продолжает обслуживать запись.
-            var dismantled = await E2eFixture.WaitForAsync(
-                () => ShardDismantledAsync(cluster, "shard1", ct), TimeSpan.FromSeconds(90), ct);
+            var dismantled = await E2ePhase.WaitAsync(Fx, $"{cluster}-shard1-dismantled",
+                () => ShardDismantledAsync(cluster, "shard1", ct), TimeSpan.FromSeconds(90), ct,
+                progress: () => WorkDumpAsync(cluster, ct));
             dismantled.Should().BeTrue($"after the last bucket leaves, the dismantling completes on its own; " +
                                        $"work={await WorkDumpAsync(cluster, ct)}, containers={string.Join(",", await ListContainerNamesAsync($"pgw-{cluster}-shard1-", all: true))}");
 
@@ -170,8 +177,10 @@ public sealed class E2eScaleScenarios(E2eScaleScenariosFx Ctx) : IClassFixture<E
             await SeedAddDeclarationAsync(cluster, "shard1", ct);
 
             // Assert: AddShardProcess принял освобождённое имя (клэйм-инвариант §4.2).
-            var reused = await E2eFixture.WaitForAsync(() => ShardRegisteredAsync(cluster, "shard1"),
-                TimeSpan.FromSeconds(90), ct);
+            var reused = await E2ePhase.WaitAsync(Fx, $"{cluster}-shard1-name-reused",
+                () => ShardRegisteredAsync(cluster, "shard1"),
+                TimeSpan.FromSeconds(90), ct,
+                progress: () => WorkDumpAsync(cluster, ct));
             reused.Should().BeTrue($"the shard1 name is freed by the dismantling and accepted anew; work={await WorkDumpAsync(cluster, ct)}");
         }
         catch
