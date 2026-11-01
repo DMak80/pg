@@ -316,10 +316,7 @@ public sealed class E2eRotateScenarios(E2eRotateScenariosFx Ctx) : IClassFixture
         return range.Value is not { } list
             ? "<range error>"
             : string.Join("; ", list.Take(12).Select(kv =>
-            {
-                var val = kv.Value.Length > 120 ? kv.Value[..120] + "…" : kv.Value;
-                return $"{kv.Key[(kv.Key.LastIndexOf('/') + 1)..]}={val}";
-            }));
+                $"{kv.Key[(kv.Key.LastIndexOf('/') + 1)..]}={kv.Value}"));
     }
 
     // StartedAt контейнеров нод кластера (docker inspect) — ротация без

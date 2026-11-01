@@ -48,12 +48,17 @@ public sealed class PatroniApplyCommands(ISupervisorCommands supervisor) : IPatr
     /// <summary>Применение rest-пары: (1) configure_spilo.py patroni --force
     /// (env процесса = env агента + SPILO_CONFIGURATION = применяемый YAML;
     /// факт образа spilo-18:4.1-p2: БЕЗ --force существующий
-    /// /run/postgres.yml не перезаписывается); (2) POST /reload — попытки
-    /// аутентификации [current, new] до 202 (факт пробы: reload-запрос
-    /// аутентифицируется по конфигу В ПАМЯТИ — до применения принимается
-    /// только текущая пара; NEW до применения даёт 401; после применения
-    /// old→401/new→200). Ни одна пара не дала 202 — отказ (типичный канал
-    /// диагностик: error-факт apply-ветки, повтор по коулдауну).</summary>
+    /// /run/postgres.yml не перезаписывается); (2) POST /reload.
+    /// Аутентификация reload-запроса — по конфигу Patroni В ПАМЯТИ; к моменту
+    /// apply возможны ровно два состояния: S1 = OLD (первое применение новой
+    /// ревизии: валиден OLD, NEW даёт 401) и S2 = NEW (идемпотентный повтор:
+    /// прошлый reload применил, но ревизия/статус не зафиксировались; или
+    /// Patroni стартовал уже из новых tmpfs-файлов: валиден NEW, OLD даёт
+    /// 401). Попытки [current, new] — покрытие обоих детерминированных
+    /// состояний (не подбор); 202 от любой = успех; 401 от обеих / 5xx /
+    /// транспорт — отказ с фактом (повтор по коулдауну apply-ветки).
+    /// Факт живой пробы S1 (t05probe-s1): NEW до применения → 401;
+    /// POST /reload OLD → 202; postmaster не останавливался.</summary>
     public async Task ApplyRestPairAsync(string spiloConfigurationYaml, string restPasswordCurrent,
         string restPasswordNew, CancellationToken ct)
     {
@@ -91,10 +96,13 @@ public sealed class PatroniApplyCommands(ISupervisorCommands supervisor) : IPatr
     // скрипт штатно завершается sys.exit(int(not USE_WALG)) — exit 1 при
     // выключенном WAL-G (факт образа spilo-18:4.1-p2; файл /run/postgres.yml
     // при этом записан). Критерий применения — содержимое файла: новый
-    // restapi-пароль присутствует. Не записан/без пароля — отказ применения.
+    // restapi-пароль присутствует. Пустой restPasswordNew — дефект данных
+    // (RestPasswordOf не нашёл пароль в YAML) — явный отказ, не успех.
     private async Task RegeneratePatroniConfigAsync(
         string yaml, string restPasswordNew, CancellationToken ct)
     {
+        if (string.IsNullOrEmpty(restPasswordNew))
+            throw new ApplicationException("restapi password not found in YAML — regeneration refused");
         var psi = new ProcessStartInfo { FileName = "python3" };
         psi.ArgumentList.Add("/scripts/configure_spilo.py");
         psi.ArgumentList.Add("patroni");

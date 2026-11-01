@@ -748,3 +748,67 @@ public class PgNodeMachineTests
         apply.Ok.Should().BeFalse();
     }
 }
+
+// П11.9: RestPasswordOf — парсер restapi-пароля из YAML (reload-аутентификация).
+// Формат — фактический шаблон SpiloConfiguration (top-level restapi,
+// authentication вложен).
+public class RestPasswordOfTests
+{
+    // Пароль найден (шаблонный вид с кавычками).
+    [Fact]
+    public void Finds_Quoted_Password()
+    {
+        const string yaml = """
+            ---
+            restapi:
+              connect_address: "node:8008"
+              authentication:
+                username: patroni
+                password: "s3cret"
+            postgresql:
+              use_pg_rewind: true
+            """;
+        PgNodeMachine.RestPasswordOf(yaml).Should().Be("s3cret");
+    }
+
+    // Пароль без кавычек.
+    [Fact]
+    public void Finds_Unquoted_Password()
+    {
+        const string yaml = """
+            restapi:
+              authentication:
+                username: patroni
+                password: plain123
+            """;
+        PgNodeMachine.RestPasswordOf(yaml).Should().Be("plain123");
+    }
+
+    // Секции restapi/authentication нет → null.
+    [Fact]
+    public void No_Restapi_Section_Returns_Null()
+    {
+        const string yaml = """
+            scope: shop
+            postgresql:
+              use_pg_rewind: true
+            """;
+        PgNodeMachine.RestPasswordOf(yaml).Should().BeNull();
+    }
+
+    // password в ЧУЖОЙ секции (postgresql.authentication) не подхватывается.
+    [Fact]
+    public void Password_In_Foreign_Section_Not_Picked()
+    {
+        const string yaml = """
+            scope: shop
+            postgresql:
+              authentication:
+                password: super-secret
+            bootstrap:
+              dcs:
+                ttl: 30
+            """;
+        PgNodeMachine.RestPasswordOf(yaml).Should().BeNull();
+    }
+}

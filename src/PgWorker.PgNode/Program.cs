@@ -68,11 +68,12 @@ internal partial class Program
         // машины не зависят (spec §3.6-6). Применение ротаций — ПО МАТЕРИАЛУ
         // (arch/14 §5 I, spec §8-29, П11.9): пароль — reload Patroni, серт —
         // рестарт Patroni-программы (реплика), пулер — supervisorctl.
+        var supervisor = new SupervisorCommands(new ProcessRunner());
         var machine = new PgNodeMachine(
             identity, etcd, endpoints,
-            new SupervisorCommands(new ProcessRunner()),
+            supervisor,
             Environment.GetEnvironmentVariable("DOORMAN_CONFIG_TEMPLATE") ?? "",
-            patroniApply: new PatroniApplyCommands(new SupervisorCommands(new ProcessRunner())));
+            patroniApply: new PatroniApplyCommands(supervisor));
 
         var builder = WebApplication.CreateBuilder(args);
         builder.WebHost.ConfigureKestrel(o =>

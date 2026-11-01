@@ -481,17 +481,19 @@ public sealed class PgNodeMachine : IDisposable
             return;
         }
 
-        // Публикация со СТАРОЙ ревизией: (1) сбой команды — «полуприменённое»
-        // не маскируется (MR-#12), ротатор/доставка честно повторяют Apply;
-        // (2) серт мастера отложен воркеру (R3-СЕРТ): пароль применён
-        // reload'ом, но applied_revision НЕ фиксируется — конвергенция
-        // повторит применение после пересоздания; факт — в error.
+        // Публикация со СТАРОЙ ревизией при сбое команды: «полуприменённое»
+        // не маскируется (MR-#12) — ротатор/доставка честно повторяют Apply,
+        // факт — в error. Случай «серт мастера отложен воркеру (R3-СЕРТ)» —
+        // НЕ ошибка, а ожидаемое состояние (пересоздание мастера — оркестрация
+        // воркера вне тикета): ready со СТАРОЙ ревизией БЕЗ error; применённые
+        // материалы не фиксируются — конвергенция повторит применение после
+        // пересоздания (пароль при этом уже применён reload'ом и повтор
+        // идемпотентен по состояниям S1/S2).
         await PublishAsync(PgNodeStatus.Ready,
             _appliedRevision is { } appliedOld ? (ulong)appliedOld : null,
             Components(pg: pgComponent,
                 doorman: doormanChanged ? "starting" : "ready"),
-            error ?? "rest cert on master is deferred to worker recreation (R3-СЕРТ); password applied via reload",
-            ct);
+            error, ct);
     }
 
     // Роль ноды для серт-ветки: прод — PatroniRoleProbe (CA из env
@@ -507,7 +509,7 @@ public sealed class PgNodeMachine : IDisposable
     // restapi-пароль из применяемого/применённого YAML (restapi.authentication.
     // password; кавычки значений срезаются). null — секция не найдена
     // (распарсить не удалось — reload-пара недоступна, команда доложит).
-    private static string? RestPasswordOf(string? yaml)
+    internal static string? RestPasswordOf(string? yaml)
     {
         if (string.IsNullOrEmpty(yaml))
             return null;
