@@ -557,6 +557,10 @@ public class PgNodeMachineTests
     {
         // Arrange: нода ready; ключ перезаписан с новым YAML; supervisorctl
         // restart бросает (реплика рестартует спило — «полуприменённое»).
+        // Коулдаун анти-дребезга выключен — тест проверяет КАНОН немедленного
+        // повтора (MR-#12); в проде повтор той же ревизии отложен на
+        // ApplyRetryCooldownSec (анти-цикл stop/start спило, факт E2E).
+        PgNodeMachine.ApplyRetryCooldownSec = 0;
         await using var rig = await Rig.CreateAsync(RealPemPair());
         rig.ProbeAllReady();
         (await rig.HandshakeAsync()).Should().Be(HandshakeResult.Started);

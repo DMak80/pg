@@ -236,22 +236,51 @@ public sealed class RestoreOperation : IReceiverOperation
             //    WAL вместо recovery и промоута (факт прогона).
             phase = OperationPhases.Recovering;
             Update(OperationStates.Running, phase);
-            File.Delete(Path.Combine(pgdata, "standby.signal"));
-            var startPsi = PgCtl(pgdata, "start");
-            startPsi.ArgumentList.Add("-l");
-            startPsi.ArgumentList.Add("/tmp/restore-pg.log");
-            startPsi.ArgumentList.Add("-w");
-            startPsi.ArgumentList.Add("-t");
-            startPsi.ArgumentList.Add(
-                Math.Max(_request.RecoveryTimeoutSec, 60).ToString(
-                    System.Globalization.CultureInfo.InvariantCulture));
-            startPsi.ArgumentList.Add("-o");
-            startPsi.ArgumentList.Add("-c listen_addresses='' -c unix_socket_directories='/tmp'");
-            var (startExit, _, startErr) = await _runner.RunAsync(startPsi, token);
-            if (startExit != 0)
+            const int recoveryStartAttempts = 3;
+            for (var attempt = 1; ; attempt++)
             {
-                var log = await TailAsync("/tmp/restore-pg.log", 3);
-                Fail(phase, OpText.FirstLine($"{startErr}\n{log}", "pg_ctl start failed"));
+                // standby.signal снимается повторно ПЕРЕД каждым стартом: живой
+                // Patroni ноды может воссоздать файл в окне между правками и
+                // стартом — postgres уйдёт в standby-ожидание WAL вместо
+                // recovery и промоута (факт прогона).
+                File.Delete(Path.Combine(pgdata, "standby.signal"));
+                var startPsi = PgCtl(pgdata, "start");
+                startPsi.ArgumentList.Add("-l");
+                startPsi.ArgumentList.Add("/tmp/restore-pg.log");
+                startPsi.ArgumentList.Add("-w");
+                startPsi.ArgumentList.Add("-t");
+                startPsi.ArgumentList.Add(
+                    Math.Max(_request.RecoveryTimeoutSec, 60).ToString(
+                        System.Globalization.CultureInfo.InvariantCulture));
+                startPsi.ArgumentList.Add("-o");
+                startPsi.ArgumentList.Add("-c listen_addresses='' -c unix_socket_directories='/tmp'");
+                var (startExit, _, startErr) = await _runner.RunAsync(startPsi, token);
+                if (startExit == 0)
+                    break;
+
+                // Ретрай старта: «recovery ended before configured recovery
+                // target was reached» — WAL-объекты цели ещё не отданы
+                // restore_command'ом (гонка добивки/доступности сегментов S3-пула
+                // против старта recovery; факт прогона PitR: последний коммит
+                // архива отставал от target на секунды). Повторный старт
+                // продолжает recovery с места — arch/19 §3.5: моргания
+                // покрываются повторами; ограничение — 3 попытки, пауза 5 с
+                // (интервал анти-дребезга, не бюджет фаз). Иные причины старта-
+                // провала — фейл как раньше.
+                var log = await TailAsync("/tmp/restore-pg.log", 25);
+                if (attempt < recoveryStartAttempts
+                    && log.Contains("recovery ended before configured recovery target was reached",
+                        StringComparison.Ordinal))
+                {
+                    await StopBestEffortAsync(pgdata);
+                    await Task.Delay(TimeSpan.FromSeconds(5), token);
+                    continue;
+                }
+
+                // Диагностика фейла старта — ПОЛНЫЙ хвост PG-лога в last_error
+                // (pg_ctl «could not start server» без деталей нечитаем: контейнер
+                // джобы с /tmp/restore-pg.log удаляется воркером после завершения).
+                Fail(phase, $"pg_ctl start failed: {startErr.Split('\n')[0]}\n--- restore-pg.log tail ---\n{log}");
                 return;
             }
 

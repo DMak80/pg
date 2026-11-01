@@ -96,6 +96,20 @@ public sealed class PgNodeMachine : IDisposable
     // apply — ok без двойного рестарта).
     private volatile Task? _applyTask;
 
+    // Анти-дребезг повторного применения ТОЙ ЖЕ ревизии после неудавшегося
+    // рестарта: рестарт spilo на реплике с восстановлением PG длиннее
+    // supervisord-startsecs даёт цикл stop/start, каждый виток которого убивает
+    // поднимающийся PG (факт E2E: ротация rest-пары, нода пересоздавалась
+    // надзором). Коулдаун даёт компонентам доездить — окно ротации честно
+    // дозревает тиками (applied_revision не фиксирован, R3 повторяется по
+    // канону arch/14 §5 I; значение — интервал анти-дребезга, не бюджет фаз).
+    // Мутируемый internal static — юнит-seam (прецедент FetchWalCommand.
+    // TransportAttempts): 0 выключает коулдаун (канон-тест немедленного
+    // повтора MR-#12).
+    internal static int ApplyRetryCooldownSec = 45;
+    private long? _failedApplyRevision;
+    private long _failedApplyUnix;
+
     // Юнит-seam: фоновая задача применения (тесты ждут её перед ассертами
     // рестартов — детерминизм без sleep-поллинга).
     internal Task? ApplyTask => _applyTask;
@@ -329,6 +343,13 @@ public sealed class PgNodeMachine : IDisposable
                 return new ApplyResult(Ok: true, AppliedRevision: _appliedRevision,
                     NotReady: false, EtcdError: false); // ревизия без изменений — no-op
 
+            // Повтор применения той же ревизии сразу после неудавшегося рестарта —
+            // ok-пинок без рестарта (коулдаун анти-дребезга, см. поле).
+            if (_failedApplyRevision == (long)mod
+                && DateTimeOffset.UtcNow.ToUnixTimeSeconds() - _failedApplyUnix < ApplyRetryCooldownSec)
+                return new ApplyResult(Ok: true, AppliedRevision: _appliedRevision,
+                    NotReady: false, EtcdError: false);
+
             // Рендер tmpfs заново (перерендер идемпотентен, 0600).
             var doormanConfig = RenderedDoormanConfig(data);
             try
@@ -389,6 +410,10 @@ public sealed class PgNodeMachine : IDisposable
         catch (Exception e)
         {
             error = FirstLine(e.Message);
+            // Факт неудавшегося применения — в анти-дребезг (повтор той же
+            // ревизии отложен до истечения коулдауна).
+            _failedApplyRevision = (long)mod;
+            _failedApplyUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         }
 
         if (error is null)
@@ -397,6 +422,7 @@ public sealed class PgNodeMachine : IDisposable
             _appliedSpiloMaterial = SpiloMaterial(data);
             _appliedDoormanConfig = DoormanMaterialOf(doormanConfig, data);
             _appliedRevision = (long)mod;
+            _failedApplyRevision = null;
             await PublishAsync(PgNodeStatus.Ready, mod,
                 Components(pg: spiloChanged ? "starting" : "ready",
                     doorman: doormanChanged ? "starting" : "ready"),

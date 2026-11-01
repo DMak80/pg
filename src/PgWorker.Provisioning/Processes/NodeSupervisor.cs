@@ -624,12 +624,24 @@ public sealed class NodeSupervisor(
 
             foreach (var node in shard.Nodes)
             {
-                if (node.State is NodeState.Quarantined or NodeState.Removing)
-                    continue; // карантин/демонтаж — вне надзора
+                if (node.State is NodeState.Removing)
+                    continue; // демонтаж — вне надзора
                 if (!addresses.TryGetValue($"{shard.Name}/{node.Name}", out var addr) || addr.Object is not null)
                     continue; // записи нет / усыновлённая (object) — чужой контейнер (R9)
                 if (!statuses.TryGetValue($"{shard.Name}/{node.Name}", out var status))
                     continue; // статуса нет — агент стартует, следующий тик увидит not_initialized
+
+                // Карантин (arch/14 §5 A: state не трогаем, вне проб) —
+                // ИСКЛЮЧЕНИЕ: not_initialized-доставка. REST эвакуированной ноды
+                // при t05-модели оживает только после доставки (spilo/pg_doorman
+                // стартует агент по команде, autostart=false), а E3-детект
+                // возврата (arch/14 §5 D: journal DONE + живой REST) опирается
+                // на него — без доставки возврат карантинного шарда не
+                // обнаруживается никогда. ready-apply и start_failed-реакции на
+                // карантинной ноде не выполняются — карантин держится
+                // эвакуатором (остановит «ожившую» ноду по REST-факту).
+                if (node.State is NodeState.Quarantined && status.State != "not_initialized")
+                    continue;
 
                 var topology = TopologyOf(cluster, snap, shard.Name, addresses);
 
