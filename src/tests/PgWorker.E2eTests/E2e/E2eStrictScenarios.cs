@@ -61,9 +61,13 @@ public sealed class E2eStrictScenarios(E2eStrictScenariosFx Ctx) : IClassFixture
                 progress: async () => $"state={await ConfigStateFieldAsync(Cluster) ?? "absent (Active)"}");
             active.Should().BeTrue("the cluster became Active (config without state)");
 
-            // Assert 1 (bootstrap): SPILO_CONFIGURATION первой ноды несёт
-            // synchronous_mode_strict: true (t06 — значение из config кластера).
-            var spilo = (await ContainerEnvAsync($"pgw-{Cluster}-shard1-shard1a", ct))["SPILO_CONFIGURATION"];
+            // Assert 1 (Т9б, MR-#6; bootstrap): spilo_configuration из
+            // bootstrap-ключа первой ноды несёт strict-пары (env
+            // SPILO_CONFIGURATION упразднён t05).
+            var bKey = (await GetOrNullAsync(
+                $"/clusters/{Cluster}/shards/shard1/nodes/shard1a/bootstrap"))!.Value;
+            using var bDoc = JsonDocument.Parse(bKey);
+            var spilo = bDoc.RootElement.GetProperty("spilo_configuration").GetString()!;
             spilo.Should().Contain("synchronous_mode_strict: true")
                 .And.Contain("synchronous_mode: true");
 
@@ -93,43 +97,43 @@ public sealed class E2eStrictScenarios(E2eStrictScenariosFx Ctx) : IClassFixture
             // же, StartedAt не свежее момента PUT); журнал несёт фазу
             // dcs-converge с патчем по strict. Patroni-проба — ТОЛЬКО условие
             // фазы (т29 §3.10: в тиках — etcd-чтения, гигиена нагрузки).
+            // Журнал фаз — JSON (WorkJournal): фаза dcs-converge перезаписывается
+            // следующим тиком (supervising) — снимок журнала снимается В МОМЕНТ
+            // конвергенции внутри опроса; вложенный diff-патч лежит в строковом
+            // поле last_error (кавычки экранированы внешней сериализацией) —
+            // ищем strict в распакованном значении.
+            string? convergePhase = null, convergeError = null;
             var converged = await E2ePhase.WaitAsync(Fx, "strict-dcs-converged", async () =>
-                await PatroniSyncStrictAsync(shard1a.Patroni, ct) == false, // localhost:{порт из portalloc}
-                TimeSpan.FromSeconds(90), ct,
-                progress: async () =>
+            {
+                if (await PatroniSyncStrictAsync(shard1a.Patroni, ct) != false) // localhost:{порт из portalloc}
+                    return false;
+                var work = (await GetOrNullAsync($"/pgworker/work/{Cluster}"))?.Value;
+                if (work is null)
+                    return false;
+                try
                 {
-                    var work = (await GetOrNullAsync($"/pgworker/work/{Cluster}"))?.Value;
-                    if (work is null)
-                        return "work=absent";
-                    try
-                    {
-                        using var doc = JsonDocument.Parse(work);
-                        var phase = doc.RootElement.TryGetProperty("phase", out var p) ? p.GetString() : "-";
-                        var err = doc.RootElement.TryGetProperty("last_error", out var e) ? e.GetString() : null;
-                        return $"work.phase={phase}, strict-patch={(err is not null && err.Contains("synchronous_mode_strict", StringComparison.Ordinal) ? "present" : "absent")}";
-                    }
-                    catch (JsonException)
-                    {
-                        return "work=<not-JSON>";
-                    }
-                });
-            converged.Should().BeTrue("the DCS convergence brought /config back to false");
+                    using var doc = JsonDocument.Parse(work);
+                    var root = doc.RootElement;
+                    convergePhase = root.TryGetProperty("phase", out var p) ? p.GetString() : null;
+                    convergeError = root.TryGetProperty("last_error", out var e) ? e.GetString() : null;
+                }
+                catch (JsonException)
+                {
+                    return false;
+                }
+
+                return convergePhase == "dcs-converge"
+                    || (convergeError ?? "").Contains("synchronous_mode_strict", StringComparison.Ordinal);
+            }, TimeSpan.FromSeconds(90), ct);
+            converged.Should().BeTrue($"the DCS convergence brought /config back to false (phase={convergePhase}, err={convergeError})");
+            (convergePhase == "dcs-converge"
+                || (convergeError ?? "").Contains("\"synchronous_mode_strict\":false", StringComparison.Ordinal))
+                .Should().BeTrue("the strict patch went through the dcs-converge phase");
 
             var startedAtAfter = await StartedAtAsync(nodes, ct);
             startedAtAfter.Keys.Should().Equal(startedAtBefore.Keys, "the container set did not change (no restarts)");
             foreach (var (name, startedAt) in startedAtAfter)
                 startedAt.Should().Be(startedAtBefore[name], $"node {name} was not restarted (StartedAt unchanged)");
-
-            var work = (await GetOrNullAsync($"/pgworker/work/{Cluster}"))!.Value;
-            // Журнал фаз — JSON (WorkJournal): вложенный diff-патч лежит в
-            // строковом поле last_error, где кавычки экранированы внешней
-            // сериализацией — подстрочный поиск по сырому значению не находит
-            // патч; разбираем документ и ищем strict в распакованном last_error.
-            using var workDoc = JsonDocument.Parse(work);
-            var workRoot = workDoc.RootElement;
-            workRoot.GetProperty("phase").GetString().Should().Be("dcs-converge");
-            workRoot.GetProperty("last_error").GetString().Should()
-                .Contain("\"synchronous_mode_strict\":false");
         }
         catch
         {

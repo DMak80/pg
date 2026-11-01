@@ -49,13 +49,18 @@ public sealed class E2ePgtuneScenarios(E2ePgtuneScenariosFx Ctx) : IClassFixture
         provisioned.Should().BeTrue("provisioning of the cluster must reach Active; " +
                                     $"work={await WorkDumpAsync(cluster, ct)}");
 
-        // Assert: SPILO_CONFIGURATION каждой ноды — merge(PGTune ∪ канон):
-        // PGTune-значения от заявки 4Gi, канон P3 поверх, exclude по умолчанию.
+        // Assert (Т9а, MR-#6): источник параметров — НЕ env контейнера:
+        // spilo_configuration из bootstrap-ключа ноды (etcd) — merge(PGTune ∪
+        // канон): PGTune-значения от заявки 4Gi, канон P3 поверх, exclude по
+        // умолчанию.
         foreach (var shard in new[] { "shard1", "shard2" })
         foreach (var node in new[] { $"{shard}a", $"{shard}b" })
         {
             var env = await ContainerEnvAsync($"pgw-{cluster}-{shard}-{node}", ct);
-            var spilo = env["SPILO_CONFIGURATION"];
+            var bKey = (await GetOrNullAsync(
+                $"/clusters/{cluster}/shards/{shard}/nodes/{node}/bootstrap"))!.Value;
+            using var bDoc = JsonDocument.Parse(bKey);
+            var spilo = bDoc.RootElement.GetProperty("spilo_configuration").GetString()!;
             spilo.Should().Contain("max_connections: \"60\"", $"pgw-{cluster}-{shard}-{node}");
             spilo.Should().Contain("shared_buffers: \"1GB\"", $"pgw-{cluster}-{shard}-{node}");
             spilo.Should().Contain("effective_cache_size: \"3GB\"", $"pgw-{cluster}-{shard}-{node}");
@@ -67,13 +72,18 @@ public sealed class E2ePgtuneScenarios(E2ePgtuneScenariosFx Ctx) : IClassFixture
             spilo.Should().NotContain("io_workers", $"pgw-{cluster}-{shard}-{node}");
         }
 
-        // Assert: env нод одного прохода идентичен по РАСЧЁТУ (SPILO_CONFIGURATION
+        // Assert: ноды одного прохода идентичны по РАСЧЁТУ (spilo_configuration
         // несёт ровно один пер-нодовый ключ — restapi.connect_address t22
         // (arch/14 §2.4 п.6); он нормализуется, прочие строки обязаны совпадать).
         var spilos = new List<string>();
         foreach (var shard in new[] { "shard1", "shard2" })
         foreach (var node in new[] { $"{shard}a", $"{shard}b" })
-            spilos.Add((await ContainerEnvAsync($"pgw-{cluster}-{shard}-{node}", ct))["SPILO_CONFIGURATION"]);
+        {
+            var bKey = (await GetOrNullAsync(
+                $"/clusters/{cluster}/shards/{shard}/nodes/{node}/bootstrap"))!.Value;
+            using var bDoc = JsonDocument.Parse(bKey);
+            spilos.Add(bDoc.RootElement.GetProperty("spilo_configuration").GetString()!);
+        }
         spilos
             .Select(s => string.Join('\n', s.Split('\n').Where(l => !l.Contains("connect_address"))))
             .Distinct()
@@ -81,7 +91,7 @@ public sealed class E2ePgtuneScenarios(E2ePgtuneScenariosFx Ctx) : IClassFixture
 
         // Assert: doorman-бюджет синхронизирован от рассчитанного max_connections
         // (P15: 60 − 5 = 55, пол 10).
-        var doorman = (await ContainerEnvAsync($"pgw-{cluster}-shard1-shard1a", ct))["DOORMAN_CONFIG"];
+        var doorman = (await ContainerEnvAsync($"pgw-{cluster}-shard1-shard1a", ct))["DOORMAN_CONFIG_TEMPLATE"];
         doorman.Should().Contain("max_db_connections: 55");
     }
 
@@ -93,7 +103,8 @@ public sealed class E2ePgtuneScenarios(E2ePgtuneScenariosFx Ctx) : IClassFixture
         cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
         var ct = cts.Token;
         var cluster = $"rshop{Fx.ClusterTag}";
-        var node = $"pgw-{cluster}-shard1-shard1b";
+        var node = $"pgw-{cluster}-shard1-shard1b"; // полное docker-имя контейнера
+        var keyNode = node.Split('-')[^1]; // короткое имя ноды в etcd-ключах (shard1b)
 
         // Arrange: живой кластер с заявкой 4Gi → env нод от 4Gi (shared_buffers 1GB).
         await SeedClusterAsync(cluster, requestMem: "4Gi", ct);
@@ -103,7 +114,13 @@ public sealed class E2ePgtuneScenarios(E2ePgtuneScenariosFx Ctx) : IClassFixture
         provisioned.Should().BeTrue("provisioning of the cluster must reach Active; " +
                                     $"work={await WorkDumpAsync(cluster, ct)}");
 
-        var envBefore = (await ContainerEnvAsync(node, ct))["SPILO_CONFIGURATION"];
+        var bootstrapReady = await E2eFixture.WaitForAsync(
+            async () => await GetOrNullAsync(
+                $"/clusters/{cluster}/shards/shard1/nodes/{keyNode}/bootstrap") is not null,
+            TimeSpan.FromSeconds(60), ct);
+        bootstrapReady.Should().BeTrue("the initial bootstrap must exist");
+        var envBefore = (await GetOrNullAsync(
+            $"/clusters/{cluster}/shards/shard1/nodes/{keyNode}/bootstrap"))!.Value;
         envBefore.Should().Contain("shared_buffers: \"1GB\"", "the initial computation comes from the 4Gi request");
 
         // Снимок имён ключей etcd ДО (граница контракта: воркер не пишет параметры).
@@ -118,26 +135,21 @@ public sealed class E2ePgtuneScenarios(E2ePgtuneScenariosFx Ctx) : IClassFixture
 
         var recreated = await E2eFixture.WaitForAsync(async () =>
         {
-            try
-            {
-                // Контейнер существует И несёт env от новой заявки (старый env 1GB).
-                var env = await ContainerEnvAsync(node, ct);
-                return env.TryGetValue("SPILO_CONFIGURATION", out var spilo)
-                       && spilo.Contains("shared_buffers: \"2GB\"", StringComparison.Ordinal);
-            }
-            catch (ApplicationException)
-            {
-                return false; // контейнера ещё нет — надзор пересоздаст следующим тиком
-            }
+            // Т9а (MR-#6): источник — bootstrap-ключ ноды (spilo_configuration
+            // от новой заявки 8Gi, старый env 1GB); env контейнера — НЕ источник.
+            var bKey = await GetOrNullAsync(
+                $"/clusters/{cluster}/shards/shard1/nodes/{keyNode}/bootstrap");
+            return bKey is not null && bKey.Value.Contains("shared_buffers: \"2GB\"", StringComparison.Ordinal);
         }, TimeSpan.FromSeconds(90), ct);
-        recreated.Should().BeTrue($"the recreated node must get env from the 8Gi request; " +
+        recreated.Should().BeTrue($"the recreated node must get bootstrap from the 8Gi request; " +
                                   $"work={await WorkDumpAsync(cluster, ct)}");
 
-        // Assert: env отличается от прежнего (пересчёт от АКТУАЛЬНОЙ заявки).
-        var envAfter = (await ContainerEnvAsync(node, ct))["SPILO_CONFIGURATION"];
-        envAfter.Should().NotBe(envBefore, "the env of the recreated node is recomputed from the new request");
-        envAfter.Should().Contain("max_connections: \"60\"");
-        envAfter.Should().Contain("wal_level: logical");
+        // Assert: bootstrap-ключ отличается от прежнего (пересчёт от АКТУАЛЬНОЙ заявки).
+        var bAfter = (await GetOrNullAsync(
+            $"/clusters/{cluster}/shards/shard1/nodes/{keyNode}/bootstrap"))!.Value;
+        bAfter.Should().NotBe(envBefore, "the recreated node is recomputed from the new request");
+        bAfter.Should().Contain("max_connections: \"60\"");
+        bAfter.Should().Contain("wal_level: logical");
 
         // Assert: etcd-контракт неизменен — новых ключей вне известного HA-churn
         // не появилось: /service/<scope>/* — состояние Patroni; shards/<X>/master —
@@ -198,7 +210,10 @@ public sealed class E2ePgtuneScenarios(E2ePgtuneScenariosFx Ctx) : IClassFixture
         foreach (var shard in new[] { "shard1", "shard2" })
         foreach (var node in new[] { $"{shard}a", $"{shard}b" })
         {
-            var spilo = (await ContainerEnvAsync($"pgw-{cluster}-{shard}-{node}", ct))["SPILO_CONFIGURATION"];
+            var bKey = (await GetOrNullAsync(
+                $"/clusters/{cluster}/shards/{shard}/nodes/{node}/bootstrap"))!.Value;
+            using var bDoc = JsonDocument.Parse(bKey);
+            var spilo = bDoc.RootElement.GetProperty("spilo_configuration").GetString()!;
             spilo.Should().Contain("shared_buffers: \"2GB\"", $"pgw-{cluster}-{shard}-{node}");
             spilo.Should().Contain("effective_cache_size: \"6GB\"", $"pgw-{cluster}-{shard}-{node}");
             spilo.Should().Contain("max_connections: \"60\"", $"pgw-{cluster}-{shard}-{node}");
