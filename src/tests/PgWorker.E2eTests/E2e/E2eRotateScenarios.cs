@@ -32,9 +32,10 @@ public sealed class E2eRotateScenarios(E2eRotateScenariosFx Ctx) : IClassFixture
         var ct = cts.Token;
         await SeedClusterAsync(Cluster);
         await using var app = await Fx.StartHostAsync("rotate", ct: ct);
-        var provisioned = await E2eFixture.WaitForAsync(async () =>
-            await GetOrNullAsync($"/clusters/{Cluster}/shards/shard1/dsn") is not null
-            && await GetOrNullAsync($"/clusters/{Cluster}/shards/shard2/dsn") is not null,
+        var provisioned = await E2ePhase.WaitAsync(Fx, "rotate-provisioned",
+            async () =>
+                await GetOrNullAsync($"/clusters/{Cluster}/shards/shard1/dsn") is not null
+                && await GetOrNullAsync($"/clusters/{Cluster}/shards/shard2/dsn") is not null,
             TimeSpan.FromSeconds(90), ct);
         provisioned.Should().BeTrue("the cluster came up");
         var oldPassword = await Fx.GetAppPasswordAsync(Cluster, ct);
@@ -71,12 +72,19 @@ public sealed class E2eRotateScenarios(E2eRotateScenariosFx Ctx) : IClassFixture
             null, ct);
 
         // Assert 1 (критерий 5а/5б): заявка исполнена и удалена; пароль сменился
-        var rotated = await E2eFixture.WaitForAsync(async () =>
+        var rotated = await E2ePhase.WaitAsync(Fx, "rotate-request-executed",
+        async () =>
         {
             var password = await Fx.GetAppPasswordAsync(Cluster, ct);
             return password != oldPassword
                 && await GetOrNullAsync($"/pgworker/rotations/{Cluster}") is null;
-        }, TimeSpan.FromSeconds(90), ct);
+        }, TimeSpan.FromSeconds(90), ct,
+            progress: async () =>
+            {
+                var work = await GetOrNullAsync($"/pgworker/work/{Cluster}");
+                var nodes = await RangeOrNullAsync($"/pgworker/nodes/{Cluster}/");
+                return $"work={work?.Value ?? "absent"}; statuses={nodes}";
+            });
         rotated.Should().BeTrue("the request is executed: the password changed, the request key is removed");
         var newPassword = await Fx.GetAppPasswordAsync(Cluster, ct);
         Regex.IsMatch(newPassword, "^[A-Za-z0-9]{32}$").Should().BeTrue();
@@ -93,11 +101,19 @@ public sealed class E2eRotateScenarios(E2eRotateScenariosFx Ctx) : IClassFixture
         // Т3 (MR-#9): StartedAt-снимок ПОСЛЕ закрытия окна (окно может жить
         // дольше заявки — ETCD-FIRST); StartedAtMapAsync выполняется только
         // после закрытия — «без пересоздания» проверено на полном окне R2→R4.
-        var windowClosed = await E2eFixture.WaitForAsync(async () =>
+        var windowClosed = await E2ePhase.WaitAsync(Fx, "rotate-window-closed",
+        async () =>
         {
             var work = await GetOrNullAsync($"/pgworker/work/{Cluster}");
             return work is not null && !work.Value.Contains("\"rest_window_open\":true");
-        }, TimeSpan.FromSeconds(120), ct);
+        }, TimeSpan.FromSeconds(120), ct,
+            progress: async () =>
+            {
+                var work = await GetOrNullAsync($"/pgworker/work/{Cluster}");
+                var nodes = await RangeOrNullAsync($"/pgworker/nodes/{Cluster}/");
+                var rotations = await GetOrNullAsync($"/pgworker/rotations/{Cluster}");
+                return $"work={work?.Value ?? "absent"}; rotations={rotations?.Value ?? "absent"}; statuses={nodes}";
+            });
         windowClosed.Should().BeTrue("R4 closes the rotation window");
 
         // Assert 1c (spec §6.3/§9.6): ротация rest_password БЕЗ пересоздания —
@@ -213,10 +229,25 @@ public sealed class E2eRotateScenarios(E2eRotateScenariosFx Ctx) : IClassFixture
     private async Task<Kv?> GetOrNullAsync(string key)
         => (await G.GetAsync(Endpoint, key, TestContext.Current.CancellationToken)).Value;
 
+    // Компактный срез статусных ключей нод (forensic-телеметрия прогресса
+    // ротации: state/applied_revision каждой ноды одной строкой).
+    private async Task<string> RangeOrNullAsync(string prefix)
+    {
+        var range = await G.RangeAsync(Endpoint, prefix, TestContext.Current.CancellationToken);
+        return range.Value is not { } list
+            ? "<range error>"
+            : string.Join("; ", list.Take(12).Select(kv =>
+            {
+                var val = kv.Value.Length > 120 ? kv.Value[..120] + "…" : kv.Value;
+                return $"{kv.Key[(kv.Key.LastIndexOf('/') + 1)..]}={val}";
+            }));
+    }
+
     // StartedAt контейнеров нод кластера (docker inspect) — ротация без
     // пересоздания не меняет их (spec §6.3/§9.6).
     private async Task<Dictionary<string, string>> StartedAtMapAsync(string cluster, CancellationToken ct)
     {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
         var names = (await E2eFixture.RunDockerAsync(
             ["ps", "--format", "{{.Names}}", "--filter", $"name=pgw-{cluster}-"], ct))
             .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
@@ -226,6 +257,8 @@ public sealed class E2eRotateScenarios(E2eRotateScenariosFx Ctx) : IClassFixture
             map[name] = (await E2eFixture.RunDockerAsync(
                 ["inspect", "-f", "{{.State.StartedAt}}", name], ct)).Trim();
         }
+        sw.Stop();
+        Console.WriteLine($"[TIMING] rotate startedAt-map ({map.Count} nodes): {sw.Elapsed.TotalSeconds:F1}s");
         return map;
     }
 }

@@ -408,8 +408,10 @@ public sealed class E2eScenarios(E2eScenariosFx Ctx, ITestOutputHelper output) :
     private async Task AssertEvacuationAsync(
         string cluster, string deadShard, string aliveShard, string snapshotsDir, CancellationToken ct)
     {
+        var stopSw = System.Diagnostics.Stopwatch.StartNew();
         foreach (var container in await ListContainerNamesAsync($"pgw-{cluster}-{deadShard}-"))
             await Fx.RunDockerAsync(["stop", container], ct);
+        Console.WriteLine($"[TIMING] ac6 dead-shard docker stop: {stopSw.Elapsed.TotalSeconds:F1}s");
 
         // Эвакуация: journal DONE (E4) после ShardDeadSec.
         var evacuated = await E2ePhase.WaitAsync(Fx, "ac6-evacuation", async () =>
@@ -446,8 +448,10 @@ public sealed class E2eScenarios(E2eScenariosFx Ctx, ITestOutputHelper output) :
             .Should().HaveCountGreaterThanOrEqualTo(2, "snapshots before/after the evacuation are taken");
 
         // Возврат шарда: docker start вручную → PgWorker останавливает (P1-призраки).
+        var startSw = System.Diagnostics.Stopwatch.StartNew();
         foreach (var container in await ListContainerNamesAsync($"pgw-{cluster}-{deadShard}-", all: true))
             await Fx.RunDockerAsync(["start", container], ct);
+        Console.WriteLine($"[TIMING] ac6 returned-shard docker start: {startSw.Elapsed.TotalSeconds:F1}s");
 
         var quarantined = await E2ePhase.WaitAsync(Fx, "ac6-quarantine", async () =>
         {
@@ -461,7 +465,13 @@ public sealed class E2eScenarios(E2eScenariosFx Ctx, ITestOutputHelper output) :
         if (!quarantined)
         {
             var current = await GetOrNullAsync($"/pgworker/evacuations/{cluster}/{deadShard}");
+            var nodeStatuses = await G.RangeAsync(Endpoint, $"/pgworker/nodes/{cluster}/", ct);
+            var statusesDump = nodeStatuses.Value is { } kvs
+                ? string.Join("; ", kvs.Select(kv => $"{kv.Key}={kv.Value}"))
+                : "<range error>";
+            var workKv = await GetOrNullAsync($"/pgworker/work/{cluster}");
             Assert.Fail($"the shard return was not observed within 120 s; journal: {current?.Value ?? "absent"}; " +
+                        $"work: {workKv?.Value ?? "absent"}; node statuses: {statusesDump}; " +
                         $"container statuses: {string.Join(",", await Task.WhenAll(
                             (await ListContainerNamesAsync($"pgw-{cluster}-{deadShard}-", all: true))
                             .Select(async n => $"{n}={await ContainerStatusAsync(n, ct)}")))}");

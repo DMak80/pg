@@ -121,7 +121,9 @@ public sealed class E2ePatroniRestTlsScenarios(E2ePatroniRestTlsScenariosFx Ctx)
                 master.Should().NotBeNullOrWhiteSpace("the primary is resolved by the /primary probe");
                 replica = master == "shard1a" ? "shard1b" : "shard1a";
                 var masterContainer = $"pgw-{cluster}-shard1-{master}";
+                var rdSw = System.Diagnostics.Stopwatch.StartNew();
                 await Fx.RunDockerAsync(["restart", masterContainer], ct);
+                Console.WriteLine($"[TIMING] rtls master restart ({masterContainer}): {rdSw.Elapsed.TotalSeconds:F1}s");
                 var keyAlive = await E2eFixture.WaitForAsync(async () =>
                     (await GetOrNullAsync($"/clusters/{cluster}/shards/shard1/master")) is { Value.Length: > 0 },
                     TimeSpan.FromSeconds(60), ct);
@@ -158,7 +160,9 @@ public sealed class E2ePatroniRestTlsScenarios(E2ePatroniRestTlsScenariosFx Ctx)
                 var legacy = $"pgw-{cluster}-shard1-{replica}";
                 var startedAtBefore = (await Fx.RunDockerAsync(
                     ["inspect", "-f", "{{.State.StartedAt}}", legacy], ct)).Trim();
+                var rrSw = System.Diagnostics.Stopwatch.StartNew();
                 await Fx.RunDockerAsync(["restart", legacy], ct);
+                Console.WriteLine($"[TIMING] rtls replica restart ({legacy}): {rrSw.Elapsed.TotalSeconds:F1}s");
                 // Граница свежести статуса: lease прежнего агента жив до 15 c
                 // после рестарта — ready-wait обязан видеть только статусы,
                 // опубликованные ПОСЛЕ этого момента (иначе протохнувший ready
@@ -190,7 +194,16 @@ public sealed class E2ePatroniRestTlsScenarios(E2ePatroniRestTlsScenariosFx Ctx)
                         }
                     },
                     TimeSpan.FromSeconds(150), ct);
-                migrated.Should().BeTrue("the restarted replica converges through a fresh handshake to ready");
+                if (!migrated)
+                {
+                    var statusesDump = await G.RangeAsync(Endpoint, $"/pgworker/nodes/{cluster}/", ct);
+                    var work = await GetOrNullAsync($"/pgworker/work/{cluster}");
+                    Assert.Fail("the restarted replica did not converge to ready; " +
+                                $"work: {work?.Value ?? "absent"}; statuses: " +
+                                (statusesDump.Value is { } kvs
+                                    ? string.Join("; ", kvs.Select(kv => $"{kv.Key}={kv.Value}"))
+                                    : "<range error>"));
+                }
 
                 // Нода рестартована и заново сконвергировала (StartedAt
                 // сменился), лидер НЕ тронут.
