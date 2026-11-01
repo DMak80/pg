@@ -467,4 +467,52 @@ public sealed class MembershipProcessTests(EtcdWorkerEnvironment env)
             await CleanupAsync(rig, env);
         }
     }
+
+    // AAA: краш-окно promote→RUNNING (член уже voting, state-лист не дописан:
+    // процесс умер между MemberPromote и put) — resume-ветка сверяет факт по
+    // свежему составу (promote voting-члена etcd 3.5 отвергает перманентно),
+    // дописывает state=RUNNING; узел не застревает в PROVISIONING навсегда
+    [Fact]
+    public async Task Resume_PromotedMemberWithoutRunningState_Converges()
+    {
+        DockerTrait.SkipIfUnavailable();
+        var rig = NewRig();
+        try
+        {
+            // Arrange: один started managed-узел (state=RUNNING пройден тиком).
+            await DeclareAsync(env, 1);
+            await RunUntilAsync(rig, env, async () =>
+            {
+                var managed = await ManagedAsync(env);
+                return managed.Count == 1
+                       && managed.All(m => m.Member.Name is { Length: > 0 })
+                       && managed.All(m => !m.Member.IsLearner);
+            }, budgetSec: 360, "1 managed started voting member");
+
+            // Симуляция краш-окна: state-лист откат в PROVISIONING (член
+            // реально voting — put между promote и state не состоялся).
+            var member = (await ManagedAsync(env)).Single();
+            await env.Gateway.PutAsync(env.Endpoint, EtcdDomainKeys.StateKey(member.K),
+                $"\"{ManagedNodeStates.Provisioning}\"", lease: null, TestContext.Current.CancellationToken);
+
+            // Act: тики доводки — already-voting ветка дописывает RUNNING.
+            await RunUntilAsync(rig, env, async () =>
+            {
+                var range = await env.Gateway.RangeAsync(
+                    env.Endpoint, EtcdDomainKeys.StateKey(member.K), TestContext.Current.CancellationToken);
+                return range.IsSuccess && range.Value is [{ Value: var v }] && v.Trim('"') == ManagedNodeStates.Running;
+            }, budgetSec: 60, "state leaf converges back to RUNNING for an already-voting member");
+
+            // Assert: член по-прежнему voting, состав не изменился (никаких
+            // лишних member-add/remove в окне resume).
+            var after = await ManagedAsync(env);
+            after.Should().HaveCount(1);
+            after.Single().Member.Id.Should().Be(member.Member.Id);
+            after.Single().Member.IsLearner.Should().BeFalse("the member was never demoted back to learner");
+        }
+        finally
+        {
+            await CleanupAsync(rig, env);
+        }
+    }
 }

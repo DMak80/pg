@@ -57,20 +57,35 @@ internal sealed class SnapshotLoop(
 
                 if (claims.IsLeader)
                 {
-                    var behind = true;
-                    var delay = await TickLeaderAsync(stoppingToken);
-                    behind = delay.Behind;
+                    try
+                    {
+                        // Cancellation-гвард лидерства (arch/17 S5): потеря leader-lease
+                        // прерывает тик лидера; цикл продолжит как не-лидер.
+                        using var leaderLease = CancellationTokenSource.CreateLinkedTokenSource(
+                            stoppingToken, claims.LeaderToken);
+                        var tick = leaderLease.Token;
 
-                    // Сон тика: отставание/FAILED — RetryIntervalSec (RPO-окно
-                    // транзиента закрывается минутами); здоровый контур — короткий
-                    // ScanIntervalSec (детекция изменений каждый тик). Сон длиннее
-                    // порога сноса — пульсирующий (чанк < окна watchdog).
-                    var sleep = behind
-                        ? TimeSpan.FromSeconds(options.CurrentValue.Snapshots.RetryIntervalSec)
-                        : TimeSpan.FromSeconds(options.CurrentValue.Loops.ScanIntervalSec);
-                    await Shared.Core.Hosting.PulsingDelay.SleepAsync(sleep,
-                        TimeSpan.FromSeconds(options.CurrentValue.Loops.Watchdog.CheckIntervalSec),
-                        health.MarkSnapshotActivity, stoppingToken);
+                        var behind = true;
+                        var delay = await TickLeaderAsync(tick);
+                        behind = delay.Behind;
+
+                        // Сон тика: отставание/FAILED — RetryIntervalSec (RPO-окно
+                        // транзиента закрывается минутами); здоровый контур — короткий
+                        // ScanIntervalSec (детекция изменений каждый тик). Сон длиннее
+                        // порога сноса — пульсирующий (чанк < окна watchdog).
+                        var sleep = behind
+                            ? TimeSpan.FromSeconds(options.CurrentValue.Snapshots.RetryIntervalSec)
+                            : TimeSpan.FromSeconds(options.CurrentValue.Loops.ScanIntervalSec);
+                        await Shared.Core.Hosting.PulsingDelay.SleepAsync(sleep,
+                            TimeSpan.FromSeconds(options.CurrentValue.Loops.Watchdog.CheckIntervalSec),
+                            health.MarkSnapshotActivity, tick);
+                    }
+                    catch (OperationCanceledException) when (!stoppingToken.IsCancellationRequested)
+                    {
+                        // Потеря leader-lease прервала тик (гвард arch/17 S5): не ошибка —
+                        // цикл продолжит как не-лидер и пере-захватит ≤ TTL + тик скана.
+                        logger.LogWarning("snapshot leadership lost mid-tick");
+                    }
                 }
                 else
                 {

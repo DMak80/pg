@@ -179,7 +179,7 @@ function EtcdSnapshotsCard({ etcd }: { etcd: EtcdSnapshotsDto | null }) {
     return (
       <Card withBorder padding="md" radius="md" w={340}>
         <Text fw={600} mb="xs">etcd snapshots</Text>
-        <Text c="dimmed" size="sm">Upload not enabled (/pgworker/etcd-snapshots key missing)</Text>
+        <Text c="dimmed" size="sm">No /etcdworker/snapshots key — EtcdWorker has not uploaded a snapshot yet</Text>
       </Card>
     );
   }

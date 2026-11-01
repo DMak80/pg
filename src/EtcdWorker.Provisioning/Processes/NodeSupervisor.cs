@@ -29,12 +29,16 @@ public sealed class NodeSupervisor(
     private readonly Dictionary<int, long> _lastProbed = [];
 
     /// <summary>Наблюдение: факты проблем для MembershipProcess + актуализация
-    /// state-листов (RUNNING/UNREACHABLE). Пробы — не чаще HealthIntervalSec.</summary>
+    /// state-листов (RUNNING/UNREACHABLE). Пробы — не чаще HealthIntervalSec.
+    /// Проба — исполненная итерация наблюдения: progress?.Mark() между узлами
+    /// (серия drop-таймаутящихся проб не должна выглядеть зависанием цикла —
+    /// инвариант поллинга долгих фаз, arch/14 §6).</summary>
     public async Task<Result<IReadOnlyList<ManagedDeadFact>>> ObserveAsync(
         IReadOnlyList<ManagedMember> managed,
         IReadOnlyList<EtcdNodesParser.ManagedNodeState> nodes,
         IReadOnlyDictionary<int, EtcdPortAllocStore.NodePort> ports,
-        CancellationToken ct)
+        CancellationToken ct,
+        Shared.Core.Hosting.ILoopProgress? progress = null)
     {
         var now = clock.GetUtcNow().ToUnixTimeSeconds();
         var nodeByK = nodes.ToDictionary(n => n.K);
@@ -85,6 +89,7 @@ public sealed class NodeSupervisor(
                 await PutStateAsync(m.K, ManagedNodeStates.Unreachable, ct);
 
             facts.Add(new ManagedDeadFact(m, since, environmentMissing));
+            progress?.Mark();
         }
 
         return Result<IReadOnlyList<ManagedDeadFact>>.Success(facts);

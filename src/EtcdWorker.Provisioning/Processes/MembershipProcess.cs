@@ -234,15 +234,40 @@ public sealed class MembershipProcess(
         return await PromoteAsync(member, ct);
     }
 
-    // Promote learner → voting: журнал promoting; not-in-sync — transient
-    // (узел остаётся PROVISIONING — следующий тик resume-веткой повторит).
+    // Promote learner → voting: журнал promoting; already-voting (краш-окно
+    // promote→RUNNING: член повышен, state-лист не дописан) — сразу RUNNING;
+    // not-in-sync — transient (узел остаётся PROVISIONING — следующий тик
+    // resume-веткой повторит).
     private async Task<Result> PromoteAsync(ManagedMember member, CancellationToken ct)
     {
+        // Факт по свежему составу: promote уже-voting члена etcd 3.5 отвергает
+        // перманентно («can only promote a learner») — сверка ДО вызова
+        // закрывает краш-окно (идемпотентность по факту).
+        var members = await MemberListFailoverAsync(ct);
+        if (!members.IsSuccess)
+            return Result.Failed(members.Error!);
+        var fresh = members.Value.FirstOrDefault(m => m.Id == member.Member.Id);
+        if (fresh is null)
+            return Result.Failed(new ApplicationException(
+                $"etcdw-node-{member.K}: PROVISIONING member {member.Member.Id} vanished from member list"));
+        if (!fresh.IsLearner)
+        {
+            var caughtUp = await PutFailoverAsync(
+                EtcdDomainKeys.StateKey(member.K), $"\"{ManagedNodeStates.Running}\"", ct);
+            if (!caughtUp.IsSuccess)
+                return Result.Failed(caughtUp.Error!);
+            await journal.WriteAsync(Op, "done", claims.InstanceId, null, ct);
+            return Result.Success();
+        }
+
         await journal.WriteAsync(Op, "promoting", claims.InstanceId, null, ct);
         var promoted = await MemberPromoteFailoverAsync(member.Member.Id, ct);
         if (!promoted.IsSuccess)
             return Result.Failed(promoted.Error!);
-        await PutFailoverAsync(EtcdDomainKeys.StateKey(member.K), $"\"{ManagedNodeStates.Running}\"", ct);
+        var put = await PutFailoverAsync(
+            EtcdDomainKeys.StateKey(member.K), $"\"{ManagedNodeStates.Running}\"", ct);
+        if (!put.IsSuccess)
+            return Result.Failed(put.Error!); // transient: resume-ветка следующего тика допишет RUNNING
         return Result.Success();
     }
 

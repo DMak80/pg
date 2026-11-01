@@ -21,6 +21,7 @@ internal sealed class ReconcileLoop(
     MembershipProcess membership,
     NodeSupervisor supervisor,
     EtcdPortAllocStore portAlloc,
+    Shared.Core.Hosting.ILoopProgress progress,
     ILogger<ReconcileLoop> logger,
     HealthState health,
     Shared.Metrics.Worker.WorkerMetricsInstrumentation metrics) : BackgroundService, IHealthCheckService
@@ -50,11 +51,24 @@ internal sealed class ReconcileLoop(
                 var tickResult = Result.Success();
                 if (claims.IsLeader)
                 {
-                    var tick = await TickLeaderAsync(stoppingToken);
-                    if (!tick.IsSuccess && tick.Error is { } error)
+                    try
                     {
-                        logger.LogWarning(error, "membership tick failed: {Message}", error.Message);
-                        tickResult = tick;
+                        // Cancellation-гвард лидерства (arch/17 S5): потеря leader-lease
+                        // прерывает тик доводки состава; цикл продолжит как не-лидер.
+                        using var leaderLease = CancellationTokenSource.CreateLinkedTokenSource(
+                            stoppingToken, claims.LeaderToken);
+                        var tick = await TickLeaderAsync(leaderLease.Token);
+                        if (!tick.IsSuccess && tick.Error is { } error)
+                        {
+                            logger.LogWarning(error, "membership tick failed: {Message}", error.Message);
+                            tickResult = tick;
+                        }
+                    }
+                    catch (OperationCanceledException) when (!stoppingToken.IsCancellationRequested)
+                    {
+                        // Потеря leader-lease прервала тик (гвард arch/17 S5): не ошибка —
+                        // цикл продолжит как не-лидер и пере-захватит ≤ TTL + тик скана.
+                        logger.LogWarning("membership leadership lost mid-tick");
                     }
                 }
 
@@ -109,7 +123,7 @@ internal sealed class ReconcileLoop(
             : new Dictionary<int, EtcdPortAllocStore.NodePort>();
 
         // Надзор: факты проблем (метки ProblemSinceUnix) + state-актуализация.
-        var facts = await supervisor.ObserveAsync(managed, nodes, ports, ct);
+        var facts = await supervisor.ObserveAsync(managed, nodes, ports, ct, progress);
         if (!facts.IsSuccess)
             return Result.Failed(facts.Error!);
 
