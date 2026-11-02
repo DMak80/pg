@@ -560,7 +560,10 @@ public sealed class PoolFailoverExhaustionScenarios(PoolFailoverExhaustionScenar
     {
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(
             TestContext.Current.CancellationToken);
-        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
+        // Потолок — бюджет ×1.2 от фактического замера в полной серии
+        // (187 с: три провиженнинга strict-sync по 48-55 с + фазы AC4 → 225 с);
+        // неверное ожидание не может длиться дольше.
+        cts.CancelAfter(TimeSpan.FromSeconds(225));
         var ct = cts.Token;
         var cluster = $"pac4{Fx.ClusterTag}";
         var writer = new WalStatusWriter(G, [Endpoint]);

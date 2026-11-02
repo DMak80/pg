@@ -288,12 +288,16 @@ public sealed class E2eEnvironment : IAsyncDisposable
             }
 
             runningSince ??= DateTimeOffset.UtcNow;
-            if (DateTimeOffset.UtcNow - runningSince > TimeSpan.FromSeconds(60))
+            // Порог — ×1.2 от фактического замера провиженнинга в полной
+            // серии (strict-sync sql-фаза 40-50 с + финальные фазы ≈ 70 с →
+            // 85 с): раньше — страховка от вечного зависания, не отсечка
+            // медленного, но живого старта.
+            if (DateTimeOffset.UtcNow - runningSince > TimeSpan.FromSeconds(85))
             {
                 await fx.CollectDiagnosticsAsync("provision-stuck-fail-fast");
                 throw new ApplicationException(
                     $"provisioning is stuck: nodes {cluster} ({string.Join(',', shards)}) RUNNING "
-                    + ">60 s, config.state not lifted (the worker does not complete the request — see "
+                    + ">85 s, config.state not lifted (the worker does not complete the request — see "
                     + "container-pgw-ew-*.log in the fail-fast telemetry)");
             }
 
