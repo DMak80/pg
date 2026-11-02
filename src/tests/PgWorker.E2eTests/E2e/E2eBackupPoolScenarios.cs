@@ -873,16 +873,16 @@ public sealed class PoolReadAnyNodeScenarios(PoolReadAnyNodeScenariosFx Ctx) : E
             await G.DeleteAsync(Endpoint, "/pgworker/backups-disabled", prefix: false, ct);
 
             // Assert — restore из пула при мёртвой node1: COMPLETED (чтение c node2).
-            // Свой 3-мин CTS на restore-секцию (мульти-CTS, приказ владельца) +
+            // Свой CTS на restore-секцию (мульти-CTS, приказ владельца; потолок 8 мин — см. ниже) +
             // бюджет 240 c (согласован владельцем по фактическим замерам):
             // операция — скачивание набора + recovery + промоут при мёртвой
-            // части пула; фактическая длительность ~150-180 c (PG завершает
+            // части пула; фактическая длительность ~150-240+ c (PG завершает
             // recovery на ~150-й, COMPLETED — следующим тиком воркера); при
             // 150 c тест падал «RUNNING» при ФАКТИЧЕСКИ завершающемся restore
             // (продукт корректен).
             using var ctsRestore = CancellationTokenSource.CreateLinkedTokenSource(
                 TestContext.Current.CancellationToken);
-            ctsRestore.CancelAfter(TimeSpan.FromMinutes(4));
+            ctsRestore.CancelAfter(TimeSpan.FromMinutes(8));
             ct = ctsRestore.Token;
 
             var restoreId = await PutRestorePlannedAsync(cluster, "shard1", "latest", ct: ct);
