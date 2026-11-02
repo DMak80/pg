@@ -731,11 +731,11 @@ public sealed class E2eWalStreamTliScenarios(E2eWalStreamTliScenariosFx Ctx) : I
         => (await G.RangeAsync(Endpoint, $"/pgworker/backups/{cluster}/{shard}/full/",
             TestContext.Current.CancellationToken)).Value;
 
-    // Листинг wal-префикса в ownS3 ИЗ СЕТИ контура (docker run mc, alias
-    // e2e-owns3:9000 — «сеть одна»): хост-публикация ownS3 после stop/start
-    // ноды не восстанавливается (mac userland-proxy: ни один
-    // хост-запрос не дошёл до сервера), контейнерные клиенты работают всё
-    // время. Возвращает ИМЕНА объектов (сегменты, *.history) префикса
+    // Листинг wal-префикса в ownS3 ИЗ СЕТИ контура (docker run mc,
+    // S3EndpointForContainers — статический IP ownS3, t02): хост-публикация
+    // ownS3 после stop/start ноды не восстанавливается (mac userland-proxy:
+    // ни один хост-запрос не дошёл до сервера), контейнерные клиенты работают
+    // всё время. Возвращает ИМЕНА объектов (сегменты, *.history) префикса
     // wal/{cluster}/{shard}/.
     private async Task<IReadOnlyList<string>> ListWalNamesAsync(string cluster, string shard, CancellationToken ct)
     {

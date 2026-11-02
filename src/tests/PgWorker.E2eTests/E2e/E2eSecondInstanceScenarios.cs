@@ -182,10 +182,10 @@ public sealed class E2eSecondInstanceScenarios(E2eSecondInstanceScenariosFx Ctx)
             ["DOTNET_ENVIRONMENT"] = "Production",
         };
 
-        // etcd окружения: воркер в сети контура — ВНУТРИСЕТEВОЙ алиас
-        // (e2e-etcdN:2379, «сеть одна»; хостовый localhost из контейнера
-        // не резолвится: оба инстанса не поднимают api (Connection
-        // refused); Advertised — тот же (Patroni-ноды в той же сети).
+        // etcd окружения: воркер в сети контура — СТАТИЧЕСКИЕ IP узлов
+        // (t02; хостовый localhost из контейнера не резолвится: оба инстанса
+        // не поднимают api (Connection refused); Advertised — тот же
+        // (Patroni-ноды в той же сети).
         for (var i = 0; i < Fx.EtcdEndpointsForContainers.Count; i++)
         {
             env[$"PgWorker__Etcd__Endpoints__{i}"] = Fx.EtcdEndpointsForContainers[i];

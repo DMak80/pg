@@ -20,7 +20,9 @@ namespace PgWorker.IntegrationTests.E2e;
 /// Подъём (StartAsync, docs/e2e-isolation.md §1): собственная docker-сеть
 /// pgw-en-{guid}, etcd-контур (1 или 3 узла), опционально ownS3-нода; etcd/ownS3
 /// и API SUT-воркера публикуют ДИНАМИЧЕСКИЕ хост-порты (тест ходит по
-/// localhost:{порт}, контейнеры — по host.docker.internal:{порт}). Смерть
+/// localhost:{порт}), etcd/ownS3 закреплены за СТАТИЧЕСКИМИ IP сети (t02:
+/// контейнерные потребители не резолвят имена — embedded-DNS при churn
+/// деградирует). Смерть
 /// etcd-контейнера уносит ключи: per-environment etcd снимает проблему чистки
 /// ключей. DisposeAsync при ЛЮБОМ исходе: телеметрия ДО удалений → успешный
 /// прогон: rm контейнеров/томов/сетей + ассерт чистоты; упавший (MarkFailed):
@@ -131,8 +133,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
     // по нему, чужие pgw-* параллельных прогонов не трогаем.
     private readonly string _runId;
 
-    private readonly IReadOnlyList<string> _etcdAliases;
-    private readonly string _s3Alias;
+    private readonly IReadOnlyList<string> _etcdIps;
     private readonly string _caPem;
     private readonly string _caKeyPem;
 
@@ -318,19 +319,21 @@ public sealed class E2eEnvironment : IAsyncDisposable
 
     /// <summary>etcd окружения: URL первого узла для ТЕСТ-ПРОЦЕССА (хост,
     /// localhost-публикация). Контейнерные потребители — EtcdEndpointForContainers
-    /// (внутрисетевой alias).</summary>
+    /// (статический IP узла).</summary>
     public string EtcdEndpoint { get; }
 
-    /// <summary>etcd окружения для КОНТЕЙНЕРОВ: внутрисетевые alias'ы
-    /// (e2e-etcdN:2379, сеть окружения одна) — env воркеров/агентов.</summary>
+    /// <summary>etcd окружения для КОНТЕЙНЕРОВ: статические IP узлов сети
+    /// окружения (t02: контейнеры-потребители etcd НЕ резолвят имена —
+    /// embedded-DNS docker при churn ~50 контейнеров + параллельная нагрузка
+    /// деградирует) — env воркеров/агентов/Patroni несёт IP.</summary>
     public string EtcdEndpointForContainers { get; }
 
     /// <summary>Все клиентские URL контура окружения (хост-доступные, для
     /// тест-процесса); при haEtcd=false — один (прежняя семантика).</summary>
     public IReadOnlyList<string> EtcdEndpoints { get; }
 
-    /// <summary>Все etcd-URL по ВНУТРИСЕТЕНЫМ alias'ам — env воркеров/агентов
-    /// (advertised: агенты нод резолвят alias'ы в той же сети).</summary>
+    /// <summary>Все etcd-URL по СТАТИЧЕСКИМ IP узлов — env воркеров/агентов
+    /// (advertised: агенты нод ходят по IP той же сети).</summary>
     public IReadOnlyList<string> EtcdEndpointsForContainers { get; }
 
     /// <summary>Имя docker-сети окружения (уникально на прогон) — удаляется в
@@ -416,11 +419,12 @@ public sealed class E2eEnvironment : IAsyncDisposable
 
     /// <summary>S3-endpoint окружения для ТЕСТ-ПРОЦЕССА (хост,
     /// localhost-публикация). Пустая строка, если окружение поднято без ownS3.
-    /// Контейнерные потребители — S3EndpointForContainers (alias e2e-owns3:9000).</summary>
+    /// Контейнерные потребители — S3EndpointForContainers (статический IP ноды).</summary>
     public string S3Endpoint { get; }
 
-    /// <summary>S3-endpoint для КОНТЕЙНЕРОВ: внутрисетевой alias ownS3
-    /// (e2e-owns3:9000). Пустая строка — окружение без ownS3.</summary>
+    /// <summary>S3-endpoint для КОНТЕЙНЕРОВ: статический IP ownS3-ноды
+    /// (t02: резолвы исключены — embedded-DNS docker при churn контура
+    /// деградирует). Пустая строка — окружение без ownS3.</summary>
     public string S3EndpointForContainers { get; }
 
     /// <summary>Имя ПЕРВОЙ etcd-ноды окружения (pgw-ee1-{runId}) для docker cp/exec
@@ -473,7 +477,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
 
     private E2eEnvironment(
         string slug, string runId, string netName, string artifactsDir,
-        IReadOnlyList<string> etcdAliases, string s3Alias,
+        IReadOnlyList<string> etcdIps, string? s3Ip,
         string caPem, string caKeyPem, int portFrom, int portTo,
         INetwork? net, IReadOnlyList<IContainer>? etcdNodes, IReadOnlyList<string> etcdNames,
         IContainer? s3Node, IReadOnlyList<int> etcdHostPorts, int s3HostPort)
@@ -482,8 +486,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
         _runId = runId;
         NetName = netName;
         ArtifactsDir = artifactsDir;
-        _etcdAliases = etcdAliases;
-        _s3Alias = s3Alias;
+        _etcdIps = etcdIps;
         _caPem = caPem;
         _caKeyPem = caKeyPem;
         _portFrom = portFrom;
@@ -496,15 +499,16 @@ public sealed class E2eEnvironment : IAsyncDisposable
         Gateway = new EtcdGateway(_gatewayHttp);
         // Динамические публикации (docs/e2e-isolation.md §2): тестовый процесс
         // ходит по localhost:{фактический порт}. Контейнерные потребители
-        // (воркеры, агенты, джобы) — по ВНУТРИСЕТЕНЫМ alias'ам сети окружения
-        // (e2e-etcdN:2379, e2e-owns3:9000): сеть одна, alias'ы резолвятся
-        // напрямую, без обхода хост-публикаций.
+        // (воркеры, агенты, Patroni-ноды) — по СТАТИЧЕСКИМ IP etcd/ownS3 в сети
+        // окружения (t02): embedded-DNS docker при churn ~50 контейнеров +
+        // параллельная нагрузка деградирует («Temporary failure in name
+        // resolution» в нодах, t02) — самый частый резолв контура исключён.
         EtcdEndpoint = $"http://localhost:{etcdHostPorts[0]}";
         EtcdEndpoints = etcdHostPorts.Select(p => $"http://host.docker.internal:{p}").ToList();
-        EtcdEndpointForContainers = $"http://{etcdAliases[0]}:2379";
-        EtcdEndpointsForContainers = etcdAliases.Select(a => $"http://{a}:2379").ToList();
+        EtcdEndpointForContainers = $"http://{etcdIps[0]}:2379";
+        EtcdEndpointsForContainers = etcdIps.Select(ip => $"http://{ip}:2379").ToList();
         S3Endpoint = s3HostPort == 0 ? "" : $"http://localhost:{s3HostPort}";
-        S3EndpointForContainers = s3HostPort == 0 ? "" : $"http://{s3Alias}:9000";
+        S3EndpointForContainers = s3Ip is null ? "" : $"http://{s3Ip}:9000";
         PatroniHttp = CreatePatroniHttpsClientOnly();
         HealthHttp = CreateMtlsHttpClient();
     }
@@ -752,17 +756,30 @@ public sealed class E2eEnvironment : IAsyncDisposable
             Directory.CreateDirectory(artifactsDir);
             Directory.CreateDirectory(Path.Combine(artifactsDir, "snapshots"));
 
+            // Статические IP etcd/ownS3 (t02): embedded-DNS docker при churn
+            // ~50 контейнеров + параллельная нагрузка (dev-стенд) деградирует —
+            // «Temporary failure in name resolution» в нодах, Patroni теряет
+            // etcd, bootstrap затягивается за бюджеты. Самый частый резолв
+            // контура (Patroni/агенты → etcd, джобы → S3) исключён: узлы
+            // поднимаются с адресами из подсети сети окружения, все
+            // контейнерные URL — по IP.
+            var (etcdIps, s3Ip) = await ContourStaticIpsAsync(netName, etcdAliases.Count, withS3Node, ct);
+
             var initialCluster = string.Join(
-                ",", etcdAliases.Select(a => $"{a}=http://{a}:2380"));
+                ",", etcdAliases.Select((a, i) => $"{a}=http://{etcdIps[i]}:2380"));
             for (var i = 0; i < etcdAliases.Count; i++)
             {
                 var alias = etcdAliases[i];
+                var ip = etcdIps[i];
                 var name = $"pgw-ee{i + 1}-{runId}";
                 etcdNames.Add(name);
                 var etcdArgs = new List<string>
                 {
                     "run", "-d", "--name", name,
                     "--network", netName, "--network-alias", alias,
+                    // Статический IP в подсети сети окружения (t02): peer-/client-
+                    // URL etcd — по IP, пиринг и клиенты не резолвят имена.
+                    "--ip", ip,
                     // Динамическая публикация клиента (docs/e2e-isolation.md §2):
                     // docker выделяет свободный хост-порт; контейнеры-потребители
                     // ходят через host.docker.internal:{фактический порт} (env),
@@ -773,15 +790,15 @@ public sealed class E2eEnvironment : IAsyncDisposable
                     EtcdImage,
                     "etcd", $"--name={alias}", "--data-dir=/etcd-data",
                     "--listen-client-urls=http://0.0.0.0:2379", "--listen-peer-urls=http://0.0.0.0:2380",
-                    $"--initial-advertise-peer-urls=http://{alias}:2380",
+                    $"--initial-advertise-peer-urls=http://{ip}:2380",
                     // advertise-client-urls задаётся ПРИ ЗАПУСКЕ, когда фактический
                     // динамический порт ещё не выделен (перевыделение при повторном
                     // run невозможно без гонки) — поэтому внутрисетевой URL, как и
                     // peer-URL. Клиенты advertise НЕ потребляют: воркер/Patroni-
-                    // ноды получают СПИСОК endpoints env'ом (host.docker.internal:{p}),
+                    // ноды получают СПИСОК endpoints env'ом (статические IP, t02),
                     // тестовый Gateway — localhost:{p}; member-list-discovery в
                     // контуре не используется.
-                    $"--advertise-client-urls=http://{alias}:2379",
+                    $"--advertise-client-urls=http://{ip}:2379",
                     $"--initial-cluster={initialCluster}", $"--initial-cluster-token=e2e-{runId}",
                     "--initial-cluster-state=new", "--heartbeat-interval=250", "--election-timeout=2000",
                 };
@@ -803,17 +820,17 @@ public sealed class E2eEnvironment : IAsyncDisposable
                 probeAttempts++;
                 try
                 {
-                    var endpointsArg = string.Join(",", EtcdAliases(etcdAliases));
+                    var endpointsArg = string.Join(",", etcdIps.Select(ip => $"http://{ip}:2379"));
                     var health = await E2eFixture.RunDockerAsync(
                         ["exec", etcdNames[0], "etcdctl", $"--endpoints={endpointsArg}", "endpoint", "health"], ct);
                     if (!health.Contains("is healthy", StringComparison.Ordinal))
                         return false;
-                    if (etcdAliases.Count > 1)
+                    if (etcdIps.Count > 1)
                     {
                         var status = await E2eFixture.RunDockerAsync(
                             ["exec", etcdNames[0], "etcdctl", $"--endpoints={endpointsArg}",
                              "endpoint", "status", "-w", "json"], ct);
-                        if (!EtcdQuorumElected(status, etcdAliases.Count))
+                        if (!EtcdQuorumElected(status, etcdIps.Count))
                             return false; // кворум не собран / лидер не избран
                     }
 
@@ -837,6 +854,9 @@ public sealed class E2eEnvironment : IAsyncDisposable
                 [
                     "run", "-d", "--name", $"pgw-eo-{runId}",
                     "--network", netName, "--network-alias", "e2e-owns3",
+                    // Статический IP (t02) — контейнерные потребители S3 (джобы,
+                    // mc) не резолвят имена.
+                    "--ip", s3Ip!,
                     "-p", "127.0.0.1::9000",
                     "-e", $"OWNS3_ROOT_USER={S3RootUser}",
                     "-e", $"OWNS3_ROOT_PASSWORD={S3RootPassword}",
@@ -859,12 +879,12 @@ public sealed class E2eEnvironment : IAsyncDisposable
                 ], ct, timeout: TimeSpan.FromMinutes(5));
 
                 Console.WriteLine($"[PHASE] e2e-env {slug}: ownS3 node raised (host port {s3HostPort}), fact mc container, bucket/images…");
-                await EnsureOwnS3BucketAsync(runId, "e2e-owns3", ct);
+                await EnsureOwnS3BucketAsync(runId, $"http://{s3Ip}:9000", ct);
                 envS3HostPort = s3HostPort;
             }
 
-            var env = new E2eEnvironment(slug, runId, netName, artifactsDir, etcdAliases,
-                withS3Node ? "e2e-owns3" : "", caPem, caKeyPem, portFrom, portTo,
+            var env = new E2eEnvironment(slug, runId, netName, artifactsDir, etcdIps,
+                withS3Node ? s3Ip : null, caPem, caKeyPem, portFrom, portTo,
                 net, etcdNodes, etcdNames, s3Node, etcdHostPorts, envS3HostPort);
             // REST-TLS CA контура: артефакт для разбора падений и ручных
             // curl-проверок контура (+ отпечаток — сверка с env воркера).
@@ -974,11 +994,33 @@ public sealed class E2eEnvironment : IAsyncDisposable
         return int.Parse(line["127.0.0.1:".Length..], CultureInfo.InvariantCulture);
     }
 
-    /// <summary>Фактический динамический хост-порт публикации контейнера
+    // Статические IP etcd/ownS3 контура (t02): подсеть сети окружения —
+    // `docker network inspect` (docker выбирает непересекающуюся подсеть пула
+    // при создании), адреса — малые офсеты последнего октета (подсети пула
+    // ≥ /24; .1 — шлюз, .10+ свободны в свежей сети). Контейнерные URL
+    // etcd/ownS3 — по IP: embedded-DNS docker при churn контура + параллельной
+    // нагрузке деградирует («Temporary failure in name resolution», t02).
+    private static async Task<(IReadOnlyList<string> Etcd, string S3)> ContourStaticIpsAsync(
+        string netName, int etcdCount, bool withS3Node, CancellationToken ct)
+    {
+        var output = await E2eFixture.RunDockerAsync(
+            ["network", "inspect", netName, "--format", "{{(index .IPAM.Config 0).Subnet}}"], ct);
+        var cidr = output.Trim();
+        var slash = cidr.IndexOf('/');
+        if (slash <= 0 || !System.Net.IPAddress.TryParse(cidr[..slash], out var baseAddr))
+            throw new ApplicationException($"cannot determine the subnet of {netName}: '{cidr}'");
+        var octets = baseAddr.GetAddressBytes();
+        if (octets.Length != 4)
+            throw new ApplicationException($"unexpected subnet family for {netName}: '{cidr}'");
 
-    // Список etcd-endpoints для etcdctl (внутрисетевые URL узлов).
-    private static string EtcdAliases(IReadOnlyList<string> aliases)
-        => string.Join(",", aliases.Select(a => $"http://{a}:2379"));
+        // Малые офсеты в последнем октете: внутри любой маски ≥ /24.
+        string OffsetIp(byte last) => new System.Net.IPAddress([octets[0], octets[1], octets[2], last])
+            .ToString();
+        var etcd = Enumerable.Range(1, etcdCount)
+            .Select(i => OffsetIp((byte)(9 + i))) // .10, .11, .12
+            .ToList();
+        return (etcd, OffsetIp(20)); // ownS3 — .20
+    }
 
     /// <summary>Кворум HA-контура по выводу «endpoint status -w json»: все
     /// узлы ответили и называют ОДНОГО ненулевого лидера. Идентификатор
@@ -1011,11 +1053,13 @@ public sealed class E2eEnvironment : IAsyncDisposable
     // pgw-em-{runId}, канон «инструментальные контейнеры — per-контур»).
     // Retry-цикл внутри разового exec: extra-ноды стартуют асинхронно —
     // бакет ждёт готовности S3 (до 60 с), не падая на первом refused.
-    public static Task EnsureOwnS3BucketAsync(string runId, string alias, CancellationToken ct)
+    // Адрес ноды — ПОЛНЫЙ URL (статический IP контура — t02; extra-ноды —
+    // внутрисетевой alias).
+    public static Task EnsureOwnS3BucketAsync(string runId, string s3Endpoint, CancellationToken ct)
         => E2eFixture.RunProcessAsync("docker",
         [
             "exec", $"pgw-em-{runId}", "/bin/sh", "-c",
-            $"for i in $(seq 1 30); do mc alias set t http://{alias}:9000 {S3RootUser} {S3RootPassword} >/dev/null 2>&1"
+            $"for i in $(seq 1 30); do mc alias set t {s3Endpoint} {S3RootUser} {S3RootPassword} >/dev/null 2>&1"
             + $" && mc mb --ignore-existing t/{BucketName} 2>/dev/null && exit 0; sleep 2; done; exit 1",
         ], ct, timeout: TimeSpan.FromMinutes(3));
 
@@ -1029,12 +1073,12 @@ public sealed class E2eEnvironment : IAsyncDisposable
     /// <summary>
     /// Старт инстанса PgWorker.App — КОНТЕЙНЕРА pgworker:e2e в сети окружения
     /// (docs/e2e-isolation.md §3): docker.sock смонтирован (воркер провижинит
-    /// ноды в контур-сеть), etcd — по host.docker.internal:{динамические порты},
+    /// ноды в контур-сеть), etcd — по статическим IP узлов контура (t02),
     /// mTLS-серт с SAN [алиас, "localhost"] (выпускается из per-run CA; второй
     /// элемент покрывает хост-адрес тестовых проб https://localhost:{порт}).
     /// Смотрит ТОЛЬКО в etcd этого окружения и обслуживает только его
     /// Active-кластеры. extraEnv — дополнительные env-пары поверх базовых
-    /// (t02: Backups-комплект).
+    /// (Backups-комплект).
     /// </summary>
     public async Task<HostInstance> StartHostAsync(
         string name, int snapshotIntervalMin = 360,
@@ -1245,12 +1289,53 @@ public sealed class E2eEnvironment : IAsyncDisposable
 
     /// <summary>Стоп/старт узла контура по индексу (0-based) — сценарии отказа;
     /// docker stop/start по имени: контейнер и data-dir переживают, член
-    /// возвращается в кворум.</summary>
+    /// возвращается в кворум. Stop — БЕЗ grace (-t 0, мгновенная смерть):
+    /// graceful-гашение etcd под нагрузкой длится до 10 с и создаёт окно
+    /// DCS-недоступности, в котором Patroni успевает демоутировать мастера,
+    /// а TTL 5 с master-ключа — истечь (гонка проб HaEtcd, фикс t08) —
+    /// мгновенная смерть даёт переизбрание ≤ election-timeout (2 с) и
+    /// непрерывность ключа.</summary>
     public Task StopEtcdNodeAsync(int index, CancellationToken ct = default)
-        => E2eFixture.RunProcessAsync("docker", ["stop", _etcdNames[index]], ct);
+        => E2eFixture.RunProcessAsync("docker", ["stop", "-t", "0", _etcdNames[index]], ct);
 
     public Task StartEtcdNodeAsync(int index, CancellationToken ct = default)
         => E2eFixture.RunProcessAsync("docker", ["start", _etcdNames[index]], ct);
+
+    /// <summary>Стоп FOLЛОВЕРА кворума (не лидера) — отказ одного узла 3-нодового
+    /// контура без окна выборов: отказ ЛИДЕРА = переизбрание ~2–4 с, в котором
+    /// ЛЮБОЙ etcd-put отклоняется — lease-ключи с TTL 5 с (master-ключ) неминуемо
+    /// гаснут и перезаказываются, и пробы «ключ непрерывно жив» невыполнимы
+    /// конструктивно; отказ folловера кворум-запись не трогает (arch/04 §8).
+    /// Возврат — индекс остановленного узла (0-based; для StartEtcdNodeAsync).
+    /// Лидер — член, чей member_id совпадает с Status.leader
+    /// («endpoint status -w json»; сравнение сырых токенов — uint64).</summary>
+    public async Task<int> StopEtcdFollowerAsync(CancellationToken ct = default)
+    {
+        var endpointsArg = string.Join(",", _etcdIps.Select(ip => $"http://{ip}:2379"));
+        var status = await E2eFixture.RunDockerAsync(
+            ["exec", _etcdNames[0], "etcdctl", $"--endpoints={endpointsArg}",
+             "endpoint", "status", "-w", "json"], ct);
+        using var doc = System.Text.Json.JsonDocument.Parse(status);
+        var root = doc.RootElement;
+        root.ValueKind.Should().Be(System.Text.Json.JsonValueKind.Array);
+        root.GetArrayLength().Should().Be(_etcdNames.Count, "the contour is raised in full");
+        var follower = -1;
+        for (var i = 0; i < root.GetArrayLength(); i++)
+        {
+            var memberStatus = root[i].GetProperty("Status");
+            var memberId = memberStatus.GetProperty("header").GetProperty("member_id").GetRawText();
+            var leaderId = memberStatus.GetProperty("leader").GetRawText();
+            if (memberId != leaderId)
+            {
+                follower = i; // первый не-лидер
+                break;
+            }
+        }
+
+        follower.Should().BeGreaterThanOrEqualTo(0, "a 3-node contour has followers");
+        await StopEtcdNodeAsync(follower, ct);
+        return follower;
+    }
 
     /// <summary>etcdctl в узле №1 (сценарии: member list / endpoint health).</summary>
     public Task<string> EtcdctlAsync(params string[] args)
@@ -1350,7 +1435,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
         ], ct);
         var hostPort = await DockerHostPortAsync(containerName, 9000, ct);
 
-        await EnsureOwnS3BucketAsync(_runId, alias, ct);
+        await EnsureOwnS3BucketAsync(_runId, $"http://{alias}:9000", ct);
         return $"http://host.docker.internal:{hostPort}";
     }
 

@@ -282,7 +282,7 @@ public sealed class E2eBackupJobsScenarios(E2eBackupJobsScenariosFx Ctx) : IClas
         => await Fx.RunDockerAsync(
         [
             "run", "--rm", "--network", Fx.NetName, "--entrypoint", "/bin/sh", E2eEnvironment.McImage,
-            "-c", $"mc alias set t http://e2e-owns3:9000 {E2eEnvironment.S3RootUser} {E2eEnvironment.S3RootPassword} >/dev/null && mc ls --recursive t/{Bucket}/{path}",
+            "-c", $"mc alias set t {Fx.S3EndpointForContainers} {E2eEnvironment.S3RootUser} {E2eEnvironment.S3RootPassword} >/dev/null && mc ls --recursive t/{Bucket}/{path}",
         ], TestContext.Current.CancellationToken);
 
     private async Task SeedClusterAsync(string cluster)
