@@ -305,33 +305,32 @@ public sealed class WalReceiverLoop : BackgroundService
                 // Ре-доклады инвентаря (history spec §3.1 п.6; сегменты
                 // arch/19 §3) — ВСПОМОГАТЕЛЬНАЯ доставка раз за цикл
                 // подключения: pg_wal своей ноды → отсутствующие в S3 put'ятся.
-                // Fail-fast-бюджет 5 с: при недоступном пуле (write-нода
-                // стопнута) list-tail S3-клиента висит на транспортном
-                // таймауте десятки секунд СИНХРОННО перед входом в стрим —
-                // сессия не доходит до PUT-фазы, где ставится факт
-                // pool_exhausted (детекция исчерпания списка глушится), а
-                // цикл повторяет ре-доклад с тем же висом. Отказ/таймаут
-                // ре-доклада — diagnostic-log; доставит следующий цикл по
-                // живому пулу, стриму и детекции он не мешает.
-                using (var inventoryCts = CancellationTokenSource.CreateLinkedTokenSource(ct))
+                // Выполняется ПАРАЛЛЕЛЬНО сессии, не блокируя вход в стрим:
+                // синхронный list-tail при недоступном/медленном пуле висел
+                // на транспортном таймауте до PUT-фазы — сессия не доходила
+                // до PUT, где ставится факт pool_exhausted (детекция
+                // исчерпания списка глушится). Полный бюджет цикла: доотправка
+                // не ограничена; завершение задачи ожидается ПОСЛЕ сессии —
+                // до dispose S3-клиента; отказ — diagnostic-log, доставит
+                // следующий цикл.
+                var inventoryTask = Task.Run(async () =>
                 {
-                    inventoryCts.CancelAfter(TimeSpan.FromSeconds(5));
                     try
                     {
                         await WalReceiverCore.RedeliverHistoryInventoryAsync(s3,
                             identity.Cluster, identity.Shard, _pgWalDir,
-                            msg => Console.Error.WriteLine(msg), inventoryCts.Token,
+                            msg => Console.Error.WriteLine(msg), ct,
                             delivered: count => metrics.HistoryDelivered(count));
 
                         // Текущая позиция записи — короткоживущий
                         // IDENTIFY_SYSTEM; отказ — доставка отложена до следующего цикла.
-                        var identityNow = await source.IdentifySystemAsync(inventoryCts.Token);
+                        var identityNow = await source.IdentifySystemAsync(ct);
                         if (identityNow.IsSuccess)
                         {
                             await WalReceiverCore.RedeliverWalInventoryAsync(s3,
                                 identity.Cluster, identity.Shard, _pgWalDir,
                                 identityNow.Value.Tli, identityNow.Value.XLogPos,
-                                msg => Console.Error.WriteLine(msg), inventoryCts.Token,
+                                msg => Console.Error.WriteLine(msg), ct,
                                 delivered: count => metrics.SegmentDelivered(count));
                         }
                         else
@@ -341,12 +340,17 @@ public sealed class WalReceiverLoop : BackgroundService
                                 + identityNow.Error!.Message.Split('\n')[0]);
                         }
                     }
-                    catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                    catch (OperationCanceledException)
+                    {
+                        // сессия закрывается — доставка доделает следующий цикл
+                    }
+                    catch (Exception e)
                     {
                         await Console.Error.WriteLineAsync(
-                            "walreceiver: wal inventory skipped — pool unresponsive (5 s budget), next cycle will retry");
+                            "walreceiver: wal inventory failed — "
+                            + e.Message.Split('\n')[0]);
                     }
-                }
+                }, ct);
 
                 var roleAtStart = currentRole;
                 var confirmedBase = 0UL;
@@ -388,6 +392,18 @@ public sealed class WalReceiverLoop : BackgroundService
                 var outcome = await WalReceiverCore.RunSessionAsync(
                     options, source, slotReader, s3, events, ct, _retryDelay,
                     roleProbePeriod: _roleProbePeriod);
+
+                // Ре-доклад инвентаря завершён ДО dispose S3-клиента сессии
+                // (запущен параллельно сессии — см. выше); дальнейших ожиданий
+                // задачи нет: следующий цикл подключения повторит доставку.
+                try
+                {
+                    await inventoryTask;
+                }
+                catch
+                {
+                    // диагностика уже в логе задачей
+                }
 
                 // Reconnect — короткая пауза до новой попытки: состояние/серию
                 // не трогаем (стрим фактически продолжается; публикация
