@@ -736,7 +736,8 @@ public sealed class WalReceiverCore
         uint currentTli, ulong currentLsn,
         Action<string>? diagnostic, CancellationToken ct,
         Action<long>? delivered = null,
-        ulong? deliveredPosition = null)
+        ulong? deliveredPosition = null,
+        Action? failed = null)
     {
         // 1. Список wal/ (соло-листинг первой доступной read-ноды) — имена
         //    позиций для mixedness-защиты шага 3. Граница прохода — позиция
@@ -746,6 +747,7 @@ public sealed class WalReceiverCore
         if (!listing.IsSuccess)
         {
             diagnostic?.Invoke($"wal inventory: list wal/ failed: {listing.Error!.Message.Split('\n')[0]}");
+            failed?.Invoke(); // пул недостижим — сигнал фактам (idle-детект, arch/19 §3)
             return; // list не прошёл — ре-доклад отложен до следующего прохода
         }
         var archivedNames = listing.Value
@@ -841,6 +843,7 @@ public sealed class WalReceiverCore
             {
                 diagnostic?.Invoke(
                     $"wal inventory: put {candidate.Segment.Name} failed: {put.Error!.Message.Split('\n')[0]}");
+                failed?.Invoke(); // пул недостижим — сигнал фактам (idle-детект, arch/19 §3)
                 return; // следующий проход повторит с той же позиции
             }
 
@@ -878,7 +881,8 @@ public sealed class WalReceiverCore
     public static async Task RedeliverHistoryInventoryAsync(
         IBackupS3 s3, string cluster, string shard, string pgWalDir,
         Action<string>? diagnostic, CancellationToken ct,
-        Action<long>? delivered = null)
+        Action<long>? delivered = null,
+        Action? failed = null)
     {
         List<string> local;
         try
@@ -909,6 +913,7 @@ public sealed class WalReceiverCore
             // list не прошёл — ре-доклад отложен до следующего цикла.
             diagnostic?.Invoke(
                 $"history inventory: list wal/ failed: {listing.Error!.Message.Split('\n')[0]}");
+            failed?.Invoke(); // пул недостижим — сигнал фактам (idle-детект, arch/19 §3)
             return;
         }
 
@@ -927,8 +932,11 @@ public sealed class WalReceiverCore
                 if (put.IsSuccess)
                     delivered?.Invoke(content.Length);
                 else
+                {
                     diagnostic?.Invoke(
                         $"history inventory: put {name} failed: {put.Error!.Message.Split('\n')[0]}");
+                    failed?.Invoke(); // пул недостижим — сигнал фактам (idle-детект, arch/19 §3)
+                }
             }
             catch (Exception e)
             {

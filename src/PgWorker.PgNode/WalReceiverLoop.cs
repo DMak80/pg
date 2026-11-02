@@ -47,6 +47,10 @@ public sealed class WalReceiverLoop : BackgroundService
     private readonly TimeSpan _inventoryPeriod;
     private readonly string _pgWalDir;
 
+    // HBA-самообеспечение (arch/19 §7): приёмник — владелец строки backup_exec;
+    // null в тестах без локального /run/postgres.yml (прод — из DI).
+    private readonly Func<CancellationToken, Task<PgWorker.PgNode.Operations.HbaEnsureResponse>>? _hbaEnsure;
+
     private PgNodeIdentity? _identity;
     private WalReceiverMetrics? _metrics;
     private WalReceiverStatusSession? _status;
@@ -98,7 +102,8 @@ public sealed class WalReceiverLoop : BackgroundService
         TimeSpan? statusKeepalive = null,
         string? pgWalDir = null,
         TimeSpan? roleProbePeriod = null,
-        TimeSpan? inventoryPeriod = null)
+        TimeSpan? inventoryPeriod = null,
+        Func<CancellationToken, Task<PgWorker.PgNode.Operations.HbaEnsureResponse>>? hbaEnsure = null)
     {
         _env = env;
         _etcd = etcd;
@@ -113,6 +118,7 @@ public sealed class WalReceiverLoop : BackgroundService
         _roleProbePeriod = roleProbePeriod;
         _inventoryPeriod = inventoryPeriod ?? DefaultInventoryPeriod;
         _pgWalDir = pgWalDir ?? WalReceiverCore.DefaultPgWalDir;
+        _hbaEnsure = hbaEnsure;
     }
 
     protected override async Task ExecuteAsync(CancellationToken ct)
@@ -241,6 +247,31 @@ public sealed class WalReceiverLoop : BackgroundService
                     continue;
                 }
 
+                // HBA-самообеспечение (arch/19 §7, первый канал): приёмник —
+                // владелец строки backup_exec — гарантирует правило ДО сессии и
+                // инвентарного прохода. Воркерный тик не связан со стартом
+                // контейнера: свежеподнятая/пересозданная нода без строки
+                // отсекала replication-подключения («28000 no pg_hba.conf
+                // entry») до первого тика. Идемпотентно: строка на месте —
+                // один file-read. Отказ — diagnostic-log, transient: повторит
+                // следующая итерация цикла.
+                if (_hbaEnsure is { } ensureHba)
+                {
+                    try
+                    {
+                        var hba = await ensureHba(ct);
+                        if (hba.Applied)
+                            await Console.Error.WriteLineAsync(
+                                "walreceiver: hba backup_exec line ensured (SIGHUP issued)");
+                    }
+                    catch (Exception e)
+                    {
+                        await Console.Error.WriteLineAsync(
+                            "walreceiver: hba self-ensure skipped — retry next cycle: "
+                            + e.Message.Split('\n')[0]);
+                    }
+                }
+
                 // 4.3. Креды/цели (живой резолв из etcd на каждом цикле).
                 var targets = await new WalReceiverTargets(_etcd, _endpoints, _pools)
                     .ResolveAsync(identity.Cluster, identity.Shard, ct);
@@ -333,16 +364,36 @@ public sealed class WalReceiverLoop : BackgroundService
                 var startDelivered = Volatile.Read(ref _facts).LastDelivered;
                 var roleAtStart = currentRole;
                 var confirmedBase = 0UL;
+                // Отказ прохода = свидетельство недостижимости пула S3 (arch/19
+                // §3): флаг ставится БЕЗ ожидания закрытия сегмента (idle-источник)
+                // — один раз на серию отказов; снятие — только проходом,
+                // ДОВЕДЁННЫМ без отказов (симметрия с «снятый первым успешным
+                // put»; отказ в середине прохода флаг не снимает).
+                var inventoryPoolFailed = false;
+
                 var inventoryTask = Task.Run(async () =>
                 {
                     try
                     {
                         while (!iterCts.IsCancellationRequested)
                         {
+                            var passFailed = false;
+                            void InventoryPoolFailed()
+                            {
+                                passFailed = true;
+                                if (inventoryPoolFailed)
+                                    return;
+                                inventoryPoolFailed = true;
+                                _ = PublishFactsQuietlyAsync(
+                                    status, currentRole, state, exhausted: true,
+                                    ct: CancellationToken.None);
+                            }
+
                             await WalReceiverCore.RedeliverHistoryInventoryAsync(s3,
                                 identity.Cluster, identity.Shard, _pgWalDir,
                                 msg => Console.Error.WriteLine(msg), iterCts.Token,
-                                delivered: count => metrics.HistoryDelivered(count));
+                                delivered: count => metrics.HistoryDelivered(count),
+                                failed: InventoryPoolFailed);
 
                             // Текущая позиция записи — короткоживущий
                             // IDENTIFY_SYSTEM; отказ — доставка отложена до следующего прохода.
@@ -364,13 +415,23 @@ public sealed class WalReceiverLoop : BackgroundService
                                     identityNow.Value.Tli, identityNow.Value.XLogPos,
                                     msg => Console.Error.WriteLine(msg), iterCts.Token,
                                     delivered: count => metrics.SegmentDelivered(count),
-                                    deliveredPosition: boundary);
+                                    deliveredPosition: boundary,
+                                    failed: InventoryPoolFailed);
                             }
                             else
                             {
                                 await Console.Error.WriteLineAsync(
                                     "walreceiver: wal inventory skipped — IDENTIFY_SYSTEM failed: "
                                     + identityNow.Error!.Message.Split('\n')[0]);
+                            }
+
+                            // Проход доведён БЕЗ отказов — пул достижим: флаг
+                            // исчерпания, поставленный прежним отказом, снят.
+                            if (!passFailed && inventoryPoolFailed)
+                            {
+                                inventoryPoolFailed = false;
+                                await PublishFactsQuietlyAsync(
+                                    status, currentRole, state, exhausted: false, ct: iterCts.Token);
                             }
 
                             await Task.Delay(_inventoryPeriod, iterCts.Token);
@@ -385,6 +446,13 @@ public sealed class WalReceiverLoop : BackgroundService
                         await Console.Error.WriteLineAsync(
                             "walreceiver: wal inventory failed — "
                             + e.Message.Split('\n')[0]);
+                        if (!inventoryPoolFailed)
+                        {
+                            inventoryPoolFailed = true;
+                            _ = PublishFactsQuietlyAsync(
+                                status, currentRole, state, exhausted: true,
+                                ct: CancellationToken.None);
+                        }
                     }
                 }, CancellationToken.None);
 

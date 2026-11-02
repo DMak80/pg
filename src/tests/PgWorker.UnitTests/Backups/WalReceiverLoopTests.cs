@@ -2,6 +2,7 @@ using FluentAssertions;
 using PgWorker.Backups;
 using PgWorker.Etcd.S3;
 using PgWorker.PgNode;
+using PgWorker.PgNode.Operations;
 using Shared.Core;
 using Shared.Etcd.Client;
 using Xunit;
@@ -280,7 +281,9 @@ public class WalReceiverLoopTests
         string? pgWalDir = null,
         Func<WalReceiverRole>? roleScript = null,
         TimeSpan? probePeriod = null,
-        TimeSpan? inventoryPeriod = null)
+        TimeSpan? inventoryPeriod = null,
+        Func<CancellationToken, Task<PgWorker.PgNode.Operations.HbaEnsureResponse>>? hbaEnsure = null,
+        TimeSpan? retryDelay = null)
     {
         var s3Fake = s3 ?? new FakeS3();
         var sources = new List<FakeXLogSource>();
@@ -297,12 +300,13 @@ public class WalReceiverLoopTests
                 return source;
             },
             o => new FakeSlots(slotRestartLsn),
-            FastStep,
+            retryDelay ?? FastStep,
             _ => s3Fake,
             FastKeepalive,
             pgWalDir,
             roleProbePeriod: probePeriod,
-            inventoryPeriod: inventoryPeriod);
+            inventoryPeriod: inventoryPeriod,
+            hbaEnsure: hbaEnsure);
         var cts = new CancellationTokenSource();
         loop.StartAsync(CancellationToken.None);
         return (loop, cts, sources);
@@ -739,6 +743,81 @@ public class WalReceiverLoopTests
             await WaitStatusAsync(
                 etcd, s => !s.PoolExhausted && s.State == WalReceiverState.Streaming,
                 "pool_exhausted=false at the session boundary (no puts in session B)");
+        }
+        finally
+        {
+            await StopLoopAsync(loop, cts);
+        }
+    }
+
+    // AAA (arch/19 §3, idle-детект): инвентарный проход трогает пул S3 тем же
+    // write-списком — на idle-источнике (put'ов нет) отказ прохода (list down)
+    // ОБЯЗАН ставить факт pool_exhausted без ожидания закрытия сегмента;
+    // успешный проход после исцеления пула снимает (симметрия с «снятый
+    // первым успешным put»). retryDelay 2 с: флаг живёт до начала следующей
+    // итерации (перепубликация на границе сессии, arch/19 §3) — окно ≥ 2 с
+    // ловится поллингом; снятие — следующий проход после исцеления.
+    [Fact]
+    public async Task InventoryPoolFailure_SetsExhaustedOnIdleMaster_ClearedByHealedPool()
+    {
+        // Arrange — мастер без записи (источник пуст), list wal/ отказывает
+        var etcd = new FakeEtcd();
+        SeedHappyPath(etcd);
+        var s3 = new FakeS3 { FailListWal = true };
+        var (loop, cts, _) = StartLoop(
+            etcd, WalReceiverRole.Master,
+            () => new FakeXLogSource { Identity = new ServerIdentity(1, 4UL * SegmentBytes) },
+            s3: s3,
+            retryDelay: TimeSpan.FromSeconds(2),
+            inventoryPeriod: TimeSpan.FromSeconds(1));
+
+        try
+        {
+            // Act/Assert — отказ инвентарного списка → факт исчерпания немедленно
+            // (put'ов сессия не делает — ставить флаг больше некому)
+            await WaitStatusAsync(etcd, s => s.PoolExhausted,
+                "pool_exhausted=true by the failed inventory pass (idle master)");
+
+            // Act — пул исцелился; следующий проход доводится
+            s3.FailListWal = false;
+
+            // Assert — флаг снят успешным проходом
+            await WaitStatusAsync(etcd, s => !s.PoolExhausted,
+                "pool_exhausted=false by the successful inventory pass");
+        }
+        finally
+        {
+            await StopLoopAsync(loop, cts);
+        }
+    }
+
+    // AAA (arch/19 §7, первый канал hba): приёмник — владелец строки
+    // backup_exec — самообеспечение выполняется ДО сессии цикла подключения
+    // (воркерный тик не связан со стартом контейнера — гонка 28000).
+    [Fact]
+    public async Task Loop_EnsuresHbaLine_BeforeSessionEachCycle()
+    {
+        // Arrange — happy path, счётчик вызовов самообеспечения
+        var etcd = new FakeEtcd();
+        SeedHappyPath(etcd);
+        var ensureCalls = 0;
+        var (loop, cts, _) = StartLoop(
+            etcd, WalReceiverRole.Master,
+            () => new FakeXLogSource(),
+            hbaEnsure: _ =>
+            {
+                Interlocked.Increment(ref ensureCalls);
+                return Task.FromResult(new PgWorker.PgNode.Operations.HbaEnsureResponse(
+                    Applied: false, Bootstrap: false));
+            });
+
+        try
+        {
+            // Act/Assert — сессия стартовала (status streaming): самообеспечение
+            // было выполнено ДО неё хотя бы раз
+            await WaitStatusAsync(etcd, s => s.State == WalReceiverState.Streaming, "streaming");
+            Assert.True(ensureCalls >= 1,
+                $"hba self-ensure must run before the session cycle; calls={ensureCalls}");
         }
         finally
         {
