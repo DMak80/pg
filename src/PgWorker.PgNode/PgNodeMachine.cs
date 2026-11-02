@@ -738,14 +738,15 @@ public sealed class PgNodeMachine : IDisposable
 
             if (!pgReady || !doormanReady)
             {
-                // Зонд зависшей doorman-пробы (e2e-факт 2026-11-01: реплика
-                // висела dm=starting 3,7 мин при живом Patroni — раскол
-                // недоказуем без слепка): каждые 3 неуспешные пробы (15 с) —
-                // прямая PG-проба app-кредами МИМО doorman + su-слепок роли и
-                // реплика-лага. Разделяет первопричины: роли нет (WAL-догон
-                // клона) / пароль ≠ etcd-ключу / дефект doorman-конфига.
+                // Зонд зависшей doorman-пробы (e2e-факты 2026-11-01/02: реплика
+                // висела dm=starting при живом Patroni — раскол недоказуем без
+                // слепка; 2026-11-02 rtls: окно 28P01 короче 15 с — зонд не
+                // успел): каждые 2 неуспешные пробы (10 с) — прямая PG-проба
+                // app-кредами МИМО doorman + su-слепок роли и реплика-лага.
+                // Разделяет первопричины: роли нет (WAL-догон клона) / пароль
+                // ≠ etcd-ключу / дефект doorman-конфига.
                 if (appCreds is { } stuck && !doormanReady
-                    && ++_doormanFailStreak % 3 == 0)
+                    && ++_doormanFailStreak % 2 == 0)
                 {
                     await LogDoormanStuckProbeAsync(stuck, probe, ct);
                 }
@@ -770,8 +771,8 @@ public sealed class PgNodeMachine : IDisposable
         }
     }
 
-    // Счётчик подряд неуспешных doorman-проб (зонд-порог — каждые 3 витка
-    // = 15 с; сброс при успехе).
+    // Счётчик подряд неуспешных doorman-проб (зонд-порог — каждые 2 витка
+    // = 10 с; сброс при успехе).
     private int _doormanFailStreak;
 
     // Диагностический слепок зависшей doorman-пробы (arch/14 §4 фаза (б);

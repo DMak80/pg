@@ -118,6 +118,15 @@ public sealed class BackupProcess(
                 logger.LogInformation(
                     "backups {Cluster}/{Shard}: supervision skipped — restore in progress",
                     cluster, shard.Name);
+                // arch/19 §7: hba-гвард — КАЖДЫЙ тик КАЖДОЙ ноде, БЕЗ
+                // restore-исключения: rejoin-нода поднимается с чистым
+                // /run/postgres.yml (строка backup_exec в нём отсутствует),
+                // а walreceiver доотправляет WAL с самой ноды сразу по
+                // готовности — без строки репликация с 127.0.0.1 отсечена
+                // («28000 no pg_hba.conf entry for replication»). Идемпотентно;
+                // нода без PG_VERSION применит строку при первом старте
+                // postgres. Отказ — transient: следующий тик дообеспечит.
+                await EnsureShardHbaAsync(cluster, shard.Name, addresses.Value, ct);
                 continue;
             }
 
@@ -165,41 +174,9 @@ public sealed class BackupProcess(
                 }
             }
 
-            // pg_hba (arch/19 §7): Spilo разрешает replication-соединения только
-            // роли standby — физический WAL-стриминг pg_basebackup для backup_exec
-            // отсекается («no pg_hba.conf entry for replication»).
-            // Гвард командует приёмнику КАЖДОЙ ноды шарда POST /api/node/hba-ensure
-            // (канал arch/25 №22): приёмник в СВОЁМ контейнере правит ИСТОЧНИК
-            // конфига Patroni — /run/postgres.yml (postgresql.pg_hba) — и будит
-            // Patroni SIGHUP'ом: тот сам перегенерирует pg_hba.conf при каждом
-            // старте postgres УЖЕ С нашей строкой. Правка самого pg_hba.conf
-            // бессмысленна: Patroni перегенерирует файл при каждом старте postgres
-            // и дописанная строка молча исчезала («no pg_hba.conf entry» у
-            // wal-агентов после любого рестарта). Ожидание применения — на
-            // приёмнике (поллинг pg_hba.conf; нода без PG_VERSION ещё
-            // бутстрапится — ждать нечего, применится при первом старте).
-            // Отказ — transient: шард skip, следующий тик дообеспечит (запуск на
-            // непатченной ноде карался бы FAILED-циклом с бэкоффом).
-            var hbaPatched = true;
-            foreach (var nodeKey in addresses.Value.Keys
-                         .Where(k => k.StartsWith($"{shard.Name}/", StringComparison.Ordinal)))
-            {
-                var addr = addresses.Value[nodeKey];
-                var nodeName = nodeKey.Split('/')[1];
-                var patched = await receiver.EnsureHbaAsync(
-                    WalReceiverAddress.ForNode(cluster, shard.Name, nodeName, addr.Object), ct);
-                if (!patched.IsSuccess)
-                {
-                    // Диагностика «почему пересъёмы молчат» (тик не валим — так
-                    // задумано; лог, не etcd-журнал — condition персистентный).
-                    logger.LogWarning(
-                        "backups {Cluster}/{Shard}: hba-guard skipped — node {Node}: {Error}",
-                        cluster, shard.Name, nodeName,
-                        patched.Error ?? $"receiver status {(int)patched.StatusCode}");
-                    hbaPatched = false;
-                    break;
-                }
-            }
+            // pg_hba (arch/19 §7): гвард командует КАЖДОЙ ноде шарда — см.
+            // EnsureShardHbaAsync (тот же вызов в restore-ветке выше).
+            var hbaPatched = await EnsureShardHbaAsync(cluster, shard.Name, addresses.Value, ct);
 
             if (!hbaPatched)
                 continue;
@@ -373,6 +350,44 @@ public sealed class BackupProcess(
         _ = snapshot;
 
         return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
+    }
+
+    // pg_hba-гвард шарда (arch/19 §7, канал arch/25 №22) — КАЖДОЙ ноде:
+    // дефолтный Spilo-pg_hba разрешает replication-соединения только роли
+    // standby — физический WAL-стриминг/pg_basebackup под backup_exec
+    // отсекается («no pg_hba.conf entry for replication»). Приёмник в СВОЁМ
+    // контейнере правит ИСТОЧНИК конфига Patroni — /run/postgres.yml (секция
+    // postgresql.pg_hba) — и будит Patroni SIGHUP'ом: тот сам перегенерирует
+    // pg_hba.conf при каждом старте postgres УЖЕ со строкой (правка самого
+    // pg_hba.conf бессмысленна — файл перегенерируется, строка исчезала).
+    // Нода без PG_VERSION ещё бутстрапится — применится при первом старте.
+    // Вызывается из ОБЕИХ веток тика: обычной и restore-скипа (rejoin-ноде
+    // строка нужна с первого старта). true — все ноды прошли; отказ —
+    // transient: шард skip, следующий тик дообеспечит (запуск на непатченной
+    // ноде карался бы FAILED-циклом с бэкоффом).
+    private async Task<bool> EnsureShardHbaAsync(
+        string cluster, string shardName,
+        IReadOnlyDictionary<string, NodeAddress> addresses, CancellationToken ct)
+    {
+        foreach (var nodeKey in addresses.Keys
+                     .Where(k => k.StartsWith($"{shardName}/", StringComparison.Ordinal)))
+        {
+            var addr = addresses[nodeKey];
+            var nodeName = nodeKey.Split('/')[1];
+            var patched = await receiver.EnsureHbaAsync(
+                WalReceiverAddress.ForNode(cluster, shardName, nodeName, addr.Object), ct);
+            if (!patched.IsSuccess)
+            {
+                // Диагностика «почему пересъёмы молчат» (тик не валим — так
+                // задумано; лог, не etcd-журнал — condition персистентный).
+                logger.LogWarning(
+                    "backups {Cluster}/{Shard}: hba-guard skipped — node {Node}: {Error}",
+                    cluster, shardName, nodeName,
+                    patched.Error ?? $"receiver status {(int)patched.StatusCode}");
+                return false;
+            }
+        }
+        return true;
     }
 
     // Общий обработчик ответа POST /api/backup/full в обеих ветках запуска

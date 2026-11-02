@@ -738,8 +738,13 @@ public sealed class TliSwitchContext : IAsyncLifetime
             var restoreId = await PutRestorePlannedAsync(cluster, shard, target, backupId, ct);
             try
             {
+                // Бюджет ×1.2 от фактического замера восстановления кластера
+                // этого класса (restore-PG ~7 с + выборы лидера + basebackup
+                // реплики ≈ 88-90 с → 110 с); меньший бюджет срезает живое
+                // восстановление, а его незавершённая заявка блокирует
+                // restore следующего теста класса (duplicate request).
                 var status = await WaitRestoreAsync(cluster, shard, restoreId,
-                    TimeSpan.FromSeconds(90), ct);
+                    TimeSpan.FromSeconds(110), ct);
                 return status!;
             }
             catch (ChainGapException) when (attempt < 3)
