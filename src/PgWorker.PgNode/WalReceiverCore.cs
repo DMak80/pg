@@ -142,7 +142,12 @@ public sealed class WalReceiverCore
     // из ФС своей ноды (приёмник живёт в контейнере ноды, user=postgres).
     public const string DefaultPgWalDir = "/home/postgres/pgdata/pgroot/data/pg_wal";
 
-    /// <summary>Одна сессия стрима (описание исходов — WalSessionOutcome).</summary>
+    /// <summary>Одна сессия стрима (описание исходов — WalSessionOutcome).
+    /// lastDeliveredSegment — собственный доставленный прогресс прошлой
+    /// сессии (статус-ключ, arch/19 §3 «Возобновление»): стартовая позиция НЕ
+    /// выше его конца — соло-хвост чужой ноды (mesh-лаг/полный набор) не
+    /// переводит сессию через свой недоставленный сегмент; перечитка у
+    /// источника и повторный put идемпотентны.</summary>
     public static async Task<WalSessionOutcome> RunSessionAsync(
         WalReceiverOptions o,
         IXLogReplicationSource source,
@@ -151,7 +156,8 @@ public sealed class WalReceiverCore
         WalSessionEvents events,
         CancellationToken ct,
         TimeSpan? retryDelay = null,
-        TimeSpan? roleProbePeriod = null)
+        TimeSpan? roleProbePeriod = null,
+        string? lastDeliveredSegment = null)
     {
         var retry = retryDelay ?? DefaultRetry;
         // Период проб роли/стоп-гейта из стрима (прод — 5 c; тесты ужимают —
@@ -276,6 +282,28 @@ public sealed class WalReceiverCore
                 {
                     startAt = tailInfo.Position;
                     tailSegment = tailInfo.SegmentName;
+
+                    // Старт НЕ выше собственного доставленного прогресса
+                    // (arch/19 §3 «Возобновление»): соло-хвост резолвится с
+                    // первой доступной read-ноды и может содержать сегменты,
+                    // доставленные ДРУГИМ источником двойной архивации и не
+                    // лежащие на write-цели ЭТОЙ ноды. Через свой
+                    // недоставленный сегмент сессия не стартует: от конца
+                    // собственного last_delivered — перечитка у источника и
+                    // повторный put идемпотентны (одно имя — то же содержимое).
+                    if (lastDeliveredSegment is { } deliveredName
+                        && WalFileName.TryParse(deliveredName) is { } deliveredFile)
+                    {
+                        var deliveredEnd = S3TailResolver.EndLsn(deliveredFile);
+                        if (startAt > deliveredEnd)
+                        {
+                            Diagnostic(events,
+                                $"tail clamp: S3 tail {tailInfo.SegmentName} exceeds own delivered " +
+                                $"{deliveredName} — starting from own progress (idempotent re-delivery)");
+                            startAt = deliveredEnd;
+                            tailSegment = deliveredName;
+                        }
+                    }
                 }
                 else
                 {
@@ -691,30 +719,50 @@ public sealed class WalReceiverCore
     /// не стримил»: промоут/restore открывает новый TLI вне окна сессии, хвост
     /// S3 остаётся на прежнем таймлайне — без ре-доклада сегменты между хвостом
     /// архива и первым сегментом нового TLI не попадают в S3 никогда (валидатор
-    /// restore видел бы реальный разрыв). Позиции не выше хвоста S3 не грузятся:
-    /// сегмент точки переключения уже лежит под именем РОДИТЕЛЯ (mixedness,
-    /// spec §3.3) — дубль под именем нового TLI дал бы две копии позиции. При
-    /// нескольких TLI на одну позицию грузится НОВЕЙШИЙ (живая ветка ноды).
-    /// Открытый (текущий) сегмент не грузится (байты дописываются — объект был
-    /// бы неполным), как и файл не штатного размера сегмента. Идемпотентно;
-    /// отказ/обрыв — diagnostic-log, следующий цикл подключения повторит.</summary>
+    /// restore видел бы реальный разрыв). Граница прохода — конец СОБСТВЕННОГО
+    /// доставленного прогресса (deliveredSegment, arch/19 §3), при его
+    /// отсутствии — хвост S3: локально закрытые сегменты между своим
+    /// прогрессом и хвостом чужой ноды ДОНОСЯТСЯ (для приёмника «числится на
+    /// чужой ноде» не значит «доставлено» — дубль того же имени идемпотентен);
+    /// позиция, уже заархивированная ДРУГИМ именем (tli-ветвление, mixedness
+    /// spec §3.3), проход останавливает — вторая копия позиции недопустима.
+    /// При нескольких TLI на одну позицию грузится НОВЕЙШИЙ (живая ветка
+    /// ноды). Открытый (текущий) сегмент не грузится (байты дописываются —
+    /// объект был бы неполным), как и файл не штатного размера сегмента.
+    /// Идемпотентно; отказ/обрыв — diagnostic-log, следующий проход повторит
+    /// (цикл подключения или период живой сессии).</summary>
     public static async Task RedeliverWalInventoryAsync(
         IBackupS3 s3, string cluster, string shard, string pgWalDir,
         uint currentTli, ulong currentLsn,
         Action<string>? diagnostic, CancellationToken ct,
-        Action<long>? delivered = null)
+        Action<long>? delivered = null,
+        ulong? deliveredPosition = null)
     {
-        // 1. Хвост непрерывной части цепочки S3 — точка продолжения (та же
-        //    истина, что у стартовой позиции стрима: S3TailResolver).
-        var tailResult = await S3TailResolver.ResolveTailAsync(s3, cluster, shard, ct);
-        if (!tailResult.IsSuccess)
+        // 1. Список wal/ (соло-листинг первой доступной read-ноды) — имена
+        //    позиций для mixedness-защиты шага 3. Граница прохода — позиция
+        //    СОБСТВЕННОГО доставленного прогресса, при её отсутствии — конец
+        //    непрерывной части цепочки S3 (прежняя семантика).
+        var listing = await s3.ListWalAsync(cluster, shard, ct: ct);
+        if (!listing.IsSuccess)
         {
-            diagnostic?.Invoke($"wal inventory: list wal/ failed: {tailResult.Error!.Message.Split('\n')[0]}");
-            return; // list не прошёл — ре-доклад отложен до следующего цикла
+            diagnostic?.Invoke($"wal inventory: list wal/ failed: {listing.Error!.Message.Split('\n')[0]}");
+            return; // list не прошёл — ре-доклад отложен до следующего прохода
         }
-        if (tailResult.Value is not { } tail
-            || WalFileName.TryParse(tail.SegmentName) is not { } tailFile)
-            return; // пустой префикс/незакреплённая цепочка — продолжать нечего
+        var archivedNames = listing.Value
+            .Select(o => WalFileName.TryParse(o.Name))
+            .OfType<WalFileName>()
+            .ToDictionary(s => (long)(s.Log * WalFileName.SegsPerLog + s.Seg), s => s.Name);
+        long boundaryPos;
+        if (deliveredPosition is { } ownPos)
+            boundaryPos = (long)ownPos; // свой доставленный сегмент — проход выше него
+        else
+        {
+            var tailName = archivedNames.Count == 0 ? null : ChainTailOf(archivedNames);
+            if (tailName is null
+                || WalFileName.TryParse(tailName) is not { } parsedTail)
+                return; // пустой префикс/незакреплённая цепочка — продолжать нечего
+            boundaryPos = (long)(parsedTail.Log * WalFileName.SegsPerLog + parsedTail.Seg);
+        }
 
         // 2. Локальный инвентарь: PG пишет имена ВЕРХНИМ hex, канон ключа
         //    wal/ — строчный (Name). Закрытый = позиция строго ниже текущего
@@ -754,14 +802,26 @@ public sealed class WalReceiverCore
             return; // ФС ноды недоступна — не ошибка приёмника
         }
 
-        // 3. Заливка строго по возрастанию позиций от Next(хвоста): первый
-        //    отсутствующий локально/недогруженный сегмент останавливает проход
-        //    (дыра в локальной цепи не заполняется сегментами выше неё —
-        //    цепочка в архиве не должна перепрыгивать позиции).
-        var next = tailFile.Next();
+        // 3. Заливка строго по возрастанию позиций от границы+1: первый
+        //    отсутствующий локально сегмент останавливает проход (дыра в
+        //    локальной цепи не заполняется сегментами выше неё — цепочка в
+        //    архиве не должна перепрыгивать позиции). Позиция, уже лежащая в
+        //    архиве ДРУГИМ именем (tli-ветвление), тоже останавливает проход:
+        //    дубль позиции под вторым именем недопустим (mixedness); то же
+        //    имя — идемпотентный повтор put (донос на свою write-цель).
+        var nextPos = boundaryPos + 1;
         var uploaded = 0;
-        while (local.TryGetValue((long)(next.Log * WalFileName.SegsPerLog + next.Seg), out var candidate))
+        while (local.TryGetValue(nextPos, out var candidate))
         {
+            if (archivedNames.TryGetValue(nextPos, out var archivedName)
+                && archivedName != candidate.Segment.Name)
+            {
+                diagnostic?.Invoke(
+                    $"wal inventory: position of {candidate.Segment.Name} is already archived as " +
+                    $"{archivedName} (tli branch point) — pass stopped, no second copy of the position");
+                return;
+            }
+
             byte[] data;
             try
             {
@@ -781,17 +841,28 @@ public sealed class WalReceiverCore
             {
                 diagnostic?.Invoke(
                     $"wal inventory: put {candidate.Segment.Name} failed: {put.Error!.Message.Split('\n')[0]}");
-                return; // следующий цикл повторит с той же позиции
+                return; // следующий проход повторит с той же позиции
             }
 
             delivered?.Invoke(data.Length);
             uploaded++;
-            next = candidate.Segment.Next();
+            nextPos++;
         }
 
         if (uploaded > 0)
             diagnostic?.Invoke(
-                $"wal inventory: redelivered {uploaded} local closed segment(s) above the S3 tail {tailFile.Name}");
+                $"wal inventory: redelivered {uploaded} local closed segment(s) above the pass boundary pos {boundaryPos}");
+    }
+
+    /// <summary>Имя хвостового сегмента непрерывной части цепочки по списку
+    /// имён (минимальный сегмент → WalChain.Check — та же непрерывность, что
+    /// у S3TailResolver).</summary>
+    private static string? ChainTailOf(IReadOnlyDictionary<long, string> namesByPos)
+    {
+        var startName = namesByPos[namesByPos.Keys.Min()];
+        if (WalFileName.TryParse(startName) is not { } start)
+            return null;
+        return WalChain.Check(start, namesByPos.Values).LastSegment?.Name;
     }
 
     /// <summary>Ре-доклад инвентаря.history (arch/19 §3): перечисляет

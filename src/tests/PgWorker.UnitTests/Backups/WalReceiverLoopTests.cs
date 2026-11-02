@@ -279,7 +279,8 @@ public class WalReceiverLoopTests
         Dictionary<string, string?>? env = null,
         string? pgWalDir = null,
         Func<WalReceiverRole>? roleScript = null,
-        TimeSpan? probePeriod = null)
+        TimeSpan? probePeriod = null,
+        TimeSpan? inventoryPeriod = null)
     {
         var s3Fake = s3 ?? new FakeS3();
         var sources = new List<FakeXLogSource>();
@@ -300,7 +301,8 @@ public class WalReceiverLoopTests
             _ => s3Fake,
             FastKeepalive,
             pgWalDir,
-            roleProbePeriod: probePeriod);
+            roleProbePeriod: probePeriod,
+            inventoryPeriod: inventoryPeriod);
         var cts = new CancellationTokenSource();
         loop.StartAsync(CancellationToken.None);
         return (loop, cts, sources);
@@ -1157,6 +1159,183 @@ public class WalReceiverLoopTests
 
         // Assert — ни одного put (истина старта — restart_lsn слота)
         s3.PutCalls.Should().Be(0);
+    }
+
+    // AAA (arch/19 §3, граница собственного прогресса): сегмент ЕСТЬ в архиве
+    // (чужой соло-хвост 0007 — доставлен другим источником двойной архивации),
+    // но доставлен НЕ этой нодой (свой delivered 0006) — локально закрытые
+    // 0007/0008 ДОНОСЯТСЯ на write-цель: идемпотентный повтор того же имени,
+    // «числится на чужой ноде» не значит «доставлено мной».
+    [Fact]
+    public async Task RedeliverWalInventory_OwnDeliveredBelowForeignTail_DeliversAboveOwnProgress()
+    {
+        // Arrange — архив 0–7 (чужой хвост 7); свой delivered = позиция 6;
+        // локально закрыты 7 и 8, текущий 9
+        var s3 = new FakeS3();
+        SeedChain(s3, [0U, 1U, 2U, 3U, 4U, 5U, 6U, 7U]);
+        var pgWalDir = PgWalDirWithSegments(
+            "000000010000000000000007",
+            "000000010000000000000008",
+            "000000010000000000000009");
+        var diagnostics = new List<string>();
+
+        // Act
+        await WalReceiverCore.RedeliverWalInventoryAsync(
+            s3, Cluster, Shard, pgWalDir, currentTli: 1, currentLsn: 9UL * SegmentBytes,
+            diagnostics.Add, TestContext.Current.CancellationToken,
+            deliveredPosition: 6);
+
+        // Assert — 0007 донесён (идемпотентный дубль чужой копии), 0008 за ним
+        s3.PutOrder.Should().Equal([WalKeyOf(1, 7), WalKeyOf(1, 8)],
+            "segments between own delivered progress and the foreign tail must be re-delivered");
+        diagnostics.Should().Contain(m => m.Contains("redelivered 2"));
+    }
+
+    // AAA (mixedness, arch/19 §3): позиция границы+1 уже заархивирована ДРУГИМ
+    // именем (tli-ветвление: точка переключения под именем родителя) — проход
+    // останавливается БЕЗ второй копии позиции.
+    [Fact]
+    public async Task RedeliverWalInventory_TliBranchedPosition_StopsWithoutSecondCopy()
+    {
+        // Arrange — архив: TLI1 0006 + TLI1 0007 (parent-имя); свой delivered
+        // TLI1/0006; локально ветка TLI2: 0007, 0008
+        var s3 = new FakeS3();
+        s3.Objects[WalKeyOf(1, 6)] = SegmentData(1, 6UL * (ulong)SegmentBytes);
+        s3.Objects[WalKeyOf(1, 7)] = SegmentData(1, 7UL * (ulong)SegmentBytes);
+        var pgWalDir = PgWalDirWithSegments(
+            "000000020000000000000007",
+            "000000020000000000000008");
+        var diagnostics = new List<string>();
+
+        // Act
+        await WalReceiverCore.RedeliverWalInventoryAsync(
+            s3, Cluster, Shard, pgWalDir, currentTli: 2, currentLsn: 9UL * SegmentBytes,
+            diagnostics.Add, TestContext.Current.CancellationToken,
+            deliveredPosition: 6);
+
+        // Assert — позиция 7 уже лежит другим именем: ни одного put
+        s3.PutCalls.Should().Be(0);
+        diagnostics.Should().Contain(m => m.Contains("tli branch point"));
+    }
+
+    // AAA (arch/19 §3 «Возобновление»): старт сессии НЕ выше собственного
+    // доставленного прогресса — соло-хвост чужой ноды (0007 в архиве) не
+    // переводит сессию через свой недоставленный сегмент: сессия B стартует от
+    // своего delivered 0001 и доносит 0002..0008 (повтор 0007 идемпотентен).
+    [Fact]
+    public async Task SessionStart_ClampedToOwnDelivered_WhenForeignTailAhead()
+    {
+        // Arrange — сессия A доставляет сегменты 0 и 1
+        var etcd = new FakeEtcd();
+        SeedHappyPath(etcd);
+        var s3 = new FakeS3();
+        var second = false;
+        var (loop, cts, sources) = StartLoop(
+            etcd, WalReceiverRole.Master,
+            () =>
+            {
+                if (!second)
+                {
+                    second = true;
+                    var a = new FakeXLogSource();
+                    a.Chunks.Enqueue(Chunk(0));
+                    a.Chunks.Enqueue(Chunk(SegmentBytes));
+                    return a;
+                }
+
+                // Сессия B — сегменты 2..8 (полный перезаказ у источника)
+                var b = new FakeXLogSource();
+                for (var boundary = 2UL * SegmentBytes; boundary <= 8UL * SegmentBytes; boundary += SegmentBytes)
+                    b.Chunks.Enqueue(Chunk(boundary));
+                return b;
+            },
+            s3: s3);
+
+        try
+        {
+            // Act 1 — сессия A доставила 0/1; стоп-гейт чисто завершает её
+            await WaitUntilAsync(
+                () => s3.Objects.ContainsKey(WalKeyOf(1, 1)),
+                Budget,
+                () => $"keys=[{string.Join(",", s3.Objects.Keys)}]");
+            etcd.Kvs[WalKey] = $$"""{"cluster":"{{Cluster}}","shard":"{{Shard}}","state":"STOPPED"}""";
+            await WaitStatusAsync(etcd, s => s.State == WalReceiverState.Paused, "paused (session A torn)");
+
+            // Arrange 2 — «чужая» доставка: хвост архива уходит выше своего
+            // delivered (0007 доставлен другим источником двойной архивации)
+            s3.Objects[WalKeyOf(1, 7)] = SegmentData(1, 7UL * (ulong)SegmentBytes);
+            etcd.Kvs.Remove(WalKey);
+
+            // Act 2 — сессия B: хвост 0007, свой delivered 0001 → старт 0002+0
+            await WaitUntilAsync(
+                () => s3.Objects.ContainsKey(WalKeyOf(1, 8)),
+                Budget,
+                () => $"keys=[{string.Join(",", s3.Objects.Keys)}]");
+
+            // Assert — клэмп: сессия доносит СВОЙ недоставленный диапазон
+            // (без клэмпа стартовала бы с 0008+0 и 0002..0007 не заливались)
+            s3.PutOrder.Should().Contain([WalKeyOf(1, 2), WalKeyOf(1, 6), WalKeyOf(1, 7)],
+                "the session re-delivers its own undelivered range below the foreign tail");
+            sources[^1].ConfirmedLsn.Should().Be(EndLsn(8), "the slot is confirmed at the last delivered segment");
+        }
+        finally
+        {
+            await StopLoopAsync(loop, cts);
+        }
+    }
+
+    // AAA (arch/19 §3, повтор инвентаря в живой сессии): сегмент закрылся
+    // локально ПОСЛЕ старта сессии — периодический инвентарный проход доносит
+    // его БЕЗ переподключения (сессия жива: один источник на всём тесте).
+    [Fact]
+    public async Task InventoryRepeatsInLivingSession_ClosesGapFromLocallyClosedSegment()
+    {
+        // Arrange — живой idle-стрим после доставки сегмента 0; IDENTIFY
+        // отдаёт позицию записи выше (сегмент 10 — «текущий»)
+        var dir = PgWalDirWithSegments();
+        var etcd = new FakeEtcd();
+        SeedHappyPath(etcd);
+        var s3 = new FakeS3();
+        var (loop, cts, sources) = StartLoop(
+            etcd, WalReceiverRole.Master,
+            () =>
+            {
+                var source = new FakeXLogSource
+                {
+                    Identity = new(1, 10UL * SegmentBytes),
+                };
+                source.Chunks.Enqueue(Chunk(0));
+                return source;
+            },
+            s3: s3,
+            pgWalDir: dir,
+            inventoryPeriod: TimeSpan.FromMilliseconds(300));
+
+        try
+        {
+            // Act 1 — сессия доставила сегмент 0 (confirmedBase = конец 0)
+            await WaitUntilAsync(
+                () => s3.Objects.ContainsKey(WalKeyOf(1, 0)),
+                Budget,
+                () => $"keys=[{string.Join(",", s3.Objects.Keys)}]");
+
+            // Act 2 — сегмент 1 закрылся локально ПОСЛЕ старта сессии
+            using (var fs = File.Create(Path.Combine(dir, "000000010000000000000001")))
+                fs.SetLength(SegmentBytes);
+
+            // Assert — повторный инвентарный проход донёс 0001; сессия не
+            // переподключалась (единственный источник)
+            await WaitUntilAsync(
+                () => s3.Objects.ContainsKey(WalKeyOf(1, 1)),
+                Budget,
+                () => $"keys=[{string.Join(",", s3.Objects.Keys)}]");
+            sources.Should().HaveCount(1, "the living session delivers the late-closed segment without reconnect");
+            s3.PutOrder.Should().Contain(WalKeyOf(1, 1));
+        }
+        finally
+        {
+            await StopLoopAsync(loop, cts);
+        }
     }
 
     // AAA (интеграция цикла): каждая итерация, дошедшая до сессии, доносит

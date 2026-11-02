@@ -23,6 +23,11 @@ public sealed class WalReceiverLoop : BackgroundService
 {
     private static readonly TimeSpan IdlePause = TimeSpan.FromSeconds(5);
 
+    // Период повторного инвентарного прохода в живой сессии (прод): чаще
+    // закрытия сегментов источника смысла нет (инвентарь берёт только
+    // закрытые), реже — дыра между проходами растёт.
+    internal static readonly TimeSpan DefaultInventoryPeriod = TimeSpan.FromSeconds(60);
+
     // Инъекции (прод — из env/DI-дефолта; тесты — фейки).
     private readonly Func<string, string?> _env;
     private readonly IEtcdGateway _etcd;
@@ -35,6 +40,11 @@ public sealed class WalReceiverLoop : BackgroundService
     private readonly TimeSpan _retryDelay;
     private readonly TimeSpan? _statusKeepalive;
     private readonly TimeSpan? _roleProbePeriod;
+
+    // Повтор инвентарного прохода в ЖИВОЙ сессии (arch/19 §3): сегменты,
+    // закрывшиеся после старта сессии, доезжают без переподключения —
+    // долгоживущая сессия не консервирует дыру.
+    private readonly TimeSpan _inventoryPeriod;
     private readonly string _pgWalDir;
 
     private PgNodeIdentity? _identity;
@@ -87,7 +97,8 @@ public sealed class WalReceiverLoop : BackgroundService
         Func<WalReceiverOptions, IBackupS3>? s3Factory = null,
         TimeSpan? statusKeepalive = null,
         string? pgWalDir = null,
-        TimeSpan? roleProbePeriod = null)
+        TimeSpan? roleProbePeriod = null,
+        TimeSpan? inventoryPeriod = null)
     {
         _env = env;
         _etcd = etcd;
@@ -100,6 +111,7 @@ public sealed class WalReceiverLoop : BackgroundService
         _s3Factory = s3Factory;
         _statusKeepalive = statusKeepalive;
         _roleProbePeriod = roleProbePeriod;
+        _inventoryPeriod = inventoryPeriod ?? DefaultInventoryPeriod;
         _pgWalDir = pgWalDir ?? WalReceiverCore.DefaultPgWalDir;
     }
 
@@ -303,41 +315,65 @@ public sealed class WalReceiverLoop : BackgroundService
                 await PublishStateAsync(status, metrics, state, currentRole, ct);
 
                 // Ре-доклады инвентаря (history spec §3.1 п.6; сегменты
-                // arch/19 §3) — ВСПОМОГАТЕЛЬНАЯ доставка раз за цикл
-                // подключения: pg_wal своей ноды → отсутствующие в S3 put'ятся.
-                // Выполняется ПАРАЛЛЕЛЬНО сессии, не блокируя вход в стрим:
-                // синхронный list-tail при недоступном/медленном пуле висел
-                // на транспортном таймауте до PUT-фазы — сессия не доходила
-                // до PUT, где ставится факт pool_exhausted (детекция
-                // исчерпания списка глушится). Полный бюджет цикла: доотправка
-                // не ограничена; завершение задачи ожидается ПОСЛЕ сессии —
-                // до dispose S3-клиента; отказ — diagnostic-log, доставит
-                // следующий цикл.
+                // arch/19 §3) — ВСПОМОГАТЕЛЬНАЯ доставка ПЕРВЫМ проходом цикла
+                // подключения и ПОВТОРАМИ в живой сессии периодом
+                // _inventoryPeriod (arch/19 §3): pg_wal своей ноды →
+                // отсутствующие в S3 put'ятся. Выполняется ПАРАЛЛЕЛЬНО сессии,
+                // не блокируя вход в стрим: синхронный list-tail при
+                // недоступном/медленном пуле висел на транспортном таймауте до
+                // PUT-фазы — сессия не доходила до PUT, где ставится факт
+                // pool_exhausted (детекция исчерпания списка глушится).
+                // Граница сегментного прохода — СОБСТВЕННЫЙ доставленный
+                // прогресс (LiveFacts.LastDelivered, arch/19 §3): соло-хвост
+                // чужой ноды не останавливает донос локально-закрывшихся
+                // сегментов между своим прогрессом и чужим хвостом (дубль на
+                // чужой ноде идемпотентен). Отказ прохода — diagnostic-log,
+                // повторит следующий период/цикл.
+                using var iterCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                var startDelivered = Volatile.Read(ref _facts).LastDelivered;
+                var roleAtStart = currentRole;
+                var confirmedBase = 0UL;
                 var inventoryTask = Task.Run(async () =>
                 {
                     try
                     {
-                        await WalReceiverCore.RedeliverHistoryInventoryAsync(s3,
-                            identity.Cluster, identity.Shard, _pgWalDir,
-                            msg => Console.Error.WriteLine(msg), ct,
-                            delivered: count => metrics.HistoryDelivered(count));
-
-                        // Текущая позиция записи — короткоживущий
-                        // IDENTIFY_SYSTEM; отказ — доставка отложена до следующего цикла.
-                        var identityNow = await source.IdentifySystemAsync(ct);
-                        if (identityNow.IsSuccess)
+                        while (!iterCts.IsCancellationRequested)
                         {
-                            await WalReceiverCore.RedeliverWalInventoryAsync(s3,
+                            await WalReceiverCore.RedeliverHistoryInventoryAsync(s3,
                                 identity.Cluster, identity.Shard, _pgWalDir,
-                                identityNow.Value.Tli, identityNow.Value.XLogPos,
-                                msg => Console.Error.WriteLine(msg), ct,
-                                delivered: count => metrics.SegmentDelivered(count));
-                        }
-                        else
-                        {
-                            await Console.Error.WriteLineAsync(
-                                "walreceiver: wal inventory skipped — IDENTIFY_SYSTEM failed: "
-                                + identityNow.Error!.Message.Split('\n')[0]);
+                                msg => Console.Error.WriteLine(msg), iterCts.Token,
+                                delivered: count => metrics.HistoryDelivered(count));
+
+                            // Текущая позиция записи — короткоживущий
+                            // IDENTIFY_SYSTEM; отказ — доставка отложена до следующего прохода.
+                            var identityNow = await source.IdentifySystemAsync(iterCts.Token);
+                            if (identityNow.IsSuccess)
+                            {
+                                // Граница прохода — СОБСТВЕННЫЙ доставленный
+                                // прогресс: факт прошлой сессии, иначе —
+                                // подтверждённый PUT живой сессии (confirmedBase:
+                                // сессия подтверждает только после успешного put).
+                                ulong? boundary = null;
+                                if (Volatile.Read(ref _facts).LastDelivered is { } deliveredName
+                                    && WalFileName.TryParse(deliveredName) is { } deliveredFile)
+                                    boundary = deliveredFile.Log * WalFileName.SegsPerLog + deliveredFile.Seg;
+                                else if (Volatile.Read(ref confirmedBase) is > 0)
+                                    boundary = (Volatile.Read(ref confirmedBase) >> 24) - 1;
+                                await WalReceiverCore.RedeliverWalInventoryAsync(s3,
+                                    identity.Cluster, identity.Shard, _pgWalDir,
+                                    identityNow.Value.Tli, identityNow.Value.XLogPos,
+                                    msg => Console.Error.WriteLine(msg), iterCts.Token,
+                                    delivered: count => metrics.SegmentDelivered(count),
+                                    deliveredPosition: boundary);
+                            }
+                            else
+                            {
+                                await Console.Error.WriteLineAsync(
+                                    "walreceiver: wal inventory skipped — IDENTIFY_SYSTEM failed: "
+                                    + identityNow.Error!.Message.Split('\n')[0]);
+                            }
+
+                            await Task.Delay(_inventoryPeriod, iterCts.Token);
                         }
                     }
                     catch (OperationCanceledException)
@@ -350,10 +386,8 @@ public sealed class WalReceiverLoop : BackgroundService
                             "walreceiver: wal inventory failed — "
                             + e.Message.Split('\n')[0]);
                     }
-                }, ct);
+                }, CancellationToken.None);
 
-                var roleAtStart = currentRole;
-                var confirmedBase = 0UL;
                 var events = new WalSessionEvents
                 {
                     PutSuccess = metrics.PutSuccess,
@@ -365,7 +399,7 @@ public sealed class WalReceiverLoop : BackgroundService
                         Math.Max(0, (long)lsn - (long)confirmedBase)),
                     // Подтверждение слота после успешного put двигает базу
                     // backlog-гейджа (serverWalEnd − confirmedBase, arch/18 §2.8).
-                    Confirmed = lsn => confirmedBase = lsn,
+                    Confirmed = lsn => Volatile.Write(ref confirmedBase, lsn),
                     HistoryDelivered = count => metrics.HistoryDelivered(count),
                     RoleChangedProbe = token => ProbeRoleChangedAsync(token, roleAtStart),
                     // Стоп-гейт из стрима (/arch/19 §3): живой стрим замирает
@@ -390,12 +424,14 @@ public sealed class WalReceiverLoop : BackgroundService
                 };
 
                 var outcome = await WalReceiverCore.RunSessionAsync(
-                    options, source, slotReader, s3, events, ct, _retryDelay,
-                    roleProbePeriod: _roleProbePeriod);
+                    options, source, slotReader, s3, events, iterCts.Token, _retryDelay,
+                    roleProbePeriod: _roleProbePeriod,
+                    lastDeliveredSegment: startDelivered);
 
-                // Ре-доклад инвентаря завершён ДО dispose S3-клиента сессии
-                // (запущен параллельно сессии — см. выше); дальнейших ожиданий
-                // задачи нет: следующий цикл подключения повторит доставку.
+                // Инвентарные повторы и сессия — одна граница итерации:
+                // отмена после исхода сессии завершает проходы до dispose
+                // S3-клиента; доставка доделает следующий цикл подключения.
+                await iterCts.CancelAsync();
                 try
                 {
                     await inventoryTask;
