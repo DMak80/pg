@@ -1,6 +1,7 @@
 using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
+using Npgsql;
 using Shared.Core;
 using Shared.Etcd.Client;
 
@@ -737,6 +738,18 @@ public sealed class PgNodeMachine : IDisposable
 
             if (!pgReady || !doormanReady)
             {
+                // Зонд зависшей doorman-пробы (e2e-факт 2026-11-01: реплика
+                // висела dm=starting 3,7 мин при живом Patroni — раскол
+                // недоказуем без слепка): каждые 3 неуспешные пробы (15 с) —
+                // прямая PG-проба app-кредами МИМО doorman + su-слепок роли и
+                // реплика-лага. Разделяет первопричины: роли нет (WAL-догон
+                // клона) / пароль ≠ etcd-ключу / дефект doorman-конфига.
+                if (appCreds is { } stuck && !doormanReady
+                    && ++_doormanFailStreak % 3 == 0)
+                {
+                    await LogDoormanStuckProbeAsync(stuck, probe, ct);
+                }
+
                 // Ещё инициализируется (без бюджета) — повтор в следующем цикле.
                 await PublishAsync(PgNodeStatus.Initializing, null,
                     Components(pg: pgReady ? "ready" : "starting",
@@ -744,6 +757,8 @@ public sealed class PgNodeMachine : IDisposable
                     null, ct);
                 continue;
             }
+
+            _doormanFailStreak = 0;
 
             // Готовы оба (SELECT 1 ok) — ready (applied_revision = mod_revision
             // применённого ключа).
@@ -754,6 +769,52 @@ public sealed class PgNodeMachine : IDisposable
             return;
         }
     }
+
+    // Счётчик подряд неуспешных doorman-проб (зонд-порог — каждые 3 витка
+    // = 15 с; сброс при успехе).
+    private int _doormanFailStreak;
+
+    // Диагностический слепок зависшей doorman-пробы (arch/14 §4 фаза (б);
+    // e2e-факт 2026-11-01: 28P01 на реплике 3,7 мин при живом Patroni).
+    // Прямая PG-проба app-кредами мимо doorman + su-слепок роли/реплика-лага.
+    // Секреты не раскрываются: SHA256[..10] пароля пробы (сверка с
+    // [t06-diag] fingerprint ensure/ALTER воркера).
+    private async Task LogDoormanStuckProbeAsync(
+        AppProbeCreds app, Func<string, Task<bool>> probe, CancellationToken ct)
+    {
+        var directPg = await probe(
+            $"Host=127.0.0.1;Port=5432;Username={app.User};Password={app.Password};" +
+            $"Database={app.DbName};Timeout={ComponentProbes.TimeoutSec}");
+        var snapshot = "<su-unavailable>";
+        try
+        {
+            await using var connection = new NpgsqlConnection(
+                ComponentProbes.PgConnectionString(_suPassword ?? ""));
+            await connection.OpenAsync(ct);
+            await using var command = connection.CreateCommand();
+            command.CommandText =
+                "SELECT (NOT EXISTS(SELECT 1 FROM pg_authid WHERE rolname = @user))::int " +
+                "|| '|' || COALESCE(pg_last_wal_replay_lsn()::text, 'primary') " +
+                "|| '|' || COALESCE((EXTRACT(EPOCH FROM now() - pg_last_xact_replay_timestamp()))::int::text, 'never')";
+            command.Parameters.AddWithValue("user", app.User);
+            snapshot = command.ExecuteScalar() as string ?? "<null>";
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            snapshot = $"<su-error: {FirstLine(e.Message)}>";
+        }
+
+        _log.LogWarning(
+            "pgnode: doorman probe stuck x{Streak}: direct-pg-app-login={DirectPg}; " +
+            "snapshot[role-missing|replay-lsn|lag-sec]={Snapshot}; probe-password-fp={Fp}",
+            _doormanFailStreak, directPg, snapshot, PasswordFingerprint(app.Password));
+    }
+
+    // Отпечаток пароля пробы (без секрета): SHA256[..10] — формат единый с
+    // [t06-diag] SecretFingerprint воркера (сверка по логам прогона).
+    internal static string PasswordFingerprint(string password)
+        => Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+               System.Text.Encoding.UTF8.GetBytes(password)))[..10];
 
     // Одна попытка-серия старта компонента: до 3 вызовов StartAsync (исключение
     // провал старта ненулевым кодом supervisorctl — попытка №+1; исчерпаны —

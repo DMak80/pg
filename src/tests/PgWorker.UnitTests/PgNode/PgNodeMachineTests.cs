@@ -987,4 +987,24 @@ public class RestPasswordOfTests
             """;
         PgNodeMachine.RestPasswordOf(yaml).Should().BeNull();
     }
+
+    // Отпечаток зонда зависшей doorman-пробы: формат един с [t06-diag]
+    // SecretFingerprint воркера (SHA256-HEX[..10]) — сверка отпечатков пробы
+    // применителя и ensure/ALTER по логам одного прогона.
+    [Fact]
+    public void PasswordFingerprint_Is_Stable_TenHexChars_And_Secret_Dependent()
+    {
+        // Arrange
+        const string password = "pgw-e2e-app-pwd";
+
+        // Act
+        var fp1 = PgNodeMachine.PasswordFingerprint(password);
+        var fp2 = PgNodeMachine.PasswordFingerprint(password);
+        var fpOther = PgNodeMachine.PasswordFingerprint(password + "-other");
+
+        // Assert
+        fp1.Should().HaveLength(10).And.MatchRegex("^[0-9A-F]{10}$");
+        fp2.Should().Be(fp1, "отпечаток детерминирован — сверка между прогонами");
+        fpOther.Should().NotBe(fp1, "отпечаток зависит от пароля — различение расхождений");
+    }
 }
