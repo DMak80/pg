@@ -29,7 +29,10 @@ public sealed class E2eScaleScenarios(E2eScaleScenariosFx Ctx) : IClassFixture<E
     {
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(
             TestContext.Current.CancellationToken);
-        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
+        // Потолок теста — бюджет ×1.2 от фактического замера (соло 175 с → 210
+        // с): неверное ожидание не может длиться дольше; запас покрывает
+        // нагрузку полного прогона (сумма бюджетов шагов ожидания — 690 с).
+        cts.CancelAfter(TimeSpan.FromSeconds(210));
         var ct = cts.Token;
 
         // Уникальное имя кластера на прогон: движковые контейнеры/тома (pgw-<C>-*)
