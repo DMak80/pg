@@ -311,6 +311,27 @@ public sealed class WalReceiverLoop : BackgroundService
                     msg => Console.Error.WriteLine(msg), ct,
                     delivered: count => metrics.HistoryDelivered(count));
 
+                // Ре-доклад инвентаря СЕГМЕНТОВ (arch/19 §3): промоут/restore
+                // открывает TLI вне окна сессии — закрытые сегменты своей ноды
+                // выше хвоста S3 доезжают до архива (иначе разрыв остаётся
+                // навсегда). Текущая позиция записи — короткоживущий
+                // IDENTIFY_SYSTEM; отказ — доставка отложена до следующего цикла.
+                var identityNow = await source.IdentifySystemAsync(ct);
+                if (identityNow.IsSuccess)
+                {
+                    await WalReceiverCore.RedeliverWalInventoryAsync(s3,
+                        identity.Cluster, identity.Shard, _pgWalDir,
+                        identityNow.Value.Tli, identityNow.Value.XLogPos,
+                        msg => Console.Error.WriteLine(msg), ct,
+                        delivered: count => metrics.SegmentDelivered(count));
+                }
+                else
+                {
+                    await Console.Error.WriteLineAsync(
+                        "walreceiver: wal inventory skipped — IDENTIFY_SYSTEM failed: "
+                        + identityNow.Error!.Message.Split('\n')[0]);
+                }
+
                 var roleAtStart = currentRole;
                 var confirmedBase = 0UL;
                 var events = new WalSessionEvents

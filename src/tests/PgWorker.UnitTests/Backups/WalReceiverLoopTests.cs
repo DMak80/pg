@@ -130,6 +130,7 @@ public class WalReceiverLoopTests
     {
         public readonly Dictionary<string, byte[]> Objects = [];
         public readonly HashSet<string> FailKeys = [];
+        public readonly List<string> PutOrder = []; // порядок успешных put (ре-доклад сегментов: возрастание позиций)
         public bool FailListWal;
         public int PutCalls;
 
@@ -141,6 +142,7 @@ public class WalReceiverLoopTests
                 // Сегментные буферы — из пула, возвращаются после put: фейк
                 // копирует байты, как реальный S3 (контракт владения буфером).
                 Objects[key] = data.ToArray();
+                PutOrder.Add(key);
                 return Task.FromResult(Result.Success());
             }
 
@@ -983,6 +985,204 @@ public class WalReceiverLoopTests
             await WaitStatusAsync(etcd, s => s.State == WalReceiverState.Streaming, "streaming");
             await WaitUntilAsync(
                 () => s3.Objects.ContainsKey($"{Cluster}/{Shard}/wal/00000002.history"),
+                Budget,
+                () => $"keys=[{string.Join(",", s3.Objects.Keys)}]");
+        }
+        finally
+        {
+            await StopLoopAsync(loop, cts);
+        }
+    }
+
+    // ── Ре-доклад инвентаря СЕГМЕНТОВ (arch/19 §3) ──
+
+    // tmpdir с закрытыми сегментными файлами штатного размера (разряжённые —
+    // PG пишет имена ВЕРХНИМ hex; содержимое для ре-докала не важно).
+    private static string PgWalDirWithSegments(params string[] names)
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "pgwal-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        foreach (var name in names)
+        {
+            using var fs = File.Create(Path.Combine(dir, name));
+            fs.SetLength(SegmentBytes);
+        }
+        return dir;
+    }
+
+    // Имя ключа wal/ для TLI+позиции (нижний hex — канон архива).
+    private static string WalKeyOf(uint tli, long pos)
+        => $"{Cluster}/{Shard}/wal/{tli:x8}{pos / WalFileName.SegsPerLog:x8}{pos % WalFileName.SegsPerLog:x8}";
+
+    // AAA: локальные закрытые сегменты выше хвоста архива доезжают в S3 строго
+    // по возрастанию позиций; открытый (текущий) сегмент не грузится.
+    [Fact]
+    public async Task RedeliverWalInventory_AppendsClosedSegmentsInAscendingOrder()
+    {
+        // Arrange — архив TLI1 №0–2; локально №3, №4 (закрыты), №5 (текущий)
+        var s3 = new FakeS3();
+        SeedChain(s3, [0U, 1U, 2U]);
+        var pgWalDir = PgWalDirWithSegments(
+            "000000010000000000000003",
+            "000000010000000000000004",
+            "000000010000000000000005");
+        var diagnostics = new List<string>();
+
+        // Act — текущая позиция записи: начало сегмента №5
+        await WalReceiverCore.RedeliverWalInventoryAsync(
+            s3, Cluster, Shard, pgWalDir, currentTli: 1, currentLsn: 5UL * SegmentBytes,
+            diagnostics.Add, TestContext.Current.CancellationToken);
+
+        // Assert — ровно №3 и №4 в порядке возрастания; текущий №5 не тронут
+        s3.PutOrder.Should().Equal([WalKeyOf(1, 3), WalKeyOf(1, 4)],
+            "closed local segments above the S3 tail are appended in ascending order");
+        s3.Objects.Should().NotContainKey(WalKeyOf(1, 5),
+            "the open (current) segment is still being written — it must not be uploaded");
+        diagnostics.Should().Contain(m => m.Contains("redelivered 2"));
+    }
+
+    // AAA: позиции не выше хвоста S3 не грузятся — сегмент точки переключения
+    // уже лежит в архиве под именем РОДИТЕЛЯ (mixedness): дубль под именем
+    // нового TLI дал бы две копии одной позиции.
+    [Fact]
+    public async Task RedeliverWalInventory_SwitchSegmentUnderParentName_NotDuplicated()
+    {
+        // Arrange — архив: TLI1 №9 → TLI1 №10 (mixed-сегмент точки переключения
+        // под именем РОДИТЕЛЯ) + history нового TLI
+        var s3 = new FakeS3();
+        s3.Objects[WalKeyOf(1, 9)] = SegmentData(1, 9UL * (ulong)SegmentBytes);
+        s3.Objects[WalKeyOf(1, 10)] = SegmentData(1, 10UL * (ulong)SegmentBytes);
+        s3.Objects[$"{Cluster}/{Shard}/wal/00000002.history"] = [1, 2, 3];
+        var pgWalDir = PgWalDirWithSegments(
+            "00000002000000000000000A", // копия точки переключения под НОВЫМ TLI
+            "00000002000000000000000B",
+            "00000002000000000000000C");
+
+        // Act — текущая позиция: начало сегмента TLI2 №13
+        await WalReceiverCore.RedeliverWalInventoryAsync(
+            s3, Cluster, Shard, pgWalDir, currentTli: 2, currentLsn: 13UL * SegmentBytes,
+            null, TestContext.Current.CancellationToken);
+
+        // Assert — позиция хвоста (10) не залита повторно; залиты 11 и 12
+        s3.PutOrder.Should().Equal([WalKeyOf(2, 11), WalKeyOf(2, 12)]);
+        s3.PutOrder.Should().NotContain(WalKeyOf(2, 10),
+            "the switch-point segment stays archived under the parent TLI name only");
+    }
+
+    // AAA: обрыв локальной цепи останавливает проход — сегменты выше дыры не
+    // заливаются (архив не перепрыгивает позиции); следующий цикл продолжит.
+    [Fact]
+    public async Task RedeliverWalInventory_LocalGap_StopsBeforeTheGap()
+    {
+        // Arrange — архив №0–2; локально №3 есть, №4 отсутствует, №5 есть
+        var s3 = new FakeS3();
+        SeedChain(s3, [0U, 1U, 2U]);
+        var pgWalDir = PgWalDirWithSegments(
+            "000000010000000000000003",
+            "000000010000000000000005");
+
+        // Act
+        await WalReceiverCore.RedeliverWalInventoryAsync(
+            s3, Cluster, Shard, pgWalDir, currentTli: 1, currentLsn: 6UL * SegmentBytes,
+            null, TestContext.Current.CancellationToken);
+
+        // Assert — только №3; №5 ждёт заполнения дыры
+        s3.PutOrder.Should().Equal([WalKeyOf(1, 3)],
+            "a local gap stops the pass — no segment above the hole is uploaded");
+    }
+
+    // AAA: несколько TLI на одну позицию — грузится НОВЕЙШИЙ (живая ветка ноды).
+    [Fact]
+    public async Task RedeliverWalInventory_SamePosition_PrefersNewestTimeline()
+    {
+        // Arrange — архив TLI1 №0–2; локально TLI2 №3 и TLI4 №3, затем TLI4 №4
+        var s3 = new FakeS3();
+        SeedChain(s3, [0U, 1U, 2U]);
+        var pgWalDir = PgWalDirWithSegments(
+            "000000020000000000000003",
+            "000000040000000000000003",
+            "000000040000000000000004");
+
+        // Act
+        await WalReceiverCore.RedeliverWalInventoryAsync(
+            s3, Cluster, Shard, pgWalDir, currentTli: 4, currentLsn: 5UL * SegmentBytes,
+            null, TestContext.Current.CancellationToken);
+
+        // Assert — позиция 3 залита новейшим TLI (4), позиция 4 — тоже TLI4
+        s3.PutOrder.Should().Equal(WalKeyOf(4, 3), WalKeyOf(4, 4));
+    }
+
+    // AAA: отказ put останавливает проход на этой позиции (порядок не
+    // ломается); следующий цикл подключения продолжает с неё.
+    [Fact]
+    public async Task RedeliverWalInventory_PutFailure_DefersToNextCycle()
+    {
+        // Arrange — архив №0; локально №1 и №2; put №2 отказывает
+        var s3 = new FakeS3();
+        SeedChain(s3, [0U]);
+        var pgWalDir = PgWalDirWithSegments(
+            "000000010000000000000001",
+            "000000010000000000000002");
+        s3.FailKeys.Add(WalKeyOf(1, 2));
+
+        // Act/Assert — доехал только №1, проход остановлен
+        await WalReceiverCore.RedeliverWalInventoryAsync(
+            s3, Cluster, Shard, pgWalDir, currentTli: 1, currentLsn: 3UL * SegmentBytes,
+            null, TestContext.Current.CancellationToken);
+        s3.PutOrder.Should().Equal(WalKeyOf(1, 1));
+        s3.Objects.Should().NotContainKey(WalKeyOf(1, 2));
+
+        // Act — put починен: следующий цикл доносит №2
+        s3.FailKeys.Clear();
+        await WalReceiverCore.RedeliverWalInventoryAsync(
+            s3, Cluster, Shard, pgWalDir, currentTli: 1, currentLsn: 3UL * SegmentBytes,
+            null, TestContext.Current.CancellationToken);
+
+        // Assert — хвост вырос до №2
+        s3.PutOrder.Should().Equal(WalKeyOf(1, 1), WalKeyOf(1, 2));
+    }
+
+    // AAA: пустой префикс архива — продолжать нечего (цепочку закрепит стрим).
+    [Fact]
+    public async Task RedeliverWalInventory_EmptyPrefix_NoOp()
+    {
+        // Arrange — S3 пуст; локально есть закрытый сегмент
+        var s3 = new FakeS3();
+        var pgWalDir = PgWalDirWithSegments("000000010000000000000003");
+
+        // Act
+        await WalReceiverCore.RedeliverWalInventoryAsync(
+            s3, Cluster, Shard, pgWalDir, currentTli: 1, currentLsn: 4UL * SegmentBytes,
+            null, TestContext.Current.CancellationToken);
+
+        // Assert — ни одного put (истина старта — restart_lsn слота)
+        s3.PutCalls.Should().Be(0);
+    }
+
+    // AAA (интеграция цикла): каждая итерация, дошедшая до сессии, доносит
+    // локальные закрытые сегменты выше хвоста S3 (вне hot-path стрима).
+    [Fact]
+    public async Task Loop_RedeliversWalInventory_EachCycle()
+    {
+        // Arrange — полный путь до сессии; архив №0–1; локально №2, №3 (закрыты)
+        var etcd = new FakeEtcd();
+        SeedHappyPath(etcd);
+        var s3 = new FakeS3();
+        SeedChain(s3, [0U, 1U]);
+        var pgWalDir = PgWalDirWithSegments(
+            "000000010000000000000002",
+            "000000010000000000000003");
+        var (loop, cts, _) = StartLoop(
+            etcd, WalReceiverRole.Master,
+            () => new FakeXLogSource { Identity = new ServerIdentity(1, 4UL * SegmentBytes) },
+            s3: s3, pgWalDir: pgWalDir);
+
+        try
+        {
+            // Act/Assert — сессия стартовала; сегменты появились в S3
+            await WaitStatusAsync(etcd, s => s.State == WalReceiverState.Streaming, "streaming");
+            await WaitUntilAsync(
+                () => s3.Objects.ContainsKey(WalKeyOf(1, 3)),
                 Budget,
                 () => $"keys=[{string.Join(",", s3.Objects.Keys)}]");
         }

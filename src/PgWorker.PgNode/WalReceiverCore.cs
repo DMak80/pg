@@ -684,6 +684,116 @@ public sealed class WalReceiverCore
         }
     }
 
+    /// <summary>Ре-доклад инвентаря СЕГМЕНТОВ (arch/19 §3): закрытые сегменты
+    /// pg_wal своей ноды, продолжающие непрерывную часть S3-цепочки, кладутся в
+    /// wal/ отсутствующие — в возрастающем порядке позиций, до первой дыры или
+    /// отказа put. Покрывает исход «WAL физически есть на ноде, но приёмник его
+    /// не стримил»: промоут/restore открывает новый TLI вне окна сессии, хвост
+    /// S3 остаётся на прежнем таймлайне — без ре-доклада сегменты между хвостом
+    /// архива и первым сегментом нового TLI не попадают в S3 никогда (валидатор
+    /// restore видел бы реальный разрыв). Позиции не выше хвоста S3 не грузятся:
+    /// сегмент точки переключения уже лежит под именем РОДИТЕЛЯ (mixedness,
+    /// spec §3.3) — дубль под именем нового TLI дал бы две копии позиции. При
+    /// нескольких TLI на одну позицию грузится НОВЕЙШИЙ (живая ветка ноды).
+    /// Открытый (текущий) сегмент не грузится (байты дописываются — объект был
+    /// бы неполным), как и файл не штатного размера сегмента. Идемпотентно;
+    /// отказ/обрыв — diagnostic-log, следующий цикл подключения повторит.</summary>
+    public static async Task RedeliverWalInventoryAsync(
+        IBackupS3 s3, string cluster, string shard, string pgWalDir,
+        uint currentTli, ulong currentLsn,
+        Action<string>? diagnostic, CancellationToken ct,
+        Action<long>? delivered = null)
+    {
+        // 1. Хвост непрерывной части цепочки S3 — точка продолжения (та же
+        //    истина, что у стартовой позиции стрима: S3TailResolver).
+        var tailResult = await S3TailResolver.ResolveTailAsync(s3, cluster, shard, ct);
+        if (!tailResult.IsSuccess)
+        {
+            diagnostic?.Invoke($"wal inventory: list wal/ failed: {tailResult.Error!.Message.Split('\n')[0]}");
+            return; // list не прошёл — ре-доклад отложен до следующего цикла
+        }
+        if (tailResult.Value is not { } tail
+            || WalFileName.TryParse(tail.SegmentName) is not { } tailFile)
+            return; // пустой префикс/незакреплённая цепочка — продолжать нечего
+
+        // 2. Локальный инвентарь: PG пишет имена ВЕРХНИМ hex, канон ключа
+        //    wal/ — строчный (Name). Закрытый = позиция строго ниже текущего
+        //    сегмента записи (его отдаёт IDENTIFY_SYSTEM вызывающего).
+        var currentPos = (long)(currentLsn / (ulong)WalFileName.SegmentBytes);
+        var local = new Dictionary<long, (WalFileName Segment, string Path)>();
+        try
+        {
+            foreach (var path in Directory.EnumerateFiles(pgWalDir))
+            {
+                var name = Path.GetFileName(path);
+                if (WalFileName.IsPartial(name) || WalFileName.TryParse(name) is not { } segment)
+                    continue; // .history/.partial/мусор — не сегменты
+                var pos = (long)(segment.Log * WalFileName.SegsPerLog + segment.Seg);
+                if (pos >= currentPos)
+                    continue; // открытый/будущий сегмент — байты ещё дописываются
+                var length = new FileInfo(path).Length;
+                if (length != WalFileName.SegmentBytes)
+                {
+                    // Не штатный размер — усечённый/чужой файл; грузить нельзя
+                    // (объект под именем целого сегмента испортил бы архив).
+                    diagnostic?.Invoke(
+                        $"wal inventory: local {name} has {length} bytes " +
+                        $"(expected {WalFileName.SegmentBytes}) — skipped");
+                    continue;
+                }
+                // Несколько TLI на одну позицию — живая ветка ноды (новейший TLI).
+                if (local.TryGetValue(pos, out var prev) && prev.Segment.Tli >= segment.Tli)
+                    continue;
+                local[pos] = (segment, path);
+            }
+        }
+        catch (Exception e)
+        {
+            diagnostic?.Invoke(
+                $"wal inventory: enumerate {pgWalDir} failed: {e.GetType().Name}: {e.Message.Split('\n')[0]}");
+            return; // ФС ноды недоступна — не ошибка приёмника
+        }
+
+        // 3. Заливка строго по возрастанию позиций от Next(хвоста): первый
+        //    отсутствующий локально/недогруженный сегмент останавливает проход
+        //    (дыра в локальной цепи не заполняется сегментами выше неё —
+        //    цепочка в архиве не должна перепрыгивать позиции).
+        var next = tailFile.Next();
+        var uploaded = 0;
+        while (local.TryGetValue((long)(next.Log * WalFileName.SegsPerLog + next.Seg), out var candidate))
+        {
+            byte[] data;
+            try
+            {
+                data = await File.ReadAllBytesAsync(candidate.Path, ct);
+            }
+            catch (Exception e)
+            {
+                diagnostic?.Invoke(
+                    $"wal inventory: read {candidate.Segment.Name} failed: {e.GetType().Name}: {e.Message.Split('\n')[0]}");
+                return;
+            }
+
+            var put = await s3.PutObjectAsync(
+                $"{cluster}/{shard}/wal/{candidate.Segment.Name}", data,
+                Convert.ToHexString(SHA256.HashData(data)), ct);
+            if (!put.IsSuccess)
+            {
+                diagnostic?.Invoke(
+                    $"wal inventory: put {candidate.Segment.Name} failed: {put.Error!.Message.Split('\n')[0]}");
+                return; // следующий цикл повторит с той же позиции
+            }
+
+            delivered?.Invoke(data.Length);
+            uploaded++;
+            next = candidate.Segment.Next();
+        }
+
+        if (uploaded > 0)
+            diagnostic?.Invoke(
+                $"wal inventory: redelivered {uploaded} local closed segment(s) above the S3 tail {tailFile.Name}");
+    }
+
     /// <summary>Ре-доклад инвентаря.history (arch/19 §3): перечисляет
     /// .history-файлы pg_wal своей ноды и кладёт в S3 wal/ отсутствующие —
     /// страховка TLI-переходов вне окна стрима (промоут, пока приёмник не
