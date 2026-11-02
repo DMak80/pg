@@ -106,6 +106,35 @@ public class RestPkiTests
         chain.Build(cert).Should().BeTrue();
     }
 
+    // AAA : клиентский серт воркера mTLS-канала доставки (spec §3.4, arch/25
+    // №23) — EKU ровно ClientAuth, издан тем же per-install CA; серверной
+    // роли (SAN/ServerAuth) у него нет.
+    [Fact]
+    public void WorkerClientCertificate_ClientAuthEkuAndIssuer()
+    {
+        // Arrange: тестовый CA (тот же per-install REST-CA, что и для нод).
+        var (caPem, caKeyPem) = TestRestCa.Generate();
+
+        // Act: выпуск клиентского серта воркера (CN по роли — pgworker).
+        var (certPem, keyPem) = RestPki.IssueWorkerClientCertificate(caPem, caKeyPem, "pgworker");
+
+        // Assert: пара серт+ключ парсится; EKU содержит ровно ClientAuth;
+        // издатель — тестовый CA; SAN-расширения нет.
+        var create = () => X509Certificate2.CreateFromPem(certPem, keyPem);
+        var createException = Record.Exception(create);
+        createException.Should().BeNull("pem pair must parse");
+        using var cert = X509Certificate2.CreateFromPem(certPem, keyPem);
+        using var ca = X509Certificate2.CreateFromPem(caPem);
+        cert.Subject.Should().Be("CN=pgworker");
+        cert.Issuer.Should().Be(ca.Subject);
+        var clientAuthOnly = new X509EnhancedKeyUsageExtension(
+            [new Oid("1.3.6.1.5.5.7.3.2")], critical: false);
+        cert.Extensions.OfType<X509EnhancedKeyUsageExtension>().Single().RawData
+            .SequenceEqual(clientAuthOnly.RawData).Should().BeTrue();
+        var san = cert.Extensions.OfType<X509SubjectAlternativeNameExtension>().ToList();
+        san.Should().BeEmpty("client-only certificate carries no SAN");
+    }
+
     [Fact]
     public void TryParse_MalformedPemIsFalse()
     {
@@ -122,6 +151,14 @@ public class RestPkiTests
 // KafkaWorker / E2eTestPki.GenerateCa); срок параметризуется кейсом зажима.
 public static class TestRestCa
 {
+    // Пароль в рантайме (секрет не зашивается в исходник) — для delivery-тестов.
+    public static string GeneratePassword()
+    {
+        const string alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+        var bytes = System.Security.Cryptography.RandomNumberGenerator.GetBytes(24);
+        return new string(bytes.Select(b => alphabet[b % alphabet.Length]).ToArray());
+    }
+
     public static (string CaPem, string CaKeyPem) Generate(
         TimeSpan? validity = null, TimeSpan? notBeforeOffset = null)
     {

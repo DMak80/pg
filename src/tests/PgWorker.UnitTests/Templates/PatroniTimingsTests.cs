@@ -1,3 +1,4 @@
+using System.Text.Json;
 using PgWorker.Core.Model;
 using PgWorker.Core.Templates;
 
@@ -19,11 +20,12 @@ public class PatroniTimingsTests
         var topology = new ShardTopology("shop", "shard1", "shop-shard1",
             new Dictionary<string, NodeAddress> { ["shard1a"] = new("h1", new NodePorts(15432, 18008, 16432)) });
 
-        // Act: генерируем env и сверяем канон через DcsConfigConvergence.
-        var spilo = SpiloEnvBuilder.Build(
-            topology, new EtcdEndpoints(["http://e1:2379"]),
-            new InstallSecrets("su", "sb", "adm", "mov"), syncStrict: false,
-            "shard1a", NodeConfigBuildersTests.TestRestTls())["SPILO_CONFIGURATION"];
+        // Act: bootstrap-ключ → SPILO_CONFIGURATION и сверяем канон через
+        // DcsConfigConvergence.
+        using var bootstrapDoc = JsonDocument.Parse(NodeBootstrapBuilder.Build(
+            topology, new EtcdEndpoints(["http://e1:2379"]), syncStrict: false,
+            "shard1a", "CERT", "KEY", "restpw", null, null));
+        var spilo = bootstrapDoc.RootElement.GetProperty("spilo_configuration").GetString()!;
         var selfPatch = DcsConfigConvergence.DivergencePatch(
             $$"""{"ttl":{{PatroniTimings.Ttl}},"loop_wait":{{PatroniTimings.LoopWait}},"retry_timeout":{{PatroniTimings.RetryTimeout}},"synchronous_mode":true,"synchronous_mode_strict":false}""",
             syncStrict: false, null);

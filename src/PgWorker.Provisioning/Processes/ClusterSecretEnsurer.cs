@@ -50,7 +50,13 @@ public sealed class ClusterSecretEnsurer(IEtcdGateway etcd, string[] endpoints) 
 
         var current = read.Value;
         if (IsComplete(current))
+        {
+            // Диагностика t06: отпечаток уже существующего etcd-ключа (полный
+            // путь ensure, без txn) — сверяется с ALTER'ом provisioning.
+            Console.WriteLine(
+                $"[t06-diag] ensure app_password fingerprint={SecretFingerprint.Of(current.AppPassword!)} cluster={cluster} (complete, no txn)");
             return Result<ClusterCredentials>.Success(ToCredentials(current));
+        }
 
         // Отсутствующие добираем txn NotExists: существующие не переписываем
         // (идемпотентность re-run — spec §2.5); bucket_admin-вход — config.
@@ -114,6 +120,12 @@ public sealed class ClusterSecretEnsurer(IEtcdGateway etcd, string[] endpoints) 
         var final = await ReadAsync(cluster, ct);
         if (!final.IsSuccess)
             return Result<ClusterCredentials>.Failed(final.Error!);
+
+        // Диагностика t06 (отпечатки, не секреты): etcd-значение app_password
+        // после ensure — сверяется с отпечатком ALTER'а provisioning и pg_authid.
+        Console.WriteLine(
+            $"[t06-diag] ensure app_password fingerprint={SecretFingerprint.Of(final.Value.AppPassword!)} " +
+            $"cluster={cluster} desired={SecretFingerprint.Of(desiredAppPassword)}");
 
         if (IsComplete(final.Value))
             return Result<ClusterCredentials>.Success(ToCredentials(final.Value));

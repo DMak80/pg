@@ -73,7 +73,7 @@ public class SdGeneratorLoopTests : IDisposable
         Directory.CreateDirectory(dir);
         _dirs.Add(dir);
         var path = Path.Combine(dir, "sd.json");
-        var walPath = Path.Combine(dir, "walreceiver-nodes.json");
+        var walPath = Path.Combine(dir, "pgnode-nodes.json");
         var etcd = new FakeEtcdGateway();
         var meter = new System.Diagnostics.Metrics.Meter("sd-unit");
         _disposables.Add(meter);

@@ -139,6 +139,7 @@ public class ProvisioningProcessTests
         => new("ignored", host, obj, pg, patroni, doorman);
 
     private sealed record Rig(Fakes.FakeEtcd Etcd, Fakes.FakeDriver Driver, Fakes.FakeSql Sql,
+        RecordingDelivery Delivery,
         ClaimStore Claims, WorkJournal Journal, ProvisioningProcess Process, Fakes.FakeNodeDataProbe Probe);
 
     private static async Task<Rig> NewRig(
@@ -155,15 +156,36 @@ public class ProvisioningProcessTests
         var sql = new Fakes.FakeSql();
         var appSecret = new ClusterSecretEnsurer(etcd, [Ep]);
         var portAlloc = new PortAllocIndex(etcd, [Ep], NullLogger<PortAllocIndex>.Instance);
+        var delivery = new RecordingDelivery();
         var process = new ProvisioningProcess(
             etcd, [Ep], driver, probe, sql, Probe(patroniResponse, trace, identityByEndpoint), claims, journal,
             opts ?? Opts, Secrets,
             appSecret, new AppParamsEnsurer(etcd, [Ep], "sslmode=require"), EtcdEndp, portAlloc,
             new PortAllocLock("/pgworker", [Ep], etcd, TimeProvider.System, claims.InstanceId),
-            Fakes.PgtuneFactory(), snapshot: null);
-        return new Rig(etcd, driver, sql, claims, journal, process, probe);
+            Fakes.PgtuneFactory(),
+            delivery, snapshot: null);
+        return new Rig(etcd, driver, sql, delivery, claims, journal, process, probe);
     }
 
+    // Т11 (MR-#18, П11.8): EnsureNode-хвост provisioning — delivery вызван для
+    // каждой создаваемой ноды с эффективной rest-парой (is_tool_start=false);
+    // порядок — после create/start ноды.
+    [Fact]
+    public async Task EnsureNodes_AfterCreate_DeliveryTailInvoked()
+    {
+        // Arrange — Patroni молчит (тип: create-фаза, ноды создаются).
+        var rig = await NewRig(_ => DeadPatroni(), identityByEndpoint: EmptyIdentity);
+
+        // Act
+        var outcome = await rig.Process.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert: доставки созданных нод (тип: create-фаза — Patroni молчит,
+        // тик завершается после create; доставлены 3 из 4 нод до конца тика).
+        outcome.IsSuccess.Should().BeTrue();
+        rig.Delivery.Calls.Should().HaveCountGreaterThanOrEqualTo(3);
+        rig.Delivery.Calls.Should().OnlyContain(c =>
+            c.Cluster == "shop" && c.RestPassword.Length > 0 && !c.IsToolStart);
+    }
     [Fact]
     public async Task Tick_FreshCluster_EnsureNodesThenInProgressWaitingPatroni()
     {
@@ -332,7 +354,8 @@ public class ProvisioningProcessTests
             new AppParamsEnsurer(etcd, [Ep], "sslmode=require"), EtcdEndp,
             new PortAllocIndex(etcd, [Ep], NullLogger<PortAllocIndex>.Instance),
             new PortAllocLock("/pgworker", [Ep], etcd, TimeProvider.System, claims.InstanceId),
-            Fakes.PgtuneFactory(), snapshot: null);
+            Fakes.PgtuneFactory(),
+            new RecordingDelivery(), snapshot: null);
 
         // Act
         var outcome = await process.TickAsync(await Snapshot(etcd), CancellationToken.None);

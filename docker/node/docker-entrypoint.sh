@@ -8,14 +8,14 @@
 set -e
 
 # Tool-режим контейнера (spec t26 §3.3): никаких PG-команд при старте —
-# только старт контейнера; WalReceiver — главный процесс (PID-1), весь
+# только старт контейнера; агент PgNode — главный процесс (PID-1), весь
 # жизненный цикл операций — через его HTTP API. Patroni/supervisord и
 # генерация нодовых конфигов не запускаются.
 if [ "$PGW_NODE_TOOL" = "1" ]; then
-    exec /opt/pgw-wal/walreceiver
+    exec /opt/pgw-node/pgnode
 fi
 
-mkdir -p /etc/haproxy /etc/pg_doorman
+mkdir -p /etc/haproxy
 
 if [ -n "$HAPROXY_CONFIG" ]; then
     printf '%s\n' "$HAPROXY_CONFIG" > /etc/haproxy/haproxy.cfg
@@ -23,32 +23,20 @@ else
     : > /etc/haproxy/haproxy.cfg
 fi
 
-# Пулер pg_doorman обязателен (arch/14 §8): нет бинарника или конфига —
-# отказ старта контейнера (ненулевой exit ДО supervisord; воркер видит
-# exited-контейнер). Молчаливых «not starting» не существует.
+# Пулер pg_doorman обязателен (arch/14 §8): нет бинарника — отказ старта
+# контейнера (ненулевой exit ДО supervisord; воркер видит exited-контейнер).
+# Молчаливых «not starting» не существует.
 if [ ! -x /usr/local/bin/pg_doorman ]; then
     echo "pg_doorman: /usr/local/bin/pg_doorman binary is missing - DOORMAN_IMAGE build-arg is required"
     exit 1
 fi
-if [ -n "$DOORMAN_CONFIG" ]; then
-    printf '%s\n' "$DOORMAN_CONFIG" > /etc/pg_doorman/pg_doorman.yaml
-else
-    echo "pg_doorman: DOORMAN_CONFIG env is empty - cannot start the mandatory pooler"
+
+# Шаблон конфига пулера (неконфиденциальный): пароль подставляет агент PgNode
+# при рендере в tmpfs (arch/14 §4); пустой шаблон — старт-отказ контейнера.
+if [ -z "$DOORMAN_CONFIG_TEMPLATE" ]; then
+    echo "pg_doorman: DOORMAN_CONFIG_TEMPLATE env is empty - cannot start the mandatory pooler"
     exit 1
 fi
-
-# Self-signed TLS-серт пулера при каждом старте (P17: клиенты ходят
-# sslmode=require без верификации цепочки — серт шифрования не несёт
-# идентичности); файлы вне volume — ключ не переживает рестарт контейнера,
-# это допустимо (минимум движущихся частей).
-openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -subj "/CN=pg_doorman" \
-    -keyout /etc/pg_doorman/tls.key -out /etc/pg_doorman/tls.crt
-
-# Пулер работает под postgres (supervisord user=postgres): конфиг и TLS-файлы
-# его; ключ — 0600 (читает только владелец).
-chown postgres:postgres /etc/pg_doorman/pg_doorman.yaml \
-    /etc/pg_doorman/tls.key /etc/pg_doorman/tls.crt
-chmod 600 /etc/pg_doorman/tls.key
 
 # ENV lease-скрипта мастер-ключа (P11) — переживает env-фильтр runit.
 {

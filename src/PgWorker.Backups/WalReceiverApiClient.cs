@@ -5,7 +5,7 @@ using System.Text.Json.Serialization;
 namespace PgWorker.Backups;
 
 // JSON-контракты клиента — те же snake_case-имена, что у ApiContracts.cs
-// приёмника (PgWorker.WalReceiver); дублирование записей между проектами —
+// приёмника (PgWorker.PgNode); дублирование записей между проектами —
 // осознанное (запрет цикла ссылок: WalReceiver → Backups, обратной нет).
 // Фактическая сверка контракта — API-тесты маршрутов приёмника (реальный
 // HTTP-обмен).

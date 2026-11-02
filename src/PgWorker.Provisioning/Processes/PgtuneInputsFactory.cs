@@ -26,6 +26,11 @@ public sealed class PgtuneInputsFactory(PgtuneSettings settings, ILogger<PgtuneI
     // «заявка меняется каждый тик») — простая очистка: расчёт дёшев, корректность
     // не зависит от кэша.
     private readonly Dictionary<PgTuneInput, PgTuneResult> cache = new();
+
+    /// <summary>Exclude-параметры сборки YAML (PgWorker:Pgtune, spec §4.3 п.3):
+    /// единый набор для bootstrap-ключа и конвергенции DCS — доставка
+    /// (NodeBootstrapDelivery) получает их отсюда.</summary>
+    public IReadOnlySet<string> ExcludeParams => settings.ExcludeParams;
     private readonly object gate = new();
 
     /// <summary>Расчёт тюнинга шарда от обязательной заявки ресурсов;

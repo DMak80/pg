@@ -243,14 +243,14 @@ Prometheus-алерты группы `backups` (rules.yml; severity — зерк
 Приёмник WAL — процесс внутри контейнера PG-ноды (arch/14 §2.1) — несёт
 СОБСТВЕННУЮ телеметрию своей работы (в отличие от §2.7 — серий воркера):
 экспозиция — Kestrel `:8080` ВНУТРИ контейнера ноды, `/metrics`
-(`Shared.Metrics`, Meter `PgWorker.WalReceiver`; порт наружу хоста НЕ
+(`Shared.Metrics`, Meter `PgWorker.PgNode`; порт наружу хоста НЕ
 публикуется). Тот же порт `:8080` несёт HTTP API операций бэкапов
 ([19](19-backups.md) §2/§3.5/§3.6/§5, канал [25](25-component-communications.md) №22);
 новых серий приёмника операции не вводят — наблюдаемость операций
 бэкапов: etcd-статусы воркера ([19](19-backups.md) §4) и журнал воркера.
 Скрейп — Prometheus по `alias:8080` через
 `Docker:ScrapeNetwork` (та же сеть/та же file_sd-запись, что patroni-нод
-§2.5 — порт другой), джоба `walreceiver-nodes` — http (закрытая сеть
+§2.5 — порт другой), джоба `pgnode-nodes` — http (закрытая сеть
 скрейпа контура; прецедент — джоба `adminpanel`). Скрейп-сети нет —
 теле­метрия приёмника недоступна снаружи (локальная диагностика curl'ом
 внутри контейнера), дашборд показывает пусто; состояние доставки при этом
@@ -355,7 +355,7 @@ TCP-проба (не тяжёлый AdminClient); лежачая нода сто
 | `valkeyworker` | имя сети стенда `valkeyworker:8080` (профиль `valkey`; хост-публикации нет — чеки ходят изнутри контейнера) | §2.1–2.2, §2.6 |
 | `adminpanel` | имя сети стенда `adminpanel:8080` (хост-публикация 5050 — только для браузера/чеков) | §2.4 |
 | `patroni-nodes` | file_sd `/etc/prometheus/sd/patroni-nodes.json` (источник файла — генератор §5.4 из `/pgworker/portalloc/`) | §2.5 нативные `patroni_*` |
-| `walreceiver-nodes` | file_sd `/etc/prometheus/sd/walreceiver-nodes.json` (источник — тот же генератор §5.4, те же записи portalloc, порт 8080; http — закрытая сеть скрейпа) | §2.8 серии приёмника WAL |
+| `pgnode-nodes` | file_sd `/etc/prometheus/sd/pgnode-nodes.json` (источник — тот же генератор §5.4, те же записи portalloc, порт 8080; http — закрытая сеть скрейпа) | §2.8 серии агента PgNode (приём WAL) |
 | `sd-generator` | static: имя сети стенда `sd-generator:8080` (профиль `metrics`) | самонаблюдение генератора §5.4 |
 
 Джоба `patroni-nodes` — `scheme: https` +
@@ -408,7 +408,7 @@ single-хост-контур «дома»).
 (read-only, `RangeAsync`, без клэймов) и пишет `sd/patroni-nodes.json` в
 volume Prometheus; таргет ноды — per-node правило §2.5 (`alias:8008`
 штатно, `host:patroni` деградационно). Тем же проходом пишется
-`sd/walreceiver-nodes.json` — те же записи per-node, порт `:8080`
+`sd/pgnode-nodes.json` — те же записи per-node, порт `:8080`
 (теле­метрия приёмника WAL §2.8; джоба http — без TLS-конфига).
 Механика file_sd/единой сети —
 без изменений; фиксируется: REST-скрейп нод — по TLS одного
@@ -482,7 +482,7 @@ ValkeyWorker:Metrics { CollectIntervalSec=30 }          # коллектор §4
 SdGenerator:Etcd:Endpoints[]           # узлы HA-контура
 SdGenerator:RefreshIntervalSec=15      # <=0 → 15 + warning
 SdGenerator:OutputPath=/sd/patroni-nodes.json
-SdGenerator:WalOutputPath=/sd/walreceiver-nodes.json   # §2.8: те же ноды, порт 8080
+SdGenerator:PgNodeOutputPath=/sd/pgnode-nodes.json   # §2.8: те же ноды, порт 8080
 SdGenerator:Metrics { Enabled=true, Path="/metrics" }
 # стенд (env-override compose):
 METRICS_PROMETHEUS_PORT=9090, METRICS_GRAFANA_PORT=3000,

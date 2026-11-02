@@ -118,6 +118,15 @@ public sealed class BackupProcess(
                 logger.LogInformation(
                     "backups {Cluster}/{Shard}: supervision skipped — restore in progress",
                     cluster, shard.Name);
+                // arch/19 §7: hba-гвард — КАЖДЫЙ тик КАЖДОЙ ноде, БЕЗ
+                // restore-исключения: rejoin-нода поднимается с чистым
+                // /run/postgres.yml (строка backup_exec в нём отсутствует),
+                // а walreceiver доотправляет WAL с самой ноды сразу по
+                // готовности — без строки репликация с 127.0.0.1 отсечена
+                // («28000 no pg_hba.conf entry for replication»). Идемпотентно;
+                // нода без PG_VERSION применит строку при первом старте
+                // postgres. Отказ — transient: следующий тик дообеспечит.
+                await EnsureShardHbaAsync(cluster, shard.Name, addresses.Value, ct);
                 continue;
             }
 
@@ -127,6 +136,16 @@ public sealed class BackupProcess(
                 cluster, shard, fulls, addresses.Value, verifyOnCreate, ct);
             if (!supervised.IsSuccess)
                 return Result<ProcessOutcome>.Failed(supervised.Error!);
+
+            // pg_hba (arch/19 §7): гвард командует КАЖДОЙ ноде шарда КАЖДЫЙ
+            // тик — см. EnsureShardHbaAsync (тот же вызов в restore-ветке
+            // выше). Идёт ДО G2 мастер-резолва: transient мастера (кластер
+            // бутстрапится, мастер не избран) не скипает гвард — иначе нода
+            // без hba-строки держит приёмник в 28000-цикле IDENTIFY_SYSTEM
+            // до первого успешного резолва мастера.
+            var hbaPatched = await EnsureShardHbaAsync(cluster, shard.Name, addresses.Value, ct);
+            if (!hbaPatched)
+                continue;
 
             // G2: ensure роли backup_exec на мастере шарда — КАЖДЫЙ тик, до
             // due-гвардов (spec §3.1); идемпотентный gexec-гвард. Мастер
@@ -164,45 +183,6 @@ public sealed class BackupProcess(
                     continue;
                 }
             }
-
-            // pg_hba (arch/19 §7): Spilo разрешает replication-соединения только
-            // роли standby — физический WAL-стриминг pg_basebackup для backup_exec
-            // отсекается («no pg_hba.conf entry for replication»).
-            // Гвард командует приёмнику КАЖДОЙ ноды шарда POST /api/node/hba-ensure
-            // (канал arch/25 №22): приёмник в СВОЁМ контейнере правит ИСТОЧНИК
-            // конфига Patroni — /run/postgres.yml (postgresql.pg_hba) — и будит
-            // Patroni SIGHUP'ом: тот сам перегенерирует pg_hba.conf при каждом
-            // старте postgres УЖЕ С нашей строкой. Правка самого pg_hba.conf
-            // бессмысленна: Patroni перегенерирует файл при каждом старте postgres
-            // и дописанная строка молча исчезала («no pg_hba.conf entry» у
-            // wal-агентов после любого рестарта). Ожидание применения — на
-            // приёмнике (поллинг pg_hba.conf; нода без PG_VERSION ещё
-            // бутстрапится — ждать нечего, применится при первом старте).
-            // Отказ — transient: шард skip, следующий тик дообеспечит (запуск на
-            // непатченной ноде карался бы FAILED-циклом с бэкоффом).
-            var hbaPatched = true;
-            foreach (var nodeKey in addresses.Value.Keys
-                         .Where(k => k.StartsWith($"{shard.Name}/", StringComparison.Ordinal)))
-            {
-                var addr = addresses.Value[nodeKey];
-                var nodeName = nodeKey.Split('/')[1];
-                var patched = await receiver.EnsureHbaAsync(
-                    WalReceiverAddress.ForNode(cluster, shard.Name, nodeName, addr.Object), ct);
-                if (!patched.IsSuccess)
-                {
-                    // Диагностика «почему пересъёмы молчат» (тик не валим — так
-                    // задумано; лог, не etcd-журнал — condition персистентный).
-                    logger.LogWarning(
-                        "backups {Cluster}/{Shard}: hba-guard skipped — node {Node}: {Error}",
-                        cluster, shard.Name, nodeName,
-                        patched.Error ?? $"receiver status {(int)patched.StatusCode}");
-                    hbaPatched = false;
-                    break;
-                }
-            }
-
-            if (!hbaPatched)
-                continue;
 
             // G3: новый полный — только без активного, при due (возраст, ИЛИ
             // валидного COMPLETED нет вовсе — инвариант «свежий полный заведёт
@@ -374,6 +354,67 @@ public sealed class BackupProcess(
 
         return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
     }
+
+    // pg_hba-гвард шарда (arch/19 §7, канал arch/25 №22) — КАЖДОЙ ноде:
+    // дефолтный Spilo-pg_hba разрешает replication-соединения только роли
+    // standby — физический WAL-стриминг/pg_basebackup под backup_exec
+    // отсекается («no pg_hba.conf entry for replication»). Приёмник в СВОЁМ
+    // контейнере правит ИСТОЧНИК конфига Patroni — /run/postgres.yml (секция
+    // postgresql.pg_hba) — и будит Patroni SIGHUP'ом: тот сам перегенерирует
+    // pg_hba.conf при каждом старте postgres УЖЕ со строкой (правка самого
+    // pg_hba.conf бессмысленна — файл перегенерируется, строка исчезала).
+    // Нода без PG_VERSION ещё бутстрапится — применится при первом старте.
+    // Вызывается из ОБЕИХ веток тика: обычной и restore-скипа (rejoin-ноде
+    // строка нужна с первого старта). true — все ноды прошли; отказ —
+    // transient: шард skip, следующий тик дообеспечит (запуск на непатченной
+    // ноде карался бы FAILED-циклом с бэкоффом).
+    // НЕ ЗАДЕРЖИВАЕТ тик (гвард ходит выше G2 — каждого тика): обход нод
+    // ПАРАЛЛЕЛЕН, каждая попытка — короткий пер-нодовый бюджет (медленный
+    // полуответивший агент не растягивает тик: worst-case сек вместо
+    // последовательных клиентских таймаутов); семантика «каждый тик каждой
+    // ноде» сохранена — попытка доставка каждой ноде в каждом тике.
+    private async Task<bool> EnsureShardHbaAsync(
+        string cluster, string shardName,
+        IReadOnlyDictionary<string, NodeAddress> addresses, CancellationToken ct)
+    {
+        var nodes = addresses.Keys
+            .Where(k => k.StartsWith($"{shardName}/", StringComparison.Ordinal))
+            .Select(nodeKey => (Node: nodeKey.Split('/')[1],
+                Url: WalReceiverAddress.ForNode(cluster, shardName, nodeKey.Split('/')[1],
+                    addresses[nodeKey].Object)))
+            .ToList();
+        var attempts = await Task.WhenAll(nodes.Select(async n =>
+        {
+            // Пер-нодовый бюджет: ПОКРЫВАЕТ штатное применение на ноде
+            // (HbaEnsureOperation.ApplyWait 8 c — вставка + SIGHUP-поллинг
+            // дорабатывают, не абортируясь), но ниже клиентского таймаута
+            // канала; медленная нода — transient, повторится следующим тиком.
+            using var budget = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            budget.CancelAfter(NodeGuardTimeout);
+            try
+            {
+                var patched = await receiver.EnsureHbaAsync(n.Url, budget.Token);
+                return (n.Node, Ok: patched.IsSuccess,
+                    Error: patched.Error ?? $"receiver status {(int)patched.StatusCode}");
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                return (n.Node, Ok: false, Error: $"hba-ensure not answered within {NodeGuardTimeout.TotalSeconds:0}s");
+            }
+        }));
+
+        foreach (var failed in attempts.Where(a => !a.Ok))
+            logger.LogWarning(
+                "backups {Cluster}/{Shard}: hba-guard skipped — node {Node}: {Error}",
+                cluster, shardName, failed.Node, failed.Error);
+        return attempts.All(a => a.Ok);
+    }
+
+    // Бюджет ОДНОЙ ноды гварда: покрывает штатное применение (ApplyWait 8 c
+    // на ноде) с запасом, ниже клиентского таймаута канала (10 c); обход нод
+    // параллелен — worst-case гварда на тик = один бюджет, а не сумма по
+    // нодам. Медленная нода — transient, следующий тик повторит.
+    private static readonly TimeSpan NodeGuardTimeout = TimeSpan.FromSeconds(9);
 
     // Общий обработчик ответа POST /api/backup/full в обеих ветках запуска
     // (G3 и PLANNED-повтор): true — команда принята (статус → RUNNING); false —

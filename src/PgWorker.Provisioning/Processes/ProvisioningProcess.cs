@@ -42,6 +42,7 @@ public sealed class ProvisioningProcess(
     PortAllocIndex portAlloc,
     PortAllocLock portLock,
     PgtuneInputsFactory pgtune,
+    INodeBootstrapDelivery bootstrap,
     Func<CancellationToken, Task<Result>>? snapshot = null,
     Shared.Core.Hosting.ILoopProgress? progress = null,
     TimeSpan? watchdogWindow = null,
@@ -493,14 +494,26 @@ public sealed class ProvisioningProcess(
             var ensured = await LongCallPolling.EnsureAsync(
                 $"create/start of node {node.Name}",
                 token => driver.EnsureNodeAsync(
-                    topology, node.Name, topology.Nodes[node.Name], clusterSecrets, etcdEndpoints, resources,
-                    tuning, syncStrict, restPassword, token),
+                    topology, node.Name, topology.Nodes[node.Name], etcdEndpoints, resources,
+                    tuning, syncStrict, token),
                 progress, logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance,
                 TimeSpan.FromTicks(Math.Max(
                     TimeSpan.TicksPerSecond, (watchdogWindow ?? TimeSpan.FromSeconds(15)).Ticks / 2)),
                 TimeSpan.FromSeconds(placementOpts.PatroniBootSec), ct);
             if (!ensured.IsSuccess)
                 return ensured;
+
+            // Доставка bootstrap-секретов ноде (t05, spec §3.7.2): put ключа +
+            // хендшейк по статусу; Transient — journal-факт (НЕ провал пути:
+            // фазы WaitPatroni упадут по своим бюджетам при недоставке —
+            // ретрай тиком).
+            var delivery = await bootstrap.EnsureAsync(
+                topology, node.Name, topology.Nodes[node.Name], clusterSecrets, tuning,
+                pgtune.ExcludeParams, syncStrict, restPassword, isToolStart: false, ct);
+            if (delivery.Transient)
+                await journal.WritePhaseAsync(cluster, Op,
+                    $"bootstrap-delivery/{shard.Name}/{node.Name}",
+                    claims.InstanceId, delivery.Detail, ct);
         }
 
         return Result.Success();
@@ -706,6 +719,10 @@ public sealed class ProvisioningProcess(
 
         // Выравнивание app-роли паролю из etcd-ключа (идемпотентно; spec §4.1):
         // кластеры, созданные до app-секрета, и rebuild нод получают актуальный пароль.
+        // Диагностика t06 (отпечаток, не секрет): SHA256[..10] значения ALTER'а —
+        // сверяется с отпечатком ensure-put'а (ClusterSecretEnsurer) и pg_authid.
+        Console.WriteLine(
+            $"[t06-diag] provisioning ALTER app fingerprint={SecretFingerprint.Of(creds.App.Password)} cluster={cluster} shard={shard.Name}");
         var alterApp = await db.ExecuteAsync(dbDsn, DatabaseProvisioner.BuildAlterRolePasswordSql(creds.App.User, creds.App.Password), ct);
         if (!alterApp.IsSuccess)
             return alterApp;
@@ -928,4 +945,16 @@ public sealed class ProvisioningProcess(
         // переносится БЕЗ изменения (всегда явленно — отсутствие поля
         // легаси-конфига трактуется читателями как true, значение не меняется).
         [property: JsonPropertyName("synchronous_mode_strict")] bool SyncStrict);
+}
+
+/// <summary>Отпечаток значения секрета для диагностики (t06): SHA256[..10] hex —
+/// значение секрета НЕ попадает в лог, только несекретный отпечаток.</summary>
+internal static class SecretFingerprint
+{
+    public static string Of(string value)
+    {
+        var bytes = System.Security.Cryptography.SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes(value));
+        return Convert.ToHexString(bytes)[..10];
+    }
 }

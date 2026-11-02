@@ -249,6 +249,7 @@ public sealed class E2eWalStreamScenarios(E2eWalStreamScenariosFx Ctx) : IClassF
                             var opLines = lines
                                 .Where(l => l.Contains("backup-wal", StringComparison.OrdinalIgnoreCase)
                                     || l.Contains("WalStreamProcess", StringComparison.OrdinalIgnoreCase)
+                                    || l.Contains("pgnode", StringComparison.OrdinalIgnoreCase)
                                     || l.Contains("walreceiver", StringComparison.OrdinalIgnoreCase)
                                     || l.Contains("supervise", StringComparison.OrdinalIgnoreCase)
                                     || l.Contains("claim", StringComparison.OrdinalIgnoreCase))
@@ -468,7 +469,7 @@ public sealed class E2eWalStreamScenarios(E2eWalStreamScenariosFx Ctx) : IClassF
                 .Where(w => w is not null).Select(w => w!.Value)
                 .OrderByDescending(w => (long)w.Log * 256 + w.Seg).First();
             restartLsn.Should().BeLessOrEqualTo(
-                PgWorker.WalReceiver.S3TailResolver.EndLsn(tail),
+                PgWorker.PgNode.S3TailResolver.EndLsn(tail),
                 $"AC1 on node {key}: restart_lsn {restartRaw} ≤ the delivered end {tail.Name}");
         }
         }
@@ -659,7 +660,11 @@ public sealed class E2eWalStreamScenarios(E2eWalStreamScenariosFx Ctx) : IClassF
         // Arrange — двухнодовый шард (двойная архивация), оба приёмника стримят
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(
             TestContext.Current.CancellationToken);
-        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
+        // Потолок — бюджет ×1.2 от фактической потребности полной серии
+        // (~205 с: ~89 с подъём контура под параллельными сериями + ~55 с
+        // provisioning + ~60 с фазы; соло — ~57 с): неверное ожидание не
+        // может длиться дольше.
+        cts.CancelAfter(TimeSpan.FromSeconds(240));
         var ct = cts.Token;
         var (fx, app, cluster, adminDsn, masterNode) = await StartWalScenarioAsync("wal-t19", "shopt19", ct);
         await using var appOwner = app; // kill воркера ниже — dispose идемпотентен
@@ -706,7 +711,7 @@ public sealed class E2eWalStreamScenarios(E2eWalStreamScenariosFx Ctx) : IClassF
             // доставка продолжается)
             Console.WriteLine($"[PHASE] wal-t19: supervisorctl stop walreceiver on {masterNodeName} + worker kill");
             await Fx.RunDockerAsync(
-                ["exec", masterNodeName, "supervisorctl", "stop", "walreceiver"], ct);
+                ["exec", masterNodeName, "supervisorctl", "stop", "pgnode"], ct);
             app.Kill();
 
             // Act 2 — генерация WAL до фактического lost (поллинг зонда; INSERT-нагрузка
@@ -740,7 +745,7 @@ public sealed class E2eWalStreamScenarios(E2eWalStreamScenariosFx Ctx) : IClassF
             // клэйм убитого истекает ≤ 15-20 c)
             Console.WriteLine("[PHASE] wal-t19: worker start + receiver start — self-healing");
             await Fx.RunDockerAsync(
-                ["exec", masterNodeName, "supervisorctl", "start", "walreceiver"], ct);
+                ["exec", masterNodeName, "supervisorctl", "start", "pgnode"], ct);
             await using var app2Owner = await StartWalHostAsync("wal-t19b", ct);
 
             // Assert 1 — журнальная фаза slot-recreate

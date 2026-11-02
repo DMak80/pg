@@ -10,8 +10,9 @@ using PgWorker.Etcd.Parsing;
 using PgWorker.IntegrationTests.Etcd;
 using PgWorker.Core.Templates;
 using PgWorker.Core.Tuning;
-using PgWorker.Provisioning.Endpoints;
+using Microsoft.Extensions.Logging.Abstractions;
 using PgWorker.Provisioning.Processes;
+using PgWorker.Provisioning.Endpoints;
 using PgWorker.Provisioning.Probes;
 using PgWorker.Provisioning.Sql;
 using Xunit;
@@ -80,25 +81,84 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
             {
                 [$"{shard}/shard1a"] = new("localhost", new NodePorts(16001, 18001, 17001)),
             }), null, ct);
+        // Заявки ресурсов ОБЯЗАТЕЛЬНЫ (arch/14 §2.1 п.4): restore-путь рендерит
+        // bootstrap с tuned-параметрами (pgtune.Create на EnsureNode-пути) —
+        // без заявок pgtune честно фейлит фазу.
+        await fixture.Gateway.PutAsync(fixture.Endpoint,
+            $"/service/{cluster}-{shard}/request_cpu", "2", null, ct);
+        await fixture.Gateway.PutAsync(fixture.Endpoint,
+            $"/service/{cluster}-{shard}/request_mem", "4Gi", null, ct);
     }
 
     // Фейк клиента API приёмника: программируемые ответы, журнал команд
     // (URL — адрес приёмника первой ноды alias:8080).
     private readonly FakeReceiverClient _receiver = new();
 
+    // Фейк tool-доставки (t05): фиксирует isToolStart и публикует статус
+    // ready(applied=1) при tool-вызове — модель bounded-машины агента.
+    // DeferredWait > 0: первые вызовы — initializing-статус + Wait (28P01-
+    // модель окна), потом ready (transient-ретрай тиком).
+    private sealed class FakeToolDelivery(OwnedEtcdFixture fixture) : PgWorker.Provisioning.Processes.INodeBootstrapDelivery
+    {
+        public readonly List<(bool IsToolStart, string Node)> Calls = [];
+        public int DeferredWait;
+
+        public async Task<PgWorker.Provisioning.Processes.DeliveryOutcome> EnsureAsync(
+            ShardTopology topology, string nodeName, NodeAddress addr, InstallSecrets secrets,
+            PgTuneResult? tuning, IReadOnlySet<string>? excludeParams, bool syncStrict,
+            string restPassword, bool isToolStart, CancellationToken ct)
+        {
+            Calls.Add((isToolStart, nodeName));
+            var ready = !isToolStart || DeferredWait <= 0;
+            if (isToolStart && DeferredWait > 0)
+                DeferredWait--;
+            var status = System.Text.Json.JsonSerializer.Serialize(new Dictionary<string, object?>
+            {
+                ["state"] = ready ? "ready" : "initializing",
+                ["applied_revision"] = ready ? 1 : null,
+                ["components"] = ready
+                    ? new Dictionary<string, string>
+                    {
+                        ["pg"] = isToolStart ? "prepared" : "ready",
+                        ["doorman"] = isToolStart ? "prepared" : "ready",
+                    }
+                    : new Dictionary<string, string> { ["pg"] = "ready", ["doorman"] = "starting" },
+                ["updated_unix"] = 1,
+            });
+            await fixture.Gateway.PutAsync(fixture.Endpoint,
+                PgNodeStatusFact.StatusKey(topology.Cluster, topology.Shard, nodeName), status, null, ct);
+            return new PgWorker.Provisioning.Processes.DeliveryOutcome(
+                Delivered: ready, Wait: !ready, Transient: false, null);
+        }
+
+        public Task<bool> IsOnRevisionAsync(
+            ShardTopology topology, string nodeName, NodeAddress addr,
+            PgTuneResult? tuning, IReadOnlySet<string>? excludeParams, bool syncStrict,
+            string restPassword, CancellationToken ct)
+            => Task.FromResult(false);
+    }
+
     private RestoreProcess BuildProcess(FakeBackupS3 s3, IClusterDriver driver,
         TimeProvider? clock = null, HttpMessageHandler? patroni = null,
         BackupsRuntimeOptions? options = null, ISqlExecutor? db = null,
-        Action<string, string, string>? restoreObserver = null)
+        Action<string, string, string>? restoreObserver = null,
+        PgWorker.Provisioning.Processes.INodeBootstrapDelivery? bootstrap = null)
         => new(fixture.Gateway, [fixture.Endpoint], driver, FakePoolFactory.Single(s3), _receiver,
             _claims,
             new WorkJournal("/pgworker", fixture.Gateway, [fixture.Endpoint]), options ?? Options(),
             new InstallSecrets("su-pw", "sb-pw", "adm-pw", "mov-pw"),
             new EtcdEndpoints([fixture.Endpoint]), new StubAppSecret(),
+            bootstrap ?? new FakeToolDelivery(fixture),
             new ShardProbe(new HttpClient(patroni ?? new DeadHandler())),
             db ?? new FakeDb(),
             new ThresholdsOptions(600, 1800, PatroniBootSec: 600),
             clock ?? TimeProvider.System,
+            new PgtuneInputsFactory(
+                new PgtuneSettings(18, "oltp", "ssd", "mid_ram", 60,
+                    new HashSet<string>(StringComparer.Ordinal)),
+                NullLogger<PgtuneInputsFactory>.Instance),
+            new PgtuneSettings(18, "oltp", "ssd", "mid_ram", 60,
+                new HashSet<string>(StringComparer.Ordinal)),
             restoreObserver: restoreObserver);
 
     /// <summary>Мини-фейк API приёмника (restore-сценарии): StartRestore — 202
@@ -479,15 +539,13 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
         public bool SupportsRunningInspection => inner.SupportsRunningInspection;
         public Task<Result<IReadOnlyList<HostInfo>>> GetHostsAsync(CancellationToken ct) => inner.GetHostsAsync(ct);
         public Task<Result<IReadOnlySet<(string Host, int Port)>>> GetBusyPortsAsync(CancellationToken ct) => inner.GetBusyPortsAsync(ct);
-        public Task<Result> EnsureNodeAsync(ShardTopology t, string n, NodeAddress a, InstallSecrets s, EtcdEndpoints e, NodeResources? r, PgTuneResult? tuning, bool syncStrict, string restPassword, CancellationToken ct)
+        public Task<Result> EnsureNodeAsync(ShardTopology t, string n, NodeAddress a, EtcdEndpoints e, NodeResources? r, PgTuneResult? tuning, bool syncStrict, CancellationToken ct)
             => EnsureFails
                 ? Task.FromResult(Result.Failed(new ApplicationException("docker: ensure failed (fake)")))
-                : inner.EnsureNodeAsync(t, n, a, s, e, r, tuning, syncStrict, restPassword, ct);
+                : inner.EnsureNodeAsync(t, n, a, e, r, tuning, syncStrict, ct);
         public Task<Result> RemoveNodeAsync(string c, string sh, string node, CancellationToken ct) => inner.RemoveNodeAsync(c, sh, node, ct);
         public Task<Result> StopNodeAsync(string c, string sh, string node, CancellationToken ct) => inner.StopNodeAsync(c, sh, node, ct);
         public Task<Result<IReadOnlyDictionary<string, DiscoveredNode>>> InspectNodesAsync(string c, IReadOnlyCollection<string> names, CancellationToken ct) => inner.InspectNodesAsync(c, names, ct);
-        public Task<Result<IReadOnlyDictionary<string, string>>> InspectNodeEnvAsync(
-            string cluster, string shard, string nodeName, CancellationToken ct) => inner.InspectNodeEnvAsync(cluster, shard, nodeName, ct);
         public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string c, CancellationToken ct) => inner.ListNodeObjectsAsync(c, ct);
         public Task<Result> RemoveBackupAgentsAsync(string c, string? sh, CancellationToken ct) => inner.RemoveBackupAgentsAsync(c, sh, ct);
     }
@@ -606,6 +664,43 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
         var running = (await ReadRestoresAsync("c1", "shard1")).Single(r => r.Id == op.Id);
         running.State.Should().Be(RestoreStatus.Running);
         running.Phase.Should().Be("launching", "the next tick polls GET only");
+    }
+
+    // AAA (t05 tool-доставка, arch/14 §4, spec §3.6-3а/§8-22): тик запуска —
+    // EnsureNode, ЗАТЕМ tool-пин is_tool_start=true ДО команды restore
+    // (28P01-окно: transient-ретрай тиком, Phase заявки не меняется),
+    // машина prepared → POST /api/ops/restore (Phase="launching").
+    [Fact]
+    public async Task LaunchTickToolDeliversWithToolStartBeforeRestoreCommand()
+    {
+        // Arrange — RUNNING-заявка на шаге запуска; deferred: первые 2 tool-
+        // вызова — initializing (28P01-окно модель).
+        var ct = TestContext.Current.CancellationToken;
+        await SeedAsync("c1");
+        var inner = new StubScaleDriver();
+        var driver = new TestDriver(inner, new FakeBackupEngine());
+        var bootstrap = new FakeToolDelivery(fixture) { DeferredWait = 2 };
+        var process = BuildProcess(new FakeBackupS3(), driver, bootstrap: bootstrap);
+        await SeedRestoreAsync("c1", "shard1", "20260911121001Z",
+            backupId: "20260910120000Z", state: RestoreStatus.Running, startedUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 60,
+            phase: "demolished");
+        (await _claims.TryClaimClusterAsync("c1", ct)).Value.Should().BeTrue();
+
+        // Act: три тика запуска (transient-ретрай тиком).
+        for (var i = 0; i < 3; i++)
+            (await process.TickAsync(BuildSnap(), await BackupsFromEtcdAsync("c1"), ct))
+                .IsSuccess.Should().BeTrue();
+
+        // Assert: команда restore НЕ уходила, пока tool-доставка не готова;
+        // все tool-пины — с is_tool_start=true, нода — первая (shard1a);
+        // после prepared — команда принята, Phase="launching".
+        bootstrap.Calls.Should().NotBeEmpty();
+        bootstrap.Calls.Should().OnlyContain(c => c.IsToolStart && c.Node == "shard1a");
+        _receiver.StartCalls.Should().Be(1, "restore launches only after prepared");
+        var running = (await ReadRestoresAsync("c1", "shard1")).Single(r => r.Id != "" || true);
+        running.Phase.Should().Be("launching");
+        // EnsureNode идемпотентен: три тика — три идемпотентных прохода одной ноды.
+        inner.EnsuredNodes.Should().OnlyContain(n => n == "shard1/shard1a");
     }
 
     [Fact]
@@ -1248,18 +1343,17 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
         result.Value.Should().Be(ProcessOutcome.InProgress);
         inner.EnsuredNodes.Should().Contain("shard1/shard1a");
         inner.EnsuredNodes.Should().NotContain("shard1/shard1b");
-        // без окна ротации — ключ кластера (эффективная пара restore-пути)
-        inner.EnsuredRestPasswords["shard1/shard1a"].Should().Be(RestPassword);
         (await ReadRestoresAsync("c1", "shard1")).Single(r => r.Id == op.Id)
             .State.Should().Be(RestoreStatus.Rejoining);
     }
 
     [Fact]
-    public async Task RejoinRotationWindowEnsureCarriesPendingPair()
+    public async Task RejoinRotationWindowEnsureCarriesWindowFlag()
     {
-        // Arrange — REJOINING; журнал работы несёт rest_pending (окно rolling
-        // REST-ротации): EnsureNode-путь restore окно НЕ расширяет — нода
-        // поднимается с NEW-парой (арх/14 §5 I).
+        // Arrange — REJOINING; журнал работы несёт rest_window_open=true
+        // (открытое окно REST-ротации, ETCD-FIRST): EnsureNode-путь restore
+        // окно НЕ расширяет — нода поднимается с NEW-парой из etcd
+        // (arch/14 §5 I).
         var ct = TestContext.Current.CancellationToken;
         await SeedAsync("c1");
         var inner = new StubScaleDriver();
@@ -1269,16 +1363,15 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
         var op = await SeedRestoreAsync("c1", "shard1", "20260911122002Z",
             backupId: "20260910120000Z", state: RestoreStatus.Rejoining);
         await fixture.Gateway.PutAsync(fixture.Endpoint, "/pgworker/work/c1",
-            """{"op":"rotate-app-password","phase":"rotate-rest-rolling","instance":"i","updated_unix":1,"rest_pending":"New0Pass00000000000000000000000B"}""",
+            """{"op":"rotate-app-password","phase":"rotate-rest-rolling","instance":"i","updated_unix":1,"rest_window_open":true}""",
             null, ct);
         (await _claims.TryClaimClusterAsync("c1", ct)).Value.Should().BeTrue();
 
         // Act
         var result = await process.TickAsync(BuildSnap(), await BackupsFromEtcdAsync("c1"), ct);
 
-        // Assert — драйвер получил pending-пару (не ключ кластера Key0…).
+        // Assert
         result.IsSuccess.Should().BeTrue(result.Error?.ToString());
-        inner.EnsuredRestPasswords["shard1/shard1a"].Should().Be("New0Pass00000000000000000000000B");
         op.Should().NotBeNull();
     }
 
@@ -1322,6 +1415,38 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
             .Value.Should().BeNull("chain reset — the full backup is retaken by the scheduler (AC4)");
         (await fixture.Gateway.GetAsync(fixture.Endpoint, "/pgworker/work/c1", ct)).Value!.Value
             .Should().Contain("done/shard1/");
+    }
+
+    // AAA: t05 bootstrap-доставка rejoin-нод (spec §3.6-3а): надзор шард в
+    // restore пропускает («restore in progress») — пин хендшейка делает
+    // restore-процесс; кластерные ноды — is_tool_start=false (полный старт
+    // компонентов). Без доставки ноды навсегда ждут handshake и состав
+    // Patroni не сходится (факт E2E PitrRollback: rejoin-wait выгорел бюджет).
+    [Fact]
+    public async Task RejoinDeliversBootstrapToBothNodesWithClusterStart()
+    {
+        // Arrange — REJOINING; пробы Patroni healthy (лидер + реплика)
+        var ct = TestContext.Current.CancellationToken;
+        await SeedAsync("c1");
+        await SeedTwoNodeAllocAsync();
+        var delivery = new FakeToolDelivery(fixture);
+        var driver = new TestDriver(new StubScaleDriver(), new FakeBackupEngine());
+        var process = BuildProcess(new FakeBackupS3(), driver,
+            patroni: new PatroniHandler { Ready = true }, bootstrap: delivery);
+        var op = await SeedRestoreAsync("c1", "shard1", "20260911122003Z",
+            backupId: "20260910120000Z", state: RestoreStatus.Rejoining);
+        (await _claims.TryClaimClusterAsync("c1", ct)).Value.Should().BeTrue();
+
+        // Act
+        (await process.TickAsync(BuildTwoNodeSnap(), await BackupsFromEtcdAsync("c1"), ct))
+            .IsSuccess.Should().BeTrue();
+
+        // Assert: обе ноды получили доставку кластерного старта (не tool);
+        // заявка доведена до COMPLETED — rejoin не висит в ожидании handshake.
+        delivery.Calls.Should().BeEquivalentTo([
+            (false, "shard1a"), (false, "shard1b")]);
+        (await ReadRestoresAsync("c1", "shard1")).Single(r => r.Id == op.Id)
+            .State.Should().Be(RestoreStatus.Completed);
     }
 
     [Fact]

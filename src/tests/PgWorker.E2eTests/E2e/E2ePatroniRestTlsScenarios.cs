@@ -32,7 +32,9 @@ public sealed class E2ePatroniRestTlsScenarios(E2ePatroniRestTlsScenariosFx Ctx)
     {
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(
             TestContext.Current.CancellationToken);
-        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
+        // Потолок 3 мин (исходный; возврат после tmpfs mode=1777 + (е)-рестарта
+        // реплики: фактический замер полного прохода 88 с; ×1.2 ≈ 106 с < 180 с).
+        cts.CancelAfter(TimeSpan.FromMinutes(3));
         var ct = cts.Token;
         var cluster = $"rtls{Fx.ClusterTag}";
         try
@@ -119,7 +121,9 @@ public sealed class E2ePatroniRestTlsScenarios(E2ePatroniRestTlsScenariosFx Ctx)
                 master.Should().NotBeNullOrWhiteSpace("the primary is resolved by the /primary probe");
                 replica = master == "shard1a" ? "shard1b" : "shard1a";
                 var masterContainer = $"pgw-{cluster}-shard1-{master}";
+                var rdSw = System.Diagnostics.Stopwatch.StartNew();
                 await Fx.RunDockerAsync(["restart", masterContainer], ct);
+                Console.WriteLine($"[TIMING] rtls master restart ({masterContainer}): {rdSw.Elapsed.TotalSeconds:F1}s");
                 var keyAlive = await E2eFixture.WaitForAsync(async () =>
                     (await GetOrNullAsync($"/clusters/{cluster}/shards/shard1/master")) is { Value.Length: > 0 },
                     TimeSpan.FromSeconds(60), ct);
@@ -127,58 +131,90 @@ public sealed class E2ePatroniRestTlsScenarios(E2ePatroniRestTlsScenariosFx Ctx)
                     "the master key returned after the restart — the master-lease passed https /primary (P11)");
 
                 // (е) конвергенция легаси: маркер в volume реплики (не лидера).
+                // Перевычисляем мастера ПОСЛЕ (д): рестарт мастера мог отдать
+                // лидерство второй ноде (DCS ttl под нагрузкой) — рестартовать
+                // «старую» реплику тогда значило бы рестартовать уже-лидера.
+                // Промоут/REST догоняют ключ — проба с ретраем в бюджете фазы.
+                var masterNow = "";
+                var primaryResolved = await E2eFixture.WaitForAsync(async () =>
+                {
+                    masterNow = await PrimaryNodeAsync(cluster, ct);
+                    return masterNow is { Length: > 0 };
+                }, TimeSpan.FromSeconds(60), ct);
+                primaryResolved.Should().BeTrue("the primary is resolved after the master restart");
+                replica = masterNow == "shard1a" ? "shard1b" : "shard1a";
                 var replicaContainer = $"pgw-{cluster}-shard1-{replica}";
                 await Fx.RunDockerAsync(["exec", replicaContainer,
                     "touch", "/home/postgres/pgdata/resttls-marker"], ct);
-            }
 
-            // Воркер остановлен: подмена РЕПЛИКИ легаси-контейнером без гонки.
-            var legacy = $"pgw-{cluster}-shard1-{replica}";
-            var legacyVolume = $"{legacy}-data";
-            var legacyAddr = (await PortallocAsync(cluster))[$"shard1/{replica}"];
-            await Fx.RunDockerAsync(["rm", "-f", legacy], ct);
-            // Легаси-контейнер имитирует ОПЕРАТОРСКУЮ ноду: тройка из portalloc
-            // публикуется, как у чужого контейнера в проде (адопция — не тестовая
-            // инфраструктура; порты — слоты окна контура, коллизий нет).
-            await Fx.RunDockerAsync(
-                ["run", "-d", "--name", legacy, "--entrypoint", "sh",
-                 "-p", $"{legacyAddr.Pg}:5432", "-p", $"{legacyAddr.Patroni}:8008",
-                 "-v", $"{legacyVolume}:/home/postgres/pgdata",
-                 E2eEnvironment.NodeImage, "-c", "sleep 900"], ct);
-            var legacyEnv = await Fx.RunDockerAsync(
-                ["inspect", "-f", "{{range .Config.Env}}{{println .}}{{end}}", legacy], ct);
-            legacyEnv.Should().NotContain("SSL_RESTAPI_CERTIFICATE", "a legacy container without REST-TLS env");
+                // Т9в (MR-#6, t05, выбранный вариант плана): легаси-env-механика
+                // (env-конвергенция) упразднена — конвергенция ПО СТАТУСНОМУ
+                // КЛЮЧУ, тиками ЖИВОГО воркера (один непрерывный надзор: сплит
+                // p1/p2 вокруг рестарта добавлял takeover-шум вне цели сцены).
+                // ЖИВАЯ РЕПЛИКА рестартуется (docker restart; контейнер и volume
+                // на месте): статусная машина гаснет (lease умер вместе с
+                // агентом), агент проходит хендшейк заново, тик доставляет
+                // bootstrap (not_initialized → initializing → ready),
+                // StartedAt ноды сменился, лидер НЕ тронут (граница: только
+                // рестарт-нутая нода проходит хендшейк).
+                var legacy = $"pgw-{cluster}-shard1-{replica}";
+                var startedAtBefore = (await Fx.RunDockerAsync(
+                    ["inspect", "-f", "{{.State.StartedAt}}", legacy], ct)).Trim();
+                var rrSw = System.Diagnostics.Stopwatch.StartNew();
+                await Fx.RunDockerAsync(["restart", legacy], ct);
+                Console.WriteLine($"[TIMING] rtls replica restart ({legacy}): {rrSw.Elapsed.TotalSeconds:F1}s");
+                // Граница свежести статуса: lease прежнего агента жив до 15 c
+                // после рестарта — ready-wait обязан видеть только статусы,
+                // опубликованные ПОСЛЕ этого момента (иначе протохнувший ready
+                // прежней машины проходит ожидание до нового хендшейка).
+                var snapshotUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
 
-            await using (var p2 = await Fx.StartHostAsync("rtls-p2", extraEnv: extraEnv, ct: ct))
-            {
-                // Тик надзора обязан пересоздать легаси-ноду с REST-TLS env.
-                // фикс гоночного окна: env читается и у Created-контейнера
-                // (между create и start recreate-пути) — критерий конвергенции
-                // обязан требовать ЖИВУЮ ноду, иначе marker-exec ниже падает
-                // на незапущенном контейнере.
                 var migrated = await E2ePhase.WaitAsync(Fx, "rtls-convergence",
                     async () =>
                     {
-                        var state = await InspectStatusOrNullAsync(legacy, ct);
-                        if (state != "running")
+                        var statusKey = await GetOrNullAsync(
+                            $"/pgworker/nodes/{cluster}/shard1/{replica}/status");
+                        if (statusKey is null)
                             return false;
-                        var env = await Fx.RunDockerAsync(
-                            ["inspect", "-f", "{{range .Config.Env}}{{println .}}{{end}}", legacy], ct);
-                        return env.Contains("SSL_RESTAPI_CERTIFICATE");
+                        if (!statusKey.Value.Contains("\"state\":\"ready\"",
+                                StringComparison.Ordinal))
+                            return false;
+                        // Свежесть: ключ перезапущенной ноды
+                        // (updated_unix > рестарта).
+                        try
+                        {
+                            using var doc = JsonDocument.Parse(statusKey.Value);
+                            return doc.RootElement.TryGetProperty("updated_unix", out var u)
+                                && u.TryGetInt64(out var updatedUnix)
+                                && updatedUnix > snapshotUnix;
+                        }
+                        catch (JsonException)
+                        {
+                            return false;
+                        }
                     },
-                    TimeSpan.FromSeconds(90), ct);
-                migrated.Should().BeTrue("the convergence step must bring the legacy node to a live node with TLS env");
+                    TimeSpan.FromSeconds(150), ct);
+                if (!migrated)
+                {
+                    var statusesDump = await G.RangeAsync(Endpoint, $"/pgworker/nodes/{cluster}/", ct);
+                    var work = await GetOrNullAsync($"/pgworker/work/{cluster}");
+                    Assert.Fail("the restarted replica did not converge to ready; " +
+                                $"work: {work?.Value ?? "absent"}; statuses: " +
+                                (statusesDump.Value is { } kvs
+                                    ? string.Join("; ", kvs.Select(kv => $"{kv.Key}={kv.Value}"))
+                                    : "<range error>"));
+                }
 
-                // Volume пережил пересоздание (маркер на месте).
-                var marker = await Fx.RunDockerAsync(
-                    ["exec", legacy, "test", "-f", "/home/postgres/pgdata/resttls-marker"], ct);
-                marker.Should().BeEmpty("the volume and data survived the migration (exec code 0)");
-
-                // Кластер снова Active после миграции.
-                var activeAgain = await E2ePhase.WaitAsync(Fx, "rtls-active-again",
-                    E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ActiveAsync(cluster), shards: ["shard1"]), TimeSpan.FromSeconds(90), ct);
-                activeAgain.Should().BeTrue($"the cluster is Active after the migration; work={await WorkDumpAsync(cluster, ct)}");
-            }
+                // Нода рестартована и заново сконвергировала (StartedAt
+                // сменился), лидер НЕ тронут.
+                var startedAtAfter = (await Fx.RunDockerAsync(
+                    ["inspect", "-f", "{{.State.StartedAt}}", legacy], ct)).Trim();
+                startedAtAfter.Should().NotBe(startedAtBefore,
+                    "the restarted node converged through a fresh handshake");
+                var leaderKv = await GetOrNullAsync($"/service/{cluster}-shard1/leader");
+                leaderKv!.Value.Should().NotContain(replica,
+                    "the leader must not be the restarted replica");
+        }
         }
         catch
         {

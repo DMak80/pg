@@ -36,7 +36,7 @@ internal static class Fakes
     // сверяет Version/Value/ModRevision (нужно P1-portalloc и P4-config).
     // Потокобезопасен: процессы реально параллелят шарды/ноды
     // (Parallel.ForEachAsync), обычный Dictionary терял записи (флaky-тесты).
-    internal sealed class FakeEtcd : IEtcdGateway
+    internal class FakeEtcd : IEtcdGateway
     {
         internal sealed record Entry(string Value, long ModRevision, long Version);
 
@@ -47,6 +47,10 @@ internal static class Fakes
         // Сбой-инъекция: prefix → исключение (имитация широкого сбоя шлюза,
         // когда gateway бросает, а не возвращает Result.Failed).
         public Func<string, Exception?>? RangeFault { get; set; }
+
+        // Сбой-инъекция GET (etcd недоступен для чтения ключа — Result-семантика
+        // шлюза: читатели получают Failed, не исключение).
+        public Func<string, Result<Kv?>>? GetFailure { get; set; }
 
         // Сбой-инъекция txn (: ошибка захвата PortAllocLock → Result.Failed).
         public Func<TxnRequest, Result<TxnResult>>? TxnFault { get; set; }
@@ -74,8 +78,10 @@ internal static class Fakes
             return Task.FromResult(Result<IReadOnlyList<Kv>>.Success(kvs));
         }
 
-        public Task<Result<Kv?>> GetAsync(string endpoint, string key, CancellationToken ct)
+        public virtual Task<Result<Kv?>> GetAsync(string endpoint, string key, CancellationToken ct)
         {
+            if (GetFailure?.Invoke(key) is { } failure)
+                return Task.FromResult(failure);
             Kv? kv;
             lock (_gate)
             {
@@ -339,9 +345,8 @@ internal sealed class FakeDriver : IClusterDriver
         public readonly List<(string Node, NodeResources? Resources)> EnsuredDetails = [];
         public readonly List<bool> EnsuredSyncStrict = []; // strict из EnsureNode-вызовов
         // env живых контейнеров (ключ "<shard>/<node>" → env-словарь; нет
-        // записи — пустой) + переданный restPassword каждого EnsureNode-вызова.
+        // записи — пустой).
         public readonly Dictionary<string, IReadOnlyDictionary<string, string>> NodeEnvs = new();
-        public readonly Dictionary<string, string> EnsuredRestPasswords = new();
         public readonly List<string> RemovedNodes = [];
         public readonly List<string> StoppedNodes = [];
         public List<string> NodeObjects = [];
@@ -392,48 +397,17 @@ internal sealed class FakeDriver : IClusterDriver
             => Task.FromResult(Result<IReadOnlySet<(string Host, int Port)>>.Success(BusyPorts));
 
         public Task<Result> EnsureNodeAsync(ShardTopology topology, string nodeName, NodeAddress addr,
-            InstallSecrets secrets, EtcdEndpoints etcd, NodeResources? resources, PgTuneResult? tuning,
-            bool syncStrict, string restPassword, CancellationToken ct)
+            EtcdEndpoints etcd, NodeResources? resources, PgTuneResult? tuning,
+            bool syncStrict, CancellationToken ct)
         {
             lock (_gate)
             {
                 EnsuredNodes.Add($"{topology.Shard}/{nodeName}");
                 EnsuredDetails.Add((nodeName, resources));
                 EnsuredSyncStrict.Add(syncStrict); // значение фиксируется для ассертов
-                EnsuredRestPasswords[$"{topology.Shard}/{nodeName}"] = restPassword;
-                // Пересоздание шагом REST-TLS — новый контейнер несёт полный env
-                // (серт + hash фактической пары): тестовая семантика «ensure пишет env».
-                NodeEnvs[$"{topology.Shard}/{nodeName}"] = new Dictionary<string, string>
-                {
-                    [RestRotation.EnvCert] = "-----BEGIN CERTIFICATE-----\nunit\n-----END CERTIFICATE-----\n",
-                    [RestRotation.EnvPasswordHash] = RestRotation.PasswordHash(restPassword),
-                };
             }
 
             return Task.FromResult(EnsureResultByNode is { } f ? f(nodeName) : Result.Success());
-        }
-
-        // env живого контейнера (шаг пересоздания). Дефолт — «TLS уже на
-        // месте» (существующие тесты надзора: шаг no-op); кейсы шага затирают
-        // NodeEnvs управляемым env (легаси без серта / чужой hash).
-        public bool DefaultNodeEnvIsLegacy { get; set; }
-        // ротация: оверрайд env инспекции (кейс «нода несёт hash(pending)» —
-        // тесты ротатора читают журнал напрямую).
-        public Func<string, string, IReadOnlyDictionary<string, string>>? InspectEnvOverride { get; set; }
-        public Task<Result<IReadOnlyDictionary<string, string>>> InspectNodeEnvAsync(
-            string cluster, string shard, string nodeName, CancellationToken ct)
-        {
-            if (InspectEnvOverride is { } over)
-                return Task.FromResult(Result<IReadOnlyDictionary<string, string>>.Success(over(shard, nodeName)));
-            if (NodeEnvs.TryGetValue($"{shard}/{nodeName}", out var env))
-                return Task.FromResult(Result<IReadOnlyDictionary<string, string>>.Success(env));
-            return Task.FromResult(Result<IReadOnlyDictionary<string, string>>.Success(
-                DefaultNodeEnvIsLegacy
-                    ? (IReadOnlyDictionary<string, string>)new Dictionary<string, string>()
-                    : new Dictionary<string, string>
-                    {
-                        [RestRotation.EnvCert] = "-----BEGIN CERTIFICATE-----\nunit\n-----END CERTIFICATE-----\n",
-                    }));
         }
 
         public Task<Result> RemoveNodeAsync(string cluster, string shard, string nodeName, CancellationToken ct)
@@ -641,4 +615,48 @@ internal sealed class FakeDriver : IClusterDriver
             string cluster, string shard, string objectKey, CancellationToken ct = default)
             => Task.FromResult(Off<string>());
     }
+}
+
+/// <summary>No-op доставка bootstrap-данных (тесты процессов, не проверяющие
+/// t05-канал): EnsureAsync — Wait без действий, IsOnRevisionAsync — false.</summary>
+/// <summary>Т11 (MR-#18): recording-фейк доставки — журнал вызовов
+/// (кластер/шард/нода/rest-пара/is_tool_start); EnsureAsync — Delivered;
+/// IsOnRevisionAsync — false. Для кейсов Ensure-хвостов.</summary>
+internal sealed class RecordingDelivery : PgWorker.Provisioning.Processes.INodeBootstrapDelivery
+{
+    public readonly List<(string Cluster, string Shard, string Node, string RestPassword, bool IsToolStart)> Calls = [];
+
+    public Task<PgWorker.Provisioning.Processes.DeliveryOutcome> EnsureAsync(
+        ShardTopology topology, string nodeName, NodeAddress addr, InstallSecrets secrets,
+        PgTuneResult? tuning, IReadOnlySet<string>? excludeParams, bool syncStrict,
+        string restPassword, bool isToolStart, CancellationToken ct)
+    {
+        Calls.Add((topology.Cluster, topology.Shard, nodeName, restPassword, isToolStart));
+        return Task.FromResult(new PgWorker.Provisioning.Processes.DeliveryOutcome(
+            Delivered: true, Wait: false, Transient: false, null));
+    }
+
+    public Task<bool> IsOnRevisionAsync(
+        ShardTopology topology, string nodeName, NodeAddress addr,
+        PgTuneResult? tuning, IReadOnlySet<string>? excludeParams, bool syncStrict,
+        string restPassword, CancellationToken ct)
+        => Task.FromResult(false);
+}
+
+internal sealed class NoDelivery : PgWorker.Provisioning.Processes.INodeBootstrapDelivery
+{
+    public static readonly NoDelivery Instance = new();
+
+    public Task<PgWorker.Provisioning.Processes.DeliveryOutcome> EnsureAsync(
+        ShardTopology topology, string nodeName, NodeAddress addr, InstallSecrets secrets,
+        PgTuneResult? tuning, IReadOnlySet<string>? excludeParams, bool syncStrict,
+        string restPassword, bool isToolStart, CancellationToken ct)
+        => Task.FromResult(new PgWorker.Provisioning.Processes.DeliveryOutcome(
+            Delivered: false, Wait: true, Transient: false, null));
+
+    public Task<bool> IsOnRevisionAsync(
+        ShardTopology topology, string nodeName, NodeAddress addr,
+        PgTuneResult? tuning, IReadOnlySet<string>? excludeParams, bool syncStrict,
+        string restPassword, CancellationToken ct)
+        => Task.FromResult(false);
 }

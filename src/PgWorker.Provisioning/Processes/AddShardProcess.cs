@@ -39,6 +39,7 @@ public sealed partial class AddShardProcess(
     PortAllocIndex portAlloc,
     PortAllocLock portLock,
     PgtuneInputsFactory pgtune,
+    INodeBootstrapDelivery bootstrap,
     Func<CancellationToken, Task<Result>>? snapshot = null,
     Shared.Core.Hosting.ILoopProgress? progress = null,
     TimeSpan? watchdogWindow = null,
@@ -301,14 +302,26 @@ public sealed partial class AddShardProcess(
             var ensured = await LongCallPolling.EnsureAsync(
                 $"create/start of node {node.Name}",
                 token => driver.EnsureNodeAsync(
-                    topology, node.Name, topology.Nodes[node.Name], clusterSecrets, etcdEndpoints, resources,
-                    tuning, syncStrict, restPassword, token),
+                    topology, node.Name, topology.Nodes[node.Name], etcdEndpoints, resources,
+                    tuning, syncStrict, token),
                 progress, logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance,
                 TimeSpan.FromTicks(Math.Max(
                     TimeSpan.TicksPerSecond, (watchdogWindow ?? TimeSpan.FromSeconds(15)).Ticks / 2)),
                 TimeSpan.FromSeconds(placementOpts.PatroniBootSec), ct);
             if (!ensured.IsSuccess)
                 return ensured;
+
+            // Доставка bootstrap-секретов ноде (t05, spec §3.7.2): put ключа +
+            // хендшейк по статусу; Transient — journal-факт (НЕ провал пути:
+            // фазы WaitPatroni упадут по своим бюджетам при недоставке —
+            // ретрай тиком).
+            var delivery = await bootstrap.EnsureAsync(
+                topology, node.Name, topology.Nodes[node.Name], clusterSecrets, tuning,
+                pgtune.ExcludeParams, syncStrict, restPassword, isToolStart: false, ct);
+            if (delivery.Transient)
+                await journal.WritePhaseAsync(cluster, Op,
+                    $"bootstrap-delivery/{shard.Name}/{node.Name}",
+                    claims.InstanceId, delivery.Detail, ct);
         }
 
         return Result.Success();
@@ -378,15 +391,32 @@ public sealed partial class AddShardProcess(
         return Result<bool>.Success(true);
     }
 
-    // Адрес master-ноды шарда для SQL-фаз: master-ключ → fallback Patroni REST.
+    // Адрес master-ноды шарда для SQL-фаз. Ключ master дискриминирует ноду
+    // только ОДНОЗНАЧНЫМ матчем: advertised-режим (arch/16) несёт ОДИН host у
+    // всех нод шарда (E2E: host.docker.internal) — host-матч выбирал
+    // произвольную ноду, на практике реплику (25006 «cannot execute CREATE
+    // DATABASE in a read-only transaction», add-shard застревал). Порядок:
+    // имя ноды → doorman-порт (канон формата ключа <host>:<doormanPort>,
+    // arch/14 §5) → host при единственном совпадении; иначе истина за
+    // Patroni-пробами.
     private async Task<NodeAddress?> ResolveMasterAsync(ShardSpec shard, ShardTopology topology, CancellationToken ct)
     {
         if (!string.IsNullOrWhiteSpace(shard.Master))
         {
-            var left = shard.Master.Split(':')[0];
-            var byKey = topology.Nodes.FirstOrDefault(p => p.Value.Host == left || p.Key == left);
-            if (byKey.Value is not null)
-                return byKey.Value;
+            var parts = shard.Master.Split(':');
+            var byName = topology.Nodes.Where(p => p.Key == parts[0]).Select(p => p.Value).ToList();
+            if (byName.Count == 1)
+                return byName[0];
+            if (parts.Length == 2 && int.TryParse(parts[1], out var doorman) && doorman > 0)
+            {
+                var byDoorman = topology.Nodes.Where(p => p.Value.Ports.Doorman == doorman)
+                    .Select(p => p.Value).ToList();
+                if (byDoorman.Count == 1)
+                    return byDoorman[0];
+            }
+            var byHost = topology.Nodes.Where(p => p.Value.Host == parts[0]).Select(p => p.Value).ToList();
+            if (byHost.Count == 1)
+                return byHost[0];
         }
 
         foreach (var node in topology.Nodes.Keys)

@@ -88,11 +88,11 @@ public class WalReceiverIntegrationTests
         var options = postgres.ReceiverOptions(
             s3Node.HostEndpoint, cluster, shard, OwnS3.AccessKey, OwnS3.SecretKey);
         var s3 = HostS3(s3Node);
-        var source = new PgWorker.WalReceiver.NpgsqlXLogSource(options);
-        var slots = new PgWorker.WalReceiver.NpgsqlSlotPositionReader(options);
+        var source = new PgWorker.PgNode.NpgsqlXLogSource(options);
+        var slots = new PgWorker.PgNode.NpgsqlSlotPositionReader(options);
         var cts = new CancellationTokenSource();
         var stdout = new TeeWriter(_output);
-        var events = new PgWorker.WalReceiver.WalSessionEvents
+        var events = new PgWorker.PgNode.WalSessionEvents
         {
             Diagnostic = stdout.WriteLine,
         };
@@ -100,7 +100,7 @@ public class WalReceiverIntegrationTests
         {
             try
             {
-                await PgWorker.WalReceiver.WalReceiverCore.RunSessionAsync(
+                await PgWorker.PgNode.WalReceiverCore.RunSessionAsync(
                     options, source, slots, s3, events, cts.Token);
                 return 1; // исход сессии до отмены — тесты трактуют как фейл
             }
@@ -188,7 +188,7 @@ public class WalReceiverIntegrationTests
             var restartLsn = await postgres.ReadRestartLsnAsync(ct);
             var (ac1Name, ac1Names) = await ListSegmentsAsync(s3, cluster, shard, ct);
             var ac1Chain = WalChain.Check(WalFileName.TryParse(ac1Name!)!.Value, ac1Names);
-            var tail = PgWorker.WalReceiver.S3TailResolver.EndLsn(ac1Chain.LastSegment!.Value);
+            var tail = PgWorker.PgNode.S3TailResolver.EndLsn(ac1Chain.LastSegment!.Value);
             restartLsn.Should().BeLessThanOrEqualTo(tail, "the confirm-on-delivery invariant");
         }
         finally
@@ -235,7 +235,7 @@ public class WalReceiverIntegrationTests
             var (minName, names) = await ListSegmentsAsync(s3, cluster, shard, ct);
             var chain = WalChain.Check(WalFileName.TryParse(minName!)!.Value, names);
             chain.IsContinuous.Should().BeTrue(chain.GapError ?? "the chain is continuous");
-            var tail = PgWorker.WalReceiver.S3TailResolver.EndLsn(chain.LastSegment!.Value);
+            var tail = PgWorker.PgNode.S3TailResolver.EndLsn(chain.LastSegment!.Value);
             restartLsn.Should().BeLessThanOrEqualTo(tail);
         }
         finally
@@ -266,7 +266,7 @@ public class WalReceiverIntegrationTests
             var (_, namesBefore) = await ListSegmentsAsync(s3, cluster, shard, ct);
             var chainBefore = WalChain.Check(
                 WalFileName.TryParse(namesBefore.Min()!)!.Value, namesBefore);
-            var tailBefore = PgWorker.WalReceiver.S3TailResolver.EndLsn(chainBefore.LastSegment!.Value);
+            var tailBefore = PgWorker.PgNode.S3TailResolver.EndLsn(chainBefore.LastSegment!.Value);
 
             // Act AC6 — S3-обрыв: docker pause ownS3-ноды; бюджет спеки «≥1 мин»
             TestContext.Current.TestOutputHelper?.WriteLine("[PHASE] pause-wait 60s (S3 unavailable)");
@@ -296,7 +296,7 @@ public class WalReceiverIntegrationTests
             chain.IsContinuous.Should().BeTrue(chain.GapError ?? "the chain is continuous");
             var restartLsn = await postgres.ReadRestartLsnAsync(ct);
             restartLsn.Should().BeLessThanOrEqualTo(
-                PgWorker.WalReceiver.S3TailResolver.EndLsn(chain.LastSegment!.Value));
+                PgWorker.PgNode.S3TailResolver.EndLsn(chain.LastSegment!.Value));
         }
         finally
         {
@@ -355,7 +355,7 @@ public class WalReceiverIntegrationTests
         // от хвоста S3 (перегрузка «streaming starts on timeline tli»).
         var options = postgres.ReceiverOptions(
             s3Node.HostEndpoint, cluster, shard, OwnS3.AccessKey, OwnS3.SecretKey);
-        await using var source = new PgWorker.WalReceiver.NpgsqlXLogSource(options);
+        await using var source = new PgWorker.PgNode.NpgsqlXLogSource(options);
         (await source.OpenAsync(ct)).IsSuccess.Should().BeTrue();
         var identity = await source.IdentifySystemAsync(ct);
         identity.IsSuccess.Should().BeTrue(identity.Error?.Message);
@@ -369,7 +369,7 @@ public class WalReceiverIntegrationTests
         minName.Should().NotBeNull("the chain is anchored by the first full segment");
         var chain = WalChain.Check(WalFileName.TryParse(minName!)!.Value, names);
         chain.IsContinuous.Should().BeTrue(chain.GapError ?? "the chain is continuous");
-        var tail = PgWorker.WalReceiver.S3TailResolver.EndLsn(chain.LastSegment!.Value);
+        var tail = PgWorker.PgNode.S3TailResolver.EndLsn(chain.LastSegment!.Value);
 
         (await source.StartReplicationAsync(OwnPostgres.Slot, tail, 1, ct))
             .IsSuccess.Should().BeTrue("the explicit-timeline start succeeds on a live PG");
@@ -408,16 +408,16 @@ public class WalReceiverIntegrationTests
             s3Node.HostEndpoint, cluster, shard, OwnS3.AccessKey, OwnS3.SecretKey);
         await using var s3 = HostS3(s3Node);
         var diagnostics = new StringWriter();
-        var outcome = await PgWorker.WalReceiver.WalReceiverCore.RunSessionAsync(
+        var outcome = await PgWorker.PgNode.WalReceiverCore.RunSessionAsync(
             options,
-            new PgWorker.WalReceiver.NpgsqlXLogSource(options),
-            new PgWorker.WalReceiver.NpgsqlSlotPositionReader(options),
+            new PgWorker.PgNode.NpgsqlXLogSource(options),
+            new PgWorker.PgNode.NpgsqlSlotPositionReader(options),
             s3,
-            new PgWorker.WalReceiver.WalSessionEvents { Diagnostic = diagnostics.WriteLine },
+            new PgWorker.PgNode.WalSessionEvents { Diagnostic = diagnostics.WriteLine },
             new CancellationTokenSource(TimeSpan.FromSeconds(30)).Token);
 
         // Assert — FailedPermanent, текст ошибки называет wal_segment_size
-        outcome.Kind.Should().Be(PgWorker.WalReceiver.WalSessionKind.FailedPermanent);
+        outcome.Kind.Should().Be(PgWorker.PgNode.WalSessionKind.FailedPermanent);
         outcome.Error.Should().Contain("wal_segment_size");
     }
 }

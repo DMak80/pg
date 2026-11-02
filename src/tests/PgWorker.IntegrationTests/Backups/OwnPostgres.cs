@@ -62,7 +62,7 @@ public sealed class OwnPostgres : IAsyncDisposable
 
     /// <summary>Опции приёмника на это окружение: слот фикстуры, Cluster/Shard —
     /// guid-значения, S3 — host-эндпоинт своей ownS3-ноды.</summary>
-    public PgWorker.WalReceiver.WalReceiverOptions ReceiverOptions(
+    public PgWorker.PgNode.WalReceiverOptions ReceiverOptions(
         string s3Endpoint, string cluster, string shard, string accessKey, string secretKey)
         => new(
             PgHost: "localhost",

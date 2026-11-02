@@ -35,10 +35,10 @@ scrape_configs:
     file_sd_configs:
       - files: ["/etc/prometheus/sd/patroni-nodes.json"]
         refresh_interval: 30s
-  - job_name: walreceiver-nodes   # приёмники WAL в нодах PgWorker (t25, arch/18 §2.8/§5.2)
+  - job_name: pgnode-nodes   # агенты PgNode в нодах PgWorker (t25/t05, arch/18 §2.8/§5.4)
     scheme: http
     file_sd_configs:
-      - files: ["/etc/prometheus/sd/walreceiver-nodes.json"]
+      - files: ["/etc/prometheus/sd/pgnode-nodes.json"]
         refresh_interval: 30s
 
   - job_name: sd-generator        # самонаблюдение генератора (arch/18 §5.4)

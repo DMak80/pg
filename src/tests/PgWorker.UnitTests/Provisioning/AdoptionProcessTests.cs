@@ -61,7 +61,7 @@ public class AdoptionProcessTests
 
     // Стенд процесса: фейковый etcd + фейковый драйвер с InspectResult + FakeSql;
     // ensurer'ы реальные (put-if-absent поверх FakeEtcd), Patroni-проба молчит.
-    private static async Task<(AdoptionProcess Process, Fakes.FakeSql Sql, Fakes.FakeDriver Driver)> NewAdoption(
+    private static async Task<(AdoptionProcess Process, Fakes.FakeSql Sql, Fakes.FakeDriver Driver, RecordingDelivery Delivery)> NewAdoption(
         Fakes.FakeEtcd etcd,
         IReadOnlyDictionary<string, DiscoveredNode> inspect,
         PortAllocLock? portLock = null)
@@ -74,6 +74,7 @@ public class AdoptionProcessTests
         portLock ??= new PortAllocLock("/pgworker", [Ep], etcd, TimeProvider.System, claims.InstanceId);
         var driver = new Fakes.FakeDriver { InspectResult = inspect };
         var sql = new Fakes.FakeSql();
+        var delivery = new RecordingDelivery();
         var process = new AdoptionProcess(
             etcd, [Ep], driver,
             new ShardEndpoints(etcd, [Ep], new ShardProbe(new HttpClient())),
@@ -86,8 +87,9 @@ public class AdoptionProcessTests
             new PlacementOptions(15000, 15100, PatroniBootSec: 600),
             new EtcdEndpoints([Ep]),
             Fakes.PgtuneFactory(),
+            delivery,
             snapshot: null);
-        return (process, sql, driver);
+        return (process, sql, driver, delivery);
     }
 
     // Журнал-записыватель: хук OnPut FakeEtcd разбирает WorkState /pgworker/work/*.
@@ -119,7 +121,7 @@ public class AdoptionProcessTests
         var snap = await SnapshotActive(etcd, ["s1", "s2"], []);
         etcd.Seed("/pgworker/portalloc/demo",
             """{"s1/s1a":{"host":"local","pg":15432,"patroni":18008,"doorman":16432}}""");
-        var (adoption, sql, _) = await NewAdoption(etcd, new Dictionary<string, DiscoveredNode>());
+        var (adoption, sql, _, delivery) = await NewAdoption(etcd, new Dictionary<string, DiscoveredNode>());
 
         // Act
         var outcome = await adoption.TickAsync(snap, CancellationToken.None);
@@ -148,7 +150,7 @@ public class AdoptionProcessTests
         var snap = await SnapshotActive(etcd, ["s1"], []);
         etcd.Seed("/pgworker/portalloc/demo",
             """{"s1/s1a":{"host":"local","pg":15432,"patroni":18008,"doorman":16432}}""");
-        var (adoption, sql, _) = await NewAdoption(etcd, new Dictionary<string, DiscoveredNode>());
+        var (adoption, sql, _, delivery) = await NewAdoption(etcd, new Dictionary<string, DiscoveredNode>());
         sql.EnsureResultByDsn = (dsn, _) =>
             dsn.Contains("Database=postgres", StringComparison.Ordinal)
                 ? Result.Success()
@@ -180,7 +182,7 @@ public class AdoptionProcessTests
         etcd.Seed("/clusters/demo/buckets/routing/bucket_7", "s1");
         var range = await etcd.RangeAsync(Ep, "/clusters/", CancellationToken.None);
         snap = ClusterSnapshotParser.ParseClusters(range.Value, out _).Value.Single(c => c.Config.Cluster == "demo");
-        var (adoption, sql, _) = await NewAdoption(etcd, new Dictionary<string, DiscoveredNode>());
+        var (adoption, sql, _, delivery) = await NewAdoption(etcd, new Dictionary<string, DiscoveredNode>());
 
         // Act
         var outcome = await adoption.TickAsync(snap, CancellationToken.None);
@@ -199,7 +201,7 @@ public class AdoptionProcessTests
         // драйвер нашёл as-контейнеры (5433/8011 и 5434/8012).
         var etcd = new Fakes.FakeEtcd();
         var snap = await SnapshotActive(etcd, ["s1"], ["s1"]);
-        var (adoption, _, _) = await NewAdoption(etcd, new Dictionary<string, DiscoveredNode>
+        var (adoption, _, _, delivery) = await NewAdoption(etcd, new Dictionary<string, DiscoveredNode>
         {
             ["s1a"] = new("s1a", "local", "as-s1a", 5433, 8011, 0),
             ["s1b"] = new("s1b", "local", "as-s1b", 5434, 8012, 0),
@@ -219,13 +221,14 @@ public class AdoptionProcessTests
         Assert.Equal("RUNNING", await GetValueAsync(etcd, "/clusters/demo/shards/s1/nodes/s1b/state"));
     }
 
+
     [Fact]
     public async Task TickAsync_NoContainersFound_SilentSkip()
     {
         // Arrange: members есть, docker находок 0 — не наш docker-домен (spec §2.5).
         var etcd = new Fakes.FakeEtcd();
         var snap = await SnapshotActive(etcd, ["s1"], ["s1"]);
-        var (adoption, _, _) = await NewAdoption(etcd, new Dictionary<string, DiscoveredNode>());
+        var (adoption, _, _, delivery) = await NewAdoption(etcd, new Dictionary<string, DiscoveredNode>());
 
         // Act
         var outcome = await adoption.TickAsync(snap, CancellationToken.None);
@@ -246,7 +249,7 @@ public class AdoptionProcessTests
         var snap = await SnapshotActive(etcd, ["s1"], ["s1"]);
         var journal = new RecordingJournal();
         journal.Attach(etcd);
-        var (adoption, _, _) = await NewAdoption(etcd, new Dictionary<string, DiscoveredNode>
+        var (adoption, _, _, delivery) = await NewAdoption(etcd, new Dictionary<string, DiscoveredNode>
         {
             ["s1a"] = new("s1a", "local", "as-s1a", 5433, 8011, 0),
         });
@@ -281,7 +284,7 @@ public class AdoptionProcessTests
             """);
         var journal = new RecordingJournal();
         journal.Attach(etcd);
-        var (process, _, _) = await NewAdoption(etcd, new Dictionary<string, DiscoveredNode>
+        var (process, _, _, delivery) = await NewAdoption(etcd, new Dictionary<string, DiscoveredNode>
         {
             ["s1a"] = new("s1a", "h1", "pgw-demo-s1-s1a", 15004, 18004, 16504),
             ["s1b"] = new("s1b", "h2", "pgw-demo-s1-s1b", 15005, 18005, 16505),
@@ -322,7 +325,7 @@ public class AdoptionProcessTests
             """);
         var journal = new RecordingJournal();
         journal.Attach(etcd);
-        var (process, _, _) = await NewAdoption(etcd, new Dictionary<string, DiscoveredNode>
+        var (process, _, _, delivery) = await NewAdoption(etcd, new Dictionary<string, DiscoveredNode>
         {
             ["s1a"] = new("s1a", "h1", "pgw-demo-s1-s1a", 15004, 18004, 16504),
             ["s1b"] = new("s1b", "h2", "pgw-demo-s1-s1b", 15005, 18005, 16505),
@@ -355,7 +358,7 @@ public class AdoptionProcessTests
             """);
         var journal = new RecordingJournal();
         journal.Attach(etcd);
-        var (process, _, driver) = await NewAdoption(etcd, new Dictionary<string, DiscoveredNode>
+        var (process, _, driver, delivery) = await NewAdoption(etcd, new Dictionary<string, DiscoveredNode>
         {
             ["s1b"] = new("s1b", "h2", "pgw-demo-s1-s1b", 15005, 18005, 16505),
         });
@@ -392,7 +395,7 @@ public class AdoptionProcessTests
             {"s1/s1a":{"host":"h1","pg":15004,"patroni":18004,"doorman":16504},
             "s1/s1b":{"host":"h2","pg":15005,"patroni":18005,"doorman":16505}}
             """);
-        var (process, _, driver) = await NewAdoption(etcd, new Dictionary<string, DiscoveredNode>());
+        var (process, _, driver, delivery) = await NewAdoption(etcd, new Dictionary<string, DiscoveredNode>());
 
         // Act
         var outcome = await process.TickAsync(snap, CancellationToken.None);
@@ -425,7 +428,7 @@ public class AdoptionProcessTests
             """);
         etcd.Seed("/pgworker/work/demo",
             """{"op":"supervise","phase":"supervising","instance":"i1","updated_unix":1,"unreachable":{"s1/s1a":100}}""");
-        var (process, _, driver) = await NewAdoption(etcd, new Dictionary<string, DiscoveredNode>
+        var (process, _, driver, delivery) = await NewAdoption(etcd, new Dictionary<string, DiscoveredNode>
         {
             ["s1b"] = new("s1b", "h2", "pgw-demo-s1-s1b", 15005, 18005, 16505),
         });
@@ -463,7 +466,7 @@ public class AdoptionProcessTests
             """);
         var journal = new RecordingJournal();
         journal.Attach(etcd);
-        var (process, _, _) = await NewAdoption(etcd, new Dictionary<string, DiscoveredNode>
+        var (process, _, _, delivery) = await NewAdoption(etcd, new Dictionary<string, DiscoveredNode>
         {
             ["s1b"] = new("s1b", "h2", "pgw-demo-s1-s1b", 15005, 18005, 16505),
         });
@@ -498,7 +501,7 @@ public class AdoptionProcessTests
             """);
         var journal = new RecordingJournal();
         journal.Attach(etcd);
-        var (process, _, driver) = await NewAdoption(etcd, new Dictionary<string, DiscoveredNode>());
+        var (process, _, driver, delivery) = await NewAdoption(etcd, new Dictionary<string, DiscoveredNode>());
         driver.InspectFault = new ApplicationException("docker: connection refused");
 
         // Act
@@ -527,7 +530,7 @@ public class AdoptionProcessTests
         var snap = await SnapshotActive(etcd, ["s1"], ["s1"]);
         var holder = new PortAllocLock("/pgworker", [Ep], etcd, TimeProvider.System, "other");
         (await holder.TryAcquireAsync(CancellationToken.None)).Value.Should().BeTrue();
-        var (adoption, _, _) = await NewAdoption(
+        var (adoption, _, _, delivery) = await NewAdoption(
             etcd,
             new Dictionary<string, DiscoveredNode>
             {

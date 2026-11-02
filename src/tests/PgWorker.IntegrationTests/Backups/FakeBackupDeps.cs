@@ -346,6 +346,33 @@ public static class FakePoolFactory
             breakerWindow: breakerWindow);
     }
 
+    // Пул с ДВУМЯ read-целями, одна из которых мертва (arch/19 §5 —
+    // неполнота union-наблюдения контроля): node1 → alive-фейк (write+read),
+    // node2 → dead-фейк (транспортный отказ листинга).
+    public static BackupS3Factory SplitAliveDead(
+        IBackupS3 alive, IBackupS3 dead, string bucket = "pgworker-backups",
+        TimeSpan? breakerWindow = null)
+    {
+        var pool = new PgWorker.Etcd.S3.S3Pool("backups", false,
+            [new PgWorker.Etcd.S3.S3PoolNode("node1", "RUNNING", "h1", "h1", 9000),
+             new PgWorker.Etcd.S3.S3PoolNode("node2", "RUNNING", "h2", "h2", 9000)],
+            ["h1:9000", "h2:9000"], Secrets: new("ak", "sk"));
+        var ctx = new BackupPoolContext(
+            "backups", "ak", "sk",
+            ["http://h1:9000"], ["http://h1:9000"], ["http://h1:9000", "http://h2:9000"]);
+        return new BackupS3Factory(
+            new BackupPoolResolver(
+                new FixedPoolStore(pool),
+                policyReader: (_, _) => Task.FromResult<PgWorker.Etcd.Parsing.BackupPolicy?>(
+                    new PgWorker.Etcd.Parsing.BackupPolicy(1, 1, 1, 86400, true,
+                        S3: new PgWorker.Etcd.Parsing.BackupPolicyS3(
+                            "backups", ["node1"], ["node1"])))),
+            new FixedPoolStore(pool),
+            () => bucket, () => null, TimeSpan.FromSeconds(5),
+            targetFactory: uri => uri == "http://h2:9000" ? dead : alive,
+            breakerWindow: breakerWindow);
+    }
+
     // Два пула («backups», «cold») на ОДНОМ фейк-таргете: union-сверки свипера
     // (arch/19 §5) видят одинаковые ключи в обоих пулах — дедуп по (пул, ключ)
     // учитывает каждую пул-копию. Store отдаётся раздельно (свипер листит имена

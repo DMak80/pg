@@ -71,7 +71,8 @@ public class AdoptionContractTests(EtcdFixture fixture)
             new PgtuneInputsFactory(
                 new PgtuneSettings(18, "oltp", "ssd", "mid_ram", 60,
                     new HashSet<string>(StringComparer.Ordinal)),
-                NullLogger<PgtuneInputsFactory>.Instance));
+                NullLogger<PgtuneInputsFactory>.Instance),
+            new NoDelivery());
 
     // Запись журнала /pgworker/work/<C> (последняя фаза тика).
     private async Task<(string Op, string Phase, string Message)> ReadJournalAsync(string cluster)
@@ -245,4 +246,24 @@ public class AdoptionContractTests(EtcdFixture fixture)
                 "backuppw00000000000000000000000A",
                 "restpw00000000000000000000000A")));
     }
+}
+
+/// <summary>No-op доставка bootstrap-данных (контракт adoption: канал t05 —
+/// вне скоупа этого теста).</summary>
+internal sealed class NoDelivery : PgWorker.Provisioning.Processes.INodeBootstrapDelivery
+{
+    public Task<PgWorker.Provisioning.Processes.DeliveryOutcome> EnsureAsync(
+        ShardTopology topology, string nodeName, NodeAddress addr, InstallSecrets secrets,
+        PgWorker.Core.Tuning.PgTuneResult? tuning,
+        System.Collections.Generic.IReadOnlySet<string>? excludeParams, bool syncStrict,
+        string restPassword, bool isToolStart, CancellationToken ct)
+        => Task.FromResult(new PgWorker.Provisioning.Processes.DeliveryOutcome(
+            Delivered: false, Wait: true, Transient: false, null));
+
+    public Task<bool> IsOnRevisionAsync(
+        ShardTopology topology, string nodeName, NodeAddress addr,
+        PgWorker.Core.Tuning.PgTuneResult? tuning,
+        System.Collections.Generic.IReadOnlySet<string>? excludeParams, bool syncStrict,
+        string restPassword, CancellationToken ct)
+        => Task.FromResult(false);
 }

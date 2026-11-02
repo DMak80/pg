@@ -168,7 +168,52 @@ public sealed class PoolBackupS3 : IBackupS3, IAsyncDisposable
     /// хотя бы один узел; исчерпание — маркер.</summary>
     public async Task<Result<IReadOnlyList<WalObject>>> ListWalUnionAsync(
         string cluster, string shard, int? maxKeysPerTest = null, CancellationToken ct = default)
-        => await ListUnionAsync(cluster, shard, "wal/", maxKeysPerTest, ct);
+    {
+        var detailed = await ListWalUnionDetailedAsync(cluster, shard, maxKeysPerTest, ct);
+        return detailed.IsSuccess
+            ? Result<IReadOnlyList<WalObject>>.Success(detailed.Value.Objects)
+            : Result<IReadOnlyList<WalObject>>.Failed(detailed.Error!);
+    }
+
+    /// <summary>Результат union-листинга wal/ с фактом полноты наблюдения
+    /// (arch/19 §5): FailedTargets — не ответившие транспортом read-цели
+    /// (включая исключённых breaker-окном). Непустой FailedTargets — набор
+    /// НЕПОЛОН: сегмент может лежать на недоступной ноде; контроль дыры
+    /// обязан учитывать это (arch/19 §3 — разрыв не доказан, transient-
+    /// DEGRADED вместо WAL_CHAIN_ERROR).</summary>
+    public sealed record WalUnionListing(
+        IReadOnlyList<WalObject> Objects, IReadOnlyList<string> FailedTargets);
+
+    /// <summary>Union-листинг wal/ по всем read-целям с перечнем не ответивших
+    /// целей (arch/19 §5): успех — если ответил хотя бы один узел; исчерпание
+    /// всего списка — маркер.</summary>
+    public async Task<Result<WalUnionListing>> ListWalUnionDetailedAsync(
+        string cluster, string shard, int? maxKeysPerTest = null, CancellationToken ct = default)
+    {
+        var merged = new Dictionary<string, WalObject>(StringComparer.Ordinal);
+        var failed = new List<string>();
+        Result<IReadOnlyList<WalObject>> last = default;
+        var anySuccess = false;
+        foreach (var uri in _readTargets)
+        {
+            var result = await AttemptAsync(uri, ct, () => Target(uri).ListAsync(cluster, shard, "wal/", maxKeysPerTest, ct));
+            if (!result.IsSuccess)
+            {
+                last = result;
+                failed.Add(uri);
+                continue;
+            }
+
+            anySuccess = true;
+            foreach (var o in result.Value)
+                merged.TryAdd(o.Name, o);
+        }
+
+        if (!anySuccess)
+            return Result<WalUnionListing>.Failed(new ApplicationException(
+                $"{S3PoolMarkers.Exhausted}: list-union wal/ — all pool nodes are unavailable: {last.Error!.Message}"));
+        return Result<WalUnionListing>.Success(new WalUnionListing([.. merged.Values], failed));
+    }
 
     /// <summary>Union-листинг ПРОИЗВОЛЬНОГО префикса по ВСЕМ read-целям (
     /// arch/19 §5 «где данные есть»): полный бэкап заливается на первую живую

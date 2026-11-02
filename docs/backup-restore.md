@@ -16,16 +16,16 @@ arch/14 §1.1. Тон — по [docs/runbook.md](runbook.md).
    (частичный upload отсекается); стартовая точка WAL из статуса/`backup_label`;
    непрерывность WAL-цепочки от этой точки (дыра → FAILED с границами). Успех →
    статус **RUNNING** (фиксируются `backup_id`/`started_unix`).
-2. **RUNNING — демонтаж + restore-операция WalReceiver первой ноды**:
+2. **RUNNING — демонтаж + restore-операция агента PgNode первой ноды**:
    ноды удаляются ВМЕСТЕ с data-volume («погиб диск»), ноды в state=REBUILDING,
    HA-scope Patroni чистится (`initialize/leader/sync`, `optime/`,
    `members/`; `request_*` остаётся) со щитом `initialize="restore-in-progress"`.
    Затем воркер поднимает первую ноду штатным EnsureNode на новом пустом
    data-volume (щит удерживает Patroni от bootstrap пустого PGDATA) и шлёт
-   `POST /api/ops/restore` её приёмнику WalReceiver — ТОТ ЖЕ единственный
+   `POST /api/ops/restore` её приёмнику (агент PgNode) — ТОТ ЖЕ единственный
    процесс ноды, что стримит WAL (фазы `downloading`→`recovering` в поле
    `phase`): качает полный в PGDATA ноды, `pg_ctl` с
-   `restore_command` (`walreceiver fetch-wal` из `wal/`) накатывает WAL до
+   `restore_command` (`pgnode fetch-wal` из `wal/`) накатывает WAL до
    цели (latest — конец архива; `time:<RFC3339>` — recovery_target_time).
    Бюджет наката — `Restore:RecoveryTimeoutSec` (дефолт 1800 с).
 3. **REJOINING — rejoin**: щит `initialize` перезаписывается
@@ -216,7 +216,7 @@ etcd-контур кластера утрачен (или кластер уда�
 | `full/<id>: backup_label недоступен/бит` | то же, объект `backup_label` отсутствует | аналогично |
 | `дыра WAL-цепочки: ожидался <a>, найден <b>` | сегмент(ы) утрачены в S3 между a и b; накат до latest невозможен | восстановление на `target_time` до дыры; либо подтянуть утраченные сегменты |
 | `recovery-бюджет исчерпан (<N> c)` | накат дольше `Restore:RecoveryTimeoutSec` (большая база/длинная цепочка) | повтор заявки (закачка заново) после увеличения `Restore:RecoveryTimeoutSec` |
-| накат не достиг `target_time` (цель раньше старта полного / позже конца архива) | recovery дошёл до конца архива, цель не достигнута — «recovery-бюджет исчерпан» (операцию ведёт WalReceiver ноды, статус по API) | заявка с target внутри [wal_start полного, конец архива] |
+| накат не достиг `target_time` (цель раньше старта полного / позже конца архива) | recovery дошёл до конца архива, цель не достигнута — «recovery-бюджет исчерпан» (операцию ведёт агент PgNode ноды, статус по API) | заявка с target внутри [wal_start полного, конец архива] |
 | `restore усыновлённых шардов не поддерживается` | object-ноды (усвоенный стендовый шард) | ручной путь (pg_basebackup от источника, docs/усыновление) |
 | `cancelled-by-remove` | remove-shard демонтировал шард вместе с заявкой | заявка бессмысленна — шарда больше нет |
 | `дубль заявки: активен старейший <id>` | ручная постановка при активной заявке | ничего: старейшая исполняется |
@@ -232,7 +232,7 @@ Active-кластера (разбор и повтор — оператор). П�
 Дрилл — плановый автоматический прогон НЕдеструктивного восстановления: берётся
 бэкап реального шарда (тот же кандидат, что выбрал бы DR-restore — новейший
 COMPLETED с манифестом и непрерывной WAL-цепочкой), разворачивается
-drill-операцией WalReceiver первой ноды шарда в scratch-каталог
+drill-операцией агента PgNode первой ноды шарда в scratch-каталог
 `/home/postgres/pgdata/backup-drill/<id>/pgdata` (НЕ PGDATA ноды — прод-данные
 недостижимы), проверяется «старт postgres + выход из recovery»
 (`pg_is_in_recovery()=false`); scratch чистит приёмник при любом исходе.

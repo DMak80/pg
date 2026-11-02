@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using System.Security.Cryptography.X509Certificates;
 using PgWorker.App;
 using PgWorker.App.Api;
 using PgWorker.App.Api.Operations;
@@ -130,6 +131,36 @@ builder.Services.AddHttpClient("etcd", c => c.Timeout = TimeSpan.FromSeconds(7.5
 builder.Services.AddHttpClient("walreceiver", c => c.Timeout = TimeSpan.FromSeconds(10));
 builder.Services.AddSingleton<IWalReceiverApiClient>(sp =>
     new WalReceiverApiClient(sp.GetRequiredService<IHttpClientFactory>().CreateClient("walreceiver")));
+// mTLS-клиент канала доставки секретов (arch/14 §4, arch/25 №23): клиентский
+// серт воркера + верификация серверного серта агента по per-install CA и SAN
+// полного имени ноды. Таймаут — существующий HttpClient-уровень 10 с.
+builder.Services.AddHttpClient("pgnode-channel", c => c.Timeout = TimeSpan.FromSeconds(10))
+    .ConfigurePrimaryHttpMessageHandler(sp =>
+    {
+        var material = sp.GetRequiredService<RestTlsMaterial>();
+        var clientCert = sp.GetRequiredService<X509Certificate2>();
+        var ca = material.Ca;
+        return new SocketsHttpHandler
+        {
+            SslOptions = new System.Net.Security.SslClientAuthenticationOptions
+            {
+                ClientCertificates = new X509CertificateCollection { clientCert },
+                RemoteCertificateValidationCallback = (sender, certificate, _, _) =>
+                    PgWorker.Provisioning.Probes.NodeChannelSsl.Validate(sender, certificate, ca),
+            },
+        };
+    });
+builder.Services.AddSingleton<PgWorker.Provisioning.Probes.INodeChannelClient>(sp =>
+    new PgWorker.Provisioning.Probes.NodeChannelClient(
+        sp.GetRequiredService<IHttpClientFactory>().CreateClient("pgnode-channel")));
+// Доставка bootstrap-данных нодам (arch/14 §4, spec §3.7.2): put ключа +
+// хендшейк по статусу, Ensure-хвост всех процессов и конвергенция надзора.
+builder.Services.AddSingleton<PgWorker.Provisioning.Processes.INodeBootstrapDelivery>(sp =>
+    new PgWorker.Provisioning.Processes.NodeBootstrapDelivery(
+        sp.GetRequiredService<IEtcdGateway>(),
+        sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
+        sp.GetRequiredService<PgWorker.Provisioning.Probes.INodeChannelClient>(),
+        sp.GetRequiredService<RestCertificateCache>()));
 builder.Services.AddSingleton<PgWorker.Provisioning.Probes.INodeDataProbe>(sp =>
     new WalNodeDataProbe(sp.GetRequiredService<IWalReceiverApiClient>()));
 // Клиент Patroni REST (arch/14 §5 C): https к host:patroni-port portalloc;
@@ -255,6 +286,16 @@ builder.Services.AddSingleton(sp =>
 {
     var material = sp.GetRequiredService<RestTlsMaterial>();
     return new RestCertificateCache(material.CaPem, material.CaKeyPem);
+});
+
+// Клиентский серт mTLS-канала доставки (arch/14 §4): выпуск из той же пары
+// PGW_REST_TLS_{CA,CA_KEY} при старте, кеш процесса; новых env-секретов нет.
+builder.Services.AddSingleton(sp =>
+{
+    var material = sp.GetRequiredService<RestTlsMaterial>();
+    var (certPem, keyPem) = RestPki.IssueWorkerClientCertificate(
+        material.CaPem, material.CaKeyPem, "pgworker");
+    return X509Certificate2.CreateFromPem(certPem, keyPem);
 });
 
 // docker: драйвер по режиму (Plain: таблица Hosts; Swarm: manager endpoint).
@@ -407,6 +448,7 @@ builder.Services.AddSingleton(sp =>
         sp.GetRequiredService<PortAllocIndex>(),
         sp.GetRequiredService<PortAllocLock>(),
         sp.GetRequiredService<PgtuneInputsFactory>(),
+        sp.GetRequiredService<PgWorker.Provisioning.Processes.INodeBootstrapDelivery>(),
         SnapshotDelegate(job),
         sp.GetRequiredService<Shared.Core.Hosting.ILoopProgress>(),
         TimeSpan.FromSeconds(opts.Loops.Watchdog.CheckIntervalSec),
@@ -438,6 +480,7 @@ builder.Services.AddSingleton(sp => new NodeSupervisor(
     sp.GetRequiredService<IAppParamsEnsurer>(),
     sp.GetRequiredService<PgtuneInputsFactory>(),
     sp.GetRequiredService<PgtuneSettings>(),
+    sp.GetRequiredService<PgWorker.Provisioning.Processes.INodeBootstrapDelivery>(),
     sp.GetRequiredService<ILogger<NodeSupervisor>>(),
     new MasterKeyReconciler(
         sp.GetRequiredService<IEtcdGateway>(),
@@ -474,6 +517,7 @@ builder.Services.AddSingleton(sp =>
             opts.Thresholds.ProvisionRetryBaseSec, opts.Thresholds.ProvisionRetryMaxSec),
         sp.GetRequiredService<EtcdEndpoints>(),
         sp.GetRequiredService<PgtuneInputsFactory>(),
+        sp.GetRequiredService<PgWorker.Provisioning.Processes.INodeBootstrapDelivery>(),
         SnapshotDelegate(sp.GetRequiredService<SnapshotJob>()),
         opts.Docker.ScrapeNetwork);
 });
@@ -521,6 +565,7 @@ builder.Services.AddSingleton(sp =>
         sp.GetRequiredService<PortAllocIndex>(),
         sp.GetRequiredService<PortAllocLock>(),
         sp.GetRequiredService<PgtuneInputsFactory>(),
+        sp.GetRequiredService<PgWorker.Provisioning.Processes.INodeBootstrapDelivery>(),
         SnapshotDelegate(sp.GetRequiredService<SnapshotJob>()),
         sp.GetRequiredService<Shared.Core.Hosting.ILoopProgress>(),
         TimeSpan.FromSeconds(opts.Loops.Watchdog.CheckIntervalSec),
@@ -581,12 +626,13 @@ builder.Services.AddSingleton(sp => new ClusterSecretRotator(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
     sp.GetRequiredService<ISqlExecutor>(),
-    sp.GetRequiredService<IClusterDriver>(),
     sp.GetRequiredService<ShardProbe>(),
     sp.GetRequiredService<ClaimStore>(),
     sp.GetRequiredService<WorkJournal>(),
     sp.GetRequiredService<InstallSecrets>(),
     sp.GetRequiredService<IClusterSecretEnsurer>(),
+    sp.GetRequiredService<PgWorker.Provisioning.Processes.INodeBootstrapDelivery>(),
+    sp.GetRequiredService<PgtuneInputsFactory>(),
     SnapshotDelegate(sp.GetRequiredService<SnapshotJob>())));
 
 // Полные бэкапы шардов (/, arch/19 §2): планировщик + супервизия через
@@ -624,12 +670,15 @@ builder.Services.AddSingleton(sp => new PgWorker.Backups.Process.RestoreProcess(
     sp.GetRequiredService<InstallSecrets>(),
     sp.GetRequiredService<EtcdEndpoints>(),
     sp.GetRequiredService<IClusterSecretEnsurer>(),
+    sp.GetRequiredService<PgWorker.Provisioning.Processes.INodeBootstrapDelivery>(),
     sp.GetRequiredService<ShardProbe>(),
     sp.GetRequiredService<ISqlExecutor>(),
     new ProcessThresholds(sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Thresholds.NodeDeadSec,
         sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Thresholds.ShardDeadSec,
         sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Thresholds.PatroniBootSec),
     sp.GetRequiredService<TimeProvider>(),
+    sp.GetRequiredService<PgtuneInputsFactory>(),
+    sp.GetRequiredService<PgtuneSettings>(),
     sp.GetRequiredService<ILoggerFactory>().CreateLogger<PgWorker.Backups.Process.RestoreProcess>(),
     sp.GetRequiredService<Shared.Metrics.Worker.WorkerMetricsInstrumentation>().BackupRestore,
     TimeSpan.FromSeconds(

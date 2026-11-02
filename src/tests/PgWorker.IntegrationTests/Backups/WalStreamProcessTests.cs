@@ -84,11 +84,12 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         Action<string, string, long?>? uploadedAgeObserver = null,
         Action<string, string, long?>? lagObserver = null,
         TimeSpan? watchdogWindow = null,
-        Shared.Core.Hosting.ILoopProgress? progress = null)
+        Shared.Core.Hosting.ILoopProgress? progress = null,
+        BackupS3Factory? factoryOverride = null)
         => new(
             fixture.Gateway, [fixture.Endpoint], driver,
             new ShardEndpoints(fixture.Gateway, [fixture.Endpoint], new ShardProbe(FakePatroni.CreateProbeClient())),
-            sql, FakePoolFactory.Single(s3),
+            sql, factoryOverride ?? FakePoolFactory.Single(s3),
             new WalStatusWriter(fixture.Gateway, [fixture.Endpoint]),
             _claims, new WorkJournal("/pgworker", fixture.Gateway, [fixture.Endpoint]),
             () => options,
@@ -1172,5 +1173,81 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         var wal = await ReadWal(cluster);
         wal!.State.Should().Be(WalStreamStatus.Active);
         wal.Error.Should().BeNull();
+    }
+
+    // AAA: дыра цепочки при НЕПОЛНОМ union-наблюдении (одна нода пула не
+    // ответила — сегмент «дыры» может лежать на ней) — НЕ WAL_CHAIN_ERROR:
+    // transient-DEGRADED с маркером s3-pool-exhausted (arch/19 §3/§5);
+    // возврат ноды — полный обход, цепочка цела → ACTIVE (self-heal).
+    [Fact]
+    public async Task VerifyGapWithUnavailablePoolNode_DegradedThenHeals()
+    {
+        // Arrange — full wal_start=..01; живая цель: сегменты 1,3 (дыра на 2),
+        // вторая read-цель пула — транспортный отказ.
+        var ct = TestContext.Current.CancellationToken;
+        var cluster = "cg1";
+        await SeedAsync(cluster);
+        (await _claims.TryClaimClusterAsync(cluster, ct)).Value.Should().BeTrue();
+        var sql = new FakeWalSqlExecutor { Current = ("0/3000000", 1) };
+        var alive = new FakeBackupS3();
+        SeedSegments(alive, cluster, 1, 1);
+        alive.Objects.Add((cluster, "shard1", "000000010000000000000003"));
+        var dead = new FakeBackupS3 { Fails = true };
+        // breaker-окно пула — нулевое: отказ Act 1 не должен держать цель
+        // исключённой 45 с (межтестовое время сжато, заживление — Act 2)
+        var process = BuildProcess(Options(), sql, alive, driver: new StubScaleDriver(),
+            factoryOverride: FakePoolFactory.SplitAliveDead(alive, dead, breakerWindow: TimeSpan.Zero));
+        var backups = new ClusterBackups(cluster, null,
+            new Dictionary<string, ShardBackups> { ["shard1"] = FullShard("000000010000000000000001") });
+
+        // Act 1 — тик контроля с неполным union-наблюдением
+        (await process.TickAsync(BuildSnap(cluster), backups, ct)).IsSuccess.Should().BeTrue();
+
+        // Assert 1 — DEGRADED с маркером и границей «дыры», НЕ разрыв цепочки
+        var wal = await ReadWal(cluster);
+        wal!.State.Should().Be(WalStreamStatus.Degraded);
+        wal.Error.Should().Contain(S3PoolMarkers.Exhausted)
+            .And.Contain("000000010000000000000002").And.Contain("000000010000000000000003");
+
+        // Act 2 — нода вернулась: полный union видит сегмент 2 (он лежал на ней)
+        dead.Fails = false;
+        dead.Objects.Add((cluster, "shard1", "000000010000000000000002"));
+        (await process.TickAsync(BuildSnap(cluster), backups, ct)).IsSuccess.Should().BeTrue();
+
+        // Assert 2 — цепочка цела: ACTIVE, error снят (self-heal подъёмом ноды)
+        var healed = await ReadWal(cluster);
+        healed!.State.Should().Be(WalStreamStatus.Active);
+        healed.Error.Should().BeNull();
+    }
+
+    // AAA: та же дыра при ПОЛНОМ union-наблюдении (все ноды пула ответили) —
+    // прежний WAL_CHAIN_ERROR: неполнота — единственное основание отложить
+    // разрыв (ложный разрыв замирает приёмники гейтом и глушит live-детекцию
+    // исчерпания write-списка).
+    [Fact]
+    public async Task VerifyGapWithFullObservation_StillWalChainError()
+    {
+        // Arrange — обе цели пула живы; сегменты 1,3 (дыра на 2)
+        var ct = TestContext.Current.CancellationToken;
+        var cluster = "cg2";
+        await SeedAsync(cluster);
+        (await _claims.TryClaimClusterAsync(cluster, ct)).Value.Should().BeTrue();
+        var sql = new FakeWalSqlExecutor();
+        var first = new FakeBackupS3();
+        SeedSegments(first, cluster, 1, 1);
+        var second = new FakeBackupS3();
+        second.Objects.Add((cluster, "shard1", "000000010000000000000003"));
+        var process = BuildProcess(Options(), sql, first, driver: new StubScaleDriver(),
+            factoryOverride: FakePoolFactory.SplitAliveDead(first, second));
+        var backups = new ClusterBackups(cluster, null,
+            new Dictionary<string, ShardBackups> { ["shard1"] = FullShard("000000010000000000000001") });
+
+        // Act
+        (await process.TickAsync(BuildSnap(cluster), backups, ct)).IsSuccess.Should().BeTrue();
+
+        // Assert — настоящий разрыв: WAL_CHAIN_ERROR с границами
+        var wal = await ReadWal(cluster);
+        wal!.State.Should().Be(WalStreamStatus.WalChainError);
+        wal.Error.Should().Contain("000000010000000000000002").And.Contain("000000010000000000000003");
     }
 }

@@ -107,10 +107,13 @@ public sealed class TliSwitchContext : IAsyncLifetime
     private async Task PrepareAsync(CancellationToken ct)
     {
         // Шаг 1 — контур: окружение (сеть/etcd/ownS3 по guid, динамические
-        // порты), сид кластера tlsw<тег> (2 шарда × 2 реплики — как образцы),
-        // воркер с ОБЪЕДИНЁННЫМ бэкап-комплектом (полные + WAL-агенты +
-        // restore одновременно — spec §3.1); provisioning DONE ≤ 360 с.
-        Fx = await E2eEnvironment.StartAsync("tlsw", withS3Node: true, ct: ct);
+        // порты) УЖЕ ПОДНЯТО InitializeAsync (один StartAsync на класс);
+        // здесь — только сид кластера tlsw<тег> (2 шарда × 2 реплики — как
+        // образцы) и воркер с ОБЪЕДИНЁННЫМ бэкап-комплектом (полные +
+        // WAL-агенты + restore одновременно — spec §3.1); provisioning
+        // DONE ≤ 360 с. Второй StartAsync здесь затирал Fx и УТЕЧКАЛ первый
+        // контур целиком (e2e-факт полного прогона: осиротевшие
+        // pgw-en/ee1/eo/em без teardown, etcd пуст).
         Cluster = $"tlsw{Fx.ClusterTag}";
         await SeedClusterAsync(Cluster);
         await StartTliSwitchHostAsync("tlsw", ct);
@@ -140,6 +143,20 @@ public sealed class TliSwitchContext : IAsyncLifetime
             TimeSpan.FromSeconds(60), ct);
         synced.Should().BeTrue("the replicas must catch up with the master position before the failover: "
             + await DumpDiagnosticsAsync(Cluster, "shard1"));
+
+        // Гейт доставки TLI1-хвоста (детерминизм промоут-точки, приказ
+        // владельца): replica-sync сверялся с позицией НА МОМЕНТ проверки —
+        // после него мастер дописывает хвост (shutdown-чекпоинт, фоновые
+        // записи), и реплика промоутится с replay-границы, не догнав его:
+        // точка ложится на границу сегмента — смешанного объекта нет (SKIP).
+        // Здесь — фактическое подтверждение ДО остановки мастера: (1) обе
+        // реплики replay'нули ТЕКУЩУЮ позицию мастера, (2) позиция стабильна
+        // (двойное чтение — запись замерла), (3) до границы сегмента ≥ 1 МиБ
+        // (shutdown-хвост мастера — килобайты, границу не пересечёт) — у
+        // границы позиция подталкивается вставкой в середину следующего
+        // сегмента. Промоут-точка гарантированно ВНУТРИ сегмента S —
+        // boundary-ветка остаётся страховкой и достигаться не должна.
+        await EnsureTailDeliveredAsync(ct);
 
         // Шаги 3–5 — failover + данные нового TLI.
         await FailoverAsync(ct);
@@ -410,8 +427,14 @@ public sealed class TliSwitchContext : IAsyncLifetime
     private async Task FailoverAsync(CancellationToken ct)
     {
         var (_, _, master) = await MasterPgAsync(Cluster, "shard1", ct);
-        Console.WriteLine($"[PHASE] tlsw-failover: docker stop pgw-{Cluster}-shard1-{master}");
-        await Fx.RunDockerAsync(["stop", $"pgw-{Cluster}-shard1-{master}"], ct);
+        // ЖЁСТКАЯ смерть (kill, не stop): graceful-shutdown PG делает
+        // checkpoint и ЗАКРЫВАЕТ сегмент (позиция уходит на границу) —
+        // догнавшая реплика промоутится ровно с границы, смешанного объекта
+        // нет (исход SKIP серийных прогонов). Краш оставляет сегмент S
+        // ОТКРЫТЫМ на позиции гейта tail-delivered — промоут-точка строго
+        // внутри S (профиль t28 гарантирован).
+        Console.WriteLine($"[PHASE] tlsw-failover: docker kill pgw-{Cluster}-shard1-{master}");
+        await Fx.RunDockerAsync(["kill", $"pgw-{Cluster}-shard1-{master}"], ct);
         var (host, port, newMaster) = await MasterPgAsync(Cluster, "shard1", ct);
         newMaster.Should().NotBe(master, "after the master dies the primary is the surviving replica");
         Console.WriteLine($"[PHASE] tlsw-failover: new primary {newMaster}");
@@ -430,6 +453,13 @@ public sealed class TliSwitchContext : IAsyncLifetime
         var (mHost, mPort, master) = await MasterPgAsync(Cluster, "shard1", ct);
         var masterPos = ParseLsn(await ScalarAsync(
             AdminDsn(mHost, mPort), "SELECT pg_current_wal_lsn()", ct));
+        return await ReplicasReplayAtLeastAsync(master, masterPos, ct);
+    }
+
+    // Обе реплики шарда replay'нули позицию atLeast (replay_lsn из SQL
+    // реплики — фактическое подтверждение доставки, не Patroni-представление).
+    private async Task<bool> ReplicasReplayAtLeastAsync(string master, ulong atLeast, CancellationToken ct)
+    {
         var kv = await G.GetAsync(Endpoint, $"/pgworker/portalloc/{Cluster}", ct);
         var entries = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(kv.Value!.Value)!;
         foreach (var (key, addr) in entries
@@ -441,11 +471,53 @@ public sealed class TliSwitchContext : IAsyncLifetime
                 // Хостовая модель: DSN реплики — localhost:{pg из portalloc}
                 AdminDsn("localhost", addr.GetProperty("pg").GetInt32()),
                 "SELECT pg_last_wal_replay_lsn()", ct));
-            if (replay < masterPos)
+            if (replay < atLeast)
                 return false;
         }
 
         return true;
+    }
+
+    // Гейт доставки TLI1-хвоста (см. вызов в PrepareAsync): цикл с [PHASE]-
+    // телеметрией вручную (side-effect INSERT в поллинге WaitPhaseAsync
+    // недопустим — образец pre-wal цикла выше); бюджет 90 c.
+    private async Task EnsureTailDeliveredAsync(CancellationToken ct)
+    {
+        var sw = Stopwatch.StartNew();
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(90);
+        while (DateTime.UtcNow < deadline)
+        {
+            var (mHost, mPort, master) = await MasterPgAsync(Cluster, "shard1", ct);
+            var dsn = AdminDsn(mHost, mPort);
+            var pos1 = ParseLsn(await ScalarAsync(dsn, "SELECT pg_current_wal_lsn()", ct));
+            var segBytes = (ulong)PgWorker.Backups.WalFileName.SegmentBytes;
+            var segEnd = (pos1 / segBytes + 1) * segBytes;
+            if (segEnd - pos1 < 1024UL * 1024UL)
+            {
+                // Позиция у границы — подталкиваем вставкой в середину
+                // СЛЕДУЮЩЕГО сегмента (4 МиБ) и замеряем заново.
+                await ExecAsync(dsn,
+                    "INSERT INTO tli_switch_probe SELECT g, repeat('x', 1048576) FROM generate_series(1, 4) g", ct);
+                continue;
+            }
+
+            var pos2 = ParseLsn(await ScalarAsync(dsn, "SELECT pg_current_wal_lsn()", ct));
+            if (pos2 != pos1)
+                continue; // запись мастера ещё идёт — стабильность не доказана
+
+            if (await ReplicasReplayAtLeastAsync(master, pos2, ct))
+            {
+                Console.WriteLine(
+                    $"[PHASE] tail-delivered: ok=True, elapsed={sw.Elapsed.TotalSeconds:0.#}s, budget=90s, " +
+                    $"progress=master={pos2:X}/{segEnd:X} both-replicas-replayed");
+                return;
+            }
+        }
+
+        throw new ApplicationException(
+            "the TLI1 tail was not confirmed delivered (stable master position replayed by both replicas, " +
+            "≥1 MiB to the segment end) before the failover: "
+            + await DumpDiagnosticsAsync(Cluster, "shard1"));
     }
 
     // Гейт мастера (t10) + DSN чтения: COMPLETED restore не гарантирует
@@ -735,8 +807,13 @@ public sealed class TliSwitchContext : IAsyncLifetime
             var restoreId = await PutRestorePlannedAsync(cluster, shard, target, backupId, ct);
             try
             {
+                // Бюджет ×1.2 от фактического замера восстановления кластера
+                // этого класса (restore-PG ~7 с + выборы лидера + basebackup
+                // реплики ≈ 88-90 с → 110 с); меньший бюджет срезает живое
+                // восстановление, а его незавершённая заявка блокирует
+                // restore следующего теста класса (duplicate request).
                 var status = await WaitRestoreAsync(cluster, shard, restoreId,
-                    TimeSpan.FromSeconds(90), ct);
+                    TimeSpan.FromSeconds(110), ct);
                 return status!;
             }
             catch (ChainGapException) when (attempt < 3)
@@ -1140,13 +1217,18 @@ public sealed class E2eTliSwitchScenarios(TliSwitchContext Ctx) : IClassFixture<
                 "after-cut rows are restored — restore reached the end of the TLI2 chain");
 
             // Assert 3 — контур: ноды RUNNING, dsn-ключ не изменился
-            // (эталон DsnBefore фиксации шага 1; образец rs-latest).
-            var nodeA = await Ctx.GetOrNullAsync(
-                $"/clusters/{Ctx.Cluster}/shards/shard1/nodes/shard1a/state");
-            var nodeB = await Ctx.GetOrNullAsync(
-                $"/clusters/{Ctx.Cluster}/shards/shard1/nodes/shard1b/state");
-            nodeA!.Value.Should().Be("RUNNING");
-            nodeB!.Value.Should().Be("RUNNING");
+            // (эталон DsnBefore фиксации шага 1; образец rs-latest). RUNNING —
+            // через ожидание: сразу после COMPLETED догружающаяся нода может
+            // секунды числиться UNREACHABLE (живые пробы надзора на буте).
+            var running = await Ctx.WaitPhaseAsync("nodes-running", async () =>
+            {
+                var a = await Ctx.GetOrNullAsync(
+                    $"/clusters/{Ctx.Cluster}/shards/shard1/nodes/shard1a/state");
+                var b = await Ctx.GetOrNullAsync(
+                    $"/clusters/{Ctx.Cluster}/shards/shard1/nodes/shard1b/state");
+                return a is { Value: "RUNNING" } && b is { Value: "RUNNING" };
+            }, TimeSpan.FromSeconds(90), ct);
+            running.Should().BeTrue("both nodes settle RUNNING after the restore rejoin");
             var dsnAfter = await Ctx.GetOrNullAsync(
                 $"/clusters/{Ctx.Cluster}/shards/shard1/dsn");
             dsnAfter!.Value.Should().Be(Ctx.DsnBefore, "restore does not touch portalloc/dsn (AC2)");
@@ -1219,14 +1301,19 @@ public sealed class E2eTliSwitchScenarios(TliSwitchContext Ctx) : IClassFixture<
                 "pre + pre-wal + post-switch are restored — both sides of the TLI boundary through the mixed segment");
             parts[1].Should().Be("0", "commits after T_cut did not roll forward — PITR stops at the target");
 
-            // Assert 3 — контур: ноды RUNNING (rejoin второй заявки — тот же
-            // RestoreProcess), dsn жив.
-            var nodeA = await Ctx.GetOrNullAsync(
-                $"/clusters/{Ctx.Cluster}/shards/shard1/nodes/shard1a/state");
-            var nodeB = await Ctx.GetOrNullAsync(
-                $"/clusters/{Ctx.Cluster}/shards/shard1/nodes/shard1b/state");
-            nodeA!.Value.Should().Be("RUNNING");
-            nodeB!.Value.Should().Be("RUNNING");
+            // Assert 3 — контур: ноды RUNNING ЧЕРЕЗ ОЖИДАНИЕ (rejoin второй
+            // заявки — тот же RestoreProcess; сразу после COMPLETED
+            // догружающаяся нода секунды числится UNREACHABLE живыми пробами
+            // надзора — прецедент Latest-Assert-3).
+            var running = await Ctx.WaitPhaseAsync("nodes-running", async () =>
+            {
+                var a = await Ctx.GetOrNullAsync(
+                    $"/clusters/{Ctx.Cluster}/shards/shard1/nodes/shard1a/state");
+                var b = await Ctx.GetOrNullAsync(
+                    $"/clusters/{Ctx.Cluster}/shards/shard1/nodes/shard1b/state");
+                return a is { Value: "RUNNING" } && b is { Value: "RUNNING" };
+            }, TimeSpan.FromSeconds(90), ct);
+            running.Should().BeTrue("both nodes settle RUNNING after the rejoin");
         }
         catch
         {

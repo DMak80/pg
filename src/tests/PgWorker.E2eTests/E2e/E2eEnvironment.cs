@@ -288,12 +288,16 @@ public sealed class E2eEnvironment : IAsyncDisposable
             }
 
             runningSince ??= DateTimeOffset.UtcNow;
-            if (DateTimeOffset.UtcNow - runningSince > TimeSpan.FromSeconds(60))
+            // Порог — ×1.2 от фактического замера провиженнинга в полной
+            // серии (strict-sync sql-фаза 40-50 с + финальные фазы ≈ 70 с →
+            // 85 с): раньше — страховка от вечного зависания, не отсечка
+            // медленного, но живого старта.
+            if (DateTimeOffset.UtcNow - runningSince > TimeSpan.FromSeconds(85))
             {
                 await fx.CollectDiagnosticsAsync("provision-stuck-fail-fast");
                 throw new ApplicationException(
                     $"provisioning is stuck: nodes {cluster} ({string.Join(',', shards)}) RUNNING "
-                    + ">60 s, config.state not lifted (the worker does not complete the request — see "
+                    + ">85 s, config.state not lifted (the worker does not complete the request — see "
                     + "container-pgw-ew-*.log in the fail-fast telemetry)");
             }
 
@@ -874,12 +878,35 @@ public sealed class E2eEnvironment : IAsyncDisposable
                 $"[PHASE] e2e-env {slug}: environment raised (network {netName}, window {portFrom}–{portTo})");
             return env;
         }
-        catch
+        catch (Exception startError)
         {
+            // Частично поднятое окружение не оставляем (лучшими усилиями).
+            // Телеметрия упавшего старта ДО сноса: маркер + docker-логи
+            // созданных контейнеров (etcd/eo/em подняты docker run — их логи
+            // после rm недоступны, а DisposeAsync окружения уже не случится:
+            // InitializeAsync бросил — xUnit DisposeAsync фикстуры не зовёт).
+            try
+            {
+                await WriteStartFailureAsync(artifactsDir, slug, runId, etcdNames, startError);
+            }
+            catch
+            {
+                // телеметрия старта — лучшими усилиями, не маскирует причину
+            }
 
-            // частично поднятое окружение не оставляем (лучшими усилиями):
-            // контейнер, чей StartAsync упал, чистит сам testcontainers; живые
-            // узлы etcd/ownS3 — здесь; сеть — здесь.
+            // Контейнеры частичного контура — по собственным именам (own-only:
+            // guid/runId этой попытки). etcdNodes/s3Node testcontainers-объектов
+            // НЕ заполняются (docker run) — чистим docker rm напрямую.
+            foreach (var name in etcdNames.Append($"pgw-eo-{runId}").Append($"pgw-em-{runId}"))
+                try
+                {
+                    await E2eFixture.RunProcessAsync("docker", ["rm", "-f", name]);
+                }
+                catch
+                {
+                    // уже нет/не создан — не важно
+                }
+
             if (s3Node is not null)
                 try
                 {
@@ -887,7 +914,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
                 }
                 catch
                 {
-                    // guid-имя, чужие прогоны не заденем; добьёт ассерт/ryuk
+                    // guid-имя, чужие прогоны не заденем
                 }
 
             foreach (var node in etcdNodes)
@@ -900,20 +927,38 @@ public sealed class E2eEnvironment : IAsyncDisposable
                     // аналогично
                 }
 
-            // Сеть окружения — создана здесь (StartOnceCoreAsync): сносим
-            // частично поднятое окружение целиком.
-            if (net is not null)
-                try
-                {
-                    await net.DeleteAsync();
-                }
-                catch
-                {
-                    // аналогично
-                }
+            // Сеть окружения — ПОСЛЕ контейнеров (docker не снимает сеть с
+            // живыми endpoints); force-disconnect + ретраи — DeleteClassNetworkAsync.
+            await DeleteClassNetworkAsync(netName, CancellationToken.None);
 
             throw;
         }
+    }
+
+    // Телеметрия упавшего старта окружения: маркер start-failed (причина) +
+    // docker-логи контейнеров частичного контура в его ArtifactsDir
+    // («лучшими усилиями» — не роняет повторный throw причины старта).
+    private static async Task WriteStartFailureAsync(
+        string artifactsDir, string slug, string runId,
+        IReadOnlyList<string> etcdNames, Exception error)
+    {
+        Directory.CreateDirectory(artifactsDir);
+        var stamp = DateTime.UtcNow.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture);
+        await File.WriteAllTextAsync(
+            Path.Combine(artifactsDir, $"{stamp}-start-failed.txt"),
+            $"reason=start-failed\nslug={slug}\nrun={runId}\nutc={DateTime.UtcNow:O}\n"
+            + $"error={error.Message}\n");
+        foreach (var name in etcdNames.Append($"pgw-eo-{runId}").Append($"pgw-em-{runId}"))
+            try
+            {
+                var logs = await E2eFixture.RunDockerLogsAsync(["--timestamps", name]);
+                await File.WriteAllTextAsync(
+                    Path.Combine(artifactsDir, $"container-{name}.log"), logs);
+            }
+            catch
+            {
+                // контейнера нет / логи недоступны — лучшими усилиями
+            }
     }
 
     /// <summary>Фактический динамический хост-порт публикации контейнера
@@ -1914,13 +1959,13 @@ public sealed class E2eEnvironment : IAsyncDisposable
             var walDir = Path.Combine(_root, "artifacts", "e2e", "node-wal");
             var toolsDir = Path.Combine(_root, "artifacts", "e2e", "node-tools");
             sw = E2eFixture.StaticSw();
-            E2eFixture.StaticPhase($"e2e-image {NodeImage}: dotnet publish WalReceiver self-contained {nodeRid} (host)…");
+            E2eFixture.StaticPhase($"e2e-image {NodeImage}: dotnet publish PgNode self-contained {nodeRid} (host)…");
             // NoMsBuildReuseEnv + бюджет: build-server/ноды держат stdout-пайп
             // после завершения publish (e2e-факт: 11 мин тишины) — без реюза
             // процесс умирает вместе с пайпом; зависание = fail-fast за бюджет.
             await E2eFixture.RunProcessAsync("dotnet",
             [
-                "publish", $"{_root}/src/PgWorker.WalReceiver/PgWorker.WalReceiver.csproj",
+                "publish", $"{_root}/src/PgWorker.PgNode/PgWorker.PgNode.csproj",
                 "-c", "Release", "-r", nodeRid, "--self-contained", "-o", walDir, "--nologo",
             ], ct, timeout: TimeSpan.FromMinutes(10), env: E2eFixture.NoMsBuildReuseEnv,
                 logFile: E2eFixture.StaticProcessLogPath("node-wal-publish"));
@@ -1935,12 +1980,12 @@ public sealed class E2eEnvironment : IAsyncDisposable
             await E2eFixture.RunProcessAsync("docker",
             [
                 "build", "-q", "-f", $"{_root}/docker/node/Dockerfile",
-                "--build-arg", "WAL_PUBLISH_DIR=artifacts/e2e/node-wal",
+                "--build-arg", "PGNODE_PUBLISH_DIR=artifacts/e2e/node-wal",
                 "--build-arg", "NODE_TOOLS_PUBLISH_DIR=artifacts/e2e/node-tools",
                 "--build-arg", $"DOORMAN_IMAGE={DoormanImage}", "-t", NodeImage, _root,
             ], ct, timeout: TimeSpan.FromMinutes(10),
                 logFile: E2eFixture.StaticProcessLogPath("node-e2e"));
-            E2eFixture.StaticPhase($"e2e-image {NodeImage}: ready in {sw.Elapsed.TotalSeconds:F0} s (walreceiver and pgwnodetool inside)");
+            E2eFixture.StaticPhase($"e2e-image {NodeImage}: ready in {sw.Elapsed.TotalSeconds:F0} s (pgnode and pgwnodetool inside)");
 
             _staticReady = true;
         }

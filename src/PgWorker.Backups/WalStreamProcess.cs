@@ -493,10 +493,10 @@ public sealed class WalStreamProcess(
         // на недоступном endpoint может висеть до HttpClient-таймаута без
         // отметок — watchdog (порт сноса 30 c) гасил reconcile посреди
         // wal-контроля (bad-S3 — штатный контур, transient повторит следующий тик).
-        var listed = await S3PulseAsync(token => s3.ListWalUnionAsync(cluster, shard, ct: token), ct);
+        var listed = await S3PulseAsync(token => s3.ListWalUnionDetailedAsync(cluster, shard, ct: token), ct);
         if (!listed.IsSuccess)
             throw new ApplicationException($"list S3 {cluster}/{shard}/wal: {listed.Error!.Message}");
-        var objects = listed.Value;
+        var objects = listed.Value.Objects;
 
         // chain_start (arch/19 §3): wal_start новейшего (по started_unix)
         // COMPLETED-полного с verify.state=OK — ОДНА точка с cutoff-ретенции
@@ -530,6 +530,59 @@ public sealed class WalStreamProcess(
 
         if (!chain.IsContinuous)
         {
+            // Дыра при НЕПОЛНОМ union-наблюдении (arch/19 §3/§5): среди read-целей
+            // пула есть не ответившие — сегмент «дыры» может лежать на
+            // недоступной ноде (она была write-целью доставки), разрыв НЕ
+            // доказан. Transient-DEGRADED с маркером (алерт
+            // backup-pool-unreachable): приёмники продолжают стрим (DEGRADED —
+            // не стоп-гейт), контроль — каждый тик (IsExhaustionDegraded);
+            // возврат нод даёт полный обход — цепочка цела → снятие деградации
+            // общим порядком, дыра подтвердилась → WAL_CHAIN_ERROR-путь ниже.
+            // Ложный разрыв здесь замирал бы приёмники гейтом ДО их первого
+            // неудачного put — live-детекция исчерпания write-списка глушилась.
+            if (listed.Value.FailedTargets.Count > 0)
+            {
+                var observedHoleTail = chain.LastSegment is { } holeSeen
+                    ? objects.Where(o => o.Name == holeSeen.Name).Select(o => o.LastModified)
+                        .Cast<DateTimeOffset?>().FirstOrDefault()?.ToUnixTimeSeconds()
+                    : null;
+                var holeLastName = chain.LastSegment?.Name ?? wal?.LastUploadedSegment;
+                var holeLastUnix = observedHoleTail ?? wal?.LastUploadedUnix;
+                if (holeLastName is not null && holeLastUnix is not null)
+                {
+                    // lag-зонд — по образцу непрерывного пути (факт прохода).
+                    long? holeLag = null;
+                    var holeCurrent = await sql.CurrentWalAsync(adminDsn, ct);
+                    if (holeCurrent.IsSuccess && WalFileName.TryParse(holeLastName) is { } holeLastSegment)
+                    {
+                        var holeMasterSegment =
+                            WalFileName.FromLsn((uint)holeCurrent.Value.Tli, holeCurrent.Value.Lsn);
+                        holeLag = Math.Max(0, holeLastSegment.DistanceTo(holeMasterSegment));
+                    }
+
+                    Observe(cluster, shard, holeLag, now - holeLastUnix.Value);
+                    var holeError =
+                        $"{S3PoolMarkers.Exhausted}: {chain.GapError} — pool nodes unavailable: " +
+                        $"{string.Join(", ", listed.Value.FailedTargets)}; chain observation incomplete " +
+                        "(the missing segment may reside on a down node; break deferred)";
+                    if (wal?.State != WalStreamStatus.Degraded || wal?.Error != holeError)
+                        logger?.LogInformation(
+                            "backup-wal {Cluster}/{Shard}: control {From}→{To}; error={Error}",
+                            cluster, shard, wal?.State.ToString() ?? "<none>", WalStreamStatus.Degraded, holeError);
+                    var degraded = new WalStreamState(
+                        WalStreamStatus.Degraded, slot, masterRef, start.Name,
+                        holeLastName, holeLastName, holeLastUnix, holeLag, holeError,
+                        Agents: agentStates, Gap: null);
+                    await status.WriteIfChangedAsync(cluster, shard, degraded, ct);
+                    return new ControlOutcome(degraded);
+                }
+
+                // Наблюдения нет и прошлого нет — ключ не пишем (п.8), как в
+                // непрерывном пути без фактов.
+                Observe(cluster, shard, null, null);
+                return new ControlOutcome(wal);
+            }
+
             // Дыра: WAL_CHAIN_ERROR даже без прошлого ключа (AC4-тотальность) —
             // BreakAsync строит запись с границей разрыва (приёмники замирают
             // по WAL_CHAIN_ERROR-гейту сами).

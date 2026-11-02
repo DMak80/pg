@@ -93,12 +93,17 @@ public sealed class HostInstance : IAsyncDisposable
         // await using и удаляет раньше CollectDiagnostics teardown'а факта —
         // после rm логи контейнера недоступны (прогон 2026-10-16:
         // container-pgw-ew-*.log отсутствовал в артефактах при живых прочих).
+        // Имя файла — с UTC-штампом снятия: факты класса переиспользуют имя
+        // воркера (pgw-ew-s1-…), без штампа каждый факт ПЕРЕЗАПИСЫВАЛ лог
+        // предыдущего — в артефактах оставался только последний воркер.
         try
         {
             var logs = await E2eFixture.RunDockerLogsAsync(
                 ["--timestamps", ContainerName], CancellationToken.None);
+            var stamp = DateTime.UtcNow.ToString(
+                "yyyyMMdd-HHmmss", System.Globalization.CultureInfo.InvariantCulture);
             await System.IO.File.WriteAllTextAsync(
-                System.IO.Path.Combine(_env.ArtifactsDir, $"container-{ContainerName}.log"),
+                System.IO.Path.Combine(_env.ArtifactsDir, $"container-{ContainerName}-{stamp}.log"),
                 logs);
         }
         catch

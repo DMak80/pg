@@ -19,7 +19,7 @@ builder.Services.AddHttpClient("etcd");
 builder.Services.AddSingleton<IEtcdGateway>(sp =>
     new EtcdGateway(sp.GetRequiredService<IHttpClientFactory>().CreateClient("etcd")));
 
-// file_sd-контур: ДВА writer (patroni-nodes + walreceiver-nodes, arch/18 §5.4)
+// file_sd-контур: ДВА writer (patroni-nodes + pgnode-nodes, arch/18 §5.4)
 // → метрики → цикл → hosted service.
 builder.Services.AddSingleton(sp => new SdGeneratorMetrics(
     sp.GetService<Meter>() ?? new Meter(SdGeneratorMetrics.MeterName), TimeProvider.System));
@@ -30,7 +30,7 @@ builder.Services.AddSingleton(sp =>
         sp.GetRequiredService<IEtcdGateway>(),
         options.Etcd.Endpoints,
         new SdFileWriter(options.OutputPath),
-        new SdFileWriter(options.WalOutputPath),
+        new SdFileWriter(options.PgNodeOutputPath),
         sp.GetRequiredService<SdGeneratorMetrics>(),
         sp.GetRequiredService<ILogger<SdGeneratorLoop>>());
 });

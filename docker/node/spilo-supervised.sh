@@ -8,6 +8,22 @@
 # Обёртка гасит runit-дерево сама: TERM → штатный sv-stop (patroni — он
 # останавливает свой постгрес; бюджет до окна supervisord'а), затем точечный
 # добор runsv/runsvdir — лок освобождён, `start spilo` поднимает Patroni чисто.
+# Доставка секретов (arch/14 §4): секретные env ПРОЦЕССА — из tmpfs-файлов
+# агента PgNode; файлов нет (доставка не выполнена) — немедленный отказ
+# старта: supervisord старт-отказы не лупит, воркер повторит доставкой.
+for f in /run/pgw/spilo-env /run/pgw/spilo-configuration.yml /run/pgw/rest-cert.pem /run/pgw/rest-key.pem; do
+    if [ ! -s "$f" ]; then
+        echo "spilo: $f is missing - waiting for secret delivery from the worker (pgnode bootstrap)" >&2
+        exit 1
+    fi
+done
+set -a
+. /run/pgw/spilo-env
+set +a
+export SPILO_CONFIGURATION="$(cat /run/pgw/spilo-configuration.yml)"
+export SSL_RESTAPI_CERTIFICATE="$(cat /run/pgw/rest-cert.pem)"
+export SSL_RESTAPI_PRIVATE_KEY="$(cat /run/pgw/rest-key.pem)"
+
 /launch.sh &
 MAIN=$!
 on_term() {

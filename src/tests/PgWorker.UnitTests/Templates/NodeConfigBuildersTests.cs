@@ -1,3 +1,4 @@
+using System.Text.Json;
 using PgWorker.Core.Model;
 using PgWorker.Core.Templates;
 using PgWorker.Core.Tuning;
@@ -5,9 +6,11 @@ using PgWorker.Core.Tuning;
 namespace PgWorker.UnitTests.Templates;
 
 // NodeConfigBuilders: детерминированные конфиги контейнера pgworker-node
-// (Spilo env, pg_doorman, haproxy) из arch/configs + параметров spec (P2/P3/P11/P13/P14/P15/P17, Д4);
-// PGTune (spec.md §4.4): merge(PGTune ∪ канон) в SPILO_CONFIGURATION, exclude,
-// doorman-бюджет от рассчитанного max_connections.
+// (Spilo env без секретов, шаблон pg_doorman с плейсхолдером, bootstrap-JSON)
+// из arch/configs + параметров spec (P2/P3/P11/P13/P14/P15/P17, Д4); PGTune:
+// merge(PGTune ∪ канон) в SPILO_CONFIGURATION, exclude, doorman-бюджет от
+// рассчитанного max_connections. t05: env — только неконфиденциальное
+// (spec §3.1); секреты — bootstrap-ключ (NodeBootstrapBuilder).
 
 public class NodeConfigBuildersTests
 {
@@ -21,17 +24,15 @@ public class NodeConfigBuildersTests
 
     private static readonly EtcdEndpoints Etcd = new(["http://e1:2379", "http://e2:2379"]);
 
-    private static readonly InstallSecrets Secrets = new(
-        "su-secret", "standby-secret", "admin-secret", "mover-secret");
-
     // PGTune-вывод по умолчанию exclude (опции PgWorker:Pgtune по умолчанию).
     private static readonly HashSet<string> DefaultExclude =
         new(["io_method", "io_workers"], StringComparer.Ordinal);
 
-    // Фабрика тестового REST-TLS-материала ноды : PEM-заглушки + пара.
-    // Реальная генерация серта — RestCertificateCache (драйвер, задача 17).
-    // Пароль генерируется в рантайме: секрет не зашивается в исходник; поле
-    // переиспользуется всеми обращениями.
+    // Публичный CA REST-слоя (env SSL_RESTAPI_CA) — PEM-заглушка теста.
+    private const string CaPem = "-----BEGIN CERTIFICATE-----\nMIIBtest-ca\n-----END CERTIFICATE-----\n";
+
+    // Пароль генерируется в рантайме: секрет не зашивается в исходник;
+    // переиспользуется всеми обращениями (bootstrap-рендер).
     private static readonly string RestPassword = GenerateTestPassword();
 
     private static string GenerateTestPassword()
@@ -42,12 +43,22 @@ public class NodeConfigBuildersTests
         return new string(bytes.Select(b => alphabet[b % alphabet.Length]).ToArray());
     }
 
-    public static NodeRestTls TestRestTls(string? password = null)
-        => new(
+    // SPILO_CONFIGURATION из bootstrap-JSON (env его больше не несёт).
+    private static string BootstrapJson(
+        PgTuneResult? tuning = null, IReadOnlySet<string>? excludeParams = null,
+        bool syncStrict = false) =>
+        NodeBootstrapBuilder.Build(Topology, Etcd, syncStrict, "shard1a",
             "-----BEGIN CERTIFICATE-----\nMIIBtest-node\n-----END CERTIFICATE-----\n",
             "-----BEGIN PRIVATE KEY-----\nMIIBtest-key\n-----END PRIVATE KEY-----\n",
-            "-----BEGIN CERTIFICATE-----\nMIIBtest-ca\n-----END CERTIFICATE-----\n",
-            password ?? RestPassword);
+            RestPassword, tuning, excludeParams);
+
+    private static string SpiloFromBootstrap(
+        PgTuneResult? tuning = null, IReadOnlySet<string>? excludeParams = null,
+        bool syncStrict = false)
+    {
+        using var doc = JsonDocument.Parse(BootstrapJson(tuning, excludeParams, syncStrict));
+        return doc.RootElement.GetProperty("spilo_configuration").GetString()!;
+    }
 
     [Fact]
     public void SpiloEnv_CarriesReceiverIdentityEnv()
@@ -55,7 +66,7 @@ public class NodeConfigBuildersTests
         // Arrange: топология шарда из 2 нод и адреса etcd.
 
         // Act: генерируем env контейнера ноды.
-        var env = SpiloEnvBuilder.Build(Topology, Etcd, Secrets, syncStrict: false, "shard1a", TestRestTls());
+        var env = SpiloEnvBuilder.Build(Topology, Etcd, syncStrict: false, "shard1a", CaPem);
 
         // Assert: идентичность приёмника WAL (arch/19 §3/§14 §2.1) — СТРОГО
         // всегда, независимо от Backups:Enabled (гейтится etcd-стоп-ключами):
@@ -70,13 +81,12 @@ public class NodeConfigBuildersTests
     {
         // Arrange: топология шарда из 2 нод и адреса etcd.
 
-        // Act: генерируем env контейнера ноды.
-        var env = SpiloEnvBuilder.Build(Topology, Etcd, Secrets, syncStrict: false, "shard1a", TestRestTls());
+        // Act: SPILO_CONFIGURATION из bootstrap-ключа (env его не несёт).
+        var spilo = SpiloFromBootstrap();
 
         // Assert: SPILO_CONFIGURATION несёт канон таймингов (: полы Patroni
         // 4.x — ttl=20/loop_wait=1/retry_timeout=3), P3 (wal_level),
         // P15 (max_connections) и callback мастер-ключа.
-        var spilo = env["SPILO_CONFIGURATION"];
         spilo.Should().Contain("ttl: 20");
         spilo.Should().Contain("loop_wait: 1");
         spilo.Should().Contain("retry_timeout: 3");
@@ -87,47 +97,12 @@ public class NodeConfigBuildersTests
     }
 
     [Fact]
-    public void SpiloEnv_RestTlsPemCarriedByteInByte()
-    {
-        // Arrange: REST-TLS-материал ноды (PEM с реальными переносами строк).
-        var rest = TestRestTls();
-
-        // Act: сборка env.
-        var env = SpiloEnvBuilder.Build(Topology, Etcd, Secrets, syncStrict: false, "shard1a", rest);
-
-        // Assert: значения SSL_RESTAPI_* равны входным PEM байт-в-байт
-        // (Spilo пишет значение в файл буквально — факт §2 п.2 спеки).
-        env["SSL_RESTAPI_CERTIFICATE"].Should().Be(rest.CertPem);
-        env["SSL_RESTAPI_PRIVATE_KEY"].Should().Be(rest.KeyPem);
-        env["SSL_RESTAPI_CA"].Should().Be(rest.CaPem);
-        env["SSL_RESTAPI_CERTIFICATE"].Should().Contain("-----BEGIN CERTIFICATE-----");
-        env["SSL_RESTAPI_PRIVATE_KEY"].Should().Contain("\n", "PEM with real line breaks");
-    }
-
-    [Fact]
-    public void SpiloEnv_RestPasswordHashIsSha256Hex()
-    {
-        // Arrange: пара rest (эффективная) — пароль фикстуры (рантайм-генерация).
-        var rest = TestRestTls();
-
-        // Act: сборка env.
-        var env = SpiloEnvBuilder.Build(Topology, Etcd, Secrets, syncStrict: false, "shard1a", rest);
-
-        // Assert: PGW_REST_PASSWORD_HASH = короткий sha256-hex пары (hex-lower) —
-        // факт «контейнер несёт эту пару» для инспекции rolling-ротации.
-        env["PGW_REST_PASSWORD_HASH"].Should().Be(RestRotation.PasswordHash(rest.RestPassword));
-        env["PGW_REST_PASSWORD_HASH"].Should().MatchRegex("^[0-9a-f]{64}$");
-    }
-
-    [Fact]
     public void SpiloEnv_SpiloConfigurationContainsRestapiSection()
     {
-        // Arrange: материал + имя ноды shard1a (cluster=shop, shard=shard1).
-        var rest = TestRestTls();
+        // Arrange: bootstrap-ключ ноды shard1a (cluster=shop, shard=shard1).
 
-        // Act: сборка env.
-        var spilo = SpiloEnvBuilder.Build(
-            Topology, Etcd, Secrets, syncStrict: false, "shard1a", rest)["SPILO_CONFIGURATION"];
+        // Act: SPILO_CONFIGURATION из bootstrap-JSON.
+        var spilo = SpiloFromBootstrap();
 
         // Assert: секция restapi верхнего уровня — connect_address DNS-именем
         // ноды (SAN серта; перекрывает шаблонный IP), authentication — пара
@@ -137,7 +112,7 @@ public class NodeConfigBuildersTests
         spilo.Should().Contain("connect_address: \"pgw-shop-shard1-shard1a:8008\"");
         spilo.Should().Contain("authentication:");
         spilo.Should().Contain("username: patroni");
-        spilo.Should().Contain($"password: \"{rest.RestPassword}\"");
+        spilo.Should().Contain($"password: \"{RestPassword}\"");
         spilo.Should().NotContain("listen");
         // bootstrap-секция не изменена (restapi — дополнение, не замена)
         spilo.Should().Contain("bootstrap:");
@@ -161,31 +136,54 @@ public class NodeConfigBuildersTests
         // Arrange: scope = "<C>-<X>" и список etcd-эндпоинтов.
 
         // Act: генерируем env контейнера ноды.
-        var env = SpiloEnvBuilder.Build(Topology, Etcd, Secrets, syncStrict: false, "shard1a", TestRestTls());
+        var env = SpiloEnvBuilder.Build(Topology, Etcd, syncStrict: false, "shard1a", CaPem);
 
         // Assert: идентификация Patroni-кластера и адреса DCS на месте.
         env["SCOPE"].Should().Be("shop-shard1");
         env["ETCD3_HOSTS"].Should().Be("e1:2379,e2:2379"); // Patroni: host:port без scheme (etcd v3)
         env["PGW_ETCD"].Should().Be("http://e1:2379,http://e2:2379");
         env["PGW_MASTER_KEY"].Should().Be("/clusters/shop/shards/shard1/master");
+        env["SSL_RESTAPI_CA"].Should().Be(CaPem);
+    }
+
+    // AAA (t05, spec §3.1): env ноды — только неконфиденциальное; секретные
+    // ключи в docker-env не попадают вовсе (доставка — агенту PgNode).
+    [Fact]
+    public void SpiloEnv_SecretsNeverLeak()
+    {
+        // Arrange: топология/etcd фикстуры файла.
+        string[] forbiddenKeys =
+        [
+            "PGUSER_SUPERUSER", "PGPASSWORD_SUPERUSER", "PGUSER_STANDBY",
+            "PGPASSWORD_STANDBY", "PGW_BUCKET_ADMIN_USER", "PGW_BUCKET_ADMIN_PASSWORD",
+            "PGW_BUCKET_MOVER_PASSWORD", "SSL_RESTAPI_CERTIFICATE",
+            "SSL_RESTAPI_PRIVATE_KEY", "PGW_REST_PASSWORD_HASH",
+            "SPILO_CONFIGURATION", "DOORMAN_CONFIG",
+        ];
+
+        // Act: сборка env по новому контракту.
+        var env = SpiloEnvBuilder.Build(Topology, Etcd, syncStrict: false, "shard1a", CaPem);
+
+        // Assert: ни одного запрещённого ключа; публичный CA на месте.
+        env.Keys.Should().NotContain(forbiddenKeys, "node env carries no secrets (spec §3.1)");
+        env.Keys.Should().Contain("SSL_RESTAPI_CA");
     }
 
     [Fact]
-    public void Doorman_ConfigCarriesSuPassword_OtherSecretsNeverLeak()
+    public void Doorman_TemplateCarriesPlaceholder_NoRealPassword()
     {
-        // Arrange: секреты установки (Д7).
+        // Arrange: шаблон конфига пулера (неконфиденциальный).
 
-        // Act: генерируем оба конфига.
-        var env = SpiloEnvBuilder.Build(Topology, Etcd, Secrets, syncStrict: false, "shard1a", TestRestTls());
-        var doorman = DoormanConfigBuilder.Build("shop", 55, "su-secret");
+        // Act: генерируем шаблон без пароля в сигнатуре.
+        var doorman = DoormanConfigBuilder.Build("shop", 55);
 
-        // Assert: секреты прокинуты в env контейнера (Spilo/bootstrap);
-        // su-secret ЛЕГИТИМНО входит в doorman — auth_query.password пула
-        // (допуск клиентов; экспозиция не расширяется: секрет уже в env
-        // того же контейнера); прочие секреты в конфиг пулера не попадают.
-        env.Values.Should().Contain(new[] { "su-secret", "standby-secret", "admin-secret", "mover-secret" });
-        doorman.Should().Contain("password: \"su-secret\"");
-        doorman.Should().NotContainAny("standby-secret", "admin-secret", "mover-secret");
+        // Assert: литеральный плейсхолдер ${PGW_SU_PASSWORD} на месте
+        // auth_query-пароля; никаких реальных секретов в шаблоне нет;
+        // TLS-файлы — tmpfs-пути рендера агента (spec §3.5).
+        doorman.Should().Contain("password: \"${PGW_SU_PASSWORD}\"");
+        doorman.Should().NotContain("\"su\"");
+        doorman.Should().Contain("tls_certificate: \"/run/pgw/doorman/tls.crt\"");
+        doorman.Should().Contain("tls_private_key: \"/run/pgw/doorman/tls.key\"");
     }
 
     [Fact]
@@ -197,16 +195,15 @@ public class NodeConfigBuildersTests
             {
                 ["shard1a"] = new("h1", new NodePorts(15432, 18008, 16432)),
             });
-        var secrets = new InstallSecrets("su", "sb", "adm", "mov");
 
         // Act
-        var env = SpiloEnvBuilder.Build(topology, new EtcdEndpoints(["http://etcd:2379"]), secrets, syncStrict: false, "shard1a", TestRestTls());
+        var env = SpiloEnvBuilder.Build(topology, new EtcdEndpoints(["http://etcd:2379"]), syncStrict: false, "shard1a", CaPem);
 
         // Assert — app-пароль в env контейнера не попадает (spec §2.4, критерий 6);
-        // bucket_admin-механизм env не тронут
+        // t05: bucket-пароли из env удалены (доставка не нужна — потребителя нет).
         env.Keys.Should().NotContain("PGW_APP_PASSWORD");
-        env.Keys.Should().Contain("PGW_BUCKET_ADMIN_PASSWORD");
-        env.Keys.Should().Contain("PGW_BUCKET_ADMIN_USER");
+        env.Keys.Should().NotContain("PGW_BUCKET_ADMIN_PASSWORD");
+        env.Keys.Should().NotContain("PGW_BUCKET_ADMIN_USER");
     }
 
     [Fact]
@@ -214,8 +211,8 @@ public class NodeConfigBuildersTests
     {
         // Arrange: dbname = имя кластера, бюджет 55 серверных соединений.
 
-        // Act: генерируем конфиг пулера.
-        var config = DoormanConfigBuilder.Build("shop", 55, "su-secret");
+        // Act: генерируем шаблон пулера.
+        var config = DoormanConfigBuilder.Build("shop", 55);
 
         // Assert: единственный пул shop → 127.0.0.1:5432, transaction-режим,
         // бюджет 55 серверных соединений (P13/P14/P15); YAML фактического
@@ -237,11 +234,11 @@ public class NodeConfigBuildersTests
         // Arrange: tuning от входа oltp/8GiB/4cpu/60/ssd/mid_ram + dw-вариант
         // для проверки перезаписи каноном.
 
-        // Act: сборка env с merge(PGTune ∪ канон) — exclude по умолчанию.
+        // Act: сборка bootstrap-ключа с merge(PGTune ∪ канон) — exclude по умолчанию.
         var tuning = PgTune.Calculate(new PgTuneInput(
             18, PgTuneOsType.Linux, PgTuneDbType.Oltp, 8388608, PgTuneMemoryUnit.KB,
             4, 60, PgTuneHdType.Ssd, PgTuneDbSize.MidRam));
-        var spilo = SpiloEnvBuilder.Build(Topology, Etcd, Secrets, syncStrict: false, "shard1a", TestRestTls(), tuning, DefaultExclude)["SPILO_CONFIGURATION"];
+        var spilo = SpiloFromBootstrap(tuning, DefaultExclude);
 
         // Assert: PGTune-параметры в YAML (в кавычках, стиль текущего блока).
         spilo.Should().Contain("max_connections: \"60\"");
@@ -286,7 +283,7 @@ public class NodeConfigBuildersTests
         var dwTuning = PgTune.Calculate(new PgTuneInput(
             18, PgTuneOsType.Linux, PgTuneDbType.Dw, 8388608, PgTuneMemoryUnit.KB,
             4, 60, PgTuneHdType.Ssd, PgTuneDbSize.MidRam));
-        var dwSpilo = SpiloEnvBuilder.Build(Topology, Etcd, Secrets, syncStrict: false, "shard1a", TestRestTls(), dwTuning, DefaultExclude)["SPILO_CONFIGURATION"];
+        var dwSpilo = SpiloFromBootstrap(dwTuning, DefaultExclude);
 
         // Assert: wal_level: logical сохранён при dw.
         dwSpilo.Should().Contain("wal_level: logical");
@@ -298,13 +295,13 @@ public class NodeConfigBuildersTests
         // Arrange: не-io_uring-вход (Windows → io_method=worker, io_workers=18),
         // чтобы оба параметра были бы выведены без exclude.
 
-        // Act: сборка env c exclude {io_method, io_workers}.
+        // Act: сборка bootstrap-ключа c exclude {io_method, io_workers}.
         var tuning = PgTune.Calculate(new PgTuneInput(
             18, PgTuneOsType.Windows, PgTuneDbType.Oltp, 8388608, PgTuneMemoryUnit.KB,
             72, 60, PgTuneHdType.Ssd, PgTuneDbSize.MidRam));
         tuning["io_method"].Should().Be("worker");
         tuning["io_workers"].Should().Be("18");
-        var spilo = SpiloEnvBuilder.Build(Topology, Etcd, Secrets, syncStrict: false, "shard1a", TestRestTls(), tuning, DefaultExclude)["SPILO_CONFIGURATION"];
+        var spilo = SpiloFromBootstrap(tuning, DefaultExclude);
 
         // Assert: исключённые параметры в YAML отсутствуют вовсе (никаких
         // пустых значений), остальные PGTune-параметры на месте.
@@ -335,8 +332,8 @@ public class NodeConfigBuildersTests
         at40.Should().Be(35);
         atFloor.Should().Be(10);
 
-        // Assert: конфиг пулера несёт вычисленный бюджет.
-        DoormanConfigBuilder.Build("shop", 35, "su-secret").Should().Contain("max_db_connections: 35");
+        // Assert: шаблон пулера несёт вычисленный бюджет.
+        DoormanConfigBuilder.Build("shop", 35).Should().Contain("max_db_connections: 35");
     }
 
     [Fact]
@@ -345,7 +342,7 @@ public class NodeConfigBuildersTests
         // Arrange/Act: tuning == null — прежний путь (изолированные пути/тесты).
 
         // Assert: хардкод-набор не изменён (константы канона остаются в нём).
-        var spilo = SpiloEnvBuilder.Build(Topology, Etcd, Secrets, syncStrict: false, "shard1a", TestRestTls())["SPILO_CONFIGURATION"];
+        var spilo = SpiloFromBootstrap();
         spilo.Should().Contain("max_connections: \"60\"");
         spilo.Should().Contain("shared_buffers: \"2GB\"");
         spilo.Should().Contain("random_page_cost: \"1.1\"");
@@ -359,11 +356,42 @@ public class NodeConfigBuildersTests
     [InlineData(false, "synchronous_mode_strict: false")]
     public void Build_SyncStrict_GoesToBootstrapDcs(bool syncStrict, string expected)
     {
-        // Arrange — топология/секреты фикстуры файла.
+        // Arrange — топология/etcd фикстуры файла.
         // Act
-        var spilo = SpiloEnvBuilder.Build(Topology, Etcd, Secrets, syncStrict, "shard1a", TestRestTls())["SPILO_CONFIGURATION"];
+        var spilo = SpiloFromBootstrap(syncStrict: syncStrict);
 
         // Assert
         spilo.Should().Contain(expected).And.Contain("synchronous_mode: true");
+    }
+
+    // AAA (t05, spec §3.3/§3.7.1): bootstrap-JSON несёт SPILO_CONFIGURATION
+    // (с rest_password), серт и ключ; per-install пароли PG в него НЕ входят
+    // (Д7 — прямая mTLS-передача); сериализация симметрична (spec §3.7.2).
+    [Fact]
+    public void Bootstrap_ContainsSpiloConfigurationCertAndKey()
+    {
+        // Arrange: тестовые PEM-пары и per-install пароли PG (в ключ НЕ входят).
+        const string certPem = "CERTPEM";
+        const string keyPem = "KEYPEM";
+        const string suPassword = "su-test-password";
+        const string standbyPassword = "standby-test-password";
+
+        // Act: построение JSON bootstrap-ключа.
+        var json = NodeBootstrapBuilder.Build(Topology, Etcd, syncStrict: false,
+            "shard1a", certPem, keyPem, RestPassword, null, null);
+
+        // Assert: JSON парсится; корень несёт spilo_configuration (с restapi
+        // и rest_password), cert_pem/key_pem байт-в-байт; пароли PG в JSON нет;
+        // повторный вызов — идентичная строка (симметрия).
+        using var doc = JsonDocument.Parse(json);
+        var root = doc.RootElement;
+        root.GetProperty("spilo_configuration").GetString().Should()
+            .Contain("restapi:").And.Contain($"password: \"{RestPassword}\"");
+        root.GetProperty("cert_pem").GetString().Should().Be(certPem);
+        root.GetProperty("key_pem").GetString().Should().Be(keyPem);
+        json.Should().NotContain(suPassword).And.NotContain(standbyPassword);
+        var again = NodeBootstrapBuilder.Build(Topology, Etcd, syncStrict: false,
+            "shard1a", certPem, keyPem, RestPassword, null, null);
+        again.Should().Be(json, "serialization is symmetric — same input, byte-identical output");
     }
 }

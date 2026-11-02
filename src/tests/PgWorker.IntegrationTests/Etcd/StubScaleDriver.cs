@@ -74,16 +74,12 @@ public sealed class StubScaleDriver : IClusterDriver
     public Task<Result<IReadOnlySet<(string Host, int Port)>>> GetBusyPortsAsync(CancellationToken ct)
         => Task.FromResult(Result<IReadOnlySet<(string, int)>>.Success(BusyPorts));
 
-    // restPassword каждого EnsureNode-вызова (окно ротации не расширяется).
-    public readonly Dictionary<string, string> EnsuredRestPasswords = new();
-
     public Task<Result> EnsureNodeAsync(ShardTopology topology, string nodeName, NodeAddress addr,
-        InstallSecrets secrets, EtcdEndpoints etcd, NodeResources? resources, PgTuneResult? tuning,
-        bool syncStrict, string restPassword, CancellationToken ct)
+        EtcdEndpoints etcd, NodeResources? resources, PgTuneResult? tuning,
+        bool syncStrict, CancellationToken ct)
     {
         EnsuredNodes.Add($"{topology.Shard}/{nodeName}");
         NodeObjects.Add($"pgw-{topology.Cluster}-{topology.Shard}-{nodeName}");
-        EnsuredRestPasswords[$"{topology.Shard}/{nodeName}"] = restPassword;
         return Task.FromResult(Result.Success());
     }
 
@@ -107,11 +103,6 @@ public sealed class StubScaleDriver : IClusterDriver
             (IReadOnlyDictionary<string, DiscoveredNode>)InspectResult
                 .Where(p => nodeNames.Contains(p.Key))
                 .ToDictionary(p => p.Key, p => p.Value)));
-
-        public Task<Result<IReadOnlyDictionary<string, string>>> InspectNodeEnvAsync(
-        string cluster, string shard, string nodeName, CancellationToken ct)
-        => Task.FromResult(Result<IReadOnlyDictionary<string, string>>.Success(
-            (IReadOnlyDictionary<string, string>)new Dictionary<string, string>()));
 
 public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, CancellationToken ct)
         => Task.FromResult(Result<IReadOnlyList<string>>.Success(

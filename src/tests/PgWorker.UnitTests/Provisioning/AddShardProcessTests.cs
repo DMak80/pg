@@ -113,7 +113,7 @@ public class AddShardProcessTests
     private static HttpResponseMessage DeadPatroni() => new(HttpStatusCode.InternalServerError);
 
     private sealed record Rig(Fakes.FakeEtcd Etcd, Fakes.FakeDriver Driver, Fakes.FakeSql Sql,
-        ClaimStore Claims, WorkJournal Journal, AddShardProcess Process);
+        ClaimStore Claims, WorkJournal Journal, AddShardProcess Process, RecordingDelivery Delivery);
 
     private static async Task<Rig> NewRig(
         Func<int, HttpResponseMessage> patroniResponse,
@@ -130,6 +130,7 @@ public class AddShardProcessTests
         if (busyPorts is not null)
             driver.BusyPorts = busyPorts;
         var sql = new Fakes.FakeSql();
+        var delivery = new RecordingDelivery();
         var process = new AddShardProcess(
             etcd, [Ep], driver, sql, Probe(patroniResponse), claims, journal,
             opts ?? new PlacementOptions(15000, 15100, PatroniBootSec: 600),
@@ -137,8 +138,9 @@ public class AddShardProcessTests
             new AppParamsEnsurer(etcd, [Ep], "sslmode=require"), EtcdEndp,
             new PortAllocIndex(etcd, [Ep], NullLogger<PortAllocIndex>.Instance),
             new PortAllocLock("/pgworker", [Ep], etcd, TimeProvider.System, claims.InstanceId),
-            Fakes.PgtuneFactory(), snapshot: null);
-        return new Rig(etcd, driver, sql, claims, journal, process);
+            Fakes.PgtuneFactory(),
+            delivery, snapshot: null);
+        return new Rig(etcd, driver, sql, claims, journal, process, delivery);
     }
 
     // Порты живых нод (docker видит публикации контейнеров) — новые ноды уходят выше:
@@ -167,7 +169,8 @@ public class AddShardProcessTests
             new AppParamsEnsurer(etcd, [Ep], "sslmode=require"), EtcdEndp,
             new PortAllocIndex(etcd, [Ep], NullLogger<PortAllocIndex>.Instance),
             new PortAllocLock("/pgworker", [Ep], etcd, TimeProvider.System, claims.InstanceId),
-            Fakes.PgtuneFactory(), snapshot: null);
+            Fakes.PgtuneFactory(),
+            NoDelivery.Instance, snapshot: null);
 
         // Act
         var outcome = await process.TickAsync(await Snapshot(etcd), "shard3", CancellationToken.None);
@@ -293,6 +296,45 @@ public class AddShardProcessTests
         rig.Etcd.Store.Keys.Should().NotContain(k => k.Contains("/buckets/status/"));
     }
 
+    // AAA (advertised-режим, канон формата master-ключа <host>:<doormanPort>,
+    // arch/14 §5): хост-часть ключа у всех нод одного хоста ОДНА (E2E:
+    // host.docker.internal) — дискриминирует только doorman-порт. Старый
+    // host-матч выбирал произвольную ноду (на практике реплику) — SQL-фаза
+    // падала 25006 «cannot execute CREATE DATABASE in a read-only
+    // transaction» и add-shard застревал.
+    [Fact]
+    public async Task Tick_MasterKeyHostOnly_SqlGoesToTheDoormanNode()
+    {
+        // Arrange — обе ноды нового шарда на ОДНОМ хосте (advertised), порты
+        // различны: shard3a 15006-15008, shard3b 15009-15011 (pre-seeded
+        // portalloc — план переиспользуется); Patroni REST жив у обеих нод,
+        // лидер — shard3b; master-ключ несёт host (h1) и doorman-порт shard3b
+        var rig = await NewRig(port => port is 15007 or 15010 ? Patroni("shard3b") : DeadPatroni());
+        var pinned = new Dictionary<string, NodeAddress>
+        {
+            ["shard1/shard1a"] = new("h1", new NodePorts(15000, 15001, 15002)),
+            ["shard1/shard1b"] = new("h2", new NodePorts(15000, 15001, 15002)),
+            ["shard2/shard2a"] = new("h1", new NodePorts(15003, 15004, 15005)),
+            ["shard2/shard2b"] = new("h2", new NodePorts(15003, 15004, 15005)),
+            ["shard3/shard3a"] = new("h1", new NodePorts(15006, 15007, 15008)),
+            ["shard3/shard3b"] = new("h1", new NodePorts(15009, 15010, 15011)),
+        };
+        rig.Etcd.Seed("/pgworker/portalloc/shop", Portalloc.Serialize(pinned));
+        rig.Etcd.Seed("/service/shop-shard3/initialize", "7403705125687833998");
+        rig.Etcd.Seed("/service/shop-shard3/leader", """{"name":"shard3b","poll_queued_commands":0}""");
+        rig.Etcd.Seed("/clusters/shop/shards/shard3/master", "h1:15011");
+
+        // Act
+        var outcome = await rig.Process.TickAsync(await Snapshot(rig.Etcd), "shard3", CancellationToken.None);
+
+        // Assert — БД/роли на shard3b (pg-порт 15009), не на реплике shard3a
+        outcome.IsSuccess.Should().BeTrue();
+        outcome.Value.Should().Be(ProcessOutcome.Done);
+        rig.Sql.EnsuredDatabases.Should().Contain(
+            ("Host=h1;Port=15009;Database=postgres;Username=postgres;Password=su-pw;SSL Mode=Require;Trust Server Certificate=true", "shop"),
+            "the doorman port in the master key discriminates the node — the host part is informative");
+    }
+
     [Fact]
     public async Task Tick_AddShard_UsesClusterAppSecret_NoRegenerate()
     {
@@ -353,7 +395,8 @@ public class AddShardProcessTests
             new AppParamsEnsurer(rig.Etcd, [Ep], "sslmode=require"), EtcdEndp,
             new PortAllocIndex(rig.Etcd, [Ep], NullLogger<PortAllocIndex>.Instance),
             new PortAllocLock("/pgworker", [Ep], rig.Etcd, TimeProvider.System, rig.Claims.InstanceId),
-            Fakes.PgtuneFactory(), snapshot: null);
+            Fakes.PgtuneFactory(),
+            NoDelivery.Instance, snapshot: null);
         var outcome = await alive.TickAsync(await Snapshot(rig.Etcd), "shard3", CancellationToken.None);
 
         // Assert — детерминизм multi-host: dsn тот же; схем/routing-мутаций нет
@@ -470,5 +513,13 @@ public class AddShardProcessTests
         var second = await rig.Process.TickAsync(await Snapshot(rig.Etcd), "shard3", CancellationToken.None);
         second.Value.Should().Be(ProcessOutcome.InProgress);
         rig.Etcd.Store["/pgworker/portalloc/shop"].Value.Should().Contain("shard3/");
+    }
+
+
+    private static void SeedShard3Nodes(Fakes.FakeEtcd etcd)
+    {
+        etcd.Seed("/clusters/shop/shards/shard3/replicas", "2");
+        etcd.Seed("/clusters/shop/shards/shard3/nodes/shard3a/state", "RUNNING");
+        etcd.Seed("/clusters/shop/shards/shard3/nodes/shard3b/state", "RUNNING");
     }
 }

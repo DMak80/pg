@@ -30,7 +30,7 @@ public class SdGeneratorIntegrationTests
         var dir = Path.Combine(Path.GetTempPath(), "sd-it-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(dir);
         var path = Path.Combine(dir, "sd.json");
-        var walPath = Path.Combine(dir, "walreceiver-nodes.json");
+        var walPath = Path.Combine(dir, "pgnode-nodes.json");
         var meter = new Meter("sd-it");
         var metrics = new SdGeneratorMetrics(meter, TimeProvider.System);
         var loop = new SdGeneratorLoop(
