@@ -302,34 +302,50 @@ public sealed class WalReceiverLoop : BackgroundService
                 metrics.SetRole(RoleName(currentRole));
                 await PublishStateAsync(status, metrics, state, currentRole, ct);
 
-                // Ре-доклад инвентаря.history (spec §3.1 п.6): раз за цикл
-                // подключения (каждая итерация, дошедшая до сессии) — pg_wal своей
-                // ноды → отсутствующие в S3 put'ятся; вне hot-path (отказ —
-                // diagnostic-log, доставит следующий цикл); старту сессии не мешает.
-                await WalReceiverCore.RedeliverHistoryInventoryAsync(s3,
-                    identity.Cluster, identity.Shard, _pgWalDir,
-                    msg => Console.Error.WriteLine(msg), ct,
-                    delivered: count => metrics.HistoryDelivered(count));
+                // Ре-доклады инвентаря (history spec §3.1 п.6; сегменты
+                // arch/19 §3) — ВСПОМОГАТЕЛЬНАЯ доставка раз за цикл
+                // подключения: pg_wal своей ноды → отсутствующие в S3 put'ятся.
+                // Fail-fast-бюджет 5 с: при недоступном пуле (write-нода
+                // стопнута) list-tail S3-клиента висит на транспортном
+                // таймауте десятки секунд СИНХРОННО перед входом в стрим —
+                // сессия не доходит до PUT-фазы, где ставится факт
+                // pool_exhausted (детекция исчерпания списка глушится), а
+                // цикл повторяет ре-доклад с тем же висом. Отказ/таймаут
+                // ре-доклада — diagnostic-log; доставит следующий цикл по
+                // живому пулу, стриму и детекции он не мешает.
+                using (var inventoryCts = CancellationTokenSource.CreateLinkedTokenSource(ct))
+                {
+                    inventoryCts.CancelAfter(TimeSpan.FromSeconds(5));
+                    try
+                    {
+                        await WalReceiverCore.RedeliverHistoryInventoryAsync(s3,
+                            identity.Cluster, identity.Shard, _pgWalDir,
+                            msg => Console.Error.WriteLine(msg), inventoryCts.Token,
+                            delivered: count => metrics.HistoryDelivered(count));
 
-                // Ре-доклад инвентаря СЕГМЕНТОВ (arch/19 §3): промоут/restore
-                // открывает TLI вне окна сессии — закрытые сегменты своей ноды
-                // выше хвоста S3 доезжают до архива (иначе разрыв остаётся
-                // навсегда). Текущая позиция записи — короткоживущий
-                // IDENTIFY_SYSTEM; отказ — доставка отложена до следующего цикла.
-                var identityNow = await source.IdentifySystemAsync(ct);
-                if (identityNow.IsSuccess)
-                {
-                    await WalReceiverCore.RedeliverWalInventoryAsync(s3,
-                        identity.Cluster, identity.Shard, _pgWalDir,
-                        identityNow.Value.Tli, identityNow.Value.XLogPos,
-                        msg => Console.Error.WriteLine(msg), ct,
-                        delivered: count => metrics.SegmentDelivered(count));
-                }
-                else
-                {
-                    await Console.Error.WriteLineAsync(
-                        "walreceiver: wal inventory skipped — IDENTIFY_SYSTEM failed: "
-                        + identityNow.Error!.Message.Split('\n')[0]);
+                        // Текущая позиция записи — короткоживущий
+                        // IDENTIFY_SYSTEM; отказ — доставка отложена до следующего цикла.
+                        var identityNow = await source.IdentifySystemAsync(inventoryCts.Token);
+                        if (identityNow.IsSuccess)
+                        {
+                            await WalReceiverCore.RedeliverWalInventoryAsync(s3,
+                                identity.Cluster, identity.Shard, _pgWalDir,
+                                identityNow.Value.Tli, identityNow.Value.XLogPos,
+                                msg => Console.Error.WriteLine(msg), inventoryCts.Token,
+                                delivered: count => metrics.SegmentDelivered(count));
+                        }
+                        else
+                        {
+                            await Console.Error.WriteLineAsync(
+                                "walreceiver: wal inventory skipped — IDENTIFY_SYSTEM failed: "
+                                + identityNow.Error!.Message.Split('\n')[0]);
+                        }
+                    }
+                    catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                    {
+                        await Console.Error.WriteLineAsync(
+                            "walreceiver: wal inventory skipped — pool unresponsive (5 s budget), next cycle will retry");
+                    }
                 }
 
                 var roleAtStart = currentRole;
