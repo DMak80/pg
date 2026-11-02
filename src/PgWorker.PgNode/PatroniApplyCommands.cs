@@ -101,7 +101,19 @@ public sealed class PatroniApplyCommands(
         {
             var code = await PostReloadAsync(password!, ct);
             if (code == 202)
+            {
+                // 202 — Patroni ПРИНЯЛ reload, но перечитывает конфиг (вкл.
+                // rest-пароль) асинхронно своим HA-циклом: до фактического
+                // перечитывания REST отвечает по СТАРОЙ паре (факт прогона
+                // гейта: converged опубликован сразу после 202, патрон
+                // перечитал на ~0.7-2.7 с позже — проба окна в этом зазоре
+                // ловила OLD). Применение ПОДТВЕРЖДАЕТСЯ зондом PATCH /config
+                // NEW-парой до auth-ok (400) — converged агента (и закрытие
+                // окна ротатора) наступают только по факту применения
+                // (arch/14 §5 I: applied_revision — ПРИМЕНЁННОГО ключа).
+                await WaitPasswordAppliedAsync(restPasswordNew, ct);
                 return;
+            }
             codes.Add(code);
             // Диагностика (разбор по логам, без значений секретов): зонд
             // немедленно повторяет тот же пароль МУТИРУЮЩИМ PATCH /config
@@ -119,6 +131,32 @@ public sealed class PatroniApplyCommands(
 
         throw new ApplicationException(
             $"patroni reload: no credentials applied the configuration (codes: {string.Join(", ", codes)})");
+    }
+
+    // Бюджет ожидания фактического перечитывания пароля Patroni после
+    // принятого reload: HA-цикл патрона ~1 c; загрузка лидера полной серии
+    // расширяет зазор до единиц секунд — бюджет с запасом, ниже клиентского
+    // таймаута канала (10 c). Истечение — отказ apply (повтор по коулдауну):
+    // окно ротации НЕ закрывается, пока пароль фактически не применён.
+    private static readonly TimeSpan ApplyConfirmBudget = TimeSpan.FromSeconds(8);
+
+    // Поллинг PATCH /config NEW-парой: 400 — аутентификация пройдена
+    // (применено), 401 — Patroni ещё на старой паре.
+    private async Task WaitPasswordAppliedAsync(string restPasswordNew, CancellationToken ct)
+    {
+        if (string.IsNullOrEmpty(restPasswordNew))
+            return; // данных нет — подтверждать нечем (Regenerate уже отказался бы)
+        var deadline = DateTime.UtcNow + ApplyConfirmBudget;
+        while (DateTime.UtcNow < deadline)
+        {
+            if (await PatchConfigProbeAsync(restPasswordNew, ct) == 400)
+                return;
+            await Task.Delay(TimeSpan.FromMilliseconds(250), ct);
+        }
+
+        throw new ApplicationException(
+            $"patroni reload accepted (202) but the new rest password is not active within " +
+            $"{ApplyConfirmBudget.TotalSeconds:0}s (patch probe still unauthorized) — apply retried");
     }
 
     // Диагностический зонд: PATCH /config с тем же паролем ({} — при
