@@ -660,7 +660,11 @@ public sealed class E2eWalStreamScenarios(E2eWalStreamScenariosFx Ctx) : IClassF
         // Arrange — двухнодовый шард (двойная архивация), оба приёмника стримят
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(
             TestContext.Current.CancellationToken);
-        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
+        // Потолок — бюджет ×1.2 от фактической потребности полной серии
+        // (~205 с: ~89 с подъём контура под параллельными сериями + ~55 с
+        // provisioning + ~60 с фазы; соло — ~57 с): неверное ожидание не
+        // может длиться дольше.
+        cts.CancelAfter(TimeSpan.FromSeconds(240));
         var ct = cts.Token;
         var (fx, app, cluster, adminDsn, masterNode) = await StartWalScenarioAsync("wal-t19", "shopt19", ct);
         await using var appOwner = app; // kill воркера ниже — dispose идемпотентен
