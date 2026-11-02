@@ -42,43 +42,6 @@
   `host.docker.internal`-потребителей (панель) — по умолчанию выключен,
   включается осознанно.
 
-- **`t05-node-secret-push`** — нода без секретов в env: доставка пушем
-  от воркера через загрузочного агента (дизайн пользователя, arch-first
-  внесён: arch/14 §4 «Планируемое», arch/13 §4). Контейнер ноды
-  создаётся БЕЗ секретов в env (только неконфиденциальное:
-  DOORMAN_CONFIG-шаблон, адреса etcd); supervisord поднимает ТОЛЬКО
-  walreceiver, тот поднимает mTLS-сервер (сёрт ноды — материалы
-  per-install REST-CA, кандидат); PgWorker — инициатор канала: он создал
-  контейнер, знает хост/порты, контролит поднятие (adopt/supervise) и
-  ИНИЦИИРУЕТ на walreceiver проверку и замену (триггер по mTLS-каналу:
-  порт внутри docker-сети кластера, на хост не публикуется); нода про
-  pgWorker ничего не знает и ничего не инициирует. Данные — из etcd,
-  самим walreceiver (доступ к etcd у него уже есть): воркер пишет в
-  etcd серверный серт doorman (серт+ключ; per-cluster секреты —
-  кандидат на тот же путь), walreceiver забирает сам, пишет файлами
-  0600, рендерит конфиги (Patroni-bootstrap, DOORMAN_CONFIG), стартует
-  spilo/pg_doorman; walreceiver — менеджер doorman: ведёт его конфиг и
-  серты, по триггеру проверки/замены перечитывает etcd и выполняет
-  релод/рестарт пулера. Целевая схема серта заменяет
-  entrypoint-генерацию self-signed (текущий канон — до мержа t05).
-  Доступность: restart контейнера — конфиги/серты из writable-слоя
-  (воркер не нужен; перечитывание etcd — по триггеру); recreate делает
-  только воркер — он же тут же инициирует. Развилки на spec: роль
-  агента (walreceiver vs отдельный бинарник), bootstrap PG файлами без
-  PGPASSWORD_SUPERUSER (отход от upstream Spilo), доставка per-install
-  SuPassword при модели «etcd-only» (Д7: per-install в etcd не живут —
-  исключение-ключ / env / данные по триггеру), источник серта
-  (per-install CA c SAN — кандидат) и верификация клиентами, watch
-  etcd-ключа вместо/вместе с триггером, ротация rest_password без
-  rolling-recreate, защита кэша (0600/шифрование).
-  Затронуто: docker/node (entrypoint/supervisord), PgWorker.WalReceiver
-  (агент), ClusterDriver (env без секретов + push-клиент), arch/13 §2
-  (firewall-строка канала). Не зависит от t02-external-secret-manager
-  (то — хранение per-cluster секретов, это — доставка в ноду).
-  Мерж-гейт: docker-E2E PgWorker на свежем Release + негативная
-  проверка «в docker inspect ноды нет секретов».
-
-
 - **`t06-rotate-backup-creds`** — ротация per-cluster backup-кредов
   (`/clusters/<C>/backup_password`, роль `backup_exec`): в общий тикет
   ротации (ETCD-FIRST, arch/14 §5 I — app/bucket_admin/bucket_mover/
