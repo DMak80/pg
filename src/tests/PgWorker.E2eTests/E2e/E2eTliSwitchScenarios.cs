@@ -144,6 +144,20 @@ public sealed class TliSwitchContext : IAsyncLifetime
         synced.Should().BeTrue("the replicas must catch up with the master position before the failover: "
             + await DumpDiagnosticsAsync(Cluster, "shard1"));
 
+        // Гейт доставки TLI1-хвоста (детерминизм промоут-точки, приказ
+        // владельца): replica-sync сверялся с позицией НА МОМЕНТ проверки —
+        // после него мастер дописывает хвост (shutdown-чекпоинт, фоновые
+        // записи), и реплика промоутится с replay-границы, не догнав его:
+        // точка ложится на границу сегмента — смешанного объекта нет (SKIP).
+        // Здесь — фактическое подтверждение ДО остановки мастера: (1) обе
+        // реплики replay'нули ТЕКУЩУЮ позицию мастера, (2) позиция стабильна
+        // (двойное чтение — запись замерла), (3) до границы сегмента ≥ 1 МиБ
+        // (shutdown-хвост мастера — килобайты, границу не пересечёт) — у
+        // границы позиция подталкивается вставкой в середину следующего
+        // сегмента. Промоут-точка гарантированно ВНУТРИ сегмента S —
+        // boundary-ветка остаётся страховкой и достигаться не должна.
+        await EnsureTailDeliveredAsync(ct);
+
         // Шаги 3–5 — failover + данные нового TLI.
         await FailoverAsync(ct);
         await SeedNewTimelineAsync(ct);
@@ -413,8 +427,14 @@ public sealed class TliSwitchContext : IAsyncLifetime
     private async Task FailoverAsync(CancellationToken ct)
     {
         var (_, _, master) = await MasterPgAsync(Cluster, "shard1", ct);
-        Console.WriteLine($"[PHASE] tlsw-failover: docker stop pgw-{Cluster}-shard1-{master}");
-        await Fx.RunDockerAsync(["stop", $"pgw-{Cluster}-shard1-{master}"], ct);
+        // ЖЁСТКАЯ смерть (kill, не stop): graceful-shutdown PG делает
+        // checkpoint и ЗАКРЫВАЕТ сегмент (позиция уходит на границу) —
+        // догнавшая реплика промоутится ровно с границы, смешанного объекта
+        // нет (исход SKIP серийных прогонов). Краш оставляет сегмент S
+        // ОТКРЫТЫМ на позиции гейта tail-delivered — промоут-точка строго
+        // внутри S (профиль t28 гарантирован).
+        Console.WriteLine($"[PHASE] tlsw-failover: docker kill pgw-{Cluster}-shard1-{master}");
+        await Fx.RunDockerAsync(["kill", $"pgw-{Cluster}-shard1-{master}"], ct);
         var (host, port, newMaster) = await MasterPgAsync(Cluster, "shard1", ct);
         newMaster.Should().NotBe(master, "after the master dies the primary is the surviving replica");
         Console.WriteLine($"[PHASE] tlsw-failover: new primary {newMaster}");
@@ -433,6 +453,13 @@ public sealed class TliSwitchContext : IAsyncLifetime
         var (mHost, mPort, master) = await MasterPgAsync(Cluster, "shard1", ct);
         var masterPos = ParseLsn(await ScalarAsync(
             AdminDsn(mHost, mPort), "SELECT pg_current_wal_lsn()", ct));
+        return await ReplicasReplayAtLeastAsync(master, masterPos, ct);
+    }
+
+    // Обе реплики шарда replay'нули позицию atLeast (replay_lsn из SQL
+    // реплики — фактическое подтверждение доставки, не Patroni-представление).
+    private async Task<bool> ReplicasReplayAtLeastAsync(string master, ulong atLeast, CancellationToken ct)
+    {
         var kv = await G.GetAsync(Endpoint, $"/pgworker/portalloc/{Cluster}", ct);
         var entries = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(kv.Value!.Value)!;
         foreach (var (key, addr) in entries
@@ -444,11 +471,53 @@ public sealed class TliSwitchContext : IAsyncLifetime
                 // Хостовая модель: DSN реплики — localhost:{pg из portalloc}
                 AdminDsn("localhost", addr.GetProperty("pg").GetInt32()),
                 "SELECT pg_last_wal_replay_lsn()", ct));
-            if (replay < masterPos)
+            if (replay < atLeast)
                 return false;
         }
 
         return true;
+    }
+
+    // Гейт доставки TLI1-хвоста (см. вызов в PrepareAsync): цикл с [PHASE]-
+    // телеметрией вручную (side-effect INSERT в поллинге WaitPhaseAsync
+    // недопустим — образец pre-wal цикла выше); бюджет 90 c.
+    private async Task EnsureTailDeliveredAsync(CancellationToken ct)
+    {
+        var sw = Stopwatch.StartNew();
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(90);
+        while (DateTime.UtcNow < deadline)
+        {
+            var (mHost, mPort, master) = await MasterPgAsync(Cluster, "shard1", ct);
+            var dsn = AdminDsn(mHost, mPort);
+            var pos1 = ParseLsn(await ScalarAsync(dsn, "SELECT pg_current_wal_lsn()", ct));
+            var segBytes = (ulong)PgWorker.Backups.WalFileName.SegmentBytes;
+            var segEnd = (pos1 / segBytes + 1) * segBytes;
+            if (segEnd - pos1 < 1024UL * 1024UL)
+            {
+                // Позиция у границы — подталкиваем вставкой в середину
+                // СЛЕДУЮЩЕГО сегмента (4 МиБ) и замеряем заново.
+                await ExecAsync(dsn,
+                    "INSERT INTO tli_switch_probe SELECT g, repeat('x', 1048576) FROM generate_series(1, 4) g", ct);
+                continue;
+            }
+
+            var pos2 = ParseLsn(await ScalarAsync(dsn, "SELECT pg_current_wal_lsn()", ct));
+            if (pos2 != pos1)
+                continue; // запись мастера ещё идёт — стабильность не доказана
+
+            if (await ReplicasReplayAtLeastAsync(master, pos2, ct))
+            {
+                Console.WriteLine(
+                    $"[PHASE] tail-delivered: ok=True, elapsed={sw.Elapsed.TotalSeconds:0.#}s, budget=90s, " +
+                    $"progress=master={pos2:X}/{segEnd:X} both-replicas-replayed");
+                return;
+            }
+        }
+
+        throw new ApplicationException(
+            "the TLI1 tail was not confirmed delivered (stable master position replayed by both replicas, " +
+            "≥1 MiB to the segment end) before the failover: "
+            + await DumpDiagnosticsAsync(Cluster, "shard1"));
     }
 
     // Гейт мастера (t10) + DSN чтения: COMPLETED restore не гарантирует
