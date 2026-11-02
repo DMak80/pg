@@ -368,30 +368,53 @@ public sealed class BackupProcess(
     // строка нужна с первого старта). true — все ноды прошли; отказ —
     // transient: шард skip, следующий тик дообеспечит (запуск на непатченной
     // ноде карался бы FAILED-циклом с бэкоффом).
+    // НЕ ЗАДЕРЖИВАЕТ тик (гвард ходит выше G2 — каждого тика): обход нод
+    // ПАРАЛЛЕЛЕН, каждая попытка — короткий пер-нодовый бюджет (медленный
+    // полуответивший агент не растягивает тик: worst-case сек вместо
+    // последовательных клиентских таймаутов); семантика «каждый тик каждой
+    // ноде» сохранена — попытка доставка каждой ноде в каждом тике.
     private async Task<bool> EnsureShardHbaAsync(
         string cluster, string shardName,
         IReadOnlyDictionary<string, NodeAddress> addresses, CancellationToken ct)
     {
-        foreach (var nodeKey in addresses.Keys
-                     .Where(k => k.StartsWith($"{shardName}/", StringComparison.Ordinal)))
+        var nodes = addresses.Keys
+            .Where(k => k.StartsWith($"{shardName}/", StringComparison.Ordinal))
+            .Select(nodeKey => (Node: nodeKey.Split('/')[1],
+                Url: WalReceiverAddress.ForNode(cluster, shardName, nodeKey.Split('/')[1],
+                    addresses[nodeKey].Object)))
+            .ToList();
+        var attempts = await Task.WhenAll(nodes.Select(async n =>
         {
-            var addr = addresses[nodeKey];
-            var nodeName = nodeKey.Split('/')[1];
-            var patched = await receiver.EnsureHbaAsync(
-                WalReceiverAddress.ForNode(cluster, shardName, nodeName, addr.Object), ct);
-            if (!patched.IsSuccess)
+            // Пер-нодовый бюджет: ПОКРЫВАЕТ штатное применение на ноде
+            // (HbaEnsureOperation.ApplyWait 8 c — вставка + SIGHUP-поллинг
+            // дорабатывают, не абортируясь), но ниже клиентского таймаута
+            // канала; медленная нода — transient, повторится следующим тиком.
+            using var budget = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            budget.CancelAfter(NodeGuardTimeout);
+            try
             {
-                // Диагностика «почему пересъёмы молчат» (тик не валим — так
-                // задумано; лог, не etcd-журнал — condition персистентный).
-                logger.LogWarning(
-                    "backups {Cluster}/{Shard}: hba-guard skipped — node {Node}: {Error}",
-                    cluster, shardName, nodeName,
-                    patched.Error ?? $"receiver status {(int)patched.StatusCode}");
-                return false;
+                var patched = await receiver.EnsureHbaAsync(n.Url, budget.Token);
+                return (n.Node, Ok: patched.IsSuccess,
+                    Error: patched.Error ?? $"receiver status {(int)patched.StatusCode}");
             }
-        }
-        return true;
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                return (n.Node, Ok: false, Error: $"hba-ensure not answered within {NodeGuardTimeout.TotalSeconds:0}s");
+            }
+        }));
+
+        foreach (var failed in attempts.Where(a => !a.Ok))
+            logger.LogWarning(
+                "backups {Cluster}/{Shard}: hba-guard skipped — node {Node}: {Error}",
+                cluster, shardName, failed.Node, failed.Error);
+        return attempts.All(a => a.Ok);
     }
+
+    // Бюджет ОДНОЙ ноды гварда: покрывает штатное применение (ApplyWait 8 c
+    // на ноде) с запасом, ниже клиентского таймаута канала (10 c); обход нод
+    // параллелен — worst-case гварда на тик = один бюджет, а не сумма по
+    // нодам. Медленная нода — transient, следующий тик повторит.
+    private static readonly TimeSpan NodeGuardTimeout = TimeSpan.FromSeconds(9);
 
     // Общий обработчик ответа POST /api/backup/full в обеих ветках запуска
     // (G3 и PLANNED-повтор): true — команда принята (статус → RUNNING); false —
