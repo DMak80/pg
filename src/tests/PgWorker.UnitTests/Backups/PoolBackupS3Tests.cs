@@ -484,4 +484,73 @@ public class PoolBackupS3Tests
         result2.IsSuccess.Should().BeFalse();
         result2.Error!.Message.Should().Contain(S3PoolMarkers.Exhausted);
     }
+
+    // AAA: детальный union — одна цель не ответила: успех, объекты живой цели
+    // ДОСТАВЛЕНЫ, FailedTargets несёт отказавший uri (факт неполноты для
+    // контроля дыры, arch/19 §5).
+    [Fact]
+    public async Task ListWalUnionDetailed_PartialFailure_ReportsFailedTargets()
+    {
+        // Arrange — n1 мертва, n2 отдаёт сегменты.
+        var dead = new FakeTargetS3(list: _ => Task.FromResult(
+            Result<IReadOnlyList<WalObject>>.Failed(new ApplicationException("S3 list: down"))));
+        var alive = new FakeTargetS3(list: _ => Task.FromResult(
+            Result<IReadOnlyList<WalObject>>.Success(
+            [
+                new WalObject("000000010000000000000002", DateTimeOffset.UnixEpoch),
+                new WalObject("000000010000000000000003", DateTimeOffset.UnixEpoch),
+            ])));
+        var pool = Pool(dead, alive);
+
+        // Act
+        var result = await pool.ListWalUnionDetailedAsync("c", "s", ct: CancellationToken.None);
+
+        // Assert — набор от живой цели + перечень не ответивших.
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Objects.Select(o => o.Name).Should().BeEquivalentTo(
+            ["000000010000000000000002", "000000010000000000000003"]);
+        result.Value.FailedTargets.Should().BeEquivalentTo(["http://n1:9000"]);
+    }
+
+    // AAA: детальный union — все цели живы: FailedTargets пуст (наблюдение
+    // полно: дыра в таком наборе — настоящий разрыв → WAL_CHAIN_ERROR-путь).
+    [Fact]
+    public async Task ListWalUnionDetailed_AllAlive_NoFailedTargets()
+    {
+        // Arrange
+        var pool = Pool(
+            new FakeTargetS3(list: _ => Task.FromResult(
+                Result<IReadOnlyList<WalObject>>.Success(
+                    [new WalObject("000000010000000000000002", DateTimeOffset.UnixEpoch)]))),
+            new FakeTargetS3(list: _ => Task.FromResult(
+                Result<IReadOnlyList<WalObject>>.Success(
+                    [new WalObject("000000010000000000000003", DateTimeOffset.UnixEpoch)]))));
+
+        // Act
+        var result = await pool.ListWalUnionDetailedAsync("c", "s", ct: CancellationToken.None);
+
+        // Assert
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Objects.Should().HaveCount(2);
+        result.Value.FailedTargets.Should().BeEmpty();
+    }
+
+    // AAA: детальный union — все цели отказали: Failed с маркером (исчерпание).
+    [Fact]
+    public async Task ListWalUnionDetailed_AllFail_ExhaustedMarker()
+    {
+        // Arrange
+        var pool = Pool(
+            new FakeTargetS3(list: _ => Task.FromResult(
+                Result<IReadOnlyList<WalObject>>.Failed(new ApplicationException("down")))),
+            new FakeTargetS3(list: _ => Task.FromResult(
+                Result<IReadOnlyList<WalObject>>.Failed(new ApplicationException("down")))));
+
+        // Act
+        var result = await pool.ListWalUnionDetailedAsync("c", "s", ct: CancellationToken.None);
+
+        // Assert
+        result.IsSuccess.Should().BeFalse();
+        result.Error!.Message.Should().Contain(S3PoolMarkers.Exhausted);
+    }
 }

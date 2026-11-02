@@ -137,6 +137,16 @@ public sealed class BackupProcess(
             if (!supervised.IsSuccess)
                 return Result<ProcessOutcome>.Failed(supervised.Error!);
 
+            // pg_hba (arch/19 §7): гвард командует КАЖДОЙ ноде шарда КАЖДЫЙ
+            // тик — см. EnsureShardHbaAsync (тот же вызов в restore-ветке
+            // выше). Идёт ДО G2 мастер-резолва: transient мастера (кластер
+            // бутстрапится, мастер не избран) не скипает гвард — иначе нода
+            // без hba-строки держит приёмник в 28000-цикле IDENTIFY_SYSTEM
+            // до первого успешного резолва мастера.
+            var hbaPatched = await EnsureShardHbaAsync(cluster, shard.Name, addresses.Value, ct);
+            if (!hbaPatched)
+                continue;
+
             // G2: ensure роли backup_exec на мастере шарда — КАЖДЫЙ тик, до
             // due-гвардов (spec §3.1); идемпотентный gexec-гвард. Мастер
             // недоступен → transient: шард в этом тике skip (супервизия выше
@@ -173,13 +183,6 @@ public sealed class BackupProcess(
                     continue;
                 }
             }
-
-            // pg_hba (arch/19 §7): гвард командует КАЖДОЙ ноде шарда — см.
-            // EnsureShardHbaAsync (тот же вызов в restore-ветке выше).
-            var hbaPatched = await EnsureShardHbaAsync(cluster, shard.Name, addresses.Value, ct);
-
-            if (!hbaPatched)
-                continue;
 
             // G3: новый полный — только без активного, при due (возраст, ИЛИ
             // валидного COMPLETED нет вовсе — инвариант «свежий полный заведёт
