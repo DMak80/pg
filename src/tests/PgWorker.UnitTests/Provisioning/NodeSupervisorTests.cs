@@ -101,7 +101,8 @@ public class NodeSupervisorTests
         IReadOnlyDictionary<string, NodeAddress>? addresses = null,
         Fakes.FakeSql? sql = null,
         Fakes.RecordingLogger<NodeSupervisor>? log = null,
-        string? configOverride = null)
+        string? configOverride = null,
+        Shared.Core.Hosting.ILoopProgress? progress = null)
     {
         var etcd = new Fakes.FakeEtcd();
         SeedCluster(etcd);
@@ -141,16 +142,42 @@ public class NodeSupervisorTests
             Fakes.PgtuneFactory(), Fakes.PgtuneSettings(),
             NoDelivery.Instance,
             log is not null ? log : NullLogger<NodeSupervisor>.Instance,
-            new MasterKeyReconciler(etcd, [Ep], probe));
+            new MasterKeyReconciler(etcd, [Ep], probe),
+            progress: progress);
         return new Rig(etcd, driver, claims, journal, supervisor);
+    }
+
+    // Счётчик прогресс-отметок (arch/14 §6 ILoopProgress).
+    private sealed class CountingProgress : Shared.Core.Hosting.ILoopProgress
+    {
+        public int Count;
+        public void Mark() => Count++;
+    }
+
+    // AAA (arch/14 §6, поллинг-инвариант): итерации надзора — пробы нод —
+    // отмечают прогресс ILoopProgress; тик из медленных проб не выглядит для
+    // watchdog'а тишиной (факт прогона ha-etcd: снос живого тика на 32-й
+    // секунде, shard3 не дошёл до scale-shards).
+    [Fact]
+    public async Task Tick_MarksProgress_PerNodeIteration()
+    {
+        // Arrange: счётчик отметок в риге; shard1 — 3 ноды по пробе.
+        var marks = new CountingProgress();
+        var rig = await NewRig(_ => Ok(), progress: marks);
+
+        // Act
+        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
+
+        // Assert: тик успешен, каждая проба ноды отметила прогресс (≥ числа нод).
+        outcome.IsSuccess.Should().BeTrue();
+        marks.Count.Should().BeGreaterThanOrEqualTo(3);
     }
 
     // AAA (arch/17 S5): потеря клэйма ПОСЛЕ входа в тик (ключ исчез из etcd —
     // как по истёкшему lease при takeover) — мутации фаз не начинаются:
     // первый EnsureClaimAlive отказывает тик, журнал несёт claim-lost/declared-nodes.
     [Fact]
-    public async Task Tick_ClaimKeyVanishedMidTick_RefusesBeforeMutations()
-    {
+    public async Task Tick_ClaimKeyVanishedMidTick_RefusesBeforeMutations()    {
         // Arrange: клэйм захвачен ригом; ключ из etcd убираем, локальный словарь
         // store'а об этом не знает (IsMine остаётся true — как в реальности).
         var rig = await NewRig(_ => Ok(), nodeObjects: []);

@@ -485,9 +485,12 @@ builder.Services.AddSingleton(sp => new NodeSupervisor(
     new MasterKeyReconciler(
         sp.GetRequiredService<IEtcdGateway>(),
         sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
-        sp.GetRequiredService<ShardProbe>()),
+        sp.GetRequiredService<ShardProbe>(),
+        sp.GetRequiredService<Shared.Core.Hosting.ILoopProgress>()),
     sp.GetRequiredService<EtcdEndpoints>(),
-    sp.GetRequiredService<Shared.Metrics.Worker.WorkerMetricsInstrumentation>().HaDurations));
+    sp.GetRequiredService<Shared.Metrics.Worker.WorkerMetricsInstrumentation>().HaDurations,
+    // Прогресс-отметки итераций надзора в healthz/watchdog (arch/14 §6, поллинг-инвариант).
+    sp.GetRequiredService<Shared.Core.Hosting.ILoopProgress>()));
 // Адресация шардов : master-ключ/portalloc + DSN-билдеры —
 // общий сервис эвакуатора и процессов переезда (MoveProcess — задача 17).
 builder.Services.AddSingleton(sp => new ShardEndpoints(

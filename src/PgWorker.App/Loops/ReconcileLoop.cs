@@ -166,6 +166,11 @@ internal sealed class ReconcileLoop(
             var cluster = snap.Config.Cluster;
             var work = ClusterClassifier.Classify(snap.Config);
 
+            // Прогресс-отметки вокруг клэйма (arch/14 §6, слепая зона watchdog):
+            // клэйм — бюджетные etcd-вызовы (grant+txn), вход/выход отмечаются —
+            // фаза деградировавшего etcd не выглядит тишиной цикла.
+            health.MarkReconcileActivity();
+
             // Клэйм ДО процесса (Д2): exclusivity; занят другим — не ошибка.
             var claimed = await claims.TryClaimClusterAsync(cluster, ct);
             if (!claimed.IsSuccess)
@@ -176,6 +181,8 @@ internal sealed class ReconcileLoop(
 
             if (!claimed.Value)
                 return; // обрабатывает другой инстанс
+
+            health.MarkReconcileActivity();
 
             // Cancellation-гвард клэйма (arch/17 S5): потеря lease прерывает
             // исполняющийся тик кластера — linked-токен течёт во все операции.
@@ -195,6 +202,11 @@ internal sealed class ReconcileLoop(
                     break;
 
                 default:
+                    // Прогресс-отметка входа в надзор (arch/14 §6): RunSuperviseAsync
+                    // идёт мимо RunClusterOpAsync (нужен SuperviseOutcome инлайн) —
+                    // без отметки её бюджетные вызовы слились бы с клэймом в одну
+                    // «тишину» между отметками.
+                    health.MarkReconcileActivity();
                     var supervised = await RunSuperviseAsync(cluster, snap, backups, ct, tick);
                     if (supervised is null)
                         break;

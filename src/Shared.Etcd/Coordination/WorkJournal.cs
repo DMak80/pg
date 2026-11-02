@@ -209,31 +209,12 @@ public sealed class WorkJournal(string keyPrefix, IEtcdGateway gateway, string[]
 
     private string WorkKey(string cluster) => $"{keyPrefix}/work/{cluster}";
 
-    private async Task<Result<T>> WithFailoverAsync<T>(Func<string, Task<Result<T>>> call)
-    {
-        Result<T> last = default;
-        foreach (var endpoint in endpoints)
-        {
-            var result = await call(endpoint);
-            if (result.IsSuccess)
-                return result;
-            last = result;
-        }
+    // Единая точка failover (arch/17 S7: sticky + per-attempt бюджет + негативный
+    // кэш; дубликат цикла обхода удалён — журнал, самый частый писатель, платил
+    // полным HTTP-бюджетом за мёртвый endpoint каждым put'ом).
+    private Task<Result<T>> WithFailoverAsync<T>(Func<string, Task<Result<T>>> call)
+        => EtcdEndpointFailover.CallAsync(endpoints, call);
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints not configured");
-    }
-
-    private async Task<Result> WithFailoverAsync(Func<string, Task<Result>> call)
-    {
-        Result last = default;
-        foreach (var endpoint in endpoints)
-        {
-            var result = await call(endpoint);
-            if (result.IsSuccess)
-                return result;
-            last = result;
-        }
-
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints not configured");
-    }
+    private Task<Result> WithFailoverAsync(Func<string, Task<Result>> call)
+        => EtcdEndpointFailover.CallAsync(endpoints, call);
 }

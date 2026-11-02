@@ -93,28 +93,15 @@ public sealed class ClusterSecretEnsurer(IEtcdGateway etcd, string[] endpoints) 
         AddIfAbsent(BackupKey(cluster), desiredBackupPassword, current.BackupPassword);
         AddIfAbsent(RestKey(cluster), desiredRestPassword, current.RestPassword);
 
-        // Txn с failover по endpoints (образец ReadAsync ниже): упавший
-        // endpoint → следующий; ни один не ответил — Failed(lastError).
-        // Замечание: txn.IsSuccess=false — транспортный сбой вызова; проигрыш
-        // compare (txn.Value.Succeeded=false) — НЕ сбой: законный исход
-        // put-if-absent, обрабатывается re-read ниже.
-        Result<TxnResult> lastTxnError = default;
-        var txnDone = false;
-        foreach (var endpoint in endpoints)
-        {
-            var txn = await etcd.TxnAsync(endpoint, TxnRequest.Of(compare, put), ct);
-            if (!txn.IsSuccess)
-            {
-                lastTxnError = txn;
-                continue;
-            }
-
-            txnDone = true;
-            break;
-        }
-
-        if (!txnDone)
-            return Result<ClusterCredentials>.Failed(lastTxnError.Error ?? new EtcdUnreachableException("etcd endpoints are not set"));
+        // Txn через единую точку failover (arch/17 S7: sticky + per-attempt бюджет
+        // + негативный кэш; дубликат цикла обхода удалён). Замечание:
+        // txn.IsSuccess=false — транспортный сбой вызова; проигрыш compare
+        // (txn.Value.Succeeded=false) — НЕ сбой: законный исход put-if-absent,
+        // обрабатывается re-read ниже.
+        var txnResult = await EtcdEndpointFailover.CallAsync(
+            endpoints, endpoint => etcd.TxnAsync(endpoint, TxnRequest.Of(compare, put), ct));
+        if (!txnResult.IsSuccess)
+            return Result<ClusterCredentials>.Failed(txnResult.Error!);
 
         // Re-read: txn мог проиграть (гонка) — актуальны существующие значения.
         var final = await ReadAsync(cluster, ct);
@@ -171,61 +158,40 @@ public sealed class ClusterSecretEnsurer(IEtcdGateway etcd, string[] endpoints) 
 
     private static string RestKey(string cluster) => $"/clusters/{cluster}/rest_password";
 
-    // Чтение семи ключей с failover по endpoints (паттерн ReadPortAllocAsync):
-    // упавший endpoint → следующий; на живом — все шесть Get подряд.
-    private async Task<Result<RawSecrets>> ReadAsync(string cluster, CancellationToken ct)
-    {
-        Result<Kv?> lastError = default;
-        foreach (var endpoint in endpoints)
+    // Чтение семи ключей с failover по endpoints (единая точка, arch/17 S7):
+    // упавший endpoint → следующий; на живом — все семь Get подряд. Частичный
+    // отказ чтения на живом endpoint — транспортный сбой этого endpoint
+    // (результат Failed → перебор продолжит единой точкой).
+    private Task<Result<RawSecrets>> ReadAsync(string cluster, CancellationToken ct)
+        => EtcdEndpointFailover.CallAsync(endpoints, async endpoint =>
         {
             var user = await etcd.GetAsync(endpoint, UserKey(cluster), ct);
             if (!user.IsSuccess)
-            {
-                lastError = user;
-                continue;
-            }
+                return Result<RawSecrets>.Failed(user.Error!);
 
             var password = await etcd.GetAsync(endpoint, PasswordKey(cluster), ct);
             if (!password.IsSuccess)
-            {
-                lastError = password;
-                continue;
-            }
+                return Result<RawSecrets>.Failed(password.Error!);
 
             var mover = await etcd.GetAsync(endpoint, MoverKey(cluster), ct);
             if (!mover.IsSuccess)
-            {
-                lastError = mover;
-                continue;
-            }
+                return Result<RawSecrets>.Failed(mover.Error!);
 
             var adminUser = await etcd.GetAsync(endpoint, BucketAdminUserKey(cluster), ct);
             if (!adminUser.IsSuccess)
-            {
-                lastError = adminUser;
-                continue;
-            }
+                return Result<RawSecrets>.Failed(adminUser.Error!);
 
             var adminPassword = await etcd.GetAsync(endpoint, BucketAdminPasswordKey(cluster), ct);
             if (!adminPassword.IsSuccess)
-            {
-                lastError = adminPassword;
-                continue;
-            }
+                return Result<RawSecrets>.Failed(adminPassword.Error!);
 
             var backupPassword = await etcd.GetAsync(endpoint, BackupKey(cluster), ct);
             if (!backupPassword.IsSuccess)
-            {
-                lastError = backupPassword;
-                continue;
-            }
+                return Result<RawSecrets>.Failed(backupPassword.Error!);
 
             var restPassword = await etcd.GetAsync(endpoint, RestKey(cluster), ct);
             if (!restPassword.IsSuccess)
-            {
-                lastError = restPassword;
-                continue;
-            }
+                return Result<RawSecrets>.Failed(restPassword.Error!);
 
             return Result<RawSecrets>.Success(new RawSecrets(
                 RawOrNull(user.Value?.Value),
@@ -235,10 +201,7 @@ public sealed class ClusterSecretEnsurer(IEtcdGateway etcd, string[] endpoints) 
                 RawOrNull(adminPassword.Value?.Value),
                 RawOrNull(backupPassword.Value?.Value),
                 RawOrNull(restPassword.Value?.Value)));
-        }
-
-        return Result<RawSecrets>.Failed(lastError.Error ?? new EtcdUnreachableException("etcd endpoints are not set"));
-    }
+        });
 
     // null — ключ отсутствует; пробельно-пустой raw — как есть (compare по нему);
     // иначе trimmed значение.

@@ -525,37 +525,20 @@ public sealed class AdoptionProcess(
         return Result<ProcessOutcome>.Failed(error);
     }
 
-    // Failover-обёртки: первый успешный endpoint выигрывает (паттерн ShardEndpoints).
-    private async Task<Result> PutAsync(string key, string value, CancellationToken ct)
-    {
-        Result last = default;
-        foreach (var endpoint in endpoints)
-        {
-            var result = await etcd.PutAsync(endpoint, key, value, lease: null, ct);
-            if (result.IsSuccess)
-                return result;
-            last = result;
-        }
-
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
-    }
+    // Failover-обёртки — единая точка (arch/17 S7: sticky + per-attempt бюджет +
+    // негативный кэш; дубликаты цикла обхода удалены — под деградировавшим etcd
+    // каждый вызов усыновления платил полным HTTP-бюджетом за мёртвый endpoint).
+    private Task<Result> PutAsync(string key, string value, CancellationToken ct)
+        => EtcdEndpointFailover.CallAsync(endpoints, endpoint => etcd.PutAsync(endpoint, key, value, lease: null, ct));
 
     // Put-if-absent (txn NotExists = version==0): операторские nodes-ключи не
     // перезаписываются; эталон txn — ClaimStore.TryPutLeasedKeyAsync.
     private async Task<Result> TxnPutIfAbsentAsync(string key, string value, CancellationToken ct)
     {
-        Result<TxnResult> last = default;
-        foreach (var endpoint in endpoints)
-        {
-            var result = await etcd.TxnAsync(endpoint, TxnRequest.Of(
-                [TxnCompare.NotExists(key)],
-                [new TxnOp.Put(key, value, null)]), ct);
-            if (result.IsSuccess)
-                return result;
-            last = result;
-        }
-
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
+        var txn = await EtcdEndpointFailover.CallAsync(endpoints, endpoint => etcd.TxnAsync(endpoint, TxnRequest.Of(
+            [TxnCompare.NotExists(key)],
+            [new TxnOp.Put(key, value, null)]), ct));
+        return txn.IsSuccess ? Result.Success() : Result.Failed(txn.Error!);
     }
 
     // Заявки ресурсов шарда (arch/14 §2.1 п.4): ОБЯЗАТЕЛЬНЫ — и лимиты ноды,
@@ -572,31 +555,9 @@ public sealed class AdoptionProcess(
         return mem.IsSuccess ? NodeResourcesParser.Parse(cpu.Value?.Value, mem.Value?.Value) : null;
     }
 
-    private async Task<Result<Kv?>> GetAsync(string key, CancellationToken ct)
-    {
-        Result<Kv?> last = default;
-        foreach (var endpoint in endpoints)
-        {
-            var result = await etcd.GetAsync(endpoint, key, ct);
-            if (result.IsSuccess)
-                return result;
-            last = result;
-        }
+    private Task<Result<Kv?>> GetAsync(string key, CancellationToken ct)
+        => EtcdEndpointFailover.CallAsync(endpoints, endpoint => etcd.GetAsync(endpoint, key, ct));
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
-    }
-
-    private async Task<Result<IReadOnlyList<Kv>>> RangeAsync(string prefix, CancellationToken ct)
-    {
-        Result<IReadOnlyList<Kv>> last = default;
-        foreach (var endpoint in endpoints)
-        {
-            var result = await etcd.RangeAsync(endpoint, prefix, ct);
-            if (result.IsSuccess)
-                return result;
-            last = result;
-        }
-
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
-    }
+    private Task<Result<IReadOnlyList<Kv>>> RangeAsync(string prefix, CancellationToken ct)
+        => EtcdEndpointFailover.CallAsync(endpoints, endpoint => etcd.RangeAsync(endpoint, prefix, ct));
 }

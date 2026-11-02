@@ -52,18 +52,8 @@ public sealed class PortAllocIndex(
         return Result<IReadOnlySet<(string Host, int Port)>>.Success(busy);
     }
 
-    // Failover-обёртка: первый успешный endpoint выигрывает (паттерн процессов).
-    private async Task<Result<T>> WithFailoverAsync<T>(Func<string, Task<Result<T>>> call)
-    {
-        Result<T> last = default;
-        foreach (var endpoint in endpoints)
-        {
-            var result = await call(endpoint);
-            if (result.IsSuccess)
-                return result;
-            last = result;
-        }
-
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
-    }
+    // Failover-обёртка — единая точка (arch/17 S7: sticky + per-attempt бюджет +
+    // негативный кэш; дубликат цикла обхода удалён).
+    private Task<Result<T>> WithFailoverAsync<T>(Func<string, Task<Result<T>>> call)
+        => EtcdEndpointFailover.CallAsync(endpoints, call);
 }

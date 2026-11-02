@@ -44,7 +44,8 @@ public sealed class NodeSupervisor(
     ILogger<NodeSupervisor> log,
     MasterKeyReconciler? masterKeys = null,
     EtcdEndpoints? etcdForNodes = null,
-    Action<string, IReadOnlyDictionary<string, (long? FailoverSec, long? RebuildSec)>>? haDurations = null)
+    Action<string, IReadOnlyDictionary<string, (long? FailoverSec, long? RebuildSec)>>? haDurations = null,
+    Shared.Core.Hosting.ILoopProgress? progress = null)
 {
     /// <summary>MR-#4 (spec §8-24): бюджет start_failed-пересозданий ноды
     /// (канон N=3 — образец QuietTicks-триады окна); превышение — permanent
@@ -259,6 +260,7 @@ public sealed class NodeSupervisor(
                 continue;
             if (restoring.Contains(shard.Name))
                 continue; //  §3.4: конфиг DCS восстановит свежеподнятая нода
+            progress?.Mark(); // отметка итерации converge (arch/14 §6)
             var converged = await ConvergeDcsConfigAsync(cluster, shard, addresses.Value,
                 snap.Config.SyncStrict, track, haFacts, restPassword, restRotationWindowOpen, ct);
             if (!converged.IsSuccess)
@@ -341,6 +343,7 @@ public sealed class NodeSupervisor(
 
             foreach (var node in shard.Nodes)
             {
+                progress?.Mark(); // отметка итерации сверки декларации (arch/14 §6)
                 if (node.State is NodeState.Quarantined or NodeState.Removing)
                     continue; // карантин/удаление — не пересоздаём (E3/задача 22)
                 if (!topology.Nodes.TryGetValue(node.Name, out var declaredAddr))
@@ -624,6 +627,7 @@ public sealed class NodeSupervisor(
 
             foreach (var node in shard.Nodes)
             {
+                progress?.Mark(); // отметка итерации реакций bootstrap (arch/14 §6)
                 if (node.State is NodeState.Removing)
                     continue; // демонтаж — вне надзора
                 if (!addresses.TryGetValue($"{shard.Name}/{node.Name}", out var addr) || addr.Object is not null)
@@ -844,6 +848,7 @@ public sealed class NodeSupervisor(
 
         foreach (var node in marked)
         {
+            progress?.Mark(); // отметка итерации recreate (arch/14 §6)
             if (!addresses.TryGetValue($"{shard.Name}/{node.Name}", out var addr))
                 continue;
 
@@ -1001,6 +1006,13 @@ public sealed class NodeSupervisor(
         var dead = new List<string>();
         foreach (var node in shard.Nodes)
         {
+            // Прогресс-отметка итерации (arch/14 §6, поллинг-инвариант): пробы
+            // нод — SQL/HTTP-вызовы с собственными бюджетами; под деградировавшим
+            // Patroni каждая тянется секунды, и тик из 4-8 проб без отметок
+            // выглядит для watchdog'а зависанием (факт прогона ha-etcd: снос на
+            // 32-й секунде живого тика).
+            progress?.Mark();
+
             // Карантин/демонтаж — не домен надзора (E3-инвариант arch/14 §5):
             // QUARANTINED ставится эвакуатором и держится до разбора runbook'ом
             // (возврат обрабатывает эвакуатор), REMOVING — RemoveShardProcess/
@@ -1025,6 +1037,8 @@ public sealed class NodeSupervisor(
                 nodeAlive = await probe.IsAliveAsync(addr, ct);
             }
 
+            progress?.Mark(); // по факту пробы ноды
+
             if (nodeAlive)
                 alive.Add(node.Name);
             else
@@ -1033,6 +1047,9 @@ public sealed class NodeSupervisor(
 
         foreach (var name in dead)
         {
+            // Отметка итерации (arch/14 §6): обработка мёртвой ноды — инспект
+            // драйвера/ускорение failover/rebuild, бюджетные вызовы подряд.
+            progress?.Mark();
             var node = shard.Nodes.Single(n => n.Name == name);
             var trackKey = $"{shard.Name}/{name}";
             track.TryAdd(trackKey, Now());
@@ -1180,6 +1197,7 @@ public sealed class NodeSupervisor(
         // а RUNNING живого пути затёр бы заявку оператора без исполнения.
         foreach (var name in alive)
         {
+            progress?.Mark(); // отметка итерации (arch/14 §6)
             var node = shard.Nodes.Single(n => n.Name == name);
             track.Remove($"{shard.Name}/{name}");
             // Флап-оживание лидера: недоступность БЕЗ смены лидера — факта не было.

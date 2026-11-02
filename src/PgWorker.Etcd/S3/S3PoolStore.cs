@@ -148,21 +148,9 @@ public sealed class S3PoolStore(IEtcdGateway gateway, string[] endpoints, ILogge
         }
     }
 
-    // Префиксный range с failover (паттерн процессов; библиотека — без DI).
-    private async Task<Result<IReadOnlyList<Kv>>> RangeAsync(string prefix, CancellationToken ct)
-    {
-        Result<IReadOnlyList<Kv>> last = default;
-        foreach (var endpoint in endpoints)
-        {
-            var result = await gateway.RangeAsync(endpoint, prefix, ct);
-            if (result.IsSuccess)
-                return result;
-            last = result;
-        }
-
-        return Result<IReadOnlyList<Kv>>.Failed(
-            last.Error ?? new EtcdUnreachableException("etcd endpoints not set"));
-    }
+    // Префиксный range с failover — единая точка (arch/17 S7; библиотека — без DI).
+    private Task<Result<IReadOnlyList<Kv>>> RangeAsync(string prefix, CancellationToken ct)
+        => EtcdEndpointFailover.CallAsync(endpoints, endpoint => gateway.RangeAsync(endpoint, prefix, ct));
 
     // Точечное чтение через RangeAsync (ключ известен по схеме; лишние значения
     // префикса отфильтрованы вызывающим — префикс уже точечный по построению).

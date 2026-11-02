@@ -1187,7 +1187,13 @@ public sealed class E2eEnvironment : IAsyncDisposable
             "run", "-d", "--name", containerName,
             "--network", NetName,
             "--network-alias", alias,
-            "--restart", "no",
+            // Рестарт-политика как в deploy (unless-stopped): самоперезапуск
+            // watchdog'а зависших циклов (arch/14 §6 — StopApplication, «контейнер
+            // поднимает docker-политика») обязан поднимать воркер и в E2E-контуре,
+            // иначе штатный снос зависшего цикла убивает воркер до конца прогона.
+            // «unless-stopped» не мешает teardown: явный docker stop/rm рестарт не
+            // порождает.
+            "--restart", "unless-stopped",
             "-v", "/var/run/docker.sock:/var/run/docker.sock",
             "-v", $"{hostSnapsDir}/{name}:/snapshots",
             // Динамическая публикация API (docs/e2e-isolation.md §2): тест —

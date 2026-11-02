@@ -19,7 +19,9 @@ namespace PgWorker.Provisioning.Processes;
 /// продление снимается, когда primary перестал отвечать (ключ протухает ≤ TTL,
 /// P11 и условие эвакуации мёртвого шарда).
 /// </summary>
-public sealed class MasterKeyReconciler(IEtcdGateway etcd, string[] endpoints, ShardProbe probe)
+public sealed class MasterKeyReconciler(
+    IEtcdGateway etcd, string[] endpoints, ShardProbe probe,
+    Shared.Core.Hosting.ILoopProgress? progress = null)
 {
     private const int MasterLeaseTtlSec = 5; // P11: TTL 5с (ttl=5/loop_wait=2 Patroni)
 
@@ -54,6 +56,10 @@ public sealed class MasterKeyReconciler(IEtcdGateway etcd, string[] endpoints, S
             NodeAddress? primary = null;
             foreach (var node in nodes)
             {
+                // Прогресс-отметка итерации пробы (arch/14 §6, поллинг-инвариант):
+                // GET /primary по деградировавшему Patroni тянется до бюджета
+                // клиента — серия проб без отметок выглядит тишиной цикла.
+                progress?.Mark();
                 if (await probe.IsPrimaryAsync(addresses[$"{shard.Name}/{node.Name}"], ct))
                 {
                     primary = addresses[$"{shard.Name}/{node.Name}"];
@@ -148,31 +154,12 @@ public sealed class MasterKeyReconciler(IEtcdGateway etcd, string[] endpoints, S
         }
     }
 
-    private async Task<Result<T>> WithFailoverAsync<T>(Func<string, Task<Result<T>>> call)
-    {
-        Result<T> last = default;
-        foreach (var endpoint in endpoints)
-        {
-            var result = await call(endpoint);
-            if (result.IsSuccess)
-                return result;
-            last = result;
-        }
+    // Единая точка failover (arch/17 S7: sticky + per-attempt бюджет + негативный
+    // кэш; дубликат цикла обхода отсюда удалён — собственный обход платил полным
+    // HTTP-бюджетом за мёртвый endpoint каждым вызовом).
+    private Task<Result<T>> WithFailoverAsync<T>(Func<string, Task<Result<T>>> call)
+        => EtcdEndpointFailover.CallAsync(endpoints, call);
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
-    }
-
-    private async Task<Result> WithFailoverAsync(Func<string, Task<Result>> call)
-    {
-        Result last = default;
-        foreach (var endpoint in endpoints)
-        {
-            var result = await call(endpoint);
-            if (result.IsSuccess)
-                return result;
-            last = result;
-        }
-
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
-    }
+    private Task<Result> WithFailoverAsync(Func<string, Task<Result>> call)
+        => EtcdEndpointFailover.CallAsync(endpoints, call);
 }

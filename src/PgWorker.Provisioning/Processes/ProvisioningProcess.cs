@@ -889,53 +889,23 @@ public sealed class ProvisioningProcess(
     private async Task<Result<Kv?>> GetAsync(string key, CancellationToken ct)
         => await WithFailoverAsync(endpoint => etcd.GetAsync(endpoint, key, ct));
 
-    private async Task<Result> PutAsync(string key, string value, CancellationToken ct)
-    {
-        Result last = default;
-        foreach (var endpoint in endpoints)
-        {
-            var result = await etcd.PutAsync(endpoint, key, value, null, ct);
-            if (result.IsSuccess)
-                return result;
-            last = result;
-        }
+    private Task<Result> PutAsync(string key, string value, CancellationToken ct)
+        => EtcdEndpointFailover.CallAsync(endpoints, endpoint => etcd.PutAsync(endpoint, key, value, null, ct));
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
-    }
+    private Task<Result> DeleteAsync(string keyOrPrefix, bool prefix, CancellationToken ct)
+        => EtcdEndpointFailover.CallAsync(endpoints, endpoint => etcd.DeleteAsync(endpoint, keyOrPrefix, prefix, ct));
 
-    private async Task<Result> DeleteAsync(string keyOrPrefix, bool prefix, CancellationToken ct)
-    {
-        Result last = default;
-        foreach (var endpoint in endpoints)
-        {
-            var result = await etcd.DeleteAsync(endpoint, keyOrPrefix, prefix, ct);
-            if (result.IsSuccess)
-                return result;
-            last = result;
-        }
+    private Task<Result<IReadOnlyList<Kv>>> RangeAsync(string prefix, CancellationToken ct)
+        => EtcdEndpointFailover.CallAsync(endpoints, endpoint => etcd.RangeAsync(endpoint, prefix, ct));
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
-    }
+    private Task<Result<TxnResult>> TxnAsync(TxnRequest req, CancellationToken ct)
+        => EtcdEndpointFailover.CallAsync(endpoints, endpoint => etcd.TxnAsync(endpoint, req, ct));
 
-    private async Task<Result<IReadOnlyList<Kv>>> RangeAsync(string prefix, CancellationToken ct)
-        => await WithFailoverAsync(endpoint => etcd.RangeAsync(endpoint, prefix, ct));
-
-    private async Task<Result<TxnResult>> TxnAsync(TxnRequest req, CancellationToken ct)
-        => await WithFailoverAsync(endpoint => etcd.TxnAsync(endpoint, req, ct));
-
-    private async Task<Result<T>> WithFailoverAsync<T>(Func<string, Task<Result<T>>> call)
-    {
-        Result<T> last = default;
-        foreach (var endpoint in endpoints)
-        {
-            var result = await call(endpoint);
-            if (result.IsSuccess)
-                return result;
-            last = result;
-        }
-
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
-    }
+    // Единая точка failover (arch/17 S7: sticky + per-attempt бюджет + негативный
+    // кэш; дубликат цикла обхода удалён — под деградировавшим etcd он платил
+    // полным HTTP-бюджетом за мёртвый endpoint каждым вызовом провижининга).
+    private Task<Result<T>> WithFailoverAsync<T>(Func<string, Task<Result<T>>> call)
+        => EtcdEndpointFailover.CallAsync(endpoints, call);
 
     // Канонический config после provisioning (Д1): state отсутствует.
     private sealed record CanonicalConfig(

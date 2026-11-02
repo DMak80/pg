@@ -123,34 +123,13 @@ public sealed class PortAllocLock(
 
     private long Now() => clock.GetUtcNow().ToUnixTimeSeconds();
 
-    // Failover по endpoints: первый успешный ответ выигрывает (паттерн ClaimStore).
-    private async Task<Result<T>> WithFailoverAsync<T>(Func<string, Task<Result<T>>> call)
-    {
-        Result<T> last = default;
-        foreach (var endpoint in endpoints)
-        {
-            var result = await call(endpoint);
-            if (result.IsSuccess)
-                return result;
-            last = result;
-        }
+    // Failover по endpoints — единая точка (arch/17 S7: sticky + per-attempt
+    // бюджет + негативный кэш; дубликат цикла обхода удалён).
+    private Task<Result<T>> WithFailoverAsync<T>(Func<string, Task<Result<T>>> call)
+        => EtcdEndpointFailover.CallAsync(endpoints, call);
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints not configured");
-    }
-
-    private async Task<Result> WithFailoverAsync(Func<string, Task<Result>> call)
-    {
-        Result last = default;
-        foreach (var endpoint in endpoints)
-        {
-            var result = await call(endpoint);
-            if (result.IsSuccess)
-                return result;
-            last = result;
-        }
-
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints not configured");
-    }
+    private Task<Result> WithFailoverAsync(Func<string, Task<Result>> call)
+        => EtcdEndpointFailover.CallAsync(endpoints, call);
 
     // Value ключа {prefix}/locks/portalloc (arch/14 §3.3).
     private sealed record LockPayload(
