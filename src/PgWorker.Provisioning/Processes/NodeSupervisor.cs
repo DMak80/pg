@@ -1091,7 +1091,26 @@ public sealed class NodeSupervisor(
                 haFacts.FailoverDetected(shard.Name, name, "elections", track[trackKey]);
             }
 
-            if (!isLeader && quorum && expired && !adopted)
+            // Положительное свидетельство смерти процесса (arch/14 §5 C):
+            // rebuild — невозвратный снос контейнера+volume, он требует большего,
+            // чем молчание REST-пробы. У драйвера с честной running-инспекцией
+            // нода в бюджете недоступности ДОЛЖНА отсутствовать в инспекте
+            // (объект снесён/не running); контейнер running при молчащей пробе —
+            // деградация наблюдаемости (нагрузка хоста, транспорт, долгий
+            // bootstrap пересозданной ноды): сноса нет — нода остаётся
+            // UNREACHABLE, rebuild не зацикливается на только что поднятой ноде
+            // (bootstrap дольше NodeDeadSec). Драйверы без честной инспекции
+            // (Swarm-заглушка) — прежняя семантика: только пробы.
+            var processDead = true;
+            if (expired && driver.SupportsRunningInspection)
+            {
+                var inspect = await driver.InspectNodesAsync(cluster, [name], ct);
+                if (!inspect.IsSuccess)
+                    return inspect.Error!;
+                processDead = !inspect.Value.ContainsKey(name);
+            }
+
+            if (!isLeader && quorum && expired && !adopted && processDead)
             {
                 // Rebuild (эталон rebuild-node.sh): удалить контейнер+volume,
                 // пересоздать с тем же адресом; Patroni сделает pg_basebackup.

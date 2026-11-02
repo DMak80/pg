@@ -295,6 +295,38 @@ public class NodeSupervisorTests
         rig.Etcd.Store["/clusters/shop/shards/shard1/nodes/shard1a/state"].Value.Should().Be("REBUILDING");
     }
 
+    // AAA (arch/14 §5 C, симметрично ускорению failover): rebuild — невозвратный
+    // снос контейнера+volume, требующий ПОЛОЖИТЕЛЬНОГО свидетельства смерти.
+    // Молчание REST-пробы при running-контейнере (нагрузка хоста, транспорт,
+    // долгий bootstrap пересозданной ноды) — не смерть: сноса нет, нода
+    // UNREACHABLE (иначе — циклическое пересоздание здоровых нод: bootstrap
+    // дольше NodeDeadSec → снова «мёртв» → rebuild).
+    [Fact]
+    public async Task Tick_DeadNonLeaderNode_RunningContainer_NoRebuild()
+    {
+        // Arrange — shard1a (не лидер) молчит дольше NodeDeadSec, кворум жив,
+        // инспекция (running-only) ноду ВИДИТ — контейнер running
+        var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        var rig = await NewRig(
+            port => port == 18000 ? Down() : Ok(), // shard1a (18000) мертва, b/c живы
+            staleUnreachableForShard1A: now - 200);
+        rig.Etcd.Seed("/service/shop-shard1/leader", """{"name":"shard1b"}""");
+        rig.Driver.InspectResult = new Dictionary<string, DiscoveredNode>
+        {
+            ["shard1a"] = new("shard1a", "h1", "", 15000, 18000, 16500),
+        };
+
+        // Act
+        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
+
+        // Assert: docker-мутаций нет, нода честно UNREACHABLE
+        outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
+        rig.Driver.RemovedNodes.Should().BeEmpty(
+            "a running container is no evidence of death — rebuild would destroy a healthy node");
+        rig.Driver.EnsuredNodes.Should().BeEmpty();
+        rig.Etcd.Store["/clusters/shop/shards/shard1/nodes/shard1a/state"].Value.Should().Be("UNREACHABLE");
+    }
+
     [Fact]
     public async Task Tick_StaleFailoverKeyForOtherLeader_Cleaned()
     {
