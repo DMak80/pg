@@ -1292,11 +1292,25 @@ s3://<bucket>/<C>/<X>/
 - **Per-cluster БД-роль** `backup_exec` (LOGIN + REPLICATION): пароль
  per-cluster `/clusters/<C>/backup_password` — по образцу прочих
  per-cluster секретов (ensure put-if-absent, 32 симв `[A-Za-z0-9]`).
- Ротация: в общий тикет ротации (ETCD-FIRST, arch/14 §5 I — app/
- bucket_admin/bucket_mover/rest + dsn) backup-креды НЕ входят — ротация
- `backup_password` (и выравнивание pg_authid `backup_exec`) — отдельная
- задача t06-rotate-backup-creds (arch/roadmap/pgworker.md), тем же
- каноном ETCD-FIRST после t05; до неё пароль статичен с ensure.
+ Ensure роли в PG (G2, каждый тик) — CREATE-if-absent И выравнивание
+ пароля ALTER'ом ПРИ РАСХОЖДЕНИИ: проверка — пересчёт verifier'а из
+ etcd-значения против сохранённого rolpassword (форматы md5 —
+ `md5(пароль+роль)`; SCRAM-SHA-256 — PBKDF2 по сохранённой соли →
+ StoredKey; нераспознанный формат = расхождение). Безусловный ALTER
+ каждым тиком отвергнут: pg_authid — строка каталога, переписывалась бы
+ каждый тик (WAL-шум, реплицируется). pg_authid — не принадлежит
+ воркеру, роль может быть создана/перезаписана кем-то ещё с чужим
+ значением (второй писатель); CREATE-only гвард такое расхождение молчал
+ вечно — новые подключения приёмника падают 28P01 при живой сессии
+ стрима (факт стенда). Расхождение pg_authid↔etcd наблюдаемо тик за
+ тиком отпечатками `[t07-diag]` (etcd-значение и rolpassword, без
+ секретов). Ротация: в общий тикет ротации (ETCD-FIRST,
+ arch/14 §5 I — app/bucket_admin/bucket_mover/rest + dsn) backup-креды
+ НЕ входят — ротация `backup_password` — отдельная задача
+ t06-rotate-backup-creds (arch/roadmap/pgworker.md), тем же каноном
+ ETCD-FIRST после t05; до неё пароль статичен с ensure (выравнивание
+ ALTER'ом — не ротация: идемпотентная конвергенция к неизменному
+ etcd-значению).
  Отдельная от bucket_mover (иная зона доверия/ротации).
 - **pg_hba-гвард**: дефолтный Spilo-pg_hba разрешает replication-соединения
  только роли `standby` — физический WAL-стриминг `pg_basebackup` под

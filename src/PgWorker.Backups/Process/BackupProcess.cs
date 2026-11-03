@@ -67,6 +67,9 @@ public sealed class BackupProcess(
         var creds = await secrets.EnsureAsync(cluster, snap.Config, ct);
         if (!creds.IsSuccess)
             return Result<ProcessOutcome>.Failed(creds.Error!);
+        if (creds.Value.BackupPassword is not { } backupPassword)
+            return Result<ProcessOutcome>.Failed(new ApplicationException(
+                $"{Op} {cluster}: backup_password absent after ensure (transient — retry next tick)"));
 
         //  (arch/19 §2/§4): резолв пула бэкапов — в начале тика кластера.
         // null (policy без s3) → полный не планируется, journal не пишем
@@ -162,24 +165,36 @@ public sealed class BackupProcess(
                 continue;
             }
             var adminDsn = ShardEndpoints.AdminDsn(master.Value, snap.Config.DbName, installSecrets);
-            var guard = await db.ExecuteScalarAsync(
-                adminDsn, DatabaseProvisioner.BuildBackupExecRoleGuardSql(creds.Value.BackupPassword), ct);
-            if (!guard.IsSuccess)
+
+            // Текущий rolpassword → соответствие etcd-значению (arch/19 §7:
+            // verifier необратим — пересчёт от etcd-значения по сохранённой соли).
+            var stored = await db.ExecuteScalarAsync(
+                adminDsn,
+                $"SELECT rolpassword FROM pg_authid WHERE rolname = '{DatabaseProvisioner.BackupExecRole}'",
+                ct);
+            var storedHash = stored.IsSuccess ? stored.Value as string : null;
+            var matches = DatabaseProvisioner.BackupExecPasswordMatches(storedHash, backupPassword);
+
+            // [t07-diag]: отпечатки pg_authid↔etcd, без секретов — расхождение
+            // пароля backup_exec видно тик за тиком (CREATE-only гвард молчал:
+            // 28P01 инвентаря приёмника при живой сессии, факт стенда).
+            Console.WriteLine(
+                $"[t07-diag] {cluster}/{shard.Name}: matches={matches} " +
+                $"etcd_fp={SecretFingerprint.Of(backupPassword)} " +
+                $"stored_fp={(storedHash is { } h ? SecretFingerprint.Of(h) : "absent")}");
+
+            // Ensure — только при расхождении (CREATE-if-absent + ALTER в одном
+            // DO-блоке; порядок «создать → выровнять» гарантирован).
+            if (!matches)
             {
-                // transient (сеть/мастер ушёл) — следующий тик дообеспечит
-                logger.LogWarning(
-                    "backups {Cluster}/{Shard}: role-guard skipped — guard query failed: {Error}",
-                    cluster, shard.Name, guard.Error!.Message);
-                continue;
-            }
-            if (guard.Value is string createRole)
-            {
-                var createdRole = await db.ExecuteAsync(adminDsn, createRole, ct);
-                if (!createdRole.IsSuccess)
+                var ensured = await db.ExecuteScalarAsync(
+                    adminDsn, DatabaseProvisioner.BuildBackupExecRoleGuardSql(backupPassword), ct);
+                if (!ensured.IsSuccess)
                 {
+                    // transient (сеть/мастер ушёл) — следующий тик дообеспечит
                     logger.LogWarning(
-                        "backups {Cluster}/{Shard}: role-guard skipped — create role failed: {Error}",
-                        cluster, shard.Name, createdRole.Error!.Message);
+                        "backups {Cluster}/{Shard}: role-guard skipped — ensure query failed: {Error}",
+                        cluster, shard.Name, ensured.Error!.Message);
                     continue;
                 }
             }

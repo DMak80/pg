@@ -917,9 +917,9 @@ public sealed class ProvisioningProcess(
         [property: JsonPropertyName("synchronous_mode_strict")] bool SyncStrict);
 }
 
-/// <summary>Отпечаток значения секрета для диагностики (t06): SHA256[..10] hex —
-/// значение секрета НЕ попадает в лог, только несекретный отпечаток.</summary>
-internal static class SecretFingerprint
+/// <summary>Отпечаток значения секрета для диагностики (t06/t07): SHA256[..10]
+/// hex — значение секрета НЕ попадает в лог, только несекретный отпечаток.</summary>
+public static class SecretFingerprint
 {
     public static string Of(string value)
     {
