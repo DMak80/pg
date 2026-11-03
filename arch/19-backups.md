@@ -894,7 +894,7 @@ AdminPanel (UI) PgWorker (оркестратор бэкапов)
 | `/pgworker/backups/<C>/<X>/restore/<id>` | операция восстановления шарда (§3.5): `{"state":"PLANNED\|RUNNING\|REJOINING\|COMPLETED\|FAILED","backup_id","source":"<srcC>/<srcX>","target":"latest"\|"time:<RFC3339>","node","requested_unix","requested_by","started_unix"?,"finished_unix"?,"phase"?,"phase_unix"?,"restored_to_lsn"?,"error"?}`; `id` — как у полных (§2); максимум один активный (не COMPLETED/FAILED) restore на шард; `phase` — фазы тика запуска заявки (`demolished\|launching`) и фазы restore-операции приёмника ноды (`downloading\|recovering`); `phase_unix` — unix-время перехода в текущую фазу (пишет воркер; стенка наката restore считается от перехода в recovering — скачивание набора recovery-бюджет не съедает); по COMPLETED ключ `wal` шарда удаляется (переснятие полного планировщиком §2) |
 | `/pgworker/backups/<C>/<X>/drill` | состояние последнего/текущего дрилла шарда (§3.6): `{"state":"RUNNING\|SUCCEEDED\|FAILED","id","backup_id","started_unix","finished_unix"?,"phase"?,"restored_to_lsn"?,"error"?}`; `id` — как у полных (§2); `phase` — `downloading\|recovering` (фазы операции приёмника); терминальный ключ без `phase` — чистый итог (scratch-каталог приёмник чистит при любом исходе — §3.6); ключ перезаписывается каждым новым дриллом (история — фазы журнала `backup-drill/<X>/<id>`); ключ один на шард — «максимум один активный дрилл» следует из формата; пишет воркер (держатель клэйма `<C>`) |
 
-- **Секция `s3` policy**: `"s3":{"pool":"<C пула>","write_master":["<I>",…],"write_replica":["<I>",…]}` — выбор пула S3 кластера (архитектура пула — [23-s3-clusters.md](23-s3-clusters.md)); `pool` — имя кластера `/s3/clusters/`; `write_master`/`write_replica` — упорядоченные (по приоритету записи) имена инстансов пула — ССЫЛКИ, не адреса: резолв `имя → host:port` воркер выполняет чтением `endpoints`-ключа пула и `/s3worker/portalloc/<C>` (arch/23 §7); поля названы по роли ИСТОЧНИКА записи (мастер-потоки/репличные), не по роли ноды. Пересечение списков и неполный охват нод пула допустимы. Отсутствие секции — пул не выбран: подсистема бэкапов кластера НЕ пишет и НЕ читает (алерт `backup-pool-missing` панели); никаких env-дефолтов. Приём секции — замещение целиком (как drill); сброс — отправкой policy без `s3`.
+- **Секция `s3` policy**: `"s3":{"pool":"<C пула>","write_master":["<I>",…],"write_replica":["<I>",…]}` — выбор пула S3 кластера (архитектура пула — [s3-clusters/README.md](s3-clusters/README.md)); `pool` — имя кластера `/s3/clusters/`; `write_master`/`write_replica` — упорядоченные (по приоритету записи) имена инстансов пула — ССЫЛКИ, не адреса: резолв `имя → host:port` воркер выполняет чтением `endpoints`-ключа пула и `/s3worker/portalloc/<C>` (arch/23 §7); поля названы по роли ИСТОЧНИКА записи (мастер-потоки/репличные), не по роли ноды. Пересечение списков и неполный охват нод пула допустимы. Отсутствие секции — пул не выбран: подсистема бэкапов кластера НЕ пишет и НЕ читает (алерт `backup-pool-missing` панели); никаких env-дефолтов. Приём секции — замещение целиком (как drill); сброс — отправкой policy без `s3`.
 - **Правила**: transient-сбой → статус с `error` + ретраи тиками;
  **Failed-резолв пула** — пул удалён/`TO_REMOVE`, имя списка не заявлено в пуле (`nodes/<I>/placement` нет), пул без читаемых secrets, нода без portalloc-адреса — transient для процессов: ретраи тиком + journal-фаза `waiting-backup-pool`, НЕ краш тика; в `Error` wal/full-статусов при этом ставится тот же маркер `s3-pool-exhausted` — алерт `backup-pool-unreachable` закрывает и случай «policy записана, но резолв не удался» (единая алертная грань записи в пул);
  permanent-отказ → фиксация причины + алерт. `DELETING` — транзитная фаза
@@ -1237,14 +1237,14 @@ s3://<bucket>/<C>/<X>/
  `PgWorker:Backups:S3:Bucket`, группа транспортных секретов
  [14-pgworker.md](14-pgworker.md) §4 п.3; единый на всех нодах всех пулов
  установки, §5); (б) **креды пулов — per-cluster secrets в etcd**:
- `/s3/clusters/<C>/secrets` ([23-s3-clusters.md](23-s3-clusters.md) §6;
+ `/s3/clusters/<C>/secrets` ([s3-clusters/06-secrets.md](s3-clusters/06-secrets.md) §6;
  ключ `name=backups`, read-write) — воркер читает их резолвером пула
  живым резолвом на каждом тике (отсутствие/битость secrets —
  transient-отказ резолва с маркером `s3-pool-exhausted` у процессов,
  ретраи тиком, НЕ краш тика — §4); единого
  `PGW_BACKUP_S3_ENDPOINT/REGION/ACCESS_KEY/SECRET_KEY/ADVERTISED_ENDPOINT`
  больше нет — цели даёт пул per-cluster (§4); (в) **etcd-слепки — зона
-  EtcdWorker** ([25-etcdworker.md](25-etcdworker.md) §4): цель —
+  EtcdWorker** ([etcdworker/04-snapshots.md](etcdworker/04-snapshots.md)): цель —
   фиксированный bucket `etcd-backups` на нодах etcd-backup кластера
   `/s3/clusters/` (признак `etcd_backup=true`, arch/23 §2; bucket создаёт
   S3Worker, arch/23 §5), креды — ключ `backups` его secrets-ключа (значение —

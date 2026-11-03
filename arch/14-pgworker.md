@@ -351,7 +351,7 @@ bootstrap (SPILO_CONFIGURATION), и для живого конфига (DCS
 - Ноды кластера подключаются к per-cluster docker-сети
  `pgw-net-<C>` (alias = имя ноды): Patroni-репликация и резолв мастера
  — по внутренним адресам (в default bridge hostname-резолва нет).
- Per-cluster (как `kfw-net-<C>` у KafkaWorker, [16](16-kafkaworker.md) §2.1;
+ Per-cluster (как `kfw-net-<C>` у KafkaWorker, [kafkaworker/README.md](kafkaworker/README.md);
  согласовано с advertised-правилами [04](04-deploy-etcd.md) §8 п.3 — «per-cluster
  сети воркера»): единая сеть делала DNS-зону общей для всех кластеров
  docker-хоста — перекрёстная видимость алиасов чужих кластеров/тестов,
@@ -790,7 +790,7 @@ compare (routing=старое значение, config.mod_revision) — «пр�
  секретов из etcd — `t02-external-secret-manager` (pgworker-трек), класс
  экспозиции не расширяется. По тому же прецеденту per-cluster в etcd —
  клиентские креды S3-кластеров хранилища бэкапов
- (`/s3/clusters/<C>/secrets`, [23-s3-clusters.md](23-s3-clusters.md) §6):
+ (`/s3/clusters/<C>/secrets`, [s3-clusters/06-secrets.md](s3-clusters/06-secrets.md) §6):
  генерирует S3Worker (PgWorker — только читатель, ключ `backups`);
  класс экспозиции тот же — парсеры панели разбирают значения только для
  внутреннего S3-клиента грани «Хранилище бэкапов» (ключ `panel`), в
@@ -1853,7 +1853,7 @@ MR3 journal op=repair (сколько/какие статусы диспатче
   `RetentionFiles` в локальном томе. Restore — внешний
   рецепт (`restore-cluster.sh`), PgWorker только снимает. Выгрузки в S3 НЕТ:
   DR-слепки контура и его обслуживание (compact/defrag) — зона EtcdWorker
-  ([25-etcdworker.md](25-etcdworker.md) §4); PgWorker не владеет
+  ([etcdworker/04-snapshots.md](etcdworker/04-snapshots.md)); PgWorker не владеет
   S3-целями слепков и статусом выгрузки.
 - **Ретраи**: короткие сетевые/SQL — Polly jitter-политики; долгие ожидания
  (Patroni-подъём, догоняние) — транзиент-толерантные циклы с бюджетом;

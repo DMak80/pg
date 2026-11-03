@@ -138,7 +138,7 @@ etcdutl snapshot restore /backup/etcd.snap --data-dir=/data/etcd
 
 > Поэтому **бэкап etcd** обязателен: EtcdWorker снимает слепки и выгружает их
 > в S3 (etcd-backup кластер) автоматически — плановый интервал + детекция
-> изменений ([25-etcdworker.md](25-etcdworker.md) §4).
+> изменений ([etcdworker/04-snapshots.md](etcdworker/04-snapshots.md)).
 
 ---
 

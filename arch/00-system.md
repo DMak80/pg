@@ -31,7 +31,7 @@
 | **Оркестрация** | Воркеры и их процессы: подъём, демонтаж и надзор контейнеров через docker/swarm, приём и исполнение заявок, конвергенция конфигов | [00-components.md](00-components.md), [25-component-communications.md](25-component-communications.md) |
 | **Данные** | Контейнеры кластеров: PG-шарды (Spilo + Patroni, pg_doorman), Kafka, Valkey, ownS3; протоколы SQL и репликации, Kafka, RESP, S3 | [00-components.md](00-components.md) |
 | **Наблюдаемость** | Метрики Prometheus, алерты, read-only инспекция панели | [18-metrics.md](18-metrics.md), [adminpanel/README.md](adminpanel/README.md) |
-| **Восстановление** | Бэкапы шардов в S3 (полные + WAL), DR-слепки etcd, PITR и дрилл восстановимости | [19-backups.md](19-backups.md), [25-etcdworker.md](25-etcdworker.md) |
+| **Восстановление** | Бэкапы шардов в S3 (полные + WAL), DR-слепки etcd, PITR и дрилл восстановимости | [19-backups.md](19-backups.md), [etcdworker/README.md](etcdworker/README.md) |
 
 ## 3. Модель развёртывания
 

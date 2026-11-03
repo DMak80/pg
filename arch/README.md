@@ -99,10 +99,11 @@ arch/
 ├── 13-network-security.md     ← ★ сетевая модель бакетов: firewall-матрица, TLS, аутентификация (P17)
 ├── 14-pgworker.md             ← ★ оркестратор PgWorker: provisioning/deprovisioning/надзор/эвакуация
 │                                  (docker-управление кластерами, префикс /pgworker/, roadmap/)
-├── 15-kafka-clusters.md       ← ★ Kafka-кластера: контракт etcd /kafka/ + координация /kafkaworker/
-│                                  + клиентский дискавери (endpoints/app-креды/реестр топиков)
-├── 16-kafkaworker.md          ← ★ KafkaWorker: оркестратор Kafka-кластеров
-│                                  (provisioning/deprovisioning/надзор/автосинк топиков/converge)
+├── kafka-clusters/            ← ★ Kafka-кластера: контракт etcd /kafka/ + координация /kafkaworker/
+│                                  (иерархия: README — уровень 2, разделы канона 01–06)
+├── kafkaworker/               ← ★ KafkaWorker: оркестратор Kafka-кластеров
+│                                  (иерархия: README — уровень 2, функции 01–08,
+│                                   процессы и перечисления — processes/)
 ├── 17-synchronization-principles.md ← ★ принципы синхронизации распределённого состояния
 │                                  (единый etcd, конвергенция DCS, детерминизм, реестр ошибок)
 ├── 18-metrics.md               ← ★ единая телеметрия: Prometheus-метрики всех сервисов
@@ -111,19 +112,19 @@ arch/
 ├── 19-backups.md               ← ★ подсистема бэкапов шардов: PgWorker-оркестрация
 │                                  (pg_basebackup + приёмник WAL внутри PG-нод, S3-хранилище,
 │                                   контракт /pgworker/backups/*)
-├── 20-valkey-clusters.md      ← ★ Valkey-кластера: контракт etcd /valkey/ + координация /valkeyworker/
-│                                  + клиентский дискавери (endpoints/ACL-креды app)
-├── 21-valkeyworker.md         ← ★ ValkeyWorker: оркестратор Valkey-кластеров
-│                                  (provisioning/deprovisioning/надзор/converge/ротация кред)
-├── 23-s3-clusters.md          ← ★ S3-кластеры хранилища бэкапов: контракт etcd /s3/ + /s3worker/
-│                                  (декларации кластеров, привязка нод placement-селекторами,
-│                                  статусы связности/синхронности, дискавери endpoints)
-├── 24-s3worker.md             ← ★ S3Worker: оркестратор S3-кластеров
-│                                  (provisioning/deprovisioning/надзор/изменение состава/
-│                                   зонд синхронности)
-├── 25-etcdworker.md           ← ★ EtcdWorker: оркестратор etcd-контура установки
-│                                  (поддержание состава managed-узлов, кворум,
-│                                   DR-слепки etcd в etcd-backup S3-кластер)
+├── valkey-clusters/           ← ★ Valkey-кластера: контракт etcd /valkey/ + координация /valkeyworker/
+│                                  (иерархия: README — уровень 2, разделы канона 01–05)
+├── valkeyworker/              ← ★ ValkeyWorker: оркестратор Valkey-кластеров
+│                                  (иерархия: README — уровень 2, функции 01–06,
+│                                   процессы и перечисления — processes/)
+├── s3-clusters/               ← ★ S3-кластеры хранилища бэкапов: контракт etcd /s3/ + /s3worker/
+│                                  (иерархия: README — уровень 2, разделы канона 01–09)
+├── s3worker/                  ← ★ S3Worker: оркестратор S3-кластеров
+│                                  (иерархия: README — уровень 2, функции 01–08,
+│                                   процессы и перечисления — processes/)
+├── etcdworker/                ← ★ EtcdWorker: оркестратор etcd-контура установки
+│                                  (иерархия: README — уровень 2, функции 00–06,
+│                                   процессы и перечисления — processes/)
 ├── configs/
 │   ├── etcd/
 │   │   ├── docker-compose.yml
@@ -208,12 +209,12 @@ arch/
 12. [14-pgworker.md](14-pgworker.md) — оркестратор PgWorker: декларативный
     provisioning/deprovisioning кластеров, контроль нод, эвакуация бакетов
     (отложенные задачи — [roadmap/](roadmap/)).
-13. [15-kafka-clusters.md](15-kafka-clusters.md) — Kafka-кластера: контракт
+13. [kafka-clusters/README.md](kafka-clusters/README.md) — Kafka-кластера: контракт
     etcd (контроль-плейн `/kafka/`, координация `/kafkaworker/`) и клиентский
-    дискавери.
-14. [16-kafkaworker.md](16-kafkaworker.md) — оркестратор KafkaWorker:
+    дискавери (иерархия уровней 2–3).
+14. [kafkaworker/README.md](kafkaworker/README.md) — оркестратор KafkaWorker:
     декларативный жизненный цикл Kafka-кластеров (KRaft, docker plain/swarm),
-    автосинк топиков, converge конфигов.
+    автосинк топиков, converge конфигов (иерархия уровней 2–4).
 15. [17-synchronization-principles.md](17-synchronization-principles.md) —
     принципы синхронизации распределённого состояния (единый etcd-контур,
     конвергенция динамического DCS-конфига, инварианты внешних систем,
@@ -222,20 +223,23 @@ arch/
 16. [19-backups.md](19-backups.md) — подсистема бэкапов шардов: механика
     (полные `pg_basebackup`, online-WAL `pg_receivewal`-агент), layout S3,
     контракт `/pgworker/backups/*`.
-17. [20-valkey-clusters.md](20-valkey-clusters.md) — Valkey-кластера:
+17. [valkey-clusters/README.md](valkey-clusters/README.md) — Valkey-кластера:
     контракт etcd `/valkey/` (контроль-плейн кластеров, координация
-    `/valkeyworker/`) и клиентский дискавери (endpoints + ACL-креды).
-18. [21-valkeyworker.md](21-valkeyworker.md) — оркестратор ValkeyWorker:
+    `/valkeyworker/`) и клиентский дискавери (endpoints + ACL-креды;
+    иерархия уровней 2–3).
+18. [valkeyworker/README.md](valkeyworker/README.md) — оркестратор ValkeyWorker:
     декларативный жизненный цикл Valkey-кластеров (standalone-кеш,
-    ACL-креды, converge, ротация без рестартов; задачи — [roadmap/valkey.md](roadmap/valkey.md)).
-19. [23-s3-clusters.md](23-s3-clusters.md) — S3-кластеры хранилища бэкапов:
+    ACL-креды, converge, ротация без рестартов; иерархия уровней 2–4;
+    задачи — [roadmap/valkey.md](roadmap/valkey.md)).
+19. [s3-clusters/README.md](s3-clusters/README.md) — S3-кластеры хранилища бэкапов:
     контракт etcd `/s3/` (декларации кластеров, привязка нод к хостам
     placement-селекторами по атрибутам, статусы связности/синхронности,
-    дискавери endpoints) и координация `/s3worker/`.
-20. [24-s3worker.md](24-s3worker.md) — оркестратор S3Worker: декларативный
-    жизненный цикл S3-кластеров (provisioning/надзор/изменение состава, зонд
-    синхронности; задачи — [roadmap/s3.md](roadmap/s3.md)).
-21. [25-etcdworker.md](25-etcdworker.md) — оркестратор EtcdWorker:
+    дискавери endpoints) и координация `/s3worker/` (иерархия уровней 2–3).
+20. [s3worker/README.md](s3worker/README.md) — оркестратор S3Worker:
+    декларативный жизненный цикл S3-кластеров (provisioning/надзор/изменение
+    состава, доводка mesh, зонд синхронности; иерархия уровней 2–4;
+    задачи — [roadmap/s3.md](roadmap/s3.md)).
+21. [etcdworker/README.md](etcdworker/README.md) — оркестратор EtcdWorker:
     поддержание состава etcd-контура установки (managed-узлы, кворум,
     авто-замена мёртвого члена) и DR-слепки etcd в S3 (etcd-backup кластер;
-    восстановление — runbook).
+    иерархия уровней 2–4; восстановление — runbook).

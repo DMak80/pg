@@ -10,10 +10,10 @@
 |---|---|---|
 | **AdminPanel** | Веб-панель (React SPA + ASP.NET Core API): read-only инспекция etcd, шардирования, HA, алертов и S3; мутации (кластеры, шарды, переезды, ротации, перезапуск воркеров) проксирует в HTTP API воркеров. В etcd пишет только серверные серты API воркеров (`/workers/api_tls/*`). | [adminpanel/README.md](adminpanel/README.md) |
 | **PgWorker** | Оркестратор шардированных PG-кластеров: provisioning/deprovisioning, надзор нод, эвакуация и онлайн-переезды бакетов, добавление/снятие шарда, ротации per-cluster секретов, adoption, репарация переездов; хозяин подсистемы бэкапов шардов. Несколько инстансов координируются lease-клэймами в etcd. | [14-pgworker.md](14-pgworker.md) |
-| **KafkaWorker** | Оркестратор Kafka-кластеров (KRaft, docker plain/swarm): подъём и демонтаж, per-cluster SASL-креды и CA, автосинк топиков, reassignment партиций. | [16-kafkaworker.md](16-kafkaworker.md) |
-| **ValkeyWorker** | Оркестратор Valkey-кластеров (standalone, `nodes=1`): подъём и демонтаж, per-cluster ACL-креды, надзор и ротации без рестартов. | [21-valkeyworker.md](21-valkeyworker.md) |
-| **S3Worker** | Оркестратор S3-кластеров (ownS3): инстансы по placement-селекторам, bucket per-install, mesh-репликация, deny-list, публикация `endpoints`. | [24-s3worker.md](24-s3worker.md) |
-| **EtcdWorker** | Хозяин etcd-контура установки: поддержание состава managed-узлов и кворума, DR-слепки etcd в etcd-backup S3-кластер. | [25-etcdworker.md](25-etcdworker.md) |
+| **KafkaWorker** | Оркестратор Kafka-кластеров (KRaft, docker plain/swarm): подъём и демонтаж, per-cluster SASL-креды и CA, автосинк топиков, reassignment партиций. | [kafkaworker/README.md](kafkaworker/README.md) |
+| **ValkeyWorker** | Оркестратор Valkey-кластеров (standalone, `nodes=1`): подъём и демонтаж, per-cluster ACL-креды, надзор и ротации без рестартов. | [valkeyworker/README.md](valkeyworker/README.md) |
+| **S3Worker** | Оркестратор S3-кластеров (ownS3): инстансы по placement-селекторам, bucket per-install, mesh-репликация, deny-list, публикация `endpoints`. | [s3worker/README.md](s3worker/README.md) |
+| **EtcdWorker** | Хозяин etcd-контура установки: поддержание состава managed-узлов и кворума, DR-слепки etcd в etcd-backup S3-кластер. | [etcdworker/README.md](etcdworker/README.md) |
 
 ## 2. Агенты на нодах
 
@@ -27,9 +27,9 @@
 |---|---|---|
 | **PG-шард (HA-кластер)** | Spilo (PostgreSQL + Patroni) на нодах с локальными дисками; etcd — DCS (выборы лидера, динамический конфиг); pg_doorman — пул `:6432` на ноде; один primary и реплики, streaming replication, автоматический failover. | [01-architecture.md](01-architecture.md) |
 | **Бакеты и шардирование** | Фиксированное число N схем-бакетов, распределённых по шардам; онлайн-переезд бакета (логическая репликация и cutover), добавление пустых и снятие пустых шардов. | [11-bucket-sharding.md](11-bucket-sharding.md) |
-| **Kafka-кластеры** | Контроль-плейн `/kafka/`: KRaft-брокеры, топики, per-cluster SASL и CA, клиентский дискавери endpoints и кредов. | [15-kafka-clusters.md](15-kafka-clusters.md) |
-| **Valkey-кластеры** | Контроль-плейн `/valkey/`: standalone-нода, ACL-креды, клиентский дискавери endpoints. | [20-valkey-clusters.md](20-valkey-clusters.md) |
-| **S3-кластеры** | Контроль-плейн `/s3/`: пул ownS3-инстансов с привязкой к хостам, mesh-репликацией и публикацией endpoints; хранилище бэкапов шардов и etcd-слепков. | [23-s3-clusters.md](23-s3-clusters.md) |
+| **Kafka-кластеры** | Контроль-плейн `/kafka/`: KRaft-брокеры, топики, per-cluster SASL и CA, клиентский дискавери endpoints и кредов. | [kafka-clusters/README.md](kafka-clusters/README.md) |
+| **Valkey-кластеры** | Контроль-плейн `/valkey/`: standalone-нода, ACL-креды, клиентский дискавери endpoints. | [valkey-clusters/README.md](valkey-clusters/README.md) |
+| **S3-кластеры** | Контроль-плейн `/s3/`: пул ownS3-инстансов с привязкой к хостам, mesh-репликацией и публикацией endpoints; хранилище бэкапов шардов и etcd-слепков. | [s3-clusters/README.md](s3-clusters/README.md) |
 
 ## 4. Внешние потребители
 

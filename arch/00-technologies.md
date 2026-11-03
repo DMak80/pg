@@ -68,7 +68,7 @@ S3-совместимое объектное хранилище: домен S3-�
 с mesh-репликацией; бэкапы шардов кладутся в bucket пула (layout
 per-cluster/per-shard, один bucket на установку).
 
-→ [23-s3-clusters.md](23-s3-clusters.md),
+→ [s3-clusters/README.md](s3-clusters/README.md),
 [19-backups.md](19-backups.md) §5
 
 ### 2.6. PostgreSQL: физическая и логическая репликация
