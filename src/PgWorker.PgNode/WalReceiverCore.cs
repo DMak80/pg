@@ -355,6 +355,11 @@ public sealed class WalReceiverCore
                     }
                     else
                     {
+                        // Конфликт содержимого (.history чужой инкарнации) —
+                        // permanent: retry не разрешится (arch/19 §3).
+                        if (WalArchiveConflict.Is(procedureResult))
+                            return Outcome(WalSessionKind.FailedPermanent,
+                                procedureResult.Error!.Message);
                         Diagnostic(events, $"start_failed: {started.Error!.Message.Split('\n')[0]}");
                         await Task.Delay(retry, sct);
                         continue;
@@ -403,11 +408,14 @@ public sealed class WalReceiverCore
                                         source, events, segment.Tli, sct);
                                     if (history.Value is { } content)
                                     {
-                                        await PutWithRetryAsync(
+                                        var historyPut = await PutWithRetryAsync(
                                             s3, events, o, $"{o.Cluster}/{o.Shard}/wal/{segment.Tli:x8}.history",
                                             content,
                                             Convert.ToHexString(SHA256.HashData(content)), retry, sct,
                                             exhaustion);
+                                        if (!historyPut.IsSuccess)
+                                            return Outcome(WalSessionKind.FailedPermanent,
+                                                historyPut.Error!.Message);
                                         events.HistoryDelivered?.Invoke(content.Length);
                                     }
                                     else
@@ -424,9 +432,12 @@ public sealed class WalReceiverCore
                                 // 6. Доставка сегмента: sha256-hex — серверная сверка целостности
                                 //    (один расчёт: маркер и put используют один хэш).
                                 var sha256 = Convert.ToHexString(SHA256.HashData(segment.Data));
-                                await PutWithRetryAsync(
+                                var put = await PutWithRetryAsync(
                                     s3, events, o, $"{o.Cluster}/{o.Shard}/wal/{segment.Name}",
                                     segment.Data, sha256, retry, sct, exhaustion);
+                                if (!put.IsSuccess)
+                                    return Outcome(WalSessionKind.FailedPermanent,
+                                        put.Error!.Message);
                                 events.SegmentDelivered?.Invoke(segment.Data.Length);
 
                                 // 7. ЕДИНСТВЕННОЕ место подтверждения слота — после успешного put.
@@ -586,11 +597,13 @@ public sealed class WalReceiverCore
             var history = await ReadHistoryWithFallbackAsync(source, events, serverTli, ct);
             if (history.Value is { } content)
             {
-                await PutWithRetryAsync(
+                var historyPut = await PutWithRetryAsync(
                     s3, events, o, $"{o.Cluster}/{o.Shard}/wal/{serverTli:x8}.history",
                     content,
                     Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(content)),
                     retry, ct, exhaustion);
+                if (!historyPut.IsSuccess)
+                    return (Result<ulong?>.Failed(historyPut.Error!), null, historyMissing);
                 events.HistoryDelivered?.Invoke(content.Length);
             }
             else
@@ -671,7 +684,7 @@ public sealed class WalReceiverCore
     /// пер-ЦЕЛЬНЫЙ таймаут (PutAttemptTimeout — requestTimeout каждой цели в
     /// PoolBackupS3) + бюджет ВЫЗОВА (цели записи + 1) × таймаут цели: висящая
     /// первая цель не отменяет перебор — фейловер доезжает до живой ноды.</summary>
-    private static async Task PutWithRetryAsync(
+    private static async Task<Result> PutWithRetryAsync(
         IBackupS3 s3, WalSessionEvents events, WalReceiverOptions o,
         string key, byte[] data, string sha256, TimeSpan retry, CancellationToken ct,
         PoolExhaustionFlag exhaustion)
@@ -685,7 +698,11 @@ public sealed class WalReceiverCore
             using (var attemptCts = CancellationTokenSource.CreateLinkedTokenSource(ct))
             {
                 attemptCts.CancelAfter(callBudget);
-                put = await s3.PutObjectAsync(key, data, sha256, attemptCts.Token);
+                // Гвард чужой цепочки (arch/19 §3): существующий объект с иным
+                // содержимым — не transient; PUT поверх уничтожил бы DR-источник.
+                put = s3 is IWalSegmentGuard guard
+                    ? await guard.PutWalSegmentAsync(key, data, sha256, attemptCts.Token)
+                    : await s3.PutObjectAsync(key, data, sha256, attemptCts.Token);
             }
 
             if (put.IsSuccess)
@@ -697,10 +714,12 @@ public sealed class WalReceiverCore
                     exhaustion.IsSet = false;
                     events.PoolExhaustedChanged?.Invoke(false);
                 }
-                return;
+                return put;
             }
 
             events.PutError?.Invoke();
+            if (WalArchiveConflict.Is(put))
+                return put; // permanent: сессия завершится failed_permanent
             if (attempt > 1)
                 events.PutRetry?.Invoke();
             if (put.Error!.Message.Contains(S3PoolMarkers.Exhausted, StringComparison.Ordinal) && !exhaustion.IsSet)
@@ -836,13 +855,21 @@ public sealed class WalReceiverCore
                 return;
             }
 
-            var put = await s3.PutObjectAsync(
-                $"{cluster}/{shard}/wal/{candidate.Segment.Name}", data,
-                Convert.ToHexString(SHA256.HashData(data)), ct);
+            var put = s3 is IWalSegmentGuard guard
+                ? await guard.PutWalSegmentAsync(
+                    $"{cluster}/{shard}/wal/{candidate.Segment.Name}", data,
+                    Convert.ToHexString(SHA256.HashData(data)), ct)
+                : await s3.PutObjectAsync(
+                    $"{cluster}/{shard}/wal/{candidate.Segment.Name}", data,
+                    Convert.ToHexString(SHA256.HashData(data)), ct);
             if (!put.IsSuccess)
             {
                 diagnostic?.Invoke(
                     $"wal inventory: put {candidate.Segment.Name} failed: {put.Error!.Message.Split('\n')[0]}");
+                // Конфликт содержимого — чужая инкарнация: проход не продолжается
+                // (иначе сегменты выше легли бы миксом поверх чужой цепочки).
+                if (WalArchiveConflict.Is(put))
+                    return;
                 failed?.Invoke(); // пул недостижим — сигнал фактам (idle-детект, arch/19 §3)
                 return; // следующий проход повторит с той же позиции
             }
@@ -926,15 +953,22 @@ public sealed class WalReceiverCore
             try
             {
                 var content = await File.ReadAllBytesAsync(Path.Combine(pgWalDir, name), ct);
-                var put = await s3.PutObjectAsync(
-                    $"{cluster}/{shard}/wal/{name}", content,
-                    Convert.ToHexString(SHA256.HashData(content)), ct);
+                var put = s3 is IWalSegmentGuard guard
+                    ? await guard.PutWalSegmentAsync(
+                        $"{cluster}/{shard}/wal/{name}", content,
+                        Convert.ToHexString(SHA256.HashData(content)), ct)
+                    : await s3.PutObjectAsync(
+                        $"{cluster}/{shard}/wal/{name}", content,
+                        Convert.ToHexString(SHA256.HashData(content)), ct);
                 if (put.IsSuccess)
                     delivered?.Invoke(content.Length);
                 else
                 {
                     diagnostic?.Invoke(
                         $"history inventory: put {name} failed: {put.Error!.Message.Split('\n')[0]}");
+                    // Конфликт — чужая инкарнация: остановить проход (не миксовать).
+                    if (WalArchiveConflict.Is(put))
+                        return;
                     failed?.Invoke(); // пул недостижим — сигнал фактам (idle-детект, arch/19 §3)
                 }
             }

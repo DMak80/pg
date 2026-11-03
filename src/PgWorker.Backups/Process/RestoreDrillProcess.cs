@@ -73,6 +73,19 @@ public sealed class RestoreDrillProcess(
 
         if (running.Drill is not null)
         {
+            // Гвард приоритета restore (arch/19 §3.5/§3.6): активная
+            // restore-заявка владеет жизненным циклом шарда — идущий дрилл
+            // уступает (гасит свою операцию и удаляет ключ), иначе он держит
+            // единственный ops-слот первой ноды, restore получает 409 и
+            // остаётся в фазе demolished до конца дрилла.
+            if (mine.Shards.TryGetValue(running.Shard, out var runningShard)
+                && runningShard.Restores.Any(r => r.State is RestoreStatus.Planned
+                    or RestoreStatus.Running or RestoreStatus.Rejoining))
+            {
+                await YieldToRestoreAsync(snap, running.Shard, running.Drill, ct);
+                return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
+            }
+
             await SuperviseRunningAsync(snap, running.Shard, running.Drill, nowUnix, ct);
             return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
         }
@@ -223,6 +236,43 @@ public sealed class RestoreDrillProcess(
         logger.LogWarning("{Op} {cluster}/{shard}: drill failed validation: {error}",
             Op, cluster, shard, error);
         return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
+    }
+
+    // Уступка активной restore-заявке (arch/19 §3.5/§3.6): шард принадлежит
+    // restore; дрилл гасит СВОЮ операцию (сверка id снимка — реестр один, в
+    // нём может быть чужая restore/verify) и удаляет свой ключ — симметрия
+    // операторской отмене («операции нет — записи нет»). Отказ etcd или
+    // неясный снимок — transient: ключ RUNNING, следующий тик повторит уступку.
+    private async Task YieldToRestoreAsync(
+        ClusterSnapshot snap, string shard, DrillState drill, CancellationToken ct)
+    {
+        var cluster = snap.Config.Cluster;
+
+        var receiverUrl = await ResolveReceiverUrl(snap, shard);
+        if (receiverUrl is not null)
+        {
+            var reply = await receiver.GetRestoreAsync(receiverUrl, ct);
+            if (reply.Status is { Id: { } activeId }
+                && string.Equals(activeId, drill.Id, StringComparison.Ordinal))
+            {
+                var cancel = await receiver.CancelOpsAsync(receiverUrl, ct);
+                if (cancel.StatusCode is not (>= 200 and < 300) && !cancel.IsNotFound)
+                    return; // операция ещё жива — ключ не трогаем, тик повторит
+            }
+            else if (reply.IsTransient)
+                return; // состояние реестра неизвестно — ключ не трогаем
+        }
+
+        var del = await etcd.DeleteAsync(endpoints[0],
+            BackupNames.DrillKey(cluster, shard), prefix: false, ct);
+        if (!del.IsSuccess)
+            return; // transient — тик повторит
+        await journal.WritePhaseAsync(cluster, Op,
+            $"yielded-to-restore/{shard}/{drill.Id}", claims.InstanceId,
+            "active restore request owns the shard lifecycle — drill cancelled, key removed", ct);
+        logger.LogInformation(
+            "{Op} {cluster}/{shard}: drill {Id} yielded to an active restore request — operation cancelled, key removed",
+            Op, cluster, shard, drill.Id);
     }
 
     // ── Супервиз RUNNING-дрилла (arch/19 §3.6 п.2) ──

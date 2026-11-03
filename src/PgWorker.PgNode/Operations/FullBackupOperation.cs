@@ -215,8 +215,14 @@ public sealed class FullBackupOperation : IReceiverOperation
                 // сегменты набора ВЕРХНИМ hex, а канон ключей wal/ — строчные
                 // (симметрия стриму приёмников и fetch-wal) — дубль сливается
                 // со стримом, дублирования объектов нет (arch/19 §2).
-                var put = await s3.PutFileAsync(
-                    $"{_identity.Cluster}/{_identity.Shard}/wal/{FetchWalCommand.NormalizeSegment(name)}", file, token);
+                // Гвард чужой цепочки (arch/19 §3) обязателен и здесь: полный
+                // ПЕРЕСОЗДАННОГО кластера дублировал бы свои pg_wal-сегменты
+                // поверх цепочки погибшей инкарнации — DR-источник разрушался
+                // (факт E2E: pg_control полного и WAL разошлись по system id).
+                var key = $"{_identity.Cluster}/{_identity.Shard}/wal/{FetchWalCommand.NormalizeSegment(name)}";
+                var put = s3 is IWalSegmentGuard guard
+                    ? await guard.PutWalSegmentFileAsync(key, file, token)
+                    : await s3.PutFileAsync(key, file, token);
                 if (!put.IsSuccess)
                 {
                     Fail(put.Error!.Message.Split('\n')[0]);

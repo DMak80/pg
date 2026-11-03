@@ -382,6 +382,58 @@ public class BackupS3Tests
         got.IsSuccess.Should().BeFalse();
     }
 
+    // AAA: гвард чужой цепочки (arch/19 §3): первый put — запись; повтор теми
+    // же байтами — идемпотентный успех БЕЗ перезаписи; иное содержимое под тем
+    // же именем (другая инкарнация в общем префиксе) — конфликт с маркером,
+    // архивный объект не тронут (DR-источник цел).
+    [Fact]
+    public async Task PutWalSegmentSameBytesIdempotentForeignBytesConflict()
+    {
+        // Arrange — своё ownS3-окружение; ключ WAL-сегмента шарда
+        var ct = TestContext.Current.CancellationToken;
+        await using var s3Node = await OwnS3.StartAsync("s3", ct);
+        await using var s3 = new BackupS3(s3Node.S3());
+        IWalSegmentGuard guard = s3;
+        const string key = "v5/shard1/wal/000000010000000000000002";
+        var original = new byte[64];
+        Random.Shared.NextBytes(original);
+        var foreign = new byte[64];
+        Random.Shared.NextBytes(foreign);
+
+        // Act — запись, повтор тех же байтов, затем подмена содержимого
+        var first = await guard.PutWalSegmentAsync(key, original, Sha256Hex(original), ct);
+        var same = await guard.PutWalSegmentAsync(key, original, Sha256Hex(original), ct);
+        var conflict = await guard.PutWalSegmentAsync(key, foreign, Sha256Hex(foreign), ct);
+
+        // Assert — первые два успешны; конфликт помечен; в архиве прежние байты
+        first.IsSuccess.Should().BeTrue();
+        same.IsSuccess.Should().BeTrue();
+        conflict.IsSuccess.Should().BeFalse();
+        WalArchiveConflict.Is(conflict).Should().BeTrue();
+        using var seed = SeedClient(s3Node);
+        var head = await seed.GetObjectMetadataAsync(OwnS3.Bucket, key, ct);
+        head.ETag.Trim('"').Should().Be(
+            Convert.ToHexString(System.Security.Cryptography.MD5.HashData(original)).ToLowerInvariant(),
+            "the foreign segment must not overwrite the archived chain");
+
+        // Файловая форма (дубль pg_wal полного): те же байты — идемпотентный
+        // успех, иные — конфликт с маркером, архив не тронут.
+        var file = Path.GetTempFileName();
+        try
+        {
+            await File.WriteAllBytesAsync(file, original, ct);
+            (await guard.PutWalSegmentFileAsync(key, file, ct)).IsSuccess.Should().BeTrue();
+            await File.WriteAllBytesAsync(file, foreign, ct);
+            var fileConflict = await guard.PutWalSegmentFileAsync(key, file, ct);
+            fileConflict.IsSuccess.Should().BeFalse();
+            WalArchiveConflict.Is(fileConflict).Should().BeTrue();
+        }
+        finally
+        {
+            File.Delete(file);
+        }
+    }
+
     // ---: ListFullsAsync / DownloadTextAsync ----
 
     // ListFulls : id полных по CommonPrefixes, сортировка, чужие шарды не попадают.

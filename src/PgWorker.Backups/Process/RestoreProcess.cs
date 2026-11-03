@@ -188,12 +188,37 @@ public sealed class RestoreProcess(
         var (srcC, srcX) = (parts[0], parts[1]);
         var ownSource = srcC == cluster && srcX == shard.Name;
 
-        // 3. backup_id: заявка → свой свежий COMPLETED (etcd) → DR-list S3.
+        // 3. backup_id: заявка → DR-кандидат (orphan S3) → свой свежий
+        //    COMPLETED (etcd) → DR-list S3.
+        //    Orphan-полные (S3 без etcd-статуса) — объекты инкарнации, чьи
+        //    статусы стёр deprovision (D2). Пересозданный кластер успевает
+        //    снять СВОЙ полный (статус есть): в DR он не источник — newest
+        //    обязан браться из orphan-набора, иначе restore восстановит пустой
+        //    кластер из собственного свежего снимка (факт E2E). Статусы —
+        //    по шарду-ИСТОЧНИКУ: source-override между шардами того же
+        //    кластера (DR shard1→shard2) подчиняется тому же правилу.
         FullBackupState? ownFresh = null;
+        var statusIds = new HashSet<string>(StringComparer.Ordinal);
         var backupId = op.BackupId;
-        if (backupId.Length == 0 && ownSource && mine?.Shards.TryGetValue(shard.Name, out var sb) == true)
-            ownFresh = sb.Full.Where(f => f.State == FullBackupStatus.Completed)
-                .OrderByDescending(f => f.Id, StringComparer.Ordinal).FirstOrDefault();
+        if (backupId.Length == 0 && srcC == cluster
+            && mine?.Shards.TryGetValue(srcX, out var srcSb) == true)
+        {
+            foreach (var f in srcSb.Full)
+                statusIds.Add(f.Id);
+            if (ownSource)
+                ownFresh = srcSb.Full.Where(f => f.State == FullBackupStatus.Completed)
+                    .OrderByDescending(f => f.Id, StringComparer.Ordinal).FirstOrDefault();
+        }
+        if (backupId.Length == 0 && statusIds.Count > 0)
+        {
+            var listed = await S3Pulse.CallAsync(progress, token => s3.ListFullsAsync(srcC, srcX, ct: token), ct, WatchdogWindow / 2);
+            if (!listed.IsSuccess)
+                return await TransientAsync(cluster, $"s3-unavailable/{shard.Name}/{op.Id}",
+                    listed.Error!.Message, ct);
+            var orphans = listed.Value.Where(id => !statusIds.Contains(id)).ToList();
+            if (orphans.Count > 0)
+                backupId = orphans[^1]; // новейший полный погибшей инкарнации
+        }
         if (backupId.Length == 0 && ownFresh is { } fresh)
             backupId = fresh.Id;
         if (backupId.Length == 0)

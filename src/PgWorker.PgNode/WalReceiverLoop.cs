@@ -155,6 +155,12 @@ public sealed class WalReceiverLoop : BackgroundService
         var state = WalReceiverState.Starting;
         // Бэкофф ретраев failed_permanent-сессий (сек; 0 — сброшен, см. исходы).
         var permanentBackoffSec = 0.0;
+        // Конфликт содержимого WAL-архива (arch/19 §3 «Гвард чужой цепочки»):
+        // сегмент с тем же именем лежит с ДРУГИМИ байтами — в префиксе цепочка
+        // чужой инкарнации. Новые сессии не стартуют (иначе сегменты выше
+        // хвоста легли бы миксом поверх чужой цепочки); состояние — failed_permanent
+        // до пересоздания ноды (restore демонтирует её — процесс начинается заново).
+        string? archiveBlockedError = null;
 
         // CA https S3 (per-install, env ноды): материализация в temp — один раз
         // (как в старом Program; файл живёт до конца процесса).
@@ -243,6 +249,17 @@ public sealed class WalReceiverLoop : BackgroundService
                     state = WalReceiverState.WaitingRole;
                     metrics.SetStreaming(false);
                     await PublishStateAsync(status, metrics, state, currentRole, ct);
+                    await SafeDelay(_retryDelay, ct);
+                    continue;
+                }
+                if (archiveBlockedError is { } blocked)
+                {
+                    // Чужая цепочка в префиксе (arch/19 §3): сессии НЕ стартуют —
+                    // иначе микс сегментов поверх DR-источника. Лечение —
+                    // restore/демонтаж шарда (нода пересоздаётся вместе с процессом).
+                    state = WalReceiverState.FailedPermanent;
+                    metrics.SetStreaming(false);
+                    await PublishStateAsync(status, metrics, state, currentRole, ct, error: blocked);
                     await SafeDelay(_retryDelay, ct);
                     continue;
                 }
@@ -551,6 +568,8 @@ public sealed class WalReceiverLoop : BackgroundService
                     metrics.Reconnect();
                 if (outcome.Kind == WalSessionKind.FailedPermanent)
                 {
+                    if (outcome.Error?.Contains(WalArchiveConflict.Marker, StringComparison.Ordinal) == true)
+                        archiveBlockedError = outcome.Error; // чужая цепочка — сессии больше не стартуют
                     // Permanent-причина несъёмна (segment-size mismatch/разрыв
                     // LSN): полный цикл попыток каждые 5 с бессмысленен — бэкофф
                     // ×2 до 60 c + diagnostic на каждую попытку (не молчание).

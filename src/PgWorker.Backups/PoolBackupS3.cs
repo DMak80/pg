@@ -18,7 +18,7 @@ namespace PgWorker.Backups;
 /// read-целей с дедупом, успех — если ответил хотя бы один узел;
 /// BucketExists — любая доступная.
 /// </summary>
-public sealed class PoolBackupS3 : IBackupS3, IAsyncDisposable
+public sealed class PoolBackupS3 : IBackupS3, IWalSegmentGuard, IAsyncDisposable
 {
     // Окно исключения отказавшей цели (arch/19 §5): закрывает тыл
     // ретрай-циклам источников (приёмник WAL — 30-35 с) — мёртвая цель не
@@ -302,6 +302,32 @@ public sealed class PoolBackupS3 : IBackupS3, IAsyncDisposable
             $"{S3PoolMarkers.Exhausted}: put {key} — all list nodes are unavailable: {last.Error!.Message}"));
     }
 
+    // WAL-сегмент с гвардом чужой цепочки (arch/19 §3): конфликт содержимого —
+    // permanent и относится к САМОЙ цепочке, а не к цели: перебор write-списка
+    // не продолжается (иначе тот же чужой сегмент затёрли бы на другой ноде
+    // пула, а mesh разнёс бы подмену). Цель без гварда (тестовый шов) —
+    // обычный put: прод-цели фабрики всегда BackupS3.
+    public async Task<Result> PutWalSegmentAsync(
+        string key, byte[] data, string? sha256, CancellationToken ct = default)
+    {
+        Result last = default;
+        foreach (var uri in _writeTargets)
+        {
+            var result = await AttemptAsync(uri, ct, () =>
+                Target(uri) is IWalSegmentGuard guard
+                    ? guard.PutWalSegmentAsync(key, data, sha256, ct)
+                    : Target(uri).PutObjectAsync(key, data, sha256, ct));
+            if (result.IsSuccess)
+                return result;
+            if (WalArchiveConflict.Is(result))
+                return result;
+            last = result;
+        }
+
+        return Result.Failed(new ApplicationException(
+            $"{S3PoolMarkers.Exhausted}: put {key} — all list nodes are unavailable: {last.Error!.Message}"));
+    }
+
     // Удаление — write-семантика put (первая доступная нода, mesh разносит
     // tombstone — arch/19 §5); исчерпание → маркер.
     public async Task<Result> DeleteKeysAsync(IReadOnlyList<string> keys, CancellationToken ct = default)
@@ -343,6 +369,29 @@ public sealed class PoolBackupS3 : IBackupS3, IAsyncDisposable
         => await FirstFoundAsync(
             uri => Target(uri).DownloadTextAsync(cluster, shard, objectKey, ct),
             ct, $"get {objectKey}");
+
+    // Файловый WAL-гвард (дубль pg_wal полного): write-перебор с немедленной
+    // остановкой на конфликте содержимого (как PutWalSegmentAsync).
+    public async Task<Result> PutWalSegmentFileAsync(
+        string key, string filePath, CancellationToken ct = default)
+    {
+        Result last = default;
+        foreach (var uri in _writeTargets)
+        {
+            var result = await AttemptAsync(uri, ct, () =>
+                Target(uri) is IWalSegmentGuard guard
+                    ? guard.PutWalSegmentFileAsync(key, filePath, ct)
+                    : Target(uri).PutFileAsync(key, filePath, ct));
+            if (result.IsSuccess)
+                return result;
+            if (WalArchiveConflict.Is(result))
+                return result;
+            last = result;
+        }
+
+        return Result.Failed(new ApplicationException(
+            $"{S3PoolMarkers.Exhausted}: put-file {key} — all list nodes are unavailable: {last.Error!.Message}"));
+    }
 
     // Запись файла: write-семантика put (перебор write-списка); исчерпание → маркер.
     public async Task<Result> PutFileAsync(string key, string filePath, CancellationToken ct = default)
