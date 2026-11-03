@@ -61,7 +61,7 @@ internal static class RefresherTestHarness
             NullLogger<SnapshotRefresher>.Instance);
 }
 
-// Счётный алертный движок: тихий тик (S10) Evaluate не вызывает —
+// Счётный алертный движок: тик без изменений (S10) Evaluate не вызывает —
 // счётчик отражает фактические пересборки с алертным пересчётом.
 internal sealed class CountingAlertEngine : IAlertEngine
 {
@@ -728,7 +728,7 @@ public class SnapshotRefresherTests
         store.Current.Clusters.Should().Equal(first.Clusters);
     }
 
-    // S10 (arch/02 §5): тихий тик — чтение совпало с кэшем → пересборки нет,
+    // S10 (arch/02 §5): тик без изменений — чтение совпало с кэшем → пересборки нет,
     // AlertEngine не вызывается; штампы свежести обновляются, данные — те же
     // ссылки; poll-цикл продолжается (чтения идут каждым тиком).
     [Fact]
@@ -750,7 +750,7 @@ public class SnapshotRefresherTests
 
         // Assert — снапшот не пересобран, алерты не пересчитаны, штампы свежие
         result.IsSuccess.Should().BeTrue();
-        engine.EvaluateCalls.Should().Be(1, "тихий тик не запускает алертный пересчёт");
+        engine.EvaluateCalls.Should().Be(1, "тик без изменений не запускает алертный пересчёт");
         store.Current!.Clusters.Should().BeSameAs(first.Clusters, "снапшот не пересобирается");
         store.Current.MoveTickets.Should().BeSameAs(first.MoveTickets);
         store.Current.Alerts.Should().BeSameAs(first.Alerts);
@@ -834,7 +834,7 @@ public class SnapshotRefresherTests
     }
 
     // S10: тождественный member list (новые списки-инстансы, те же значения)
-    // НЕ считается изменением — тихий тик.
+    // НЕ считается изменением — тик без изменений.
     [Fact]
     public async Task Refresh_MemberListNewInstances_SameValues_Skips()
     {
@@ -924,12 +924,12 @@ public class SnapshotRefresherTests
         store.Current.Etcd.Reachable.Should().BeFalse();
     }
 
-    // S10: после сбоя данные те же, что в кэше → тихий тик (пересборки/алертного
+    // S10: после сбоя данные те же, что в кэше → тик без изменений (пересборки/алертного
     // пересчёта нет): сравнение всегда с кэшем последнего успешно прочитанного
     // состояния, исходы тиков в ветвлении не участвуют. Etcd-часть при тихом
     // тике свежая — восстановление доступности видно без пересборки.
     [Fact]
-    public async Task Refresh_AfterFailSameData_IsQuietTick()
+    public async Task Refresh_AfterFailSameData_IsNoChangeTick()
     {
         // Arrange — успешный тик (кэш=X), сбой статусов, восстановление при тех же данных
         var gateway = DemoGateway();
@@ -948,7 +948,7 @@ public class SnapshotRefresherTests
         // Act — первый опрос после сбоя по тем же данным etcd
         await refresher.RefreshOnceAsync(CancellationToken.None);
 
-        // Assert — тихий тик: данные те же ссылки, алерты не пересчитаны;
+        // Assert — тик без изменений: данные те же ссылки, алерты не пересчитаны;
         // Etcd-часть свежая (reachable восстановлен), штамп обновлён.
         // Счёт 2: пересборка т1 + пересчёт отказного т2 (spec §3.5).
         engine.EvaluateCalls.Should().Be(2);

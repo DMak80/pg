@@ -149,7 +149,7 @@ public class KafkaRefresherTests
             NullLogger<KafkaSnapshotRefresher>.Instance,
             new AdminPanel.Etcd.Workers.KafkaWorkerHealthStore());
 
-    // Счётный алертный движок: тихий тик (S10) Evaluate не вызывает — счётчик
+    // Счётный алертный движок: тик без изменений (S10) Evaluate не вызывает — счётчик
     // отражает фактические пересборки с алертным пересчётом.
     private sealed class CountingKafkaAlertEngine : IKafkaAlertEngine
     {
@@ -583,7 +583,7 @@ public class KafkaRefresherTests
         store.Current.BuiltAtUtc.Should().Be(first.BuiltAtUtc);
     }
 
-    // S10 (arch/02 §10, §5): тихий тик — чтение совпало с кэшем → пересборки нет,
+    // S10 (arch/02 §10, §5): тик без изменений — чтение совпало с кэшем → пересборки нет,
     // KafkaAlertEngine не вызывается; штамп свежести BuiltAtUtc обновляется,
     // данные — те же ссылки.
     [Fact]
@@ -604,7 +604,7 @@ public class KafkaRefresherTests
 
         // Assert — снапшот не пересобран, алерты не пересчитаны, штамп свежий
         result.IsSuccess.Should().BeTrue();
-        engine.EvaluateCalls.Should().Be(1, "тихий тик не запускает алертный пересчёт");
+        engine.EvaluateCalls.Should().Be(1, "тик без изменений не запускает алертный пересчёт");
         store.Current!.Clusters.Should().BeSameAs(first.Clusters, "снапшот не пересобирается");
         store.Current.Alerts.Should().BeSameAs(first.Alerts);
         store.Current.BuiltAtUtc.Should().Be(time.Utc, "штамп свежести обновляется");
@@ -659,10 +659,10 @@ public class KafkaRefresherTests
     }
 
     // S10/E11: после отказного тика первый успешный при НЕИЗМЕННЫХ данных —
-    // тихий тик (тики не классифицируются, гейт — дельта состояния): пересборки
+    // тик без изменений (тики не классифицируются, гейт — дельта состояния): пересборки
     // и алертного пересчёта нет, доступностная часть восстановлена.
     [Fact]
-    public async Task Refresh_RecoveryAfterFail_SameData_QuietTick()
+    public async Task Refresh_RecoveryAfterFail_SameData_NoChangeTick()
     {
         // Arrange — успешный тик, затем отказ всех endpoints, затем восстановление
         var gateway = DemoGateway();
@@ -681,11 +681,11 @@ public class KafkaRefresherTests
         // Act — восстановительный тик по тем же данным etcd
         var result = await refresher.RefreshOnceAsync(CancellationToken.None);
 
-        // Assert — тихий тик: данные не пересобраны, алертный пересчёт не
+        // Assert — тик без изменений: данные не пересобраны, алертный пересчёт не
         // выполнялся (счёт 2: пересборка т1 + пересчёт отказного т2),
         // доступностная часть свежая.
         result.IsSuccess.Should().BeTrue();
-        engine.EvaluateCalls.Should().Be(2, "тихий тик не запускает алертный пересчёт");
+        engine.EvaluateCalls.Should().Be(2, "тик без изменений не запускает алертный пересчёт");
         store.Current!.Clusters.Should().BeSameAs(first.Clusters, "снапшот не пересобирается");
         store.Current.EtcdReachable.Should().BeTrue();
         store.Current.ConsecutiveFailures.Should().Be(0);
