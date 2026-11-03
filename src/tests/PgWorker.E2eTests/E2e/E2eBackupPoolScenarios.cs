@@ -319,9 +319,10 @@ public abstract class E2eBackupPoolScenarios
     // ≤3 мин; восстановление PG+rejoin (recovering → терминал) ≤3 мин;
     // просрочка этапа — немедленное падение с именем этапа.
     protected async Task<Dictionary<string, JsonElement>> WaitRestoreAsync(
-        string cluster, string shard, string id, CancellationToken ct)
+        string cluster, string shard, string id, CancellationToken ct,
+        TimeSpan? demolishDownloadBudget = null)
     {
-        var stageBudget = TimeSpan.FromMinutes(3);
+        var stageBudget = demolishDownloadBudget ?? TimeSpan.FromMinutes(3);
         Dictionary<string, JsonElement>? status = null;
         var stageStart = DateTime.UtcNow;
         var stage = "demolish+download";
@@ -345,7 +346,7 @@ public abstract class E2eBackupPoolScenarios
                         + $" (state={s["state"].GetString()})");
             }
             return status is not null && (status["state"].GetString() is "COMPLETED" or "FAILED");
-        }, TimeSpan.FromMinutes(6), ct);
+        }, (demolishDownloadBudget ?? TimeSpan.FromMinutes(3)) + TimeSpan.FromMinutes(3), ct);
         if (!done || status!["state"].GetString() == "FAILED")
             throw new ApplicationException(
                 $"restore {cluster}/{shard}/{id} did not reach COMPLETED: "
@@ -910,7 +911,10 @@ public sealed class PoolReadAnyNodeScenarios(PoolReadAnyNodeScenariosFx Ctx) : E
             ct = ctsRestore.Token;
 
             var restoreId = await PutRestorePlannedAsync(cluster, "shard1", "latest", ct: ct);
-            var restore = await WaitRestoreAsync(cluster, "shard1", restoreId, ct);
+            // Этап demolish+download 4 мин (приказ владельца): чтение набора с
+            // node2 идёт после перебора пула с мёртвым node1 + параллельный drill.
+            var restore = await WaitRestoreAsync(cluster, "shard1", restoreId, ct,
+                TimeSpan.FromMinutes(4));
             restore["state"].GetString().Should().Be("COMPLETED",
                 "the ReadAll walkover reaches a live pool node (mesh copy)");
             await Fx.RunDockerAsync(["start", Fx.S3NodeContainerName], ct);
