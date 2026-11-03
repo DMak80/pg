@@ -51,8 +51,13 @@ public sealed class PoolBackupS3 : IBackupS3, IWalSegmentGuard, IAsyncDisposable
         // Прод: uri => new BackupS3(new S3ClientOptions(uri, bucket, access,
         // secret, CaBundlePath: caBundlePath), requestTimeout); инъекция —
         // юнит-тесты (FakeTargetS3 с управляемым отказом).
+        // MaxErrorRetry: 0 — у пула СВОЯ ретрай-политика (перебор целей + breaker):
+        // внутренние ретраи AWSSDK на мёртвой ноде множат пер-попыточный таймаут
+        // и растягивают ОДИН вызов до минут (факт E2E: list-union 49,7 с,
+        // control-pass 65,8 с при остановленной ноде пула) — канон S3ClientOptions.
         _targetFactory = targetFactory ?? (uri => new BackupS3(
-            new S3ClientOptions(uri, bucket, accessKey, secretKey, CaBundlePath: caBundlePath),
+            new S3ClientOptions(uri, bucket, accessKey, secretKey, CaBundlePath: caBundlePath,
+                MaxErrorRetry: 0),
             requestTimeout));
         _breakerWindow = breakerWindow ?? DefaultBreakerWindow;
         _clock = clock ?? TimeProvider.System;

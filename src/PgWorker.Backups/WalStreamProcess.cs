@@ -122,8 +122,13 @@ public sealed class WalStreamProcess(
 
             try
             {
+                var tickSw = System.Diagnostics.Stopwatch.StartNew();
                 await TickShardAsync(cluster, snap, shard, shardBackups.GetValueOrDefault(shard.Name),
                     options, poolResult, ct);
+                if (tickSw.Elapsed > TimeSpan.FromSeconds(5))
+                    logger?.LogWarning(
+                        "backup-wal {Cluster}/{Shard}: shard tick took {Seconds:F1}s",
+                        cluster, shard.Name, tickSw.Elapsed.TotalSeconds);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -150,6 +155,23 @@ public sealed class WalStreamProcess(
     {
         lagObserver?.Invoke(cluster, shard, lagSegments);
         uploadedAgeObserver?.Invoke(cluster, shard, uploadedAgeSec);
+    }
+
+    // Диагностика медленных шагов тика (arch/19 §3): вызов к недоступной ноде
+    // пула (S3/Patroni/SQL) тянет тик до таймаута — шаг с длительностью обязан
+    // быть виден в логе: без этого между «backup-wal Done» тишина, и причина
+    // 60-секундных пауз тика недоказуема.
+    private async Task<T> TimedStepAsync<T>(
+        string cluster, string shard, string step, Func<Task<T>> call)
+    {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var result = await call();
+        sw.Stop();
+        if (sw.Elapsed > TimeSpan.FromSeconds(2))
+            logger?.LogWarning(
+                "backup-wal {Cluster}/{Shard}: step {Step} took {Seconds:F1}s",
+                cluster, shard, step, sw.Elapsed.TotalSeconds);
+        return result;
     }
 
     private async Task TickShardAsync(
@@ -193,7 +215,8 @@ public sealed class WalStreamProcess(
         var addresses = await shards.ReadPortAllocAsync(cluster, ct);
         if (!addresses.IsSuccess)
             throw new ApplicationException($"portalloc: {addresses.Error!.Message}");
-        var master = await shards.ResolveMasterAsync(cluster, shard, addresses.Value, ct);
+        var master = await TimedStepAsync(cluster, shard.Name, "resolve-master",
+            () => shards.ResolveMasterAsync(cluster, shard, addresses.Value, ct));
         if (!master.IsSuccess)
             throw new ApplicationException($"master resolve: {master.Error!.Message}");
         if (master.Value is not { } masterAddr)
@@ -205,7 +228,8 @@ public sealed class WalStreamProcess(
 
         var (masterRef, masterPgHost, masterPgPort) = ResolveNodeRef(shard, addresses.Value, masterAddr);
         var sources = new List<WalSource> { new(masterRef, masterAddr, masterPgHost, masterPgPort) };
-        var sync = await shards.ResolveSyncStandbyAsync(cluster, shard, addresses.Value, ct);
+        var sync = await TimedStepAsync(cluster, shard.Name, "resolve-sync",
+            () => shards.ResolveSyncStandbyAsync(cluster, shard, addresses.Value, ct));
         if (!sync.IsSuccess)
             throw new ApplicationException($"sync-standby resolve: {sync.Error!.Message}");
         if (sync.Value is { } syncAddr && syncAddr != masterAddr)
@@ -236,7 +260,8 @@ public sealed class WalStreamProcess(
         foreach (var src in sources)
         {
             var dsn = ShardEndpoints.AdminDsn(src.Addr, snap.Config.DbName, secrets);
-            var probe = await sql.SlotProbeAsync(dsn, slot, ct);
+            var probe = await TimedStepAsync(cluster, shard.Name, $"slot-probe@{src.Node}",
+                () => sql.SlotProbeAsync(dsn, slot, ct));
             if (!probe.IsSuccess)
                 throw new ApplicationException($"slot probe {slot}@{src.Node}: {probe.Error!.Message}");
             slotProbes.Add((src, dsn, probe.Value.Exists, probe.Value.WalStatus));
@@ -334,9 +359,10 @@ public sealed class WalStreamProcess(
 
         // (6–7) Контроль: WAL_CHAIN_ERROR-исход — ключ WAL_CHAIN_ERROR (слот recreate при «слот
         // исчез»); docker-сносов в тике больше нет.
-        await ControlDueAsync(
-            cluster, shard.Name, wal, shardBackups, options, sources, slot, adminDsn,
-            poolS3, agentFacts, agentStates, ct);
+        await TimedStepAsync(cluster, shard.Name, "control-pass",
+            () => ControlDueAsync(
+                cluster, shard.Name, wal, shardBackups, options, sources, slot, adminDsn,
+                poolS3, agentFacts, agentStates, ct));
     }
 
     // Чтение фактов приёмников шарда : Range статус-ключей; транспорт-фейл —

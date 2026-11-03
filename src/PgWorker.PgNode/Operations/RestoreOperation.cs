@@ -124,13 +124,20 @@ public sealed class RestoreOperation : IReceiverOperation
             //    отказ посреди заливки/лаг mesh — неполон, недокачанный набор
             //    дал бы ложный permanent-FAILED) и скачивание 1:1 в PGDATA.
             Update(OperationStates.Running, phase);
+            // Хронометраж набора (диагностика «куда уходит время restore»:
+            // union-лист и пофайловый download — крупнейшие неочевидные шаги).
+            var listSw = System.Diagnostics.Stopwatch.StartNew();
             var listed = await s3.ListPrefixUnionAsync(s3Base, ct: token);
             if (!listed.IsSuccess)
             {
                 Fail(phase, OpText.OneLine(listed.Error!.Message));
                 return;
             }
+            Console.WriteLine(
+                $"[restore] union-list {s3Base}: {listed.Value.Count} file(s) in {listSw.Elapsed.TotalSeconds:F1}s");
             Directory.CreateDirectory(pgdata);
+            var downloadSw = System.Diagnostics.Stopwatch.StartNew();
+            var downloaded = 0;
             foreach (var obj in listed.Value)
             {
                 // rel — путь под PGDATA (относительно s3Base); key — ключ
@@ -150,7 +157,10 @@ public sealed class RestoreOperation : IReceiverOperation
                     Fail(phase, OpText.OneLine(got.Error!.Message));
                     return;
                 }
+                downloaded++;
             }
+            Console.WriteLine(
+                $"[restore] downloaded {downloaded} file(s) in {downloadSw.Elapsed.TotalSeconds:F1}s");
             // Проверка backup_label набора — нет → failed/downloading.
             if (!File.Exists(Path.Combine(pgdata, "backup_label")))
             {

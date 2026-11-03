@@ -142,14 +142,14 @@ public sealed class E2eRestoreNewClusterScenarios(E2eRestoreNewClusterScenariosF
                 "reprovisioning", E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(90), ct2);
             reprovisioned.Should().BeTrue("the cluster must come up anew (empty shards)");
             Mark("reprovision");
-            // Оба шарда — ПАРАЛЛЕЛЬНО: шарды независимы (свои ноды/тома/префиксы),
-            // канон допускает одну активную заявку НА ШАРД; последовательный
-            // прогон удваивал ожидание (замер: 34 с + 59 с).
-            await Task.WhenAll(
-                RestoreWithRetryAsync(cluster, "shard1",
-                    target: "latest", source: $"{cluster}/shard1", ct: ct2),
-                RestoreWithRetryAsync(cluster, "shard2",
-                    target: "latest", source: $"{cluster}/shard1", ct: ct2));
+            // Последовательно: параллельный запуск двух restore экономил ~23 с,
+            // но на общем хосте выводил REJOINING второго шарда за 90-секундное
+            // ожидание теста (гейт воркера — PatroniBootSec 120 с) — флейк
+            // (факт E2E). Параллель — только с согласованным бюджетом ожидания.
+            var drDone = await RestoreWithRetryAsync(cluster, "shard1",
+                target: "latest", source: $"{cluster}/shard1", ct: ct2);
+            var drDone2 = await RestoreWithRetryAsync(cluster, "shard2",
+                target: "latest", source: $"{cluster}/shard1", ct: ct2);
             Mark("restores");
 
             // Assert — оба restore COMPLETED (RestoreWithRetry не вернёт FAILED);
