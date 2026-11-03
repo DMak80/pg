@@ -151,8 +151,8 @@ internal sealed class ReconcileLoop(
         if (version == Interlocked.Read(ref _processedVersion))
         {
             health.MarkReconcileActivity();
-            health.MarkReconcileSkippedTick();
-            metrics.LoopTick("reconcile.skipped", ok: true); // «пропущен без изменений» — отдельная серия
+            health.MarkReconcileNoChangeTick();
+            metrics.LoopTick("reconcile.nochange", ok: true); // «тик без изменений» — отдельная серия
             return Result.Success();
         }
 

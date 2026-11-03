@@ -45,7 +45,7 @@ public sealed class HealthState(TimeProvider clock) : Shared.Core.Hosting.ILoopP
     /// <summary>Пропущенный без изменений тик (arch/17 S10): итерация была
     /// (loops-alive живёт, watchdog жив), работы не было — счётчик клэймов
     /// НЕ трогается (клэймы держит keepalive-цикл, не тик).</summary>
-    public void MarkReconcileSkippedTick()
+    public void MarkReconcileNoChangeTick()
     {
         lock (_sync)
         {
