@@ -498,13 +498,15 @@ public sealed class PoolSingleNodeScenarios(PoolSingleNodeScenariosFx Ctx) : E2e
     [Fact]
     public async Task Pool_SingleNode_BothStreams_RestoreOk()
     {
-        using var cts = CancellationTokenSource.CreateLinkedTokenSource(
-            TestContext.Current.CancellationToken);
-        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
-        var ct = cts.Token;
+        // Общего потолка нет (приказ владельца): все этапы покрыты лимитами —
+        // provision+backup ≤3 мин (ассерт ниже), скачивание ≤3 мин и
+        // восстановление ≤3 мин (RestoreLatestStagedAsync).
+        var ct = TestContext.Current.CancellationToken;
         var cluster = $"pac3{Fx.ClusterTag}";
         try
         {
+            // Этап 1 (provision+backup) — лимит 3 мин (приказ владельца).
+            var stage1Start = DateTime.UtcNow;
             await TimedAsync("ac3 seed-cluster", () => SeedClusterAsync(cluster));
             await TimedAsync("ac3 seed-pool", () => Fx.SeedS3PoolAsync(Pool, ct));
             await TimedAsync("ac3 policy", () => PutPolicyAsync(cluster, ["node1"], ["node1"]));
@@ -529,10 +531,12 @@ public sealed class PoolSingleNodeScenarios(PoolSingleNodeScenariosFx Ctx) : E2e
             var done = await TimedAsync(
                 "ac3 full-completed", () => WaitCompletedFullAsync(cluster, ct));
             done.Should().NotBeNull();
+            (DateTime.UtcNow - stage1Start).Should().BeLessThanOrEqualTo(
+                TimeSpan.FromMinutes(3), "provision+backup stage budget (3 min)");
 
-            // Act/Assert — restore latest из пула: COMPLETED.
+            // Act/Assert — restore latest из пула: COMPLETED (этапные лимиты).
             var restore = await TimedAsync(
-                "ac3 restore-latest", () => RestoreLatestAsync(cluster, "shard1", ct));
+                "ac3 restore-latest", () => RestoreLatestStagedAsync(cluster, "shard1", ct));
             restore["state"].GetString().Should().Be("COMPLETED", "restore from a single-node pool");
             await load.CancelAsync();
             try { await loader; } catch { /* фон остановлен */ }
@@ -542,6 +546,46 @@ public sealed class PoolSingleNodeScenarios(PoolSingleNodeScenariosFx Ctx) : E2e
             Fx.MarkFailed();
             throw;
         }
+    }
+
+    // Этапные бюджеты restore, только этот тест (приказ владельца): заявка →
+    // phase=recovering ≤3 мин (скачивание), recovering → терминал ≤3 мин
+    // (восстановление); просрочка этапа — немедленное падение с именем этапа.
+    private async Task<Dictionary<string, JsonElement>> RestoreLatestStagedAsync(
+        string cluster, string shard, CancellationToken ct)
+    {
+        var stageBudget = TimeSpan.FromMinutes(3);
+        var id = await PutRestorePlannedAsync(cluster, shard, "latest", ct: ct);
+        Dictionary<string, JsonElement>? status = null;
+        var stageStart = DateTime.UtcNow;
+        var stage = "download";
+        var done = await E2eFixture.WaitForAsync(async () =>
+        {
+            var raw = await GetOrNullAsync(PgWorker.Backups.BackupNames.RestoreKey(cluster, shard, id));
+            if (raw is null)
+                return false;
+            status = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(raw.Value);
+            if (status is { } s)
+            {
+                if (stage == "download" && s.TryGetValue("phase", out var ph)
+                    && ph.GetString() == "recovering")
+                {
+                    stage = "recover";
+                    stageStart = DateTime.UtcNow;
+                }
+                if (DateTime.UtcNow - stageStart > stageBudget)
+                    throw new ApplicationException(
+                        $"restore {cluster}/{shard}/{id} stage '{stage}' exceeded {stageBudget.TotalSeconds:0}s"
+                        + $" (state={s["state"].GetString()})");
+            }
+            return status is not null && (status["state"].GetString() is "COMPLETED" or "FAILED");
+        }, TimeSpan.FromMinutes(6), ct);
+        if (!done || status!["state"].GetString() == "FAILED")
+            throw new ApplicationException(
+                $"restore {cluster}/{shard}/{id} did not reach COMPLETED: "
+                + (status is null ? "no key" : status["state"].GetString())
+                + (status is { } s && s.TryGetValue("error", out var err) ? $", error={err.GetString()}" : ""));
+        return status!;
     }
 }
 
