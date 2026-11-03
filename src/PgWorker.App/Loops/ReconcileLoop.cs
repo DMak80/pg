@@ -35,11 +35,6 @@ internal sealed class ReconcileLoop(
     Shared.Metrics.Worker.WorkerMetricsInstrumentation metrics,
     IPrefixPollSources sources) : BackgroundService, IHealthCheckService
 {
-    // Baseline гейта тика (arch/17 S10): Version источников на момент
-    // последнего ОБРАБОТАННОГО тика; −1 = ещё не обрабатывали (первый тик
-    // всегда работает — стартовый слепок кэшей и есть обрабатываемое состояние).
-    private long _processedVersion = -1;
-
     public bool Inited { get; private set; }
 
     public bool Working { get; private set; }
@@ -117,8 +112,8 @@ internal sealed class ReconcileLoop(
         }
     }
 
-    /// <summary>Один тик (публичен для тестов/health): гейт по дельте → слепки
-    /// кэшей → параллельная обработка кластеров.</summary>
+    /// <summary>Один тик (публичен для тестов/health): слепки опросных кэшей
+    /// → параллельная обработка кластеров (само-healing тикает всегда, S10).</summary>
     internal async Task<Result> TickAsync(CancellationToken ct)
     {
         var endpoints = options.CurrentValue.Etcd.Endpoints.ToArray();
@@ -140,22 +135,15 @@ internal sealed class ReconcileLoop(
             return Result.Failed(ex);
         }
 
-        // ГЕЙТ ТИКА (arch/17 S10, реестр E10): применяется только фактическое
-        // изменение etcd-состояния. Дельты с последнего обработанного состояния
-        // нет (в т.ч. после сбоя опроса — кэш дельту не поднимает) → тик НЕ
-        // работает: processes/клэймы/пробы/docker не вызываются. Heartbeat
-        // отмечается ВСЕГДА (watchdog жив, arch/14 §6), loops-alive живёт
-        // (клэймы не трогаем — их держит keepalive-цикл), метрика тика —
-        // успешная (цикл жив, работы не было).
-        var version = sources.Version;
-        if (version == Interlocked.Read(ref _processedVersion))
-        {
-            health.MarkReconcileActivity();
-            health.MarkReconcileNoChangeTick();
-            metrics.LoopTick("reconcile.nochange", ok: true); // «тик без изменений» — отдельная серия
-            return Result.Success();
-        }
-
+        // ГЕЙТ ТИКА — НЕТ (уточнение владельца S10, факт E2E 2026-11-03):
+        // «применять только изменения» относится к применениям etcd-значений
+        // (ensurer/ALTER/пересборка панели — они работают по кэшу и проверкам),
+        // а НЕ к само-healing циклам воркера: provision (waiting-patroni),
+        // restore, надзор обязаны тикать всегда — их ожидания (готовность
+        // Patroni, docker-состояние) не порождают etcd-дельт, гейт навсегда
+        // заморозил бы недоведённую работу. E10 закрыт объёмом чтения:
+        // etcd-чтений в тике НОЛЬ (слепки опросных кэшей); применения внутри
+        // процессов — по факту изменения (put-if-absent, G2-проверка arch/19 §7).
         health.MarkReconcileActivity();
 
         // Парсинг контроль-плейна — из слепков кэшей (не etcd; P9 выполняется
@@ -186,9 +174,6 @@ internal sealed class ReconcileLoop(
             gate.Dispose();
         }
 
-        // Тик обработан: baseline = Version на входе тика; изменения, пришедшие
-        // ВО ВРЕМЯ обработки, остались за baseline'ом — их донесёт следующий тик.
-        Interlocked.Exchange(ref _processedVersion, version);
         health.MarkReconcileTick(ok: true, claimsHeld: parsed.Value.Count(c => claims.IsMine(c.Config.Cluster)));
         metrics.LoopTick("reconcile", ok: true);
         metrics.ClaimsHeld(parsed.Value.Count(c => claims.IsMine(c.Config.Cluster)));

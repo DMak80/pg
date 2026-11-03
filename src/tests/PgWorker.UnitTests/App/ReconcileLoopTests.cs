@@ -555,11 +555,12 @@ public class ReconcileLoopTests
         processes.Supervised.Should().Equal("shop");
     }
 
-    // AAA (arch/17 S10, гейт тика): нет дельты с последнего обработанного
-    // состояния → тик НЕ работает (processes не зовутся, клэймов нет), но
-    // heartbeat/loops-alive отмечаются всегда (watchdog жив, arch/14 §6).
+    // AAA (уточнение владельца S10): цикл само-healing тикает ВСЕГДА (ожидания
+    // provision/надзора — не-etcd события, дельт не порождают); etcd в тике
+    // не читается вовсе — слепки опросных кэшей (E10). Два тика подряд
+    // обрабатывают кластер из слепков.
     [Fact]
-    public async Task Tick_NoDeltaSinceProcessed_SkipsWork_HeartbeatAlways()
+    public async Task Tick_ProcessesFromSourcesSnapshot_EveryTick()
     {
         // Arrange — стартовый слепок; отметки HealthState — на управляемых часах
         SeedCluster("shop", null);
@@ -575,7 +576,7 @@ public class ReconcileLoopTests
                 new System.Diagnostics.Metrics.Meter("TestReconcile"), TimeProvider.System),
             sources);
 
-        // Act 1 — первый тик обрабатывает стартовый слепок (baseline)
+        // Act 1 — первый тик обрабатывает стартовый слепок
         var tick1 = await loop.TickAsync(TestContext.Current.CancellationToken);
 
         // Assert 1 — процесс зван, клэймы посчитаны
@@ -584,22 +585,21 @@ public class ReconcileLoopTests
         var afterTick1 = health.Snapshot();
         afterTick1.ClaimsHeld.Should().Be(1);
 
-        // Act 2 — дельты нет (опрос не принёс изменений): тик пропускается
+        // Act 2 — второй тик без всяких дельт: цикл само-healing тикает всегда
         clock.Now = clock.Now.AddMinutes(1);
         var tick2 = await loop.TickAsync(TestContext.Current.CancellationToken);
 
-        // Assert 2 — работы нет; heartbeat/loops-alive обновлены (watchdog жив),
-        // счётчик клэймов не тронут (клэймы держит keepalive-цикл, не тик)
+        // Assert 2 — процесс зван снова; heartbeat/loops-alive обновлены
         tick2.IsSuccess.Should().BeTrue();
-        processes.Supervised.Should().HaveCount(1);
+        processes.Supervised.Should().HaveCount(2);
         var afterTick2 = health.Snapshot();
         afterTick2.LastReconcileTick.Should().BeAfter(afterTick1.LastReconcileTick!.Value);
         afterTick2.LastReconcileActivity.Should().BeAfter(afterTick1.LastReconcileActivity!.Value);
         afterTick2.ClaimsHeld.Should().Be(1);
     }
 
-    // AAA (arch/17 S10): дельта наблюдаемого префикса (изменение /clusters/,
-    // опросный кэш поднял Changed) → тик исполняется, процессы зовутся.
+    // AAA (arch/17 S10): изменение наблюдаемого префикса, принесённое опросным
+    // кэшем (шард3 в слепке) → тик обрабатывает новое состояние.
     [Fact]
     public async Task Tick_DeltaInWatchedPrefix_Processes()
     {
@@ -612,21 +612,21 @@ public class ReconcileLoopTests
         tick1.IsSuccess.Should().BeTrue();
         processes.Supervised.Should().Equal("shop");
 
-        // Act — дельта: изменение /clusters/; опрос кэша принёс его (Version++)
+        // Act — изменение /clusters/, опрос кэша принёс его в слепок
         _etcd.Seed("/clusters/shop/shards/shard3/replicas", "2");
         sources.PollChanged(_etcd);
         var tick2 = await loop.TickAsync(TestContext.Current.CancellationToken);
 
-        // Assert — тик по дельте исполнился: кластер обработан снова
+        // Assert — тик обработал обновлённое состояние
         tick2.IsSuccess.Should().BeTrue();
         processes.Supervised.Should().HaveCount(2);
     }
 
-    // AAA (arch/17 S10, сценарий владельца): сбой опроса — дельты нет → тик
-    // пропущен (без ретрай-ветки по исходу тика); когда опрос удался и принёс
-    // изменение → дельта → тик исполняется.
+    // AAA (arch/17 S10): сбой опроса — слепок остаётся последним успешным;
+    // цикл продолжает обрабатывать последний успешный слепок (само-healing),
+    // без ретрай-веток по исходу тика (владелец: тики не классифицируются).
     [Fact]
-    public async Task Tick_PollFaultSkipsTick_ThenDeltaProcesses()
+    public async Task Tick_PollFault_ProcessesFromLastGoodSnapshot()
     {
         // Arrange — первый тик обработал стартовый слепок
         SeedCluster("shop", null);
@@ -637,28 +637,20 @@ public class ReconcileLoopTests
         tick1.IsSuccess.Should().BeTrue();
         processes.Supervised.Should().Equal("shop");
 
-        // Act 1 — сбой опроса: кэш дельту не поднимает (слепок и Version без изменений)
+        // Act — опрос не принёс изменений (слепок прежний) → тик обрабатывает
+        // прежний слепок как обычно
         var tick2 = await loop.TickAsync(TestContext.Current.CancellationToken);
 
-        // Assert 1 — тик пропущен (processes не зовутся), цикл жив
+        // Assert — цикл жив, обработка по последнему успешному слепку
         tick2.IsSuccess.Should().BeTrue();
-        processes.Supervised.Should().HaveCount(1);
-
-        // Act 2 — опрос удался и принёс изменение → дельта
-        _etcd.Seed("/clusters/shop/shards/shard3/replicas", "2");
-        sources.PollChanged(_etcd);
-        var tick3 = await loop.TickAsync(TestContext.Current.CancellationToken);
-
-        // Assert 2 — по дельте тик исполняется
-        tick3.IsSuccess.Should().BeTrue();
         processes.Supervised.Should().HaveCount(2);
     }
 
-    // AAA (arch/14 §3 + S10): смерть чужого инстанса гасит его клэйм-lease —
-    // ключ исчезает из /pgworker/claims/; опросный кэш видит удаление → дельта →
-    // тик исполняется и клэйм берём — takeover доезжает (≤ TTL + тик).
+    // AAA (arch/14 §3): смерть чужого инстанса гасит его клэйм-lease — ключ
+    // исчезает из /pgworker/claims/; слепок кэша отражает удаление → тик берёт
+    // клэйм — takeover доезжает (≤ TTL + тик).
     [Fact]
-    public async Task Tick_ClaimKeyVanishes_Delta_TakeoverProcesses()
+    public async Task Tick_ClaimKeyVanishes_TakeoverProcesses()
     {
         // Arrange — клэйм кластера у чужого инстанса
         SeedCluster("shop", "NOT_INITIALIZED");
@@ -672,7 +664,7 @@ public class ReconcileLoopTests
         tick1.IsSuccess.Should().BeTrue();
         processes.Provisioned.Should().BeEmpty();
 
-        // Act 2 — чужой инстанс умер: ключ клэйма исчез; дельта удаления дошла до тика
+        // Act 2 — чужой инстанс умер: ключ клэйма исчез, слепок обновлён
         _etcd.Store.Remove("/pgworker/claims/shop");
         sources.PollChanged(_etcd);
         var tick2 = await loop.TickAsync(TestContext.Current.CancellationToken);

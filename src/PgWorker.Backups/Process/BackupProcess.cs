@@ -235,7 +235,26 @@ public sealed class BackupProcess(
                     && f.WalStartSegment is { Length: > 0 } walStart
                     && string.CompareOrdinal(walStart, gapTo) >= 0);
 
-            if (!BackupPlanner.IsDue(fulls, fullMaxAgeSec, nowUnix, lastRestoreFinished,
+            // (arch/19 §2): первый полный в окне ДО избрания sync-standby
+            // снимается с мастера (fallback источника). После избрания
+            // sync-standby самый свежий COMPLETED с ролью master — due для
+            // пересъёма с реплики (канон: «источник полного — синхрон-реплика»);
+            // полное с role=replica гасит force. Без цикла: sync не избран →
+            // force нет, обычный due. Гейт по дельте (arch/17 S10) сдвинул
+            // первый полный в это окно — правило делает канон исполнимым.
+            var freshestCompleted = fulls.Where(f => f.State == FullBackupStatus.Completed)
+                .OrderByDescending(f => f.StartedUnix).FirstOrDefault();
+            var freshestIsMasterSourced = freshestCompleted is { } fc
+                && fc.Role == BackupSourceRole.Master;
+            var syncElected = false;
+            if (freshestIsMasterSourced)
+            {
+                var syncProbe = await shardEndpoints.ResolveBackupSourceAsync(cluster, shard, addresses.Value, ct);
+                syncElected = syncProbe.IsSuccess && syncProbe.Value is { } s
+                    && (s.Ports != master.Value.Ports || s.Host != master.Value.Host);
+            }
+
+            if (!syncElected && !BackupPlanner.IsDue(fulls, fullMaxAgeSec, nowUnix, lastRestoreFinished,
                     walChainBroken: brokenBoundary is not null && !breakCovered,
                     walGapUncovered: gapBoundary is not null && !gapCovered))
                 continue;
