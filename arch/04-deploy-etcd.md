@@ -201,7 +201,7 @@ reliability-report) — контур обязан быть 3-узловым. Б�
 оператор: ОДИН **seed-узел** (рецепт `deploy/etcd/` — compose-файл одного
 узла в общей сети, peer-URL по имени узла); состав до целевого (нечётное
 число, рекомендация 3) доводит оркестратор EtcdWorker по декларации
-`/etcd/config` ([25-etcdworker.md](25-etcdworker.md)).
+`/etcd/config` ([etcdworker/00-etcd-contract.md](etcdworker/00-etcd-contract.md)).
 
 1. **Топология — адресация только по именам узлов** (IP хостов и
    host-network в контуре воркер-инсталляции НЕ используются): peer-URL

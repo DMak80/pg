@@ -502,5 +502,5 @@ METRICS_ALERTMANAGER_PORT=9093, METRICS_ALERT_WEBHOOK_URL=   # пусто — т
 ---
 
 → Возврат к [README.md](README.md). Воркеры — [14-pgworker.md](14-pgworker.md)
-§7, [16-kafkaworker.md](16-kafkaworker.md) §7; панель —
+§7, [kafkaworker/README.md](kafkaworker/README.md); панель —
 [adminpanel/01-architecture.md](adminpanel/01-architecture.md)

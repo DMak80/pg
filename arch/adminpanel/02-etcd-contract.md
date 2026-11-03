@@ -1119,11 +1119,11 @@ etcd-контура (`/etcd/config`, arch/25 §5) — прокси в API EtcdWo
 
 ## 10. Kafka (чтение + записи панели)
 
-Третий домен панели. Канон ключей — [15-kafka-clusters.md](../15-kafka-clusters.md)
+Третий домен панели. Канон ключей — [kafka-clusters/README.md](../kafka-clusters/README.md)
 (контроль-плейн `/kafka/clusters/`, координация `/kafkaworker/`, формат
 `topics/<T>` §3 — дословно источник истины); эта глава фиксирует панельную
 проекцию: что панель читает и как мутирует. Декларатор — панель, исполнитель —
-KafkaWorker ([16-kafkaworker.md](../16-kafkaworker.md)); панель никогда не
+KafkaWorker ([kafkaworker/README.md](../kafkaworker/README.md)); панель никогда не
 трогает контейнеры и Kafka напрямую (мутации — только ключи etcd, пробы —
 read-only). Отдельный домен-снапшот `KafkaSnapshot` (не `EtcdSnapshot` pg) —
 своя механика тика §4, тем же транспортом §1 и настройками endpoints.
@@ -1241,10 +1241,10 @@ min.insync.replicas?}}` + `desired_unix`=now + `desired_by`=username → txn
 
 ## 11. Valkey (чтение + мутации)
 
-Четвёртый домен панели. Канон ключей — [20-valkey-clusters.md](../20-valkey-clusters.md)
+Четвёртый домен панели. Канон ключей — [valkey-clusters/02-keys.md](../valkey-clusters/02-keys.md)
 (контроль-плейн `/valkey/clusters/`, координация `/valkeyworker/` — дословно
 источник истины); эта глава фиксирует панельную проекцию. Декларатор — панель,
-исполнитель — ValkeyWorker ([21-valkeyworker.md](../21-valkeyworker.md));
+исполнитель — ValkeyWorker ([valkeyworker/README.md](../valkeyworker/README.md));
 панель никогда не трогает контейнеры и Valkey-ноды напрямую (мутации — только
 через API воркера, пробы — read-only PING по admin-креду из etcd). Отдельный
 домен-снапшот `ValkeySnapshot` (не `EtcdSnapshot` pg и не `KafkaSnapshot`) —
@@ -1308,8 +1308,7 @@ parseError-запись + warning-алерт `valkey-key-malformed` (arch/20 §5
 ## 12. S3 (чтение + мутации)
 
 Пятый домен панели. Канон ключей —
-[23-s3-clusters.md](../23-s3-clusters.md) (§2 — состав кластера, §3 —
-connectivity/sync зонда, §4 — placement, §6 — PKI, §8 — ротации и API);
+[s3-clusters/README.md](../s3-clusters/README.md) (состав канона и разделы);
 этот раздел — панельная проекция. Декларатор — панель, исполнитель —
 S3Worker ([24-s3worker.md](../24-s3worker.md)); панель никогда не трогает
 контейнеры и ноды S3 напрямую. Отдельный домен-снапшот `S3Snapshot`

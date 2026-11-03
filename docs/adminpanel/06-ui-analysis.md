@@ -22,17 +22,17 @@
 |---|---|---|
 | **etcd-контур** | Единственный источник истины (DCS): 3 узла, кворум 2/3, один контур на все домены. Декларации кластеров, координация воркеров (leader/claims/lease TTL 15 с), DCS Patroni, клиентский дискавери. Данные кластеров в etcd не живут — только метаданные | [arch/01](../../arch/01-architecture.md), [arch/17](../../arch/17-synchronization-principles.md) |
 | **PgWorker** | Оркестратор шардированных HA-кластеров PostgreSQL: provisioning/deprovisioning, надзор нод (failover/rebuild/конвергенция), переезды бакетов, эвакуации, ротации секретов, бэкапы. Единственный писатель `/clusters/`, `/pgworker/`, `/service/<C>-<X>/request_*` | [arch/14](../../arch/14-pgworker.md) |
-| **KafkaWorker** | Оркестратор Kafka-кластеров (KRaft): жизненный цикл брокеров, SASL/PKI, автосинк топиков, reassignment партиций, mutable-конфиги. Единственный писатель `/kafka/`, `/kafkaworker/` | [arch/16](../../arch/16-kafkaworker.md) |
+| **KafkaWorker** | Оркестратор Kafka-кластеров (KRaft): жизненный цикл брокеров, SASL/PKI, автосинк топиков, reassignment партиций, mutable-конфиги. Единственный писатель `/kafka/`, `/kafkaworker/` | [arch/kafkaworker](../../arch/kafkaworker/README.md) |
 | **ValkeyWorker** | Оркестратор Valkey-кластеров (standalone-кеш, 1 нода, persistence off): контейнер, ACL-креды, TLS, ротации. Единственный писатель `/valkey/`, `/valkeyworker/` | [arch/21](../../arch/21-valkeyworker.md) |
-| **S3Worker** | Оркестратор пулов S3-хранилища бэкапов (ownS3): инстансы по placement-селекторам, mesh-репликация (`links`), PKI, deny-list, зонд синхронности. Единственный писатель `/s3/`, `/s3worker/` | [arch/24](../../arch/24-s3worker.md), [arch/23](../../arch/23-s3-clusters.md) |
+| **S3Worker** | Оркестратор пулов S3-хранилища бэкапов (ownS3): инстансы по placement-селекторам, mesh-репликация (`links`), PKI, deny-list, зонд синхронности. Единственный писатель `/s3/`, `/s3worker/` | [arch/s3worker](../../arch/s3worker/README.md), [arch/s3-clusters](../../arch/s3-clusters/README.md) |
 | **AdminPanel** | Декларатор и наблюдатель: 5 доменных снапшотов etcd (тик 3 с) + live-пробы (15 с) + healthz-поллер. Все доменные мутации — прокси в HTTP API воркеров (mTLS); в etcd напрямую пишет только `/workers/api_tls/*` | [arch/adminpanel/01](../../arch/adminpanel/01-architecture.md) |
 | **PG-нода** (`pgworker-node`) | Контейнер Spilo (PG + Patroni) + pg_doorman + приёмник WAL (стрим в S3, полные бэкапы, verify, restore, drill) — один процесс, API `alias:8080` без публикации на хост | [arch/14 §2.1](../../arch/14-pgworker.md), [arch/19](../../arch/19-backups.md) |
 | **Patroni / HA-контур шарда** | Репликация и failover внутри нод; DCS `/service/<scope>/`; Patroni-callback — единственный писатель `shards/X/master` (lease TTL 5 с) | [arch/01 §1.2](../../arch/01-architecture.md), [arch/11 §2](../../arch/11-bucket-sharding.md) |
 | **Подсистема бэкапов** | Хозяин PgWorker: полные + WAL (двойная архивация мастер+sync-реплика), verify, restore/PITR, drill, GFS-ретенция, реестр сирот, DR-слепки etcd → S3. Контракт `/pgworker/backups/*` | [arch/19](../../arch/19-backups.md) |
-| **S3-хранилище (OwnS3)** | Durability-хранилище: бэкапы шардов (`<C>/<X>/full|wal`), слепки etcd; избыточность — mesh-репликация внутри пула. Внешний репозиторий `../OwnS3` | [arch/19 §5](../../arch/19-backups.md), [arch/23](../../arch/23-s3-clusters.md) |
+| **S3-хранилище (OwnS3)** | Durability-хранилище: бэкапы шардов (`<C>/<X>/full|wal`), слепки etcd; избыточность — mesh-репликация внутри пула. Внешний репозиторий `../OwnS3` | [arch/19 §5](../../arch/19-backups.md), [arch/s3-clusters](../../arch/s3-clusters/README.md) |
 | **Docker-движки (plain/swarm)** | Исполнитель размещения: контейнеры/сети/тома через Engine API; воркер — строго управление запуском + проверка факта | [arch/25 §2–3](../../arch/25-component-communications.md) |
 | **Мониторинг** | Prometheus + Grafana + Alertmanager; таргеты — file_sd из portalloc. Канал наблюдения, независимый от панели | [arch/18](../../arch/18-metrics.md) |
-| **EtcdWorker** | Оркестратор etcd-контура: поддержание состава (managed-узлы, кворум-гварды, rolling-доводка), DR-слепки etcd → S3 (безусловная выгрузка, ключ `/etcdworker/snapshots`). Единственный писатель `/etcd/`, `/etcdworker/` | [arch/25](../../arch/25-etcdworker.md) |
+| **EtcdWorker** | Оркестратор etcd-контура: поддержание состава (managed-узлы, кворум-гварды, rolling-доводка), DR-слепки etcd → S3 (безусловная выгрузка, ключ `/etcdworker/snapshots`). Единственный писатель `/etcd/`, `/etcdworker/` | [arch/etcdworker](../../arch/etcdworker/README.md) |
 
 ### 1.2. Зависимости (кто кого создаёт, читает, слушает)
 
@@ -90,8 +90,8 @@ API воркеров** (живое etcd, применяется тиками/rol
 | **5. Рантайм** | per-cluster policy бэкапов (retention/full_max_age/verify/drill/s3-пул), заявки (переезды/ротации/rebalance/зонды/recreate), рестарты, серты API | etcd (ключи заявок/policy) | живое, тиками воркера |
 
 Каталоги параметров: pg — [arch/14 §8](../../arch/14-pgworker.md), бэкапы —
-[arch/19 §4](../../arch/19-backups.md), kafka — [arch/16 §8](../../arch/16-kafkaworker.md),
-valkey — [arch/21 §8](../../arch/21-valkeyworker.md), s3 — [arch/24 §8](../../arch/24-s3worker.md),
+[arch/19 §4](../../arch/19-backups.md), kafka — [arch/kafkaworker](../../arch/kafkaworker/README.md),
+valkey — [arch/21 §8](../../arch/21-valkeyworker.md), s3 — [arch/s3worker](../../arch/s3worker/README.md),
 панель — `src/AdminPanel.Api/appsettings.json`.
 
 ### 2.2. Что пользователь может задать из UI сегодня
@@ -131,10 +131,10 @@ PG P3/P4, TTL lease, порт-тройки, env брокеров/нод, тай�
 |---|---|
 | **pg** | Кластер `NOT_INITIALIZED→Active→TO_REMOVE`; шард `Active→TO_REMOVE` (guard'ы G1–G7); нода `NOT_INITIALIZED→PROVISIONING→RUNNING / REBUILDING / UNREACHABLE / QUARANTINED / REMOVING / TO_RECREATE`; бакет `Active (нет ключа) / NOT_INITIALIZED / SYNCING / FROZEN / ABORTING` (фазы ddl/frozen/flip/…); заявки переездов `move\|rollback\|finalize\|abort`; HA-scope Patroni (leader/members, master-lease 5 с) — [arch/14](../../arch/14-pgworker.md), [arch/11](../../arch/11-bucket-sharding.md) |
 | **бэкапы** | Полный `PLANNED→RUNNING→UPLOADING→COMPLETED\|FAILED→DELETING`; verify `PENDING/OK/FAILED`; WAL-поток `ACTIVE/DEGRADED/STOPPED/WAL_CHAIN_ERROR` (+gap); приёмник `starting/waiting_*/streaming/paused/failed_permanent` (lease 15 с); restore `PLANNED→RUNNING→REJOINING→COMPLETED\|FAILED`; drill `RUNNING/SUCCEEDED/FAILED`; сироты `OBSERVED/DELETING`; хранилище `OK/WARN/CRIT`; выгрузка etcd-слепков `OK/FAILED` — EtcdWorker (ключ `/etcdworker/snapshots`,
-[arch/25 §5](../../arch/25-etcdworker.md)) |
-| **kafka** | Кластер state; брокер `NOT_INITIALIZED→PROVISIONING→RUNNING / UNREACHABLE / REMOVING / TO_REMOVE` + role (навсегда); ротации app/admin/CA; reassignment (drain/balance, прогресс); регенерация; топики (факт + desired + lifecycle create/delete); ticket_outcomes `done\|expired` — [arch/16](../../arch/16-kafkaworker.md) |
+[arch/etcdworker](../../arch/etcdworker/README.md)) |
+| **kafka** | Кластер state; брокер `NOT_INITIALIZED→PROVISIONING→RUNNING / UNREACHABLE / REMOVING / TO_REMOVE` + role (навсегда); ротации app/admin/CA; reassignment (drain/balance, прогресс); регенерация; топики (факт + desired + lifecycle create/delete); ticket_outcomes `done\|expired` — [arch/kafkaworker](../../arch/kafkaworker/README.md) |
 | **valkey** | Кластер state; нода (v1 — одна); ротации кредов (окно двух паролей) и CA; TLS-миграция; ticket_outcomes — [arch/21](../../arch/21-valkeyworker.md) |
-| **s3** | Кластер state; инстанс (state + placed_on + usage); connectivity `OK/DEGRADED/DOWN`; sync `SYNCED/LAGGING/DIVERGED`; denylist; ротации — [arch/24](../../arch/24-s3worker.md) |
+| **s3** | Кластер state; инстанс (state + placed_on + usage); connectivity `OK/DEGRADED/DOWN`; sync `SYNCED/LAGGING/DIVERGED`; denylist; ротации — [arch/s3worker](../../arch/s3worker/README.md) |
 
 Общий паттерн: **«нет status-ключа = штатное состояние»**; статус-ключи —
 переходные; «последняя фаза побеждает» (журналы не копят историю — S6 arch/17).
