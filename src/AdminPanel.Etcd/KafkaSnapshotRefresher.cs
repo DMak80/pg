@@ -14,6 +14,9 @@ namespace AdminPanel.Etcd;
 // + /kafkaworker/ticket_outcomes/ на активном endpoint
 // (sticky + failover, опции общие с pg-циклом EtcdOptions). Транспортный провал
 // любого чтения роняет тик: прежние данные, EtcdReachable=false, счётчик отказов.
+// Применение только изменений — arch/02 §10/§5 (arch/17 S10): чтение совпало
+// с кэшем последнего применённого тика → пересборки и алертного пересчёта нет,
+// обновляется только штамп свежести; отказной тик кэш не меняет.
 // Регистрация — явно в ModuleExtensions.AddKafka().
 public sealed class KafkaSnapshotRefresher(
     IEtcdGateway gateway,
@@ -29,6 +32,11 @@ public sealed class KafkaSnapshotRefresher(
 {
     private string? _activeEndpoint;
     private bool _endpointsWarned;
+
+    // Кэш последнего применённого тика (arch/02 §10, arch/17 S10): тик сравнивает
+    // прочитанное с ним и пересобирает снапшот только при фактическом изменении.
+    // Запоминается только на пересборке — отказной и тихий тики кэш не меняют.
+    private (string Prefix, IReadOnlyList<Kv> Items)[]? _lastRead;
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -118,6 +126,38 @@ public sealed class KafkaSnapshotRefresher(
 
         _activeEndpoint = active;
 
+        // Прочитанное тика — вход сравнения с кэшем (arch/02 §10, arch/17 S10):
+        // списки KV всех наблюдаемых префиксов (Kv — record: ключ/значение/
+        // mod_revision); member list/alarm/статусы endpoints домен не читает.
+        (string Prefix, IReadOnlyList<Kv> Items)[] reads =
+        [
+            (Prefixes.Clusters, clustersKv.Value),
+            (Prefixes.Rotations, rotationsKv.Value),
+            (Prefixes.AdminRotations, adminRotationsKv.Value),
+            (Prefixes.CaRotations, caRotationsKv.Value),
+            (Prefixes.TicketOutcomes, ticketOutcomesKv.Value),
+            (Prefixes.Rebalances, rebalancesKv.Value),
+            (Prefixes.Reassignments, reassignmentsKv.Value),
+            (Prefixes.Regens, regensKv.Value),
+            (Prefixes.WorkerApi, workerApiKv.Value),
+            (Prefixes.WorkerApiCert, certKv.Value),
+            (Prefixes.Work, workKv.Value),
+            (Prefixes.Leader, leaderKv.Value),
+            (Prefixes.Claims, claimsKv.Value),
+            (Prefixes.Instances, instancesKv.Value),
+        ];
+
+        // arch/02 §10/§5 (arch/17 S10): чтение совпало с кэшем при успешном
+        // прошлом тике — снапшот не пересобирается, алертный пересчёт и перепись
+        // кредов проб не выполняются (KV не менялся — семантически те же);
+        // обновляется только штамп свежести (живость для потребителей BuiltAtUtc).
+        if (previous is KafkaSnapshot { EtcdReachable: true, ConsecutiveFailures: 0 } lastApplied
+            && TickUnchanged(reads))
+        {
+            store.Replace(lastApplied with { BuiltAtUtc = now });
+            return Result.Success();
+        }
+
         // Парсеры → модель → алерты → атомарная замена (механика pg-цикла §4).
         var clusters = KafkaParser.ParseClusters(clustersKv.Value);
         var rotations = KafkaParser.ParseRotations(rotationsKv.Value);
@@ -168,7 +208,29 @@ public sealed class KafkaSnapshotRefresher(
             Coordination: coordinationParsed.Coordination);
 
         store.Replace(built with { Alerts = alertEngine.Evaluate(built, previous, securityReady) });
+        RememberTick(reads);
         return Result.Success();
+    }
+
+    // Кэш последнего применённого тика: запоминается только на пересборке —
+    // отказной и тихий тики кэш не меняют (arch/02 §10, arch/17 S10).
+    private void RememberTick((string Prefix, IReadOnlyList<Kv> Items)[] reads)
+        => _lastRead = reads;
+
+    // Сравнение прочитанного тика с кэшем последнего применённого (arch/02 §10,
+    // arch/17 S10): списки KV наблюдаемых префиксов по значению. Кэш не собран
+    // (первый тик) → «изменено»; отказной тик кэш не портит — первый успешный
+    // тик после отказа всегда пересборка (ветку гейтит EtcdReachable/счётчик
+    // отказов прежнего снапшота, проверяет вызывающий).
+    private bool TickUnchanged((string Prefix, IReadOnlyList<Kv> Items)[] reads)
+    {
+        if (_lastRead is null || reads.Length != _lastRead.Length)
+            return false;
+        for (var i = 0; i < reads.Length; i++)
+            if (reads[i].Prefix != _lastRead[i].Prefix
+                || !reads[i].Items.SequenceEqual(_lastRead[i].Items))
+                return false;
+        return true;
     }
 
     // Мердж live-данных проб (волна C): USR топиков и группы с лагами — в
