@@ -38,11 +38,12 @@ public class LoopsHealthResetTests
     public async Task ReconcileLoop_StatusErrorStickyUntilNextSuccessfulTick()
     {
         // Arrange: цикл с нулевым интервалом; etcd «падает» на range (RangeFault →
-        // тик проваливается, ErrorDelayMs=200 — детерминированное окно), затем оживает.
+        // старт опросных кэшей тика проваливается, ErrorDelayMs=200 — детерминированное
+        // окно), затем оживает.
         var etcd = new Fakes.FakeEtcd();
         etcd.RangeFault = _ => new ApplicationException("etcd unavailable");
         var loop = new ReconcileLoop(
-            Options(), etcd,
+            Options(), new EtcdPrefixSources(Options(), etcd),
             new ClaimStore("/kafkaworker", ["http://etcd:2379"], etcd, TimeProvider.System),
             new FakeProcesses(),
             new WorkJournal("/kafkaworker", etcd, ["http://etcd:2379"]),

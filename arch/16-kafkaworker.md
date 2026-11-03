@@ -465,6 +465,19 @@ env, панелью не меняется.
 в кластере); `UNREACHABLE` (молчит дольше NodeDeadSec);
 `REMOVING` (в процессе демонтажа); `TO_REMOVE` (маркер панели, one-way).
 
+Тик ReconcileLoop — по модели S10 ([17](17-synchronization-principles.md)):
+контроль-плейн читается опросными кэшами наблюдаемых префиксов —
+`/kafka/clusters/` (декларации, states, staging CA, реестр топиков) и
+`/kafkaworker/{claims,locks,rotations,admin_rotations,ca_rotations,rebalances}/`
+(координация и внешние заявки процессов H/K/I; смерть инстанса гасит его
+клэймы и locks-lease — удаление ключей = различие = тик живёт = takeover
+«≤ TTL 15 с + тик»). Чтение сравнивается с кэшем последнего прочитанного:
+различий нет — тик не работает (ни парсинга-классификации, ни клэймов/
+мутаций), но активность цикла отмечается (watchdog §6); различия есть
+(добавление, изменение или удаление ключа) — обработка по новому состоянию.
+Журналы `/kafkaworker/work/` и самописные прогресс-ключи (`reassignments/`,
+`regens/`, `ticket_outcomes/`) не наблюдаются — воркер пишет их сам.
+
 Классификация тика: `config.state=NOT_INITIALIZED` → Provisioning (A);
 `TO_REMOVE` → Deprovisioning (B); иначе Active-ветка: **премиграционный
 кластер (нет `ca_pem`/`admin_password` или брокеры без SASL_SSL-env) →

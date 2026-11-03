@@ -14,20 +14,22 @@ namespace ValkeyWorker.App.Loops;
 // unit-тестах цикла). Валю-туннель Active-ветки: надзор (C) → converge (D) →
 // ротация (E) — без kafka-специфики (нет reassign/topic-sync/security/backoff).
 
-/// <summary>Один reconcile-тик над всеми кластерами (процессы arch/21 §5).</summary>
+/// <summary>Один reconcile-тик над всеми кластерами (процессы arch/21 §5).
+/// Слепок /valkey/clusters/ читает ReconcileLoop из опросного кэша (arch/17 S10)
+/// и передаёт сюда.</summary>
 public interface IValkeyClusterProcesses
 {
     /// <summary>Число клэймов, держимых этим инстансом (health-секция claims).</summary>
-    Task<int> TickAsync(CancellationToken ct);
+    Task<int> TickAsync(IReadOnlyList<Kv> clustersKvs, CancellationToken ct);
 }
 
 /// <summary>
-/// Реализация поверх процессов (синглтоны DI): Range /valkey/clusters/ →
-/// парсер → клэйм → классификация → процесс. Ошибки кластера не роняют тик;
-/// параллелизм — SemaphoreSlim MaxClusters (внутри кластера — последовательно).
+/// Реализация поверх процессов (синглтоны DI): слепок опросного кэша
+/// /valkey/clusters/ (arch/17 S10 — читает ReconcileLoop) → парсер → клэйм →
+/// классификация → процесс. Ошибки кластера не роняют тик; параллелизм —
+/// SemaphoreSlim MaxClusters (внутри кластера — последовательно).
 /// </summary>
 internal sealed class ValkeyClusterProcesses(
-    IEtcdGateway etcd,
     IOptionsMonitor<ValkeyWorkerOptions> options,
     ClaimStore claims,
     WorkJournal journal,
@@ -40,18 +42,9 @@ internal sealed class ValkeyClusterProcesses(
     CaRotator caRotator,
     ILogger<ValkeyClusterProcesses> logger) : IValkeyClusterProcesses
 {
-    public async Task<int> TickAsync(CancellationToken ct)
+    public async Task<int> TickAsync(IReadOnlyList<Kv> clustersKvs, CancellationToken ct)
     {
-        var endpoints = options.CurrentValue.Etcd.Endpoints.ToArray();
-        if (endpoints.Length == 0)
-            throw new ApplicationException("ValkeyWorker:Etcd:Endpoints are not set");
-
-        // Снапшот контроль-плейна: Range /valkey/clusters/ c failover.
-        var clustersKvs = await RangeWithFailoverAsync(endpoints, "/valkey/clusters/", ct);
-        if (!clustersKvs.IsSuccess)
-            throw clustersKvs.Error!;
-
-        var parsed = ValkeySnapshotParser.Parse(clustersKvs.Value);
+        var parsed = ValkeySnapshotParser.Parse(clustersKvs);
         foreach (var cluster in parsed.Value.Clusters)
         foreach (var error in cluster.ParseErrors)
             logger.LogWarning("skipped malformed key: {Error}", error);
@@ -239,9 +232,4 @@ internal sealed class ValkeyClusterProcesses(
             logger.LogWarning(journalEx, "work journal {Cluster} not written after lease loss", cluster);
         }
     }
-
-    // Failover: первый успешный endpoint выигрывает (общий хелпер).
-    private Task<Result<IReadOnlyList<Kv>>> RangeWithFailoverAsync(
-        string[] endpoints, string prefix, CancellationToken ct)
-        => EtcdEndpointFailover.CallAsync(endpoints, (endpoint, token) => etcd.RangeAsync(endpoint, prefix, token), ct);
 }
