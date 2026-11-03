@@ -314,19 +314,38 @@ public abstract class E2eBackupPoolScenarios
         return id;
     }
 
-    // Поллинг restore-ключа до терминального статуса (упрощённый образец).
+    // Поллинг restore-ключа до терминального статуса, этапные лимиты
+    // (приказ владельца): демонтаж+скачивание (заявка → phase=recovering)
+    // ≤3 мин; восстановление PG+rejoin (recovering → терминал) ≤3 мин;
+    // просрочка этапа — немедленное падение с именем этапа.
     protected async Task<Dictionary<string, JsonElement>> WaitRestoreAsync(
-        string cluster, string shard, string id, TimeSpan budget, CancellationToken ct)
+        string cluster, string shard, string id, CancellationToken ct)
     {
+        var stageBudget = TimeSpan.FromMinutes(3);
         Dictionary<string, JsonElement>? status = null;
+        var stageStart = DateTime.UtcNow;
+        var stage = "demolish+download";
         var done = await E2eFixture.WaitForAsync(async () =>
         {
             var raw = await GetOrNullAsync(PgWorker.Backups.BackupNames.RestoreKey(cluster, shard, id));
             if (raw is null)
                 return false;
             status = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(raw.Value);
+            if (status is { } s)
+            {
+                if (stage == "demolish+download" && s.TryGetValue("phase", out var ph)
+                    && ph.GetString() == "recovering")
+                {
+                    stage = "recover+rejoin";
+                    stageStart = DateTime.UtcNow;
+                }
+                if (DateTime.UtcNow - stageStart > stageBudget)
+                    throw new ApplicationException(
+                        $"restore {cluster}/{shard}/{id} stage '{stage}' exceeded {stageBudget.TotalSeconds:0}s"
+                        + $" (state={s["state"].GetString()})");
+            }
             return status is not null && (status["state"].GetString() is "COMPLETED" or "FAILED");
-        }, budget, ct);
+        }, TimeSpan.FromMinutes(6), ct);
         if (!done || status!["state"].GetString() == "FAILED")
             throw new ApplicationException(
                 $"restore {cluster}/{shard}/{id} did not reach COMPLETED: "
@@ -339,7 +358,7 @@ public abstract class E2eBackupPoolScenarios
         string cluster, string shard, CancellationToken ct)
     {
         var id = await PutRestorePlannedAsync(cluster, shard, "latest", ct: ct);
-        return await WaitRestoreAsync(cluster, shard, id, TimeSpan.FromSeconds(90), ct);
+        return await WaitRestoreAsync(cluster, shard, id, ct);
     }
 }
 
@@ -536,7 +555,7 @@ public sealed class PoolSingleNodeScenarios(PoolSingleNodeScenariosFx Ctx) : E2e
 
             // Act/Assert — restore latest из пула: COMPLETED (этапные лимиты).
             var restore = await TimedAsync(
-                "ac3 restore-latest", () => RestoreLatestStagedAsync(cluster, "shard1", ct));
+                "ac3 restore-latest", () => RestoreLatestAsync(cluster, "shard1", ct));
             restore["state"].GetString().Should().Be("COMPLETED", "restore from a single-node pool");
             await load.CancelAsync();
             try { await loader; } catch { /* фон остановлен */ }
@@ -548,45 +567,6 @@ public sealed class PoolSingleNodeScenarios(PoolSingleNodeScenariosFx Ctx) : E2e
         }
     }
 
-    // Этапные бюджеты restore, только этот тест (приказ владельца): заявка →
-    // phase=recovering ≤3 мин (скачивание), recovering → терминал ≤3 мин
-    // (восстановление); просрочка этапа — немедленное падение с именем этапа.
-    private async Task<Dictionary<string, JsonElement>> RestoreLatestStagedAsync(
-        string cluster, string shard, CancellationToken ct)
-    {
-        var stageBudget = TimeSpan.FromMinutes(3);
-        var id = await PutRestorePlannedAsync(cluster, shard, "latest", ct: ct);
-        Dictionary<string, JsonElement>? status = null;
-        var stageStart = DateTime.UtcNow;
-        var stage = "download";
-        var done = await E2eFixture.WaitForAsync(async () =>
-        {
-            var raw = await GetOrNullAsync(PgWorker.Backups.BackupNames.RestoreKey(cluster, shard, id));
-            if (raw is null)
-                return false;
-            status = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(raw.Value);
-            if (status is { } s)
-            {
-                if (stage == "download" && s.TryGetValue("phase", out var ph)
-                    && ph.GetString() == "recovering")
-                {
-                    stage = "recover";
-                    stageStart = DateTime.UtcNow;
-                }
-                if (DateTime.UtcNow - stageStart > stageBudget)
-                    throw new ApplicationException(
-                        $"restore {cluster}/{shard}/{id} stage '{stage}' exceeded {stageBudget.TotalSeconds:0}s"
-                        + $" (state={s["state"].GetString()})");
-            }
-            return status is not null && (status["state"].GetString() is "COMPLETED" or "FAILED");
-        }, TimeSpan.FromMinutes(6), ct);
-        if (!done || status!["state"].GetString() == "FAILED")
-            throw new ApplicationException(
-                $"restore {cluster}/{shard}/{id} did not reach COMPLETED: "
-                + (status is null ? "no key" : status["state"].GetString())
-                + (status is { } s && s.TryGetValue("error", out var err) ? $", error={err.GetString()}" : ""));
-        return status!;
-    }
 }
 
 // AC4 (failover списка записи и исчерпание с маркером (AC4)) — отдельный класс: свой guid-контур; коллекции классов
@@ -930,8 +910,7 @@ public sealed class PoolReadAnyNodeScenarios(PoolReadAnyNodeScenariosFx Ctx) : E
             ct = ctsRestore.Token;
 
             var restoreId = await PutRestorePlannedAsync(cluster, "shard1", "latest", ct: ct);
-            var restore = await WaitRestoreAsync(cluster, "shard1", restoreId,
-                TimeSpan.FromSeconds(240), ct);
+            var restore = await WaitRestoreAsync(cluster, "shard1", restoreId, ct);
             restore["state"].GetString().Should().Be("COMPLETED",
                 "the ReadAll walkover reaches a live pool node (mesh copy)");
             await Fx.RunDockerAsync(["start", Fx.S3NodeContainerName], ct);
@@ -1047,10 +1026,7 @@ public sealed class PoolPolicyValidationScenarios(PoolPolicyValidationScenariosF
                 DateTimeOffset.UtcNow.ToUnixTimeSeconds(), "e2e", SourcePool: Pool);
             await G.PutAsync(Endpoint, PgWorker.Backups.BackupNames.RestoreKey(cluster, "shard1", restoreId),
                 PgWorker.Backups.Restore.RestoreStatusJson.Serialize(op), null, ct);
-            // Бюджет 150 c: DR-операция (скачивание + recovery + промоут) ~80-110 c
-            // — 90-секундный бюджет не вмещал её при фактическом успехе.
-            var restore = await WaitRestoreAsync(cluster, "shard1", restoreId,
-                TimeSpan.FromSeconds(150), ct);
+            var restore = await WaitRestoreAsync(cluster, "shard1", restoreId, ct);
             restore["state"].GetString().Should().Be("COMPLETED",
                 "the DR-restore reads from source_pool (a foreign prefix — another pool)");
         }
