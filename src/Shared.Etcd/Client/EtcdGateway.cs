@@ -15,7 +15,8 @@ public sealed class EtcdUnreachableException(string message) : Exception(message
 
 // Реализация IEtcdGateway: HttpClient (именованный клиент DI / IHttpClientFactory),
 // base64-кодирование ключей. Таймаут задаётся конфигурацией клиента, не здесь.
-public sealed class EtcdGateway(HttpClient httpClient) : IEtcdGateway
+// IEtcdWatchApi — watch-стрим префикса (долгоживущий, без per-attempt бюджета).
+public sealed class EtcdGateway(HttpClient httpClient) : IEtcdGateway, IEtcdWatchApi
 {
     public const string HttpClientName = "etcd";
     // etcd gateway сериализует int64 decimal-строками и не приводит proto-имена к camelCase.
@@ -216,6 +217,90 @@ public sealed class EtcdGateway(HttpClient httpClient) : IEtcdGateway
     {
         return await Result.FromAsync(
             async () => await PostAsync<DefragmentResponse>(endpoint, "/v3/maintenance/defragment", new { }, ct));
+    }
+
+    // Watch-стрим префикса (arch/17 S10): POST /v3/watch {"create_request":{key,
+    // range_end, start_revision}} → поток фреймов grpc-gateway {"result":{"events":
+    // [{"type":"PUT"|"DELETE","kv":{key,value,mod_revision}}],compact_revision,
+    // canceled}}\n. Долгоживущий: per-attempt таймаут НЕ применяется (ResponseHeadersRead,
+    // пофреймовое чтение — образец SnapshotSaveAsync/DecodeSnapshotBody); разрывы
+    // соединения — штатный случай, обработка у вызывающего цикла. Каждое событие —
+    // колбэку потребителя (key/value UTF-8, value=null при DELETE); compact_revision>0
+    // или canceled=true → Compacted (вызывающий сделает повторную первичную загрузку).
+    public async Task<Result<EtcdWatchStop>> WatchAsync(
+        string endpoint, string prefix, long startRevision, Func<EtcdWatchEvent, Task> onEvent, CancellationToken ct)
+    {
+        try
+        {
+            var body = new
+            {
+                create_request = new
+                {
+                    key = ToB64(prefix),
+                    range_end = ToB64(PrefixEnd(prefix)),
+                    start_revision = startRevision,
+                },
+            };
+            using var request = new HttpRequestMessage(HttpMethod.Post, endpoint + "/v3/watch")
+            {
+                Content = JsonContent.Create(body, options: Json),
+            };
+            // ResponseHeadersRead: тело — поток событий, буферизовать целиком нельзя.
+            using var response = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
+            if (!response.IsSuccessStatusCode)
+            {
+                var errorBody = response.Content is null
+                    ? string.Empty
+                    : await response.Content.ReadAsStringAsync(ct);
+                throw new EtcdHttpException(endpoint, (int)response.StatusCode, errorBody);
+            }
+
+            await using var stream = await response.Content.ReadAsStreamAsync(ct);
+            using var reader = new StreamReader(stream, Encoding.UTF8);
+            while (await reader.ReadLineAsync(ct) is { } line)
+            {
+                if (line.Length == 0)
+                    continue;
+                // Фреймов в потоке несколько (по чанку на Send); чанк может нести
+                // несколько событий и несколько фреймов — читаем по строкам.
+                var frame = JsonSerializer.Deserialize<WatchFrame>(line, Json);
+                if (frame?.Result is not { } result)
+                    continue;
+
+                if (result.Events is { } events)
+                    foreach (var e in events)
+                    {
+                        // Фрейм без kv / неизвестный тип (progress_notify и пр.) — не событие.
+                        if (e.Kv is not { } kv || e.Type is not ("PUT" or "DELETE"))
+                            continue;
+                        await onEvent(new EtcdWatchEvent(
+                            FromB64(kv.Key),
+                            e.Type == "PUT" ? FromB64(kv.Value ?? "") : null,
+                            (long)kv.ModRevision,
+                            e.Type == "PUT" ? EtcdWatchEventType.Put : EtcdWatchEventType.Delete));
+                    }
+
+                // История недоступна (canceled) / ревизия уже сжата (compact_revision>0):
+                // поток завершаем с причиной — вызывающий сделает повторную первичную загрузку.
+                if (result.Canceled || (result.CompactRevision ?? 0) > 0)
+                    return Result<EtcdWatchStop>.Success(
+                        new EtcdWatchStop(EtcdWatchStopReason.Compacted, result.CompactRevision ?? 0));
+            }
+
+            // Поток закрыт: разрыв соединения (штатный случай) либо отмена потребителя.
+            return Result<EtcdWatchStop>.Success(new EtcdWatchStop(
+                ct.IsCancellationRequested ? EtcdWatchStopReason.Cancelled : EtcdWatchStopReason.Closed));
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // Отмена потребителем (StopAsync) — штатное завершение, не ошибка.
+            return Result<EtcdWatchStop>.Success(new EtcdWatchStop(EtcdWatchStopReason.Cancelled));
+        }
+        catch (Exception e)
+        {
+            // Транспорт-отказ / ошибка чтения потока — разрыв: вызывающий переподключится.
+            return Result<EtcdWatchStop>.Failed(e);
+        }
     }
 
     // Compare → protojson: target (enum: VERSION=0, MOD=2, VALUE=3), result (EQUAL=0/GREATER=1),
@@ -471,5 +556,46 @@ public sealed class EtcdGateway(HttpClient httpClient) : IEtcdGateway
     {
         [JsonPropertyName("header")]
         public object? Header { get; set; }
+    }
+
+    private sealed class WatchFrame
+    {
+        [JsonPropertyName("result")]
+        public WatchResult? Result { get; set; }
+    }
+
+    private sealed class WatchResult
+    {
+        [JsonPropertyName("events")]
+        public List<WatchEventDto>? Events { get; set; }
+
+        // int64 в protojson → decimal-строка; AllowReadingFromString читает как long.
+        [JsonPropertyName("compact_revision")]
+        public long? CompactRevision { get; set; }
+
+        [JsonPropertyName("canceled")]
+        public bool Canceled { get; set; }
+    }
+
+    private sealed class WatchEventDto
+    {
+        [JsonPropertyName("type")]
+        public string? Type { get; set; }
+
+        [JsonPropertyName("kv")]
+        public WatchKvDto? Kv { get; set; }
+    }
+
+    private sealed class WatchKvDto
+    {
+        [JsonPropertyName("key")]
+        public string Key { get; set; } = "";
+
+        // У DELETE события value отсутствует (снятие base64 — null).
+        [JsonPropertyName("value")]
+        public string? Value { get; set; }
+
+        [JsonPropertyName("mod_revision")]
+        public ulong ModRevision { get; set; }
     }
 }
