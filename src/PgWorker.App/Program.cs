@@ -849,6 +849,9 @@ builder.Services.AddSingleton(sp => new SnapshotLoop(
     sp.GetRequiredService<HealthState>(),
     sp.GetRequiredService<TimeProvider>(),
     sp.GetRequiredService<Shared.Metrics.Worker.WorkerMetricsInstrumentation>()));
+// Опросные кэши тика (arch/17 S10): слепки наблюдаемых префиксов + счётчик
+// дельт; старт/ретрай — в самом ReconcileLoop (transient etcd не роняет хост).
+builder.Services.AddSingleton<IPrefixPollSources, EtcdPrefixSources>();
 builder.Services.AddSingleton<ReconcileLoop>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<KeepaliveLoop>());
 builder.Services.AddHostedService(sp => sp.GetRequiredService<SnapshotLoop>());
