@@ -12,24 +12,34 @@ using PgWorker.Provisioning.Processes;
 namespace PgWorker.App.Loops;
 
 /// <summary>
-/// Главный цикл (задача 23; spec §6.2, arch/14 §4; образец — BusConsumerHostedService
-/// из Puzzle): тик = снапшот /clusters/ + /service/ → классификация → клэйм →
-/// процесс; ошибка тика не роняет цикл (лог + ErrorDelayMs, следующий тик — ретрай).
-/// Кластеры обрабатываются параллельно (SemaphoreSlim MaxClusters), внутри
-/// кластера — строго последовательно. Эвакуационные события надзора
-/// (SuperviseOutcome.DeadShards — значение тика, не состояние синглтона)
-/// передаются BucketEvacuator в этом же тике.
+/// Главный цикл (задача 23; spec §6.2, arch/14 §4; чтение состояния —
+/// arch/17 S10): контроль-плейн читается опросными кэшами (IPrefixPollSources),
+/// тик применяется ТОЛЬКО при факте изменения etcd-состояния — гейт по дельте:
+/// с последнего обработанного состояния изменений не было → тик НЕ работает
+/// (processes не зовутся, клэймов/проб/docker-вызовов нет); heartbeat и
+/// healthz loops-alive отмечаются всегда (watchdog жив, arch/14 §6). Сбой
+/// опроса кэша дельту не поднимает — тик пропускается; при появлении
+/// изменения дельта будет — тик обработает. Кластеры обрабатываются
+/// параллельно (SemaphoreSlim MaxClusters), внутри кластера — строго
+/// последовательно. Эвакуационные события надзора (SuperviseOutcome.DeadShards
+/// — значение тика, не состояние синглтона) передаются BucketEvacuator в этом
+/// же тике.
 /// </summary>
 internal sealed class ReconcileLoop(
     IOptionsMonitor<PgWorkerOptions> options,
-    IEtcdGateway etcd,
     ClaimStore claims,
     IClusterProcesses processes,
     WorkJournal journal,
     ILogger<ReconcileLoop> logger,
     HealthState health,
-    Shared.Metrics.Worker.WorkerMetricsInstrumentation metrics) : BackgroundService, IHealthCheckService
+    Shared.Metrics.Worker.WorkerMetricsInstrumentation metrics,
+    IPrefixPollSources sources) : BackgroundService, IHealthCheckService
 {
+    // Baseline гейта тика (arch/17 S10): Version источников на момент
+    // последнего ОБРАБОТАННОГО тика; −1 = ещё не обрабатывали (первый тик
+    // всегда работает — стартовый слепок кэшей и есть обрабатываемое состояние).
+    private long _processedVersion = -1;
+
     public bool Inited { get; private set; }
 
     public bool Working { get; private set; }
@@ -73,6 +83,16 @@ internal sealed class ReconcileLoop(
         finally
         {
             Working = false;
+            // Останов опросных кэшей (идемпотентно; остановка лучшего эффекта —
+            // процесс останавливается).
+            try
+            {
+                await sources.StopAsync(CancellationToken.None);
+            }
+            catch
+            {
+                // host останавливается — повтор не требуется
+            }
         }
     }
 
@@ -97,46 +117,65 @@ internal sealed class ReconcileLoop(
         }
     }
 
-    /// <summary>Один тик (публичен для тестов/health): снапшот → параллельная обработка кластеров.</summary>
+    /// <summary>Один тик (публичен для тестов/health): гейт по дельте → слепки
+    /// кэшей → параллельная обработка кластеров.</summary>
     internal async Task<Result> TickAsync(CancellationToken ct)
     {
         var endpoints = options.CurrentValue.Etcd.Endpoints.ToArray();
         if (endpoints.Length == 0)
             return Result.Failed(new ApplicationException("PgWorker:Etcd:Endpoints are not set"));
 
-        health.MarkReconcileActivity(); // heartbeat: старт итерации (долгие фазы отмечаются глубже)
+        // Запуск опросных кэшей (идемпотентно; сбой старта — ошибка тика:
+        // цикл залогирует и повторит с ErrorDelayMs).
+        try
+        {
+            await sources.StartAsync(ct);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            return Result.Failed(ex);
+        }
 
-        // Снапшот контроль-плейна (P9: без свежего чтения мутаций не делаем).
-        var clustersKvs = await RangeWithFailoverAsync(endpoints, "/clusters/", ct);
-        if (!clustersKvs.IsSuccess)
-            return Result.Failed(clustersKvs.Error!);
-        var serviceKvs = await RangeWithFailoverAsync(endpoints, "/service/", ct);
-        if (!serviceKvs.IsSuccess)
-            return Result.Failed(serviceKvs.Error!);
+        // ГЕЙТ ТИКА (arch/17 S10, реестр E10): применяется только фактическое
+        // изменение etcd-состояния. Дельты с последнего обработанного состояния
+        // нет (в т.ч. после сбоя опроса — кэш дельту не поднимает) → тик НЕ
+        // работает: processes/клэймы/пробы/docker не вызываются. Heartbeat
+        // отмечается ВСЕГДА (watchdog жив, arch/14 §6), loops-alive живёт
+        // (клэймы не трогаем — их держит keepalive-цикл), метрика тика —
+        // успешная (цикл жив, работы не было).
+        var version = sources.Version;
+        if (version == Interlocked.Read(ref _processedVersion))
+        {
+            health.MarkReconcileActivity();
+            health.MarkReconcileSkippedTick();
+            metrics.LoopTick("reconcile.skipped", ok: true); // «пропущен без изменений» — отдельная серия
+            return Result.Success();
+        }
 
-        // Бэкапы (/, arch/19 §4): префикс читаем ВСЕГДА — стоп-семантика 
-        // (Enabled=false → финальный STOPPED) обязана видеть живые ключи; пустой
-        // префикс дёшев. Потребители фильтруются по Enabled сами (процесс).
-        var backupsKvs = await RangeWithFailoverAsync(endpoints, "/pgworker/backups/", ct);
-        if (!backupsKvs.IsSuccess)
-            return Result.Failed(backupsKvs.Error!);
-        var backupsParsed = BackupsParser.Parse(backupsKvs.Value, out var backupsErrors);
+        health.MarkReconcileActivity();
+
+        // Парсинг контроль-плейна — из слепков кэшей (не etcd; P9 выполняется
+        // опросным циклом кэша, единая точка failover — arch/17 S7).
+        var parsed = ClusterSnapshotParser.ParseClusters(ToKvs(sources.ClustersSnapshot), out var parseErrors);
+        foreach (var error in parseErrors)
+            logger.LogWarning("skipped broken key: {Error}", error);
+
+        // Бэкапы (arch/19 §4): потребители фильтруются по Enabled сами (процесс).
+        var backupsParsed = BackupsParser.Parse(ToKvs(sources.BackupsSnapshot), out var backupsErrors);
         foreach (var error in backupsErrors)
             logger.LogWarning("skipped broken backups key: {Error}", error);
         IReadOnlyList<ClusterBackups> backups = backupsParsed.Value;
 
-        health.MarkEtcdOk();
-
-        var parsed = ClusterSnapshotParser.ParseClusters(clustersKvs.Value, out var parseErrors);
-        foreach (var error in parseErrors)
-            logger.LogWarning("skipped broken key: {Error}", error);
-
         // Параллельная обработка кластеров с лимитом; ошибка кластера не роняет тик
-        // (journal процесса уже несёт last_error — следующий тик продолжит).
+        // (journal процесса уже несёт last_error — дельта следующего изменения
+        // продолжит доводку: процессы идемпотентны, arch/17 S10).
         var gate = new SemaphoreSlim(Math.Max(1, options.CurrentValue.Parallelism.MaxClusters));
         try
         {
-            var backupsList = backupsParsed.Value;
             var tasks = parsed.Value
                 .Select(snap => ProcessClusterAsync(snap, gate, backups, ct))
                 .ToArray();
@@ -147,11 +186,20 @@ internal sealed class ReconcileLoop(
             gate.Dispose();
         }
 
+        // Тик обработан: baseline = Version на входе тика; изменения, пришедшие
+        // ВО ВРЕМЯ обработки, остались за baseline'ом — их донесёт следующий тик.
+        Interlocked.Exchange(ref _processedVersion, version);
         health.MarkReconcileTick(ok: true, claimsHeld: parsed.Value.Count(c => claims.IsMine(c.Config.Cluster)));
         metrics.LoopTick("reconcile", ok: true);
         metrics.ClaimsHeld(parsed.Value.Count(c => claims.IsMine(c.Config.Cluster)));
         return Result.Success();
     }
+
+    // Слепок кэша → Kv-список парсера (значения без изменений).
+    private static List<Kv> ToKvs(IReadOnlyDictionary<string, (string Value, long ModRevision)> snapshot)
+        => snapshot
+            .Select(pair => new Kv(pair.Key, pair.Value.Value, (ulong)pair.Value.ModRevision))
+            .ToList();
 
     // Обработка одного кластера под семафором: клэйм → процесс → эвакуация.
     // Исключение ЛЮБОГО кластера не роняет тик и сервис (rework №3): catch-all
@@ -430,9 +478,4 @@ internal sealed class ReconcileLoop(
 
         return Task.CompletedTask;
     }
-
-    // Failover: первый успешный endpoint выигрывает (общий хелпер).
-    private Task<Result<IReadOnlyList<Kv>>> RangeWithFailoverAsync(
-        string[] endpoints, string prefix, CancellationToken ct)
-        => EtcdEndpointFailover.CallAsync(endpoints, (endpoint, token) => etcd.RangeAsync(endpoint, prefix, token), ct);
 }

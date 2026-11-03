@@ -178,7 +178,7 @@ public class ClusterSecretRotatorTests
             new RestCertificateCache(testCa.CaPem, testCa.CaKeyPem));
         var rotator = new ClusterSecretRotator(
             store, [Ep], usedSql, probe, claims, journal, Secrets,
-            new ClusterSecretEnsurer(store, [Ep]),
+            new ClusterSecretEnsurer(store, [Ep], new FakeClustersCache(store)),
             bootstrap, Fakes.PgtuneFactory(), snapshot: null);
         return new Rig(store, usedSql, claims, journal, rotator, channel, bootstrap);
     }
@@ -577,7 +577,7 @@ public class ClusterSecretRotatorTests
         var takeover = new ClusterSecretRotator(
             rig.Etcd, [Ep], rig.Sql, new ShardProbe(new HttpClient(new DeadHandler())),
             rig.Claims, rig.Journal, Secrets,
-            new ClusterSecretEnsurer(rig.Etcd, [Ep]),
+            new ClusterSecretEnsurer(rig.Etcd, [Ep], new FakeClustersCache(rig.Etcd)),
             rig.Bootstrap, Fakes.PgtuneFactory(), snapshot: null);
 
         // Act: тик takeover-ротатора — окно живо по флагу, rolling продолжается.
@@ -640,7 +640,7 @@ public class ClusterSecretRotatorTests
         var rotator = new ClusterSecretRotator(
             etcd, [Ep], new Fakes.FakeSql(), probe,
             new ClaimStore("/pgworker", [Ep], etcd, TimeProvider.System), journal, Secrets,
-            new ClusterSecretEnsurer(etcd, [Ep]),
+            new ClusterSecretEnsurer(etcd, [Ep], new FakeClustersCache(etcd)),
             bootstrap, Fakes.PgtuneFactory(), snapshot: null);
 
         // Act

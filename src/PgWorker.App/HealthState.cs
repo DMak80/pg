@@ -42,6 +42,18 @@ public sealed class HealthState(TimeProvider clock) : Shared.Core.Hosting.ILoopP
         }
     }
 
+    /// <summary>Пропущенный без изменений тик (arch/17 S10): итерация была
+    /// (loops-alive живёт, watchdog жив), работы не было — счётчик клэймов
+    /// НЕ трогается (клэймы держит keepalive-цикл, не тик).</summary>
+    public void MarkReconcileSkippedTick()
+    {
+        lock (_sync)
+        {
+            _lastReconcileTick = clock.GetUtcNow();
+            _lastReconcileActivity = _lastReconcileTick;
+        }
+    }
+
     /// <summary>Прогресс-отметка reconcile (heartbeat долгих фаз итерации:
     /// контейнеры нод, ожидание готовности, поллинг переездов) — активность без
     /// тика; читает только watchdog, healthz loops-alive — по тикам.</summary>

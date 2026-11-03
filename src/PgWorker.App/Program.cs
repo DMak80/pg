@@ -525,11 +525,18 @@ builder.Services.AddSingleton(sp =>
         opts.Docker.ScrapeNetwork);
 });
 
-// Ensure per-cluster app-секрета (spec §4.1): чтение/txn put-if-absent
-// /clusters/<C>/{app_user,app_password} — общий для Provisioning/AddShard.
+// Опросные кэши контроль-плейна тика (arch/17 S10): четыре префикса
+// (/clusters/, /service/, /pgworker/backups/, /pgworker/claims/) — источник
+// тика ReconcileLoop и слепок /clusters/ для читателей (ClusterSecretEnsurer).
+builder.Services.AddSingleton<EtcdPrefixSources>();
+builder.Services.AddSingleton<IClustersCacheSnapshot>(sp => sp.GetRequiredService<EtcdPrefixSources>());
+
+// Ensure per-cluster app-секрета (spec §4.1): чтение — из кэша /clusters/
+// (arch/17 S10), txn put-if-absent — общий для Provisioning/AddShard.
 builder.Services.AddSingleton<IClusterSecretEnsurer>(sp => new ClusterSecretEnsurer(
     sp.GetRequiredService<IEtcdGateway>(),
-    sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints));
+    sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
+    sp.GetRequiredService<IClustersCacheSnapshot>()));
 
 // Ensure per-node app_params (spec §4.2): put-if-absent дефолта — общий для
 // Provisioning (P2.5')/AddShard (A5)/надзора (миграция C).

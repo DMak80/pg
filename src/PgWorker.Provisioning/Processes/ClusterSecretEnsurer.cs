@@ -14,15 +14,18 @@ public sealed record ClusterCredentials(
     string RestPassword);
 
 /// <summary>
-/// Ensure per-cluster кредов (arch/14 §4 / arch/19 §7): чтение
-/// /clusters/&lt;C&gt;/{app_user,app_password,mover_password,bucket_admin_user,bucket_admin_password,backup_password};
-/// отсутствующие ключи генерируются (bucket_admin — из config кластера или
-/// генерация) и кладутся ОДНОЙ txn put-if-absent (compare NotExists только на
-/// отсутствующие). Имя роли mover фиксировано (bucket_mover) — отдельного
-/// user-ключа нет. И чтение, и txn — с failover по endpoints до первого живого
-/// (паттерн ReadPortAllocAsync); повтор txn на другом endpoint безопасен для
-/// put-if-absent: проигрыш compare корректно разрешается re-read. Вызывается
-/// только держателем клэйма &lt;C&gt; (инвариант мутаций /clusters/).
+/// Ensure per-cluster кредов (arch/14 §4 / arch/19 §7): чтение семи ключей
+/// /clusters/&lt;C&gt;/{app_user,app_password,mover_password,bucket_admin_user,bucket_admin_password,backup_password,rest_password}
+/// — из опросного кэша префикса /clusters/ (arch/17 S10, реестр E10: 7 GET на
+/// кластер каждый тик запрещены); живое чтение (с failover по endpoints) —
+/// только re-read после txn добора. Отсутствующие ключи генерируются
+/// (bucket_admin — из config кластера или генерация) и кладутся ОДНОЙ txn
+/// put-if-absent (compare NotExists только на отсутствующие). Имя роли mover
+/// фиксировано (bucket_mover) — отдельного user-ключа нет. Txn и re-read — с
+/// failover по endpoints до первого живого (паттерн ReadPortAllocAsync);
+/// повтор txn на другом endpoint безопасен для put-if-absent: проигрыш compare
+/// корректно разрешается re-read. Вызывается только держателем клэйма &lt;C&gt;
+/// (инвариант мутаций /clusters/).
 /// </summary>
 public interface IClusterSecretEnsurer
 {
@@ -30,7 +33,8 @@ public interface IClusterSecretEnsurer
         string cluster, ClusterConfig config, CancellationToken ct);
 }
 
-public sealed class ClusterSecretEnsurer(IEtcdGateway etcd, string[] endpoints) : IClusterSecretEnsurer
+public sealed class ClusterSecretEnsurer(
+    IEtcdGateway etcd, string[] endpoints, IClustersCacheSnapshot? cache = null) : IClusterSecretEnsurer
 {
     private const string DefaultAppUser = "app";
     private const string DefaultBucketAdminUser = "bucket_admin";
@@ -44,11 +48,9 @@ public sealed class ClusterSecretEnsurer(IEtcdGateway etcd, string[] endpoints) 
     public async Task<Result<ClusterCredentials>> EnsureAsync(
         string cluster, ClusterConfig config, CancellationToken ct)
     {
-        var read = await ReadAsync(cluster, ct);
-        if (!read.IsSuccess)
-            return Result<ClusterCredentials>.Failed(read.Error!);
-
-        var current = read.Value;
+        // Первичное чтение — из кэша префикса (без etcd-GET); неполный набор —
+        // txn добора по живому etcd (put-if-absent гарантирует актуальность).
+        var current = ReadFromCache(cluster);
         if (IsComplete(current))
         {
             // Диагностика t06: отпечаток уже существующего etcd-ключа (полный
@@ -157,6 +159,22 @@ public sealed class ClusterSecretEnsurer(IEtcdGateway etcd, string[] endpoints) 
     private static string BackupKey(string cluster) => $"/clusters/{cluster}/backup_password";
 
     private static string RestKey(string cluster) => $"/clusters/{cluster}/rest_password";
+
+    // Чтение семи ключей из слепка кэша /clusters/ (arch/17 S10): отсутствующий
+    // в слепке ключ — null (добирается txn-ом по живому etcd).
+    private RawSecrets ReadFromCache(string cluster)
+    {
+        var snapshot = cache?.Snapshot ?? ClustersCacheSnapshot.Empty.Snapshot;
+        string? Of(string key)
+            => snapshot.TryGetValue(key, out var kv)
+                ? string.IsNullOrWhiteSpace(kv.Value) ? kv.Value : kv.Value.Trim()
+                : null;
+
+        return new RawSecrets(
+            Of(UserKey(cluster)), Of(PasswordKey(cluster)), Of(MoverKey(cluster)),
+            Of(BucketAdminUserKey(cluster)), Of(BucketAdminPasswordKey(cluster)),
+            Of(BackupKey(cluster)), Of(RestKey(cluster)));
+    }
 
     // Чтение семи ключей с failover по endpoints (единая точка, arch/17 S7):
     // упавший endpoint → следующий; на живом — все семь Get подряд. Частичный

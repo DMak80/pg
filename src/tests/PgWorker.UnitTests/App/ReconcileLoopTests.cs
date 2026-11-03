@@ -24,16 +24,20 @@ public class ReconcileLoopTests
         Parallelism = new ParallelismOptions { MaxClusters = 4 },
     });
 
-    private ReconcileLoop CreateLoop(FakeProcesses processes, ClaimStore? claims = null, PgWorkerOptions? options = null)
+    private ReconcileLoop CreateLoop(
+        FakeProcesses processes, ClaimStore? claims = null, PgWorkerOptions? options = null,
+        PgWorker.App.IPrefixPollSources? sources = null)
     {
         claims ??= new ClaimStore("/pgworker", _options.CurrentValue.Etcd.Endpoints, _etcd, TimeProvider.System);
+        sources ??= new FakeSources().Reload(_etcd);
         return new ReconcileLoop(
             options is null ? _options : new FixedOptionsMonitor(options),
-            _etcd, claims, processes,
+            claims, processes,
             new WorkJournal("/pgworker", _etcd, _options.CurrentValue.Etcd.Endpoints),
             NullLogger<ReconcileLoop>.Instance, new HealthState(TimeProvider.System),
             new Shared.Metrics.Worker.WorkerMetricsInstrumentation(
-                new System.Diagnostics.Metrics.Meter("TestReconcile"), TimeProvider.System));
+                new System.Diagnostics.Metrics.Meter("TestReconcile"), TimeProvider.System),
+            sources);
     }
 
     private void SeedCluster(string name, string? state)
@@ -70,12 +74,13 @@ public class ReconcileLoopTests
             Parallelism = new ParallelismOptions { MaxClusters = 4 },
         });
         var loop = new ReconcileLoop(
-            options, etcd, new ClaimStore("/pgworker", options.CurrentValue.Etcd.Endpoints, etcd, TimeProvider.System),
+            options, new ClaimStore("/pgworker", options.CurrentValue.Etcd.Endpoints, etcd, TimeProvider.System),
             new FakeProcesses(),
             new WorkJournal("/pgworker", etcd, options.CurrentValue.Etcd.Endpoints),
             NullLogger<ReconcileLoop>.Instance, new HealthState(TimeProvider.System),
             new Shared.Metrics.Worker.WorkerMetricsInstrumentation(
-                new System.Diagnostics.Metrics.Meter("TestReconcile"), TimeProvider.System));
+                new System.Diagnostics.Metrics.Meter("TestReconcile"), TimeProvider.System),
+            new EtcdPrefixSources(options, etcd));
         using var cts = new CancellationTokenSource();
         await loop.StartAsync(cts.Token);
 
@@ -474,11 +479,12 @@ public class ReconcileLoopTests
         var claims = new ClaimStore("/pgworker", ["http://dead:2379"], deadEtcd, TimeProvider.System);
         var processes = new FakeProcesses();
         var loop = new ReconcileLoop(
-            _options, deadEtcd, claims, processes,
+            _options, claims, processes,
             new WorkJournal("/pgworker", deadEtcd, ["http://dead:2379"]),
             NullLogger<ReconcileLoop>.Instance, new HealthState(TimeProvider.System),
             new Shared.Metrics.Worker.WorkerMetricsInstrumentation(
-                new System.Diagnostics.Metrics.Meter("TestReconcile"), TimeProvider.System));
+                new System.Diagnostics.Metrics.Meter("TestReconcile"), TimeProvider.System),
+            new EtcdPrefixSources(_options, deadEtcd));
 
         // Act
         var tick = await loop.TickAsync(TestContext.Current.CancellationToken);
@@ -489,13 +495,14 @@ public class ReconcileLoopTests
     }
 
     [Fact]
-    public async Task Tick_ProcessThrowsException_TickSurvives_JournalHasLastError_NextTickContinues()
+    public async Task Tick_ProcessThrowsException_TickSurvives_JournalHasLastError_NextDeltaContinues()
     {
         // Arrange — процесс бросает НЕОБРАБОТАННОЕ исключение (баг процесса),
         // а не Result.Failed: раньше оно уходило в Task.WhenAll → StopHost
         SeedCluster("shop", "NOT_INITIALIZED");
         var processes = new FakeProcesses { ThrowProvisions = 1 };
-        var loop = CreateLoop(processes);
+        var sources = new FakeSources().Reload(_etcd);
+        var loop = CreateLoop(processes, sources: sources);
 
         // Act — первый тик: исключение процесса проглочено (catch-all, rework №3)
         var tick1 = await loop.TickAsync(TestContext.Current.CancellationToken);
@@ -507,10 +514,14 @@ public class ReconcileLoopTests
         work.Should().Contain("\"phase\":\"crashed\"");
         work.Should().Contain("process bug");
 
-        // Act — второй тик: процесс уже не бросает — цикл продолжил работу
+        // Act — следующий тик ПО НОВОЙ ДЕЛЬТЕ (arch/17 S10, владелец): ретрай-ветки
+        // по исходу тика нет — недоведённое добивается тиком, до которого донесло
+        // изменение контроль-плейна; процесс уже не бросает
+        _etcd.Seed("/clusters/shop/shards/shard3/replicas", "2");
+        sources.PollChanged(_etcd);
         var tick2 = await loop.TickAsync(TestContext.Current.CancellationToken);
 
-        // Assert — упавший вызов не зарегистрирован, второй тик дошёл до процесса
+        // Assert — упавший вызов не зарегистрирован, доводка дошла до процесса
         tick2.IsSuccess.Should().BeTrue();
         processes.Provisioned.Should().HaveCount(1);
     }
@@ -518,7 +529,7 @@ public class ReconcileLoopTests
     [Fact]
     public async Task TickSafelyAsync_TickThrows_ReturnsFailed_NextTickWorks()
     {
-        // Arrange — первый Range /clusters/ бросает исключение (широкий сбой
+        // Arrange — старт опросных кэшей падает на Range /clusters/ (широкий сбой
         // шлюза): защита тела ExecuteAsync (rework №3) превращает его в ошибку тика
         SeedCluster("shop", null);
         var faulted = true;
@@ -530,7 +541,7 @@ public class ReconcileLoopTests
             return new HttpRequestException("gateway exploded");
         };
         var processes = new FakeProcesses();
-        var loop = CreateLoop(processes);
+        var loop = CreateLoop(processes, sources: new EtcdPrefixSources(_options, _etcd));
 
         // Act
         var first = await loop.TickSafelyAsync(TestContext.Current.CancellationToken);
@@ -542,6 +553,133 @@ public class ReconcileLoopTests
         first.Error.Should().BeAssignableTo<HttpRequestException>();
         second.IsSuccess.Should().BeTrue();
         processes.Supervised.Should().Equal("shop");
+    }
+
+    // AAA (arch/17 S10, гейт тика): нет дельты с последнего обработанного
+    // состояния → тик НЕ работает (processes не зовутся, клэймов нет), но
+    // heartbeat/loops-alive отмечаются всегда (watchdog жив, arch/14 §6).
+    [Fact]
+    public async Task Tick_NoDeltaSinceProcessed_SkipsWork_HeartbeatAlways()
+    {
+        // Arrange — стартовый слепок; отметки HealthState — на управляемых часах
+        SeedCluster("shop", null);
+        var processes = new FakeProcesses();
+        var clock = new MutableClock();
+        var health = new HealthState(clock);
+        var sources = new FakeSources().Reload(_etcd);
+        var loop = new ReconcileLoop(
+            _options, new ClaimStore("/pgworker", _options.CurrentValue.Etcd.Endpoints, _etcd, TimeProvider.System),
+            processes, new WorkJournal("/pgworker", _etcd, _options.CurrentValue.Etcd.Endpoints),
+            NullLogger<ReconcileLoop>.Instance, health,
+            new Shared.Metrics.Worker.WorkerMetricsInstrumentation(
+                new System.Diagnostics.Metrics.Meter("TestReconcile"), TimeProvider.System),
+            sources);
+
+        // Act 1 — первый тик обрабатывает стартовый слепок (baseline)
+        var tick1 = await loop.TickAsync(TestContext.Current.CancellationToken);
+
+        // Assert 1 — процесс зван, клэймы посчитаны
+        tick1.IsSuccess.Should().BeTrue();
+        processes.Supervised.Should().Equal("shop");
+        var afterTick1 = health.Snapshot();
+        afterTick1.ClaimsHeld.Should().Be(1);
+
+        // Act 2 — дельты нет (опрос не принёс изменений): тик пропускается
+        clock.Now = clock.Now.AddMinutes(1);
+        var tick2 = await loop.TickAsync(TestContext.Current.CancellationToken);
+
+        // Assert 2 — работы нет; heartbeat/loops-alive обновлены (watchdog жив),
+        // счётчик клэймов не тронут (клэймы держит keepalive-цикл, не тик)
+        tick2.IsSuccess.Should().BeTrue();
+        processes.Supervised.Should().HaveCount(1);
+        var afterTick2 = health.Snapshot();
+        afterTick2.LastReconcileTick.Should().BeAfter(afterTick1.LastReconcileTick!.Value);
+        afterTick2.LastReconcileActivity.Should().BeAfter(afterTick1.LastReconcileActivity!.Value);
+        afterTick2.ClaimsHeld.Should().Be(1);
+    }
+
+    // AAA (arch/17 S10): дельта наблюдаемого префикса (изменение /clusters/,
+    // опросный кэш поднял Changed) → тик исполняется, процессы зовутся.
+    [Fact]
+    public async Task Tick_DeltaInWatchedPrefix_Processes()
+    {
+        // Arrange — первый тик обрабатывает стартовый слепок
+        SeedCluster("shop", null);
+        var processes = new FakeProcesses();
+        var sources = new FakeSources().Reload(_etcd);
+        var loop = CreateLoop(processes, sources: sources);
+        var tick1 = await loop.TickAsync(TestContext.Current.CancellationToken);
+        tick1.IsSuccess.Should().BeTrue();
+        processes.Supervised.Should().Equal("shop");
+
+        // Act — дельта: изменение /clusters/; опрос кэша принёс его (Version++)
+        _etcd.Seed("/clusters/shop/shards/shard3/replicas", "2");
+        sources.PollChanged(_etcd);
+        var tick2 = await loop.TickAsync(TestContext.Current.CancellationToken);
+
+        // Assert — тик по дельте исполнился: кластер обработан снова
+        tick2.IsSuccess.Should().BeTrue();
+        processes.Supervised.Should().HaveCount(2);
+    }
+
+    // AAA (arch/17 S10, сценарий владельца): сбой опроса — дельты нет → тик
+    // пропущен (без ретрай-ветки по исходу тика); когда опрос удался и принёс
+    // изменение → дельта → тик исполняется.
+    [Fact]
+    public async Task Tick_PollFaultSkipsTick_ThenDeltaProcesses()
+    {
+        // Arrange — первый тик обработал стартовый слепок
+        SeedCluster("shop", null);
+        var processes = new FakeProcesses();
+        var sources = new FakeSources().Reload(_etcd);
+        var loop = CreateLoop(processes, sources: sources);
+        var tick1 = await loop.TickAsync(TestContext.Current.CancellationToken);
+        tick1.IsSuccess.Should().BeTrue();
+        processes.Supervised.Should().Equal("shop");
+
+        // Act 1 — сбой опроса: кэш дельту не поднимает (слепок и Version без изменений)
+        var tick2 = await loop.TickAsync(TestContext.Current.CancellationToken);
+
+        // Assert 1 — тик пропущен (processes не зовутся), цикл жив
+        tick2.IsSuccess.Should().BeTrue();
+        processes.Supervised.Should().HaveCount(1);
+
+        // Act 2 — опрос удался и принёс изменение → дельта
+        _etcd.Seed("/clusters/shop/shards/shard3/replicas", "2");
+        sources.PollChanged(_etcd);
+        var tick3 = await loop.TickAsync(TestContext.Current.CancellationToken);
+
+        // Assert 2 — по дельте тик исполняется
+        tick3.IsSuccess.Should().BeTrue();
+        processes.Supervised.Should().HaveCount(2);
+    }
+
+    // AAA (arch/14 §3 + S10): смерть чужого инстанса гасит его клэйм-lease —
+    // ключ исчезает из /pgworker/claims/; опросный кэш видит удаление → дельта →
+    // тик исполняется и клэйм берём — takeover доезжает (≤ TTL + тик).
+    [Fact]
+    public async Task Tick_ClaimKeyVanishes_Delta_TakeoverProcesses()
+    {
+        // Arrange — клэйм кластера у чужого инстанса
+        SeedCluster("shop", "NOT_INITIALIZED");
+        _etcd.Seed("/pgworker/claims/shop", """{"instance":"someoneelse","since_unix":1}""");
+        var processes = new FakeProcesses();
+        var sources = new FakeSources().Reload(_etcd);
+        var loop = CreateLoop(processes, sources: sources);
+
+        // Act 1 — чужой клэйм жив: кластер не обрабатываем (exclusivity, Д2)
+        var tick1 = await loop.TickAsync(TestContext.Current.CancellationToken);
+        tick1.IsSuccess.Should().BeTrue();
+        processes.Provisioned.Should().BeEmpty();
+
+        // Act 2 — чужой инстанс умер: ключ клэйма исчез; дельта удаления дошла до тика
+        _etcd.Store.Remove("/pgworker/claims/shop");
+        sources.PollChanged(_etcd);
+        var tick2 = await loop.TickAsync(TestContext.Current.CancellationToken);
+
+        // Assert — клэйм взят, процесс доведён: takeover доехал
+        tick2.IsSuccess.Should().BeTrue();
+        processes.Provisioned.Should().Equal("shop");
     }
 
     // Фиксированный IOptionsMonitor и DeadEtcd — общие даблы TestSupport.cs.
@@ -722,5 +860,77 @@ public class ReconcileLoopTests
         {
             public void Dispose() => dispose();
         }
+    }
+
+    // Управляемый источник контроль-плейна тика (замена EtcdPrefixSources на
+    // фейках, arch/17 S10): слепки и Version правит тест — «опрос принёс
+    // изменение» эмулируется перечитыванием Store + инкрементом Version (реальный
+    // кэш поднимает Changed на факте изменения); «сбой опроса» — ничего не меняет.
+    private sealed class FakeSources : PgWorker.App.IPrefixPollSources
+    {
+        public bool Started { get; private set; }
+
+        public long Version { get; private set; }
+
+        public Dictionary<string, (string Value, long ModRevision)> Clusters { get; } = new();
+
+        public Dictionary<string, (string Value, long ModRevision)> Service { get; } = new();
+
+        public Dictionary<string, (string Value, long ModRevision)> Backups { get; } = new();
+
+        public Dictionary<string, (string Value, long ModRevision)> Claims { get; } = new();
+
+        IReadOnlyDictionary<string, (string Value, long ModRevision)> PgWorker.App.IPrefixPollSources.ClustersSnapshot => Clusters;
+
+        IReadOnlyDictionary<string, (string Value, long ModRevision)> PgWorker.App.IPrefixPollSources.ServiceSnapshot => Service;
+
+        IReadOnlyDictionary<string, (string Value, long ModRevision)> PgWorker.App.IPrefixPollSources.BackupsSnapshot => Backups;
+
+        IReadOnlyDictionary<string, (string Value, long ModRevision)> PgWorker.App.IPrefixPollSources.ClaimsSnapshot => Claims;
+
+        public Task StartAsync(CancellationToken ct)
+        {
+            Started = true;
+            return Task.CompletedTask;
+        }
+
+        public Task StopAsync(CancellationToken ct)
+        {
+            Started = false;
+            return Task.CompletedTask;
+        }
+
+        // Успешный опрос с изменением: слепки перечитаны из Store, Version инкремент.
+        public FakeSources PollChanged(Fakes.FakeEtcd etcd)
+        {
+            Reload(etcd);
+            Version++;
+            return this;
+        }
+
+        public FakeSources Reload(Fakes.FakeEtcd etcd)
+        {
+            Load(Clusters, etcd, "/clusters/");
+            Load(Service, etcd, "/service/");
+            Load(Backups, etcd, "/pgworker/backups/");
+            Load(Claims, etcd, "/pgworker/claims/");
+            return this;
+        }
+
+        private static void Load(
+            Dictionary<string, (string Value, long ModRevision)> target, Fakes.FakeEtcd etcd, string prefix)
+        {
+            target.Clear();
+            foreach (var pair in etcd.Store.Where(p => p.Key.StartsWith(prefix, StringComparison.Ordinal)))
+                target[pair.Key] = (pair.Value.Value, pair.Value.ModRevision);
+        }
+    }
+
+    // Управляемые часы для HealthState: различимость отметок тик/пропуск.
+    private sealed class MutableClock : TimeProvider
+    {
+        public DateTimeOffset Now { get; set; } = DateTimeOffset.UtcNow;
+
+        public override DateTimeOffset GetUtcNow() => Now;
     }
 }

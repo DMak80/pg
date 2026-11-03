@@ -27,7 +27,21 @@ public class ClusterSecretEnsurerTests
         return new string(bytes.Select(b => alphabet[b % alphabet.Length]).ToArray());
     }
 
-    private static ClusterSecretEnsurer Sut(Fakes.FakeEtcd etcd) => new(etcd, [Ep]);
+    // Sut со слепком кэша /clusters/ (arch/17 S10): первичное чтение — из кэша,
+    // живой etcd — только txn добора и re-read после него.
+    private static ClusterSecretEnsurer Sut(Fakes.FakeEtcd etcd) => new(etcd, [Ep], new FakeClustersCache(etcd));
+
+    // Полная семёрка ключей (полный путь ensure — кэш-чтение без txn).
+    private static void SeedComplete(Fakes.FakeEtcd etcd)
+    {
+        etcd.Seed("/clusters/shop/app_user", "app");
+        etcd.Seed("/clusters/shop/app_password", "OldPassword0000000000000000000A");
+        etcd.Seed("/clusters/shop/mover_password", "OldMoverPass0000000000000000000A");
+        etcd.Seed("/clusters/shop/bucket_admin_user", "ba_user");
+        etcd.Seed("/clusters/shop/bucket_admin_password", "OldBaPass000000000000000000000A");
+        etcd.Seed("/clusters/shop/backup_password", "OldBackupPass0000000000000000000A");
+        etcd.Seed("/clusters/shop/rest_password", "OldRestPass0000000000000000000000A");
+    }
 
     [Fact]
     public async Task Ensure_NoKeys_GeneratesAllSeven()
@@ -181,6 +195,28 @@ public class ClusterSecretEnsurerTests
         result.Value.BackupPassword.Should().Be("OldBackupPass0000000000000000000A");
         result.Value.RestPassword.Should().Be("OldRestPass0000000000000000000000A");
         etcd.Txns.Should().BeEmpty("existing keys are not rewritten by a txn");
+    }
+
+    // AAA (arch/17 S10, реестр E10): полный набор в кэше /clusters/ — ensure
+    // БЕЗ txn и БЕЗ etcd-GET (7 GET на кластер каждый тик запрещены). Инверсия
+    // S7: шлюз падает на ЛЮБОМ GetAsync — если бы ensure пошёл в живой etcd,
+    // вызов бы упал; успех доказывает кэш-путь.
+    [Fact]
+    public async Task Ensure_CacheComplete_NoTxnNoEtcdGets()
+    {
+        // Arrange — семёрка в Store (слепок кэша = Store); GetAsync всегда падает
+        var etcd = new Fakes.FakeEtcd();
+        SeedComplete(etcd);
+        etcd.GetFailure = _ => Result<Kv?>.Failed(new ApplicationException("etcd GET must not happen"));
+
+        // Act
+        var result = await Sut(etcd).EnsureAsync("shop", Config, CancellationToken.None);
+
+        // Assert — креды из кэша, ни txn, ни живого чтения
+        result.IsSuccess.Should().BeTrue();
+        result.Value.App.Password.Should().Be("OldPassword0000000000000000000A");
+        result.Value.RestPassword.Should().Be("OldRestPass0000000000000000000000A");
+        etcd.Txns.Should().BeEmpty("complete cache — no txn, no etcd GETs");
     }
 
     [Fact]
