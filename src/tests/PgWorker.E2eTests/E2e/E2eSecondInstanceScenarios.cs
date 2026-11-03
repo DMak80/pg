@@ -82,12 +82,10 @@ public sealed class E2eSecondInstanceScenarios(E2eSecondInstanceScenariosFx Ctx)
             a3Started.Should().BeTrue("the first instance must start A3 (the shard3 container appeared)");
 
             // ---------- Act: docker kill ПЕРВОГО контейнера воркера ----------
-            // Контур по умолчанию стартует воркера с unless-stopped (семантика
-            // watchdog'а, arch/14 §6 / docs/e2e-isolation.md §3); этот сценарий
-            // моделирует ОТКЛЮЧЕНИЕ МАШИНЫ (мульти-хост: рестартера нет) —
-            // жертве рестарт-политика снимается ДО kill, сам не воскреснет —
-            // доносит ТОЛЬКО выживший.
-            await Fx.RunDockerAsync(["update", "--restart=no", w1], ct);
+            // Сценарий моделирует ОТКЛЮЧЕНИЕ МАШИНЫ (мульти-хост: рестартера
+            // нет): рестарт-политики у контуров E2E нет (docs/e2e-isolation.md
+            // §3) — убитый docker kill воркер сам не воскреснет, доносит
+            // ТОЛЬКО выживший.
             await Fx.RunDockerAsync(["kill", w1], ct);
 
             // ---------- Assert: выживший донёс, дублей нет, клэйм у него ----------
@@ -199,10 +197,9 @@ public sealed class E2eSecondInstanceScenarios(E2eSecondInstanceScenariosFx Ctx)
 
         var args = new List<string>
         {
-            // Рестарт-политика — дефолт контура (unless-stopped, docs/e2e-isolation.md
-            // §3, семантика watchdog'а arch/14 §6); «машину отключили» этому
-            // воркеру сценарий делает сам — docker update --restart=no перед kill.
-            "run", "-d", "--name", name, "--restart", "unless-stopped",
+            // Без рестарт-политики — дефолт контуров E2E (docs/e2e-isolation.md §3):
+            // убитый воркер демоном не поднимается, takeover делает выживший.
+            "run", "-d", "--name", name,
             "--network", Fx.NetName,
             "--network-alias", name,
             "-v", "/var/run/docker.sock:/var/run/docker.sock",
