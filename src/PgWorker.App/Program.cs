@@ -851,7 +851,11 @@ builder.Services.AddSingleton(sp => new SnapshotLoop(
     sp.GetRequiredService<Shared.Metrics.Worker.WorkerMetricsInstrumentation>()));
 // Опросные кэши тика (arch/17 S10): слепки наблюдаемых префиксов + счётчик
 // дельт; старт/ретрай — в самом ReconcileLoop (transient etcd не роняет хост).
-builder.Services.AddSingleton<IPrefixPollSources, EtcdPrefixSources>();
+// ОДИН экземпляр на все интерфейсы: регистрация «тип-реализацией» создаёт
+// второй EtcdPrefixSources (свой, не стартованный) — читатели получают пустой
+// слепок (факт E2E: ensure крутился навсегда, txn NotExists на существующем
+// rest_password = succeeded=False).
+builder.Services.AddSingleton<IPrefixPollSources>(sp => sp.GetRequiredService<EtcdPrefixSources>());
 builder.Services.AddSingleton<ReconcileLoop>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<KeepaliveLoop>());
 builder.Services.AddHostedService(sp => sp.GetRequiredService<SnapshotLoop>());

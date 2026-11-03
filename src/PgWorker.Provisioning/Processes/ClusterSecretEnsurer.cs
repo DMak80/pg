@@ -51,6 +51,11 @@ public sealed class ClusterSecretEnsurer(
         // Первичное чтение — из кэша префикса (без etcd-GET); неполный набор —
         // txn добора по живому etcd (put-if-absent гарантирует актуальность).
         var current = ReadFromCache(cluster);
+        // [t06-diag] факт слепка: размер и наличие ключей секретов
+        Console.WriteLine(
+            $"[t06-diag] cache_snapshot={cache?.Snapshot.Count ?? -1} " +
+            $"rest_in_cache={current.RestPassword is not null} " +
+            $"cache_null={cache is null}");
         if (IsComplete(current))
         {
             // Диагностика t06: отпечаток уже существующего etcd-ключа (полный
@@ -102,6 +107,10 @@ public sealed class ClusterSecretEnsurer(
         // обрабатывается re-read ниже.
         var txnResult = await EtcdEndpointFailover.CallAsync(
             endpoints, endpoint => etcd.TxnAsync(endpoint, TxnRequest.Of(compare, put), ct));
+        // [t06-diag] факт txn (диагностика E2E rotate: compare/put счётчики и исход)
+        Console.WriteLine(
+            $"[t06-diag] txn compares={compare.Count} puts={put.Count} " +
+            $"transport_ok={txnResult.IsSuccess} succeeded={txnResult.Value?.Succeeded} endpoints={endpoints.Length}");
         if (!txnResult.IsSuccess)
             return Result<ClusterCredentials>.Failed(txnResult.Error!);
 
