@@ -382,6 +382,40 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
             .Should().Contain($"validated/shard1/{op.Id}");
     }
 
+    // AAA: DR-резолв latest при живых etcd-статусах текущей инкарнации:
+    // orphan-полный (S3 без etcd-статуса — инкарнация до deprovision) имеет
+    // приоритет над свежим полным пересозданного кластера. Иначе restore
+    // восстановил бы пустой свежий снимок вместо погибших данных (факт E2E).
+    [Fact]
+    public async Task ValidationLatestPrefersOrphanFullOverCurrentIncarnation()
+    {
+        // Arrange — текущая инкарнация: свежий COMPLETED-полный в etcd;
+        // в S3 тот же префикс содержит и старый orphan-полный без статуса.
+        const string freshId = "20260911120000Z";
+        const string orphanId = "20260910120000Z";
+        await SeedAsync("c1");
+        await SeedFullAsync("c1", "shard1", freshId);
+        var s3 = new FakeBackupS3();
+        SeedChain(s3, "c1", "shard1", freshId);
+        SeedChain(s3, "c1", "shard1", orphanId);
+        s3.Fulls.Add(("c1", "shard1", freshId));
+        s3.Fulls.Add(("c1", "shard1", orphanId));
+        var process = BuildProcess(s3, new StubScaleDriver());
+        var op = await SeedRestoreAsync("c1", "shard1", "20260911120001Z");
+        (await _claims.TryClaimClusterAsync("c1", TestContext.Current.CancellationToken))
+            .Value.Should().BeTrue("claim is a tick precondition");
+
+        // Act
+        var result = await process.TickAsync(
+            BuildSnap(), await BackupsFromEtcdAsync("c1"), TestContext.Current.CancellationToken);
+
+        // Assert — выбран новейший orphan, а не свежий полный текущей инкарнации
+        result.IsSuccess.Should().BeTrue(result.Error?.ToString());
+        var running = (await ReadRestoresAsync("c1", "shard1")).Single(r => r.Id == op.Id);
+        running.State.Should().Be(RestoreStatus.Running);
+        running.BackupId.Should().Be(orphanId);
+    }
+
     // ── PLANNED: permanent-отказы валидации ──
 
     [Fact]

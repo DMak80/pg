@@ -130,7 +130,7 @@ public sealed class E2eBackupVerifyScenarios(E2eBackupVerifyScenariosFx Ctx) : I
         // оставался OK — перепроверки шли, порча не ловилась)
         await Fx.RunDockerAsync(
             ["run", "--rm", "--network", Fx.NetName, "--entrypoint", "/bin/sh", E2eEnvironment.McImage,
-                "-c", $"mc alias set t http://e2e-owns3:9000 {E2eEnvironment.S3RootUser} {E2eEnvironment.S3RootPassword} >/dev/null"
+                "-c", $"mc alias set t {Fx.S3EndpointForContainers} {E2eEnvironment.S3RootUser} {E2eEnvironment.S3RootPassword} >/dev/null"
                       + $" && echo corrupted | mc pipe t/{Bucket}/{cluster}/shard1/full/{id}/backup_manifest"], ct1);
 
         // Часть 2 — ct2: перепроверка по interval → FAILED + error (бюджет 120 c —

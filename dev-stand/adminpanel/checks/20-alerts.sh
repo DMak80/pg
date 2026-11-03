@@ -137,18 +137,19 @@ api /api/alerts | jq -e 'all(.[]; (.kind | startswith("move-")) | not)' >/dev/nu
   || { echo "❌ move-* alerts remain"; exit 1; }
 echo "  no move-* alerts"
 
-# Act 6 / Assert 7: shard-no-master (critical) на каноническом кластере:
-# удаление master-ключа шарда → алерт → возврат ключа ФАКТИЧЕСКИМ мастером
-# (Patroni-lease живых нод перепишет; значение — из HA-грани панели).
-ect del /clusters/demo/shards/shard2/master >/dev/null
-echo "  shard2 master key deleted"
+# Act 6 / Assert 7: shard-no-master (critical) на каноническом кластере.
+# Устойчивое отсутствие мастер-ключа детерминированно даёт только остановка
+# ОБОИХ нод шарда: ключ живёт на lease ноды (t05, arch/14 §5) — нода
+# переписывает удаление за ≤TTL 5 с, а P11-реконсилятор воркера восстанавливает
+# быстрее тика панели (3 c); «удалить ключ» на живом кластере окно не создаёт.
+# Kill нод → lease гаснет → ключ исчезает → алерт; возврат — старт нод
+# (Patroni выбирает лидера, lease-скрипт возвращает ключ), воркер не трогаем.
+docker kill pgw-demo-shard2-shard2a pgw-demo-shard2-shard2b >/dev/null
+echo "  shard2 nodes stopped — master lease expires"
 wait_alert shard-no-master demo/shard2 critical
 echo "  shard-no-master -> demo/shard2 (critical)"
-shard2_master="$(api /api/ha/demo-shard2 | jq -r '.leaderName + ":5432"')"
-[ -n "$shard2_master" ] && [ "$shard2_master" != ":5432" ] \
-  || { echo "❌ /api/ha/demo-shard2: empty leaderName for master key restore"; exit 1; }
-ect put /clusters/demo/shards/shard2/master "$shard2_master" >/dev/null
-echo "  shard2 master key restored by the actual master ($shard2_master)"
+docker start pgw-demo-shard2-shard2a pgw-demo-shard2-shard2b >/dev/null
+echo "  shard2 nodes started — Patroni elects a leader, the key returns"
 wait_no_alert shard-no-master demo/shard2
 echo "  shard-no-master -> demo/shard2 cleared"
 

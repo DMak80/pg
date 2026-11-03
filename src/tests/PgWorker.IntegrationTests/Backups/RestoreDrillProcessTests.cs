@@ -4,6 +4,7 @@ using PgWorker.Backups;
 using PgWorker.Backups.Drill;
 using PgWorker.Backups.Job;
 using PgWorker.Backups.Process;
+using PgWorker.Backups.Restore;
 using PgWorker.Core.Model;
 using Shared.Etcd.Client;
 using PgWorker.Etcd.Parsing;
@@ -180,6 +181,44 @@ public class RestoreDrillProcessTests
         var parsed = BackupsParser.Parse(range.Value, out var errors);
         errors.Should().BeEmpty("the seed keys must parse");
         return parsed.Value;
+    }
+
+    // AAA: активная restore-заявка владеет жизненным циклом шарда
+    // (arch/19 §3.5/§3.6) — идущий дрилл уступает: гасит СВОЮ операцию (id
+    // снимка совпал), удаляет ключ дрилла и НЕ повторяет POST. Иначе дрилл
+    // держит единственный ops-слот ноды, restore получает 409 и ждёт.
+    [Fact]
+    public async Task RunningDrill_ActiveRestore_YieldsAndRemovesKey()
+    {
+        // Arrange — свой etcd; RUNNING-дрилл + PLANNED-restore того же шарда;
+        // GET приёмника отвечает id дрилла (операция наша).
+        var ct = TestContext.Current.CancellationToken;
+        await using var fx = await OwnEtcd.StartAsync("drill", ct);
+        Fx = fx;
+        const string cluster = "dr3";
+        await SeedAsync(cluster);
+        Receiver.GetReply = new ReceiverReply(200,
+            new ReceiverStatus("running", "downloading", Id: DrillId), null);
+        await SeedDrillAsync(cluster,
+            new DrillState(DrillId, DrillStatus.Running, "20261001090000Z", NowUnix()));
+        var restoreId = $"{DateTimeOffset.UtcNow:yyyyMMddHHmmss}Z-{Shard}";
+        await Fx.Gateway.PutAsync(Fx.Endpoint,
+            BackupNames.RestoreKey(cluster, Shard, restoreId),
+            RestoreStatusJson.Serialize(new RestoreOperationState(
+                restoreId, RestoreStatus.Planned, "", $"{cluster}/{Shard}",
+                "latest", "shard1a", NowUnix(), "test")), null, ct);
+        var process = BuildProcess(cluster, new FakeBackupS3());
+
+        // Act — тик дрилла при активной restore-заявке
+        var result = await process.TickAsync(
+            BuildSnap(cluster), await SnapshotBackupsAsync(cluster), ct);
+
+        // Assert — cancel своей операции; ключ дрилла удалён; POST не посылался
+        result.IsSuccess.Should().BeTrue();
+        Receiver.CancelUrls.Should().ContainSingle().Which.Should().Be(ExpectedReceiverUrl(cluster));
+        (await Fx.Gateway.GetAsync(Fx.Endpoint, DrillKey(cluster), ct)).Value
+            .Should().BeNull("the drill key is removed when yielding to a restore");
+        Receiver.StartUrls.Should().BeEmpty("the drill must not re-post its operation");
     }
 
     // ── Супервиз RUNNING-дрилла (API приёмника первой ноды) ──

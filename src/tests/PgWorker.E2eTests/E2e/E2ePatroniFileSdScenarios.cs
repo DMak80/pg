@@ -82,17 +82,18 @@ public sealed class E2ePatroniFileSdScenarios(E2ePatroniFileSdScenariosFx Ctx) :
                 """, ct);
 
             // Контур мониторинга — единая сеть окружения класса (ревизия 3):
-            // sd-generator читает etcd по alias e2e-etcdN:2379, prometheus скрейпит
-            // ноды по <alias>:8008 — host-форвардинга в контуре НЕТ вообще
-            // (WithExtraHost отсутствует: регрессия ловится конструктивно —
-            // резолва нет → скрейп умер → тест красный).
+            // sd-generator читает etcd по СТАТИЧЕСКИМ IP узлов (t02: embedded-DNS
+            // при churn деградирует), prometheus скрейпит ноды по <alias>:8008 —
+            // host-форвардинга в контуре НЕТ вообще (WithExtraHost отсутствует:
+            // регрессия ловится конструктивно — резолва нет → скрейп умер → тест
+            // красный).
             var sdGenEnv = new Dictionary<string, string>
             {
                 ["SdGenerator__OutputPath"] = "/sd/patroni-nodes.json",
                 ["SdGenerator__RefreshIntervalSec"] = "2",
             };
-            for (var i = 0; i < Fx.EtcdEndpoints.Count; i++)
-                sdGenEnv[$"SdGenerator__Etcd__Endpoints__{i}"] = $"http://e2e-etcd{i + 1}:2379";
+            for (var i = 0; i < Fx.EtcdEndpointsForContainers.Count; i++)
+                sdGenEnv[$"SdGenerator__Etcd__Endpoints__{i}"] = Fx.EtcdEndpointsForContainers[i];
 
             // sd-generator: alias обязателен — static-таргет «sd-generator:8080»
             // резолвится по имени/alias в сети контура.

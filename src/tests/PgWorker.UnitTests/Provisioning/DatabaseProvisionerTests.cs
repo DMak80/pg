@@ -228,6 +228,69 @@ public class DatabaseProvisionerTests
         DatabaseProvisioner.Redact(dsn).Should().Be(dsn);
     }
 
+    // AAA (arch/19 §7): ensure роли backup_exec = CREATE-if-absent И
+    // безусловный ALTER-выравниватель — pg_authid могут перезаписать с чужим
+    // значением (второй писатель); CREATE-only гвард молчал вечно, инвентарь
+    // приёмника падал 28P01 при живой сессии стрима (факт стенда).
+    [Fact]
+    public void BuildBackupExecRoleGuardSql_ContainsCreateIfAbsent_AndAlterAlignment()
+    {
+        // Arrange
+        const string password = "pw-test-123";
+
+        // Act
+        var sql = DatabaseProvisioner.BuildBackupExecRoleGuardSql(password);
+
+        // Assert: DO-блок — CREATE-if-absent и ALTER-выравниватель в одном
+        // исполнении (порядок «создать → выровнять» гарантирован).
+        sql.Should().StartWith("DO $$ BEGIN");
+        sql.Should().Contain("IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'backup_exec')");
+        sql.Should().Contain($"CREATE ROLE \"backup_exec\" LOGIN REPLICATION PASSWORD '{password}';");
+        sql.Should().Contain($"ALTER ROLE \"backup_exec\" WITH LOGIN REPLICATION PASSWORD '{password}';");
+        sql.Should().Contain("END $$;");
+    }
+
+    // AAA (arch/19 §7): проверка соответствия пароля — пересчёт verifier'а от
+    // etcd-значения по СОЛЬ СОХРАНЁННОГО; md5-формат.
+    [Fact]
+    public void BackupExecPasswordMatches_Md5Format_VerifiesPlaintext()
+    {
+        // Arrange: PG хранит 'md5'+md5hex(пароль+роль)
+        const string password = "pw-test-123";
+        var md5 = Convert.ToHexString(System.Security.Cryptography.MD5.HashData(
+            System.Text.Encoding.UTF8.GetBytes(password + DatabaseProvisioner.BackupExecRole))).ToLowerInvariant();
+        var stored = "md5" + md5;
+
+        // Act + Assert
+        DatabaseProvisioner.BackupExecPasswordMatches(stored, password).Should().BeTrue();
+        DatabaseProvisioner.BackupExecPasswordMatches(stored, "other-pw").Should().BeFalse();
+    }
+
+    // AAA (arch/19 §7): SCRAM-SHA-256 формат — SaltedPassword=PBKDF2,
+    // ClientKey=HMAC("Client Key"), StoredKey=SHA256(ClientKey).
+    [Fact]
+    public void BackupExecPasswordMatches_ScramFormat_VerifiesPlaintext()
+    {
+        // Arrange: верификатор от известного пароля/соли (алгоритм PG)
+        const string password = "pw-test-123";
+        var salt = System.Text.Encoding.UTF8.GetBytes("0123456789abcdef");
+        var salted = System.Security.Cryptography.Rfc2898DeriveBytes.Pbkdf2(
+            password, salt, 4096, System.Security.Cryptography.HashAlgorithmName.SHA256, 32);
+        using var hmac = new System.Security.Cryptography.HMACSHA256(salted);
+        var clientKey = hmac.ComputeHash("Client Key"u8.ToArray());
+        using var sha = System.Security.Cryptography.SHA256.Create();
+        var storedKey = sha.ComputeHash(clientKey);
+        var serverKey = hmac.ComputeHash("Server Key"u8.ToArray());
+        var stored = $"SCRAM-SHA-256$4096:{Convert.ToBase64String(salt)}$" +
+                     $"{Convert.ToBase64String(storedKey)}:{Convert.ToBase64String(serverKey)}";
+
+        // Act + Assert: совпадает по паролю; чужой/битый/пустой — расхождение.
+        DatabaseProvisioner.BackupExecPasswordMatches(stored, password).Should().BeTrue();
+        DatabaseProvisioner.BackupExecPasswordMatches(stored, "other-pw").Should().BeFalse();
+        DatabaseProvisioner.BackupExecPasswordMatches("garbage", password).Should().BeFalse();
+        DatabaseProvisioner.BackupExecPasswordMatches(null, password).Should().BeFalse();
+    }
+
     [Fact]
     public async Task ExecuteAsync_FailingDsn_ErrorContainsRedactedPassword()
     {

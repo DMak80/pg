@@ -139,6 +139,23 @@ public static class SpiloEnvBuilder
                 username: {{RestRotation.RestUsername}}
                 {{RestPasswordKey}}: "{{restPassword}}"
             postgresql:
+              # Bootstrap реплик: ВСТРОЕННЫЙ метод Patroni (pg_basebackup
+              # -X stream — WAL напрямую от мастера), а не Spilo-скрипт
+              # basebackup_fast_xlog (он гонит pg_basebackup -X none +
+              # отдельный pg_receivewal).
+              # checkpoint: fast — КРИТИЧНО для времени bootstrap'а:
+              # pg_basebackup по умолчанию просит SPREAD-checkpoint, и на
+              # мастере checkpointer стоит в CheckpointWriteDelay
+              # (checkpoint_completion_target 0.9 × checkpoint_timeout 15 мин):
+              # pg_basebackup ждёт CheckpointDone ~40 с (e2e-факт: provision
+              # 46 с; pg_stat_progress_basebackup = waiting for checkpoint
+              # to finish, при этом fsync 3+ GB/s — диск не при чём).
+              # fast завершает checkpoint немедленно — реплика догоняет за
+              # секунды (факт после фикса: provision 13,6 с, тест 58→26 с).
+              create_replica_methods:
+                - basebackup
+              basebackup:
+                checkpoint: fast
               callbacks:
                 # P11: key /clusters/<C>/shards/<X>/master under etcd-lease.
                 # Секция ЛОКАЛЬНАЯ, не bootstrap.dcs: Patroni мержит локальную

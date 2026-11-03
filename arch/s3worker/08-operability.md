@@ -14,6 +14,19 @@
 (демонтаж); `TO_REMOVE` (маркер панели, one-way). Семантика каждого
 значения — [processes/enums.md](processes/enums.md).
 
+Тик ReconcileLoop — работает КАЖДЫЙ тик, без гейтов по дельте (self-healing:
+provision/надзор/зонд ждут не-etcd события — health-грань инстанса,
+docker-факты). etcd в тике не читается: контроль-плейн берётся из слепка
+опросного кэша `/s3/` (S10
+[17](../17-synchronization-principles.md), реестр E10 — чтение уходит в
+фоновый опрос, единая точка failover S7; заявки ротации кредов и
+по-командного зонда, клэймы и portalloc-клэйм процессы читают из etcd
+напрямую при исполнении). Применения etcd-значений процессами (ensure
+секретов/PKI, RMW, снятие state) — только по факту изменения значения
+(S10). Журналы `/s3worker/work/` воркер пишет сам — в кэш домена они не
+входят. Смерть инстанса гасит его клэймы-lease ≤ 15 с — takeover очередным
+тиком.
+
 Классификация тика: `config.state=NOT_INITIALIZED` → Provisioning
 ([A](processes/a-provisioning.md)); `TO_REMOVE` → Deprovisioning
 ([B](processes/b-deprovisioning.md)); битый/отсутствующий `config` → пропуск

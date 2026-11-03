@@ -82,7 +82,10 @@ public sealed class E2eSecondInstanceScenarios(E2eSecondInstanceScenariosFx Ctx)
             a3Started.Should().BeTrue("the first instance must start A3 (the shard3 container appeared)");
 
             // ---------- Act: docker kill ПЕРВОГО контейнера воркера ----------
-            // --restart no: не воскреснет сам — доносит ТОЛЬКО выживший.
+            // Сценарий моделирует ОТКЛЮЧЕНИЕ МАШИНЫ (мульти-хост: рестартера
+            // нет): рестарт-политики у контуров E2E нет (docs/e2e-isolation.md
+            // §3) — убитый docker kill воркер сам не воскреснет, доносит
+            // ТОЛЬКО выживший.
             await Fx.RunDockerAsync(["kill", w1], ct);
 
             // ---------- Assert: выживший донёс, дублей нет, клэйм у него ----------
@@ -182,10 +185,10 @@ public sealed class E2eSecondInstanceScenarios(E2eSecondInstanceScenariosFx Ctx)
             ["DOTNET_ENVIRONMENT"] = "Production",
         };
 
-        // etcd окружения: воркер в сети контура — ВНУТРИСЕТEВОЙ алиас
-        // (e2e-etcdN:2379, «сеть одна»; хостовый localhost из контейнера
-        // не резолвится: оба инстанса не поднимают api (Connection
-        // refused); Advertised — тот же (Patroni-ноды в той же сети).
+        // etcd окружения: воркер в сети контура — СТАТИЧЕСКИЕ IP узлов
+        // (t02; хостовый localhost из контейнера не резолвится: оба инстанса
+        // не поднимают api (Connection refused); Advertised — тот же
+        // (Patroni-ноды в той же сети).
         for (var i = 0; i < Fx.EtcdEndpointsForContainers.Count; i++)
         {
             env[$"PgWorker__Etcd__Endpoints__{i}"] = Fx.EtcdEndpointsForContainers[i];
@@ -194,7 +197,9 @@ public sealed class E2eSecondInstanceScenarios(E2eSecondInstanceScenariosFx Ctx)
 
         var args = new List<string>
         {
-            "run", "-d", "--name", name, "--restart", "no",
+            // Без рестарт-политики — дефолт контуров E2E (docs/e2e-isolation.md §3):
+            // убитый воркер демоном не поднимается, takeover делает выживший.
+            "run", "-d", "--name", name,
             "--network", Fx.NetName,
             "--network-alias", name,
             "-v", "/var/run/docker.sock:/var/run/docker.sock",

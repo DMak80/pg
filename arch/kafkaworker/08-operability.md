@@ -14,6 +14,18 @@
 процессе демонтажа); `TO_REMOVE` (маркер панели, one-way). Семантика каждого
 значения — [processes/enums.md](processes/enums.md).
 
+Тик ReconcileLoop — работает КАЖДЫЙ тик, без гейтов по дельте (self-healing:
+provision/надзор/ротации ждут не-etcd события — готовность брокеров,
+docker-факты). etcd в тике не читается: контроль-плейн берётся из слепка
+опросного кэша `/kafka/clusters/` (S10
+[17](../17-synchronization-principles.md), реестр E10 — чтение уходит в
+фоновый опрос, единая точка failover S7; заявки ротаций/ребалансировок,
+клэймы и portalloc-клэйм процессы читают из etcd напрямую при исполнении).
+Применения etcd-значений процессами (ensure секретов/CA, RMW, снятие
+state) — только по факту изменения значения (S10). Журналы
+`/kafkaworker/work/` воркер пишет сам — в кэш домена они не входят. Смерть
+инстанса гасит его клэймы-lease ≤ 15 с — takeover очередным тиком.
+
 Классификация тика: `config.state=NOT_INITIALIZED` → Provisioning
 ([A](processes/a-provisioning.md)); `TO_REMOVE` → Deprovisioning
 ([B](processes/b-deprovisioning.md)); иначе Active-ветка: **премиграционный

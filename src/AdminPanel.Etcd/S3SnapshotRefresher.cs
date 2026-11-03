@@ -13,8 +13,12 @@ namespace AdminPanel.Etcd;
 // range /s3/clusters/ + /s3worker/rotations/ + /s3worker/api/ и точечный ключ
 // /workers/api_tls/s3worker на активном endpoint (sticky + failover, опции
 // общие с pg-циклом EtcdOptions). Транспортный провал любого чтения роняет тик:
-// прежние данные, EtcdReachable=false, счётчик отказов. Регистрация — явно в
-// ModuleExtensions.AddS3().
+// прежние данные, EtcdReachable=false, счётчик отказов. Применение только
+// изменений — arch/02 §12/§5 (arch/17 S10): прочитанное идентично кэшу
+// последнего успешно прочитанного состояния → тик без изменений: пересборки и
+// алертного пересчёта нет, обновляются свежая доступностная часть и штамп
+// свежести; тики не классифицируются (E11) — гейт только по дельте состояния.
+// Регистрация — явно в ModuleExtensions.AddS3().
 public sealed class S3SnapshotRefresher(
     IEtcdGateway gateway,
     IS3AlertEngine alertEngine,
@@ -27,6 +31,12 @@ public sealed class S3SnapshotRefresher(
 {
     private string? _activeEndpoint;
     private bool _endpointsWarned;
+
+    // Кэш последнего успешно прочитанного состояния (arch/02 §12, arch/17 S10):
+    // тик сравнивает прочитанное с ним и пересобирает снапшот только при
+    // фактическом изменении. Обновляется только на пересборке — отказной и
+    // тик без изменений кэш не меняют (по построению кэш хранит успешно прочитанное).
+    private (string Prefix, IReadOnlyList<Kv> Items)[]? _lastRead;
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -99,6 +109,40 @@ public sealed class S3SnapshotRefresher(
 
         _activeEndpoint = active;
 
+        // Прочитанное тика — вход сравнения с кэшем (arch/02 §12, arch/17 S10):
+        // списки KV всех наблюдаемых префиксов (Kv — record: ключ/значение/
+        // mod_revision); member list/alarm/статусы endpoints домен не читает.
+        (string Prefix, IReadOnlyList<Kv> Items)[] reads =
+        [
+            (Prefixes.Clusters, clustersKv.Value),
+            (Prefixes.Rotations, rotationsKv.Value),
+            (Prefixes.WorkerApi, workerApiKv.Value),
+            (Prefixes.WorkerApiCert, certKv.Value),
+            (Prefixes.Work, workKv.Value),
+            (Prefixes.Leader, leaderKv.Value),
+            (Prefixes.Claims, claimsKv.Value),
+            (Prefixes.Instances, instancesKv.Value),
+        ];
+
+        // arch/02 §12/§5 (arch/17 S10): прочитанное идентично кэшу (последнему
+        // успешно прочитанному состоянию из etcd) — тик без изменений: снапшот не
+        // пересобирается, алертный пересчёт не выполняется; обновляются свежая
+        // доступностная часть (телеметрия доступности не замерзает) и штамп
+        // свежести. Ветвление только по факту совпадения с кэшем, без истории
+        // исходов тиков (E11): совпадение после сбоя — тик без изменений, различие —
+        // пересборка.
+        if (previous is S3Snapshot lastApplied
+            && TickUnchanged(reads))
+        {
+            store.Replace(lastApplied with
+            {
+                BuiltAtUtc = now,
+                EtcdReachable = true,
+                ConsecutiveFailures = 0,
+            });
+            return Result.Success();
+        }
+
         var clusters = S3Parser.ParseClusters(clustersKv.Value);
         var rotations = S3Parser.ParseRotations(rotationsKv.Value);
         var workerApi = WorkerEndpointsParser.Parse(workerApiKv.Value);
@@ -133,7 +177,29 @@ public sealed class S3SnapshotRefresher(
             Coordination: coordinationParsed.Coordination);
 
         store.Replace(built with { Alerts = alertEngine.Evaluate(built, previous) });
+        RememberTick(reads);
         return Result.Success();
+    }
+
+    // Кэш последнего успешно прочитанного состояния: обновляется только на
+    // пересборке — отказной и тик без изменений кэш не меняют (arch/02 §12, arch/17 S10).
+    private void RememberTick((string Prefix, IReadOnlyList<Kv> Items)[] reads)
+        => _lastRead = reads;
+
+    // Сравнение прочитанного тика с кэшем (arch/02 §12, arch/17 S10): списки
+    // KV наблюдаемых префиксов по значению. Кэш хранит последнее успешно
+    // прочитанное состояние: обновляется только на пересборке, отказной тик
+    // его не меняет по построению; тики не классифицируются (E11) — ветвление
+    // только по факту совпадения (кэш не собран — первый тик → «изменено»).
+    private bool TickUnchanged((string Prefix, IReadOnlyList<Kv> Items)[] reads)
+    {
+        if (_lastRead is null || reads.Length != _lastRead.Length)
+            return false;
+        for (var i = 0; i < reads.Length; i++)
+            if (reads[i].Prefix != _lastRead[i].Prefix
+                || !reads[i].Items.SequenceEqual(_lastRead[i].Items))
+                return false;
+        return true;
     }
 
     // Failover: один проход по endpoints по кругу от активного (pg-механика).

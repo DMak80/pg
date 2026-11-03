@@ -14,6 +14,19 @@
 (демонтаж); `TO_REMOVE` (маркер панели, one-way). Семантика каждого
 значения — [processes/enums.md](processes/enums.md).
 
+Тик ReconcileLoop — работает КАЖДЫЙ тик, без гейтов по дельте (self-healing:
+provision/надзор/ротации ждут не-etcd события — PING-готовность ноды,
+docker-факты). etcd в тике не читается: контроль-плейн берётся из слепка
+опросного кэша `/valkey/clusters/` (S10
+[17](../17-synchronization-principles.md), реестр E10 — чтение уходит в
+фоновый опрос, единая точка failover S7; заявки ротаций, клэймы и
+portalloc-клэйм процессы читают из etcd напрямую при исполнении).
+Применения etcd-значений процессами (ensure кредов/CA, RMW, снятие state) —
+только по факту изменения значения (S10). Журналы `/valkeyworker/work/`
+(включая стейт ротации `work/<C>/rotation`) воркер пишет сам — в кэш домена
+они не входят. Смерть инстанса гасит его клэймы-lease ≤ 15 с — takeover
+очередным тиком.
+
 Классификация тика: `config.state=NOT_INITIALIZED` → Provisioning
 ([A](processes/a-provisioning.md)); `TO_REMOVE` → Deprovisioning
 ([B](processes/b-deprovisioning.md)); иначе Active-ветка: **миграция TLS

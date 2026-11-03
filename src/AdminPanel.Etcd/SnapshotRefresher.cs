@@ -13,7 +13,9 @@ using Microsoft.Extensions.Options;
 
 namespace AdminPanel.Etcd;
 
-// Единственный писатель снапшота (arch/01 §1): тик RefreshIntervalSeconds по arch/02 §4.
+// Единственный писатель снапшота (arch/01 §1): тик RefreshIntervalSeconds по arch/02 §4,
+// применение только изменений — arch/02 §5 (arch/17 S10): чтение совпало с кэшем →
+// пересборки и алертного пересчёта нет, обновляются только штампы свежести.
 // Отказ тика = обновление только Etcd-части: данные и BuiltAtUtc прежние, возраст растёт (spec §3.9).
 [InjectAsSingleton(typeof(IHostedService))]
 public sealed class SnapshotRefresher(
@@ -34,6 +36,14 @@ public sealed class SnapshotRefresher(
     private bool _working;
     private Result _statusError = Result.Success();
     private bool _endpointsWarned;
+
+    // Кэш последнего применённого тика (arch/02 §5, arch/17 S10): тик сравнивает
+    // прочитанное с ним и пересобирает снапшот только при фактическом изменении.
+    // Members — проекцией: record несёт списки URL (reference-equality).
+    private Dictionary<string, IReadOnlyList<Kv>>? _lastRead;
+    private (ulong Id, string? Name, string PeerUrls, string ClientUrls, bool IsLearner)[]? _lastMemberFacts;
+    private IReadOnlyList<EtcdAlarm>? _lastAlarms;
+    private (string Url, bool Reachable, string? Version, ulong? LeaderMemberId, ulong? RaftTerm, string Errors)[]? _lastStatusFacts;
 
     public bool Inited => _inited;
 
@@ -151,6 +161,81 @@ public sealed class SnapshotRefresher(
             || !leaderKv.IsSuccess || !claimsKv.IsSuccess || !instancesKv.IsSuccess)
             return FailTick(previous, statuses, now, "etcd KV reads failed");
 
+        // Прочитанное тика — вход сравнения с кэшем (arch/02 §5). Member/alarm
+        // при мягком сбое применяются пустыми (прежнее поведение) — кэш зеркалит
+        // применённое, а не запрошенное.
+        (string Prefix, IReadOnlyList<Kv> Items)[] reads =
+        [
+            (Prefixes.Clusters, clustersKv.Value),
+            (Prefixes.Service, serviceKv.Value),
+            (Prefixes.Nodes, nodesKv.Value),
+            (Prefixes.PortAlloc, portAllocKv.Value),
+            (Prefixes.Moves, movesKv.Value),
+            (Prefixes.Backups, backupsKv.Value),
+            (Prefixes.PgWorkerApi, pgApiKv.Value),
+            (Prefixes.WorkerApiCert, pgCertKv.Value),
+            (Prefixes.EtcdSnapshots, etcdSnapshotsKv.Value),
+            (Prefixes.EtcdConfig, etcdConfigKv.Value),
+            (Prefixes.EtcdNodes, etcdNodesKv.Value),
+            (Prefixes.EtcdWorkerApi, etcdwApiKv.Value),
+            (Prefixes.EtcdWorkerCert, etcdwCertKv.Value),
+            (Prefixes.PgWorkerWork, workKv.Value),
+            (Prefixes.BackupsDisabled, backupsDisabledKv.Value),
+            (Prefixes.Evacuations, evacuationsKv.Value),
+            (Prefixes.PgRotations, pgRotationsKv.Value),
+            (Prefixes.Leader, leaderKv.Value),
+            (Prefixes.Claims, claimsKv.Value),
+            (Prefixes.Instances, instancesKv.Value),
+        ];
+        IReadOnlyList<EtcdMember> appliedMembers = members.IsSuccess ? members.Value : [];
+        IReadOnlyList<EtcdAlarm> appliedAlarms = alarms.IsSuccess ? alarms.Value : [];
+
+        // Кворум-эвристика (spec §3.11) + мягкие метаданные member/alarm (ошибка не
+        // роняет тик); свежая Etcd-часть нужна и тихому тику (телеметрия доступности).
+        var quorumSuspected = alive.All(a => a.LeaderMemberId is not > 0 || a.RaftTerm is not > 0)
+            || alive.Any(a => a.Errors.Any(IsRaftError));
+
+        var metaErrors = new List<string>();
+        if (!members.IsSuccess)
+            metaErrors.Add("member/list: " + members.Error!.Message);
+        if (!alarms.IsSuccess)
+            metaErrors.Add("alarm: " + alarms.Error!.Message);
+        EtcdEndpoint[] patchedStatuses = statuses;
+        if (metaErrors.Count > 0)
+        {
+            patchedStatuses = [.. statuses.Select(s => s.Url == active.Url
+                ? s with { Errors = [.. s.Errors, .. metaErrors] }
+                : s)];
+        }
+
+        var etcd = new EtcdStatus(
+            true,
+            patchedStatuses,
+            appliedMembers,
+            appliedAlarms,
+            active.Url,
+            quorumSuspected,
+            now,
+            0);
+
+        // arch/02 §5 (arch/17 S10): прочитанное идентично кэшу (последнему
+        // успешно прочитанному состоянию из etcd) — тик без изменений: данные не
+        // пересобираются, парсеры/AlertEngine/потребители не вызываются;
+        // обновляются свежая Etcd-часть (телеметрия доступности не замерзает)
+        // и штампы свежести. Ветвление только по факту совпадения с кэшем,
+        // без истории исходов тиков: совпадение после сбоя — тик без изменений,
+        // различие — пересборка.
+        if (previous is EtcdSnapshot lastApplied
+            && TickUnchanged(reads, appliedMembers, appliedAlarms, statuses))
+        {
+            store.Replace(lastApplied with
+            {
+                BuiltAtUtc = now,
+                Etcd = etcd,
+            });
+            return Finish(Result.Success(), working: true);
+        }
+
         // 4. Парсеры → модель (чистые функции, arch/02 §4 п.3).
         var clustersParsed = ClustersParser.Parse(clustersKv.Value);
         var serviceParsed = ServiceParser.Parse(
@@ -176,33 +261,6 @@ public sealed class SnapshotRefresher(
         var evacuationsParsed = EvacuationsParser.Parse(evacuationsKv.Value);
         var pgRotationsParsed = RotationsParser.Parse(pgRotationsKv.Value);
         var coordinationParsed = CoordinationParser.Parse(leaderKv.Value.FirstOrDefault(), claimsKv.Value, instancesKv.Value);
-
-        // 5. Кворум-эвристика (spec §3.11) + мягкие метаданные member/alarm (ошибка не роняет тик).
-        var quorumSuspected = alive.All(a => a.LeaderMemberId is not > 0 || a.RaftTerm is not > 0)
-            || alive.Any(a => a.Errors.Any(IsRaftError));
-
-        var metaErrors = new List<string>();
-        if (!members.IsSuccess)
-            metaErrors.Add("member/list: " + members.Error!.Message);
-        if (!alarms.IsSuccess)
-            metaErrors.Add("alarm: " + alarms.Error!.Message);
-        EtcdEndpoint[] patchedStatuses = statuses;
-        if (metaErrors.Count > 0)
-        {
-            patchedStatuses = [.. statuses.Select(s => s.Url == active.Url
-                ? s with { Errors = [.. s.Errors, .. metaErrors] }
-                : s)];
-        }
-
-        var etcd = new EtcdStatus(
-            true,
-            patchedStatuses,
-            members.IsSuccess ? members.Value : [],
-            alarms.IsSuccess ? alarms.Value : [],
-            active.Url,
-            quorumSuspected,
-            now,
-            0);
 
         // 6. Сборка + внесение проб (arch/02 §4 п.3) + health воркеров (spec D4,
         // образец ProbeEnricher.Apply — poller пишет независимо от KV-тика) +
@@ -235,6 +293,7 @@ public sealed class SnapshotRefresher(
         {
             Alerts = alertEngine.Evaluate(enrichedBase, previous, now, EffectiveIntervalSeconds()),
         });
+        RememberTick(reads, appliedMembers, appliedAlarms, statuses);
         return Finish(Result.Success(), working: true);
     }
 
@@ -330,6 +389,53 @@ public sealed class SnapshotRefresher(
         _working = working;
         _statusError = status;
         return status;
+    }
+
+    // Кэш последнего применённого тика: запоминается только на пересборке —
+    // отказной и тик без изменений кэш не меняют (arch/02 §5).
+    private void RememberTick(
+        (string Prefix, IReadOnlyList<Kv> Items)[] reads,
+        IReadOnlyList<EtcdMember> members,
+        IReadOnlyList<EtcdAlarm> alarms,
+        IReadOnlyList<EtcdEndpoint> statuses)
+    {
+        _lastRead = reads.ToDictionary(r => r.Prefix, r => r.Items);
+        _lastMemberFacts = members.Select(MemberFact).ToArray();
+        _lastAlarms = alarms;
+        _lastStatusFacts = statuses.Select(StatusFact).ToArray();
+    }
+
+    // Факты статуса endpoint'а без изменчивых от тика к тику полей (latency/
+    // dbSize/raftIndex — шум каждого тика): вход сравнения с кэшем (arch/02 §5).
+    private static (string Url, bool Reachable, string? Version, ulong? LeaderMemberId, ulong? RaftTerm, string Errors) StatusFact(EtcdEndpoint e)
+        => (e.Url, e.Reachable, e.Version, e.LeaderMemberId, e.RaftTerm, string.Join(";", e.Errors));
+
+    // Проекция члена кластера (PeerUrls/ClientUrls — списки с reference-
+    // equality, record их не сравнивает по значению).
+    private static (ulong Id, string? Name, string PeerUrls, string ClientUrls, bool IsLearner) MemberFact(EtcdMember m)
+        => (m.Id, m.Name, string.Join(",", m.PeerUrls), string.Join(",", m.ClientUrls), m.IsLearner);
+
+    // Сравнение прочитанного тика с кэшем последнего применённого (arch/02 §5):
+    // списки KV всех наблюдаемых префиксов (Kv — record: ключ/значение/
+    // mod_revision) + member list + alarm + факты статусов. Кэш не собран
+    // (первый тик / после отказа — Reachable=false у снапшота, проверяет
+    // вызывающий) → «изменено».
+    private bool TickUnchanged(
+        (string Prefix, IReadOnlyList<Kv> Items)[] reads,
+        IReadOnlyList<EtcdMember> members,
+        IReadOnlyList<EtcdAlarm> alarms,
+        IReadOnlyList<EtcdEndpoint> statuses)
+    {
+        if (_lastRead is null || _lastMemberFacts is null || _lastAlarms is null || _lastStatusFacts is null)
+            return false;
+        if (reads.Length != _lastRead.Count)
+            return false;
+        foreach (var (prefix, items) in reads)
+            if (!_lastRead.TryGetValue(prefix, out var cached) || !cached.SequenceEqual(items))
+                return false;
+        return members.Select(MemberFact).SequenceEqual(_lastMemberFacts)
+            && alarms.SequenceEqual(_lastAlarms)
+            && statuses.Select(StatusFact).SequenceEqual(_lastStatusFacts);
     }
 
     private static bool IsValidEndpoint(string endpoint)

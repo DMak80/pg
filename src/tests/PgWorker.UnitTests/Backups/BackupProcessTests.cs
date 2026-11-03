@@ -175,6 +175,15 @@ public class BackupProcessTests
         }
     }
 
+    // Patroni-обработчик для probe'а (используется NewRig при respondRaw != null).
+    private sealed class PatroniHandler(Func<HttpRequestMessage, HttpResponseMessage> respond)
+        : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request, CancellationToken ct)
+            => Task.FromResult(respond(request));
+    }
+
     internal sealed class FakeSql : ISqlExecutor
     {
         public readonly List<(string Dsn, string Sql)> Scalars = [];
@@ -185,7 +194,8 @@ public class BackupProcessTests
         public Task<Result<object?>> ExecuteScalarAsync(string dsn, string sql, CancellationToken ct)
         {
             Scalars.Add((dsn, sql));
-            // Гвард роли: строка CREATE ROLE — роль ещё не создана (идемпотентный путь).
+            // Проверка rolpassword → null (расхождение → ensure исполнится);
+            // ensure (DO-блок) → успех.
             return Task.FromResult(Result<object?>.Success(
                 sql.Contains("CREATE ROLE") ? "CREATE ROLE backup_exec ..." : null));
         }
@@ -278,7 +288,8 @@ public class BackupProcessTests
     private static async Task<Rig> NewRig(
         bool claim = true, bool seedPortalloc = true, BackupsRuntimeOptions? options = null,
         Fakes.FakeEtcd? etcdOverride = null,
-        Action<string, IReadOnlyDictionary<string, (long? LastValidUnix, long MaxAgeSec)>>? observer = null)
+        Action<string, IReadOnlyDictionary<string, (long? LastValidUnix, long MaxAgeSec)>>? observer = null,
+        Func<HttpRequestMessage, HttpResponseMessage>? respondRaw = null)
     {
         var store = etcdOverride ?? new Fakes.FakeEtcd();
         SeedCluster(store);
@@ -294,7 +305,9 @@ public class BackupProcessTests
             await claims.TryClaimClusterAsync("shop", CancellationToken.None);
         store.Txns.Clear(); // отсечь claim-txn: ассерты — только про тик бэкапов
         var journal = new WorkJournal("/pgworker", store, [Ep]);
-        var probe = new ShardProbe(new HttpClient(new DeadHandler()));
+        var probe = new ShardProbe(new HttpClient(respondRaw is not null
+            ? new PatroniHandler(respondRaw)
+            : new DeadHandler()));
         var process = new BackupProcess(
             store, [Ep],
             new ShardEndpoints(store, [Ep], probe), sql, ensurer,
@@ -842,12 +855,95 @@ public class BackupProcessTests
         // Act
         var outcome = await rig.Process.TickAsync(await Snapshot(rig.Etcd), backups, CancellationToken.None);
 
-        // Assert — новых записей НЕТ; гвард исполнен; тик Done
+        // Assert — новых записей НЕТ; проверка rolpassword исполнена, ensure
+        // роли (DO-блок backup_exec) исполнен при расхождении; тик Done
         outcome.IsSuccess.Should().BeTrue();
         rig.Etcd.Store.Keys.Should().NotContain(k => k.StartsWith("/pgworker/backups/shop/shard1/full/"));
         rig.Receiver.StartFullUrls.Should().BeEmpty();
-        var guard = rig.Sql.Scalars.Should().ContainSingle().Subject;
-        guard.Sql.Should().Contain("backup_exec");
+        rig.Sql.Scalars.Should().Contain(s => s.Sql.Contains("rolpassword FROM pg_authid"));
+        rig.Sql.Scalars.Should().Contain(s => s.Sql.Contains("DO $$") && s.Sql.Contains("backup_exec"));
+    }
+
+    // Patroni /cluster JSON для probe'а (порты 18000/18001 — patroni-порты рига).
+    private const string PatroniClusterSyncElected =
+        """{"members":[{"name":"shard1a","role":"master","state":"running","sync":false},""" +
+        """{"name":"shard1b","role":"replica","state":"running","sync":true}]}""";
+    private const string PatroniClusterNoSync =
+        """{"members":[{"name":"shard1a","role":"master","state":"running","sync":false},""" +
+        """{"name":"shard1b","role":"replica","state":"running","sync":false}]}""";
+
+    private static IReadOnlyList<ClusterBackups> BackupsWithCompletedMasterFull(DateTimeOffset now)
+    {
+        var completed = new FullBackupState("20260908030000Z", FullBackupStatus.Completed,
+            "shard1a", BackupSourceRole.Master, Unix(now.AddHours(-1).AddMinutes(-5)),
+            Unix(now.AddHours(-1)), "000000010000000000000042", 1048576, null, null);
+        var wal = new WalStreamState(WalStreamStatus.Active, "slot_shop_shard1", "shard1a",
+            "000000010000000000000042", "000000010000000000000043", "000000010000000000000043",
+            Unix(now), null, null);
+        return
+        [
+            new ClusterBackups("shop", null, new Dictionary<string, ShardBackups>
+            {
+                ["shard1"] = new([completed], wal),
+            }),
+        ];
+    }
+
+    // AAA (arch/19 §2): самый свежий COMPLETED с ролью master при избранной
+    // sync-standby — due для пересъёма с реплики (канон «источник полного —
+    // синхрон-реплика»; дельта-гейт тика сдвинул первый полный в окно до
+    // избрания sync — правило делает канон исполнимым).
+    [Fact]
+    public async Task FreshMasterSourcedFull_SyncElected_RetakesFromReplica()
+    {
+        // Arrange: /cluster отвечает sync на shard1b; COMPLETED час назад с мастера.
+        var now = TimeProvider.System.GetUtcNow();
+        var rig = await NewRig(respondRaw: r =>
+            r.RequestUri!.Port is 18000 or 18001
+                ? new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+                {
+                    Content = new StringContent(
+                        PatroniClusterSyncElected, System.Text.Encoding.UTF8, "application/json"),
+                }
+                : new HttpResponseMessage(System.Net.HttpStatusCode.OK));
+        var backups = BackupsWithCompletedMasterFull(now);
+
+        // Act
+        var outcome = await rig.Process.TickAsync(await Snapshot(rig.Etcd), backups, CancellationToken.None);
+
+        // Assert: пересъём запланирован с реплики (Planned, role=replica).
+        outcome.IsSuccess.Should().BeTrue();
+        var fullKey = rig.Etcd.Store.Keys.Cast<string>()
+            .FirstOrDefault(k => k.StartsWith("/pgworker/backups/shop/shard1/full/"));
+        fullKey.Should().NotBeNull();
+        rig.Etcd.Store[fullKey!].Value.Should().Contain("\"role\":\"replica\"");
+        rig.Receiver.StartFullUrls.Should().ContainSingle();
+    }
+
+    // AAA (arch/19 §2): sync не избран → force-пересъёма НЕТ (иначе вечный
+    // цикл master-полных); действует обычный due.
+    [Fact]
+    public async Task FreshMasterSourcedFull_NoSync_NoRetake()
+    {
+        // Arrange: /cluster без sync-участника; COMPLETED час назад с мастера.
+        var now = TimeProvider.System.GetUtcNow();
+        var rig = await NewRig(respondRaw: r =>
+            r.RequestUri!.Port is 18000 or 18001
+                ? new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+                {
+                    Content = new StringContent(
+                        PatroniClusterNoSync, System.Text.Encoding.UTF8, "application/json"),
+                }
+                : new HttpResponseMessage(System.Net.HttpStatusCode.OK));
+        var backups = BackupsWithCompletedMasterFull(now);
+
+        // Act
+        var outcome = await rig.Process.TickAsync(await Snapshot(rig.Etcd), backups, CancellationToken.None);
+
+        // Assert: новых полных нет, приёмник не дёргался.
+        outcome.IsSuccess.Should().BeTrue();
+        rig.Etcd.Store.Keys.Should().NotContain(k => k.StartsWith("/pgworker/backups/shop/shard1/full/"));
+        rig.Receiver.StartFullUrls.Should().BeEmpty();
     }
 
     // AAA (AC1): wal-ключ WAL_CHAIN_ERROR → планировщик создаёт новый полный, даже если

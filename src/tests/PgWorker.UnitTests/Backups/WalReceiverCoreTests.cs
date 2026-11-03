@@ -45,10 +45,25 @@ public class WalReceiverCoreTests
 
     /// <summary>Мини-фейк IBackupS3: put в словарь, ListWalAsync от словаря;
     /// FailKeys — УСТОЙЧИВЫЙ отказ (до ручного снятия — backpressure-тест).</summary>
-    private sealed class FakeS3 : IBackupS3
+    private sealed class FakeS3 : IBackupS3, IWalSegmentGuard
     {
         public readonly Dictionary<string, byte[]> Objects = [];
         public readonly HashSet<string> FailKeys = [];
+
+        // Гвард чужой цепочки (arch/19 §3): ключи-конфликты — put НЕ пишется,
+        // наружу маркер WalArchiveConflict (permanent, не transient).
+        public readonly HashSet<string> ConflictKeys = [];
+
+        public Task<Result> PutWalSegmentAsync(
+            string key, byte[] data, string? sha256, CancellationToken ct = default)
+            => ConflictKeys.Contains(key)
+                ? Task.FromResult(Result.Failed(new ApplicationException(
+                    $"{WalArchiveConflict.Marker}: {key} already archived with different content")))
+                : PutObjectAsync(key, data, sha256, ct);
+
+        public Task<Result> PutWalSegmentFileAsync(
+            string key, string filePath, CancellationToken ct = default)
+            => PutWalSegmentAsync(key, File.ReadAllBytes(filePath), null, ct);
 
         public Task<Result> PutObjectAsync(string key, byte[] data, string? sha256, CancellationToken ct = default)
         {
@@ -283,6 +298,32 @@ public class WalReceiverCoreTests
         // (confirm k происходит сразу после успешного put k — никогда не опережает)
         source.ConfirmJournal.Should().Equal(
             $"{EndLsn(0)}", $"{EndLsn(1)}", $"{EndLsn(2)}");
+    }
+
+    // AAA: гвард чужой цепочки (arch/19 §3): сегмент с тем же именем уже лежит
+    // с другим содержимым — сессия завершается failed_permanent с маркером, слот
+    // НЕ подтверждён (put не успешен), ретраев нет (permanent, не transient).
+    [Fact]
+    public async Task ForeignWalSegment_StopsPermanentWithoutConfirm()
+    {
+        // Arrange — источник отдаёт сегменты; S3 отвечает конфликтом на первый put
+        var source = new FakeXLogSource();
+        foreach (var boundary in new[] { 0UL, (ulong)SegmentBytes, 2UL * SegmentBytes })
+            source.Chunks.Enqueue(Chunk(boundary));
+        var s3 = new FakeS3();
+        s3.ConflictKeys.Add("c1/shard1/wal/000000010000000000000000");
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+
+        // Act — сессия до терминального исхода
+        var (outcome, _, _) = await RunSession(
+            source, s3, new FakeSlots(0), Options(), cts.Token);
+
+        // Assert — permanent с маркером; слот не подтверждён; объект не записан
+        outcome.Should().NotBeNull();
+        outcome!.Kind.Should().Be(WalSessionKind.FailedPermanent);
+        outcome.Error.Should().Contain(WalArchiveConflict.Marker);
+        source.ConfirmedLsn.Should().BeNull("the slot must not be confirmed without a successful put");
+        s3.Objects.Should().BeEmpty();
     }
 
     [Fact]

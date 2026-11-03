@@ -107,6 +107,9 @@ builder.Services.AddSingleton(sp => new WorkJournal(
     KeyPrefix,
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Etcd.Endpoints));
+// Опросные кэши контроль-плейна тика (arch/17 S10, arch/16 §5): ReconcileLoop
+// читает слепок и гейтится по дельте — etcd в каждом тике не range-ится.
+builder.Services.AddSingleton<IPrefixPollSources, EtcdPrefixSources>();
 
 // HTTP API воркера (arch/16 §1.1): мутации декларативного контракта kafka-домена —
 // хендлеры-синглтоны (task etcd-via-worker-api).

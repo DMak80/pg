@@ -53,9 +53,12 @@ public sealed class BackupS3Factory(
             ctx.WriteMaster.ToList(), ctx.ReadAll.ToList(),
             ctx.AccessKey, ctx.SecretKey, bucket(), caBundlePath(),
             requestTimeout, breakerWindow: breakerWindow,
+            // MaxErrorRetry: 0 — ретраит ПУЛ (перебор целей + breaker), а не
+            // AWSSDK: внутренние ретраи на мёртвой ноде множат пер-попыточный
+            // таймаут (факт E2E: 49,7-65,8 с на один вызов); канон S3ClientOptions.
             targetFactory: targetFactory ?? (uri => new BackupS3(
                 new S3ClientOptions(uri, bucket(), ctx.AccessKey, ctx.SecretKey,
-                    CaBundlePath: caBundlePath()),
+                    CaBundlePath: caBundlePath(), MaxErrorRetry: 0),
                 requestTimeout)));
 
     /// <summary>Пул-клиент кластера: write — списки роли источника из policy,

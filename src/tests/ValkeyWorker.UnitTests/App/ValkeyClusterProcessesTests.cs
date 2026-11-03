@@ -33,7 +33,7 @@ public class ValkeyClusterProcessesTests
             var options = new ValkeyWorker.Provisioning.Processes.ValkeyProvisioningOptions(
                 17000, 17999, 100, 90, "localhost", "valkey/valkey:9.1.2");
             Processes = new ValkeyClusterProcesses(
-                Etcd, new FixedOptionsMonitor(new ValkeyWorkerOptions
+                new FixedOptionsMonitor(new ValkeyWorkerOptions
                 {
                     Etcd = new EtcdOptions { Endpoints = ["http://etcd:2379"] },
                     Parallelism = new ParallelismOptions { MaxClusters = 1 },
@@ -106,6 +106,14 @@ public class ValkeyClusterProcessesTests
         public string? Work(string cluster)
             => Etcd.Store.TryGetValue($"/valkeyworker/work/{cluster}", out var kv) ? kv.Value : null;
 
+        // Слепок домена /valkey/ (arch/17 S10): Processes тикает от слепка
+        // опросного кэша — ReconcileLoop читает etcd больше не сам.
+        public List<Kv> DomainKvs()
+            => Etcd.Store
+                .Where(p => p.Key.StartsWith("/valkey/", StringComparison.Ordinal))
+                .Select(p => new Kv(p.Key, p.Value.Value, (ulong)p.Value.ModRevision))
+                .ToList();
+
         // Премиграционный Active-кластер: без ca-ключей, plain-контейнер.
         public void SeedPlain(string cluster, int port = 17001)
         {
@@ -133,7 +141,7 @@ public class ValkeyClusterProcessesTests
         rig.SeedPlain("tlsfirst");
 
         // Act: один тик цикла.
-        var claims = await rig.Processes.TickAsync(TestContext.Current.CancellationToken);
+        var claims = await rig.Processes.TickAsync(rig.DomainKvs(), TestContext.Current.CancellationToken);
 
         // Assert: миграция доведена до done в ЭТОМ тике; журнал НЕ перезаписан
         // надзором (supervising) — надзор в этом тике не шёл (InProgress-выход).
@@ -159,7 +167,7 @@ public class ValkeyClusterProcessesTests
             """{"requested_unix":1756500000,"requested_by":"it"}""");
 
         // Act
-        await rig.Processes.TickAsync(TestContext.Current.CancellationToken);
+        await rig.Processes.TickAsync(rig.DomainKvs(), TestContext.Current.CancellationToken);
 
         // Assert — журнал работы держит op=rotate-ca done: надзор НЕ
         // перезаписал его своим op («supervise» появился бы, если бы ветка
@@ -192,7 +200,7 @@ public class ValkeyClusterProcessesTests
             """{"role":"app","requested_unix":1756500000,"requested_by":"it"}""");
 
         // Act
-        await rig.Processes.TickAsync(TestContext.Current.CancellationToken);
+        await rig.Processes.TickAsync(rig.DomainKvs(), TestContext.Current.CancellationToken);
 
         // Assert — ветка НЕ заблокирована Waiting: ротатор E доиграл свою
         // заявку этим же тиком (заявка rotations снята, журнал — op rotate

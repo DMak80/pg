@@ -118,7 +118,8 @@ internal partial class Program
         {
             builder.Services.AddSingleton(sp => new WalReceiverLoop(
                 Environment.GetEnvironmentVariable, etcd, endpoints, pools, roleProbe,
-                o => new NpgsqlXLogSource(o), o => new NpgsqlSlotPositionReader(o)));
+                o => new NpgsqlXLogSource(o), o => new NpgsqlSlotPositionReader(o),
+                hbaEnsure: ct => new HbaEnsureOperation(new ProcessRunner()).RunAsync(ct)));
             builder.Services.AddHostedService(sp => sp.GetRequiredService<WalReceiverLoop>());
         }
 

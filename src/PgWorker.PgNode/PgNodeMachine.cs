@@ -738,17 +738,42 @@ public sealed class PgNodeMachine : IDisposable
 
             if (!pgReady || !doormanReady)
             {
-                // Зонд зависшей doorman-пробы (e2e-факты 2026-11-01/02: реплика
-                // висела dm=starting при живом Patroni — раскол недоказуем без
-                // слепка; 2026-11-02 rtls: окно 28P01 короче 15 с — зонд не
-                // успел): каждые 2 неуспешные пробы (10 с) — прямая PG-проба
-                // app-кредами МИМО doorman + su-слепок роли и реплика-лага.
-                // Разделяет первопричины: роли нет (WAL-догон клона) / пароль
-                // ≠ etcd-ключу / дефект doorman-конфига.
-                if (appCreds is { } stuck && !doormanReady
-                    && ++_doormanFailStreak % 2 == 0)
+                // Умная валидация пулера (решение пользователя, e2e-факт
+                // rotate864443d3: PG реплики принимает актуальный пароль
+                // напрямую, doorman-passthrough отклонён 28P01 навсегда):
+                // PG готов (SELECT 1 ok), doorman fail → конфигурация doorman
+                // в лог (SU-пароль маскируется) и ПЕРЕЗАГРУЗКА пулера с
+                // обязательным перечитыванием app-пароля из etcd (кеш на
+                // процесс мог отстать — проба после рестарта идёт только с
+                // подтверждённым из etcd паролем); второй аналогичный fail →
+                // конфигурация в лог ещё раз и СТОП НОДЫ (start_failed +
+                // supervisorctl shutdown — контейнер гаснет, воркеровский
+                // надзор пересоздаёт ноду с чистым рендером по факту
+                // не-running).
+                if (pgReady && !doormanReady)
                 {
-                    await LogDoormanStuckProbeAsync(stuck, probe, ct);
+                    await LogDoormanConfigAsync(ct);
+                    if (!_doormanRestartedAfterPg)
+                    {
+                        _doormanRestartedAfterPg = true;
+                        _appCreds = null; // пароль — обязательно заново из etcd
+                        _log.LogWarning(
+                            "pgnode: pg ready, doorman probe failed — restarting pg_doorman, app credentials will be re-read from etcd");
+                        await _supervisor.RestartAsync("pg_doorman", ct);
+                        await PublishAsync(PgNodeStatus.Initializing, null,
+                            Components(pg: "ready", doorman: "starting"), null, ct);
+                        continue;
+                    }
+
+                    // Второй аналогичный fail после рестарта — стоп ноды.
+                    _log.LogWarning(
+                        "pgnode: doorman probe failed again after restart — stopping the node (start_failed)");
+                    await PublishAsync(PgNodeStatus.StartFailed, null,
+                        Components(pg: "ready", doorman: "failed"),
+                        "doorman probe failed twice after pg ready — node stopped for worker-side recreation", ct);
+                    _state = PgNodeStatus.StartFailed;
+                    await _supervisor.ShutdownAsync(ct);
+                    return;
                 }
 
                 // Ещё инициализируется (без бюджета) — повтор в следующем цикле.
@@ -758,8 +783,6 @@ public sealed class PgNodeMachine : IDisposable
                     null, ct);
                 continue;
             }
-
-            _doormanFailStreak = 0;
 
             // Готовы оба (SELECT 1 ok) — ready (applied_revision = mod_revision
             // применённого ключа).
@@ -771,44 +794,31 @@ public sealed class PgNodeMachine : IDisposable
         }
     }
 
-    // Счётчик подряд неуспешных doorman-проб (зонд-порог — каждые 2 витка
-    // = 10 с; сброс при успехе).
-    private int _doormanFailStreak;
+    // Умная валидация пулера (решение пользователя): рестарт pg_doorman после
+    // первого fail-а при готовном PG; второй аналогичный fail — стоп ноды.
+    private bool _doormanRestartedAfterPg;
 
-    // Диагностический слепок зависшей doorman-пробы (arch/14 §4 фаза (б);
-    // e2e-факт 2026-11-01: 28P01 на реплике 3,7 мин при живом Patroni).
-    // Прямая PG-проба app-кредами мимо doorman + su-слепок роли/реплика-лага.
-    // Секреты не раскрываются: SHA256[..10] пароля пробы (сверка с
-    // [t06-diag] fingerprint ensure/ALTER воркера).
-    private async Task LogDoormanStuckProbeAsync(
-        AppProbeCreds app, Func<string, Task<bool>> probe, CancellationToken ct)
+    // Конфигурация doorman в лог (решение пользователя: «конфигурацию doorman
+    // в лог» перед рестартом/стопом). Секрет не раскрывается: фактический
+    // SU-пароль подставлен рендером — маскируется обратно в плейсхолдер.
+    private async Task LogDoormanConfigAsync(CancellationToken ct)
     {
-        var directPg = await probe(
-            $"Host=127.0.0.1;Port=5432;Username={app.User};Password={app.Password};" +
-            $"Database={app.DbName};Timeout={ComponentProbes.TimeoutSec}");
-        var snapshot = "<su-unavailable>";
         try
         {
-            await using var connection = new NpgsqlConnection(
-                ComponentProbes.PgConnectionString(_suPassword ?? ""));
-            await connection.OpenAsync(ct);
-            await using var command = connection.CreateCommand();
-            command.CommandText =
-                "SELECT (NOT EXISTS(SELECT 1 FROM pg_authid WHERE rolname = @user))::int " +
-                "|| '|' || COALESCE(pg_last_wal_replay_lsn()::text, 'primary') " +
-                "|| '|' || COALESCE((EXTRACT(EPOCH FROM now() - pg_last_xact_replay_timestamp()))::int::text, 'never')";
-            command.Parameters.AddWithValue("user", app.User);
-            snapshot = command.ExecuteScalar() as string ?? "<null>";
+            var path = RenderRootDirOverride is { } dir
+                ? Path.Combine(dir, "doorman/pg_doorman.yaml")
+                : BootstrapRenderer.DoormanConfigPath;
+            var config = await File.ReadAllTextAsync(path, ct);
+            if (_suPassword is { Length: > 0 } su)
+                config = config.Replace(su, BootstrapRenderer.SuPasswordPlaceholder,
+                    StringComparison.Ordinal);
+            _log.LogWarning("pgnode: doorman configuration (su masked):\n{Config}", config);
         }
         catch (Exception e) when (e is not OperationCanceledException)
         {
-            snapshot = $"<su-error: {FirstLine(e.Message)}>";
+            _log.LogWarning("pgnode: doorman configuration unreadable: {Error}",
+                FirstLine(e.Message));
         }
-
-        _log.LogWarning(
-            "pgnode: doorman probe stuck x{Streak}: direct-pg-app-login={DirectPg}; " +
-            "snapshot[role-missing|replay-lsn|lag-sec]={Snapshot}; probe-password-fp={Fp}",
-            _doormanFailStreak, directPg, snapshot, PasswordFingerprint(app.Password));
     }
 
     // Отпечаток пароля пробы (без секрета): SHA256[..10] — формат единый с

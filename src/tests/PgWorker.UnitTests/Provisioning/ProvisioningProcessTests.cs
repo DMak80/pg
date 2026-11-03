@@ -154,7 +154,7 @@ public class ProvisioningProcessTests
         var driver = new Fakes.FakeDriver();
         var probe = new Fakes.FakeNodeDataProbe();
         var sql = new Fakes.FakeSql();
-        var appSecret = new ClusterSecretEnsurer(etcd, [Ep]);
+        var appSecret = new ClusterSecretEnsurer(etcd, [Ep], new FakeClustersCache(etcd));
         var portAlloc = new PortAllocIndex(etcd, [Ep], NullLogger<PortAllocIndex>.Instance);
         var delivery = new RecordingDelivery();
         var process = new ProvisioningProcess(
@@ -350,7 +350,7 @@ public class ProvisioningProcessTests
         var driver = new Fakes.FakeDriver();
         var process = new ProvisioningProcess(
             etcd, [Ep], driver, new Fakes.FakeNodeDataProbe(), new Fakes.FakeSql(), Probe(_ => Patroni("shard1a")),
-            claims, journal, Opts, Secrets, new ClusterSecretEnsurer(etcd, [Ep]),
+            claims, journal, Opts, Secrets, new ClusterSecretEnsurer(etcd, [Ep], new FakeClustersCache(etcd)),
             new AppParamsEnsurer(etcd, [Ep], "sslmode=require"), EtcdEndp,
             new PortAllocIndex(etcd, [Ep], NullLogger<PortAllocIndex>.Instance),
             new PortAllocLock("/pgworker", [Ep], etcd, TimeProvider.System, claims.InstanceId),

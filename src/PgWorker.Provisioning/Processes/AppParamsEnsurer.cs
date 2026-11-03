@@ -41,18 +41,8 @@ public sealed class AppParamsEnsurer(IEtcdGateway etcd, string[] endpoints, stri
     private static string Key(string cluster, string shard, string node)
         => $"/clusters/{cluster}/shards/{shard}/nodes/{node}/app_params";
 
-    // Failover-обёртка: первый успешный endpoint выигрывает (образец AppSecretEnsurer).
-    private async Task<Result<TxnResult>> TxnAsync(TxnRequest req, CancellationToken ct)
-    {
-        Result<TxnResult> last = default;
-        foreach (var endpoint in endpoints)
-        {
-            var result = await etcd.TxnAsync(endpoint, req, ct);
-            if (result.IsSuccess)
-                return result;
-            last = result;
-        }
-
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
-    }
+    // Failover-обёртка — единая точка (arch/17 S7: sticky + per-attempt бюджет +
+    // негативный кэш; дубликат цикла обхода удалён).
+    private Task<Result<TxnResult>> TxnAsync(TxnRequest req, CancellationToken ct)
+        => EtcdEndpointFailover.CallAsync(endpoints, endpoint => etcd.TxnAsync(endpoint, req, ct));
 }

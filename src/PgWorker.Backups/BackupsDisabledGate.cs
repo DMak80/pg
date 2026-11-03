@@ -17,46 +17,16 @@ public sealed class BackupsDisabledGate(IEtcdGateway etcd)
 {
     public const string Key = "/pgworker/backups-disabled";
 
-    /// <summary>Поставить ключ (failover-перебор endpoints): plain put
+    /// <summary>Поставить ключ (failover — единая точка, arch/17 S7): plain put
     /// {"updated_unix":T} — отметка поддержки (панель/диагностика).</summary>
-    public async Task<Result> PutDisabledAsync(string[] endpoints, long unix, CancellationToken ct)
+    public Task<Result> PutDisabledAsync(string[] endpoints, long unix, CancellationToken ct)
     {
         var json = JsonSerializer.Serialize(new { updated_unix = unix });
-        Result last = default;
-        foreach (var endpoint in endpoints)
-        {
-            var put = await etcd.PutAsync(endpoint, Key, json, lease: null, ct);
-            if (!put.IsSuccess)
-            {
-                last = put; // отказ — пробуем следующий endpoint (failover)
-                continue;
-            }
-
-            return put;
-        }
-
-        return Result.Failed(last.Error
-            ?? new EtcdUnreachableException("etcd endpoints are not set"));
+        return EtcdEndpointFailover.CallAsync(endpoints, endpoint => etcd.PutAsync(endpoint, Key, json, lease: null, ct));
     }
 
-    /// <summary>Снять ключ (failover-перебор endpoints): del; отсутствие ключа —
-    /// успех (идемпотентность старта с Enabled=true).</summary>
-    public async Task<Result> DeleteAsync(string[] endpoints, CancellationToken ct)
-    {
-        Result last = default;
-        foreach (var endpoint in endpoints)
-        {
-            var del = await etcd.DeleteAsync(endpoint, Key, prefix: false, ct);
-            if (!del.IsSuccess)
-            {
-                last = del; // отказ — пробуем следующий endpoint (failover)
-                continue;
-            }
-
-            return del;
-        }
-
-        return Result.Failed(last.Error
-            ?? new EtcdUnreachableException("etcd endpoints are not set"));
-    }
+    /// <summary>Снять ключ (failover — единая точка, arch/17 S7): del; отсутствие
+    /// ключа — успех (идемпотентность старта с Enabled=true).</summary>
+    public Task<Result> DeleteAsync(string[] endpoints, CancellationToken ct)
+        => EtcdEndpointFailover.CallAsync(endpoints, endpoint => etcd.DeleteAsync(endpoint, Key, prefix: false, ct));
 }

@@ -3,6 +3,7 @@ using Microsoft.Extensions.Logging;
 using System.Diagnostics;
 using Microsoft.Extensions.Options;
 using Shared.Core.HealthChecks;
+using KafkaWorker.App;
 using KafkaWorker.Core;
 using KafkaWorker.Core.Model;
 using Shared.Etcd.Client;
@@ -12,15 +13,19 @@ using KafkaWorker.Provisioning.Kafka;
 namespace KafkaWorker.App.Loops;
 
 /// <summary>
-/// Главный цикл воркера (arch/16 §5; порт ReconcileLoop PgWorker): тик =
-/// снапшот /kafka/clusters/ → классификация → клэйм → процесс. Ошибка тика
-/// не роняет цикл (лог + ErrorDelayMs, следующий тик — ретрай). Кластеры
-/// обрабатываются параллельно (SemaphoreSlim MaxClusters), внутри кластера —
-/// строго последовательно. Scale-проход/ротация/TopicSync — заглушки волн B/C.
+/// Главный цикл воркера (arch/16 §5; порт ReconcileLoop PgWorker; чтение
+/// состояния — arch/17 S10): контроль-плейн читается из слепка опросного
+/// кэша (IPrefixPollSources) — etcd-чтений в тике ноль (E10). Тик работает
+/// КАЖДЫЙ раз, без гейтов по дельте: self-healing ждёт не-etcd события
+/// (готовность брокеров, docker-факты) — применения etcd-значений процессами
+/// идут по факту изменения значения (S10). Heartbeat и healthz loops-alive
+/// отмечаются каждым тиком (arch/16 §6). Кластеры обрабатываются параллельно
+/// (SemaphoreSlim MaxClusters), внутри кластера — строго последовательно.
+/// Ошибка тика не роняет цикл (лог + ErrorDelayMs, следующий тик — ретрай).
 /// </summary>
 internal sealed class ReconcileLoop(
     IOptionsMonitor<KafkaWorkerOptions> options,
-    IEtcdGateway etcd,
+    IPrefixPollSources sources,
     ClaimStore claims,
     IKafkaClusterProcesses processes,
     WorkJournal journal,
@@ -72,6 +77,16 @@ internal sealed class ReconcileLoop(
         finally
         {
             Working = false;
+            // Останов опросных кэшей (идемпотентно; остановка лучшего эффекта —
+            // процесс останавливается).
+            try
+            {
+                await sources.StopAsync(CancellationToken.None);
+            }
+            catch
+            {
+                // host останавливается — повтор не требуется
+            }
         }
     }
 
@@ -95,34 +110,44 @@ internal sealed class ReconcileLoop(
         }
     }
 
-    /// <summary>Один тик (публичен для тестов/health): снапшот → параллельная обработка кластеров.</summary>
+    /// <summary>Один тик (публичен для тестов/health): слепок кэша →
+    /// параллельная обработка кластеров.</summary>
     internal async Task<Result> TickAsync(CancellationToken ct)
     {
         var endpoints = options.CurrentValue.Etcd.Endpoints.ToArray();
         if (endpoints.Length == 0)
             return Result.Failed(new ApplicationException("KafkaWorker:Etcd:Endpoints is not set"));
 
-        // Единственная точка KafkaWorker: ожидания расползаются по тикам
-        // (один DescribeCluster RequestTimeout=10 с за тик) — спека §4.6.
+        // Запуск опросного кэша (идемпотентно; сбой старта — ошибка тика:
+        // цикл залогирует и повторит с ErrorDelayMs).
+        try
+        {
+            await sources.StartAsync(ct);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            return Result.Failed(ex);
+        }
+
         health.MarkReconcileActivity();
 
-        // Снапшот контроль-плейна (P9: без свежего чтения мутаций не делаем).
-        var clustersKvs = await RangeWithFailoverAsync(endpoints, "/kafka/clusters/", ct);
-        if (!clustersKvs.IsSuccess)
-            return Result.Failed(clustersKvs.Error!);
-
-        health.MarkEtcdOk();
-
-        var parsed = KafkaSnapshotParser.Parse(clustersKvs.Value);
+        // Парсинг контроль-плейна — из слепка кэша (не etcd; P9 выполняется
+        // опросным циклом кэша, единая точка failover — arch/17 S7).
+        var parsed = KafkaSnapshotParser.Parse(ToKvs(sources.ClustersSnapshot));
         foreach (var cluster in parsed.Value)
         foreach (var error in cluster.ParseErrors)
             logger.LogWarning("skipped a broken key: {Error}", error);
 
-        // Кластеры исчезли из снапшота — backoff-состояние не копится.
+        // Кластеры исчезли из слепка — backoff-состояние не копится.
         backoff.ForgetMissing(parsed.Value.Select(c => c.Cluster).ToHashSet());
 
         // Параллельная обработка кластеров с лимитом; ошибка кластера не роняет тик
-        // (journal процесса уже несёт last_error — следующий тик продолжит).
+        // (journal процесса уже несёт last_error — следующий тик продолжит доводку:
+        // процессы идемпотентны; применения etcd-значений — по факту изменения, S10).
         var gate = new SemaphoreSlim(Math.Max(1, options.CurrentValue.Parallelism.MaxClusters));
         try
         {
@@ -141,6 +166,12 @@ internal sealed class ReconcileLoop(
         metrics.ClaimsHeld(parsed.Value.Count(c => claims.IsMine(c.Cluster)));
         return Result.Success();
     }
+
+    // Слепок кэша → Kv-список парсера (значения без изменений).
+    private static List<Kv> ToKvs(IReadOnlyDictionary<string, (string Value, long ModRevision)> snapshot)
+        => snapshot
+            .Select(pair => new Kv(pair.Key, pair.Value.Value, (ulong)pair.Value.ModRevision))
+            .ToList();
 
     // Обработка одного кластера под семафором: клэйм → процесс по классификации.
     // Исключение ЛЮБОГО кластера не роняет тик и сервис: catch-all → лог +
@@ -275,9 +306,4 @@ internal sealed class ReconcileLoop(
             logger.LogWarning(journalEx, "work journal for {Cluster} was not written after the exception", cluster);
         }
     }
-
-    // Failover: первый успешный endpoint выигрывает (общий хелпер).
-    private Task<Result<IReadOnlyList<Kv>>> RangeWithFailoverAsync(
-        string[] endpoints, string prefix, CancellationToken ct)
-        => EtcdEndpointFailover.CallAsync(endpoints, (endpoint, token) => etcd.RangeAsync(endpoint, prefix, token), ct);
 }

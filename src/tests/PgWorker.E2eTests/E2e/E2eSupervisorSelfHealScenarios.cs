@@ -438,7 +438,7 @@ public sealed class E2eSupervisorSelfHealScenarios(E2eSupervisorSelfHealScenario
         => Fx.RunDockerAsync(
         [
             "run", "--rm", "--network", Fx.NetName, "--entrypoint", "/bin/sh", E2eEnvironment.McImage,
-            "-c", $"mc alias set t http://e2e-owns3:9000 {E2eEnvironment.S3RootUser} {E2eEnvironment.S3RootPassword} >/dev/null"
+            "-c", $"mc alias set t {Fx.S3EndpointForContainers} {E2eEnvironment.S3RootUser} {E2eEnvironment.S3RootPassword} >/dev/null"
                   + $" && mc rm t/{Bucket}/{key}",
         ], TestContext.Current.CancellationToken);
 
@@ -448,7 +448,7 @@ public sealed class E2eSupervisorSelfHealScenarios(E2eSupervisorSelfHealScenario
         var output = await Fx.RunDockerAsync(
         [
             "run", "--rm", "--network", Fx.NetName, "--entrypoint", "/bin/sh", E2eEnvironment.McImage,
-            "-c", $"mc alias set t http://e2e-owns3:9000 {E2eEnvironment.S3RootUser} {E2eEnvironment.S3RootPassword} >/dev/null"
+            "-c", $"mc alias set t {Fx.S3EndpointForContainers} {E2eEnvironment.S3RootUser} {E2eEnvironment.S3RootPassword} >/dev/null"
                   + $" && mc ls --recursive t/{Bucket}/{prefix} || true",
         ], TestContext.Current.CancellationToken);
         return output
@@ -462,7 +462,7 @@ public sealed class E2eSupervisorSelfHealScenarios(E2eSupervisorSelfHealScenario
         => Fx.RunDockerAsync(
         [
             "run", "--rm", "--network", Fx.NetName, "--entrypoint", "/bin/sh", E2eEnvironment.McImage,
-            "-c", $"mc alias set t http://e2e-owns3:9000 {E2eEnvironment.S3RootUser} {E2eEnvironment.S3RootPassword} >/dev/null"
+            "-c", $"mc alias set t {Fx.S3EndpointForContainers} {E2eEnvironment.S3RootUser} {E2eEnvironment.S3RootPassword} >/dev/null"
                   + $" && echo {content} >/tmp/f && mc cp /tmp/f t/{Bucket}/{key}",
         ], TestContext.Current.CancellationToken);
 

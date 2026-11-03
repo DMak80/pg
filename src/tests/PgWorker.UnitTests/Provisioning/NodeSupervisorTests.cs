@@ -101,7 +101,8 @@ public class NodeSupervisorTests
         IReadOnlyDictionary<string, NodeAddress>? addresses = null,
         Fakes.FakeSql? sql = null,
         Fakes.RecordingLogger<NodeSupervisor>? log = null,
-        string? configOverride = null)
+        string? configOverride = null,
+        Shared.Core.Hosting.ILoopProgress? progress = null)
     {
         var etcd = new Fakes.FakeEtcd();
         SeedCluster(etcd);
@@ -141,16 +142,42 @@ public class NodeSupervisorTests
             Fakes.PgtuneFactory(), Fakes.PgtuneSettings(),
             NoDelivery.Instance,
             log is not null ? log : NullLogger<NodeSupervisor>.Instance,
-            new MasterKeyReconciler(etcd, [Ep], probe));
+            new MasterKeyReconciler(etcd, [Ep], probe),
+            progress: progress);
         return new Rig(etcd, driver, claims, journal, supervisor);
+    }
+
+    // Счётчик прогресс-отметок (arch/14 §6 ILoopProgress).
+    private sealed class CountingProgress : Shared.Core.Hosting.ILoopProgress
+    {
+        public int Count;
+        public void Mark() => Count++;
+    }
+
+    // AAA (arch/14 §6, поллинг-инвариант): итерации надзора — пробы нод —
+    // отмечают прогресс ILoopProgress; тик из медленных проб не выглядит для
+    // watchdog'а тишиной (факт прогона ha-etcd: снос живого тика на 32-й
+    // секунде, shard3 не дошёл до scale-shards).
+    [Fact]
+    public async Task Tick_MarksProgress_PerNodeIteration()
+    {
+        // Arrange: счётчик отметок в риге; shard1 — 3 ноды по пробе.
+        var marks = new CountingProgress();
+        var rig = await NewRig(_ => Ok(), progress: marks);
+
+        // Act
+        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
+
+        // Assert: тик успешен, каждая проба ноды отметила прогресс (≥ числа нод).
+        outcome.IsSuccess.Should().BeTrue();
+        marks.Count.Should().BeGreaterThanOrEqualTo(3);
     }
 
     // AAA (arch/17 S5): потеря клэйма ПОСЛЕ входа в тик (ключ исчез из etcd —
     // как по истёкшему lease при takeover) — мутации фаз не начинаются:
     // первый EnsureClaimAlive отказывает тик, журнал несёт claim-lost/declared-nodes.
     [Fact]
-    public async Task Tick_ClaimKeyVanishedMidTick_RefusesBeforeMutations()
-    {
+    public async Task Tick_ClaimKeyVanishedMidTick_RefusesBeforeMutations()    {
         // Arrange: клэйм захвачен ригом; ключ из etcd убираем, локальный словарь
         // store'а об этом не знает (IsMine остаётся true — как в реальности).
         var rig = await NewRig(_ => Ok(), nodeObjects: []);
@@ -293,6 +320,38 @@ public class NodeSupervisorTests
         rig.Driver.RemovedNodes.Should().ContainSingle().Which.Should().Be("shard1/shard1a");
         rig.Driver.EnsuredNodes.Should().Contain("shard1/shard1a");
         rig.Etcd.Store["/clusters/shop/shards/shard1/nodes/shard1a/state"].Value.Should().Be("REBUILDING");
+    }
+
+    // AAA (arch/14 §5 C, симметрично ускорению failover): rebuild — невозвратный
+    // снос контейнера+volume, требующий ПОЛОЖИТЕЛЬНОГО свидетельства смерти.
+    // Молчание REST-пробы при running-контейнере (нагрузка хоста, транспорт,
+    // долгий bootstrap пересозданной ноды) — не смерть: сноса нет, нода
+    // UNREACHABLE (иначе — циклическое пересоздание здоровых нод: bootstrap
+    // дольше NodeDeadSec → снова «мёртв» → rebuild).
+    [Fact]
+    public async Task Tick_DeadNonLeaderNode_RunningContainer_NoRebuild()
+    {
+        // Arrange — shard1a (не лидер) молчит дольше NodeDeadSec, кворум жив,
+        // инспекция (running-only) ноду ВИДИТ — контейнер running
+        var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        var rig = await NewRig(
+            port => port == 18000 ? Down() : Ok(), // shard1a (18000) мертва, b/c живы
+            staleUnreachableForShard1A: now - 200);
+        rig.Etcd.Seed("/service/shop-shard1/leader", """{"name":"shard1b"}""");
+        rig.Driver.InspectResult = new Dictionary<string, DiscoveredNode>
+        {
+            ["shard1a"] = new("shard1a", "h1", "", 15000, 18000, 16500),
+        };
+
+        // Act
+        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
+
+        // Assert: docker-мутаций нет, нода честно UNREACHABLE
+        outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
+        rig.Driver.RemovedNodes.Should().BeEmpty(
+            "a running container is no evidence of death — rebuild would destroy a healthy node");
+        rig.Driver.EnsuredNodes.Should().BeEmpty();
+        rig.Etcd.Store["/clusters/shop/shards/shard1/nodes/shard1a/state"].Value.Should().Be("UNREACHABLE");
     }
 
     [Fact]

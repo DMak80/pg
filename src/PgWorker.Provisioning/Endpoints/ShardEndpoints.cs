@@ -29,28 +29,21 @@ public sealed partial class ShardEndpoints(IEtcdGateway etcd, string[] endpoints
 
     // ── Чтение адресов ──
 
-    // /pgworker/portalloc/<C>: ключа нет → пустой словарь (failover-обёртка).
+    // /pgworker/portalloc/<C>: ключа нет → пустой словарь (failover — единая
+    // точка EtcdEndpointFailover, arch/17 S7).
     public async Task<Result<IReadOnlyDictionary<string, NodeAddress>>> ReadPortAllocAsync(
         string cluster, CancellationToken ct)
     {
-        Result<Kv?> last = default;
-        foreach (var endpoint in endpoints)
-        {
-            var result = await etcd.GetAsync(endpoint, $"/pgworker/portalloc/{cluster}", ct);
-            if (!result.IsSuccess)
-            {
-                last = result;
-                continue;
-            }
+        var read = await EtcdEndpointFailover.CallAsync(
+            endpoints, endpoint => etcd.GetAsync(endpoint, $"/pgworker/portalloc/{cluster}", ct));
+        if (!read.IsSuccess)
+            return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(read.Error!);
 
-            if (result.Value is not { } kv)
-                return Result<IReadOnlyDictionary<string, NodeAddress>>.Success(
-                    (IReadOnlyDictionary<string, NodeAddress>)new Dictionary<string, NodeAddress>());
+        if (read.Value is not { } kv)
+            return Result<IReadOnlyDictionary<string, NodeAddress>>.Success(
+                (IReadOnlyDictionary<string, NodeAddress>)new Dictionary<string, NodeAddress>());
 
-            return Portalloc.Parse(cluster, kv.Value);
-        }
-
-        return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(last.Error ?? new EtcdUnreachableException("etcd endpoints are not set"));
+        return Portalloc.Parse(cluster, kv.Value);
     }
 
     // Мастер шарда для SQL (adopt-repair §3.3, arch/14 §5 F — цепочка):
@@ -154,24 +147,9 @@ public sealed partial class ShardEndpoints(IEtcdGateway etcd, string[] endpoints
         return await ResolveMasterAsync(cluster, shard, addresses, ct);
     }
 
-    // Точечный GET с failover-обёрткой (паттерн ReadPortAllocAsync).
-    private async Task<Result<Kv?>> GetAsync(string key, CancellationToken ct)
-    {
-        Result<Kv?> last = default;
-        foreach (var endpoint in endpoints)
-        {
-            var result = await etcd.GetAsync(endpoint, key, ct);
-            if (!result.IsSuccess)
-            {
-                last = result;
-                continue;
-            }
-
-            return result;
-        }
-
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
-    }
+    // Точечный GET с failover-обёрткой (единая точка, arch/17 S7).
+    private Task<Result<Kv?>> GetAsync(string key, CancellationToken ct)
+        => EtcdEndpointFailover.CallAsync(endpoints, endpoint => etcd.GetAsync(endpoint, key, ct));
 
     // ── DSN-билдеры ──
 

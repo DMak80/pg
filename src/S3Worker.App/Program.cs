@@ -331,6 +331,9 @@ builder.Services.AddSingleton(sp => new S3Worker.Provisioning.Processes.SecretRo
 builder.Services.AddSingleton<IS3ClusterProcesses, S3ClusterProcesses>();
 
 // Циклы: keepalive первым (lease живут до Reconcile), затем снапшоты и reconcile.
+// Опросные кэши контроль-плейна тика (arch/17 S10, arch/24 §5): ReconcileLoop
+// читает слепок и гейтится по дельте — etcd в каждом тике не range-ится.
+builder.Services.AddSingleton<IPrefixPollSources, EtcdPrefixSources>();
 builder.Services.AddSingleton<KeepaliveLoop>();
 builder.Services.AddSingleton<SnapshotLoop>();
 builder.Services.AddSingleton<ReconcileLoop>();

@@ -485,9 +485,12 @@ builder.Services.AddSingleton(sp => new NodeSupervisor(
     new MasterKeyReconciler(
         sp.GetRequiredService<IEtcdGateway>(),
         sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
-        sp.GetRequiredService<ShardProbe>()),
+        sp.GetRequiredService<ShardProbe>(),
+        sp.GetRequiredService<Shared.Core.Hosting.ILoopProgress>()),
     sp.GetRequiredService<EtcdEndpoints>(),
-    sp.GetRequiredService<Shared.Metrics.Worker.WorkerMetricsInstrumentation>().HaDurations));
+    sp.GetRequiredService<Shared.Metrics.Worker.WorkerMetricsInstrumentation>().HaDurations,
+    // Прогресс-отметки итераций надзора в healthz/watchdog (arch/14 §6, поллинг-инвариант).
+    sp.GetRequiredService<Shared.Core.Hosting.ILoopProgress>()));
 // Адресация шардов : master-ключ/portalloc + DSN-билдеры —
 // общий сервис эвакуатора и процессов переезда (MoveProcess — задача 17).
 builder.Services.AddSingleton(sp => new ShardEndpoints(
@@ -522,11 +525,18 @@ builder.Services.AddSingleton(sp =>
         opts.Docker.ScrapeNetwork);
 });
 
-// Ensure per-cluster app-секрета (spec §4.1): чтение/txn put-if-absent
-// /clusters/<C>/{app_user,app_password} — общий для Provisioning/AddShard.
+// Опросные кэши контроль-плейна тика (arch/17 S10): четыре префикса
+// (/clusters/, /service/, /pgworker/backups/, /pgworker/claims/) — источник
+// тика ReconcileLoop и слепок /clusters/ для читателей (ClusterSecretEnsurer).
+builder.Services.AddSingleton<EtcdPrefixSources>();
+builder.Services.AddSingleton<IClustersCacheSnapshot>(sp => sp.GetRequiredService<EtcdPrefixSources>());
+
+// Ensure per-cluster app-секрета (spec §4.1): чтение — из кэша /clusters/
+// (arch/17 S10), txn put-if-absent — общий для Provisioning/AddShard.
 builder.Services.AddSingleton<IClusterSecretEnsurer>(sp => new ClusterSecretEnsurer(
     sp.GetRequiredService<IEtcdGateway>(),
-    sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints));
+    sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
+    sp.GetRequiredService<IClustersCacheSnapshot>()));
 
 // Ensure per-node app_params (spec §4.2): put-if-absent дефолта — общий для
 // Provisioning (P2.5')/AddShard (A5)/надзора (миграция C).
@@ -839,6 +849,13 @@ builder.Services.AddSingleton(sp => new SnapshotLoop(
     sp.GetRequiredService<HealthState>(),
     sp.GetRequiredService<TimeProvider>(),
     sp.GetRequiredService<Shared.Metrics.Worker.WorkerMetricsInstrumentation>()));
+// Опросные кэши тика (arch/17 S10): слепки наблюдаемых префиксов + счётчик
+// дельт; старт/ретрай — в самом ReconcileLoop (transient etcd не роняет хост).
+// ОДИН экземпляр на все интерфейсы: регистрация «тип-реализацией» создаёт
+// второй EtcdPrefixSources (свой, не стартованный) — читатели получают пустой
+// слепок (факт E2E: ensure крутился навсегда, txn NotExists на существующем
+// rest_password = succeeded=False).
+builder.Services.AddSingleton<IPrefixPollSources>(sp => sp.GetRequiredService<EtcdPrefixSources>());
 builder.Services.AddSingleton<ReconcileLoop>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<KeepaliveLoop>());
 builder.Services.AddHostedService(sp => sp.GetRequiredService<SnapshotLoop>());

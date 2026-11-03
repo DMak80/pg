@@ -34,9 +34,22 @@ internal static class RefresherTestHarness
         SettableProbeStateStore? probes,
         S3InventoryStore? s3,
         params string[] endpoints)
+        => New(gateway, store, probes, s3, new AlertEngine(AlertTestRules.All()), new FixedTimeProvider(), endpoints);
+
+    // Кейсы diff-skip (arch/02 §5): подмены алерт-движка (счёт вызовов
+    // Evaluate) и времени (движение штампов BuiltAtUtc между тиками).
+    // Отдельный оверлоад без optional-параметров — не конфликтует по params.
+    public static SnapshotRefresher New(
+        FakeEtcdGateway gateway,
+        ISnapshotStore store,
+        SettableProbeStateStore? probes,
+        S3InventoryStore? s3,
+        IAlertEngine alertEngine,
+        TimeProvider time,
+        params string[] endpoints)
         => new(
             gateway,
-            new AlertEngine(AlertTestRules.All()),
+            alertEngine,
             store,
             probes ?? new SettableProbeStateStore(),
             new WorkerHealthStore(),
@@ -44,8 +57,27 @@ internal static class RefresherTestHarness
             new EtcdWorkerHealthStore(),
             new SettableS3SnapshotReader(),
             Options.Create(new EtcdOptions { Endpoints = endpoints }),
-            new FixedTimeProvider(),
+            time,
             NullLogger<SnapshotRefresher>.Instance);
+}
+
+// Счётный алертный движок: тик без изменений (S10) Evaluate не вызывает —
+// счётчик отражает фактические пересборки с алертным пересчётом.
+internal sealed class CountingAlertEngine : IAlertEngine
+{
+    private readonly AlertEngine _inner = new(AlertTestRules.All());
+
+    public int EvaluateCalls { get; private set; }
+
+    public IReadOnlyList<Alert> Evaluate(
+        EtcdSnapshot snapshot,
+        EtcdSnapshot? previous,
+        DateTimeOffset nowUtc,
+        double refreshIntervalSeconds)
+    {
+        EvaluateCalls++;
+        return _inner.Evaluate(snapshot, previous, nowUtc, refreshIntervalSeconds);
+    }
 }
 
 // Управляемый читатель S3-домена (конструктор refresher'а): null — домен
@@ -88,9 +120,13 @@ internal sealed class FakeEtcdGateway : IEtcdGateway
     // rotations/leader/claims/instances) — точные данные теста вместо fallback.
     public Dictionary<string, IReadOnlyList<Kv>> ExtraKv { get; } = [];
 
-    public IReadOnlyList<EtcdMember> Members { get; init; } = [];
+    public IReadOnlyList<EtcdMember> Members { get; set; } = [];
 
-    public IReadOnlyList<EtcdAlarm> Alarms { get; init; } = [];
+    public IReadOnlyList<EtcdAlarm> Alarms { get; set; } = [];
+
+    // Управляемый payload /v3/maintenance/status: кейсы diff-skip по фактам
+    // статуса (raftTerm/version) против шума (latency/dbSize/raftIndex).
+    public EtcdStatusPayload StatusPayload { get; set; } = new("3.5.21", 20480, 42, 17, 3, null);
 
     public int RangeCalls { get; private set; }
 
@@ -119,7 +155,7 @@ internal sealed class FakeEtcdGateway : IEtcdGateway
         StatusCalls++;
         return Task.FromResult(StatusFailEndpoints.Contains(endpoint)
             ? Result<EtcdStatusPayload>.Failed(new EtcdUnreachableException(endpoint))
-            : Result<EtcdStatusPayload>.Success(new EtcdStatusPayload("3.5.21", 20480, 42, 17, 3, null)));
+            : Result<EtcdStatusPayload>.Success(StatusPayload));
     }
 
     public Task<Result<IReadOnlyList<EtcdMember>>> MemberListAsync(string endpoint, CancellationToken ct)
@@ -690,5 +726,235 @@ public class SnapshotRefresherTests
         store.Current!.Etcd.Reachable.Should().BeFalse();
         store.Current.BuiltAtUtc.Should().Be(first.BuiltAtUtc);
         store.Current.Clusters.Should().Equal(first.Clusters);
+    }
+
+    // S10 (arch/02 §5): тик без изменений — чтение совпало с кэшем → пересборки нет,
+    // AlertEngine не вызывается; штампы свежести обновляются, данные — те же
+    // ссылки; poll-цикл продолжается (чтения идут каждым тиком).
+    [Fact]
+    public async Task Refresh_SecondIdenticalTick_SkipsRebuildAndAlerts()
+    {
+        // Arrange — первый тик собирает снапшот, время двигается вперёд
+        var gateway = DemoGateway();
+        var store = new SnapshotStore();
+        var engine = new CountingAlertEngine();
+        var time = new FixedTimeProvider();
+        var refresher = RefresherTestHarness.New(gateway, store, null, null, engine, time, "http://e1");
+        await refresher.RefreshOnceAsync(CancellationToken.None);
+        var first = store.Current!;
+        time.Utc = time.Utc.AddSeconds(5);
+
+        // Act — второй тик по неизменному etcd (латентность статуса при этом
+        // шумит естественно — из сравнения она исключена)
+        var result = await refresher.RefreshOnceAsync(CancellationToken.None);
+
+        // Assert — снапшот не пересобран, алерты не пересчитаны, штампы свежие
+        result.IsSuccess.Should().BeTrue();
+        engine.EvaluateCalls.Should().Be(1, "тик без изменений не запускает алертный пересчёт");
+        store.Current!.Clusters.Should().BeSameAs(first.Clusters, "снапшот не пересобирается");
+        store.Current.MoveTickets.Should().BeSameAs(first.MoveTickets);
+        store.Current.Alerts.Should().BeSameAs(first.Alerts);
+        store.Current.BuiltAtUtc.Should().Be(time.Utc, "штамп свежести обновляется");
+        store.Current.Etcd.LastRefreshUtc.Should().Be(time.Utc);
+        gateway.StatusCalls.Should().Be(2, "poll-цикл продолжается");
+        refresher.Working.Should().BeTrue();
+    }
+
+    // S10: изменение KV (новая заявка в очереди moves) → пересборка и
+    // алертный пересчёт.
+    [Fact]
+    public async Task Refresh_KvChange_RebuildsAndRecomputesAlerts()
+    {
+        // Arrange — первый тик с очередью, затем новая заявка в KV
+        var gateway = DemoGateway();
+        gateway.MovesKv = EtcdFixtures.LoadKv("moves-queue.json");
+        var store = new SnapshotStore();
+        var engine = new CountingAlertEngine();
+        var time = new FixedTimeProvider();
+        var refresher = RefresherTestHarness.New(gateway, store, null, null, engine, time, "http://e1");
+        await refresher.RefreshOnceAsync(CancellationToken.None);
+        var first = store.Current!;
+        gateway.MovesKv = [.. gateway.MovesKv, new Kv("/pgworker/moves/demo/bucket_15", """{"op":"move","to":"shard2","requested_unix":1757000000}""", 99)];
+
+        // Act
+        await refresher.RefreshOnceAsync(CancellationToken.None);
+
+        // Assert — пересборка: новые ссылки модели и новый пересчёт алертов
+        store.Current!.MoveTickets.Should().HaveCount(7);
+        store.Current.MoveTickets.Should().Contain(t => t.Bucket == "bucket_15");
+        store.Current.MoveTickets.Should().NotBeSameAs(first.MoveTickets);
+        engine.EvaluateCalls.Should().Be(2);
+    }
+
+    // S10: исчезновение ключа видно в полном range-чтении (ключа нет против
+    // кэша) → пересборка.
+    [Fact]
+    public async Task Refresh_KeyGone_Rebuilds()
+    {
+        // Arrange — первый тик с очередью, затем заявка bucket_3 снята (ключ удалён)
+        var gateway = DemoGateway();
+        gateway.MovesKv = EtcdFixtures.LoadKv("moves-queue.json");
+        var store = new SnapshotStore();
+        var engine = new CountingAlertEngine();
+        var time = new FixedTimeProvider();
+        var refresher = RefresherTestHarness.New(gateway, store, null, null, engine, time, "http://e1");
+        await refresher.RefreshOnceAsync(CancellationToken.None);
+        gateway.MovesKv = gateway.MovesKv.Skip(1).ToList();
+
+        // Act
+        await refresher.RefreshOnceAsync(CancellationToken.None);
+
+        // Assert — очередь пересобрана без снятой заявки, пересчёт выполнен
+        store.Current!.MoveTickets.Should().HaveCount(5);
+        store.Current.MoveTickets.Should().NotContain(t => t.Bucket == "bucket_3");
+        engine.EvaluateCalls.Should().Be(2);
+    }
+
+    // S10: изменился member list → пересборка (списки URL в члене сравниваются
+    // проекцией — reference-equality списков не даёт ложных «изменений»).
+    [Fact]
+    public async Task Refresh_MemberChange_Rebuilds()
+    {
+        // Arrange — первый тик с одним членом, затем их два
+        var gateway = DemoGateway();
+        var store = new SnapshotStore();
+        var engine = new CountingAlertEngine();
+        var time = new FixedTimeProvider();
+        var refresher = RefresherTestHarness.New(gateway, store, null, null, engine, time, "http://e1");
+        await refresher.RefreshOnceAsync(CancellationToken.None);
+        store.Current!.Etcd.Members.Should().ContainSingle();
+        gateway.Members = [new EtcdMember(42, "test", ["http://p"], ["http://c"]), new EtcdMember(43, "test2", ["http://p2"], ["http://c2"])];
+
+        // Act
+        await refresher.RefreshOnceAsync(CancellationToken.None);
+
+        // Assert — member list обновлён, пересчёт алертов выполнен
+        store.Current!.Etcd.Members.Should().HaveCount(2);
+        engine.EvaluateCalls.Should().Be(2);
+    }
+
+    // S10: тождественный member list (новые списки-инстансы, те же значения)
+    // НЕ считается изменением — тик без изменений.
+    [Fact]
+    public async Task Refresh_MemberListNewInstances_SameValues_Skips()
+    {
+        // Arrange — первый тик, затем member list пересоздан теми же значениями
+        var gateway = DemoGateway();
+        var store = new SnapshotStore();
+        var engine = new CountingAlertEngine();
+        var time = new FixedTimeProvider();
+        var refresher = RefresherTestHarness.New(gateway, store, null, null, engine, time, "http://e1");
+        await refresher.RefreshOnceAsync(CancellationToken.None);
+        gateway.Members = [new EtcdMember(42, "test", ["http://p"], ["http://c"])];
+
+        // Act
+        await refresher.RefreshOnceAsync(CancellationToken.None);
+
+        // Assert — пересборки нет
+        engine.EvaluateCalls.Should().Be(1);
+    }
+
+    // S10: изменился alarm кластера → пересборка.
+    [Fact]
+    public async Task Refresh_AlarmChange_Rebuilds()
+    {
+        // Arrange — первый тик без алармов, затем NOSPACE-тревога
+        var gateway = DemoGateway();
+        var store = new SnapshotStore();
+        var engine = new CountingAlertEngine();
+        var time = new FixedTimeProvider();
+        var refresher = RefresherTestHarness.New(gateway, store, null, null, engine, time, "http://e1");
+        await refresher.RefreshOnceAsync(CancellationToken.None);
+        store.Current!.Etcd.Alarms.Should().BeEmpty();
+        gateway.Alarms = [new EtcdAlarm(42, EtcdAlarmType.NoSpace)];
+
+        // Act
+        await refresher.RefreshOnceAsync(CancellationToken.None);
+
+        // Assert — тревога в снапшоте, пересчёт выполнен
+        store.Current!.Etcd.Alarms.Should().ContainSingle(a => a.Type == EtcdAlarmType.NoSpace);
+        engine.EvaluateCalls.Should().Be(2);
+    }
+
+    // S10: факты статуса изменились (raftTerm) → пересборка; шумовые поля
+    // (latency/dbSize/raftIndex) сравнением не охватываются.
+    [Fact]
+    public async Task Refresh_StatusFactChange_Rebuilds()
+    {
+        // Arrange — первый тик, затем сменился raftTerm (выборы)
+        var gateway = DemoGateway();
+        var store = new SnapshotStore();
+        var engine = new CountingAlertEngine();
+        var time = new FixedTimeProvider();
+        var refresher = RefresherTestHarness.New(gateway, store, null, null, engine, time, "http://e1");
+        await refresher.RefreshOnceAsync(CancellationToken.None);
+        gateway.StatusPayload = new EtcdStatusPayload("3.5.21", 20480, 42, 17, 4, null);
+
+        // Act
+        await refresher.RefreshOnceAsync(CancellationToken.None);
+
+        // Assert — пересборка по изменению факта статуса
+        engine.EvaluateCalls.Should().Be(2);
+        store.Current!.Etcd.Endpoints.Should().OnlyContain(e => e.RaftTerm == 4);
+    }
+
+    // S10: сбойный опрос ничего не меняет — данные снапшота и BuiltAtUtc не
+    // тронуты (применения нет), обновляется только Etcd-часть отказа.
+    [Fact]
+    public async Task Refresh_FailTick_DoesNotTouchSnapshotData()
+    {
+        // Arrange — успешный тик, затем endpoints умирают
+        var gateway = DemoGateway();
+        var store = new SnapshotStore();
+        var engine = new CountingAlertEngine();
+        var time = new FixedTimeProvider();
+        var refresher = RefresherTestHarness.New(gateway, store, null, null, engine, time, "http://e1");
+        await refresher.RefreshOnceAsync(CancellationToken.None);
+        var first = store.Current!;
+        gateway.StatusFailEndpoints.Add("http://e1");
+
+        // Act — сбойный опрос
+        var result = await refresher.RefreshOnceAsync(CancellationToken.None);
+
+        // Assert — тик отказан; данные и штамп не тронуты
+        result.IsSuccess.Should().BeFalse();
+        store.Current!.Clusters.Should().BeSameAs(first.Clusters);
+        store.Current.MoveTickets.Should().BeSameAs(first.MoveTickets);
+        store.Current.BuiltAtUtc.Should().Be(first.BuiltAtUtc);
+        store.Current.Etcd.Reachable.Should().BeFalse();
+    }
+
+    // S10: после сбоя данные те же, что в кэше → тик без изменений (пересборки/алертного
+    // пересчёта нет): сравнение всегда с кэшем последнего успешно прочитанного
+    // состояния, исходы тиков в ветвлении не участвуют. Etcd-часть при тихом
+    // тике свежая — восстановление доступности видно без пересборки.
+    [Fact]
+    public async Task Refresh_AfterFailSameData_IsNoChangeTick()
+    {
+        // Arrange — успешный тик (кэш=X), сбой статусов, восстановление при тех же данных
+        var gateway = DemoGateway();
+        var store = new SnapshotStore();
+        var engine = new CountingAlertEngine();
+        var time = new FixedTimeProvider();
+        var refresher = RefresherTestHarness.New(gateway, store, null, null, engine, time, "http://e1");
+        await refresher.RefreshOnceAsync(CancellationToken.None);
+        var first = store.Current!;
+        gateway.StatusFailEndpoints.Add("http://e1");
+        await refresher.RefreshOnceAsync(CancellationToken.None);
+        store.Current!.Etcd.Reachable.Should().BeFalse();
+        gateway.StatusFailEndpoints.Clear();
+        time.Utc = time.Utc.AddSeconds(5);
+
+        // Act — первый опрос после сбоя по тем же данным etcd
+        await refresher.RefreshOnceAsync(CancellationToken.None);
+
+        // Assert — тик без изменений: данные те же ссылки, алерты не пересчитаны;
+        // Etcd-часть свежая (reachable восстановлен), штамп обновлён.
+        // Счёт 2: пересборка т1 + пересчёт отказного т2 (spec §3.5).
+        engine.EvaluateCalls.Should().Be(2);
+        store.Current!.Clusters.Should().BeSameAs(first.Clusters);
+        store.Current.Etcd.Reachable.Should().BeTrue();
+        store.Current.Etcd.ConsecutiveFailures.Should().Be(0);
+        store.Current.BuiltAtUtc.Should().Be(time.Utc);
     }
 }

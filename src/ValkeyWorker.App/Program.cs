@@ -271,6 +271,9 @@ builder.Services.AddSingleton(sp => new RestartHandler(
     sp.GetRequiredService<ILoggerFactory>().CreateLogger<RestartHandler>()));
 
 // Циклы: keepalive первым (lease живут до Reconcile), затем снапшоты и reconcile.
+// Опросные кэши контроль-плейна тика (arch/17 S10, arch/21 §5): ReconcileLoop
+// читает слепок и гейтится по дельте — etcd в каждом тике не range-ится.
+builder.Services.AddSingleton<IPrefixPollSources, EtcdPrefixSources>();
 builder.Services.AddSingleton<IValkeyClusterProcesses, ValkeyClusterProcesses>();
 builder.Services.AddSingleton<KeepaliveLoop>();
 builder.Services.AddSingleton<SnapshotLoop>();

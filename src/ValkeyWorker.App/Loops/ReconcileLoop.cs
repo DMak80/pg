@@ -3,18 +3,24 @@ using Microsoft.Extensions.Logging;
 using System.Diagnostics;
 using Microsoft.Extensions.Options;
 using Shared.Core.HealthChecks;
+using Shared.Etcd.Client;
 using ValkeyWorker.App;
 
 namespace ValkeyWorker.App.Loops;
 
 /// <summary>
-/// Главный цикл воркера (arch/21 §5; порт ReconcileLoop KafkaWorker): тик =
-/// обработка снапшота /valkey/clusters/ → классификация → клэйм → процесс.
-/// В каркасе (фаза 2) тело тика делегирует IValkeyClusterProcesses (пусто).
-/// Ошибка тика не роняет цикл (лог + ErrorDelayMs, следующий тик — ретрай).
+/// Главный цикл воркера (arch/21 §5; порт ReconcileLoop KafkaWorker; чтение
+/// состояния — arch/17 S10): контроль-плейн читается из слепка опросного
+/// кэша (IPrefixPollSources) — etcd-чтений в тике ноль (E10). Тик работает
+/// КАЖДЫЙ раз, без гейтов по дельте: self-healing ждёт не-etcd события
+/// (PING-готовность ноды, docker-факты) — применения etcd-значений
+/// процессами идут по факту изменения значения (S10). Heartbeat и healthz
+/// loops-alive отмечаются каждым тиком (arch/21 §6). Ошибка тика не роняет
+/// цикл (лог + ErrorDelayMs, следующий тик — ретрай).
 /// </summary>
 internal sealed class ReconcileLoop(
     IOptionsMonitor<ValkeyWorkerOptions> options,
+    IPrefixPollSources sources,
     IValkeyClusterProcesses processes,
     ILogger<ReconcileLoop> logger,
     HealthState health,
@@ -63,6 +69,16 @@ internal sealed class ReconcileLoop(
         finally
         {
             Working = false;
+            // Останов опросных кэшей (идемпотентно; остановка лучшего эффекта —
+            // процесс останавливается).
+            try
+            {
+                await sources.StopAsync(CancellationToken.None);
+            }
+            catch
+            {
+                // host останавливается — повтор не требуется
+            }
         }
     }
 
@@ -86,21 +102,44 @@ internal sealed class ReconcileLoop(
         }
     }
 
-    /// <summary>Один тик (публичен для тестов/health): процессы A–E над снапшотом.</summary>
+    /// <summary>Один тик (публичен для тестов/health): слепок кэша →
+    /// процессы A–E над снапшотом /valkey/clusters/.</summary>
     internal async Task<Result> TickAsync(CancellationToken ct)
     {
         var endpoints = options.CurrentValue.Etcd.Endpoints.ToArray();
         if (endpoints.Length == 0)
             return Result.Failed(new ApplicationException("ValkeyWorker:Etcd:Endpoints are not set"));
 
+        // Запуск опросного кэша (идемпотентно; сбой старта — ошибка тика:
+        // цикл залогирует и повторит с ErrorDelayMs).
+        try
+        {
+            await sources.StartAsync(ct);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            return Result.Failed(ex);
+        }
+
         health.MarkReconcileActivity(); // heartbeat: старт итерации (долгие фазы отмечаются глубже)
 
-        var claimsHeld = await processes.TickAsync(ct);
+        // Парсинг контроль-плейна — из слепка кэша (не etcd; P9 выполняется
+        // опросным циклом кэша, единая точка failover — arch/17 S7).
+        var claimsHeld = await processes.TickAsync(ToKvs(sources.ClustersSnapshot), ct);
 
-        health.MarkEtcdOk();
         // Секция health «claims»: фактическое число клэймов этого инстанса.
         health.MarkReconcileTick(ok: true, claimsHeld);
         metrics.LoopTick("reconcile", ok: true);
         return Result.Success();
     }
+
+    // Слепок кэша → Kv-список парсера (значения без изменений).
+    private static List<Kv> ToKvs(IReadOnlyDictionary<string, (string Value, long ModRevision)> snapshot)
+        => snapshot
+            .Select(pair => new Kv(pair.Key, pair.Value.Value, (ulong)pair.Value.ModRevision))
+            .ToList();
 }

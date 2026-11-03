@@ -67,6 +67,9 @@ public sealed class BackupProcess(
         var creds = await secrets.EnsureAsync(cluster, snap.Config, ct);
         if (!creds.IsSuccess)
             return Result<ProcessOutcome>.Failed(creds.Error!);
+        if (creds.Value.BackupPassword is not { } backupPassword)
+            return Result<ProcessOutcome>.Failed(new ApplicationException(
+                $"{Op} {cluster}: backup_password absent after ensure (transient — retry next tick)"));
 
         //  (arch/19 §2/§4): резолв пула бэкапов — в начале тика кластера.
         // null (policy без s3) → полный не планируется, journal не пишем
@@ -162,24 +165,36 @@ public sealed class BackupProcess(
                 continue;
             }
             var adminDsn = ShardEndpoints.AdminDsn(master.Value, snap.Config.DbName, installSecrets);
-            var guard = await db.ExecuteScalarAsync(
-                adminDsn, DatabaseProvisioner.BuildBackupExecRoleGuardSql(creds.Value.BackupPassword), ct);
-            if (!guard.IsSuccess)
+
+            // Текущий rolpassword → соответствие etcd-значению (arch/19 §7:
+            // verifier необратим — пересчёт от etcd-значения по сохранённой соли).
+            var stored = await db.ExecuteScalarAsync(
+                adminDsn,
+                $"SELECT rolpassword FROM pg_authid WHERE rolname = '{DatabaseProvisioner.BackupExecRole}'",
+                ct);
+            var storedHash = stored.IsSuccess ? stored.Value as string : null;
+            var matches = DatabaseProvisioner.BackupExecPasswordMatches(storedHash, backupPassword);
+
+            // [t07-diag]: отпечатки pg_authid↔etcd, без секретов — расхождение
+            // пароля backup_exec видно тик за тиком (CREATE-only гвард молчал:
+            // 28P01 инвентаря приёмника при живой сессии, факт стенда).
+            Console.WriteLine(
+                $"[t07-diag] {cluster}/{shard.Name}: matches={matches} " +
+                $"etcd_fp={SecretFingerprint.Of(backupPassword)} " +
+                $"stored_fp={(storedHash is { } h ? SecretFingerprint.Of(h) : "absent")}");
+
+            // Ensure — только при расхождении (CREATE-if-absent + ALTER в одном
+            // DO-блоке; порядок «создать → выровнять» гарантирован).
+            if (!matches)
             {
-                // transient (сеть/мастер ушёл) — следующий тик дообеспечит
-                logger.LogWarning(
-                    "backups {Cluster}/{Shard}: role-guard skipped — guard query failed: {Error}",
-                    cluster, shard.Name, guard.Error!.Message);
-                continue;
-            }
-            if (guard.Value is string createRole)
-            {
-                var createdRole = await db.ExecuteAsync(adminDsn, createRole, ct);
-                if (!createdRole.IsSuccess)
+                var ensured = await db.ExecuteScalarAsync(
+                    adminDsn, DatabaseProvisioner.BuildBackupExecRoleGuardSql(backupPassword), ct);
+                if (!ensured.IsSuccess)
                 {
+                    // transient (сеть/мастер ушёл) — следующий тик дообеспечит
                     logger.LogWarning(
-                        "backups {Cluster}/{Shard}: role-guard skipped — create role failed: {Error}",
-                        cluster, shard.Name, createdRole.Error!.Message);
+                        "backups {Cluster}/{Shard}: role-guard skipped — ensure query failed: {Error}",
+                        cluster, shard.Name, ensured.Error!.Message);
                     continue;
                 }
             }
@@ -220,7 +235,26 @@ public sealed class BackupProcess(
                     && f.WalStartSegment is { Length: > 0 } walStart
                     && string.CompareOrdinal(walStart, gapTo) >= 0);
 
-            if (!BackupPlanner.IsDue(fulls, fullMaxAgeSec, nowUnix, lastRestoreFinished,
+            // (arch/19 §2): первый полный в окне ДО избрания sync-standby
+            // снимается с мастера (fallback источника). После избрания
+            // sync-standby самый свежий COMPLETED с ролью master — due для
+            // пересъёма с реплики (канон: «источник полного — синхрон-реплика»);
+            // полное с role=replica гасит force. Без цикла: sync не избран →
+            // force нет, обычный due. Гейт по дельте (arch/17 S10) сдвинул
+            // первый полный в это окно — правило делает канон исполнимым.
+            var freshestCompleted = fulls.Where(f => f.State == FullBackupStatus.Completed)
+                .OrderByDescending(f => f.StartedUnix).FirstOrDefault();
+            var freshestIsMasterSourced = freshestCompleted is { } fc
+                && fc.Role == BackupSourceRole.Master;
+            var syncElected = false;
+            if (freshestIsMasterSourced)
+            {
+                var syncProbe = await shardEndpoints.ResolveBackupSourceAsync(cluster, shard, addresses.Value, ct);
+                syncElected = syncProbe.IsSuccess && syncProbe.Value is { } s
+                    && (s.Ports != master.Value.Ports || s.Host != master.Value.Host);
+            }
+
+            if (!syncElected && !BackupPlanner.IsDue(fulls, fullMaxAgeSec, nowUnix, lastRestoreFinished,
                     walChainBroken: brokenBoundary is not null && !breakCovered,
                     walGapUncovered: gapBoundary is not null && !gapCovered))
                 continue;

@@ -14,17 +14,20 @@ namespace S3Worker.App.Loops;
 // (мокабельно в unit-тестах цикла). Active-ветка (arch/24 §5): надзор (C) →
 // add-node (D) → remove-node (E); живая заявка ротации — эксклюзивная ветка.
 
-/// <summary>Один reconcile-тик над всеми кластерами (процессы arch/24 §5).</summary>
+/// <summary>Один reconcile-тик над всеми кластерами (процессы arch/24 §5).
+/// Слепок /s3/ читает ReconcileLoop из опросного кэша (arch/17 S10) и
+/// передаёт сюда.</summary>
 public interface IS3ClusterProcesses
 {
     /// <summary>Число клэймов, держимых этим инстансом (health-секция claims).</summary>
-    Task<int> TickAsync(CancellationToken ct);
+    Task<int> TickAsync(IReadOnlyList<Kv> clustersKvs, CancellationToken ct);
 }
 
 /// <summary>
-/// Реализация поверх координации (синглтоны DI): Range /s3/ → парсер →
-/// клэйм → классификация → процесс. Ошибки кластера не роняют тик;
-/// параллелизм — SemaphoreSlim MaxClusters (внутри кластера — последовательно).
+/// Реализация поверх координации (синглтоны DI): слепок опросного кэша /s3/
+/// (arch/17 S10 — читает ReconcileLoop) → парсер → клэйм → классификация →
+/// процесс. Ошибки кластера не роняют тик; параллелизм — SemaphoreSlim
+/// MaxClusters (внутри кластера — последовательно).
 /// </summary>
 internal sealed class S3ClusterProcesses(
     IEtcdGateway etcd,
@@ -47,18 +50,9 @@ internal sealed class S3ClusterProcesses(
     // (arch/23 §2); инкремент — размер списка за тик.
     private readonly Counter<long> _unknownKeys = meter.CreateCounter<long>("s3worker_unknown_keys_total");
 
-    public async Task<int> TickAsync(CancellationToken ct)
+    public async Task<int> TickAsync(IReadOnlyList<Kv> clustersKvs, CancellationToken ct)
     {
-        var endpoints = options.CurrentValue.Etcd.Endpoints.ToArray();
-        if (endpoints.Length == 0)
-            throw new ApplicationException("S3Worker:Etcd:Endpoints are not configured");
-
-        // Снапшот контроль-плейна: Range /s3/ c failover.
-        var clustersKvs = await RangeWithFailoverAsync(endpoints, "/s3/", ct);
-        if (!clustersKvs.IsSuccess)
-            throw clustersKvs.Error!;
-
-        var parsed = S3SnapshotParser.Parse(clustersKvs.Value);
+        var parsed = S3SnapshotParser.Parse(clustersKvs);
         foreach (var cluster in parsed.Value.Clusters)
         {
             if (cluster.ParseError is not null)
@@ -263,19 +257,4 @@ internal sealed class S3ClusterProcesses(
     private Task<Result<Kv?>> GetWithFailoverAsync(string key, CancellationToken ct)
         => EtcdEndpointFailover.CallAsync(options.CurrentValue.Etcd.Endpoints,
             (endpoint, token) => etcd.GetAsync(endpoint, key, token), ct);
-
-    private async Task<Result<IReadOnlyList<Kv>>> RangeWithFailoverAsync(
-        string[] endpoints, string prefix, CancellationToken ct)
-    {
-        Result<IReadOnlyList<Kv>> last = default;
-        foreach (var endpoint in endpoints)
-        {
-            var result = await etcd.RangeAsync(endpoint, prefix, ct);
-            if (result.IsSuccess)
-                return result;
-            last = result;
-        }
-
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not configured");
-    }
 }

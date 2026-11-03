@@ -55,6 +55,11 @@ public sealed record SupervisionState(
 // takeover продолжает фазу).
 public sealed class WorkJournal(string keyPrefix, IEtcdGateway gateway, string[] endpoints)
 {
+    // Сериализация фазовых записей: запись work-ключа — read-modify-write
+    // (carry-forward unreachable/фактов/окна), конкурентные писатели теряли бы
+    // поля журнала; шаги разных шардов тика теперь идут параллельными тасками.
+    private readonly SemaphoreSlim _writeGate = new(1, 1);
+
     private static readonly JsonSerializerOptions Json = new()
     {
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
@@ -98,6 +103,24 @@ public sealed class WorkJournal(string keyPrefix, IEtcdGateway gateway, string[]
         RetrySeries? series = null, IReadOnlyDictionary<string, long>? unreachable = null,
         HaSupervisionFacts? facts = null, bool? restWindowOpen = null,
         int? rotateQuietTicks = null, int? startFailedRecreateCount = null)
+    {
+        await _writeGate.WaitAsync(ct);
+        try
+        {
+            return await WritePhaseCoreAsync(cluster, op, phase, instance, lastError, ct,
+                series, unreachable, facts, restWindowOpen, rotateQuietTicks, startFailedRecreateCount);
+        }
+        finally
+        {
+            _writeGate.Release();
+        }
+    }
+
+    private async Task<Result> WritePhaseCoreAsync(
+        string cluster, string op, string phase, string instance, string? lastError, CancellationToken ct,
+        RetrySeries? series, IReadOnlyDictionary<string, long>? unreachable,
+        HaSupervisionFacts? facts, bool? restWindowOpen,
+        int? rotateQuietTicks, int? startFailedRecreateCount)
     {
         //  (унификация с Pg, фикс AC6): фазовая запись БЕЗ явного трека
         // сохраняет существующий (fix сброса порогов NodeDead/BrokerDead;
@@ -209,31 +232,12 @@ public sealed class WorkJournal(string keyPrefix, IEtcdGateway gateway, string[]
 
     private string WorkKey(string cluster) => $"{keyPrefix}/work/{cluster}";
 
-    private async Task<Result<T>> WithFailoverAsync<T>(Func<string, Task<Result<T>>> call)
-    {
-        Result<T> last = default;
-        foreach (var endpoint in endpoints)
-        {
-            var result = await call(endpoint);
-            if (result.IsSuccess)
-                return result;
-            last = result;
-        }
+    // Единая точка failover (arch/17 S7: sticky + per-attempt бюджет + негативный
+    // кэш; дубликат цикла обхода удалён — журнал, самый частый писатель, платил
+    // полным HTTP-бюджетом за мёртвый endpoint каждым put'ом).
+    private Task<Result<T>> WithFailoverAsync<T>(Func<string, Task<Result<T>>> call)
+        => EtcdEndpointFailover.CallAsync(endpoints, call);
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints not configured");
-    }
-
-    private async Task<Result> WithFailoverAsync(Func<string, Task<Result>> call)
-    {
-        Result last = default;
-        foreach (var endpoint in endpoints)
-        {
-            var result = await call(endpoint);
-            if (result.IsSuccess)
-                return result;
-            last = result;
-        }
-
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints not configured");
-    }
+    private Task<Result> WithFailoverAsync(Func<string, Task<Result>> call)
+        => EtcdEndpointFailover.CallAsync(endpoints, call);
 }

@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using Amazon.Runtime;
 using Amazon.S3;
 using Amazon.S3.Model;
@@ -83,7 +84,44 @@ public interface IBackupS3
         string cluster, string shard, string key, string destFilePath, CancellationToken ct = default);
 }
 
-public sealed class BackupS3 : IBackupS3, IAsyncDisposable
+/// <summary>Запись WAL-сегмента без разрушения чужой цепочки (arch/19 §3):
+/// существующий объект с ИДЕНТИЧНЫМ содержимым — идемпотентный успех (повтор
+/// put двух приёмников одного потока — канон идемпотентности); с ДРУГИМ
+/// содержимым — отказ с маркером <see cref="WalArchiveConflict.Marker"/>
+/// (перезапись запрещена: в общем S3-префиксе одинаковых имён сегментов может
+/// лежать цепочка ДРУГОЙ инкарнации — DR-источник, который restore ещё должен
+/// прочитать; PUT поверх неё уничтожает восстановимость).
+/// Отдельный интерфейс (не метод IBackupS3): тестовые фейки подсистемы,
+/// которым гвард не нужен, не обязаны его реализовывать.</summary>
+public interface IWalSegmentGuard
+{
+    Task<Result> PutWalSegmentAsync(
+        string key, byte[] data, string? sha256, CancellationToken ct = default);
+
+    /// <summary>Файловая форма (дубль pg_wal полного в общий wal/): та же
+    /// сверка содержимого по ETag, файл не читается в память целиком.</summary>
+    Task<Result> PutWalSegmentFileAsync(
+        string key, string filePath, CancellationToken ct = default);
+}
+
+/// <summary>Маркер permanent-конфликта WAL-архива (arch/19 §3): сегмент с тем
+/// же именем уже лежит с другим содержимым — это НЕ transient (ретрай ничего
+/// не изменит) и НЕ исчерпание пула: приёмник обязан замереть, а не
+/// перезаписывать чужую цепочку.</summary>
+public static class WalArchiveConflict
+{
+    public const string Marker = "wal-archive-conflict";
+
+    public static bool Is(Result result)
+        => !result.IsSuccess
+           && result.Error!.Message.Contains(Marker, StringComparison.Ordinal);
+
+    public static bool Is<T>(Result<T> result)
+        => !result.IsSuccess
+           && result.Error!.Message.Contains(Marker, StringComparison.Ordinal);
+}
+
+public sealed class BackupS3 : IBackupS3, IWalSegmentGuard, IAsyncDisposable
 {
     private readonly AmazonS3Client _client;
     private readonly string _bucket;
@@ -247,6 +285,92 @@ public sealed class BackupS3 : IBackupS3, IAsyncDisposable
         {
             return Result.Failed(new ApplicationException($"S3 batch-delete: {e.Message}", e));
         }
+    }
+
+    /// <summary>WAL-сегмент с гвардом чужой цепочки (arch/19 §3): HEAD
+    /// существующего объекта, сверка ETag (одиночный PUT ownS3/S3 — md5-hex)
+    /// с md5 содержимого. Совпал — байт-в-байт уже в архиве, put НЕ
+    /// повторяется (идемпотентность двух приёмников одного потока); не совпал
+    /// (или ETag не md5 — доказать идентичность нельзя) — конфликт: объект
+    /// НЕ перезаписывается, наружу — маркер WalArchiveConflict. Отсутствует —
+    /// обычный put (в т.ч. перебор целей пула).</summary>
+    public async Task<Result> PutWalSegmentAsync(
+        string key, byte[] data, string? sha256, CancellationToken ct = default)
+    {
+        GetObjectMetadataResponse? existing;
+        try
+        {
+            existing = await _client.GetObjectMetadataAsync(
+                new GetObjectMetadataRequest { BucketName = _bucket, Key = key }, ct);
+        }
+        catch (AmazonS3Exception e) when (e.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            existing = null; // отсутствует — заливаем
+        }
+        catch (Exception e)
+        {
+            return Result.Failed(new ApplicationException($"S3 head {key}: {e.Message}", e));
+        }
+
+        if (existing is not null)
+        {
+            var etag = existing.ETag?.Trim('"');
+            var md5 = Convert.ToHexString(MD5.HashData(data)).ToLowerInvariant();
+            if (string.Equals(etag, md5, StringComparison.OrdinalIgnoreCase))
+                return Result.Success(); // идемпотентный повтор: те же байты
+            return Result.Failed(new ApplicationException(
+                $"{WalArchiveConflict.Marker}: {key} already archived with different content " +
+                $"(etag={etag ?? "?"}, md5={md5}) — refusing to overwrite a foreign WAL chain"));
+        }
+
+        return await PutObjectAsync(key, data, sha256, ct);
+    }
+
+    /// <summary>Файловая форма гварда (дубль pg_wal полного): HEAD + md5 файла
+    /// (потоково) против ETag; идентичность — идемпотентный успех, иное —
+    /// WalArchiveConflict, отсутствие — обычный put-file. Обычный путь
+    /// перезаписи файла (без гварда) — PutFileAsync.</summary>
+    public async Task<Result> PutWalSegmentFileAsync(
+        string key, string filePath, CancellationToken ct = default)
+    {
+        GetObjectMetadataResponse? existing;
+        try
+        {
+            existing = await _client.GetObjectMetadataAsync(
+                new GetObjectMetadataRequest { BucketName = _bucket, Key = key }, ct);
+        }
+        catch (AmazonS3Exception e) when (e.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            existing = null;
+        }
+        catch (Exception e)
+        {
+            return Result.Failed(new ApplicationException($"S3 head {key}: {e.Message}", e));
+        }
+
+        if (existing is not null)
+        {
+            string md5;
+            try
+            {
+                await using var input = new FileStream(
+                    filePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+                md5 = Convert.ToHexString(MD5.HashData(input)).ToLowerInvariant();
+            }
+            catch (Exception e)
+            {
+                return Result.Failed(new ApplicationException(
+                    $"wal segment file read {filePath}: {e.Message}", e));
+            }
+            var etag = existing.ETag?.Trim('"');
+            if (string.Equals(etag, md5, StringComparison.OrdinalIgnoreCase))
+                return Result.Success();
+            return Result.Failed(new ApplicationException(
+                $"{WalArchiveConflict.Marker}: {key} already archived with different content " +
+                $"(etag={etag ?? "?"}, md5={md5}) — refusing to overwrite a foreign WAL chain"));
+        }
+
+        return await PutFileAsync(key, filePath, ct);
     }
 
     public async Task<Result> PutObjectAsync(string key, byte[] data, string? sha256, CancellationToken ct = default)

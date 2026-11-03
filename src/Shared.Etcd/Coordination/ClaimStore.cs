@@ -470,34 +470,13 @@ public sealed class ClaimStore(string keyPrefix, string[] endpoints, IEtcdGatewa
         guard?.Cancel();
     }
 
-    // Failover по endpoints: первый успешный ответ выигрывает; все недоступны → последняя ошибка.
-    private async Task<Result<T>> WithFailoverAsync<T>(Func<string, Task<Result<T>>> call)
-    {
-        Result<T> last = default;
-        foreach (var endpoint in endpoints)
-        {
-            var result = await call(endpoint);
-            if (result.IsSuccess)
-                return result;
-            last = result;
-        }
+    // Failover по endpoints — единая точка EtcdEndpointFailover (arch/17 S7:
+    // sticky последнего живого + per-attempt бюджет; дубликат цикла запрещён).
+    private Task<Result<T>> WithFailoverAsync<T>(Func<string, Task<Result<T>>> call)
+        => EtcdEndpointFailover.CallAsync(endpoints, call);
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints not configured");
-    }
-
-    private async Task<Result> WithFailoverAsync(Func<string, Task<Result>> call)
-    {
-        Result last = default;
-        foreach (var endpoint in endpoints)
-        {
-            var result = await call(endpoint);
-            if (result.IsSuccess)
-                return result;
-            last = result;
-        }
-
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints not configured");
-    }
+    private Task<Result> WithFailoverAsync(Func<string, Task<Result>> call)
+        => EtcdEndpointFailover.CallAsync(endpoints, call);
 
     // Value claim'а: {"instance","since_unix"} (spec §4.3).
     private sealed record ClaimPayload(

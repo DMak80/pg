@@ -584,36 +584,16 @@ public sealed partial class ClusterSecretRotator(
     private async Task<Result<IReadOnlyList<Kv>>> RangeAsync(string prefix, CancellationToken ct)
         => await WithFailoverAsync(endpoint => etcd.RangeAsync(endpoint, prefix, ct));
 
-    private async Task<Result> DeleteAsync(string key, CancellationToken ct)
-    {
-        Result last = default;
-        foreach (var endpoint in endpoints)
-        {
-            var result = await etcd.DeleteAsync(endpoint, key, prefix: false, ct);
-            if (result.IsSuccess)
-                return result;
-            last = result;
-        }
+    private Task<Result> DeleteAsync(string key, CancellationToken ct)
+        => EtcdEndpointFailover.CallAsync(endpoints, endpoint => etcd.DeleteAsync(endpoint, key, prefix: false, ct));
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
-    }
+    private Task<Result<TxnResult>> TxnAsync(TxnRequest req, CancellationToken ct)
+        => EtcdEndpointFailover.CallAsync(endpoints, endpoint => etcd.TxnAsync(endpoint, req, ct));
 
-    private async Task<Result<TxnResult>> TxnAsync(TxnRequest req, CancellationToken ct)
-        => await WithFailoverAsync(endpoint => etcd.TxnAsync(endpoint, req, ct));
-
-    private async Task<Result<T>> WithFailoverAsync<T>(Func<string, Task<Result<T>>> call)
-    {
-        Result<T> last = default;
-        foreach (var endpoint in endpoints)
-        {
-            var result = await call(endpoint);
-            if (result.IsSuccess)
-                return result;
-            last = result;
-        }
-
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
-    }
+    // Единая точка failover (arch/17 S7: sticky + per-attempt бюджет + негативный
+    // кэш; дубликат цикла обхода удалён).
+    private Task<Result<T>> WithFailoverAsync<T>(Func<string, Task<Result<T>>> call)
+        => EtcdEndpointFailover.CallAsync(endpoints, call);
 
     // Лимиты шарда от заявки request_* (копия NodeSupervisor.ReadShardResourcesAsync
     // — у ротатора своей не было; прецедент упрощённой копии RestoreProcess).

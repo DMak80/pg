@@ -133,6 +133,38 @@ public class KafkaRefresherTests
             NullLogger<KafkaSnapshotRefresher>.Instance,
             healthStore);
 
+    // Перегрузка New (кейсы S10, образец pg RefresherTestHarness.New): подмены
+    // алерт-движка (счёт вызовов Evaluate) и времени (движение BuiltAtUtc).
+    private static KafkaSnapshotRefresher New(
+        IEtcdGateway gateway, IKafkaSnapshotStore store,
+        IKafkaAlertEngine alertEngine, TimeProvider time, params string[] endpoints)
+        => new(
+            gateway,
+            alertEngine,
+            store,
+            new KafkaSecretsStore(),
+            Options.Create(new EtcdOptions { Endpoints = endpoints }),
+            Options.Create(new KafkaPanelOptions()),
+            time,
+            NullLogger<KafkaSnapshotRefresher>.Instance,
+            new AdminPanel.Etcd.Workers.KafkaWorkerHealthStore());
+
+    // Счётный алертный движок: тик без изменений (S10) Evaluate не вызывает — счётчик
+    // отражает фактические пересборки с алертным пересчётом.
+    private sealed class CountingKafkaAlertEngine : IKafkaAlertEngine
+    {
+        private readonly KafkaAlertEngine _inner = new(Options.Create(new KafkaAlertsOptions()));
+
+        public int EvaluateCalls { get; private set; }
+
+        public IReadOnlyList<Alert> Evaluate(
+            KafkaSnapshot next, KafkaSnapshot? previous, IReadOnlyCollection<string>? securityReady = null)
+        {
+            EvaluateCalls++;
+            return _inner.Evaluate(next, previous, securityReady);
+        }
+    }
+
     private static KafkaFakeGateway DemoGateway() => new()
     {
         ClustersKv = EtcdFixtures.LoadKv("Kafka/kafka-clusters-full.json"),
@@ -549,6 +581,148 @@ public class KafkaRefresherTests
         second.IsSuccess.Should().BeFalse();
         store.Current!.EtcdReachable.Should().BeFalse();
         store.Current.BuiltAtUtc.Should().Be(first.BuiltAtUtc);
+    }
+
+    // S10 (arch/02 §10, §5): тик без изменений — чтение совпало с кэшем → пересборки нет,
+    // KafkaAlertEngine не вызывается; штамп свежести BuiltAtUtc обновляется,
+    // данные — те же ссылки.
+    [Fact]
+    public async Task Refresh_SecondIdenticalTick_SkipsRebuildAndAlerts()
+    {
+        // Arrange — первый тик собирает снапшот, время двигается вперёд
+        var gateway = DemoGateway();
+        var store = new KafkaSnapshotStore();
+        var engine = new CountingKafkaAlertEngine();
+        var time = new FixedTimeProvider();
+        var refresher = New(gateway, store, engine, time, "http://e1");
+        await refresher.RefreshOnceAsync(CancellationToken.None);
+        var first = store.Current!;
+        time.Utc = time.Utc.AddSeconds(5);
+
+        // Act — второй тик по неизменному etcd
+        var result = await refresher.RefreshOnceAsync(CancellationToken.None);
+
+        // Assert — снапшот не пересобран, алерты не пересчитаны, штамп свежий
+        result.IsSuccess.Should().BeTrue();
+        engine.EvaluateCalls.Should().Be(1, "тик без изменений не запускает алертный пересчёт");
+        store.Current!.Clusters.Should().BeSameAs(first.Clusters, "снапшот не пересобирается");
+        store.Current.Alerts.Should().BeSameAs(first.Alerts);
+        store.Current.BuiltAtUtc.Should().Be(time.Utc, "штамп свежести обновляется");
+    }
+
+    // S10: изменение KV (новая заявка ротации) → пересборка и алертный пересчёт.
+    [Fact]
+    public async Task Refresh_KvChange_RebuildsAndRecomputesAlerts()
+    {
+        // Arrange — первый тик, затем новая заявка в /kafkaworker/rotations/
+        var gateway = DemoGateway();
+        var store = new KafkaSnapshotStore();
+        var engine = new CountingKafkaAlertEngine();
+        var time = new FixedTimeProvider();
+        var refresher = New(gateway, store, engine, time, "http://e1");
+        await refresher.RefreshOnceAsync(CancellationToken.None);
+        var first = store.Current!;
+        gateway.RotationsKv = [.. gateway.RotationsKv,
+            new Kv("/kafkaworker/rotations/extra", """{"requested_unix":1756500999,"requested_by":"op"}""", 42)];
+
+        // Act
+        await refresher.RefreshOnceAsync(CancellationToken.None);
+
+        // Assert — пересборка: новая ссылка модели и новый пересчёт алертов
+        store.Current!.Rotations.Should().HaveCount(first.Rotations.Count + 1);
+        store.Current.Rotations.Should().NotBeSameAs(first.Rotations);
+        engine.EvaluateCalls.Should().Be(2);
+    }
+
+    // S10: исчезновение ключа видно в полном range-чтении (ключа нет против
+    // кэша) → пересборка.
+    [Fact]
+    public async Task Refresh_KeyGone_Rebuilds()
+    {
+        // Arrange — первый тик с ротациями, затем первая заявка снята (ключ удалён)
+        var gateway = DemoGateway();
+        var store = new KafkaSnapshotStore();
+        var engine = new CountingKafkaAlertEngine();
+        var time = new FixedTimeProvider();
+        var refresher = New(gateway, store, engine, time, "http://e1");
+        await refresher.RefreshOnceAsync(CancellationToken.None);
+        var first = store.Current!;
+        gateway.RotationsKv = gateway.RotationsKv.Skip(1).ToArray();
+
+        // Act
+        await refresher.RefreshOnceAsync(CancellationToken.None);
+
+        // Assert — ротации пересобраны без снятой заявки, пересчёт выполнен
+        store.Current!.Rotations.Should().HaveCount(first.Rotations.Count - 1);
+        store.Current.Rotations.Should().NotBeSameAs(first.Rotations);
+        engine.EvaluateCalls.Should().Be(2);
+    }
+
+    // S10/E11: после отказного тика первый успешный при НЕИЗМЕННЫХ данных —
+    // тик без изменений (тики не классифицируются, гейт — дельта состояния): пересборки
+    // и алертного пересчёта нет, доступностная часть восстановлена.
+    [Fact]
+    public async Task Refresh_RecoveryAfterFail_SameData_NoChangeTick()
+    {
+        // Arrange — успешный тик, затем отказ всех endpoints, затем восстановление
+        var gateway = DemoGateway();
+        var store = new KafkaSnapshotStore();
+        var engine = new CountingKafkaAlertEngine();
+        var time = new FixedTimeProvider();
+        var refresher = New(gateway, store, engine, time, "http://e1");
+        await refresher.RefreshOnceAsync(CancellationToken.None);
+        var first = store.Current!;
+        gateway.FailEndpoints.Add("http://e1");
+        await refresher.RefreshOnceAsync(CancellationToken.None);
+        store.Current!.EtcdReachable.Should().BeFalse();
+        gateway.FailEndpoints.Clear();
+        time.Utc = time.Utc.AddSeconds(5);
+
+        // Act — восстановительный тик по тем же данным etcd
+        var result = await refresher.RefreshOnceAsync(CancellationToken.None);
+
+        // Assert — тик без изменений: данные не пересобраны, алертный пересчёт не
+        // выполнялся (счёт 2: пересборка т1 + пересчёт отказного т2),
+        // доступностная часть свежая.
+        result.IsSuccess.Should().BeTrue();
+        engine.EvaluateCalls.Should().Be(2, "тик без изменений не запускает алертный пересчёт");
+        store.Current!.Clusters.Should().BeSameAs(first.Clusters, "снапшот не пересобирается");
+        store.Current.EtcdReachable.Should().BeTrue();
+        store.Current.ConsecutiveFailures.Should().Be(0);
+        store.Current.BuiltAtUtc.Should().Be(time.Utc, "штамп свежести обновляется");
+    }
+
+    // S10/E11: после отказного тика первый успешный при ИЗМЕНИВШИХСЯ данных —
+    // пересборка (дельта состояния есть).
+    [Fact]
+    public async Task Refresh_RecoveryAfterFail_DataChanged_Rebuilds()
+    {
+        // Arrange — успешный тик, отказ; пока endpoints мертвы, в etcd ставится
+        // новая заявка ротации
+        var gateway = DemoGateway();
+        var store = new KafkaSnapshotStore();
+        var engine = new CountingKafkaAlertEngine();
+        var time = new FixedTimeProvider();
+        var refresher = New(gateway, store, engine, time, "http://e1");
+        await refresher.RefreshOnceAsync(CancellationToken.None);
+        var first = store.Current!;
+        gateway.FailEndpoints.Add("http://e1");
+        await refresher.RefreshOnceAsync(CancellationToken.None);
+        gateway.FailEndpoints.Clear();
+        gateway.RotationsKv = [.. gateway.RotationsKv,
+            new Kv("/kafkaworker/rotations/extra", """{"requested_unix":1756500999,"requested_by":"op"}""", 42)];
+
+        // Act — восстановительный тик по изменившимся данным
+        var result = await refresher.RefreshOnceAsync(CancellationToken.None);
+
+        // Assert — пересборка: новые данные, доступностная часть свежая; счёт 3:
+        // пересборка т1 + пересчёт отказного т2 + пересборка т3
+        result.IsSuccess.Should().BeTrue();
+        engine.EvaluateCalls.Should().Be(3);
+        store.Current!.EtcdReachable.Should().BeTrue();
+        store.Current.ConsecutiveFailures.Should().Be(0);
+        store.Current.Rotations.Should().HaveCount(first.Rotations.Count + 1);
+        store.Current.Clusters.Should().NotBeSameAs(first.Clusters, "дельта состояния — пересборка");
     }
 }
 

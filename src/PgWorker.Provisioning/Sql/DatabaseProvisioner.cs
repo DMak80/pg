@@ -107,10 +107,73 @@ public sealed partial class DatabaseProvisioner : ISqlExecutor
     /// per-cluster пароль /clusters/&lt;C&gt;/backup_password (ensure).</summary>
     public const string BackupExecRole = "backup_exec";
 
-    // gexec-guard роли backup_exec (G2): SELECT возвращает CREATE ROLE,
-    /// если её нет; пароль выравнивается при создании/ротации.
+    // gexec-ensure роли backup_exec (G2, arch/19 §7): DO-блок —
+    // CREATE-if-absent И выравнивание пароля ALTER'ом в ОДНОМ исполнении
+    // (порядок «создать → выровнять» гарантирован). Выполняется ТОЛЬКО при
+    // расхождении (BackupExecPasswordMatches=false) — без каталог-записи в
+    // каждый тик. Роль, существующая с чужим значением (второй писатель
+    // pg_authid), конвергируется следующим тиком; CREATE-only гвард молчал
+    // вечно — 28P01 инвентаря приёмника при живой сессии стрима (факт
+    // стенда). Пароль внутри $$-литерала без экранирования кавычек
+    // (генератор — [A-Za-z0-9], '$$' в значении невозможен).
     public static string BuildBackupExecRoleGuardSql(string password)
-        => Role(BackupExecRole, password, replication: true);
+    {
+        ValidateIdentifier(BackupExecRole);
+        return
+            "DO $$ BEGIN\n" +
+            $"  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '{BackupExecRole}') THEN\n" +
+            $"    CREATE ROLE \"{BackupExecRole}\" LOGIN REPLICATION PASSWORD '{password}';\n" +
+            "  END IF;\n" +
+            $"  ALTER ROLE \"{BackupExecRole}\" WITH LOGIN REPLICATION PASSWORD '{password}';\n" +
+            "END $$;";
+    }
+
+    // Проверка «сохранённый rolpassword соответствует etcd-значению?» (arch/19
+    // §7): verifier'ы необратимы — пересчитываем от etcd-значения по СОЛЬ
+    // СОХРАНЁННОГО. md5-формат: 'md5'+md5(пароль+роль); SCRAM-SHA-256:
+    // 'SCRAM-SHA-256$<iter>:<salt-b64>$<StoredKey-b64>:<ServerKey-b64>',
+    // SaltedPassword=PBKDF2-HMAC-SHA256(пароль,соль,iter), ClientKey=HMAC-
+    // SHA256(SaltedPassword,"Client Key"), StoredKey=SHA256(ClientKey).
+    // Пусто/нераспознанный формат — расхождение (ALTER-ensure поднимет).
+    public static bool BackupExecPasswordMatches(string? stored, string password)
+    {
+        if (string.IsNullOrEmpty(stored))
+            return false;
+
+        if (stored.StartsWith("md5", StringComparison.Ordinal))
+            return stored == "md5" + Md5Hex(password + BackupExecRole);
+
+        const string ScramPrefix = "SCRAM-SHA-256$";
+        if (!stored.StartsWith(ScramPrefix, StringComparison.Ordinal))
+            return false;
+
+        var parts = stored[ScramPrefix.Length..].Split('$');
+        if (parts.Length != 2) // "<iter>:<salt>" и "<StoredKey>:<ServerKey>"
+            return false;
+        var iterParts = parts[0].Split(':');
+        if (iterParts.Length != 2 || !int.TryParse(iterParts[0], out var iterations) || iterations <= 0)
+            return false;
+        try
+        {
+            var salt = Convert.FromBase64String(iterParts[1]);
+            var storedKey = Convert.FromBase64String(parts[1].Split(':')[0]);
+            var saltedPassword = System.Security.Cryptography.Rfc2898DeriveBytes.Pbkdf2(
+                password, salt, iterations, System.Security.Cryptography.HashAlgorithmName.SHA256, 32);
+            using var hmac = new System.Security.Cryptography.HMACSHA256(saltedPassword);
+            var clientKey = hmac.ComputeHash("Client Key"u8.ToArray());
+            using var sha = System.Security.Cryptography.SHA256.Create();
+            var expected = sha.ComputeHash(clientKey);
+            return expected.AsSpan().SequenceEqual(storedKey);
+        }
+        catch (FormatException)
+        {
+            return false; // битая соль/ключ — считаем расхождением
+        }
+    }
+
+    private static string Md5Hex(string value)
+        => Convert.ToHexString(System.Security.Cryptography.MD5.HashData(
+            System.Text.Encoding.UTF8.GetBytes(value))).ToLowerInvariant();
 
     private static string Role(string name, string password, bool replication = false)
     {
