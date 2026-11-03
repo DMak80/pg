@@ -190,17 +190,48 @@ public sealed class SnapshotRefresher(
         IReadOnlyList<EtcdMember> appliedMembers = members.IsSuccess ? members.Value : [];
         IReadOnlyList<EtcdAlarm> appliedAlarms = alarms.IsSuccess ? alarms.Value : [];
 
-        // arch/02 §5 (arch/17 S10): чтение совпало с кэшем при успешном прошлом
-        // тике — снапшот не пересобирается, алерты не пересчитываются, потребители
-        // не дёргаются; обновляются только штампы свежести (живость для
-        // snapshot-stale и бейджа «данные от <t>»).
-        if (previous is EtcdSnapshot { Etcd.Reachable: true, Etcd.ConsecutiveFailures: 0 } lastApplied
+        // Кворум-эвристика (spec §3.11) + мягкие метаданные member/alarm (ошибка не
+        // роняет тик); свежая Etcd-часть нужна и тихому тику (телеметрия доступности).
+        var quorumSuspected = alive.All(a => a.LeaderMemberId is not > 0 || a.RaftTerm is not > 0)
+            || alive.Any(a => a.Errors.Any(IsRaftError));
+
+        var metaErrors = new List<string>();
+        if (!members.IsSuccess)
+            metaErrors.Add("member/list: " + members.Error!.Message);
+        if (!alarms.IsSuccess)
+            metaErrors.Add("alarm: " + alarms.Error!.Message);
+        EtcdEndpoint[] patchedStatuses = statuses;
+        if (metaErrors.Count > 0)
+        {
+            patchedStatuses = [.. statuses.Select(s => s.Url == active.Url
+                ? s with { Errors = [.. s.Errors, .. metaErrors] }
+                : s)];
+        }
+
+        var etcd = new EtcdStatus(
+            true,
+            patchedStatuses,
+            appliedMembers,
+            appliedAlarms,
+            active.Url,
+            quorumSuspected,
+            now,
+            0);
+
+        // arch/02 §5 (arch/17 S10): прочитанное идентично кэшу (последнему
+        // успешно прочитанному состоянию из etcd) — тихий тик: данные не
+        // пересобираются, парсеры/AlertEngine/потребители не вызываются;
+        // обновляются свежая Etcd-часть (телеметрия доступности не замерзает)
+        // и штампы свежести. Ветвление только по факту совпадения с кэшем,
+        // без истории исходов тиков: совпадение после сбоя — тихий тик,
+        // различие — пересборка.
+        if (previous is EtcdSnapshot lastApplied
             && TickUnchanged(reads, appliedMembers, appliedAlarms, statuses))
         {
             store.Replace(lastApplied with
             {
                 BuiltAtUtc = now,
-                Etcd = lastApplied.Etcd with { LastRefreshUtc = now },
+                Etcd = etcd,
             });
             return Finish(Result.Success(), working: true);
         }
@@ -230,33 +261,6 @@ public sealed class SnapshotRefresher(
         var evacuationsParsed = EvacuationsParser.Parse(evacuationsKv.Value);
         var pgRotationsParsed = RotationsParser.Parse(pgRotationsKv.Value);
         var coordinationParsed = CoordinationParser.Parse(leaderKv.Value.FirstOrDefault(), claimsKv.Value, instancesKv.Value);
-
-        // 5. Кворум-эвристика (spec §3.11) + мягкие метаданные member/alarm (ошибка не роняет тик).
-        var quorumSuspected = alive.All(a => a.LeaderMemberId is not > 0 || a.RaftTerm is not > 0)
-            || alive.Any(a => a.Errors.Any(IsRaftError));
-
-        var metaErrors = new List<string>();
-        if (!members.IsSuccess)
-            metaErrors.Add("member/list: " + members.Error!.Message);
-        if (!alarms.IsSuccess)
-            metaErrors.Add("alarm: " + alarms.Error!.Message);
-        EtcdEndpoint[] patchedStatuses = statuses;
-        if (metaErrors.Count > 0)
-        {
-            patchedStatuses = [.. statuses.Select(s => s.Url == active.Url
-                ? s with { Errors = [.. s.Errors, .. metaErrors] }
-                : s)];
-        }
-
-        var etcd = new EtcdStatus(
-            true,
-            patchedStatuses,
-            appliedMembers,
-            appliedAlarms,
-            active.Url,
-            quorumSuspected,
-            now,
-            0);
 
         // 6. Сборка + внесение проб (arch/02 §4 п.3) + health воркеров (spec D4,
         // образец ProbeEnricher.Apply — poller пишет независимо от KV-тика) +

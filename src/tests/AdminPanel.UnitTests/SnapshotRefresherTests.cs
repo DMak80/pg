@@ -898,32 +898,63 @@ public class SnapshotRefresherTests
         store.Current!.Etcd.Endpoints.Should().OnlyContain(e => e.RaftTerm == 4);
     }
 
-    // S10: после отказного тика первый успешный — всегда пересборка, даже при
-    // неизменных данных (Reachable=false у прежнего снапшота снимает skip).
+    // S10: сбойный опрос ничего не меняет — данные снапшота и BuiltAtUtc не
+    // тронуты (применения нет), обновляется только Etcd-часть отказа.
     [Fact]
-    public async Task Refresh_RecoveryAfterFail_RebuildsDespiteSameData()
+    public async Task Refresh_FailTick_DoesNotTouchSnapshotData()
     {
-        // Arrange — успешный тик, затем отказ всех endpoints, затем восстановление
+        // Arrange — успешный тик, затем endpoints умирают
         var gateway = DemoGateway();
         var store = new SnapshotStore();
         var engine = new CountingAlertEngine();
         var time = new FixedTimeProvider();
         var refresher = RefresherTestHarness.New(gateway, store, null, null, engine, time, "http://e1");
         await refresher.RefreshOnceAsync(CancellationToken.None);
-        var firstClusters = store.Current!.Clusters;
+        var first = store.Current!;
+        gateway.StatusFailEndpoints.Add("http://e1");
+
+        // Act — сбойный опрос
+        var result = await refresher.RefreshOnceAsync(CancellationToken.None);
+
+        // Assert — тик отказан; данные и штамп не тронуты
+        result.IsSuccess.Should().BeFalse();
+        store.Current!.Clusters.Should().BeSameAs(first.Clusters);
+        store.Current.MoveTickets.Should().BeSameAs(first.MoveTickets);
+        store.Current.BuiltAtUtc.Should().Be(first.BuiltAtUtc);
+        store.Current.Etcd.Reachable.Should().BeFalse();
+    }
+
+    // S10: после сбоя данные те же, что в кэше → тихий тик (пересборки/алертного
+    // пересчёта нет): сравнение всегда с кэшем последнего успешно прочитанного
+    // состояния, исходы тиков в ветвлении не участвуют. Etcd-часть при тихом
+    // тике свежая — восстановление доступности видно без пересборки.
+    [Fact]
+    public async Task Refresh_AfterFailSameData_IsQuietTick()
+    {
+        // Arrange — успешный тик (кэш=X), сбой статусов, восстановление при тех же данных
+        var gateway = DemoGateway();
+        var store = new SnapshotStore();
+        var engine = new CountingAlertEngine();
+        var time = new FixedTimeProvider();
+        var refresher = RefresherTestHarness.New(gateway, store, null, null, engine, time, "http://e1");
+        await refresher.RefreshOnceAsync(CancellationToken.None);
+        var first = store.Current!;
         gateway.StatusFailEndpoints.Add("http://e1");
         await refresher.RefreshOnceAsync(CancellationToken.None);
         store.Current!.Etcd.Reachable.Should().BeFalse();
         gateway.StatusFailEndpoints.Clear();
+        time.Utc = time.Utc.AddSeconds(5);
 
-        // Act — восстановительный тик по тем же данным etcd
+        // Act — первый опрос после сбоя по тем же данным etcd
         await refresher.RefreshOnceAsync(CancellationToken.None);
 
-        // Assert — восстановление пересобрало снапшот (не тихий тик), reachable восстановлен;
-        // счёт 3: пересборка т1 + пересчёт отказного т2 (spec §3.5) + пересборка восстановления т3
-        engine.EvaluateCalls.Should().Be(3);
-        store.Current!.Etcd.Reachable.Should().BeTrue();
+        // Assert — тихий тик: данные те же ссылки, алерты не пересчитаны;
+        // Etcd-часть свежая (reachable восстановлен), штамп обновлён.
+        // Счёт 2: пересборка т1 + пересчёт отказного т2 (spec §3.5).
+        engine.EvaluateCalls.Should().Be(2);
+        store.Current!.Clusters.Should().BeSameAs(first.Clusters);
+        store.Current.Etcd.Reachable.Should().BeTrue();
         store.Current.Etcd.ConsecutiveFailures.Should().Be(0);
-        store.Current.Clusters.Should().NotBeSameAs(firstClusters, "восстановление после отказа — пересборка, не тихий тик");
+        store.Current.BuiltAtUtc.Should().Be(time.Utc);
     }
 }
