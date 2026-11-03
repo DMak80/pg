@@ -39,18 +39,6 @@ public sealed class HealthState(TimeProvider clock)
         }
     }
 
-    /// <summary>Тик без изменений (arch/17 S10): итерация была (loops-alive
-    /// живёт, watchdog жив), сравнение с кэшем различий не нашло — работы не
-    /// было; счётчик клэймов НЕ трогается (клэймы держит keepalive-цикл, не тик).</summary>
-    public void MarkReconcileNoChangeTick()
-    {
-        lock (_sync)
-        {
-            _lastReconcileTick = clock.GetUtcNow();
-            _lastReconcileActivity = _lastReconcileTick;
-        }
-    }
-
     /// <summary>Прогресс-отметка reconcile (активность без тика) — глубоких
     /// долгих фаз у KafkaWorker нет, отмечается только старт итерации; читает
     /// только watchdog, healthz loops-alive — по тикам.</summary>

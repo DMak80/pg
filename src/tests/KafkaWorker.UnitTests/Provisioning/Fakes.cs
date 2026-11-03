@@ -47,12 +47,17 @@ internal static class Fakes
         // порт TxnFault PgWorker): запрос → готовый Failed ДО compare.
         public Func<TxnRequest, Result<TxnResult>>? TxnFault { get; set; }
 
+        // Счётчик Range-вызовов (тесты чтения тика из слепка кэша, arch/17 S10:
+        // etcd-чтений в тике ноль — range делает только фоновый опрос кэша).
+        public int RangeCalls { get; private set; }
+
         private long _rev;
         private long _lease;
         private readonly object _gate = new();
 
         public Task<Result<IReadOnlyList<Kv>>> RangeAsync(string endpoint, string prefix, CancellationToken ct)
         {
+            RangeCalls++;
             if (RangeFault is { } fault && fault(prefix) is { } ex)
                 return Task.FromResult(Result<IReadOnlyList<Kv>>.Failed(ex));
 

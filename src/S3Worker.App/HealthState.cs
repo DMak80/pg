@@ -40,18 +40,6 @@ public sealed class HealthState(TimeProvider clock) : Shared.Core.Hosting.ILoopP
         }
     }
 
-    /// <summary>Тик без изменений (arch/17 S10): итерация была (loops-alive
-    /// живёт, watchdog жив), сравнение с кэшем различий не нашло — работы не
-    /// было; счётчик клэймов НЕ трогается (клэймы держит keepalive-цикл, не тик).</summary>
-    public void MarkReconcileNoChangeTick()
-    {
-        lock (_sync)
-        {
-            _lastReconcileTick = clock.GetUtcNow();
-            _lastReconcileActivity = _lastReconcileTick;
-        }
-    }
-
     /// <summary>Прогресс-отметка reconcile (heartbeat долгих фаз итерации:
     /// контейнеры нод, health-цикл ожидания готовности) — активность без тика;
     /// читает только watchdog, healthz loops-alive — по тикам.</summary>

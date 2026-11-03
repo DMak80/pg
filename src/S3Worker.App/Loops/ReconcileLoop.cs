@@ -10,14 +10,13 @@ namespace S3Worker.App.Loops;
 
 /// <summary>
 /// Главный цикл воркера (arch/24 §5; порт ReconcileLoop ValkeyWorker; чтение
-/// состояния — arch/17 S10): контроль-плейн читается опросными кэшами
-/// (IPrefixPollSources), тик применяется ТОЛЬКО при факте изменения
-/// etcd-состояния — гейт по дельте: с последнего обработанного состояния
-/// изменений не было → тик БЕЗ изменений (processes не зовутся, клэймов/
-/// мутаций нет); heartbeat и healthz loops-alive отмечаются всегда
-/// (watchdog жив, arch/24 §6). Сбой опроса кэша дельту не поднимает — тик
-/// без изменений; при появлении изменения дельта будет — тик обработает.
-/// Ошибка тика не роняет цикл (лог + ErrorDelayMs, следующий тик — ретрай).
+/// состояния — arch/17 S10): контроль-плейн читается из слепка опросного
+/// кэша (IPrefixPollSources) — etcd-чтений в тике ноль (E10). Тик работает
+/// КАЖДЫЙ раз, без гейтов по дельте: self-healing ждёт не-etcd события
+/// (health-грань инстанса, docker-факты) — применения etcd-значений
+/// процессами идут по факту изменения значения (S10). Heartbeat и healthz
+/// loops-alive отмечаются каждым тиком (arch/24 §6). Ошибка тика не роняет
+/// цикл (лог + ErrorDelayMs, следующий тик — ретрай).
 /// </summary>
 internal sealed class ReconcileLoop(
     IOptionsMonitor<S3WorkerOptions> options,
@@ -27,11 +26,6 @@ internal sealed class ReconcileLoop(
     HealthState health,
     Shared.Metrics.Worker.WorkerMetricsInstrumentation metrics) : BackgroundService, IHealthCheckService
 {
-    // Baseline гейта тика (arch/17 S10): Version источников на момент
-    // последнего ОБРАБОТАННОГО тика; −1 = ещё не обрабатывали (первый тик
-    // всегда работает — стартовый слепок кэшей и есть обрабатываемое состояние).
-    private long _processedVersion = -1;
-
     public bool Inited { get; private set; }
 
     public bool Working { get; private set; }
@@ -108,15 +102,15 @@ internal sealed class ReconcileLoop(
         }
     }
 
-    /// <summary>Один тик (публичен для тестов/health): гейт по дельте → слепок
-    /// кэша → процессы A–E над снапшотом /s3/.</summary>
+    /// <summary>Один тик (публичен для тестов/health): слепок кэша →
+    /// процессы A–E над снапшотом /s3/.</summary>
     internal async Task<Result> TickAsync(CancellationToken ct)
     {
         var endpoints = options.CurrentValue.Etcd.Endpoints.ToArray();
         if (endpoints.Length == 0)
             return Result.Failed(new ApplicationException("S3Worker:Etcd:Endpoints are not configured"));
 
-        // Запуск опросных кэшей (идемпотентно; сбой старта — ошибка тика:
+        // Запуск опросного кэша (идемпотентно; сбой старта — ошибка тика:
         // цикл залогирует и повторит с ErrorDelayMs).
         try
         {
@@ -131,31 +125,12 @@ internal sealed class ReconcileLoop(
             return Result.Failed(ex);
         }
 
-        // ГЕЙТ ТИКА (arch/17 S10, реестр E10): применяется только фактическое
-        // изменение etcd-состояния. Дельты с последнего обработанного состояния
-        // нет (в т.ч. после сбоя опроса — кэш дельту не поднимает) → тик БЕЗ
-        // изменений: processes/клэймы/мутации не вызываются. Heartbeat
-        // отмечается ВСЕГДА (watchdog жив, arch/24 §6), loops-alive живёт
-        // (клэймы не трогаем — их держит keepalive-цикл), метрика тика —
-        // успешная (цикл жив, работы не было).
-        var version = sources.Version;
-        if (version == Interlocked.Read(ref _processedVersion))
-        {
-            health.MarkReconcileActivity();
-            health.MarkReconcileNoChangeTick();
-            metrics.LoopTick("reconcile.nochange", ok: true); // «тик без изменений» — отдельная серия
-            return Result.Success();
-        }
-
         health.MarkReconcileActivity(); // heartbeat: старт итерации (долгие фазы отмечаются глубже)
 
         // Парсинг контроль-плейна — из слепка кэша (не etcd; P9 выполняется
         // опросным циклом кэша, единая точка failover — arch/17 S7).
         var claimsHeld = await processes.TickAsync(ToKvs(sources.ClustersSnapshot), ct);
 
-        // Тик обработан: baseline = Version на входе тика; изменения, пришедшие
-        // ВО ВРЕМЯ обработки, остались за baseline'ом — их донесёт следующий тик.
-        Interlocked.Exchange(ref _processedVersion, version);
         // Секция health «claims»: фактическое число клэймов этого инстанса.
         health.MarkReconcileTick(ok: true, claimsHeld);
         metrics.LoopTick("reconcile", ok: true);

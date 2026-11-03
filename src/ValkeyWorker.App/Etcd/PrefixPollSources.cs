@@ -5,61 +5,45 @@ using Shared.Etcd.Coordination;
 namespace ValkeyWorker.App;
 
 // Источник контроль-плейна тика ReconcileLoop (arch/17 S10, arch/21 §5):
-// опросные кэши наблюдаемых префиксов вместо полных Range в каждом тике.
-// Тик читает слепок и счётчик изменений (Version — растёт на любой дельте
-// любого префикса); гейт тика сравнивает Version с baseline последнего
-// обработанного тика. Префиксы: /valkey/clusters/ — домен (декларации,
-// states, CA и staging окна ротации); /valkeyworker/{claims,locks,rotations,
-// ca_rotations}/ — координация и внешние заявки (смерть инстанса гасит его
-// клэймы и locks-lease: удаление ключей = дельта = тик живёт = takeover
-// ≤ TTL 15 с + тик). Журналы /valkeyworker/work/ (включая стейт ротации
-// work/<C>/rotation) НАМЕРЕННО не опрашиваются — воркер пишет их сам.
+// опросный кэш домена вместо полных Range в каждом тике. Тик работает
+// КАЖДЫЙ раз (self-healing ждёт не-etcd события — гейтов по дельте нет) и
+// читает слепок кэша: etcd-чтений в тике ноль (E10 — чтение уходит в
+// фоновый опрос, единая точка failover S7). Применения etcd-значений
+// процессами — по факту изменения значения (S10). Заявки ротаций, клэймы и
+// portalloc-клэйм процессы читают из etcd напрямую при исполнении; журналы
+// /valkeyworker/work/ (вкл. стейт ротации work/<C>/rotation) воркер пишет сам.
 internal interface IPrefixPollSources
 {
-    /// <summary>Кэши запущены (первичная загрузка прошла).</summary>
+    /// <summary>Кэш запущен (первичная загрузка прошла).</summary>
     bool Started { get; }
 
-    /// <summary>Запуск опросных кэшей (идемпотентен; ошибка — наружу, ретрай тиком).</summary>
+    /// <summary>Запуск опросного кэша (идемпотентен; ошибка — наружу, ретрай тиком).</summary>
     Task StartAsync(CancellationToken ct);
 
-    /// <summary>Штатный останов всех кэшей (идемпотентен).</summary>
+    /// <summary>Штатный останов кэша (идемпотентен).</summary>
     Task StopAsync(CancellationToken ct);
-
-    /// <summary>Счётчик изменений: ++ на каждую дельту любого префикса.</summary>
-    long Version { get; }
 
     /// <summary>Слепок домена /valkey/clusters/ (ключ → значение + mod_revision).</summary>
     IReadOnlyDictionary<string, (string Value, long ModRevision)> ClustersSnapshot { get; }
 }
 
-// Прод-реализация: опросные кэши EtcdPrefixPollCache (интервал =
+// Прод-реализация: опросный кэш EtcdPrefixPollCache (интервал =
 // Loops:ScanIntervalSec, кэш ужмёт к границе ≤5 с). Сбой опроса кэш переживает
-// сам (слепок сохраняется, дельта не поднимается — тик без изменений; ретрай
-// на следующем шаге опроса).
+// сам (слепок сохраняется; ретрай на следующем шаге опроса).
 internal sealed class EtcdPrefixSources(
     IOptionsMonitor<ValkeyWorkerOptions> options,
     IEtcdGateway gateway) : IPrefixPollSources
 {
-    // Наблюдаемые префиксы: домен + координация/внешние заявки (arch/21 §5).
-    private static readonly string[] Prefixes =
-    [
-        "/valkey/clusters/",
-        "/valkeyworker/claims/",
-        "/valkeyworker/locks/",
-        "/valkeyworker/rotations/",
-        "/valkeyworker/ca_rotations/",
-    ];
+    // Наблюдаемый префикс — домен (arch/21 §5).
+    private const string DomainPrefix = "/valkey/clusters/";
 
     private readonly SemaphoreSlim _gate = new(1, 1);
-    private readonly List<EtcdPrefixPollCache> _caches = [];
-    private long _version;
+    private EtcdPrefixPollCache? _cache;
 
     public bool Started { get; private set; }
 
-    public long Version => Interlocked.Read(ref _version);
-
     public IReadOnlyDictionary<string, (string Value, long ModRevision)> ClustersSnapshot
-        => _caches.Count == 0 ? EmptySnapshot() : _caches[0].Snapshot;
+        => _cache?.Snapshot ?? EmptySnapshot();
 
     public async Task StartAsync(CancellationToken ct)
     {
@@ -78,35 +62,21 @@ internal sealed class EtcdPrefixSources(
             // не меняются моделью); кэш ужмёт к границе ≤5 с.
             var interval = TimeSpan.FromSeconds(options.CurrentValue.Loops.ScanIntervalSec);
 
-            // Кэши создаются на попытку старта: частично запущенный набор после
-            // сбоя не переиспользуем — следующая попытка начинает с чистого.
-            var created = new List<EtcdPrefixPollCache>();
+            // Кэш создаётся на попытку старта: частично запущенное состояние
+            // после сбоя не переиспользуем — следующая попытка начинает с чистого.
+            var cache = new EtcdPrefixPollCache(DomainPrefix, gateway, endpoints, interval);
             try
             {
-                foreach (var prefix in Prefixes)
-                    CreateAndSubscribe(created, prefix, endpoints, interval);
-                foreach (var cache in created)
-                    await cache.StartAsync(ct);
-                _caches.AddRange(created);
-                Started = true;
+                await cache.StartAsync(ct);
             }
             catch
             {
-                // Частичный старт гасим целиком — состояние «не запущено».
-                foreach (var cache in created)
-                {
-                    try
-                    {
-                        await cache.StopAsync(CancellationToken.None);
-                    }
-                    catch
-                    {
-                        // останов лучшего эффекта — старт будет повторён тиком
-                    }
-                }
-
+                await cache.StopAsync(CancellationToken.None);
                 throw;
             }
+
+            _cache = cache;
+            Started = true;
         }
         finally
         {
@@ -116,19 +86,11 @@ internal sealed class EtcdPrefixSources(
 
     public async Task StopAsync(CancellationToken ct)
     {
-        var caches = _caches;
-        _caches.Clear();
+        var cache = _cache;
+        _cache = null;
         Started = false;
-        foreach (var cache in caches)
+        if (cache is not null)
             await cache.StopAsync(ct);
-    }
-
-    private void CreateAndSubscribe(
-        List<EtcdPrefixPollCache> created, string prefix, string[] endpoints, TimeSpan interval)
-    {
-        var cache = new EtcdPrefixPollCache(prefix, gateway, endpoints, interval);
-        cache.Changed += _ => Interlocked.Increment(ref _version); // любая дельта — тик живёт
-        created.Add(cache);
     }
 
     private static IReadOnlyDictionary<string, (string Value, long ModRevision)> EmptySnapshot()
