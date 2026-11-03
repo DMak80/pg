@@ -918,11 +918,17 @@ public sealed class ProvisioningProcess(
 }
 
 /// <summary>Отпечаток значения секрета для диагностики (t06/t07): SHA256[..10]
-/// hex — значение секрета НЕ попадает в лог, только несекретный отпечаток.</summary>
+/// hex — значение секрета НЕ попадает в лог, только несекретный отпечаток.
+/// null/пустое — не сбой диагностики (re-read из опросного кэша может отставать
+/// от только что записанного txn, arch/17 S10) — «<null>»/«<empty>».</summary>
 public static class SecretFingerprint
 {
-    public static string Of(string value)
+    public static string Of(string? value)
     {
+        if (value is null)
+            return "<null>";
+        if (value.Length == 0)
+            return "<empty>";
         var bytes = System.Security.Cryptography.SHA256.HashData(
             System.Text.Encoding.UTF8.GetBytes(value));
         return Convert.ToHexString(bytes)[..10];

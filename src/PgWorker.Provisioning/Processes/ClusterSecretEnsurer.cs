@@ -113,7 +113,7 @@ public sealed class ClusterSecretEnsurer(
         // Диагностика t06 (отпечатки, не секреты): etcd-значение app_password
         // после ensure — сверяется с отпечатком ALTER'а provisioning и pg_authid.
         Console.WriteLine(
-            $"[t06-diag] ensure app_password fingerprint={SecretFingerprint.Of(final.Value.AppPassword!)} " +
+            $"[t06-diag] ensure app_password fingerprint={SecretFingerprint.Of(final.Value.AppPassword)} " +
             $"cluster={cluster} desired={SecretFingerprint.Of(desiredAppPassword)}");
 
         if (IsComplete(final.Value))
