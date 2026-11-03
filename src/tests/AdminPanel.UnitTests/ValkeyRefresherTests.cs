@@ -556,10 +556,11 @@ public class ValkeyRefresherTests
         engine.EvaluateCalls.Should().Be(2);
     }
 
-    // S10: после отказного тика первый успешный — всегда пересборка, даже при
-    // неизменных данных (EtcdReachable=false у прежнего снапшота снимает тихий тик).
+    // S10/E11: после отказного тика первый успешный при НЕИЗМЕННЫХ данных —
+    // тихий тик (тики не классифицируются, гейт — дельта состояния): пересборки
+    // и алертного пересчёта нет, доступностная часть восстановлена.
     [Fact]
-    public async Task Refresh_RecoveryAfterFail_RebuildsDespiteSameData()
+    public async Task Refresh_RecoveryAfterFail_SameData_QuietTick()
     {
         // Arrange — успешный тик, затем отказ всех endpoints, затем восстановление
         var gateway = DemoGateway();
@@ -568,21 +569,57 @@ public class ValkeyRefresherTests
         var time = new FixedTimeProvider();
         var refresher = New(gateway, store, engine, time, "http://e1");
         await refresher.RefreshOnceAsync(CancellationToken.None);
-        var firstClusters = store.Current!.Clusters;
+        var first = store.Current!;
         gateway.FailEndpoints.Add("http://e1");
         await refresher.RefreshOnceAsync(CancellationToken.None);
         store.Current!.EtcdReachable.Should().BeFalse();
         gateway.FailEndpoints.Clear();
+        time.Utc = time.Utc.AddSeconds(5);
 
         // Act — восстановительный тик по тем же данным etcd
         var result = await refresher.RefreshOnceAsync(CancellationToken.None);
 
-        // Assert — восстановление пересобрало снапшот (не тихий тик), reachable
-        // восстановлен; счёт 3: пересборка т1 + пересчёт отказного т2 + пересборка т3
+        // Assert — тихий тик: данные не пересобраны, алертный пересчёт не
+        // выполнялся (счёт 2: пересборка т1 + пересчёт отказного т2),
+        // доступностная часть свежая.
+        result.IsSuccess.Should().BeTrue();
+        engine.EvaluateCalls.Should().Be(2, "тихий тик не запускает алертный пересчёт");
+        store.Current!.Clusters.Should().BeSameAs(first.Clusters, "снапшот не пересобирается");
+        store.Current.EtcdReachable.Should().BeTrue();
+        store.Current.ConsecutiveFailures.Should().Be(0);
+        store.Current.BuiltAtUtc.Should().Be(time.Utc, "штамп свежести обновляется");
+    }
+
+    // S10/E11: после отказного тика первый успешный при ИЗМЕНИВШИХСЯ данных —
+    // пересборка (дельта состояния есть).
+    [Fact]
+    public async Task Refresh_RecoveryAfterFail_DataChanged_Rebuilds()
+    {
+        // Arrange — успешный тик, отказ; пока endpoints мертвы, в etcd ставится
+        // новая заявка ротации
+        var gateway = DemoGateway();
+        var store = new ValkeySnapshotStore();
+        var engine = new CountingValkeyAlertEngine();
+        var time = new FixedTimeProvider();
+        var refresher = New(gateway, store, engine, time, "http://e1");
+        await refresher.RefreshOnceAsync(CancellationToken.None);
+        var first = store.Current!;
+        gateway.FailEndpoints.Add("http://e1");
+        await refresher.RefreshOnceAsync(CancellationToken.None);
+        gateway.FailEndpoints.Clear();
+        gateway.RotationsKv = [.. gateway.RotationsKv,
+            new Kv("/valkeyworker/rotations/extra", """{"role":"app","requested_unix":1756500999,"requested_by":"op"}""", 42)];
+
+        // Act — восстановительный тик по изменившимся данным
+        var result = await refresher.RefreshOnceAsync(CancellationToken.None);
+
+        // Assert — пересборка: новые данные, доступностная часть свежая; счёт 3:
+        // пересборка т1 + пересчёт отказного т2 + пересборка т3
         result.IsSuccess.Should().BeTrue();
         engine.EvaluateCalls.Should().Be(3);
         store.Current!.EtcdReachable.Should().BeTrue();
         store.Current.ConsecutiveFailures.Should().Be(0);
-        store.Current.Clusters.Should().NotBeSameAs(firstClusters, "восстановление после отказа — пересборка, не тихий тик");
+        store.Current.Rotations.Should().HaveCount(first.Rotations.Count + 1);
+        store.Current.Clusters.Should().NotBeSameAs(first.Clusters, "дельта состояния — пересборка");
     }
 }
