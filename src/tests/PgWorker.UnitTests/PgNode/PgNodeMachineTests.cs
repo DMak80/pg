@@ -43,6 +43,53 @@ public class PgNodeMachineTests
 
     // supervisorctl-фейк: журнал команд; настраиваемый провал start по
     // компоненту (первые N вызовов StartAsync(program) бросают).
+    // Мгновенный TimeProvider: таймеры задержек фазы (б) срабатывают
+    // немедленно — юнит без реальных 5-с ожиданий (всё мокается). Callback
+    // срабатывает и при СОЗДАНИИ таймера (dueTime из CreateTimer — Delay
+    // не зовёт Change), и на каждый Change.
+    private sealed class InstantTimeProvider : TimeProvider
+    {
+        public static readonly InstantTimeProvider Instance = new();
+
+        private sealed class InstantTimer(TimerCallback callback, object? state) : ITimer
+        {
+            private TimerCallback? _callback = callback;
+
+            public void Fire()
+            {
+                var cb = _callback;
+                if (cb is not null)
+                    Task.Run(() => cb(state));
+            }
+
+            public bool Change(TimeSpan dueTime, TimeSpan period)
+            {
+                Fire();
+                return true;
+            }
+
+            public TimeSpan Period { get; set; } = Timeout.InfiniteTimeSpan;
+            public TimeSpan DueTime { get; set; } = TimeSpan.Zero;
+
+            public void Dispose() => _callback = null;
+
+            public ValueTask DisposeAsync()
+            {
+                Dispose();
+                return ValueTask.CompletedTask;
+            }
+        }
+
+        public override ITimer CreateTimer(
+            TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+        {
+            var timer = new InstantTimer(callback, state);
+            if (dueTime != Timeout.InfiniteTimeSpan)
+                timer.Fire();
+            return timer;
+        }
+    }
+
     private sealed class FakeSupervisor : ISupervisorCommands
     {
         public readonly List<string> Commands = [];
@@ -73,6 +120,12 @@ public class PgNodeMachineTests
                 _restartFailures[program] = left - 1;
                 throw new ApplicationException($"supervisorctl restart {program}: exit 1 (fake)");
             }
+            return Task.CompletedTask;
+        }
+
+        public Task ShutdownAsync(CancellationToken ct)
+        {
+            Commands.Add("shutdown");
             return Task.CompletedTask;
         }
     }
@@ -209,6 +262,7 @@ public class PgNodeMachineTests
                 Identity, Etcd, ["http://e1:2379"], Supervisor,
                 doormanTemplate: "pooler ${PGW_SU_PASSWORD} template",
                 statusWriter: () => Status,
+                clock: InstantTimeProvider.Instance,
                 patroniApply: PatroniApply,
                 logger: Logger);
             Machine.RenderRootDirOverride = RenderDir;
@@ -446,6 +500,77 @@ public class PgNodeMachineTests
             await Task.Delay(50, TestContext.Current.CancellationToken);
         rig.Machine.State.Should().Be(PgNodeStatus.Ready);
         rig.Supervisor.Commands.Should().NotBeEmpty("components were started");
+    }
+
+    // (6b) Умная валидация пулера (решение пользователя): PG готов, doorman
+    // fail → конфигурация doorman в лог (SU маскируется), рестарт pg_doorman
+    // с обязательным перечитыванием app-пароля из etcd; перечитанный пароль
+    // (etcd сменился между пробами) доезжает до пробы → ready.
+    [Fact]
+    public async Task Handshake_PgReadyDoormanFail_RestartsAndReReadsEtcdPassword()
+    {
+        // Arrange: pg-проба (:5432) всегда true; doorman-проба (:6432) true
+        // только с «new-pw». Первый doorman-фейл — это первый опрос со
+        // СТАРЫМ паролем: в этот момент etcd меняется на «new-pw» —
+        // рестарт с инвалидацией кеша обязан перечитать и пройти.
+        await using var rig = await Rig.CreateAsync(RealPemPair());
+        rig.Machine.ProbeOverride = cs =>
+        {
+            if (cs.Contains("Port=6432"))
+            {
+                // Первый doorman-фейл — проба с ПЕРВИЧНЫМ паролем рига
+                // («app-pw», кеш процесса); в этот момент etcd меняется на
+                // «new-pw» — рестарт с инвалидацией кеша обязан перечитать.
+                if (cs.Contains("app-pw"))
+                {
+                    rig.Etcd.Store["/clusters/shop/app_password"] =
+                        new Fakes.FakeEtcd.Entry("new-pw", 5, 2);
+                    return Task.FromResult(false);
+                }
+                return Task.FromResult(cs.Contains("new-pw"));
+            }
+            return Task.FromResult(true); // pg :5432 — готов
+        };
+
+        // Act
+        var result = await rig.HandshakeAsync();
+
+        // Assert: рестарт pg_doorman ровно один; after-restart проба с
+        // перечитанным из etcd паролем дошла до ready; конфиг в логе (su
+        // замаскирован, фактический su-secret в лог не попал).
+        result.Should().Be(HandshakeResult.Started);
+        rig.Supervisor.Commands.Count(c => c == "restart pg_doorman").Should().Be(1);
+        rig.Machine.State.Should().Be(PgNodeStatus.Ready);
+        rig.Logger.Entries.Should().Contain(e =>
+            e.Message.Contains("restarting pg_doorman"));
+        rig.Logger.Entries.Should().Contain(e =>
+            e.Message.Contains("doorman configuration (su masked)")
+            && e.Message.Contains("pooler ${PGW_SU_PASSWORD} template")
+            && !e.Message.Contains("su-secret"));
+    }
+
+    // (6b-стоп) PG готов, doorman fail ПОСЛЕ рестарта ещё раз → конфигурация
+    // в лог повторно, статус start_failed, supervisorctl shutdown (стоп ноды:
+    // воркеровский надзор пересоздаёт ноду по факту не-running).
+    [Fact]
+    public async Task Handshake_DoormanFailsTwiceAfterPgReady_StopsNode()
+    {
+        // Arrange: doorman-проба (:6432) никогда не проходит, PG — всегда ok.
+        await using var rig = await Rig.CreateAsync(RealPemPair());
+        rig.Machine.ProbeOverride = cs =>
+            Task.FromResult(!cs.Contains("Port=6432"));
+
+        // Act
+        var result = await rig.HandshakeAsync();
+
+        // Assert: рестарт ровно один (второй fail — не рестарт), shutdown
+        // вызван, машина терминальна start_failed, конфиг в логе дважды.
+        result.Should().Be(HandshakeResult.Started);
+        rig.Supervisor.Commands.Count(c => c == "restart pg_doorman").Should().Be(1);
+        rig.Supervisor.Commands.Should().Contain("shutdown");
+        rig.Machine.State.Should().Be(PgNodeStatus.StartFailed);
+        rig.Logger.Entries.Count(e =>
+            e.Message.Contains("doorman configuration (su masked)")).Should().Be(2);
     }
 
     // (6c) Apply на ready-ноде оставляет машину ready (фоновое применение —

@@ -7,11 +7,14 @@ namespace PgWorker.PgNode;
 /// прецедент RestoreOperation): start блокирует до startsecs и рапортует
 /// провал старта ненулевым кодом — попытка старта = один вызов; «already
 /// started» — успех (идемпотентность). restart безопасен на остановленной
-/// программе.</summary>
+/// программе. shutdown — остановка ВСЕЙ ноды: supervisord гасит процессы и
+/// себя, контейнер завершается (воркеровский надзор пересоздаёт ноду по
+/// факту не-running).</summary>
 public interface ISupervisorCommands
 {
     Task StartAsync(string program, CancellationToken ct);
     Task RestartAsync(string program, CancellationToken ct);
+    Task ShutdownAsync(CancellationToken ct);
 }
 
 public sealed class SupervisorCommands(IProcessRunner runner) : ISupervisorCommands
@@ -22,15 +25,20 @@ public sealed class SupervisorCommands(IProcessRunner runner) : ISupervisorComma
     public async Task RestartAsync(string program, CancellationToken ct)
         => await RunAsync("restart", program, ct);
 
+    public async Task ShutdownAsync(CancellationToken ct)
+        => await RunAsync("shutdown", "", ct);
+
     private async Task RunAsync(string verb, string program, CancellationToken ct)
     {
         var psi = new ProcessStartInfo { FileName = "supervisorctl" };
         psi.ArgumentList.Add(verb);
-        psi.ArgumentList.Add(program);
+        if (program.Length > 0)
+            psi.ArgumentList.Add(program);
         var (exit, output, err) = await runner.RunAsync(psi, ct);
         if (exit != 0
             && !(verb == "start"
-                 && (output + err).Contains("already started", StringComparison.Ordinal)))
+                 && (output + err).Contains("already started", StringComparison.Ordinal))
+            && !(verb == "shutdown"))
             throw new ApplicationException(
                 $"supervisorctl {verb} {program}: exit {exit}: " +
                 ((output.Length > 0 ? output : err).Split('\n')[0]));
