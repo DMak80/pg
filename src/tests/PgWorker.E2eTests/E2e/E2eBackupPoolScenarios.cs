@@ -197,14 +197,19 @@ public abstract class E2eBackupPoolScenarios
     }
 
     // WAL-нагрузка под admin/superuser (образец E2eWalStreamPromoteScenarios).
-    protected static async Task GenerateWalAsync(string adminDsn, CancellationToken ct)
+    // iterations — число закрытых сегментов (по 8 МиБ): 30 по умолчанию для
+    // сценариев, где длина цепочки — предмет проверки; сценариям «restore после
+    // стопа ноды» хватает короткой цепочки — каждый лишний сегмент restore
+    // качает по одному через перебор пула с мёртвой нодой (~3,5 с/сегмент).
+    protected static async Task GenerateWalAsync(
+        string adminDsn, CancellationToken ct, int iterations = 30)
     {
         await using var conn = new NpgsqlConnection(adminDsn);
         await conn.OpenAsync(ct);
         await using (var create = new NpgsqlCommand(
             "CREATE TABLE IF NOT EXISTS wal_load(id bigserial, payload text)", conn))
             await create.ExecuteNonQueryAsync(ct);
-        for (var i = 0; i < 30; i++)
+        for (var i = 0; i < iterations; i++)
         {
             await using var insert = new NpgsqlCommand(
                 "INSERT INTO wal_load(payload) SELECT repeat('x', 1048576) FROM generate_series(1, 8)", conn);
@@ -821,6 +826,16 @@ public sealed class PoolReadAnyNodeScenarios(PoolReadAnyNodeScenariosFx Ctx) : E
         var cluster = $"pac6{Fx.ClusterTag}";
         try
         {
+            // Хронометраж шагов (E2eFixture.Timing — файл /tmp переживает прогон):
+            // [TIMING] ac6 <шаг>: секунды от предыдущей метки.
+            var phase = System.Diagnostics.Stopwatch.StartNew();
+            void Mark(string step)
+            {
+                E2eFixture.Timing(
+                    $"[TIMING] ac6 {step}: {phase.Elapsed.TotalSeconds:F1}s");
+                phase.Restart();
+            }
+
             await Fx.StartExtraS3NodeAsync(Node2Alias, ct);
             var ep2 = S3Node2Mc(Node2Alias); // mc из контейнера — alias ноды
             await Fx.SeedS3PoolAsync(Pool, ct, [Fx.S3EndpointForContainers, ep2]);
@@ -829,15 +844,20 @@ public sealed class PoolReadAnyNodeScenarios(PoolReadAnyNodeScenariosFx Ctx) : E
             await PutPolicyAsync(cluster, ["node1"], ["node1"]);
             await using var app = await StartPoolHostAsync("pac6", ct);
             (await WaitProvisionedAsync(cluster, ct)).Should().BeTrue();
+            Mark("host+provision");
             var (host, port, _) = await MasterPgAsync(cluster, "shard1", ct);
             var adminDsn = DatabaseProvisioner.BuildAdminDsn(host, port, cluster,
                 new InstallSecrets(E2eFixture.SuPassword, "", "", ""));
             await ExecAsync(adminDsn, "CREATE TABLE pool_probe(id int, note text)", ct);
             await ExecAsync(adminDsn, "INSERT INTO pool_probe SELECT g, 'keeper' FROM generate_series(1, 5) g", ct);
             (await WaitBothWalAgentsAsync(cluster, ct)).Should().BeTrue();
-            await GenerateWalAsync(adminDsn, ct);
+            // Короткая цепочка: сценарию нужен замкнутый WAL-хвост, а не длина
+            // (каждый сегмент restore качает ПО ОДНОМУ через перебор пула с
+            // мёртвой node1 — ~3,5 с/сегмент; 30 сегментов = ~130 с redo).
+            await GenerateWalAsync(adminDsn, ct, iterations: 4);
             var done = await WaitCompletedFullAsync(cluster, ct);
             done.Should().NotBeNull();
+            Mark("data+wal+full");
 
             // Пауза стрима ПЕРЕД копией (стрим пишется только на node1 — write
             // [node1]): без паузы сегменты, залитые на node1 ПОСЛЕ копии,
@@ -852,6 +872,7 @@ public sealed class PoolReadAnyNodeScenarios(PoolReadAnyNodeScenariosFx Ctx) : E
                 var facts = await Fx.ReadWalAgentFactsAsync(cluster, "shard1", ct);
                 return facts.Count >= 2 && facts.All(f => f.State == "waiting_disabled");
             }, TimeSpan.FromSeconds(60), ct)).Should().BeTrue("receivers paused before the copy");
+            Mark("pause");
 
             // Act — копия bucket node1 → node2, затем стоп node1.
             // Прогон 3…7 (2026-10-27): S3→S3 копии (mc mirror/cp --recursive)
@@ -882,6 +903,7 @@ public sealed class PoolReadAnyNodeScenarios(PoolReadAnyNodeScenariosFx Ctx) : E
                 + $" | docker exec -i {node2Container} sh -c"
                 + $" 'rm -rf /data/pgworker-backups && mkdir -p /data/pgworker-backups"
                 + $" && tar -xf - -C /data/pgworker-backups --strip-components=1'"], ct);
+            Mark("copy-bucket");
             // ownS3 индексирует /data при СТАРТЕ (прогон 8: fs-файлы, дописанные
             // в живой контейнер, S3-API не видны; чистый ownS3, стартовавший с той же
             // data, LIST/STAT/GET манифеста отдаёт) — рестарт переиндексирует копию.
@@ -894,8 +916,10 @@ public sealed class PoolReadAnyNodeScenarios(PoolReadAnyNodeScenariosFx Ctx) : E
                 + " && echo PRESENT || echo MISSING"], ct);
             manifestOnNode2.Trim().Should().Be("PRESENT",
                 "the mesh copy must carry the backup manifest before node1 is stopped");
+            Mark("restart+manifest");
             await Fx.RunDockerAsync(["stop", Fx.S3NodeContainerName], ct);
             await G.DeleteAsync(Endpoint, "/pgworker/backups-disabled", prefix: false, ct);
+            Mark("stop-node1");
 
             // Assert — restore из пула при мёртвой node1: COMPLETED (чтение c node2).
             // Свой CTS на restore-секцию (мульти-CTS, приказ владельца; потолок 8 мин — см. ниже) +
@@ -917,7 +941,9 @@ public sealed class PoolReadAnyNodeScenarios(PoolReadAnyNodeScenariosFx Ctx) : E
                 TimeSpan.FromMinutes(4));
             restore["state"].GetString().Should().Be("COMPLETED",
                 "the ReadAll walkover reaches a live pool node (mesh copy)");
+            Mark("restore");
             await Fx.RunDockerAsync(["start", Fx.S3NodeContainerName], ct);
+            Mark("final");
         }
         catch
         {

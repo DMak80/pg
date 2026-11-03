@@ -55,24 +55,38 @@ public sealed class E2eRestoreNewClusterScenarios(E2eRestoreNewClusterScenariosF
         var ct = cts1.Token;
         await RunScenarioAsync(async fx =>
         {
+            // Хронометраж частей (E2eFixture.Timing — файл /tmp переживает прогон):
+            // [TIMING] rs-dr <шаг>: секунды от предыдущей метки.
+            var phase = Stopwatch.StartNew();
+            void Mark(string step)
+            {
+                E2eFixture.Timing(
+                    $"[TIMING] rs-dr {step}: {phase.Elapsed.TotalSeconds:F1}s");
+                phase.Restart();
+            }
+
             // Arrange 1 — окружение + кластер rdr<тег>, данные, полный COMPLETED
             var cluster = $"rdr{fx.ClusterTag}";
             await SeedClusterAsync(cluster);
             await using var app = await StartRestoreHostAsync("rsdr", ct);
+            Mark("start-host");
 
             var provisioned = await WaitPhaseAsync(
                 "provisioning", E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(90), ct);
             provisioned.Should().BeTrue("provisioning must reach DONE before the backups");
+            Mark("provision");
             var (pgHost, pgPort) = await MasterPgAsync(cluster, "shard1", ct);
             var adminDsn = DatabaseProvisioner.BuildAdminDsn(pgHost, pgPort, cluster,
                 new InstallSecrets(E2eFixture.SuPassword, "", "", ""));
             await ExecAsync(adminDsn, "CREATE TABLE dr_probe(id int, note text)", ct);
             await ExecAsync(adminDsn,
                 "INSERT INTO dr_probe SELECT g, 'keeper' FROM generate_series(1, 7) g", ct);
+            Mark("data");
             var completed = await WaitPhaseAsync(
                 "full-completed", async () => (await FullKeysAsync(cluster, "shard1")).Any(f => f.Value.Contains("COMPLETED")),
                 TimeSpan.FromSeconds(90), ct);
             completed.Should().BeTrue("the full must reach COMPLETED before the deprovision");
+            Mark("full");
 
             // Act 1 — deprovision: state=TO_REMOVE → контур A пуст (D2-ассерт: и
             // /clusters/A/, и /pgworker/backups/A/), S3-префикс жив
@@ -93,10 +107,12 @@ public sealed class E2eRestoreNewClusterScenarios(E2eRestoreNewClusterScenariosF
                 return clusterPrefix.Value.Count == 0 && backupsPrefix.Value.Count == 0;
             }, TimeSpan.FromSeconds(90), ct);
             deprovisioned.Should().BeTrue("the deprovision must clean up the cluster contour (incl. restore/full/wal)");
+            Mark("deprovision");
             await using var backupS3 = HostS3Client();
             var fullsInS3 = await backupS3.ListFullsAsync(cluster, "shard1", ct: ct);
             fullsInS3.IsSuccess.Should().BeTrue();
             fullsInS3.Value.Should().NotBeEmpty("S3 outlives the cluster — the actual DR source");
+            Mark("s3-check");
         }, ct);
 
         // Часть 2 — ct2 (независимый бюджет 3 мин).
@@ -110,6 +126,13 @@ public sealed class E2eRestoreNewClusterScenarios(E2eRestoreNewClusterScenariosF
         await RunScenarioAsync(async fx =>
         {
             var cluster = $"rdr{fx.ClusterTag}";
+            var phase = Stopwatch.StartNew();
+            void Mark(string step)
+            {
+                E2eFixture.Timing(
+                    $"[TIMING] rs-dr {step}: {phase.Elapsed.TotalSeconds:F1}s");
+                phase.Restart();
+            }
 
             // Act 2 — пересоздание декларацией + restore обеих шардов из A/shard1
             // (source-override; ретрай на гонку — дыры цепочки source-префикса)
@@ -118,10 +141,16 @@ public sealed class E2eRestoreNewClusterScenarios(E2eRestoreNewClusterScenariosF
             var reprovisioned = await WaitPhaseAsync(
                 "reprovisioning", E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(90), ct2);
             reprovisioned.Should().BeTrue("the cluster must come up anew (empty shards)");
-            var drDone = await RestoreWithRetryAsync(cluster, "shard1",
-                target: "latest", source: $"{cluster}/shard1", ct: ct2);
-            var drDone2 = await RestoreWithRetryAsync(cluster, "shard2",
-                target: "latest", source: $"{cluster}/shard1", ct: ct2);
+            Mark("reprovision");
+            // Оба шарда — ПАРАЛЛЕЛЬНО: шарды независимы (свои ноды/тома/префиксы),
+            // канон допускает одну активную заявку НА ШАРД; последовательный
+            // прогон удваивал ожидание (замер: 34 с + 59 с).
+            await Task.WhenAll(
+                RestoreWithRetryAsync(cluster, "shard1",
+                    target: "latest", source: $"{cluster}/shard1", ct: ct2),
+                RestoreWithRetryAsync(cluster, "shard2",
+                    target: "latest", source: $"{cluster}/shard1", ct: ct2));
+            Mark("restores");
 
             // Assert — оба restore COMPLETED (RestoreWithRetry не вернёт FAILED);
             // контрольные строки на месте.
@@ -149,6 +178,7 @@ public sealed class E2eRestoreNewClusterScenarios(E2eRestoreNewClusterScenariosF
             masterReady.Should().BeTrue(
                 "the master must accept SQL before the final read (SQL gate): "
                 + await DumpDiagnosticsAsync(cluster, "shard1"));
+            Mark("master-ready");
 
             // Финальное чтение с ретраем (эталон rs-latest): даже после гейта
             // Patroni может доводить конфиг мастера (рестарт рвёт соединения) —
@@ -172,6 +202,7 @@ public sealed class E2eRestoreNewClusterScenarios(E2eRestoreNewClusterScenariosF
 
             rows.Should().Be("7", "the data matches the backup moment (RPO = the full point): "
                 + await DumpDiagnosticsAsync(cluster, "shard1"));
+            Mark("final-read");
         }, ct2);
     }
 
