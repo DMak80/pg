@@ -88,21 +88,50 @@ public sealed class RestoreProcess(
         // (txn 409) обычно не допускает дублей, но ручная запись/гонка могут —
         // младшие дубли того же шарда гасим permanent-FAILED, старейший
         // исполняется.
-        var oldest = actives[0];
-        foreach (var dup in actives.Skip(1).Where(p => p.Shard == oldest.Shard))
-            await FailPermanentAsync(cluster, dup.Shard, dup.Op,
-                error: $"duplicate request: oldest {oldest.Op.Id} is active", ct);
+        var perShard = new List<(string Shard, RestoreOperationState Op)>();
+        foreach (var active in actives)
+        {
+            var existing = perShard.FirstOrDefault(p => p.Shard == active.Shard);
+            if (existing.Shard is null)
+                perShard.Add(active);
+            else
+                await FailPermanentAsync(cluster, active.Shard, active.Op,
+                    error: $"duplicate request: oldest {existing.Op.Id} is active", ct);
+        }
 
-        var shard = snap.Shards.FirstOrDefault(s => s.Name == oldest.Shard);
-        if (shard is null)
-            return Result<ProcessOutcome>.Success(ProcessOutcome.Done); // шард убрали — заявку закроет remove-shard ветка
+        // Каждый шард делает ОДИН шаг за тик — шаги разных шардов идут
+        // ОТДЕЛЬНЫМИ ТАСКАМИ и тик ждёт их все (Task.WhenAll): шарды независимы
+        // (свои ноды/тома/S3-префиксы). Прежний последовательный обход отдавал
+        // время одного шарда другому (второй restore стартовал на 31 с позже).
+        var steps = new List<Task<Result<ProcessOutcome>>>();
+        foreach (var (shardName, op) in perShard)
+        {
+            var shard = snap.Shards.FirstOrDefault(s => s.Name == shardName);
+            if (shard is null)
+                continue; // шард убрали — заявку закроет remove-shard ветка
+            steps.Add(RunShardStepAsync(cluster, snap, shard, op, mine, ct));
+        }
+
+        var last = Result<ProcessOutcome>.Success(ProcessOutcome.Done);
+        foreach (var outcome in await Task.WhenAll(steps))
+            if (!outcome.IsSuccess)
+                last = outcome;
+        return last;
+    }
+
+    // Один шаг одного шарда в тике (выполняется отдельной таской; исключение
+    // шарда не роняет тик и другие шарды — §3.4).
+    private async Task<Result<ProcessOutcome>> RunShardStepAsync(
+        string cluster, ClusterSnapshot snap, ShardSpec shard, RestoreOperationState op,
+        ClusterBackups? mine, CancellationToken ct)
+    {
         try
         {
-            return oldest.Op.State switch
+            return op.State switch
             {
-                RestoreStatus.Planned => await ValidateAsync(snap, shard, oldest.Op, mine, ct),
-                RestoreStatus.Running => await RunAsync(snap, shard, oldest.Op, ct),      // Task 9
-                RestoreStatus.Rejoining => await RejoinAsync(snap, shard, oldest.Op, ct), // Task 10
+                RestoreStatus.Planned => await ValidateAsync(snap, shard, op, mine, ct),
+                RestoreStatus.Running => await RunAsync(snap, shard, op, ct),      // Task 9
+                RestoreStatus.Rejoining => await RejoinAsync(snap, shard, op, ct), // Task 10
                 _ => Result<ProcessOutcome>.Success(ProcessOutcome.Done),
             };
         }
@@ -112,7 +141,6 @@ public sealed class RestoreProcess(
         }
         catch (Exception ex)
         {
-            // ошибка шарда не роняет тик (§3.4)
             logger?.LogError(ex, "backup-restore {Cluster}/{Shard}: {Message}", cluster, shard.Name, ex.Message);
             await journal.WritePhaseAsync(cluster, Op, "crashed", claims.InstanceId, ex.Message, ct);
             return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
@@ -405,6 +433,35 @@ public sealed class RestoreProcess(
         }
     }
 
+    // Хронометраж шагов restore-процесса (диагностика «почему restore долгий»,
+    // вкл. параллельные заявки: демонтаж/ensure/tool-доставка/гейты). Лог —
+    // только для шагов >2 с: молчание восстановлено для нормального хода.
+    private async Task<T> TimedStepAsync<T>(
+        string cluster, string shard, string step, Func<Task<T>> call)
+    {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var result = await call();
+        sw.Stop();
+        if (sw.Elapsed > TimeSpan.FromSeconds(2))
+            logger?.LogWarning(
+                "backup-restore {Cluster}/{Shard}: step {Step} took {Seconds:F1}s",
+                cluster, shard, step, sw.Elapsed.TotalSeconds);
+        return result;
+    }
+
+    private async Task<Result> TimedResultStepAsync(
+        string cluster, string shard, string step, Func<Task<Result>> call)
+    {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var result = await call();
+        sw.Stop();
+        if (sw.Elapsed > TimeSpan.FromSeconds(2))
+            logger?.LogWarning(
+                "backup-restore {Cluster}/{Shard}: step {Step} took {Seconds:F1}s",
+                cluster, shard, step, sw.Elapsed.TotalSeconds);
+        return result;
+    }
+
     // Шаг демонтажа (Phase null/""): снос нод шарда с data-volume + чистка
     // HA-scope + щит (см. DemolishAsync); факт — Phase="demolished" (тик
     // запуска продолжается следующим тиком — takeover между шагами безопасен:
@@ -412,7 +469,8 @@ public sealed class RestoreProcess(
     private async Task<Result<ProcessOutcome>> DemolishStepAsync(
         string cluster, ShardSpec shard, RestoreOperationState op, CancellationToken ct)
     {
-        var demolished = await DemolishAsync(cluster, shard, op, ct);
+        var demolished = await TimedResultStepAsync(cluster, shard.Name, "demolish",
+            () => DemolishAsync(cluster, shard, op, ct));
         if (!demolished.IsSuccess)
             return Result<ProcessOutcome>.Failed(demolished.Error!);
         var put = await PutStatusAsync(cluster, shard.Name, op with { Phase = "demolished" }, ct);
@@ -444,7 +502,8 @@ public sealed class RestoreProcess(
         // (DemolishAsync) удерживает Patroni от bootstrap пустого PGDATA —
         // постгрес Patroni не поднимает, PGDATA ноды свободен для операции
         // (arch/19 §3.5). Поллинг create/start — arch/14 §6 инвариант.
-        var ensured = await EnsureShardNodeAsync(snap, shard, first, addr, addresses, ct);
+        var ensured = await TimedResultStepAsync(cluster, shard.Name, "ensure-first",
+            () => EnsureShardNodeAsync(snap, shard, first, addr, addresses, ct));
         if (!ensured.IsSuccess)
             return await TransientAsync(cluster, $"docker-unavailable/{shard.Name}/{op.Id}",
                 ensured.Error!.Message, ct);
@@ -462,9 +521,10 @@ public sealed class RestoreProcess(
                 toolCreds.Error!.Message, ct);
         var toolTopology = Topology(cluster, shard.Name, addresses);
         var toolTuning = pgtune.Create(await ReadShardResourcesAsync(cluster, shard.Name, ct));
-        var toolDelivery = await bootstrap.EnsureAsync(
-            toolTopology, first, addr, secrets, toolTuning, pgtuneSettings.ExcludeParams,
-            snap.Config.SyncStrict, toolCreds.Value.RestPassword, isToolStart: true, ct);
+        var toolDelivery = await TimedStepAsync(cluster, shard.Name, "tool-delivery",
+            () => bootstrap.EnsureAsync(
+                toolTopology, first, addr, secrets, toolTuning, pgtuneSettings.ExcludeParams,
+                snap.Config.SyncStrict, toolCreds.Value.RestPassword, isToolStart: true, ct));
         if (!toolDelivery.Delivered)
             return await TransientAsync(cluster, $"bootstrap-tool/{shard.Name}/{first}",
                 toolDelivery.Detail ?? "bootstrap delivery is not complete (waiting)", ct);
@@ -495,20 +555,21 @@ public sealed class RestoreProcess(
         }
         var poolCtx = poolRead.Value.Context;
 
-        var launch = await receiver.StartRestoreAsync(
-            receiverUrl,
-            new StartRestoreRequest(
-                BackupId: op.BackupId,
-                Id: null, // restore — не drill
-                TargetTime: targetTime,
-                RecoveryTimeoutSec: options.RestoreRecoveryTimeoutSec,
-                S3: new S3Context(
-                    Endpoints: [.. poolCtx.ReadAll],
-                    AccessKey: poolCtx.AccessKey,
-                    SecretKey: poolCtx.SecretKey,
-                    Bucket: options.S3Bucket,
-                    Prefix: $"{SrcCluster(op)}/{SrcShard(op)}",
-                    CaPem: BackupCaPem.ReadIfConfigured(options.S3CaBundlePath))), ct);
+        var launch = await TimedStepAsync(cluster, shard.Name, "start-restore",
+            () => receiver.StartRestoreAsync(
+                receiverUrl,
+                new StartRestoreRequest(
+                    BackupId: op.BackupId,
+                    Id: null, // restore — не drill
+                    TargetTime: targetTime,
+                    RecoveryTimeoutSec: options.RestoreRecoveryTimeoutSec,
+                    S3: new S3Context(
+                        Endpoints: [.. poolCtx.ReadAll],
+                        AccessKey: poolCtx.AccessKey,
+                        SecretKey: poolCtx.SecretKey,
+                        Bucket: options.S3Bucket,
+                        Prefix: $"{SrcCluster(op)}/{SrcShard(op)}",
+                        CaPem: BackupCaPem.ReadIfConfigured(options.S3CaBundlePath))), ct));
         if (launch.IsConflict)
         {
             // 409 — в общем ops-реестре приёмника ЧУЖАЯ ops-операция (verify
@@ -784,7 +845,9 @@ public sealed class RestoreProcess(
         if (!agents.IsSuccess)
             return agents;
 
-        foreach (var node in shard.Nodes)
+        // Ноды демонтируются НЕЗАВИСИМО (свои контейнеры/тома) — отдельные таски,
+        // шаг ждёт все: последовательный снос суммировал docker-время нод.
+        async Task<Result> RemoveOneAsync(NodeSpec node)
         {
             // REBUILDING — видимый статус демонтажа (панель/гварды), Removing не трогаем.
             if (node.State != NodeState.Removing)
@@ -795,10 +858,11 @@ public sealed class RestoreProcess(
                 if (!put.IsSuccess)
                     return put;
             }
-            var removed = await driver.RemoveNodeAsync(cluster, shard.Name, node.Name, ct);
+            return await driver.RemoveNodeAsync(cluster, shard.Name, node.Name, ct);
+        }
+        foreach (var removed in await Task.WhenAll(shard.Nodes.Select(RemoveOneAsync)))
             if (!removed.IsSuccess)
                 return removed;
-        }
 
         var scope = $"{cluster}-{shard.Name}";
         // status чистим ОБЯЗАТЕЛЬНО: в нём optime прошлой жизни лидера; без чистки
@@ -809,12 +873,14 @@ public sealed class RestoreProcess(
         // scheduled_at в прошлом для Patroni новой жизни — «accelerated failover»
         // на неинициализированного кандидата: восстановленная нода не лидерится
         // (первыйReady-гейт rejoin недостижим).
-        foreach (var key in new[] { "initialize", "leader", "sync", "status", "failover" })
-        {
-            var del = await etcd.DeleteAsync(endpoints[0], $"/service/{scope}/{key}", prefix: false, ct);
+        // Ключи HA-scope независимы — удаляются параллельно (таски шага).
+        var scopeDeletes = await Task.WhenAll(
+            new[] { "initialize", "leader", "sync", "status", "failover" }
+                .Select(key => etcd.DeleteAsync(
+                    endpoints[0], $"/service/{scope}/{key}", prefix: false, ct)));
+        foreach (var del in scopeDeletes)
             if (!del.IsSuccess)
                 return del;
-        }
         foreach (var prefix in new[] { $"/service/{scope}/optime/", $"/service/{scope}/members/" })
         {
             var del = await etcd.DeleteAsync(endpoints[0], prefix, prefix: true, ct);
@@ -999,14 +1065,15 @@ public sealed class RestoreProcess(
             return await TransientAsync(cluster, $"docker-unavailable/{shard.Name}/{op.Id}",
                 work.Error!.Message, ct);
         var rejoinTuning = pgtune.Create(resources);
-        var firstEnsure = await LongCallPolling.EnsureAsync(
-            $"create/start of node {first}",
-            token => driver.EnsureNodeAsync(
-                topology, first, firstAddr, etcdEndpoints, resources, rejoinTuning,
-                snap.Config.SyncStrict, token),
-            progress, logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<RestoreProcess>.Instance,
-            TimeSpan.FromTicks(Math.Max(TimeSpan.TicksPerSecond, WatchdogWindow.Ticks / 2)),
-            TimeSpan.FromSeconds(thresholds.PatroniBootSec), ct);
+        var firstEnsure = await TimedStepAsync(cluster, shard.Name, "rejoin-ensure-first",
+            () => LongCallPolling.EnsureAsync(
+                $"create/start of node {first}",
+                token => driver.EnsureNodeAsync(
+                    topology, first, firstAddr, etcdEndpoints, resources, rejoinTuning,
+                    snap.Config.SyncStrict, token),
+                progress, logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<RestoreProcess>.Instance,
+                TimeSpan.FromTicks(Math.Max(TimeSpan.TicksPerSecond, WatchdogWindow.Ticks / 2)),
+                TimeSpan.FromSeconds(thresholds.PatroniBootSec), ct));
         if (!firstEnsure.IsSuccess)
             return await TransientAsync(cluster, $"docker-unavailable/{shard.Name}/{op.Id}",
                 firstEnsure.Error!.Message, ct);
@@ -1017,9 +1084,10 @@ public sealed class RestoreProcess(
         // restore-процесс, иначе ноды навсегда ждут handshake и Patroni-состав
         // не сходится (rejoin-wait выгорает бюджет). Тюнинг null: bootstrap-ключ
         // ноды в etcd жив (provisioning) — рендер не нужен, ensure повторяет его.
-        var rejoinDelivery = await bootstrap.EnsureAsync(
-            topology, first, firstAddr, secrets, rejoinTuning, pgtuneSettings.ExcludeParams,
-            snap.Config.SyncStrict, creds.Value.RestPassword, isToolStart: false, ct);
+        var rejoinDelivery = await TimedStepAsync(cluster, shard.Name, "rejoin-delivery-first",
+            () => bootstrap.EnsureAsync(
+                topology, first, firstAddr, secrets, rejoinTuning, pgtuneSettings.ExcludeParams,
+                snap.Config.SyncStrict, creds.Value.RestPassword, isToolStart: false, ct));
         if (!rejoinDelivery.Delivered)
             return await TransientAsync(cluster, $"bootstrap-rejoin/{shard.Name}/{first}",
                 rejoinDelivery.Detail ?? "bootstrap delivery is not complete (waiting)", ct);
@@ -1038,7 +1106,38 @@ public sealed class RestoreProcess(
             return await RejoinWaitAsync(cluster, shard.Name, op, waitKey, firstAddr, ct);
 
         // Остальные ноды — чистыми (драйвер создаст volume, реплики догоняются
-        // pg_basebackup от лидера).
+        // pg_basebackup от лидера). Реплики НЕЗАВИСИМЫ: ensure + bootstrap-
+        // доставка каждой — отдельная таска, тик ждёт все (Task.WhenAll);
+        // последовательный обход суммировал их время.
+        async Task<Result> RejoinReplicaAsync(string node, NodeAddress addr)
+        {
+            // Поллинг create/start реплики — тот же инвариант (arch/14 §6).
+            var ensured = await TimedStepAsync(cluster, shard.Name, $"rejoin-ensure-{node}",
+                () => LongCallPolling.EnsureAsync(
+                    $"create/start of node {node}",
+                    token => driver.EnsureNodeAsync(
+                        topology, node, addr, etcdEndpoints, resources, rejoinTuning,
+                        snap.Config.SyncStrict, token),
+                    progress, logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<RestoreProcess>.Instance,
+                    TimeSpan.FromTicks(Math.Max(TimeSpan.TicksPerSecond, WatchdogWindow.Ticks / 2)),
+                    TimeSpan.FromSeconds(thresholds.PatroniBootSec), ct));
+            if (!ensured.IsSuccess)
+                return Result.Failed(ensured.Error!);
+
+            // t05 bootstrap-доставка реплики rejoin (см. выше — надзор шард в
+            // restore пропускает): пин хендшейка → агент стартует компоненты →
+            // реплика догоняет лидера.
+            var replicaDelivery = await TimedStepAsync(cluster, shard.Name, $"rejoin-delivery-{node}",
+                () => bootstrap.EnsureAsync(
+                    topology, node, addr, secrets, rejoinTuning, pgtuneSettings.ExcludeParams,
+                    snap.Config.SyncStrict, creds.Value.RestPassword, isToolStart: false, ct));
+            return replicaDelivery.Delivered
+                ? Result.Success()
+                : Result.Failed(new ApplicationException(
+                    replicaDelivery.Detail ?? "bootstrap delivery is not complete (waiting)"));
+        }
+
+        var replicaSteps = new List<Task<Result>>();
         foreach (var node in ordered.Skip(1))
         {
             if (!addresses.Value.TryGetValue($"{shard.Name}/{node}", out var addr))
@@ -1047,29 +1146,12 @@ public sealed class RestoreProcess(
                     $"node {node} of shard {shard.Name} not found in portalloc", ct);
                 return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
             }
-            // Поллинг create/start реплики — тот же инвариант (arch/14 §6).
-            var ensured = await LongCallPolling.EnsureAsync(
-                $"create/start of node {node}",
-                token => driver.EnsureNodeAsync(
-                    topology, node, addr, etcdEndpoints, resources, rejoinTuning,
-                    snap.Config.SyncStrict, token),
-                progress, logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<RestoreProcess>.Instance,
-                TimeSpan.FromTicks(Math.Max(TimeSpan.TicksPerSecond, WatchdogWindow.Ticks / 2)),
-                TimeSpan.FromSeconds(thresholds.PatroniBootSec), ct);
-            if (!ensured.IsSuccess)
-                return await TransientAsync(cluster, $"docker-unavailable/{shard.Name}/{op.Id}",
-                    ensured.Error!.Message, ct);
-
-            // t05 bootstrap-доставка реплики rejoin (см. выше — надзор шард в
-            // restore пропускает): пин хендшейка → агент стартует компоненты →
-            // реплика догоняет лидера.
-            var replicaDelivery = await bootstrap.EnsureAsync(
-                topology, node, addr, secrets, rejoinTuning, pgtuneSettings.ExcludeParams,
-                snap.Config.SyncStrict, creds.Value.RestPassword, isToolStart: false, ct);
-            if (!replicaDelivery.Delivered)
-                return await TransientAsync(cluster, $"bootstrap-rejoin/{shard.Name}/{node}",
-                    replicaDelivery.Detail ?? "bootstrap delivery is not complete (waiting)", ct);
+            replicaSteps.Add(RejoinReplicaAsync(node, addr));
         }
+        foreach (var replica in await Task.WhenAll(replicaSteps))
+            if (!replica.IsSuccess)
+                return await TransientAsync(cluster, $"bootstrap-rejoin/{shard.Name}/{op.Id}",
+                    replica.Error!.Message, ct);
 
         // Пробы всех нод (тот же трекер-бюджет). Контракт (решение, 2026-09-12):
         // COMPLETED ждёт ЛИДЕР running/streaming + реплики, УСПЕШНО СТАРТОВАВШИЕ
@@ -1097,7 +1179,8 @@ public sealed class RestoreProcess(
         // «f», как в PG≤17) — осознанное уточнение spec §4.2 по фактам
         // прогона E2E (решение пользователя, 2026-09-15).
         var adminDsn = ShardEndpoints.AdminDsn(firstAddr, snap.Config.DbName, secrets);
-        var masterProbe = await db.ExecuteScalarAsync(adminDsn, "SELECT pg_is_in_recovery()", ct);
+        var masterProbe = await TimedStepAsync(cluster, shard.Name, "sql-gate",
+            () => db.ExecuteScalarAsync(adminDsn, "SELECT pg_is_in_recovery()", ct));
         if (masterProbe is not { IsSuccess: true, Value: false })
             return await MasterSqlWaitAsync(cluster, shard.Name, op, waitKey, firstAddr,
                 masterProbe.IsSuccess ? "pg_is_in_recovery != false" : masterProbe.Error!.Message, ct);
