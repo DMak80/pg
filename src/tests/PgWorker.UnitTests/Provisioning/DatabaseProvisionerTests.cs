@@ -274,9 +274,8 @@ public class DatabaseProvisionerTests
         // Arrange: верификатор от известного пароля/соли (алгоритм PG)
         const string password = "pw-test-123";
         var salt = System.Text.Encoding.UTF8.GetBytes("0123456789abcdef");
-        using var pbkdf2 = new System.Security.Cryptography.Rfc2898DeriveBytes(
-            password, salt, 4096, System.Security.Cryptography.HashAlgorithmName.SHA256);
-        var salted = pbkdf2.GetBytes(32);
+        var salted = System.Security.Cryptography.Rfc2898DeriveBytes.Pbkdf2(
+            password, salt, 4096, System.Security.Cryptography.HashAlgorithmName.SHA256, 32);
         using var hmac = new System.Security.Cryptography.HMACSHA256(salted);
         var clientKey = hmac.ComputeHash("Client Key"u8.ToArray());
         using var sha = System.Security.Cryptography.SHA256.Create();

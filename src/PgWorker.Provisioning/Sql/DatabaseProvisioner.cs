@@ -148,7 +148,7 @@ public sealed partial class DatabaseProvisioner : ISqlExecutor
             return false;
 
         var parts = stored[ScramPrefix.Length..].Split('$');
-        if (parts.Length != 3)
+        if (parts.Length != 2) // "<iter>:<salt>" и "<StoredKey>:<ServerKey>"
             return false;
         var iterParts = parts[0].Split(':');
         if (iterParts.Length != 2 || !int.TryParse(iterParts[0], out var iterations) || iterations <= 0)
@@ -157,8 +157,8 @@ public sealed partial class DatabaseProvisioner : ISqlExecutor
         {
             var salt = Convert.FromBase64String(iterParts[1]);
             var storedKey = Convert.FromBase64String(parts[1].Split(':')[0]);
-            using var pbkdf2 = new Rfc2898DeriveBytes(password, salt, iterations, System.Security.Cryptography.HashAlgorithmName.SHA256);
-            var saltedPassword = pbkdf2.GetBytes(32);
+            var saltedPassword = System.Security.Cryptography.Rfc2898DeriveBytes.Pbkdf2(
+                password, salt, iterations, System.Security.Cryptography.HashAlgorithmName.SHA256, 32);
             using var hmac = new System.Security.Cryptography.HMACSHA256(saltedPassword);
             var clientKey = hmac.ComputeHash("Client Key"u8.ToArray());
             using var sha = System.Security.Cryptography.SHA256.Create();

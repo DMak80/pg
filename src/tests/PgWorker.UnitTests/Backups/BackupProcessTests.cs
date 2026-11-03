@@ -185,7 +185,8 @@ public class BackupProcessTests
         public Task<Result<object?>> ExecuteScalarAsync(string dsn, string sql, CancellationToken ct)
         {
             Scalars.Add((dsn, sql));
-            // Гвард роли: строка CREATE ROLE — роль ещё не создана (идемпотентный путь).
+            // Проверка rolpassword → null (расхождение → ensure исполнится);
+            // ensure (DO-блок) → успех.
             return Task.FromResult(Result<object?>.Success(
                 sql.Contains("CREATE ROLE") ? "CREATE ROLE backup_exec ..." : null));
         }
@@ -842,12 +843,13 @@ public class BackupProcessTests
         // Act
         var outcome = await rig.Process.TickAsync(await Snapshot(rig.Etcd), backups, CancellationToken.None);
 
-        // Assert — новых записей НЕТ; гвард исполнен; тик Done
+        // Assert — новых записей НЕТ; проверка rolpassword исполнена, ensure
+        // роли (DO-блок backup_exec) исполнен при расхождении; тик Done
         outcome.IsSuccess.Should().BeTrue();
         rig.Etcd.Store.Keys.Should().NotContain(k => k.StartsWith("/pgworker/backups/shop/shard1/full/"));
         rig.Receiver.StartFullUrls.Should().BeEmpty();
-        var guard = rig.Sql.Scalars.Should().ContainSingle().Subject;
-        guard.Sql.Should().Contain("backup_exec");
+        rig.Sql.Scalars.Should().Contain(s => s.Sql.Contains("rolpassword FROM pg_authid"));
+        rig.Sql.Scalars.Should().Contain(s => s.Sql.Contains("DO $$") && s.Sql.Contains("backup_exec"));
     }
 
     // AAA (AC1): wal-ключ WAL_CHAIN_ERROR → планировщик создаёт новый полный, даже если
