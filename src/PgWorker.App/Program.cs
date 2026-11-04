@@ -779,8 +779,7 @@ builder.Services.AddSingleton(sp => new PgWorker.Backups.BackupVerifyProcess(
     sp.GetRequiredService<TimeProvider>(),
     sp.GetRequiredService<ILoggerFactory>().CreateLogger<PgWorker.Backups.BackupVerifyProcess>(),
     sp.GetRequiredService<Shared.Metrics.Worker.WorkerMetricsInstrumentation>().BackupVerify,
-    TimeSpan.FromSeconds(sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Loops.Watchdog.CheckIntervalSec),
-    sp.GetRequiredService<Shared.Core.Hosting.ILoopProgress>()));
+    TimeSpan.FromSeconds(sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Loops.Watchdog.CheckIntervalSec)));
 
 // Дрилл восстановимости (arch/19 §3.6): супервиз drill-операции WalReceiver
 // первой ноды шарда, отбор/валидация/запуск; runtime — как у verify.

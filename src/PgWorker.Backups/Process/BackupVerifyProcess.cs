@@ -13,9 +13,9 @@ namespace PgWorker.Backups;
 /// BackupVerifyProcess — тиковая машина проверки полных бэкапов (/,
 /// arch/19 §5/§8) под клэймом &lt;C&gt;: due-резолв кандидатов (PENDING от
 /// on_create / периодика по verify.interval_sec; FAILED терминален) →
-/// цепочечная проверка list-ами S3 + строгий LSN-разбор .history
-/// (WalChain.CheckRange + WalHistory, без скачивания сегментов) →
-/// verify-операция WalReceiver ноды-источника полного (candidate.Node):
+/// verify-операция WalReceiver ноды-источника полного (candidate.Node)
+/// (полнота набора доказывается манифестом в самой операции; дубль wal/ —
+/// общий контроль цепочки, от формата полного не зависит):
 /// POST /api/ops/verify на `alias:8080` её приёмника, поллинг GET — итог.
 /// Тик не блокируется на длинную проверку: итог — поллинг GET /api/ops/verify
 /// следующих тиков. Transient (S3/приёмник недостижим) — статус кандидата не
@@ -34,8 +34,7 @@ public sealed class BackupVerifyProcess(
     TimeProvider time,
     ILogger<BackupVerifyProcess> logger,
     Action<string, string, string>? verifyObserver = null, // (cluster, shard, result: ok|failed|transient)
-    TimeSpan? watchdogWindow = null, // период S3-пульса — полокна (образец сверстников)
-    Shared.Core.Hosting.ILoopProgress? progress = null) // S3-вызовы — пульс S3Pulse (arch/14 §6)
+    TimeSpan? watchdogWindow = null) // период S3-пульса — полокна (образец сверстников)
 {
     private const string Op = "backup-verify";
 
@@ -79,9 +78,6 @@ public sealed class BackupVerifyProcess(
                 poolRead.IsSuccess ? "policy without s3 section — pool not selected" : poolRead.Error!.Message, ct);
             return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
         }
-        // Клиент — кэш фабрики (breaker переживает тики) — НЕ диспоузим.
-        var s3 = s3Factory.Create(poolCtx);
-
         foreach (var shard in snap.Shards.Where(s => !s.ToRemove))
         {
             // шард без ключей полных — пропускается (dsn не нужен: verify чисто по S3)
@@ -90,7 +86,7 @@ public sealed class BackupVerifyProcess(
 
             try
             {
-                await TickShardAsync(cluster, shard.Name, shardBackups, addresses.Value, intervalSec, nowUnix, poolCtx, s3, ct);
+                await TickShardAsync(cluster, shard.Name, shardBackups, addresses.Value, intervalSec, nowUnix, poolCtx, ct);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -111,7 +107,7 @@ public sealed class BackupVerifyProcess(
     private async Task TickShardAsync(
         string cluster, string shard, ShardBackups shardBackups,
         IReadOnlyDictionary<string, NodeAddress> addresses, long intervalSec, long nowUnix,
-        BackupPoolContext pool, PoolBackupS3 s3, CancellationToken ct)
+        BackupPoolContext pool, CancellationToken ct)
     {
         var fulls = shardBackups.Full;
 
@@ -144,90 +140,9 @@ public sealed class BackupVerifyProcess(
 
         var id = candidate.Id;
 
-        // (2) wal_start_segment отсутствует у COMPLETED — аномалия: permanent FAILED.
-        if (string.IsNullOrEmpty(candidate.WalStartSegment))
-        {
-            await WritePermanentAsync(cluster, shard, candidate,
-                "no wal_start_segment — set is not archiveable (no chain start point)", nowUnix, ct);
-            return;
-        }
-
-        // (3) Цепочка: list wal/ + list набора + строгие TLI-переходы (по содержимому
-        //     history при наличии). Transient list/GET → шард-skip, статус не трогаем.
-        //     Листинги — UNION по всем нодам пула (arch/19 §5 «где данные
-        //     есть»): полный заливается на первую живую ноду момента заливки —
-        //     соло-лист другой ноды (отказ посреди заливки/лаг mesh) неполон и дал бы
-        //     недокачанный набор → ложный permanent verify-FAILED.
-        var walList = await S3Pulse.CallAsync(progress, token => s3.ListWalUnionAsync(cluster, shard, ct: token), ct, WatchdogWindow / 2);
-        if (!walList.IsSuccess)
-        {
-            observe(cluster, shard, "transient");
-            return;
-        }
-
-        var setList = await S3Pulse.CallAsync(progress, token => s3.ListUnionAsync(cluster, shard, $"full/{id}/pg_wal/", ct: token), ct, WatchdogWindow / 2);
-        if (!setList.IsSuccess)
-        {
-            observe(cluster, shard, "transient");
-            return;
-        }
-
-        var start = WalFileName.TryParse(candidate.WalStartSegment);
-        if (start is null)
-        {
-            await WritePermanentAsync(cluster, shard, candidate,
-                $"invalid wal_start_segment {candidate.WalStartSegment}", nowUnix, ct);
-            return;
-        }
-
-        var setSegments = setList.Value
-            .Select(o => WalFileName.TryParse(o.Name))
-            .OfType<WalFileName>()
-            .ToList();
-        if (setSegments.Count == 0)
-        {
-            await WritePermanentAsync(cluster, shard, candidate,
-                "set contains no pg_wal WAL segments", nowUnix, ct);
-            return;
-        }
-
-        var endSegment = setSegments
-            .OrderByDescending(s => (s.Tli, s.Log, s.Seg))
-            .First();
-
-        // Содержимое history для переходов диапазона (tli > start.Tli && tli <= end.Tli).
-        var historyContents = new Dictionary<uint, string>();
-        foreach (var obj in walList.Value)
-        {
-            if (WalFileName.TryParseHistory(obj.Name) is not { } tli
-                || tli <= start.Value.Tli || tli > endSegment.Tli)
-                continue;
-            var content = await S3Pulse.CallAsync(progress, token => s3.GetObjectAsync(cluster, shard, $"wal/{obj.Name}", token), ct, WatchdogWindow / 2);
-            if (!content.IsSuccess)
-            {
-                observe(cluster, shard, "transient");
-                return;
-            }
-
-            historyContents[tli] = content.Value;
-        }
-
-        // UNION имён wal/ и pg_wal набора (arch/19 §5 п.2: «list wal/ + list
-        // full/<id>/pg_wal/»): последний сегмент набора может быть живым в источнике
-        // на момент заливки и НЕ дублироваться в wal/ (§2 t14) — диапазон до точки
-        // бэкапа закрывается объектами набора; сегменты выше end игнорирует Walk.
-        var check = WalChain.CheckRange(
-            start.Value, endSegment,
-            walList.Value.Select(o => o.Name)
-                .Concat(setList.Value.Select(o => o.Name)),
-            historyContents);
-        if (!check.IsContinuous)
-        {
-            await WritePermanentAsync(cluster, shard, candidate,
-                check.GapError ?? "WAL chain check failed", nowUnix, ct);
-            return;
-        }
-
+        // (3) Полнота набора (вкл. pg_wal) — манифестом в потоковой
+        //     verify-операции приёмника; дубль wal/ — общий контроль цепочки
+        //     ([02-wal-archive §3], от формата полного не зависит).
         // (4) Verify-операция WalReceiver ноды-источника полного (arch/19 §5):
         //     alias:8080 приёмника candidate.Node (object — имя её контейнера).
         //     Итог — ТОЛЬКО по API: GET /api/ops/verify; 404 (операции нет —
@@ -261,7 +176,8 @@ public sealed class BackupVerifyProcess(
                     SecretKey: pool.SecretKey,
                     Bucket: options.S3Bucket,
                     Prefix: $"{cluster}/{shard}",
-                    CaPem: BackupCaPem.ReadIfConfigured(options.S3CaBundlePath))), ct);
+                    CaPem: BackupCaPem.ReadIfConfigured(options.S3CaBundlePath)),
+                Sha256: candidate.Sha256), ct);
             if (launch.IsAccepted || launch.IsConflict)
             {
                 await journal.WritePhaseAsync(cluster, Op, $"started/{shard}/{id}", claims.InstanceId, null, ct);
@@ -339,7 +255,8 @@ public sealed class BackupVerifyProcess(
                         SecretKey: pool.SecretKey,
                         Bucket: options.S3Bucket,
                         Prefix: $"{cluster}/{shard}",
-                        CaPem: BackupCaPem.ReadIfConfigured(options.S3CaBundlePath))), ct);
+                        CaPem: BackupCaPem.ReadIfConfigured(options.S3CaBundlePath)),
+                    Sha256: full.Sha256), ct);
                 if (!relaunch.IsAccepted && !relaunch.IsConflict)
                     observe(cluster, shard, "transient"); // отказ — тик повторит
                 return;
