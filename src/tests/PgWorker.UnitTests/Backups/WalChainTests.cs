@@ -493,7 +493,7 @@ public class WalChainTests
     public void TailOf_NoObjects_ReturnsNull()
     {
         // Act
-        var tail = WalChain.TailOf(null, []);
+        var tail = WalChain.TailOf(null, [], chainLife: 0);
 
         // Assert
         tail.Should().BeNull();
@@ -507,7 +507,7 @@ public class WalChainTests
         var final = Seg(1, 0, 5);
 
         // Act
-        var tail = WalChain.TailOf(final, [final.Name]);
+        var tail = WalChain.TailOf(final, [final.Name], chainLife: 0);
 
         // Assert
         tail.Should().NotBeNull();
@@ -526,7 +526,7 @@ public class WalChainTests
         var longVersion = WalPartialName.Key(next.Name, 0x200);
 
         // Act
-        var tail = WalChain.TailOf(final, [final.Name, shortVersion, longVersion]);
+        var tail = WalChain.TailOf(final, [final.Name, shortVersion, longVersion], chainLife: 0);
 
         // Assert
         tail!.SegmentName.Should().Be(next.Name);
@@ -542,7 +542,7 @@ public class WalChainTests
         var partial = WalPartialName.Key(final.Name, 0x400);
 
         // Act
-        var tail = WalChain.TailOf(final, [final.Name, partial]);
+        var tail = WalChain.TailOf(final, [final.Name, partial], chainLife: 0);
 
         // Assert
         tail!.ObjectName.Should().Be(final.Name);
@@ -557,7 +557,7 @@ public class WalChainTests
         var below = Seg(1, 0, 3);
 
         // Act
-        var tail = WalChain.TailOf(final, [final.Name, WalPartialName.Key(below.Name, 0x100)]);
+        var tail = WalChain.TailOf(final, [final.Name, WalPartialName.Key(below.Name, 0x100)], chainLife: 0);
 
         // Assert
         tail!.SegmentName.Should().Be(final.Name);
@@ -572,10 +572,111 @@ public class WalChainTests
         var newTli = Seg(2, 0, 1);
 
         // Act
-        var tail = WalChain.TailOf(final, [final.Name, WalPartialName.Key(newTli.Name, 0x100)]);
+        var tail = WalChain.TailOf(final, [final.Name, WalPartialName.Key(newTli.Name, 0x100)], chainLife: 0);
 
         // Assert
         tail!.SegmentName.Should().Be(newTli.Name);
+    }
+
+    // ---: TailOf — покрытие дельта-кусков ТЕКУЩЕГО номера жизни (t15) ----
+
+    private static string Md5(char c) => new(c, 32);
+
+    // AAA: база [0..X) + примыкающая дельта [X..Y) — хвост по сегменту покрытия.
+    [Fact]
+    public void TailOf_DeltasOfCurrentLife_ExtendCoverage()
+    {
+        // Arrange
+        var segA = Seg(1, 0, 8);
+        var baseKey = WalDeltaName.Key(segA, 0, 0x100, 1, true, Md5('a'));
+        var deltaKey = WalDeltaName.Key(segA, 0x100, 0x200, 1, false, Md5('b'));
+
+        // Act
+        var tail = WalChain.TailOf(null, [baseKey, deltaKey], chainLife: 1);
+
+        // Assert — сегмент покрыт кусками жизни 1 (имя объекта не детерминировано)
+        tail.Should().NotBeNull();
+        tail!.SegmentName.Should().Be(segA.Name);
+    }
+
+    // AAA: куски ЧУЖОГО номера жизни не рассматриваются вовсе.
+    [Fact]
+    public void TailOf_ForeignLifePieces_Ignored()
+    {
+        // Arrange — куски жизни 2
+        var segA = Seg(1, 0, 8);
+        string[] pieces =
+        [
+            WalDeltaName.Key(segA, 0, 0x100, 2, true, Md5('a')),
+            WalDeltaName.Key(segA, 0x100, 0x200, 2, false, Md5('b')),
+        ];
+
+        // Act
+        var foreign = WalChain.TailOf(null, pieces, chainLife: 1);
+        var own = WalChain.TailOf(null, pieces, chainLife: 2);
+
+        // Assert
+        foreign.Should().BeNull();
+        own!.SegmentName.Should().Be(segA.Name);
+    }
+
+    // AAA (решение №39): безномерная t14-версия учитывается, пока у сегмента нет
+    // кусков текущего номера; появился кусок — версия сегмента игнорируется.
+    [Fact]
+    public void TailOf_LegacyVersion_UsedUntilCurrentLifePieceAppears()
+    {
+        // Arrange — segB: версия + кусок жизни 1; segC: только версия
+        var segB = Seg(1, 0, 9);
+        var segC = Seg(1, 0, 10);
+        var legacyB = WalPartialName.Key(segB.Name, 0x180);
+        var pieceB = WalDeltaName.Key(segB, 0, 0x100, 1, true, Md5('c'));
+        var legacyC = WalPartialName.Key(segC.Name, 0x50);
+
+        // Act
+        var withPiece = WalChain.TailOf(null, [legacyB, pieceB], chainLife: 1);
+        var onlyLegacy = WalChain.TailOf(null, [legacyC], chainLife: 1);
+
+        // Assert — по куску (не версии) / по лучшей версии
+        withPiece!.ObjectName.Should().Be(pieceB);
+        onlyLegacy!.ObjectName.Should().Be(legacyC);
+    }
+
+    // AAA: дыра в покрытии кусков — покрытие останавливается на её границе.
+    [Fact]
+    public void TailOf_GapInCoverage_StopsAtCoverage()
+    {
+        // Arrange — [0..A) и [B..C), A < B
+        var segA = Seg(1, 0, 8);
+        var baseKey = WalDeltaName.Key(segA, 0, 0x100, 1, true, Md5('a'));
+        var afterGap = WalDeltaName.Key(segA, 0x200, 0x300, 1, false, Md5('b'));
+
+        // Act
+        var tail = WalChain.TailOf(null, [baseKey, afterGap], chainLife: 1);
+
+        // Assert — покрытие = база (A), кусок за дырой не примыкает
+        tail!.SegmentName.Should().Be(segA.Name);
+        tail.ObjectName.Should().Be(baseKey);
+    }
+
+    // AAA: при равной позиции финал авторитетен даже при более длинных кусках.
+    [Fact]
+    public void TailOf_FinalAuthoritative()
+    {
+        // Arrange — финал segA + куски segA жизни 1 длиннее
+        var final = Seg(1, 0, 11);
+        string[] objects =
+        [
+            final.Name,
+            WalDeltaName.Key(final, 0, 0x1000, 1, true, Md5('a')),
+            WalDeltaName.Key(final, 0x1000, 0x2000, 1, false, Md5('b')),
+        ];
+
+        // Act
+        var tail = WalChain.TailOf(final, objects, chainLife: 1);
+
+        // Assert
+        tail!.SegmentName.Should().Be(final.Name);
+        tail.ObjectName.Should().Be(final.Name);
     }
 
     // AAA (Review Focus 4): end-сегмент есть только в объединённом списке

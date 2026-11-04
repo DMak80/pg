@@ -630,7 +630,8 @@ public sealed class WalStreamProcess(
         // сегменту WalChain.TailOf); цепочка не наблюдалась — прошлый ключ,
         // НИКОГДА не now() (ревью Ф4-2 №2). last_uploaded_segment — имя сегмента
         // БЕЗ суффикса (формат etcd-ключа не меняется, парсеры панели толерантны).
-        var tail = WalChain.TailOf(chain.LastSegment, objects.Select(o => o.Name));
+        var tail = WalChain.TailOf(chain.LastSegment, objects.Select(o => o.Name), chainLife: 0);
+        // t15: chainLife — текущий номер wal-life; подводится чтением счётчика (Task 11)
         var lastUploadedName = tail?.SegmentName ?? wal?.LastUploadedSegment;
         var observedLastUnix = tail is { } tailFact
             ? objects.Where(o => o.Name == tailFact.ObjectName).Select(o => o.LastModified)
