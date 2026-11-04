@@ -273,4 +273,73 @@ public class WalSweeperProcessTests
         etcd.Store.Values.Should().Contain(e => e.Value.Contains("wal-swept/s2/1"),
             "the healthy shard completed its pass despite the failed one");
     }
+
+    // ---: кусочная гигиена t15 — номер жизни и гвард активного restore ----
+
+    private static string Piece(string segment, ulong startOffset, ulong endOffset, uint life,
+        char md5 = 'a')
+        => WalDeltaName.Key(
+            WalFileName.TryParse(segment)!.Value,
+            WalDeltaName.SegmentStartOf(WalFileName.TryParse(segment)!.Value) + startOffset,
+            WalDeltaName.SegmentStartOf(WalFileName.TryParse(segment)!.Value) + endOffset,
+            life, false, new string(md5, 32));
+
+    private static void SeedLife(Fakes.FakeEtcd etcd, string cluster, string shard, uint life)
+        => etcd.Store[BackupNames.WalLifeKey(cluster, shard)] =
+            new Fakes.FakeEtcd.Entry(
+                $"{{\"chain_life\":{life},\"bumped_unix\":100,\"reason\":\"restore\"}}", 1, 1);
+
+    // AAA (д): кусок ЧУЖОГО номера жизни удаляется сразу, текущей — остаётся.
+    [Fact]
+    public async Task ForeignLifePiece_DeletedCurrentKept()
+    {
+        // Arrange — счётчик жизни 1; в wal/ куски жизней 1 и 2
+        var etcd = new Fakes.FakeEtcd();
+        SeedLife(etcd, "c1", "s1", life: 1);
+        var s3 = new FakeWalS3();
+        var current = Piece(Seg6.Name, 0, 0x100, life: 1);
+        var foreign = Piece(Seg6.Name, 0, 0x100, life: 2, md5: 'b');
+        s3.Wal[("c1", "s1")] = [current, foreign];
+        var process = Create(s3, etcd, Claims(etcd), () => new BackupsRuntimeOptions(Enabled: true));
+
+        // Act
+        var result = await process.SweepShardsAsync(
+            [ClusterSnap("c1", "s1")], new Dictionary<string, ClusterBackups?>(), 1000,
+            CancellationToken.None);
+
+        // Assert — удалён только чужой кусок
+        result.IsSuccess.Should().BeTrue();
+        s3.Deletes.Should().HaveCount(1);
+        s3.Deletes[0].Should().BeEquivalentTo([$"c1/s1/wal/{foreign}"]);
+    }
+
+    // AAA (гвард restore): активная заявка — ветка чужих номеров отключена.
+    [Fact]
+    public async Task ActiveRestore_ForeignLifePieceKept()
+    {
+        // Arrange — счётчик жизни 1, чужой кусок жизни 2, активная restore-заявка
+        var etcd = new Fakes.FakeEtcd();
+        SeedLife(etcd, "c1", "s1", life: 1);
+        var s3 = new FakeWalS3();
+        var foreign = Piece(Seg6.Name, 0, 0x100, life: 2, md5: 'b');
+        s3.Wal[("c1", "s1")] = [foreign];
+        var restores = new[]
+        {
+            new RestoreOperationState("r1", RestoreStatus.Running, "b1", "c1/s1", "latest", "n1", 1, "api"),
+        };
+        var backups = new ClusterBackups("c1", null, new Dictionary<string, ShardBackups>
+        {
+            ["s1"] = new ShardBackups([], null, restores),
+        });
+        var process = Create(s3, etcd, Claims(etcd), () => new BackupsRuntimeOptions(Enabled: true));
+
+        // Act
+        var result = await process.SweepShardsAsync(
+            [ClusterSnap("c1", "s1")],
+            new Dictionary<string, ClusterBackups?> { ["c1"] = backups }, 1000, CancellationToken.None);
+
+        // Assert — чужие куски не тронуты (их читает fetch-wal наката)
+        result.IsSuccess.Should().BeTrue();
+        s3.Deletes.Should().BeEmpty();
+    }
 }
