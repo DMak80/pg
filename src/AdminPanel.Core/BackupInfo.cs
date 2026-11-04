@@ -57,7 +57,10 @@ public sealed record ClusterBackupsInfo(
     IReadOnlyDictionary<string, DrillInfo>? ShardsDrills = null,
     // reliability : полная policy кластера (форма мутации интервала дрилов);
     // null = policy-ключа нет.
-    BackupsPolicyInfo? Policy = null);
+    BackupsPolicyInfo? Policy = null,
+    // t15 (arch/adminpanel/02 §2.3.1): счётчики жизни цепочки per-shard (ключи
+    // .../wal-life) — вход правила backup-wal-life-changed; null = ключей нет.
+    IReadOnlyDictionary<string, WalLifeInfo>? WalLife = null);
 
 /// <summary>Один etcd-ключ полного /pgworker/backups/&lt;C&gt;/&lt;X&gt;/full/&lt;id&gt; :
 /// полный факт state/verify/size для сверки с S3 и деталей шарда.</summary>

@@ -23,6 +23,12 @@ public sealed record WalStreamInfo(
     // опционально — старые/битые ключи поля не несут.
     WalGapInfo? Gap = null);
 
+/// <summary>Счётчик жизни цепочки WAL шарда (ключ /pgworker/backups/&lt;C&gt;/&lt;X&gt;/wal-life,
+/// t15, arch/backups/05 §1; пишет только воркер): номер жизни, время и причина
+/// последнего инкремента (shard-rebuilt|restore|foreign-chain).</summary>
+public sealed record WalLifeInfo(
+    string Cluster, string Shard, long ChainLife, long? BumpedUnix, string? Reason);
+
 /// <summary>Одна запись реестра сирот из глобального ключа
 /// /pgworker/backups/orphans ( дубль воркерной модели — осознанный):
 /// префикс «&lt;C&gt;/&lt;X&gt;»,
