@@ -18,7 +18,8 @@ namespace PgWorker.Backups;
 /// read-целей с дедупом, успех — если ответил хотя бы один узел;
 /// BucketExists — любая доступная.
 /// </summary>
-public sealed class PoolBackupS3 : IBackupS3, IWalSegmentGuard, IDeleteObjectS3, IAsyncDisposable
+public sealed class PoolBackupS3
+    : IBackupS3, IWalSegmentGuard, IDeleteObjectS3, IStreamObjectS3, IAsyncDisposable
 {
     // Окно исключения отказавшей цели (arch/19 §5): закрывает тыл
     // ретрай-циклам источников (приёмник WAL — 30-35 с) — мёртвая цель не
@@ -481,6 +482,71 @@ public sealed class PoolBackupS3 : IBackupS3, IWalSegmentGuard, IDeleteObjectS3,
 
         return last;
     }
+
+    // ── Потоковое чтение объектов (DR-валидация restore/drill): read-перебор
+    // целей до найденного (образец GetObjectToFileAsync); NotFound → следующая.
+
+    /// <summary>HEAD по read-целям: первая цель, где объект существует, даёт
+    /// размер (spec t01 §6.23); все NotFound → Success((false, 0)); транспортный
+    /// отказ всех целей — Failed последней исходной причиной.</summary>
+    public async Task<Result<(bool Exists, long SizeBytes)>> HeadObjectAsync(
+        string cluster, string shard, string key, CancellationToken ct)
+    {
+        Result<(bool Exists, long SizeBytes)> last =
+            Result<(bool Exists, long SizeBytes)>.Success((false, 0L));
+        foreach (var uri in _readTargets)
+        {
+            var target = Target(uri);
+            if (target is not IStreamObjectS3 streamer)
+            {
+                last = Result<(bool Exists, long SizeBytes)>.Failed(new ApplicationException(
+                    $"target {uri} does not support stream reads"));
+                continue;
+            }
+
+            var result = await AttemptAsync(
+                uri, ct, () => streamer.HeadObjectAsync(cluster, shard, key, ct));
+            if (result.IsSuccess && result.Value.Exists)
+                return result;
+            if (!result.IsSuccess)
+                last = result;
+        }
+
+        return last;
+    }
+
+    /// <summary>Range-GET по read-целям до найденного; NotFound → следующая,
+    /// исходная ошибка наружу (последняя).</summary>
+    public async Task<Result<byte[]>> GetObjectRangeAsync(
+        string cluster, string shard, string key, long start, long end, CancellationToken ct)
+    {
+        Result<byte[]> last = default;
+        foreach (var uri in _readTargets)
+        {
+            var target = Target(uri);
+            if (target is not IStreamObjectS3 streamer)
+            {
+                last = Result<byte[]>.Failed(new ApplicationException(
+                    $"target {uri} does not support stream reads"));
+                continue;
+            }
+
+            var result = await AttemptAsync(
+                uri, ct, () => streamer.GetObjectRangeAsync(cluster, shard, key, start, end, ct));
+            if (result.IsSuccess)
+                return result;
+            last = result;
+        }
+
+        return last;
+    }
+
+    /// <summary>Стрим тела НЕ реализуется пулом: операции приёмника (restore/
+    /// verify) строят единичный клиент с зафиксированным endpoint'ом (spec §6.9).</summary>
+    public Task<Result<(Stream Body, long Size)>> GetObjectStreamAsync(
+        string cluster, string shard, string key, CancellationToken ct)
+        => throw new NotSupportedException(
+            "stream is endpoint-pinned; use single-target client");
 
     // Листинги: первая доступная read-цель (успех = пустой список тоже успех);
     // исчерпание — маркер (алертная грань «пул недоступен»).

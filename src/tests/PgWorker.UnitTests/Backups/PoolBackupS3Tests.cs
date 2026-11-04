@@ -640,4 +640,106 @@ public class PoolBackupS3Tests
         public Task<Result> PutFileAsync(string key, string filePath, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<Result> GetObjectToFileAsync(string cluster, string shard, string key, string destFilePath, CancellationToken ct = default) => throw new NotSupportedException();
     }
+
+    // AAA (spec t01 §6.23): HEAD по read-целям — первая найденная цель даёт
+    // размер; все NotFound → (false, 0).
+    [Fact]
+    public async Task HeadObject_FirstExistingTargetGivesSize_AllMissFalse()
+    {
+        // Arrange — n1 «нет объекта», n2 отдаёт размер.
+        var pool = PoolOf(
+        [
+            ("http://n1:9000", new FakeStreamTargetS3 { Exists = false }),
+            ("http://n2:9000", new FakeStreamTargetS3 { Size = 4096 }),
+        ]);
+
+        // Act
+        var found = await pool.HeadObjectAsync("c", "s", "full/id.tar", CancellationToken.None);
+        var missPool = PoolOf(
+        [
+            ("http://n1:9000", new FakeStreamTargetS3 { Exists = false }),
+            ("http://n2:9000", new FakeStreamTargetS3 { Exists = false }),
+        ]);
+        var missing = await missPool.HeadObjectAsync("c", "s", "full/id.tar", CancellationToken.None);
+
+        // Assert
+        found.IsSuccess.Should().BeTrue();
+        found.Value.Exists.Should().BeTrue();
+        found.Value.SizeBytes.Should().Be(4096);
+        missing.IsSuccess.Should().BeTrue();
+        missing.Value.Exists.Should().BeFalse();
+        missing.Value.SizeBytes.Should().Be(0);
+    }
+
+    // AAA: Range-GET по read-целям: NotFound на первой — срез со второй.
+    [Fact]
+    public async Task GetObjectRange_NotFoundOnFirst_FoundOnSecond()
+    {
+        // Arrange
+        var pool = PoolOf(
+        [
+            ("http://n1:9000", new FakeStreamTargetS3 { RangeNotFound = true }),
+            ("http://n2:9000", new FakeStreamTargetS3 { RangeBytes = [7, 8, 9] }),
+        ]);
+
+        // Act
+        var result = await pool.GetObjectRangeAsync("c", "s", "full/id.tar", 0, 2, CancellationToken.None);
+
+        // Assert
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Should().Equal(7, 8, 9);
+    }
+
+    // AAA: стрим тела пулом не реализуется — операции приёмника фиксируют endpoint.
+    [Fact]
+    public async Task GetObjectStream_NotSupported_PoolIsEndpointPinned()
+    {
+        var pool = PoolOf([("http://n1:9000", new FakeStreamTargetS3())]);
+
+        var act = async () => await pool.GetObjectStreamAsync("c", "s", "full/id.tar", CancellationToken.None);
+
+        await act.Should().ThrowAsync<NotSupportedException>();
+    }
+
+    /// <summary>Фейк-цель потокового чтения (HEAD/Range); IBackupS3 — заглушки.</summary>
+    private sealed class FakeStreamTargetS3 : IBackupS3, IStreamObjectS3
+    {
+        public bool Exists { get; init; } = true;
+
+        public long Size { get; init; } = 1024;
+
+        public bool RangeNotFound { get; init; }
+
+        public byte[] RangeBytes { get; init; } = [1, 2, 3];
+
+        public Task<Result<(bool Exists, long SizeBytes)>> HeadObjectAsync(
+            string cluster, string shard, string key, CancellationToken ct)
+            => Task.FromResult(Result<(bool Exists, long SizeBytes)>.Success(
+                (Exists, Exists ? Size : 0L)));
+
+        public Task<Result<byte[]>> GetObjectRangeAsync(
+            string cluster, string shard, string key, long start, long end, CancellationToken ct)
+            => Task.FromResult(RangeNotFound
+                ? Result<byte[]>.Failed(new ApplicationException(
+                    $"S3 get-range {cluster}/{shard}/{key}: not found"))
+                : Result<byte[]>.Success(RangeBytes));
+
+        public Task<Result<(Stream Body, long Size)>> GetObjectStreamAsync(
+            string cluster, string shard, string key, CancellationToken ct)
+            => throw new NotSupportedException();
+
+        public Task<Result<bool>> BucketExistsAsync(CancellationToken ct) => throw new NotSupportedException();
+        public Task<Result<IReadOnlyList<WalObject>>> ListWalAsync(string cluster, string shard, int? maxKeysPerTest = null, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<IReadOnlyList<S3ObjectInfo>>> ListPrefixAsync(string prefix, int? maxKeysPerTest = null, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result> DeleteKeysAsync(IReadOnlyList<string> keys, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result> PutObjectAsync(string key, byte[] data, string? sha256, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<IReadOnlyList<WalObject>>> ListAsync(string cluster, string shard, string prefix, int? maxKeysPerTest = null, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<string>> GetObjectAsync(string cluster, string shard, string key, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result> PutObjectMd5Async(string key, byte[] data, string md5Hex, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<(byte[] Data, string? ETag)>> GetObjectBytesAsync(string cluster, string shard, string key, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<IReadOnlyList<string>>> ListFullsAsync(string cluster, string shard, int? maxKeysPerTest = null, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<string>> DownloadTextAsync(string cluster, string shard, string objectKey, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result> PutFileAsync(string key, string filePath, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result> GetObjectToFileAsync(string cluster, string shard, string key, string destFilePath, CancellationToken ct = default) => throw new NotSupportedException();
+    }
 }

@@ -137,19 +137,26 @@ public sealed class RestoreDrillProcess(
             return Result<ProcessOutcome>.Success(ProcessOutcome.Done); // гвард отбора — молча
         var backupId = fresh.Id;
 
-        // 1. Манифест: upload не атомарен — частичный префикс отсеиваем
-        // (образец); отказ — валидационный FAILED без операции.
-        var manifest = await S3Pulse.CallAsync(progress, token => s3.DownloadTextAsync(cluster, shard, $"full/{backupId}/backup_manifest", token), ct, WatchdogWindow / 2);
-        if (!manifest.IsSuccess)
+        // 1. Завершённость кандидата: объект `full/<id>.tar` существует
+        // (появляется только после Complete multipart, spec t01 §6.10);
+        // транспортный отказ — валидационный FAILED без операции.
+        var head = await S3Pulse.CallAsync(progress,
+            token => s3.HeadObjectAsync(cluster, shard, $"full/{backupId}.tar", token), ct, WatchdogWindow / 2);
+        if (!head.IsSuccess || !head.Value.Exists)
             return await FailValidationAsync(cluster, shard, backupId, nowUnix,
-                $"full backup {backupId} without backup_manifest (incomplete/corrupt)", ct);
+                $"full backup {backupId}: object full/{backupId}.tar not found", ct);
 
-        // 2. Стартовая точка WAL: etcd-статус; нет — backup_label из S3.
+        // 2. Стартовая точка WAL: etcd-статус; нет — backup_label — первая
+        // запись tar-объекта (Range-чтение начала).
         var walStart = fresh.WalStartSegment;
         if (walStart is not { Length: > 0 })
         {
-            var label = await S3Pulse.CallAsync(progress, token => s3.DownloadTextAsync(cluster, shard, $"full/{backupId}/backup_label", token), ct, WatchdogWindow / 2);
-            walStart = label.IsSuccess ? Restore.BackupLabel.WalStartSegment(label.Value) : null;
+            var label = await S3Pulse.CallAsync(progress,
+                token => FullTarSet.ReadBackupLabelAsync(s3, cluster, shard, backupId, token),
+                ct, WatchdogWindow / 2);
+            walStart = label.IsSuccess && label.Value is { } labelText
+                ? Restore.BackupLabel.WalStartSegment(labelText)
+                : null;
             if (walStart is null)
                 return await FailValidationAsync(cluster, shard, backupId, nowUnix,
                     $"full/{backupId}: backup_label unavailable/corrupt", ct);

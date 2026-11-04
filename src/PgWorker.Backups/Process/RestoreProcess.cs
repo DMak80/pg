@@ -276,26 +276,35 @@ public sealed class RestoreProcess(
             selectedFull = lifeSb.Full.FirstOrDefault(f => f.Id == backupId);
         var chainLife = selectedFull?.ChainLife;
 
-        // 4. Факт целостности кандидата: upload (mc cp --recursive) не
-        // атомарен и не гарантирует «манифест последним» — упавший на середине
-        // джоб оставляет частичный префикс full/<id>/, а при DR etcd-статусов
-        // нет; инвариант «префикс ⇔ манифест» механикой НЕ обеспечивается →
-        // частичный кандидат отсеивается проверкой манифеста.
-        var manifest = await S3Pulse.CallAsync(progress, token => s3.DownloadTextAsync(srcC, srcX, $"full/{backupId}/backup_manifest", token), ct, WatchdogWindow / 2);
-        if (!manifest.IsSuccess)
+        // 4. Факт завершённости кандидата: объект полного — ОДИН
+        // `full/<id>.tar`; он появляется в листинге только после Complete
+        // multipart — существование объекта = завершённая загрузка (spec t01
+        // §6.10), DR-валидация по объекту (прежний маркер манифеста упразднён).
+        var head = await S3Pulse.CallAsync(progress,
+            token => s3.HeadObjectAsync(srcC, srcX, $"full/{backupId}.tar", token), ct, WatchdogWindow / 2);
+        if (!head.IsSuccess)
+        {
+            // Транспортный отказ — transient: следующий тик повторит выбор.
+            return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
+        }
+        if (!head.Value.Exists)
         {
             await FailPermanentAsync(cluster, shard.Name, op,
-                $"full {backupId} has no backup_manifest (incomplete/corrupt)", ct);
+                $"full {backupId}: object full/{backupId}.tar not found", ct);
             return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
         }
 
         // 5. Стартовая точка WAL: свой свежий полный → etcd-статус; иначе
-        // backup_label из S3 (BackupLabel.WalStartSegment — sed-эквивалент).
+        // backup_label — ПЕРВАЯ запись tar-объекта (Range-чтение начала).
         string? walStart = ownFresh?.WalStartSegment;
         if (walStart is not { Length: > 0 })
         {
-            var label = await S3Pulse.CallAsync(progress, token => s3.DownloadTextAsync(srcC, srcX, $"full/{backupId}/backup_label", token), ct, WatchdogWindow / 2);
-            walStart = label.IsSuccess ? Restore.BackupLabel.WalStartSegment(label.Value) : null;
+            var label = await S3Pulse.CallAsync(progress,
+                token => FullTarSet.ReadBackupLabelAsync(s3, srcC, srcX, backupId, token),
+                ct, WatchdogWindow / 2);
+            walStart = label.IsSuccess && label.Value is { } labelText
+                ? Restore.BackupLabel.WalStartSegment(labelText)
+                : null;
             if (walStart is null)
             {
                 await FailPermanentAsync(cluster, shard.Name, op,
