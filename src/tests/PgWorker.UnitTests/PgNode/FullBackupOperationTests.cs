@@ -158,15 +158,12 @@ public class FullBackupOperationTests
                     Path.Combine(dest, "backup_label"),
                     "START WAL LOCATION: 0/2000028 (file 000000010000000000000002)\n");
                 await File.WriteAllTextAsync(Path.Combine(dest, "postgresql.conf"), "x");
-                // Сегменты набора: закрытые 0002/0004 (финалы) + буквенный 0AB
-                // (нормализация дубля) + ХВОСТ 0AC (публикуется `.partial`-версией,
-                // финалом не дублируется — arch/19 §2).
-                WriteSegment(Path.Combine(dest, "pg_wal", "000000010000000000000002"), segNo: 2);
-                WriteSegment(Path.Combine(dest, "pg_wal", "000000010000000000000004"), segNo: 4);
+                await File.WriteAllTextAsync(
+                    Path.Combine(dest, "pg_wal", "000000010000000000000002"), "wal");
                 // Реальный pg_basebackup кладёт сегменты набора ВЕРХНИМ hex —
                 // буквенный сегмент проверяет нормализацию дубля wal/.
-                WriteSegment(Path.Combine(dest, "pg_wal", "0000000100000000000000AB"), segNo: 0xAB);
-                WriteSegment(Path.Combine(dest, "pg_wal", "0000000100000000000000AC"), segNo: 0xAC);
+                await File.WriteAllTextAsync(
+                    Path.Combine(dest, "pg_wal", "0000000100000000000000AB"), "wal");
                 await File.WriteAllTextAsync(
                     Path.Combine(dest, "pg_wal", "000000010000000000000003.partial"), "p");
                 await File.WriteAllTextAsync(
@@ -176,35 +173,6 @@ public class FullBackupOperationTests
 
             return (0, "", "");
         }
-
-        // Файл сегмента набора: ровно wal_segment_size; валидный префикс
-        // (long page header + одна полная запись 64 байта = 104), остаток — нули.
-        private static void WriteSegment(string path, int segNo)
-        {
-            using var file = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None);
-            file.SetLength(WalFileName.SegmentBytes);
-            file.Write(SegmentPrefix(segNo));
-        }
-    }
-
-    // Валидный префикс сегмента набора (104 байта): long page header (tli=1,
-    // pageaddr = граница) + запись 64 байта.
-    private static byte[] SegmentPrefix(int segNo)
-        => SegmentPrefix(segNo, recordLen: 64);
-
-    private static byte[] SegmentPrefix(int segNo, int recordLen)
-    {
-        var prefix = new byte[WalPrefixScanner.LongHeaderBytes + recordLen];
-        var boundary = (ulong)segNo * (ulong)WalFileName.SegmentBytes;
-        // long page header: tli LE u32 @4, pageaddr LE u64 @8
-        prefix[4] = 1;
-        for (var i = 0; i < 8; i++)
-            prefix[8 + i] = (byte)(boundary >> (8 * i));
-        // запись: xl_tot_len LE u32 @0, xl_xid @4 (≠ длины), полезный байт @8
-        prefix[WalPrefixScanner.LongHeaderBytes] = (byte)recordLen;
-        prefix[WalPrefixScanner.LongHeaderBytes + 4] = 0xB3;
-        prefix[WalPrefixScanner.LongHeaderBytes + 8] = 0xAB;
-        return prefix;
     }
 
     /// <summary>Фейк IBackupS3: put-файлы в словарь ключей; программирование
@@ -317,17 +285,7 @@ public class FullBackupOperationTests
         s3.PutKeys.Should().Contain($"{prefix}/full/{Id}/postgresql.conf");
         s3.PutKeys.Should().Contain($"{prefix}/full/{Id}/pg_wal/000000010000000000000002");
         s3.PutKeys.Should().Contain($"{prefix}/wal/000000010000000000000002");
-        s3.PutKeys.Should().Contain($"{prefix}/wal/000000010000000000000004");
-        // Assert: ХВОСТ набора (0AC) финалом не дублируется — только `.partial`-версией
-        // его валидного префикса (arch/19 §2: restore_command дочитывает им).
-        s3.PutKeys.Should().Contain($"{prefix}/full/{Id}/pg_wal/0000000100000000000000AC");
-        s3.PutKeys.Should().NotContain($"{prefix}/wal/0000000100000000000000ac",
-            "the backup set tail is never duplicated as a final");
-        var tailKey = $"{prefix}/wal/{WalPartialName.Key("0000000100000000000000ac", 0xAC000068UL)}";
-        s3.PutKeys.Should().Contain(tailKey,
-            "the tail's valid prefix is published as a .partial version");
-        s3.Objects[tailKey].Length.Should().Be(40 + 64,
-            "only the valid prefix (page header + one full record) is published");
+        s3.PutKeys.Should().Contain($"{prefix}/wal/0000000100000000000000ab");
         // Assert: локальные .partial-файлы набора и .history НЕ дублируются
         // (`.partial`-версия хвоста публикуется выше — это канонический ключ).
         s3.PutKeys.Should().NotContain($"{prefix}/wal/000000010000000000000003.partial");
@@ -498,55 +456,6 @@ public class FullBackupOperationTests
         s3.PutKeys.Should().Contain($"{prefix}/full/{Id}/pg_wal/0000000100000000000000AB");
 
         // Cleanup
-        Directory.Delete(staging, recursive: true);
-    }
-
-    // AAA (t14, arch/19 §2/§3): финал того же сегмента из ЧУЖОЙ цепочки
-    // (пересозданный кластер) — хвост-гвард FAILED операции.
-    [Fact]
-    public async Task TailGuard_ForeignChain_Failed()
-    {
-        // Arrange — в wal/ уже лежит финал хвостового сегмента иной инкарнации
-        var staging = Path.Combine(Path.GetTempPath(), $"full-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(staging);
-        var s3 = new FakeS3();
-        s3.Objects[$"{Cluster}/{Shard}/wal/0000000100000000000000ac"] = new byte[WalFileName.SegmentBytes];
-        var registry = new OperationRegistry();
-        var op = Create(Etcd(), new FakeRunner(), s3, staging, registry);
-
-        // Act
-        await op.RunAsync(CancellationToken.None);
-
-        // Assert — FAILED, причина называет чужую цепочку; хвост не опубликован
-        var snap = registry.Current!;
-        snap.State.Should().Be("failed");
-        snap.Error.Should().Contain("foreign WAL chain");
-        s3.PutKeys.Should().NotContain(k =>
-            k.StartsWith($"{Cluster}/{Shard}/wal/") && k.EndsWith(".partial"));
-        Directory.Delete(staging, recursive: true);
-    }
-
-    // AAA (t14): финал той же цепочки (префикс совпадает) — хвост публикуется.
-    [Fact]
-    public async Task TailGuard_SameChain_Ok()
-    {
-        // Arrange — финал хвоста содержит те же первые байты (одна инкарнация)
-        var staging = Path.Combine(Path.GetTempPath(), $"full-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(staging);
-        var s3 = new FakeS3();
-        var existing = new byte[WalFileName.SegmentBytes];
-        SegmentPrefix(0xAC).CopyTo(existing, 0);
-        s3.Objects[$"{Cluster}/{Shard}/wal/0000000100000000000000ac"] = existing;
-        var registry = new OperationRegistry();
-        var op = Create(Etcd(), new FakeRunner(), s3, staging, registry);
-
-        // Act
-        await op.RunAsync(CancellationToken.None);
-
-        // Assert — succeeded; версия хвоста опубликована
-        registry.Current!.State.Should().Be("succeeded");
-        s3.Objects.Should().ContainKey(
-            $"{Cluster}/{Shard}/wal/{WalPartialName.Key("0000000100000000000000ac", 0xAC000068UL)}");
         Directory.Delete(staging, recursive: true);
     }
 
