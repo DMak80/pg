@@ -148,31 +148,44 @@ public class WalPrefixScannerTests
     }
 
     [Fact]
-    public void RecordNotFittingPage_MovedToNext()
+    public void RecordSpanningPage_Continuation()
     {
-        // Arrange — запись длиннее остатка страницы (8153 > 8152) — стоп;
-        // вторая страница: short-заголовок 24 + запись 40 — читается.
-        var notFitting = new byte[2 * WalPrefixScanner.PageBytes];
-        notFitting[4] = 1;
-        WriteRecord(notFitting, WalPrefixScanner.LongHeaderBytes,
-            WalPrefixScanner.PageBytes - WalPrefixScanner.LongHeaderBytes + 1);
+        // Arrange — запись 8153 байта не влезает в остаток страницы (8152):
+        // начало 8152 байта + продолжение 1 байт после short-заголовка страницы 2;
+        // затем MAXALIGN-добивка 7 и следующая запись 40.
+        var buffer = new byte[2 * WalPrefixScanner.PageBytes];
+        buffer[4] = 1;
+        WriteRecord(buffer, WalPrefixScanner.LongHeaderBytes, 8153);
+        var continuation = WalPrefixScanner.PageBytes + WalPrefixScanner.ShortHeaderBytes;
+        var secondRecord = continuation + 1 + 7; // +1 байт продолжения, +7 добивки
+        WriteRecord(buffer, secondRecord, 40);
+        var fullCount = secondRecord + 40;
 
-        var nextPage = new byte[2 * WalPrefixScanner.PageBytes];
-        nextPage[4] = 1;
-        WriteRecord(nextPage, WalPrefixScanner.LongHeaderBytes,
+        // Act — запись целиком; запись продолжена, но следующая ещё не начата
+        var prefixFull = WalPrefixScanner.ValidPrefixLength(buffer, fullCount);
+        var prefixRecordOnly = WalPrefixScanner.ValidPrefixLength(buffer, continuation + 1);
+
+        // Assert — конец второй записи / конец записи-продолжения
+        prefixFull.Should().Be(fullCount);
+        prefixRecordOnly.Should().Be(continuation + 1);
+    }
+
+    [Fact]
+    public void RecordFillsPage_NextPageRead()
+    {
+        // Arrange — запись ровно до границы страницы, вторая — на следующей
+        var buffer = new byte[2 * WalPrefixScanner.PageBytes];
+        buffer[4] = 1;
+        WriteRecord(buffer, WalPrefixScanner.LongHeaderBytes,
             WalPrefixScanner.PageBytes - WalPrefixScanner.LongHeaderBytes);
-        WriteRecord(nextPage,
-            WalPrefixScanner.PageBytes + WalPrefixScanner.ShortHeaderBytes, 40);
+        WriteRecord(buffer, WalPrefixScanner.PageBytes + WalPrefixScanner.ShortHeaderBytes, 40);
 
         // Act
-        var prefixNotFitting = WalPrefixScanner.ValidPrefixLength(notFitting, 8193);
-        var prefixNextPage = WalPrefixScanner.ValidPrefixLength(
-            nextPage, WalPrefixScanner.PageBytes + WalPrefixScanner.ShortHeaderBytes + 40);
+        var prefix = WalPrefixScanner.ValidPrefixLength(
+            buffer, WalPrefixScanner.PageBytes + WalPrefixScanner.ShortHeaderBytes + 40);
 
         // Assert
-        prefixNotFitting.Should().Be(0);
-        prefixNextPage.Should().Be(
-            WalPrefixScanner.PageBytes + WalPrefixScanner.ShortHeaderBytes + 40);
+        prefix.Should().Be(WalPrefixScanner.PageBytes + WalPrefixScanner.ShortHeaderBytes + 40);
     }
 
     [Fact]
