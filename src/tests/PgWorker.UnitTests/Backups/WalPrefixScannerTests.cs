@@ -11,7 +11,8 @@ public class WalPrefixScannerTests
 {
     // Локальный билдер (в классе теста): страница 8192; long-заголовок первой
     // страницы (tli LE u32 @4, pageaddr LE u64 @8 = 0 — сканеру достаточно полей);
-    // записи: [зарезерв 4 байта нулей][totalLen LE u32 @4][полезные байты до totalLen].
+    // записи: [xl_tot_len LE u32 @0][xl_xid @4][полезные байты до totalLen],
+    // следующая запись — с выравниванием длины по 8 (MAXALIGN, как в WAL).
     private static (byte[] Buffer, int Count) Page(params int[] recordLengths)
     {
         var buffer = new byte[WalPrefixScanner.PageBytes];
@@ -21,19 +22,22 @@ public class WalPrefixScannerTests
         foreach (var len in recordLengths)
         {
             WriteRecord(buffer, pos, len);
-            pos += len;
+            pos += (len + 7) & ~7; // MAXALIGN
         }
         return (buffer, pos);
     }
 
-    // Запись на позиции pos: маркер 4 байта, totalLen LE u32 @4, полезный байт @8.
+    // Запись на позиции pos: xl_tot_len LE u32 @0 (поле первое в XLogRecord),
+    // xl_xid @4 (отличен от длины — регресс-гвард), полезный байт @8.
     private static void WriteRecord(byte[] buffer, int pos, int totalLen)
     {
         var l = (uint)totalLen;
-        buffer[pos + 4] = (byte)l;
-        buffer[pos + 5] = (byte)(l >> 8);
-        buffer[pos + 6] = (byte)(l >> 16);
-        buffer[pos + 7] = (byte)(l >> 24);
+        buffer[pos] = (byte)l;
+        buffer[pos + 1] = (byte)(l >> 8);
+        buffer[pos + 2] = (byte)(l >> 16);
+        buffer[pos + 3] = (byte)(l >> 24);
+        buffer[pos + 4] = 0xB3;
+        buffer[pos + 5] = 0x03;
         buffer[pos + 8] = 0xAB; // полезный байт записи (отличен от нуля)
     }
 
@@ -100,8 +104,8 @@ public class WalPrefixScannerTests
         // Act
         var prefix = WalPrefixScanner.ValidPrefixLength(buffer, count);
 
-        // Assert
-        prefix.Should().Be(190);
+        // Assert — конец второй записи (144 + 50), паддинг выравнивания не входит
+        prefix.Should().Be(194);
     }
 
     [Fact]
@@ -187,5 +191,25 @@ public class WalPrefixScannerTests
 
         // Assert
         prefix.Should().Be(WalPrefixScanner.PageBytes);
+    }
+
+    [Fact]
+    public void RecordLengthFromOffsetZero_NotXid()
+    {
+        // Arrange — реальная раскладка XLogRecord: xl_tot_len=46 @0, xl_xid=947 @4.
+        // Чтение длины со смещения 4 (xl_xid) дало бы 947 и префикс 987 —
+        // обрезка посреди следующей записи (факт E2E: CRC-ошибка восстановления).
+        var buffer = new byte[WalPrefixScanner.PageBytes];
+        buffer[4] = 1;
+        WriteRecord(buffer, WalPrefixScanner.LongHeaderBytes, 46);
+        buffer[WalPrefixScanner.LongHeaderBytes + 4] = 947 & 0xFF;
+        buffer[WalPrefixScanner.LongHeaderBytes + 5] = (947 >> 8) & 0xFF;
+        const int count = 40 + 46;
+
+        // Act
+        var prefix = WalPrefixScanner.ValidPrefixLength(buffer, count);
+
+        // Assert — конец единственной полной записи (40 + 46), не 987
+        prefix.Should().Be(86);
     }
 }

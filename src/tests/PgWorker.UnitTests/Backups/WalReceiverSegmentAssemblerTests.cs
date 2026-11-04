@@ -245,9 +245,9 @@ public class WalReceiverSegmentAssemblerTests
     [Fact]
     public void PartialSnapshot_ReturnsValidPrefix()
     {
-        // Arrange — header 40 байт + запись 60 байт (totalLen LE u32 @44)
+        // Arrange — header 40 байт + запись 60 байт (xl_tot_len LE u32 @0 записи)
         var data = SegmentBytesWithHeader(1, 0, 100);
-        data[44] = 60;
+        data[40] = 60;
         var assembler = new SegmentAssembler(0);
         assembler.Append(new XLogChunk(0, 100, data));
 
@@ -268,7 +268,7 @@ public class WalReceiverSegmentAssemblerTests
     {
         // Arrange — частичный сегмент и снимок префикса
         var data = SegmentBytesWithHeader(1, 0, 100);
-        data[44] = 60;
+        data[40] = 60;
         var assembler = new SegmentAssembler(0);
         assembler.Append(new XLogChunk(0, 100, data));
         assembler.PartialSnapshot().Should().NotBeNull();
