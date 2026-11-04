@@ -149,7 +149,7 @@ public interface IStreamObjectS3
 {
     Task<Result<(Stream Body, long Size)>> GetObjectStreamAsync(string cluster, string shard, string key, CancellationToken ct);
     Task<Result<(byte[] Data, long TotalSize)>> GetObjectRangeAsync(string cluster, string shard, string key, long start, long end, CancellationToken ct); // [start, end] включительно
-    Task<Result<bool>> HeadObjectAsync(string cluster, string shard, string key, CancellationToken ct); // NotFound → Success(false)
+    Task<Result<(bool Exists, long SizeBytes)>> HeadObjectAsync(string cluster, string shard, string key, CancellationToken ct); // NotFound → Success((false, 0)); размер — из GetObjectMetadataAsync.ContentLength (spec §6.23)
 }
 public interface IDeleteObjectS3
 {
@@ -278,8 +278,10 @@ public sealed class TarFormatException(string message) : Exception(message);
 Комментарии — русские, кратко.
 
 1.3. Создай тест `src/tests/PgWorker.UnitTests/Backups/TarStreamTests.cs`
-(xunit, `GlobalUsings.cs` проекта уже даёт Xunit/FluentAssertions; см.
-соседний `BackupLabelTests.cs` за стилем): билдер тестового tar прямо в
+(xunit; `Xunit` приходит в тест-файлы из `<Using Include="Xunit"/>` в
+`src/tests/PgWorker.UnitTests/PgWorker.UnitTests.csproj`, `FluentAssertions`
+и `PgWorker.Backups` — из `GlobalUsings.cs`; стиль — соседний
+`BackupLabelTests.cs`): билдер тестового tar прямо в
 тесте (массив байт: 512-заголовок + данные + padding): заголовок собирай
 вспомогательным приватным методом `static byte[] Header(string name, char
 type, long size, string magic = "ustar\0", string prefix = "", string
@@ -562,7 +564,10 @@ IDeleteObjectS3`:
   response.ContentLength при 206... вместо этого парсить
   response.Headers["Content-Range"] "bytes s-e/total")`. 404 →
   Failed(": not found") (симметрия существующих GET).
-- `HeadObjectAsync` → `GetObjectMetadataAsync`; NotFound → `Success(false)`.
+- `HeadObjectAsync` → `GetObjectMetadataAsync`; NotFound → `Success((false,
+  0L))`; иначе `Success((true, response.ContentLength))` — размер нужен
+  verify ДО первого Range-запроса хвоста (spec §6.23; HEAD и так выполняется
+  для фиксации endpoint'а — размер бесплатно, без суффиксного Range).
 - `DeleteObjectAsync(cluster, shard, key)` → `_client.DeleteObjectAsync`.
 Все — try/catch в Result по образцу существующих методов файла.
 `PoolBackupS3` НЕ реализует новые интерфейсы (multipart/стрим — только
@@ -687,7 +692,13 @@ DirectorySize/UploadParallelism удалить). Пайплайн (`RunAsync`):
    - После `RunAsync`: `await tar.FinishAsync(ct)` → `parts.CompleteAsync`
      → ETag; снять `tar.Sha256Hash()`, `_sizeBytes = tar.TotalBytes`.
    - Успех → `break`; исключение (транспорт/протокол) → `await parts.
-     AbortAsync()` →continue (следующий endpoint). Превышение лимита
+     AbortAsync()` → continue (следующий endpoint). Отдельно ДО общего
+     catch: `catch (OperationCanceledException) when (token.
+     IsCancellationRequested)` — прерывает цикл попыток БЕЗ следующего
+     endpoint (отмена — не отказ endpoint'а; деградация отмены в
+     s3-pool-exhausted недопустима), наружу — в общий `catch
+     (OperationCanceledException)` → `Fail("cancelled")` (п. «Отмена»).
+     Превышение лимита
      частей (фактически: `parts.PartsDone` не ограничить заранее — лимит
      ловится отказом сервера; ДОБАВИТЬ проверку в CopyStream: `tar.
      TotalBytes > 10000L * 16MiB` → ApplicationException "backup exceeds
@@ -749,9 +760,11 @@ DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/PgWorker.UnitTests -c Debug --fi
 (`wireFactory` возвращает фейк `IBaseBackupSource`, который выдаёт
 запрограммированную последовательность сообщений с двумя COPY-потоками:
 первый — записи backup_label+файл+pg_wal/каталог, второй — сегмент
-000000010000000000000001) + фейк `IBackupS3`/`IMultipartS3` (наследование
-FakeTargetS3 из `tests/PgWorker.UnitTests/Backups/TestPoolFactory.cs`
-невозможно — интерфейсы новые; сделать локальный в тесте класс `FakeMultipartS3`
+000000010000000000000001) + фейк `IBackupS3`/`IMultipartS3` (существующий
+`FakeTargetS3` — private-класс в
+`src/tests/PgWorker.UnitTests/Backups/PoolBackupS3Tests.cs` — новых
+интерфейсов не реализует и наследоваться нельзя; сделать локальный в
+тесте класс `FakeMultipartS3`
 реализующий `IBackupS3 + IMultipartS3 + IStreamObjectS3`, собирающий байты
 частей в объект и отвечающий на Range из них; для PutWalSegmentAsync —
 запись ключей). Кейсы: фазы running/basebackup → uploading → succeeded;
@@ -933,20 +946,27 @@ DOTNET_CLI_UI_LANGUAGE=en dotnet build src/PgWorker.slnx -c Debug --nologo > /tm
    обращения к пофайловому layout (list `full/<id>/...`, ожидания
    `backup_manifest`-объекта, подсчёты файлов) заменить: объект один
    `full/<id>.tar`; листинг `full/`-префикса возвращает один ключ.
-   Сценарии: `E2eBackupJobsScenarios` (ассерты набора), 
-   `E2eBackupFailsOnBadS3Scenarios`, `E2eBackupPoolScenarios`,
-   `E2eBackupVerifyScenarios` (verify-фаза — после шага 14; сценарий
-   прогонится в шаге 15 — сейчас только компиляция), `E2eRestoreScenarios`/
-   `E2eRestoreNewClusterScenarios`/`E2eDrillScenarios` (компиляция — прогон
-   в шагах 13/19), `E2eRetentionScenarios` (прогон в шаге 16),
-   `E2eSupervisorOrphan*` (прогон в шаге 17).
-2. Прогнать сценарий полных: `E2eBackupJobsScenarios` (+FailsOnBadS3/Pool —
-   они в той же серии).
+   Сценарии (все — компиляция сейчас; фактические прогоны по фазам):
+   `E2eBackupJobsScenarios`, `E2eBackupFailsOnBadS3Scenarios`,
+   `E2eBackupPoolScenarios` + его наследники `PoolNotSelectedScenarios`/
+   `PoolMasterReplicaSplitScenarios`/`PoolSingleNodeScenarios`/
+   `PoolFailoverExhaustionScenarios`/`PoolRoleSwitchScenarios`/
+   `PoolReadAnyNodeScenarios` (прогон — п.2 этого шага);
+   `E2eBackupVerifyScenarios` (прогон — шаг 19; verify-механика — шаг 14);
+   `E2eRestoreScenarios`/`E2eRestoreNewClusterScenarios` (прогон — шаг 13);
+   `E2eDrillScenarios`/`E2eRetentionScenarios`/`E2eSupervisorOrphan*`
+   (прогон — шаг 19).
+2. Прогон серий фазы B: полный одним объектом + отказные (единственное
+   E2E-покрытие Abort/retry-семантики multipart — требование 3 roadmap,
+   anti-goal spec): `E2eBackupJobsScenarios`,
+   `E2eBackupFailsOnBadS3Scenarios` и все Pool-серии (классы-наследники
+   `E2eBackupPoolScenarios` — самостоятельные FQN, фильтр по базовому
+   имени их НЕ матчит).
 3. После серии — зачистка docker-остатков (`docker ps -a | grep pgw`,
    `docker network prune -f`) по правилам AGENTS.md.
 
 **Выход:** E2E: полный бэкап = один объект `full/<id>.tar`; COMPLETED в
-etcd; отказные сценарии живы.
+etcd; отказные сценарии (пул/недоступный S3) живы.
 
 **Проверка (три отдельные команды, по порядку; перед тестами —
 статподготовка; каждая фаза >60с — `[PHASE]`-лог теста уже ведёт фикстура):**
@@ -959,9 +979,11 @@ DOTNET_CLI_UI_LANGUAGE=en dotnet run --project src/tests/PgWorker.E2ePrepare -c 
 ```
 Ожидание `exit=0`, в логе штамп готовности образов. Затем:
 ```
-DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/PgWorker.E2eTests -c Release --no-build --filter "FullyQualifiedName~E2eBackupJobsScenarios" > /tmp/t01-s11-e2e.log 2>&1; echo "exit=$?"
+DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/PgWorker.E2eTests -c Release --no-build --filter "FullyQualifiedName~E2eBackupJobsScenarios|FullyQualifiedName~E2eBackupFailsOnBadS3Scenarios|FullyQualifiedName~PoolNotSelectedScenarios|FullyQualifiedName~PoolMasterReplicaSplitScenarios|FullyQualifiedName~PoolSingleNodeScenarios|FullyQualifiedName~PoolFailoverExhaustionScenarios|FullyQualifiedName~PoolRoleSwitchScenarios|FullyQualifiedName~PoolReadAnyNodeScenarios" > /tmp/t01-s11-e2e.log 2>&1; echo "exit=$?"
 ```
-Ожидание `exit=0`, в `/tmp/t01-s11-e2e.log` только Passed. Длинные логи —
+Ожидание `exit=0`, в `/tmp/t01-s11-e2e.log` только Passed (фильтр покрывает
+все 8 классов серий фазы B по фактическим именам — см. «Действие» п.2).
+Длинные логи —
 разбор из файла, не перезапускать упавшие без анализа логов (AGENTS.md).
 
 **Связь со spec:** §4 фаза 2 (E2E полного одним объектом), §7 (критерий
@@ -979,7 +1001,7 @@ DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/PgWorker.E2eTests -c Release --n
 
 ---
 
-### Шаг 12. RestoreOperation: потоковая распаковка (без юнитов сети — tar-тесты шага 1 покрывают reader; операционная склейка — E2E шага 13)
+### Шаг 12. RestoreOperation: потоковая распаковка (TDD)
 
 **Вход:** шаги 1, 6, 10 слиты.
 
@@ -990,7 +1012,8 @@ downloading (union-лист + цикл скачивания, строки ~122�
    streamClient = null; foreach (var ep in _request.S3.Endpoints) { var c =
    CreateClient(ep); if (await ((IStreamObjectS3)c).HeadObjectAsync(cluster,
    shard, $"full/{_request.BackupId}.tar", token) is { IsSuccess: true,
-   Value: true }) { client = c; streamClient = (IStreamObjectS3)c; break; } }`
+   Value.Exists: true }) { client = c; streamClient = (IStreamObjectS3)c;
+   break; } }`
    — не найден ни на одном → `Fail(phase, $"full/{_request.BackupId}.tar:
    object not found")` (transient-семантика сохранена: failed/downloading).
    `CreateClient(ep)` — приватный helper `new BackupS3(new S3ClientOptions(
@@ -1004,18 +1027,19 @@ downloading (union-лист + цикл скачивания, строки ~122�
    CreateDirectory(pgdata); while (await reader.ReadHeaderAsync(token) is
    { } e) { var dest = Path.Combine(pgdata, e.Name.Replace('/',
    Path.DirectorySeparatorChar)); switch (e.TypeFlag) { case TarTypeFlags.
-   Dir: Directory.CreateDirectory(dest); reader.SkipData(); break; case
+   Dir: Directory.CreateDirectory(dest); await reader.SkipDataAsync(token);
+   break; case
    TarTypeFlags.Symlink: (существует → File.Delete/Directory.Delete)
-   File.CreateSymbolicLink(dest, e.LinkName); reader.SkipData(); break;
+   File.CreateSymbolicLink(dest, e.LinkName); await reader.SkipDataAsync(
+   token); break;
    default (File/LegacyFile): Directory.CreateDirectory(Path.GetDirectoryName(
    dest)); await using (var fs = new FileStream(dest, FileMode.Create,
    FileAccess.Write, FileShare.None)) await reader.OpenData().CopyToAsync(fs,
    64KiБ, token); if (!OperatingSystem.IsWindows() &&
    Path.GetFullPath(dest).StartsWith(pgdata)) File.SetUnixFileMode(dest,
-   (UnixFileMode)(e.Mode & 0x1FF)); break; } }` — `SkipData()` — НОВЫЙ метод
-   `TarStreamReader`: дочитать данные+padding записи (добавить в шаг 1-класс:
-   `public async Task SkipDataAsync(CancellationToken ct)`; для Dir/Symlink
-   Size=0 — допустимо вызывать OpenData/Dispose). Прогресс-лог `[restore]
+   (UnixFileMode)(e.Mode & 0x1FF)); break; } }` — `SkipDataAsync` — НОВЫЙ
+   метод `TarStreamReader` (подпункт 12.1; для Dir/Symlink Size=0 —
+   no-op). Прогресс-лог `[restore]
    extracting ... every 512 МиБ` по счётчику байт. Отказ/битый tar →
    Fail(downloading, однострочно).
 4. Проверка `backup_label` после распаковки — оставить (файл теперь из tar).
@@ -1029,13 +1053,17 @@ downloading (union-лист + цикл скачивания, строки ~122�
    изменений. `_targetFactory`-шов сохранён (фейк на endpoint).
 
 **Выход:** restore/drill распаковывают tar-объект потоково; фазы/семантика
-прежние; drill — тот же код (ScratchRoot).
+прежние; drill — тот же код (ScratchRoot); юнит-кейсы операции переведены
+на tar-объект.
 
 **Проверка:**
 ```
-DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/PgWorker.UnitTests -c Debug --filter "FullyQualifiedName~TarStreamTests|FullyQualifiedName~TarWriterTests" --nologo && DOTNET_CLI_UI_LANGUAGE=en dotnet build src/PgWorker.slnx -c Debug --nologo > /tmp/t01-s12.log 2>&1; echo "exit=$?"
+DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/PgWorker.UnitTests -c Debug --filter "FullyQualifiedName~RestoreOperationTests|FullyQualifiedName~TarStreamTests|FullyQualifiedName~TarWriterTests" --nologo > /tmp/t01-s12.log 2>&1; echo "exit=$?"
 ```
-Ожидание: юниты PASS, `exit=0`. Поведенческое покрытие — E2E шага 13.
+Ожидание `exit=0`, только Passed: существующий
+`src/tests/PgWorker.UnitTests/PgNode/RestoreOperationTests.cs` переписан
+(подпункт 12.3) и зелён вместе с tar-тестами. Поведенческое E2E-покрытие —
+шаг 13.
 
 **Связь со spec:** §3.6; §6.9 (endpoint фиксирован, транспортный отказ =
 transient); §6.22 (каталоги лениво + права); §6.15 (typeflag).
@@ -1044,7 +1072,7 @@ transient); §6.22 (каталоги лениво + права); §6.15 (typefla
 
 12.1. Добавь метод `public async Task SkipDataAsync(CancellationToken ct)`
 в `src/PgWorker.Backups/Tar/TarStreamReader.cs`: дочитать `Size`
-байт данных + padding (кусками 64 КиБ в `/dev/null`-буфер); вызвать
+байт данных + padding (кусками 64 КиБ в буфер-мусорку); вызвать
 запрещено после `OpenData()` той же записи — кидать
 `InvalidOperationException`.
 
@@ -1052,6 +1080,33 @@ transient); §6.22 (каталоги лениво + права); §6.15 (typefla
 `src/PgWorker.PgNode/Operations/RestoreOperation.cs` по «Действие» п.1–5
 (сильная модель уже выделила строки ~122–169; using добавить
 `PgWorker.Backups.Tar`). Комментарии русские.
+
+12.3. ПОЛНОСТЬЮ перепиши `src/tests/PgWorker.UnitTests/PgNode/
+RestoreOperationTests.cs` под новую механику скачивания (шаг ломает
+существующий файл: его `FakeS3 : IBackupS3` не реализует
+`IStreamObjectS3` — каст в операции упал бы `InvalidCastException` во ВСЕХ
+кейсах): замени `FakeS3` на локальный `FakeTarS3 : IBackupS3,
+IStreamObjectS3` — хранит один tar-объект `full/<backupId>.tar` (байты
+собирает через `TarStreamWriter` из списка тестовых записей:
+`backup_label` с валидной строкой `START WAL LOCATION: ... (file
+000000010000000000000002)` + пара файлов/каталогов `pg_wal/…`);
+`HeadObjectAsync` → `Success((true, размер))`; `GetObjectStreamAsync` →
+`MemoryStream` объекта; `GetObjectRangeAsync` → срез массива; прочие
+методы `IBackupS3` — `throw new NotSupportedException()`. Кейсы
+union-листинга/пофайловой загрузки (если были) — удалить; вместо них:
+`Downloading_ExtractsTarFiles_IntoPgdata` (после операции в целевом
+каталоге есть файлы набора); `TarObjectNotFound_AllEndpointsMiss_Failed
+Downloading` (Head=false везде → failed/фаза downloading, error содержит
+`not found`); `CorruptTar_FailedDownloading` (объект-мусор без валидных
+заголовков → failed/downloading). Существующие кейсы НЕ-скачивательной
+механики (`HappyPath_IncidentEditsAndCallOrder_ThenSucceeded`,
+`AutoConfOverrides_ContainFullSet_TargetTimeOnlyWhenSet`,
+`LatestTarget_NoRecoveryTargetTimeLine`,
+`PollRetries_PromoteWindow_BeforeOk`,
+`CancelDuringRecoveryPoll_StateCancelled_NotFailed` и остальные) —
+СОХРАНИТЬ как есть (FakeRunner-моки auto.conf/pg_ctl не зависят от
+механики скачивания), они должны пройти на новом фейке без правок тел —
+правится только источник набора. AAA-комментарии сохранить.
 
 ---
 
@@ -1088,23 +1143,30 @@ E2eRestoreScenarios|FullyQualifiedName~E2eRestoreNewClusterScenarios`;
    алгоритм `Checksum-Algorithm` ≠ SHA256 — исключение (мы задаём SHA256
    при съёме). Вернуть словарь Path→ManifestFile.
 2. Переписать `src/PgWorker.PgNode/Operations/VerifyOperation.cs`:
-   - Фаза `downloading`: фиксация endpoint (HEAD-цикл как в шаге 12) →
-     хвост: `tail = 8 МиБ; for attempt in 1..4 { var (data, totalSize) =
-     await streamClient.GetObjectRangeAsync(cluster, shard, key, Math.Max(
-     0, totalSize - tail), totalSize - 1, token); if (TryFindManifest(data,
-     totalSize - dataLength (начало диапазона), out var manifestJson))
-     break; tail *= 2; }` — не найден за 4 попытки → Fail(downloading,
+   - Фаза `downloading`: фиксация endpoint (HEAD-цикл как в шаге 12 —
+     `HeadObjectAsync` возвращает и размер: `{ IsSuccess: true,
+     Value.Exists: true }` → `long size = Value.SizeBytes`) → хвост:
+     `var tail = 8L << 20; for (int attempt = 1; attempt <= 4; attempt++)
+     { var start = Math.Max(0, size - tail); var range = await
+     streamClient.GetObjectRangeAsync(cluster, shard, key, start, size - 1,
+     token); if (!range.IsSuccess) { Fail(downloading, ...); return; }
+     if (TryFindManifest(range.Value.Data, start, out var manifestJson))
+     break; tail <<= 1; }` — не найден за 4 попытки → Fail(downloading,
      "backup_manifest not found in tail") (transient-семантика:
      транспортный сбой — тоже failed/downloading; различие permanent здесь
      не нужно: отсутствие манифеста у Complete-объекта — битые данные, но
      фазу оставляем downloading/transient — воркер ретраит; вечный цикл
      исключён VerifyTimeoutSec-бюджетом супервизора — семантика прежняя
-     «сбой скачивания transient»).
-   - `TryFindManifest`: сканирование буфера от `firstHeader = (start % 512
-     == 0 ? start : start + (512 - start % 512))` с шагом 512: заголовок с
-     валидным checksum (переиспользовать разбор шага 1: приватный доступ —
+     «сбой скачивания transient»). Размер объекта — ТОЛЬКО из HEAD
+     (спец §6.23: `GetObjectRangeAsync` возвращает байты диапазона,
+     полный размер ему не нужен).
+   - `TryFindManifest(byte[] data, long rangeStart, out string?)`: сканирование
+     буфера от `firstHeader = (rangeStart % 512 == 0 ? rangeStart :
+     rangeStart + (512 - rangeStart % 512))` (позиция в объекте; смещение
+     в буфере = позиция − rangeStart) с шагом 512: заголовок с валидным
+     checksum (переиспользовать разбор шага 1: приватный доступ —
      сделать в `TarStreamReader` internal-метод `static TarEntry?
-     TryParseHeaderAt(byte[] buf, int offset)` + internal-ctor записи) и
+     TryParseHeaderAt(byte[] buf, int offset)`) и
      именем `backup_manifest` → данные записи в буфере (полностью) → ASCII
      string.
    - Фаза `verifying`: `GetObjectStreamAsync` → `TarStreamReader` →
@@ -1145,21 +1207,27 @@ E2eRestoreScenarios|FullyQualifiedName~E2eRestoreNewClusterScenarios`;
 ```
 DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/PgWorker.UnitTests -c Debug --filter "FullyQualifiedName~BackupManifestTests|FullyQualifiedName~VerifyOperationTests" --nologo
 ```
-Ожидание: PASS (`BackupManifestTests`: ParseFiles эталонного JSON-фрагмента
-манефеста PG (Fixture-строка с 2 файлами), битый JSON → исключение,
-Checksum-Algorithm CRC32 → исключение; `VerifyOperationTests` — НОВЫЙ файл:
-фейк endpoint-клиента `IBackupS3+IStreamObjectS3` с собранным tar (writer
+Ожидание: PASS (`BackupManifestTests` — новый файл: ParseFiles эталонного
+JSON-фрагмента манифеста PG (Fixture-строка с 2 файлами), битый JSON →
+исключение, Checksum-Algorithm CRC32 → исключение;
+`VerifyOperationTests` — СУЩЕСТВУЮЩИЙ файл
+(`src/tests/PgWorker.UnitTests/PgNode/VerifyOperationTests.cs`, кейсы
+pg_verifybackup/staging с `FakeRunner` и ctor `new VerifyOperation(request,
+runner, registry, staging, ...)`) — ПОЛНОСТЬЮ ЗАМЕНЯЕТСЯ (старые кейсы
+удаляются): фейк endpoint-клиента `IBackupS3+IStreamObjectS3` с собранным
+tar (writer
 шага 2 с манифестом в конце): OK-набор → succeeded/verifying; битый байт
 файла → failed "checksum mismatch"; лишний файл → failed "unexpected";
 отсутствующий → failed "missing"; объект < 8 МиБ → Range запрошен от 0
-(ассерт фейка: минимальный start); транспортный отказ GetObjectRange →
+(ассерт фейка: минимальный start; размер фейк отдаёт из HeadObjectAsync);
+транспортный отказ GetObjectRange →
 failed/downloading; сквозной sha256 не сошёлся → failed "object sha256
 mismatch").
 
-**Связь со spec:** §3.5; §6.7 (двухфазность, хвост/удвоение ≤4); Review
-Focus 5.
+**Связь со spec:** §3.5; §6.7 (двухфазность, хвост/удвоение ≤4); §6.23
+(размер из HEAD); Review Focus 5.
 
-**Подпункты:**
+**Подпункты (порядок исполнения — по номерам):**
 
 14.1. Создай `src/PgWorker.PgNode/BaseBackup/BackupManifest.cs` по
 «Действие» п.1 (namespace `PgWorker.PgNode.BaseBackup`; `ManifestFile`/
@@ -1177,22 +1245,27 @@ registry, Func<string, IBackupS3>? targetFactory = null)`; фазы; helpers
 `TryFindManifest`/`VerifyPass`; using `PgWorker.Backups.Tar`).
 Комментарии русские.
 
+14.4. Добавь `string? Sha256 = null` (`[JsonPropertyName("sha256")]`) в
+ОБА record'а `StartVerifyRequest`: `src/PgWorker.PgNode/Operations/
+ApiContracts.cs` и `src/PgWorker.Backups/WalReceiverApiClient.cs`.
+
+14.5. Создай файл `src/tests/PgWorker.UnitTests/PgNode/
+BackupManifestTests.cs` и ПОЛНОСТЬЮ замени существующий
+`src/tests/PgWorker.UnitTests/PgNode/VerifyOperationTests.cs` (старые
+кейсы pg_verifybackup/staging/FakeRunner-целиком удалить — новая операция
+не запускает процессов и не пишет на диск) по «Проверке»: фейк-клиент
+`IBackupS3 + IStreamObjectS3` хранит tar-объект (собери `TarStreamWriter`-ом
+в MemoryStream: файлы + `backup_manifest` ПОСЛЕДНЕЙ записью перед
+FinishAsync), `HeadObjectAsync` → `Success((true, размер))`; AAA.
+
 14.6. Выполни зачистку «Действие» п.4: в `NodePaths.cs` удали константу
 `Staging` (doc-комментарий перепиши без staging); в
 `NodeOperationFactory.cs` убери параметр `stagingRoot` (вызов
 `CreateVerify` — `new VerifyOperation(request, registry)`); в
 `src/PgWorker.PgNode/Program.cs` убери аргумент stagingRoot у создания
-`NodeOperationFactory` (найди по grep `NodeOperationFactory`). Скомпилируй
-командой из «Проверки» шага.
-
-14.4. Добавь `string? Sha256 = null` (`[JsonPropertyName("sha256")]`) в
-ОБА record'а `StartVerifyRequest`: `src/PgWorker.PgNode/Operations/
-ApiContracts.cs` и `src/PgWorker.Backups/WalReceiverApiClient.cs`.
-
-14.5. Создай тесты `src/tests/PgWorker.UnitTests/PgNode/
-BackupManifestTests.cs` и `src/tests/PgWorker.UnitTests/PgNode/
-VerifyOperationTests.cs` по «Проверке» (фейк-клиент: собрать tar через
-`TarStreamWriter` в MemoryStream → отдавать как stream/range; AAA).
+`NodeOperationFactory` (найди по grep `NodeOperationFactory`). Затем
+запусти команду «Проверки» шага — юниты + компиляция после ВСЕХ
+подпунктов.
 
 ---
 
@@ -1304,7 +1377,8 @@ IBackupS3 — `throw new NotSupportedException()`, кроме используе
 `targetFactory`-параметр конструктора `PoolBackupS3` (паттерн существующих
 тестов файла). Кейсы: 1-я цель отказала → 2-я удалила → успех; все
 отказали → маркер `s3-pool-exhausted` в ошибке. ListFullsAsync-кейс: если
-в файле есть list-фейки — обновить ожидания под `.tar`-ключи; нет — не
+в `PoolBackupS3Tests` (фейк-цель `FakeTargetS3` с list-делегатами) есть
+листинг-кейсы — обновить ожидания под `.tar`-ключи; таких нет — не
 добавлять (покрывается E2E). AAA.
 
 ---
@@ -1323,9 +1397,13 @@ IBackupS3 — `throw new NotSupportedException()`, кроме используе
    Удаление: `DeleteObjectAsync(cluster, shard, $"full/{id}.tar")`
    (PoolBackupS3-обёртка из шага 16). recheck-подтверждение: повторный
    list — ключ исчез.
-2. NEW-гигиена: в конец `SweepShardAsync`: per-endpoint цикл по write-
-   списку пула (контекст уже есть в вызывающем коде — `BackupS3Factory`-
-   резолв; сверить по вызывающему коду `BackupSupervisorProcess.TickAsync`):
+2. NEW-гигиена: в конец `SweepShardAsync`: перебор endpoints =
+   ОБЪЕДИНЕНИЕ `WriteMaster ∪ WriteReplica` пула (сессии multipart
+   создаёт полный на write-списке, зафиксированном ПО РОЛИ на старте
+   операции — супервизор роль снятия не знает, потому обходятся ОБА
+   списка; дедуп по endpoint); контекст пула уже есть в вызывающем коде —
+   `BackupS3Factory`-резолв (`BackupPoolContext.WriteMaster`/`WriteReplica`;
+   сверить по вызывающему коду `BackupSupervisorProcess.TickAsync`):
    для каждого endpoint строить единичный `BackupS3` (helper как в шаге
    8/12) → `ListMultipartUploadsAsync($"{cluster}/{shard}/")` → для каждой
    сессии старше `garbageMinAgeSec` (Initiated) → `AbortMultipartUploadAsync(
@@ -1382,8 +1460,9 @@ using — по компилятору.
    первая запись tar-объекта полного; 64 КиБ покрывают заголовок+содержимое
    с запасом».
 2. `PoolBackupS3`: добавить реализацию `IStreamObjectS3` (класс объявляет
-   интерфейс): `HeadObjectAsync` — read-перебор до `true`; если все цели
-   ответили NotFound → `Success(false)`; `GetObjectRangeAsync` — read-перебор
+   интерфейс): `HeadObjectAsync` — read-перебор целей; первая цель, где
+   объект существует, даёт `Success((true, size))`; все NotFound →
+   `Success((false, 0))` (spec §6.23); `GetObjectRangeAsync` — read-перебор
    до найденного (NotFound → следующая цель; образец: `GetObjectToFileAsync`
    пула); `GetObjectStreamAsync` — НЕ реализуем в пуле (операции приёмника
    строят единичный клиент): метод явного исключения
@@ -1431,11 +1510,9 @@ read-методов файла; `_targetFactory`/`GetTarget`-паттерн фа
 18.4. Создай `src/tests/PgWorker.UnitTests/Backups/FullTarSetTests.cs` по
 «Проверке» (AAA; tar собери `TarStreamWriter`-ом).
 
-> Примечание к 18.1: решение смещает размещение относительно spec §3.2
-> — spec §9 допускает внутренние степени свободы; причина:
-> недопустимость циклической ссылки проектов
-> (PgWorker.PgNode → PgWorker.Backups уже существует, обратной нет).
-> Все имена классов и API сохранены против spec §3.2.
+> Примечание к 18.1: размещение Tar-кода в PgWorker.Backups закреплено
+> spec §3.2 (обоснование — недопустимость циклической ссылки проектов:
+> PgWorker.PgNode → PgWorker.Backups уже существует, обратной нет).
 
 ---
 
@@ -1444,10 +1521,21 @@ read-методов файла; `_targetFactory`/`GetTarget`-паттерн фа
 **Вход:** шаги 11–18 слиты; все юниты зелены.
 
 **Действие (сильная модель):**
-1. Полный прогон серий (по порядку, с зачисткой между):
-   BackupJobs → BackupVerify → Restore → RestoreNewCluster → Drill →
-   Retention → SupervisorOrphanRegistry/DrHold → TliSwitch (PITR-цепочка).
-   Каждая серия — свой прогон с фильтром, логи `/tmp/t01-s19-<серия>.log`.
+1. Полный прогон серий (по порядку, с зачисткой между; фильтры — по
+   фактическим именам классов, Pool-наследники перечислены явно — фильтр
+   по базовому имени их не матчит):
+   `E2eBackupJobsScenarios` → `E2eBackupFailsOnBadS3Scenarios` →
+   `E2eBackupVerifyScenarios` → `E2eRestoreScenarios` →
+   `E2eRestoreNewClusterScenarios` → `E2eDrillScenarios` →
+   `E2eRetentionScenarios` → `E2eSupervisorOrphanRegistryScenarios` →
+   `E2eSupervisorOrphanDrHoldScenarios` → `E2eTliSwitchScenarios`
+   (PITR-цепочка) → Pool-серии: `PoolNotSelectedScenarios`,
+   `PoolMasterReplicaSplitScenarios`, `PoolSingleNodeScenarios`,
+   `PoolFailoverExhaustionScenarios`, `PoolRoleSwitchScenarios`,
+   `PoolReadAnyNodeScenarios` (отказные серии повторно после правок шагов
+   16–18 — Abort/retry-семантика multipart, требование 3 roadmap).
+   Каждая серия — свой прогон с фильтром `FullyQualifiedName~<Класс>`,
+   логи `/tmp/t01-s19-<серия>.log`.
 2. Профиль «большой набор»: НОВЫЙ сценарий `E2eBackupLargeSetScenarios`
    (файл `src/tests/PgWorker.E2eTests/E2E/E2eBackupLargeSetScenarios.cs`,
    по образцу `E2eBackupJobsScenarios`): кластер из фикстуры; засев ~3 ГиБ
@@ -1495,16 +1583,17 @@ namespace, приватные поля фикстуры (копия соседн
 D) → 16→17→18 (фаза E) → 19 (фаза F). Шаг 5 требует живого стенда; если
 стенд недоступен — остановиться (не продолжать фазу B без прототипа).
 
-## Placement-решение (отклонение от spec §3.2, зафиксировано заранее)
+## Placement-решение (зафиксировано spec §3.2)
 
 Tar-код (`TarEntry.cs`, `TarStreamReader.cs`, `TarStreamWriter.cs`) живёт в
 `src/PgWorker.Backups/Tar/`, namespace `PgWorker.Backups.Tar` (шаги 1–2
-создают файлы сразу там). Причина: `TarStreamReader` нужен И приёмнику
+создают файлы сразу там; spec §3.2 закрепляет это размещение явно).
+Причина: `TarStreamReader` нужен И приёмнику
 (FullBackup/Verify/Restore — PgWorker.PgNode), И воркеру
 (`FullTarSet.ReadBackupLabelAsync` — PgWorker.Backups); ссылка проектов
 PgWorker.PgNode → PgWorker.Backups существует, обратной нет (циклические
 ссылки запрещены) — общий код кладётся в PgWorker.Backups. Имена классов и
-API — без изменений против spec §3.2 (допустимая степень свободы, spec §9).
+API соответствуют сводке интерфейсов.
 Остальные файлы BaseBackup (`PgMessage.cs`, `PgWireReplicationClient.cs`,
 `BaseBackupCommand.cs`, `MultipartPartBufferStream.cs`,
 `BackupManifest.cs`) — в `src/PgWorker.PgNode/BaseBackup/`: потребителей

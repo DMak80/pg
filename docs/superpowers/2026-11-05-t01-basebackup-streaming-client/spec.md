@@ -88,7 +88,16 @@ PGDATA на диске; потоковые restore и verify.
 - Тестовый шов: интерфейс потока сообщений + фейк-последовательности
   (юниты «разбор BASE_BACKUP»).
 
-### 3.2 Tar-перепаковщик — `src/PgWorker.PgNode/BaseBackup/Tar/`
+### 3.2 Tar-перепаковщик — `src/PgWorker.Backups/Tar/` (namespace `PgWorker.Backups.Tar`)
+
+Размещение в PgWorker.Backups (не в PgWorker.PgNode): `TarStreamReader`
+нужен И приёмнику (полный/verify/restore — PgWorker.PgNode), И воркеру
+(`FullTarSet.ReadBackupLabelAsync` — §3.7); ссылка проектов
+PgWorker.PgNode → PgWorker.Backups существует, обратной нет (циклические
+ссылки запрещены) — общий код живёт в PgWorker.Backups. Прочие компоненты
+BaseBackup (клиент протокола, команда, multipart-поток, парсер манифеста —
+§3.1/§3.3/§3.5) остаются в `src/PgWorker.PgNode/BaseBackup/`: потребителей
+в воркере у них нет.
 
 - **`TarStreamWriter`** — пишет единый выходной tar в `Stream`-цель:
   заголовки ustar, GNU longname (`L`) для имён >100 байт, PAX (`x`) для
@@ -116,10 +125,15 @@ PGDATA на диске; потоковые restore и verify.
   выключены (уже так — `MaxErrorRetry=0`), per-попыточный таймаут —
   существующий `WalReceiverCore.FileAttemptTimeout` (300 с).
 - **`GetObjectStreamAsync`** (стрим тела) и **Range-GET** (`GetObjectRangeAsync`)
-  — для потокового verify/restore и дубля WAL. Реализация на существующем
-  AWSSDK (`GetObjectRequest` c `ByteRange`); OwnS3 поддерживает Range
-  (206 + Content-Range) и multipart (части 1–10000, ≤5 ГиБ — проверено по
-  коду `../OwnS3/src/OwnS3.App/Handlers`).
+  — для потокового verify/restore и дубля WAL; **`HeadObjectAsync`**
+  возвращает `Result<(bool Exists, long SizeBytes)>` — размер из того же
+  `GetObjectMetadataAsync` (HEAD и так выполняется для фиксации endpoint'а
+  чтения — размер достаётся бесплатно; суффиксный Range `bytes=-N` OwnS3
+  поддерживает, но не используется: полный размер нужен ДО расчёта хвоста
+  манифеста, а парсинг Content-Range уступает прямому HEAD). Реализация на
+  существующем AWSSDK (`GetObjectRequest` c `ByteRange`); OwnS3 поддерживает
+  Range (206 + Content-Range) и multipart (части 1–10000, ≤5 ГиБ — проверено
+  по коду `../OwnS3/src/OwnS3.App/Handlers`).
 
 ### 3.4 Полный бэкап — перепись `src/PgWorker.PgNode/Operations/FullBackupOperation.cs`
 
@@ -149,11 +163,12 @@ FAILED `s3-pool-exhausted`. Отмена (cancel API / linked-CTS бюджета
 
 ### 3.5 Потоковый verify — перепись `src/PgWorker.PgNode/Operations/VerifyOperation.cs`
 
-- Фаза `downloading`: фиксация endpoint'а (HEAD до первого найденного) →
-  Range-GET хвоста объекта (последние 8 МиБ; manifest не найден → удвоение,
-  ≤4 попыток) → `TarStreamReader` по хвосту (валидация checksum) →
-  `backup_manifest` (парс: перечень файлов, размеры, алгоритм sha256,
-  хэши).
+- Фаза `downloading`: фиксация endpoint'а (HEAD до первого найденного —
+  возвращает и размер объекта) → Range-чтение хвоста объекта `[max(0,
+  size−tail), size−1]` (tail = 8 МиБ; manifest не найден → удвоение,
+  ≤4 попыток; объект меньше tail → диапазон от 0) → `TarStreamReader` по
+  хвосту (валидация checksum) → `backup_manifest` (парс: перечень файлов,
+  размеры, алгоритм sha256, хэши).
 - Фаза `verifying`: единственный проход `GetObjectStreamAsync`: для каждой
   tar-записи sha256 на лету; сверка с манифестом: файл существует, размер
   совпал, хэш совпал; лишние файлы/отсутствующие → FAILED (permanent).
@@ -368,6 +383,15 @@ AGENTS; пользователь дал карт-бланш («всё сам, н
     идемпотентен); права из заголовка применяются `chmod`-эквивалентом
     после записи файла.** tar PG содержит каталоговые записи, но
     идемпотентное дублирование создания исключает порядок-зависимость.
+23. **Размер объекта для Range-хвоста манифеста — из HEAD:
+    `HeadObjectAsync` возвращает `Result<(bool Exists, long SizeBytes)>`
+    (размер — `GetObjectMetadataAsync.ContentLength`).** HEAD выполняется
+    в verify/restore и так — для фиксации endpoint'а чтения (решение 9);
+    размер достаётся тем же вызовом, без отдельного запроса и без парсинга
+    `Content-Range` суффиксного Range (который OwnS3 поддерживает, но
+    который дал бы только размер, всё равно требуя первого запроса).
+    Пул-реализация (§3.7 `PoolBackupS3`): перебор read-целей — первая
+    цель, где объект существует, даёт и размер.
 
 ## 7. Критерии приёмки (из roadmap-задачи)
 
@@ -418,5 +442,6 @@ AGENTS; пользователь дал карт-бланш («всё сам, н
 
 Всё выше — обязательные решения; план раскладывает §3–§4 по шагам с
 TDD. Единственные степени свободы — внутренние имена приватных членов и
-порядок вспомогательных юнит-тестов внутри фазы; имена публичных
-компонентов §3 зафиксированы.
+порядок вспомогательных юнит-тестов внутри фазы. Размещение компонентов
+(включая Tar-код в `src/PgWorker.Backups/Tar/`, §3.2) и все имена публичных
+компонентов §3 зафиксированы и выбору исполнителя не принадлежат.
