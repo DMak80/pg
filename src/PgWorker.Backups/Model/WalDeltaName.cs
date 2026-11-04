@@ -63,6 +63,40 @@ public static class WalDeltaName
         return new Piece(segment, start, end, life, role == 'm', new string(md5));
     }
 
+    /// <summary>Покрытие дельта-кусков ТЕКУЩЕГО номера жизни по именам (без
+    /// байтов; arch/pgnode/processes/g-wal-delta-assembly.md, spec §4.2/§4.5):
+    /// база start=0 задаёт начальное покрытие (max end среди баз), затем куски
+    /// start ≤ coverage &lt; end расширяют его жадно (сортировка по start);
+    /// 0 — базы нет (покрытие жизни не начато). Куски чужих номеров не
+    /// участвуют; финалы и t14-версии этим парсером не разбираются вовсе.</summary>
+    public static ulong CoverageOf(IEnumerable<string> names, uint chainLife)
+    {
+        var pieces = new List<Piece>();
+        foreach (var name in names)
+            if (TryParse(name) is { } piece && piece.ChainLife == chainLife)
+                pieces.Add(piece);
+        pieces.Sort((a, b) => a.Start.CompareTo(b.Start));
+
+        ulong coverage = 0;
+        foreach (var piece in pieces)
+            if (piece.Start == 0 && piece.End > coverage)
+                coverage = piece.End; // база жизни
+        bool extended;
+        do
+        {
+            extended = false;
+            foreach (var piece in pieces)
+                if (piece.Start <= coverage && piece.End > coverage)
+                {
+                    coverage = piece.End;
+                    extended = true;
+                }
+        }
+        while (extended);
+
+        return coverage;
+    }
+
     /// <summary>Узкий S3-префикс листинга всего кусочного семейства сегмента
     /// (куски и t14-версии): "&lt;segmentName&gt;.".</summary>
     public static string SegmentPrefixOf(string segmentName)

@@ -20,11 +20,16 @@ public class WalReceiverCoreTests
     private const int Mib = 1024 * 1024;
     private static readonly TimeSpan FastRetry = TimeSpan.FromMilliseconds(20);
 
-    private static WalReceiverOptions Options(int partialIntervalSec = 3) => new(
+    private static WalReceiverOptions Options(
+        int partialIntervalSec = 3, uint chainLife = 0, int partialCompactIntervalSec = 3600,
+        bool isMaster = false) => new(
         "s1a", 5432, "backup_exec", "pw", "postgres",
         "pgw_bkp_c1_shard1", "c1", "shard1",
         ["http://s3a:9000"], ["http://s3a:9000"], "backups", "ak", "sk",
-        PartialIntervalSec: partialIntervalSec);
+        PartialIntervalSec: partialIntervalSec,
+        PartialCompactIntervalSec: partialCompactIntervalSec,
+        ChainLife: chainLife,
+        IsMasterSource: isMaster);
 
     /// <summary>Сегментные байты с long page header (tli, pageaddr=boundary).</summary>
     private static byte[] SegmentData(uint tli, ulong boundary)
@@ -166,8 +171,23 @@ public class WalReceiverCoreTests
                 .ToList();
             return Task.FromResult(Result<IReadOnlyList<WalObject>>.Success(objects));
         }
-        public Task<Result> PutObjectMd5Async(string key, byte[] data, string md5Hex, CancellationToken ct = default)
-            => throw new NotSupportedException();
+        // Устойчивый отказ put дельта-кусков (backpressure дельт, spec §8.4).
+        public bool FailDeltaPuts { get; set; }
+
+        // t15: кусок кладётся с Content-MD5 — фейк сверяет хэш с байтами
+        // (имя и транспорт строятся из одного расчёта) и пишет в словарь.
+        public Task<Result> PutObjectMd5Async(
+            string key, byte[] data, string md5Hex, CancellationToken ct = default)
+        {
+            if (FailDeltaPuts)
+                return Task.FromResult(Result.Failed(
+                    new ApplicationException($"S3 put {key}: test delta failure")));
+            var actual = Convert.ToHexStringLower(System.Security.Cryptography.MD5.HashData(data));
+            if (!string.Equals(actual, md5Hex, StringComparison.Ordinal))
+                return Task.FromResult(Result.Failed(
+                    new ApplicationException($"S3 put {key}: md5 mismatch")));
+            return PutObjectAsync(key, data, null, ct);
+        }
 
         public Task<Result<(byte[] Data, string? ETag)>> GetObjectBytesAsync(
             string cluster, string shard, string key, CancellationToken ct = default)
@@ -969,74 +989,98 @@ public class WalReceiverCoreTests
                 = SegmentData(tli, segId * SegmentBytes);
     }
 
-    // ---- .partial-доотправка приёмника (arch/19 §3) ----
+    // ---- дельта-памп приёмника (t15, spec §4.2) ----
 
     private const string LiveSegment = "000000010000000000000000";
 
-    private static string PartialKey(string segmentName, ulong endLsn)
-        => $"c1/shard1/wal/{WalPartialName.Key(segmentName, endLsn)}";
+    // Префикс имени куска до md5: сегмент + диапазон + номер жизни + роль.
+    private static string DeltaPrefix(
+        string segmentName, ulong start, ulong end, uint chainLife = 0, bool isMaster = false)
+        => $"{segmentName}.partial_{start:x16}_{end:x16}_{chainLife:x8}_{(isMaster ? "m" : "r")}_";
 
-    // AAA: валидный префикс живого сегмента выкладывается пампом; следующая
-    // версия длиннее (каждая длиннее предыдущей).
-    [Fact]
-    public async Task PartialPrefix_Uploaded_LongerThanLying()
+    // Ключ лежащего куска (сид сценария); md5-часть — произвольный hex.
+    private static string SeededPieceKey(
+        string segmentName, ulong start, ulong end, uint chainLife = 0, char md5Char = 'a')
+        => $"c1/shard1/wal/{WalDeltaName.Key(
+            WalFileName.TryParse(segmentName)!.Value, start, end, chainLife, false,
+            new string(md5Char, 32))}";
+
+    // Найти ключ куска по префиксу имени (точно один — иначе null).
+    private static string? PieceKey(FakeS3 s3, string segmentName, ulong start, ulong end,
+        uint chainLife = 0, bool isMaster = false)
     {
-        // Arrange — живой сегмент: запись 60 байт (префикс 100 = 0x64), затем
-        // ещё запись 120 байт (префикс 220 = 0xdc).
+        var prefix = DeltaPrefix(segmentName, start, end, chainLife, isMaster);
+        var keys = s3.Objects.Keys
+            .Where(k => k.StartsWith($"c1/shard1/wal/{prefix}", StringComparison.Ordinal)).ToList();
+        return keys.Count == 1 ? keys[0] : null;
+    }
+
+    // AAA: первая выкладка сессии — база [0..end) с номером жизни/ролью в имени,
+    // байты — весь валидный префикс; прирост — дельта от конца базы.
+    [Fact]
+    public async Task DeltaPump_FirstUploadIsBase_ThenGrowthIsDelta()
+    {
+        // Arrange — живой сегмент: запись 60 байт (префикс 104 = 0x68)
         var source = new FakeXLogSource { WaitForChunks = true };
         source.Push(PartialChunk(0, 64));
         var s3 = new FakeS3();
         using var cts = new CancellationTokenSource();
 
-        // Act — сессия с периодом пампа 1 с; первая версия префикса
+        // Act — сессия с периодом пампа 1 с; первая выкладка — база
         var run = RunSession(source, s3, new FakeSlots(0), Options(partialIntervalSec: 1), cts.Token);
-        await WaitUntilAsync(() => s3.Objects.ContainsKey(PartialKey(LiveSegment, 104)),
-            TimeSpan.FromSeconds(5),
-            () => $"keys=[{string.Join(",", s3.Objects.Keys)}]");
-        source.Push(RecordChunk(104, 128));
-        await WaitUntilAsync(() => s3.Objects.ContainsKey(PartialKey(LiveSegment, 232)),
-            TimeSpan.FromSeconds(5),
-            () => $"keys=[{string.Join(",", s3.Objects.Keys)}]");
+        await WaitUntilAsync(() => PieceKey(s3, LiveSegment, 0, 0x68) is not null,
+            TimeSpan.FromSeconds(5), () => $"keys=[{string.Join(",", s3.Objects.Keys)}]");
 
-        // Assert — обе версии в S3, вторая длиннее (EndLsn больше)
+        // Assert — база: start=0, life 0, роль r, байты = весь префикс
+        var baseKey = PieceKey(s3, LiveSegment, 0, 0x68)!;
+        s3.Objects[baseKey].Should().HaveCount(0x68);
+
+        // Act — прирост записью 128 байт (префикс 232 = 0xE8)
+        source.Push(RecordChunk(0x68, 128));
+        await WaitUntilAsync(() => PieceKey(s3, LiveSegment, 0x68, 0xE8) is not null,
+            TimeSpan.FromSeconds(5), () => $"keys=[{string.Join(",", s3.Objects.Keys)}]");
+
+        // Assert — дельта от конца базы: только прирост
+        var deltaKey = PieceKey(s3, LiveSegment, 0x68, 0xE8)!;
+        s3.Objects[deltaKey].Should().HaveCount(128);
+
         cts.Cancel();
         var (outcome, _, _) = await run;
         outcome.Should().BeNull();
-        s3.Objects.Should().ContainKey(PartialKey(LiveSegment, 104));
-        s3.Objects.Should().ContainKey(PartialKey(LiveSegment, 232));
-        s3.DeletedKeys.Should().BeEmpty("the segment is still live — versions are not absorbed");
+        s3.DeletedKeys.Should().BeEmpty("the segment is still live — pieces are not absorbed");
     }
 
-    // AAA: лежащая версия длиннее снимка (сосед двойной архивации) — put не
-    // выполняется, «только длиннее лежащей» соблюдено.
+    // AAA: лежащее покрытие ТЕКУЩЕГО номера жизни длиннее снимка (сосед двойной
+    // архивации) — put не выполняется.
     [Fact]
-    public async Task PartialPrefix_ShorterThanLying_Skipped()
+    public async Task DeltaPump_LyingCoverageLonger_Skipped()
     {
-        // Arrange — в S3 уже лежит версия с EndLsn 0x5000; снимок сессии — 0x64
+        // Arrange — в S3 лежат база и дельта жизни 0 до 0x5000
         var source = new FakeXLogSource { WaitForChunks = true };
         source.Push(PartialChunk(0, 64));
         var s3 = new FakeS3();
-        var lyingKey = PartialKey(LiveSegment, 0x5000);
-        s3.Objects[lyingKey] = [1, 2, 3];
+        var lyingBase = SeededPieceKey(LiveSegment, 0, 0x5000);
+        s3.Objects[lyingBase] = [1, 2, 3];
         using var cts = new CancellationTokenSource();
 
-        // Act — сессия переживает тик пампа со сверкой листинга
+        // Act — сессия переживает тик пампа со сверкой покрытия
         var run = RunSession(source, s3, new FakeSlots(0), Options(partialIntervalSec: 1), cts.Token);
         await WaitUntilAsync(() => s3.ListCalls > 0, TimeSpan.FromSeconds(5),
             () => $"listCalls={s3.ListCalls} keys=[{string.Join(",", s3.Objects.Keys)}]");
+        await Task.Delay(500, TestContext.Current.CancellationToken);
 
-        // Assert — короткая версия не выложена: осталась только лежащая
+        // Assert — короткое покрытие не выложено: остался только лежащий кусок
         cts.Cancel();
         var (outcome, _, _) = await run;
         outcome.Should().BeNull();
-        s3.Objects.Keys.Where(k => k.Contains(".partial", StringComparison.Ordinal))
-            .Should().BeEquivalentTo([lyingKey]);
+        s3.Objects.Keys.Where(k => k.Contains(".partial_", StringComparison.Ordinal))
+            .Should().BeEquivalentTo([lyingBase]);
     }
 
     // AAA: отказ list-сверки (transient) не рвёт стрим — финал доставляется и
     // подтверждается; памп тик пропускает.
     [Fact]
-    public async Task PartialPrefix_ListFailure_DoesNotBreakStream()
+    public async Task DeltaPump_ListFailure_DoesNotBreakStream()
     {
         // Arrange — list узкого префикса сегмента отвечает отказом
         var source = new FakeXLogSource { WaitForChunks = true };
@@ -1051,40 +1095,161 @@ public class WalReceiverCoreTests
             () => $"listCalls={s3.ListCalls}");
 
         // Act — сегмент закрывается: финальный put и подтверждение проходят
-        source.Push(ZeroChunk(104, SegmentBytes - 104));
+        source.Push(ZeroChunk(0x68, SegmentBytes - 0x68));
         await WaitUntilAsync(() => s3.Objects.ContainsKey($"c1/shard1/wal/{LiveSegment}"),
             TimeSpan.FromSeconds(5),
             () => $"keys=[{string.Join(",", s3.Objects.Keys)}]");
 
-        // Assert — стрим не сломан, финал подтверждён
+        // Assert — стрим не сломан, финал подтверждён, факт отказа — в журнале
         cts.Cancel();
         var (outcome, output, _) = await run;
         outcome.Should().BeNull();
         source.ConfirmJournal.Should().Equal($"{EndLsn(0)}");
-        output.Should().Contain("partial list failed");
+        output.Should().Contain("delta list failed");
     }
 
-    // AAA: .partial НЕ двигает подтверждение слота — журнал подтверждений
-    // пуст до закрытия сегмента и содержит только конец финала после.
+    // AAA: нулевой прирост (EndLsn ≤ coverage) — нового куска нет, «тишина» честна.
     [Fact]
-    public async Task SlotConfirmation_NotMovedByPartial()
+    public async Task DeltaPump_NoGrowth_NoNewPieces()
     {
-        // Arrange — живой сегмент с выложенным .partial
+        // Arrange — живой сегмент с выложенной базой
+        var source = new FakeXLogSource { WaitForChunks = true };
+        source.Push(PartialChunk(0, 64));
+        var s3 = new FakeS3();
+        using var cts = new CancellationTokenSource();
+        var run = RunSession(source, s3, new FakeSlots(0), Options(partialIntervalSec: 1), cts.Token);
+        await WaitUntilAsync(() => PieceKey(s3, LiveSegment, 0, 0x68) is not null,
+            TimeSpan.FromSeconds(5), () => $"keys=[{string.Join(",", s3.Objects.Keys)}]");
+        var piecesAfterBase = s3.Objects.Keys
+            .Where(k => k.Contains(".partial_", StringComparison.Ordinal)).ToList();
+
+        // Act — несколько тиков без прироста
+        await Task.Delay(1500, TestContext.Current.CancellationToken);
+
+        // Assert — новых объектов нет
+        cts.Cancel();
+        var (outcome, _, _) = await run;
+        outcome.Should().BeNull();
+        s3.Objects.Keys.Where(k => k.Contains(".partial_", StringComparison.Ordinal))
+            .Should().BeEquivalentTo(piecesAfterBase);
+    }
+
+    // AAA: лежащий ФИНАЛ сегмента — куски не выкладываются (префикс листинга без
+    // точки возвращает и финал; поглощение/чистка удалят семейство).
+    [Fact]
+    public async Task DeltaPump_LyingFinal_NoPieces()
+    {
+        // Arrange — живой сегмент: база выложена, затем сегмент закрыт соседом
+        var source = new FakeXLogSource { WaitForChunks = true };
+        source.Push(PartialChunk(0, 64));
+        var s3 = new FakeS3();
+        using var cts = new CancellationTokenSource();
+        var run = RunSession(source, s3, new FakeSlots(0), Options(partialIntervalSec: 1), cts.Token);
+        await WaitUntilAsync(() => PieceKey(s3, LiveSegment, 0, 0x68) is not null,
+            TimeSpan.FromSeconds(5), () => $"keys=[{string.Join(",", s3.Objects.Keys)}]");
+        s3.Objects[$"c1/shard1/wal/{LiveSegment}"] = new byte[8]; // финал лежит
+        var piecesAfterFinal = s3.Objects.Keys
+            .Where(k => k.Contains(".partial_", StringComparison.Ordinal)).ToList();
+
+        // Act — прирост после появления финала: памп тик видит финал и молчит
+        source.Push(RecordChunk(0x68, 128));
+        await Task.Delay(1500, TestContext.Current.CancellationToken);
+
+        // Assert — новых кусков нет
+        cts.Cancel();
+        var (outcome, _, _) = await run;
+        outcome.Should().BeNull();
+        s3.Objects.Keys.Where(k => k.Contains(".partial_", StringComparison.Ordinal))
+            .Should().BeEquivalentTo(piecesAfterFinal);
+    }
+
+    // AAA (решение №10): компакция раз в интервал при наличии дельты — база
+    // [0..новый конец) перезаливается; тик без прироста базу не перезаливает.
+    [Fact]
+    public async Task DeltaPump_Compaction_PutsBaseOnGrowth()
+    {
+        // Arrange — период пампа и компакции 1 с (в конфигурации клэмп ≥60)
+        var source = new FakeXLogSource { WaitForChunks = true };
+        source.Push(PartialChunk(0, 64));
+        var s3 = new FakeS3();
+        using var cts = new CancellationTokenSource();
+        var run = RunSession(source, s3, new FakeSlots(0),
+            Options(partialIntervalSec: 1, partialCompactIntervalSec: 1), cts.Token);
+        await WaitUntilAsync(() => PieceKey(s3, LiveSegment, 0, 0x68) is not null,
+            TimeSpan.FromSeconds(5), () => $"keys=[{string.Join(",", s3.Objects.Keys)}]");
+
+        // Act — первый прирост: дельта [0x68..0xE8)
+        source.Push(RecordChunk(0x68, 128));
+        await WaitUntilAsync(() => PieceKey(s3, LiveSegment, 0x68, 0xE8) is not null,
+            TimeSpan.FromSeconds(5), () => $"keys=[{string.Join(",", s3.Objects.Keys)}]");
+
+        // Act — второй прирост: на следующем интервале компакция кладёт базу до свежего конца
+        source.Push(RecordChunk(0xE8, 128));
+        await WaitUntilAsync(() => PieceKey(s3, LiveSegment, 0, 0x168) is not null
+                || PieceKey(s3, LiveSegment, 0xE8, 0x168) is not null,
+            TimeSpan.FromSeconds(10), () => $"keys=[{string.Join(",", s3.Objects.Keys)}]");
+
+        // Assert — база покрывает свежий конец (компакция состоялась)
+        await WaitUntilAsync(() => PieceKey(s3, LiveSegment, 0, 0x168) is not null,
+            TimeSpan.FromSeconds(10), () => $"keys=[{string.Join(",", s3.Objects.Keys)}]");
+
+        // Assert — тик без прироста базу не перезаливает (новых баз не появляется)
+        var bases = s3.Objects.Keys
+            .Where(k => k.Contains(".partial_0000000000000000_", StringComparison.Ordinal)).ToList();
+        await Task.Delay(1500, TestContext.Current.CancellationToken);
+        s3.Objects.Keys.Where(k => k.Contains(".partial_0000000000000000_", StringComparison.Ordinal))
+            .Should().BeEquivalentTo(bases);
+
+        cts.Cancel();
+        var (outcome, _, _) = await run;
+        outcome.Should().BeNull();
+    }
+
+    // AAA: номер жизни сессии кладётся в имя каждого куска (жизнь 2 поверх
+    // лежащих кусков жизни 1 — чужие невидимы, база кладётся с новым номером).
+    [Fact]
+    public async Task DeltaPump_ChainLifeInName_ForeignCoverageIgnored()
+    {
+        // Arrange — в S3 лежит покрытие жизни 1 до 0x5000; сессия — жизнь 2
+        var source = new FakeXLogSource { WaitForChunks = true };
+        source.Push(PartialChunk(0, 64));
+        var s3 = new FakeS3();
+        s3.Objects[SeededPieceKey(LiveSegment, 0, 0x5000, chainLife: 1)] = [1, 2, 3];
+        using var cts = new CancellationTokenSource();
+
+        // Act — первая выкладка сессии жизни 2
+        var run = RunSession(source, s3, new FakeSlots(0),
+            Options(partialIntervalSec: 1, chainLife: 2), cts.Token);
+        await WaitUntilAsync(() => PieceKey(s3, LiveSegment, 0, 0x68, chainLife: 2) is not null,
+            TimeSpan.FromSeconds(5), () => $"keys=[{string.Join(",", s3.Objects.Keys)}]");
+
+        // Assert — база с номером жизни 2 (чужая жизнь 1 покрытие не наследует)
+        cts.Cancel();
+        var (outcome, _, _) = await run;
+        outcome.Should().BeNull();
+        PieceKey(s3, LiveSegment, 0, 0x68, chainLife: 2).Should().NotBeNull();
+    }
+
+    // AAA: куски НЕ двигают подтверждение слота — журнал пуст до закрытия
+    // сегмента и содержит только конец финала после.
+    [Fact]
+    public async Task DeltaPump_SlotConfirmationOnlyOnClose()
+    {
+        // Arrange — живой сегмент с выложенной базой
         var source = new FakeXLogSource { WaitForChunks = true };
         source.Push(PartialChunk(0, 64));
         var s3 = new FakeS3();
         using var cts = new CancellationTokenSource();
 
         var run = RunSession(source, s3, new FakeSlots(0), Options(partialIntervalSec: 1), cts.Token);
-        await WaitUntilAsync(() => s3.Objects.ContainsKey(PartialKey(LiveSegment, 104)),
-            TimeSpan.FromSeconds(5),
-            () => $"keys=[{string.Join(",", s3.Objects.Keys)}]");
+        await WaitUntilAsync(() => PieceKey(s3, LiveSegment, 0, 0x68) is not null,
+            TimeSpan.FromSeconds(5), () => $"keys=[{string.Join(",", s3.Objects.Keys)}]");
 
         // Assert — частичная выкладка подтверждений не дала
-        source.ConfirmJournal.Should().BeEmpty("partial never moves the slot");
+        source.ConfirmJournal.Should().BeEmpty("pieces never move the slot");
 
         // Act — закрытие сегмента
-        source.Push(ZeroChunk(104, SegmentBytes - 104));
+        source.Push(ZeroChunk(0x68, SegmentBytes - 0x68));
         await WaitUntilAsync(() => source.ConfirmJournal.Count > 0, TimeSpan.FromSeconds(5),
             () => $"confirmed=[{string.Join(",", source.ConfirmJournal)}]");
 
@@ -1095,18 +1260,50 @@ public class WalReceiverCoreTests
         source.ConfirmJournal.Should().Equal($"{EndLsn(0)}");
     }
 
-    // AAA: финал поглощает все версии .partial сегмента (batch-delete).
+    // AAA (spec §8.4): отказы put дельт — backpressure без разрыва стрима и без
+    // подтверждения слота; после снятия отказа памп доезжает.
     [Fact]
-    public async Task FinalAbsorbsPartialVersions()
+    public async Task DeltaPump_PutFailures_BackpressureNoConfirm()
     {
-        // Arrange — в S3 лежат две версии .partial будущего финала
+        // Arrange — put кусков устойчиво падает
+        var source = new FakeXLogSource { WaitForChunks = true };
+        source.Push(PartialChunk(0, 64));
+        var s3 = new FakeS3 { FailDeltaPuts = true };
+        using var cts = new CancellationTokenSource();
+        var run = RunSession(source, s3, new FakeSlots(0), Options(partialIntervalSec: 1), cts.Token);
+
+        // Act — несколько циклов ретраев на отказе
+        await WaitUntilAsync(() => s3.ListCalls > 0, TimeSpan.FromSeconds(5),
+            () => $"listCalls={s3.ListCalls}");
+
+        // Assert — куски не выложены, слот не подтверждён (стрим не разорван)
+        PieceKey(s3, LiveSegment, 0, 0x68).Should().BeNull();
+        source.ConfirmJournal.Should().BeEmpty("no confirmation without a final put");
+
+        // Act — отказ снят: памп доезжает следующим тиком
+        s3.FailDeltaPuts = false;
+        await WaitUntilAsync(() => PieceKey(s3, LiveSegment, 0, 0x68) is not null,
+            TimeSpan.FromSeconds(10), () => $"keys=[{string.Join(",", s3.Objects.Keys)}]");
+
+        // Assert — сессия жива, кусок выложен, подтверждение по-прежнему только по финалу
+        cts.Cancel();
+        var (outcome, _, _) = await run;
+        outcome.Should().BeNull();
+        source.ConfirmJournal.Should().BeEmpty();
+    }
+
+    // AAA: финал поглощает куски ЛЮБЫХ номеров жизни (batch-delete семейства).
+    [Fact]
+    public async Task FinalAbsorbsPiecesOfAnyLife()
+    {
+        // Arrange — в S3 лежат куски двух жизней будущего финала
         var source = new FakeXLogSource { WaitForChunks = true };
         source.Push(Chunk(0));
         var s3 = new FakeS3();
-        var shortVersion = PartialKey(LiveSegment, 0x10);
-        var longVersion = PartialKey(LiveSegment, 0x20);
-        s3.Objects[shortVersion] = [1];
-        s3.Objects[longVersion] = [2];
+        var life1 = SeededPieceKey(LiveSegment, 0, 0x10, chainLife: 1, md5Char: 'a');
+        var life2 = SeededPieceKey(LiveSegment, 0, 0x20, chainLife: 2, md5Char: 'b');
+        s3.Objects[life1] = [1];
+        s3.Objects[life2] = [2];
         using var cts = new CancellationTokenSource();
 
         // Act — сегмент закрывается целиком
@@ -1116,18 +1313,18 @@ public class WalReceiverCoreTests
             TimeSpan.FromSeconds(5),
             () => $"keys=[{string.Join(",", s3.Objects.Keys)}]");
         await WaitUntilAsync(
-            () => s3.DeletedKeys.Contains(shortVersion) && s3.DeletedKeys.Contains(longVersion),
+            () => s3.DeletedKeys.Contains(life1) && s3.DeletedKeys.Contains(life2),
             TimeSpan.FromSeconds(5),
             () => $"deleted=[{string.Join(",", s3.DeletedKeys)}]");
-        // Assert — версии удалены одним batch; финал на месте и после тика пампа
-        // версии НЕ пересоздаются (лежащий финал = закрытый сегмент, arch/19 §3)
+
+        // Assert — куски удалены одним batch; после тика пампа не пересоздаются
         await Task.Delay(1200, TestContext.Current.CancellationToken);
         cts.Cancel();
         var (outcome, _, _) = await run;
         outcome.Should().BeNull();
-        s3.Objects.Should().NotContainKey(shortVersion);
-        s3.Objects.Should().NotContainKey(longVersion);
-        s3.Objects.Keys.Where(k => k.Contains(".partial", StringComparison.Ordinal))
-            .Should().BeEmpty("a closed segment never gets .partial versions");
+        s3.Objects.Should().NotContainKey(life1);
+        s3.Objects.Should().NotContainKey(life2);
+        s3.Objects.Keys.Where(k => k.Contains(".partial_", StringComparison.Ordinal))
+            .Should().BeEmpty("a closed segment never gets delta pieces");
     }
 }

@@ -110,4 +110,83 @@ public class WalDeltaNameTests
         string.CompareOrdinal(a, b).Should().BeNegative();
         string.CompareOrdinal(legacy, a).Should().BeNegative();
     }
+
+    // ---: CoverageOf — покрытие по именам кусков текущей жизни (t15) ----
+
+    // AAA: пустой список — покрытия нет.
+    [Fact]
+    public void CoverageOf_Empty_Zero()
+    {
+        // Arrange / Act / Assert
+        WalDeltaName.CoverageOf([], chainLife: 1).Should().Be(0UL);
+    }
+
+    // AAA: дельта без базы (start > 0) покрытие не начинает.
+    [Fact]
+    public void CoverageOf_NoBase_Zero()
+    {
+        // Arrange — только дельта [0x100..0x200)
+        var seg = WalFileName.TryParse(Seg)!.Value;
+        var delta = WalDeltaName.Key(seg, 0x100, 0x200, 1, true, new string('a', 32));
+
+        // Act / Assert
+        WalDeltaName.CoverageOf([delta], chainLife: 1).Should().Be(0UL);
+    }
+
+    // AAA: база + примыкающие дельты — покрытие до конца последней.
+    [Fact]
+    public void CoverageOf_BaseAndAdjacent_EndOfLast()
+    {
+        // Arrange
+        var seg = WalFileName.TryParse(Seg)!.Value;
+        string[] names =
+        [
+            WalDeltaName.Key(seg, 0, 0x100, 1, true, new string('a', 32)),
+            WalDeltaName.Key(seg, 0x100, 0x200, 1, false, new string('b', 32)),
+            WalDeltaName.Key(seg, 0x200, 0x300, 1, false, new string('c', 32)),
+        ];
+
+        // Act / Assert
+        WalDeltaName.CoverageOf(names, chainLife: 1).Should().Be(0x300UL);
+    }
+
+    // AAA: дыра в покрытии — покрытие останавливается на её границе.
+    [Fact]
+    public void CoverageOf_Gap_StopsAtGap()
+    {
+        // Arrange — [0..0x100) и [0x200..0x300), дыра [0x100..0x200)
+        var seg = WalFileName.TryParse(Seg)!.Value;
+        string[] names =
+        [
+            WalDeltaName.Key(seg, 0, 0x100, 1, true, new string('a', 32)),
+            WalDeltaName.Key(seg, 0x200, 0x300, 1, false, new string('b', 32)),
+        ];
+
+        // Act / Assert
+        WalDeltaName.CoverageOf(names, chainLife: 1).Should().Be(0x100UL);
+    }
+
+    // AAA: куски чужого номера жизни не участвуют.
+    [Fact]
+    public void CoverageOf_ForeignLife_Ignored()
+    {
+        // Arrange — база жизни 2 при запросе жизни 1
+        var seg = WalFileName.TryParse(Seg)!.Value;
+        var foreign = WalDeltaName.Key(seg, 0, 0x100, 2, true, new string('a', 32));
+
+        // Act / Assert
+        WalDeltaName.CoverageOf([foreign], chainLife: 1).Should().Be(0UL);
+        WalDeltaName.CoverageOf([foreign], chainLife: 2).Should().Be(0x100UL);
+    }
+
+    // AAA: финал и t14-версия в списке имён — не куски, игнорируются.
+    [Fact]
+    public void CoverageOf_FinalAndLegacy_Ignored()
+    {
+        // Arrange
+        string[] names = [Seg, WalPartialName.Key(Seg, 0x500)];
+
+        // Act / Assert
+        WalDeltaName.CoverageOf(names, chainLife: 0).Should().Be(0UL);
+    }
 }

@@ -392,18 +392,28 @@ public sealed class WalReceiverCore
                 var assembler = new SegmentAssembler(startAt);
                 uint prevTli = 0;
 
-                // .partial-памп (arch/19 §3): фоновая задача итерации — выкладка
-                // валидного префикса незакрытого сегмента (только длиннее лежащей);
-                // подтверждение слота НЕ двигает (инвариант RPO — только финалы).
-                // Триггеры: таймер PartialIntervalSec ИЛИ сигнал порога из цикла
-                // приёма (4 МиБ).
-                var lastPartialEndLsn = 0UL; // Volatile-гейт прироста (вкл. версии соседа)
+                // Дельта-памп (t15, spec §4.2, arch/pgnode/03 §2): фоновая задача
+                // итерации — выкладка валидного префикса незакрытого сегмента
+                // кусками с номером жизни: первая выкладка сессии — база-компак
+                // [0..end), дальше — только дельты прироста; компакция раз в
+                // PartialCompactIntervalSec при наличии инкремента. Подтверждение
+                // слота НЕ двигает (инвариант RPO — только финалы). Триггеры:
+                // таймер PartialIntervalSec ИЛИ сигнал порога (4 МиБ).
+                var lastPartialEndLsn = 0UL; // Volatile-гейт прироста (вкл. покрытие соседа)
                 var partialGate = new SignalGate();
                 using var partialCts = CancellationTokenSource.CreateLinkedTokenSource(sct);
                 var partialPumpToken = partialCts.Token;
                 var partialPump = Task.Run(async () =>
                 {
                     var interval = TimeSpan.FromSeconds(Math.Max(1, o.PartialIntervalSec));
+                    // Компакция: фактическое значение приходит из конфигурации
+                    // (клэмп ≥60 — на входе конфигурации/env, spec §4.2); здесь —
+                    // только защита от неположительного периода.
+                    var compactInterval = TimeSpan.FromSeconds(Math.Max(1, o.PartialCompactIntervalSec));
+                    string? pumpedSegment = null;  // сегмент сессии (смена → новое покрытие)
+                    ulong coverage = 0;            // конец своего выложенного покрытия
+                    var deltasSinceCompact = 0;    // дельт после последней компакции
+                    var compactAt = DateTimeOffset.MaxValue;
                     while (!partialPumpToken.IsCancellationRequested)
                     {
                         try
@@ -420,48 +430,79 @@ public sealed class WalReceiverCore
                         var snap = assembler.PartialSnapshot();
                         if (snap is not { } shot)
                             continue; // незакрытого сегмента/полной записи нет (§3, развилка 22)
-                        if (shot.EndLsn <= Volatile.Read(ref lastPartialEndLsn))
-                            continue; // нулевой прирост — версии не пере-clay'ются (§3)
 
-                        // Сверка «длиннее лежащей»: list узкого префикса сегмента
-                        // (первая доступная read-нода) — в нём и финал `wal/<seg>`,
-                        // и версии `wal/<seg>.*.partial`; отказ — skip тика (стрим не
-                        // рвём, хвост доедет следующим тиком/финалом).
+                        if (shot.Name != pumpedSegment)
+                        {
+                            // Новый сегмент сессии: покрытие с нуля, первая выкладка — база.
+                            pumpedSegment = shot.Name;
+                            coverage = 0;
+                            deltasSinceCompact = 0;
+                            compactAt = DateTimeOffset.UtcNow + compactInterval;
+                        }
+
+                        if (shot.EndLsn <= coverage)
+                            continue; // нулевой прирост — куски не пере-выкладываются
+
+                        // Компакция (spec решение №10): проверяется ДО выкладки дельты;
+                        // при нулевом приросте база НЕ перезаливается, таймер сдвигается.
+                        if (DateTimeOffset.UtcNow >= compactAt && deltasSinceCompact > 0)
+                        {
+                            var fresh = assembler.PartialSnapshot();
+                            if (fresh is { } s2 && s2.EndLsn > coverage)
+                            {
+                                var compactPut = await PutDeltaAsync(
+                                    s3, events, o, s2.Name, s2.Prefix, 0, s2.EndLsn,
+                                    retry, partialPumpToken, exhaustion);
+                                if (!compactPut.IsSuccess)
+                                    return; // permanent-веток нет, вечный ретрай не завершается
+                                coverage = s2.EndLsn;
+                                Volatile.Write(ref lastPartialEndLsn, s2.EndLsn);
+                                deltasSinceCompact = 0;
+                            }
+                            compactAt = DateTimeOffset.UtcNow + compactInterval;
+                            if (shot.EndLsn <= coverage)
+                                continue; // прирост этого тика покрыт компакцией
+                        }
+
+                        // Листинг узкого префикса БЕЗ ТОЧКИ (wal/<seg>): возвращает и
+                        // лежащий финал wal/<seg>, и всё кусочное семейство; отказ —
+                        // skip тика (стрим не рвём, хвост доедет следующим тиком/финалом).
                         var listed = await s3.ListAsync(
                             o.Cluster, o.Shard, $"wal/{shot.Name}", ct: partialPumpToken);
                         if (!listed.IsSuccess)
                         {
                             Diagnostic(events,
-                                $"partial list failed: {listed.Error!.Message.Split('\n')[0]}");
+                                $"delta list failed: {listed.Error!.Message.Split('\n')[0]}");
                             continue;
                         }
 
-                        // Сегмент уже закрыт (лежит финал) — версии не выкладываются:
-                        // мусор, поглощение/чистка удаляют их; заодно приёмник чужой
-                        // инкарнации не публикует версии по сегментам с финалом.
+                        // Лежащий финал сегмента — куски не выкладываются (поглощение и
+                        // чистка удалят семейство); проверка работает из-за префикса без точки.
                         if (listed.Value.Any(obj =>
                                 string.Equals(obj.Name, shot.Name, StringComparison.Ordinal)))
                             continue;
 
-                        ulong lying = 0;
-                        foreach (var obj in listed.Value)
-                            if (WalPartialName.TryParse(obj.Name) is { } v && v.EndLsn > lying)
-                                lying = v.EndLsn;
+                        // Симметрия TailOf: покрытие кусков ТЕКУЩЕГО номера жизни;
+                        // чужие номера и безномерные legacy игнорируются по построению.
+                        var lying = WalDeltaName.CoverageOf(
+                            listed.Value.Select(x => x.Name), o.ChainLife);
                         if (lying >= shot.EndLsn)
                         {
-                            // Сосед двойной архивации длиннее — ждём прироста за его версию.
+                            // Сосед двойной архивации длиннее — ждём прироста за его покрытие.
                             Volatile.Write(ref lastPartialEndLsn, lying);
                             continue;
                         }
+                        coverage = Math.Max(coverage, lying);
 
-                        var partialKey =
-                            $"{o.Cluster}/{o.Shard}/wal/{WalPartialName.Key(shot.Name, shot.EndLsn)}";
-                        var partialSha = Convert.ToHexString(SHA256.HashData(shot.Prefix));
-                        var putPartial = await PutWithRetryAsync(
-                            s3, events, o, partialKey, shot.Prefix, partialSha, retry, partialPumpToken,
-                            exhaustion, useGuard: false);
-                        if (!putPartial.IsSuccess)
-                            return; // permanent (конфликт невозможен; прочее — вечный ретрай не завершается)
+                        var putDelta = await PutDeltaAsync(
+                            s3, events, o, shot.Name, shot.Prefix, coverage, shot.EndLsn,
+                            retry, partialPumpToken, exhaustion);
+                        if (!putDelta.IsSuccess)
+                            return; // permanent-веток нет, вечный ретрай не завершается
+
+                        if (coverage > 0)
+                            deltasSinceCompact++; // инкремент для компакции (не база)
+                        coverage = shot.EndLsn;
                         Volatile.Write(ref lastPartialEndLsn, shot.EndLsn);
                         events.PutSuccess?.Invoke();
                     }
@@ -820,6 +861,76 @@ public sealed class WalReceiverCore
     /// пер-ЦЕЛЬНЫЙ таймаут (PutAttemptTimeout — requestTimeout каждой цели в
     /// PoolBackupS3) + бюджет ВЫЗОВА (цели записи + 1) × таймаут цели: висящая
     /// первая цель не отменяет перебор — фейловер доезжает до живой ноды.</summary>
+    // Выкладка куска незакрытого сегмента (t15, spec §4.2): байты — срез снимка
+    // префикса [startLsn..endLsn), md5 — в имени куска и в Content-MD5 (один
+    // расчёт); start==0 — база-компак, иначе дельта. Границы — только по целым
+    // записям (снимок даёт валидный префикс сканером сборщика).
+    private static async Task<Result> PutDeltaAsync(
+        IBackupS3 s3, WalSessionEvents events, WalReceiverOptions o,
+        string segmentName, byte[] prefix, ulong startLsn, ulong endLsn,
+        TimeSpan retry, CancellationToken ct, PoolExhaustionFlag exhaustion)
+    {
+        if (WalFileName.TryParse(segmentName) is not { } segment)
+            return Result.Failed(new ApplicationException($"delta: bad segment name {segmentName}"));
+        var segmentStart = ((ulong)segment.Log * WalFileName.SegsPerLog + segment.Seg)
+                           * (ulong)WalFileName.SegmentBytes;
+        var from = startLsn == 0 ? 0 : (int)(startLsn - segmentStart);
+        var to = (int)(endLsn - segmentStart);
+        if (from < 0 || to > prefix.Length || from >= to)
+            return Result.Failed(new ApplicationException(
+                $"delta: range [{startLsn:x}-{endLsn:x}) outside the snapshot of {segmentName}"));
+
+        var bytes = prefix[from..to];
+        var md5Hex = Convert.ToHexStringLower(MD5.HashData(bytes));
+        var key = $"{o.Cluster}/{o.Shard}/wal/" +
+                  WalDeltaName.Key(segment, startLsn, endLsn, o.ChainLife, o.IsMasterSource, md5Hex);
+        return await PutDeltaWithRetryAsync(s3, events, o, key, bytes, md5Hex, retry, ct, exhaustion);
+    }
+
+    // Put дельта-куска с Content-MD5 (t15, spec §4.2): петля бюджета/ретраев та же,
+    // что у PutWithRetryAsync, но гварда чужой цепочки НЕТ — куски не гвардятся
+    // (пересечения разрешает сборка байтовой сверкой, spec решение №12).
+    private static async Task<Result> PutDeltaWithRetryAsync(
+        IBackupS3 s3, WalSessionEvents events, WalReceiverOptions o,
+        string key, byte[] data, string md5Hex, TimeSpan retry, CancellationToken ct,
+        PoolExhaustionFlag exhaustion)
+    {
+        var callBudget = TimeSpan.FromTicks(PutAttemptTimeout.Ticks * (o.S3Endpoints.Count + 1));
+        var attempt = 0;
+        while (true)
+        {
+            attempt++;
+            Result put;
+            using (var attemptCts = CancellationTokenSource.CreateLinkedTokenSource(ct))
+            {
+                attemptCts.CancelAfter(callBudget);
+                put = await s3.PutObjectMd5Async(key, data, md5Hex, attemptCts.Token);
+            }
+
+            if (put.IsSuccess)
+            {
+                events.PutSuccess?.Invoke();
+                if (exhaustion.IsSet)
+                {
+                    // Первый успешный put снимает флаг исчерпания (arch/19 §3).
+                    exhaustion.IsSet = false;
+                    events.PoolExhaustedChanged?.Invoke(false);
+                }
+                return put;
+            }
+
+            events.PutError?.Invoke();
+            if (attempt > 1)
+                events.PutRetry?.Invoke();
+            if (put.Error!.Message.Contains(S3PoolMarkers.Exhausted, StringComparison.Ordinal) && !exhaustion.IsSet)
+            {
+                exhaustion.IsSet = true;
+                events.PoolExhaustedChanged?.Invoke(true);
+            }
+            await Task.Delay(retry, ct);
+        }
+    }
+
     private static async Task<Result> PutWithRetryAsync(
         IBackupS3 s3, WalSessionEvents events, WalReceiverOptions o,
         string key, byte[] data, string sha256, TimeSpan retry, CancellationToken ct,
