@@ -426,6 +426,7 @@ public static IReadOnlyList<string> SelectPartialForDeletion(
 - `BelowCutoff_AllVersionsDoomed`: версии сегмента seg(1,0,3), cutoff seg(1,0,5) → обе; сегмент РАВНЫЙ cutoff → НЕ doomятся.
 - `CutoffNull_KeepsLiveVersions`: версии живого сегмента при cutoff null → только устаревшие (ветка (в) молчит).
 - `EqualEndLsn_KeepsExactlyOne` (Review Focus 5): две версии с равным EndLsn → в результате ровно одна из них.
+  (решение Фазы 6: при фиксированной ширине EndLsn равный числовой LSN у двух имён достижим только неканоническим регистром hex-суффикса — канон пишется lower-case; тест использует пару `Key(seg, 0x3FF)` + `{seg}.{0x3FF:X16}.partial` и проверяет «ровно одна версия удалена, остаток 1», как задаёт Review Focus. Канонические одинаковые ключи физически один объект — удаление не требуется.)
 - `FinalsAndHistory_Untouched`: финал seg(1,0,2) + `"00000002.history"` в списке → в результате их нет.
 
 ---
