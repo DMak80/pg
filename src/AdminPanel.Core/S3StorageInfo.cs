@@ -21,8 +21,10 @@ public sealed record S3FullNode(
 
 /// <summary>WAL-часть шарда в S3: сегменты wal/&lt;segment&gt; и истории wal/&lt;TLI&gt;.history;
 /// LastSegment — старейший→новейший максимум имени по Ordinal среди СЕГМЕНТОВ
-/// (истории в «последний» не идут; 24-hex имена при равном TLI лексикографически
-/// упорядочены, cross-TLI — факт без вердикта); null — сегментов не было.</summary>
+/// (истории и `.partial`-версии незакрытого сегмента в «последний» не идут:
+/// версия префиксно длиннее финала и ложно выиграла бы сверку; 24-hex имена при
+/// равном TLI лексикографически упорядочены, cross-TLI — факт без вердикта);
+/// null — сегментов не было.</summary>
 public sealed record S3WalNode(
     long SegmentCount, long HistoryCount, long SizeBytes, long LastModifiedUnix,
     string? LastSegment = null);

@@ -52,7 +52,10 @@ public sealed partial record S3Inventory
             }
             else if (parts[2] == "wal" && parts.Length >= 4)
             {
-                // сегмент или timeline-история (суффикс .history — отдельный счётчик)
+                // сегмент или timeline-история (суффикс .history — отдельный
+                // счётчик). `.partial`-версия живого сегмента — НЕ сегмент:
+                // только место/время (иначе счётчик завышен, а «последний
+                // сегмент» становится именем версии — arch/backups/02 §3).
                 acc.HasWal = true;
                 acc.WalSizeBytes += obj.SizeBytes;
                 acc.WalLastModifiedUnix = Math.Max(acc.WalLastModifiedUnix, obj.LastModifiedUnix);
@@ -60,7 +63,7 @@ public sealed partial record S3Inventory
                 {
                     acc.WalHistoryCount++;
                 }
-                else
+                else if (!parts[3].EndsWith(".partial", StringComparison.Ordinal))
                 {
                     acc.WalSegmentCount++;
                     // «последний сегмент» — max имени по Ordinal (факт для wal-сверки)

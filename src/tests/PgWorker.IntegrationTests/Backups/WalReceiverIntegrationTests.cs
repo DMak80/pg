@@ -128,6 +128,14 @@ public class WalReceiverIntegrationTests
         return (min?.Name, names);
     }
 
+    /// <summary>Доставленные ФИНАЛЬНЫЕ сегменты: `.partial`-версии живого
+    /// сегмента и `.history` — штатные объекты wal/, но не закрытые сегменты.</summary>
+    private static IEnumerable<string> Finals(IEnumerable<string> names)
+        => names.Where(n => !n.EndsWith(".partial", StringComparison.Ordinal)
+                            && !n.EndsWith(".history", StringComparison.Ordinal));
+
+    private static int FinalCount(IEnumerable<string> names) => Finals(names).Count();
+
     private static async Task WaitUntilAsync(
         Func<Task<bool>> condition, TimeSpan budget, Func<Task<string>>? debug = null)
     {
@@ -164,7 +172,7 @@ public class WalReceiverIntegrationTests
             // WAL-нагрузка: 6 переключений ≈ 50 MiB → ≥2 полных сегмента 16 MiB
             await GenerateWalAsync(postgres.AdminDsn, Switches, ct);
             await WaitUntilAsync(async () =>
-                (await ListSegmentsAsync(s3, cluster, shard, ct)).Names.Count >= 2,
+                FinalCount((await ListSegmentsAsync(s3, cluster, shard, ct)).Names) >= 2,
                 TimeSpan.FromSeconds(30),
                 async () =>
                 {
@@ -173,10 +181,12 @@ public class WalReceiverIntegrationTests
                     return $"segments=[{string.Join(",", names)}] restart_lsn={restart}";
                 });
 
-            // Assert — сегменты в S3, без .partial, цепочка непрерывна
+            // Assert — доставлены ≥2 ФИНАЛЬНЫХ сегмента, цепочка непрерывна;
+            // `.partial`-версии живого сегмента — штатные объекты (arch/19 §3).
             var (minName, names) = await ListSegmentsAsync(s3, cluster, shard, ct);
             minName.Should().NotBeNull("the chain is anchored by the first full segment");
-            names.Should().NotContain(n => n.EndsWith(".partial"), ".partial files do not appear");
+            FinalCount(names).Should().BeGreaterThanOrEqualTo(2,
+                "closed segments must be delivered (AC1); .partial versions are legitimate");
             var chain = WalChain.Check(
                 WalFileName.TryParse(minName!)!.Value, names);
             chain.IsContinuous.Should().BeTrue(chain.GapError ?? "the chain is continuous");
@@ -213,7 +223,7 @@ public class WalReceiverIntegrationTests
         var (cts1, run1) = await StartCoreAsync(postgres, s3Node, cluster, shard);
         await GenerateWalAsync(postgres.AdminDsn, Switches, ct);
         await WaitUntilAsync(async () =>
-            (await ListSegmentsAsync(s3, cluster, shard, ct)).Names.Count >= 2,
+            FinalCount((await ListSegmentsAsync(s3, cluster, shard, ct)).Names) >= 2,
             TimeSpan.FromSeconds(30));
         cts1.Cancel();
         (await run1).Should().Be(0);
@@ -225,7 +235,8 @@ public class WalReceiverIntegrationTests
         try
         {
             await WaitUntilAsync(async () =>
-                (await ListSegmentsAsync(s3, cluster, shard, ct)).Names.Count > beforeNames.Count,
+                FinalCount((await ListSegmentsAsync(s3, cluster, shard, ct)).Names)
+                    > FinalCount(beforeNames),
                 TimeSpan.FromSeconds(30));
 
             // Assert — цепочка непрерывна (дыр нет), AC1 сохраняется: restart_lsn
@@ -261,11 +272,11 @@ public class WalReceiverIntegrationTests
         {
             await GenerateWalAsync(postgres.AdminDsn, Switches, ct);
             await WaitUntilAsync(async () =>
-                (await ListSegmentsAsync(s3, cluster, shard, ct)).Names.Count >= 1,
+                FinalCount((await ListSegmentsAsync(s3, cluster, shard, ct)).Names) >= 1,
                 TimeSpan.FromSeconds(30));
             var (_, namesBefore) = await ListSegmentsAsync(s3, cluster, shard, ct);
             var chainBefore = WalChain.Check(
-                WalFileName.TryParse(namesBefore.Min()!)!.Value, namesBefore);
+                WalFileName.TryParse(Finals(namesBefore).Min()!)!.Value, namesBefore);
             var tailBefore = PgWorker.PgNode.S3TailResolver.EndLsn(chainBefore.LastSegment!.Value);
 
             // Act AC6 — S3-обрыв: docker pause ownS3-ноды; бюджет спеки «≥1 мин»
@@ -287,7 +298,7 @@ public class WalReceiverIntegrationTests
             await WaitUntilAsync(async () =>
             {
                 var (_, names) = await ListSegmentsAsync(s3, cluster, shard, ct);
-                return names.Count > namesBefore.Count;
+                return FinalCount(names) > FinalCount(namesBefore);
             }, TimeSpan.FromSeconds(30));
 
             // Assert — цепочка непрерывна, AC1 после восстановления
@@ -336,7 +347,7 @@ public class WalReceiverIntegrationTests
             // ЗАКРЫТЫЕ сегменты выше него; 3 переключений дают < 3 доставленных.
             await GenerateWalAsync(postgres.AdminDsn, Switches, ct);
             await WaitUntilAsync(async () =>
-                (await ListSegmentsAsync(s3, cluster, shard, ct)).Names.Count >= 3,
+                FinalCount((await ListSegmentsAsync(s3, cluster, shard, ct)).Names) >= 3,
                 TimeSpan.FromSeconds(30),
                 async () =>
                 {

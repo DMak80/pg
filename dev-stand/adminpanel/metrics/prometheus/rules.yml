@@ -146,6 +146,23 @@ groups:
         annotations:
           summary: "{{ $labels.cluster }}/{{ $labels.shard }}: no WAL uploads for >300s"
           description: "threshold = default PgWorker:Backups:Wal:StaleSec (per-install config); runbook — arch/18 §2.7"
+      # t14 (arch/metrics 02 §2, arch/19 §4): живость фоновой чистки wal/ —
+      # цикл лидера 60 с; порог 3× интервала; серия эмитится только лидером при
+      # Backups:Enabled=true (выключенная подсистема не алертится).
+      - alert: WalSweepStalled
+        expr: time() - worker_loop_last_success_timestamp_seconds{loop="wal-sweeper"} > 180
+        for: 0m
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ $labels.job }} wal sweeper not sweeping for >3m"
+          description: "fixed threshold 3x 60s loop interval (arch/19 §4); series emitted only by the leader with Backups:Enabled=true; runbook — arch/metrics/02-dictionary.md §2"
+      - alert: WalSweepShardStale
+        expr: time() - worker_wal_sweep_shard_last_success_timestamp_seconds > 180
+        for: 0m
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ $labels.cluster }}/{{ $labels.shard }}: wal-sweeper shard pass overdue >3m"
+          description: "per-shard freshness (series disappears with the shard); threshold 3x 60s interval; runbook — arch/metrics/02-dictionary.md §2, arch/19 §4"
       - alert: BackupVerifyFailed
         expr: increase(pgworker_backup_verify_total{result="failed"}[15m]) > 0
         for: 0m

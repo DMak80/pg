@@ -157,13 +157,15 @@ internal static class FetchWalCommand
     /// прочитать layout самому — и остановиться там, где кончается копия набора
     /// (сканировать разреженный файл эвристиками нельзя).</summary>
     internal static bool? LocalSetCoversPartial(
-        string normalizedSegment, string? bestPartialKey, string? pgDataRoot = null)
+        string segment, string? bestPartialKey, string? pgDataRoot = null)
     {
         var root = pgDataRoot ?? PgDataRoot;
-        var local = Path.Combine(root, "pg_wal", normalizedSegment);
-        if (!File.Exists(local) || new FileInfo(local).Length != WalFileName.SegmentBytes)
+        // PG/pg_basebackup пишут имена ВЕРХНИМ hex, а %f/S3-ключ нормализуются
+        // в строчные — копию набора ищем без учёта регистра.
+        var local = FindLocalWalFile(root, segment);
+        if (local is null || new FileInfo(local).Length != WalFileName.SegmentBytes)
             return null;
-        if (WalFileName.TryParse(normalizedSegment) is not { } seg)
+        if (WalFileName.TryParse(segment) is not { } seg)
             return null;
 
         // Последний ненулевой байт копии (верхняя граница её содержимого).
@@ -195,6 +197,26 @@ internal static class FetchWalCommand
             : 0;
         var partialEnd = partialAbsEnd > segmentStart ? partialAbsEnd - segmentStart : 0;
         return setEnd >= partialEnd;
+    }
+
+    // Локальная копия сегмента в pg_wal набора: точное имя, иначе — без учёта
+    // регистра (ВЕРХНИЙ hex у PG/pg_basebackup vs строчный %f/S3-ключ).
+    private static string? FindLocalWalFile(string root, string segment)
+    {
+        var walDir = Path.Combine(root, "pg_wal");
+        var exact = Path.Combine(walDir, segment);
+        if (File.Exists(exact))
+            return exact;
+        try
+        {
+            return Directory.EnumerateFiles(walDir)
+                .FirstOrDefault(p => string.Equals(Path.GetFileName(p), segment,
+                    StringComparison.OrdinalIgnoreCase));
+        }
+        catch
+        {
+            return null; // каталога нет — локальной копии нет
+        }
     }
 
     /// <summary>Дописать валидный префикс `.partial` нулями до полного
@@ -267,7 +289,7 @@ internal static class FetchWalCommand
         // разрежена и добита — эвристиками префикса её не режем). Копия не
         // короче — exit 1: postgres прочитает layout сам (остановится на его
         // реальном конце), битого хвоста из архива не возьмёт.
-        if (LocalSetCoversPartial(normalized, bestKey) is { } preferLayout
+        if (LocalSetCoversPartial(segment, bestKey) is { } preferLayout
             && preferLayout)
             return (1, null);
 

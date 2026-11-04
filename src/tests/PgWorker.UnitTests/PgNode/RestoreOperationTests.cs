@@ -556,11 +556,23 @@ public class RestoreOperationTests
         var noCopy = FetchWalCommand.LocalSetCoversPartial(
             "000000010000000000000005", null, root);
 
+        // PG/pg_basebackup пишут имена ВЕРХНИМ hex, а %f/S3-ключ нормализуются
+        // в строчные: копия набора обязана находиться и при строчном запросе.
+        const string upperSeg = "00000001000000000000000A";
+        var upperBytes = new byte[WalFileName.SegmentBytes];
+        upperBytes[0x3FFF] = 0xAB;
+        File.WriteAllBytes(Path.Combine(root, "pg_wal", upperSeg), upperBytes);
+        var upper = FetchWalCommand.LocalSetCoversPartial(
+            upperSeg.ToLowerInvariant(),
+            WalPartialName.Key(upperSeg.ToLowerInvariant(), 0xA002000UL), root);
+
         // Assert — layout предпочтителен, если не короче; иначе отдаётся .partial
         shorter.Should().BeTrue("the set copy reaches further than the .partial");
         longer.Should().BeFalse("the live .partial extends past the set content");
         noPartial.Should().BeTrue("without a .partial the set copy is preferred");
         noCopy.Should().BeNull("no local copy — the generic archive path decides");
+        upper.Should().BeTrue(
+            "PG names WAL files UPPER-hex — the lower-cased request must still find the set copy");
         Directory.Delete(root, recursive: true);
     }
 

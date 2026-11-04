@@ -46,6 +46,31 @@ public class S3InventoryTests
         inv.ForeignPrefixes.Should().BeEmpty();
     }
 
+    // AAA: `.partial`-версии живого сегмента — не сегменты: счётчик и «последний
+    // сегмент» считаются только по финалам (иначе S3↔etcd сверка врёт).
+    [Fact]
+    public void Build_PartialVersions_NotCountedAsSegments()
+    {
+        // Arrange — финал сегмента 6 + две версии живого (имена длиннее финала)
+        var objects = new List<S3InventoryObject>
+        {
+            new("demo/s1/wal/000000010000000000000006", 16, 2000),
+            new("demo/s1/wal/000000010000000000000006.0000000000001000.partial", 8, 2001),
+            new("demo/s1/wal/000000010000000000000006.0000000000002000.partial", 12, 2002),
+        };
+
+        // Act
+        var inv = S3Inventory.Build(objects);
+
+        // Assert — один сегмент, последний — финал; место/время включают версии
+        var shard = inv.Clusters.Should().ContainSingle().Subject
+            .Shards.Should().ContainSingle().Subject;
+        shard.Wal.Should().NotBeNull();
+        shard.Wal!.SegmentCount.Should().Be(1);
+        shard.Wal.LastSegment.Should().Be("000000010000000000000006");
+        shard.Wal.SizeBytes.Should().Be(36);
+    }
+
     // AAA: корень вне формы <C>/<X>/… → foreign-префикс (факт, без вердикта)
     [Fact]
     public void Build_ForeignPrefix_CountedWithoutVerdict()

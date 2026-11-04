@@ -125,7 +125,10 @@ public sealed class E2eWalStreamScenarios(E2eWalStreamScenariosFx Ctx) : IClassF
             if (!list.IsSuccess)
                 return false;
             listed = [.. list.Value];
-            return listed.Select(o => o.Name).Contains(wal.LastUploadedSegment);
+            // last_uploaded_segment — имя СЕГМЕНТА без суффикса (arch/19 §3):
+            // в листинге ему соответствует финал или лучшая `.partial`-версия.
+            return listed.Any(o => (PgWorker.Backups.WalPartialName.TryParse(o.Name) is { } p
+                    ? p.Segment.Name : o.Name) == wal.LastUploadedSegment);
         }, TimeSpan.FromSeconds(90), ct);
         consistent.Should().BeTrue("the wal key must become ACTIVE (AC2) and match the S3 fact");
         wal.Slot.Should().Be($"pgw_bkp_{cluster}_shard1");

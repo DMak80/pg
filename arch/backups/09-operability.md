@@ -116,8 +116,10 @@ PG → цепочка рвётся → алерт панели + пересня�
 `worker_loop_last_success_timestamp_seconds{loop=…}`; алерты панели —
 `backup-full-stale`, `backup-verify-failed`, `backup-storage-quota`,
 `backup-pool-unreachable`, `backup-pool-missing`, `backup-deleting-stuck`,
-`backup-wal-tli-gap`, `slot-wal-lost`, `OrphanSweepStalled` (расчёт — над
-снапшотом, [07-retention.md](07-retention.md) §6).
+`backup-wal-tli-gap`, `slot-wal-lost` (расчёт — над снапшотом,
+[07-retention.md](07-retention.md) §2); алерты Prometheus-контура воркера —
+`OrphanSweepStalled`, `WalSweepStalled`, `WalSweepShardStale`
+([metrics/02-dictionary.md](../metrics/02-dictionary.md) §2).
 
 ## 7. Потеря WAL-слота (`wal_status='lost'`)
 
