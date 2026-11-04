@@ -68,7 +68,7 @@ per-cluster ([02](02-etcd-contract.md) §12): endpoints Active-кластеро�
 health-отказом).
 
 `as-etcd-1/2/3` — **единственный etcd полной системы** — 3 узла ОДНИМ
-кластером (кворум 2/3; рецепт — arch/04 §8, зеркало прода): advertise
+кластером (кворум 2/3; рецепт — ../pg-clusters/04-etcd-dcs.md, зеркало прода): advertise
 `host.docker.internal:2379/2381/2383` потребляют Patroni-ноды,
 создаваемые PgWorker в своих сетях; PgWorker из `deploy/` подключается по
 `PGW_ETCD_ENDPOINT_0..2=http://host.docker.internal:2379/2381/2383`
@@ -86,7 +86,7 @@ portalloc (`host.docker.internal:15xxx`), Patroni — `http://host.docker.intern
 ### 2.1. `etcd1/etcd2/etcd3` (оба профиля)
 
 - `quay.io/coreos/etcd:v3.5.21`, 3 узла `etcd1/etcd2/etcd3` одним
-  static-bootstrap кластером (arch/04 §8; стенд зеркалит прод — надёжность
+  static-bootstrap кластером (../pg-clusters/04-etcd-dcs.md; стенд зеркалит прод — надёжность
   дефолтом); peer по compose-DNS, клиентские публикации 2379/2381/2383;
   named volumes `etcd1-data`/`etcd2-data`/`etcd3-data` (переживают
   `docker compose down`); healthcheck `etcdctl endpoint health`.
@@ -160,9 +160,9 @@ config → no-op. Воркер в `valkey`-профиле продолжает �
 
 Сервис deploy-compose `etcdworker`/`etcdworker-2` (образ publish-COPY
 `etcdworker:dev`, собирает `00-up.sh` на хосте; env — якорь `x-etcdworker-env`):
-оркестратор etcd-контура (arch/25). Стендовый контур `as-etcd-1/2/3` для него
+оркестратор etcd-контура (../etcdworker/README.md). Стендовый контур `as-etcd-1/2/3` для него
 ВНЕШНИЙ: ключа `/etcd/config` нет — режим «только наблюдение/слепки»
-(arch/25 §3; `/api/etcd/domain` отдаёт `declaredNodes:null`). HTTP API — mTLS
+(../etcdworker/02-membership.md; `/api/etcd/domain` отдаёт `declaredNodes:null`). HTTP API — mTLS
 (порты 8087/8088, `ETCDW_API_HOST_PORT/2`), дискавери — lease-ключи
 `/etcdworker/api/`; стенд поднимает 2 инстанса.
 
@@ -177,10 +177,10 @@ config → no-op. Воркер в `valkey`-профиле продолжает �
 | `30-failover.sh` | kill мастера по leader-ключу `/clusters/demo/shards/shard1/master` (`docker kill pgw-demo-shard1-<node>`) → Patroni (DCS etcd) промотит реплику — wait нового мастера (leader-ключ сменился, lease жив) → надзор движка rejoin'ит убитую ноду (wait RUNNING) | цикл алерт→успокоение; финал — оба члена RUNNING, master-ключ жив |
 | `40-live-probes.sh` | панель (в докере, стендовая сеть): Patroni/SQL-пробы — advertised portalloc-адреса нод (из `/api/clusters/demo`: patroni `:18xxx`, pg `:15xxx` через `host.docker.internal`); `/api/ha/demo-shard1` lag/state заполнены, инвентарь ACTIVE-схем сверен | поля не null, probe-ошибок нет, `inventory-mismatch` нет |
 | `43-etcd-ha.sh` | кворум/health/member list; stop as-etcd-2 → запись/healthz/master-ключ живы; start → снова 3/3 | каждый шаг ≤ бюджета |
-| `44-etcdworker.sh` | read-only чек etcdworker-грани: `/api/workers` — ряд etcdworker ≥1 инстанса, health healthy; `/api/etcd/domain` — 200, стендовый инвариант внешнего контура (declaredNodes null, узлов нет, snapshots отсутствует, OK или FAILED с маркером `etcd-backup-missing` — «не настроено» по arch/25 §5; иная причина FAILED — fail); `/api/etcd/status` — members ≥ 3, все external | без мутаций; чистка — сессионный JAR |
+| `44-etcdworker.sh` | read-only чек etcdworker-грани: `/api/workers` — ряд etcdworker ≥1 инстанса, health healthy; `/api/etcd/domain` — 200, стендовый инвариант внешнего контура (declaredNodes null, узлов нет, snapshots отсутствует, OK или FAILED с маркером `etcd-backup-missing` — «не настроено» по ../etcdworker/00-etcd-contract.md; иная причина FAILED — fail); `/api/etcd/status` — members ≥ 3, все external | без мутаций; чистка — сессионный JAR |
 | `45-backups-storage.sh` | грань «Хранилище бэкапов» против ownS3 (контур: `owns3:9000` внутри / `:9010` снаружи): гвард healthz `:9010`, идемпотентный mc-налив снаружи (`demo/shard1`), дерево — реальные бэкапы demo + налив, `clusterOk == true` | `configured=true`, health api/live ok, дерево `demo/shard1` с полными |
 | `51-valkey-api.sh` | valkey-домен против живого воркера (профиль `valkey`): сид `demo` → панель видит кластер (список/детали/нода RUNNING/endpoints), live-PING `live=true`; полный цикл мутаций через панель→прокси→API воркера: create (RunTag-имя) → NOT_INITIALIZED → RUNNING ≤ бюджета тиков, config-мутация (maxmemory converge), resources (пересоздание контейнера), ротации app+admin (заявки 202, исполнение окном двух паролей), delete → контейнера и ключей нет; 409-ветки (имя занято, двойная ротация) | каждый шаг ≤ бюджета; после delete — ни контейнера `vwk-<tag>-*`, ни ключей `/valkey/clusters/<tag>/` |
-| `52-valkey-contour.sh` | приёмка контурного режима сетей ValkeyWorker (arch/21 §2, ручной чек): логин в панель → создание valkey-кластера (уникальное имя) ЧЕРЕЗ панель → wait Active/нода RUNNING → инспект контейнера `vwk-<C>-*`: сеть `adminpanel-stand-net`; `endpoints` — advertised `host:port` (portalloc, формат не изменился) → удаление кластера через панель → ассерт чистоты (контейнера и ключей `/valkey/clusters/<C>/` нет) | контейнер ноды — в стендовой сети; advertised-формат прежний; после чека следов нет |
+| `52-valkey-contour.sh` | приёмка контурного режима сетей ValkeyWorker (../valkeyworker/01-placement.md, ручной чек): логин в панель → создание valkey-кластера (уникальное имя) ЧЕРЕЗ панель → wait Active/нода RUNNING → инспект контейнера `vwk-<C>-*`: сеть `adminpanel-stand-net`; `endpoints` — advertised `host:port` (portalloc, формат не изменился) → удаление кластера через панель → ассерт чистоты (контейнера и ключей `/valkey/clusters/<C>/` нет) | контейнер ноды — в стендовой сети; advertised-формат прежний; после чека следов нет |
 | `60-move-ops.sh` | операции переездов через панель→API воркера на живом demo; гвард — живой `/clusters/demo/config` (не NOT_INITIALIZED) + ноды RUNNING (wait до 60 c) | заявки исполняются, бакеты переезжают (`demo/shard1`↔`demo/shard2`) |
 | `90-down.sh` | разбор: стендовый + deploy compose-проекты + движковые `pgw-*`-контейнеры/тома/сети (созданы Engine API — compose их не трогает) + страховочный prune сетей (с опцией `-v` — стереть данные) | контура не осталось (контейнеры/сети/тома) |
 

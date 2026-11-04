@@ -25,5 +25,5 @@ batch-delete (повтор прохода идемпотентен). Наблю�
 серия `worker_loop_last_success_timestamp_seconds{loop="wal-sweeper"}` плюс
 per-shard свежесть последнего успешного прохода (алерт остановки цикла и
 алерт просрочки отдельного шарда —
-[18-metrics.md](../../18-metrics.md) §2.2, паттерн OrphanSweepStalled);
+[metrics/README.md](../../metrics/02-dictionary.md) §2, паттерн OrphanSweepStalled);
 `Backups:Enabled=false` → проход no-op, как ретенция.

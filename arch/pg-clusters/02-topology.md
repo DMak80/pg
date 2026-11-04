@@ -74,7 +74,7 @@ SSD для etcd-узлов) — [03-prerequisites.md](03-prerequisites.md) §4.
 - **Общая сеть воркера и нод** — инвариант поставки: контейнеры PgWorker и
   нод всегда в одной сети (контур или per-cluster); этим работает
   адресация API PgNode `alias:8080`
-  ([25-component-communications.md](../25-component-communications.md) №22).
+  ([communications/02-channel-registry.md](../communications/02-channel-registry.md) №22).
 
 Внутри шарда Patroni-репликация и резолв мастера идут по внутренним
 адресам сети; наружу — только опубликованные порты.

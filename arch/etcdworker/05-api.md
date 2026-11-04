@@ -15,7 +15,7 @@ TLS-хендшейке опционален, но для префикса `/api`
 `/api` без валидного серта — 401. `/healthz` и `/metrics` — открытая грань
 доверенной docker-сети и хост-публикаций портов API (паттерн Patroni REST,
 [pg-clusters/13-network-security.md](../pg-clusters/13-network-security.md) §4; скрейп — `https` +
-`ca_file`, [18-metrics.md](../18-metrics.md) §5.2).
+`ca_file`, [metrics/README.md](../metrics/05-storage.md) §2).
 
 ## 2. Эндпоинты
 

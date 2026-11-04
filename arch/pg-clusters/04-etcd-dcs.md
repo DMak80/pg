@@ -22,7 +22,7 @@ Patroni, адреса для нод, поведение при отказах, T
 
 Ссылка на etcd — настройка при старте кластера: адреса передаются явно,
 «второго etcd» в контуре нет
-([17-synchronization-principles.md](../17-synchronization-principles.md) S1).
+([synchronization/README.md](../synchronization/README.md) S1).
 
 ## 2. Контур установки
 
@@ -114,7 +114,7 @@ v2-клиент Spilo с etcd 3.5 несовместим). Lease-скрипту 
 - **Восстановление** — [etcdworker/04-snapshots.md](../etcdworker/04-snapshots.md)
   (DR-слепки в S3), операторский путь —
   [09-troubleshooting.md](09-troubleshooting.md) §5 и
-  [docs/runbook.md](../../docs/runbook.md) §«Восстановление etcd из
+  [etcdworker/06-operability.md](../etcdworker/06-operability.md) §«Восстановление etcd из
   S3-выгрузки». Снапшот покрывает все кластеры сразу: restore возвращает
   ВСЕ системы к моменту снапшота.
 

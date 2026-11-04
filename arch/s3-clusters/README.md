@@ -49,7 +49,7 @@ docker/swarm-хостам) и mesh-репликацией между нодам�
 
 ## 4. Свойства, на которые опираются все разделы
 
-- **Один общий etcd-контур** установки ([17-synchronization-principles.md](../17-synchronization-principles.md) S1);
+- **Один общий etcd-контур** установки ([synchronization/README.md](../synchronization/README.md) S1);
   динамика покрывается тиками воркера (5 с) и панели (3 с) — watch не
   используется ([01-transport.md](01-transport.md) §1).
 - **Декларативная модель**: отсутствие `config.state` = Active-кластер;

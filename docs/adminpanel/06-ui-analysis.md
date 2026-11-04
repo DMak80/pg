@@ -20,18 +20,18 @@
 
 | Секция | Назначение | Канон |
 |---|---|---|
-| **etcd-контур** | Единственный источник истины (DCS): 3 узла, кворум 2/3, один контур на все домены. Декларации кластеров, координация воркеров (leader/claims/lease TTL 15 с), DCS Patroni, клиентский дискавери. Данные кластеров в etcd не живут — только метаданные | [arch/pg-clusters](../../arch/pg-clusters/README.md), [arch/17](../../arch/17-synchronization-principles.md) |
+| **etcd-контур** | Единственный источник истины (DCS): 3 узла, кворум 2/3, один контур на все домены. Декларации кластеров, координация воркеров (leader/claims/lease TTL 15 с), DCS Patroni, клиентский дискавери. Данные кластеров в etcd не живут — только метаданные | [arch/pg-clusters](../../arch/pg-clusters/README.md), [arch/synchronization](../../arch/synchronization/README.md) |
 | **PgWorker** | Оркестратор шардированных HA-кластеров PostgreSQL: provisioning/deprovisioning, надзор нод (failover/rebuild/конвергенция), переезды бакетов, эвакуации, ротации секретов, бэкапы. Единственный писатель `/clusters/`, `/pgworker/`, `/service/<C>-<X>/request_*` | [arch/pgworker](../../arch/pgworker/README.md) |
 | **KafkaWorker** | Оркестратор Kafka-кластеров (KRaft): жизненный цикл брокеров, SASL/PKI, автосинк топиков, reassignment партиций, mutable-конфиги. Единственный писатель `/kafka/`, `/kafkaworker/` | [arch/kafkaworker](../../arch/kafkaworker/README.md) |
-| **ValkeyWorker** | Оркестратор Valkey-кластеров (standalone-кеш, 1 нода, persistence off): контейнер, ACL-креды, TLS, ротации. Единственный писатель `/valkey/`, `/valkeyworker/` | [arch/21](../../arch/21-valkeyworker.md) |
+| **ValkeyWorker** | Оркестратор Valkey-кластеров (standalone-кеш, 1 нода, persistence off): контейнер, ACL-креды, TLS, ротации. Единственный писатель `/valkey/`, `/valkeyworker/` | [arch/valkeyworker](../../arch/valkeyworker/README.md) |
 | **S3Worker** | Оркестратор пулов S3-хранилища бэкапов (ownS3): инстансы по placement-селекторам, mesh-репликация (`links`), PKI, deny-list, зонд синхронности. Единственный писатель `/s3/`, `/s3worker/` | [arch/s3worker](../../arch/s3worker/README.md), [arch/s3-clusters](../../arch/s3-clusters/README.md) |
 | **AdminPanel** | Декларатор и наблюдатель: 5 доменных снапшотов etcd (тик 3 с) + live-пробы (15 с) + healthz-поллер. Все доменные мутации — прокси в HTTP API воркеров (mTLS); в etcd напрямую пишет только `/workers/api_tls/*` | [arch/adminpanel/01](../../arch/adminpanel/01-architecture.md) |
 | **PG-нода** (`pgworker-node`) | Контейнер Spilo (PG + Patroni) + pg_doorman + приёмник WAL (стрим в S3, полные бэкапы, verify, restore, drill) — один процесс, API `alias:8080` без публикации на хост | [arch/pgworker/01 §1](../../arch/pgworker/01-placement.md), [arch/pgnode](../../arch/pgnode/README.md) |
 | **Patroni / HA-контур шарда** | Репликация и failover внутри нод; DCS `/service/<scope>/`; Patroni-callback — единственный писатель `shards/X/master` (lease TTL 5 с) | [arch/pg-clusters/01 §3](../../arch/pg-clusters/01-ha-architecture.md), [arch/pg-clusters/11 §2](../../arch/pg-clusters/11-buckets.md) |
 | **Подсистема бэкапов** | Хозяин PgWorker: полные + WAL (двойная архивация мастер+sync-реплика), verify, restore/PITR, drill, GFS-ретенция, реестр сирот, DR-слепки etcd → S3. Контракт `/pgworker/backups/*` | [arch/backups](../../arch/backups/README.md) |
 | **S3-хранилище (OwnS3)** | Durability-хранилище: бэкапы шардов (`<C>/<X>/full|wal`), слепки etcd; избыточность — mesh-репликация внутри пула. Внешний репозиторий `../OwnS3` | [arch/backups/06 §1](../../arch/backups/06-s3-layout.md), [arch/s3-clusters](../../arch/s3-clusters/README.md) |
-| **Docker-движки (plain/swarm)** | Исполнитель размещения: контейнеры/сети/тома через Engine API; воркер — строго управление запуском + проверка факта | [arch/25 §2–3](../../arch/25-component-communications.md) |
-| **Мониторинг** | Prometheus + Grafana + Alertmanager; таргеты — file_sd из portalloc. Канал наблюдения, независимый от панели | [arch/18](../../arch/18-metrics.md) |
+| **Docker-движки (plain/swarm)** | Исполнитель размещения: контейнеры/сети/тома через Engine API; воркер — строго управление запуском + проверка факта | [arch/communications §2–3](../../arch/communications/01-rules.md) |
+| **Мониторинг** | Prometheus + Grafana + Alertmanager; таргеты — file_sd из portalloc. Канал наблюдения, независимый от панели | [arch/metrics](../../arch/metrics/README.md) |
 | **EtcdWorker** | Оркестратор etcd-контура: поддержание состава (managed-узлы, кворум-гварды, rolling-доводка), DR-слепки etcd → S3 (безусловная выгрузка, ключ `/etcdworker/snapshots`). Единственный писатель `/etcd/`, `/etcdworker/` | [arch/etcdworker](../../arch/etcdworker/README.md) |
 
 ### 1.2. Зависимости (кто кого создаёт, читает, слушает)
@@ -91,7 +91,7 @@ API воркеров** (живое etcd, применяется тиками/rol
 
 Каталоги параметров: pg — [arch/pgworker/08 §5](../../arch/pgworker/08-operability.md), бэкапы —
 [arch/backups/05](../../arch/backups/05-etcd-contract.md), kafka — [arch/kafkaworker](../../arch/kafkaworker/README.md),
-valkey — [arch/21 §8](../../arch/21-valkeyworker.md), s3 — [arch/s3worker](../../arch/s3worker/README.md),
+valkey — [arch/valkeyworker §8](../../arch/valkeyworker/README.md), s3 — [arch/s3worker](../../arch/s3worker/README.md),
 панель — `src/AdminPanel.Api/appsettings.json`.
 
 ### 2.2. Что пользователь может задать из UI сегодня
@@ -117,7 +117,7 @@ PG P3/P4, TTL lease, порт-тройки, env брокеров/нод, тай�
 8. Пороги алертов и проб панели (`AdminPanel:Alerts:*`, `Probes:*`).
 9. Отмена живых заявок ротаций kafka/valkey — сегодня только etcdctl;
     правка стоящих заявок переездов — runbook.
-10. `garbage_min_age_sec` — есть в arch/19 §4, отсутствует в форме policy
+10. `garbage_min_age_sec` — есть в ../../arch/backups/05-etcd-contract.md, отсутствует в форме policy
     панели (§3.8) — пробел контракта.
 
 Вынос каждого пункта — arch-first решение (изменение зон ответственности),
@@ -133,11 +133,11 @@ PG P3/P4, TTL lease, порт-тройки, env брокеров/нод, тай�
 | **бэкапы** | Полный `PLANNED→RUNNING→UPLOADING→COMPLETED\|FAILED→DELETING`; verify `PENDING/OK/FAILED`; WAL-поток `ACTIVE/DEGRADED/STOPPED/WAL_CHAIN_ERROR` (+gap); приёмник `starting/waiting_*/streaming/paused/failed_permanent` (lease 15 с); restore `PLANNED→RUNNING→REJOINING→COMPLETED\|FAILED`; drill `RUNNING/SUCCEEDED/FAILED`; сироты `OBSERVED/DELETING`; хранилище `OK/WARN/CRIT`; выгрузка etcd-слепков `OK/FAILED` — EtcdWorker (ключ `/etcdworker/snapshots`,
 [arch/etcdworker](../../arch/etcdworker/README.md)) |
 | **kafka** | Кластер state; брокер `NOT_INITIALIZED→PROVISIONING→RUNNING / UNREACHABLE / REMOVING / TO_REMOVE` + role (навсегда); ротации app/admin/CA; reassignment (drain/balance, прогресс); регенерация; топики (факт + desired + lifecycle create/delete); ticket_outcomes `done\|expired` — [arch/kafkaworker](../../arch/kafkaworker/README.md) |
-| **valkey** | Кластер state; нода (v1 — одна); ротации кредов (окно двух паролей) и CA; TLS-миграция; ticket_outcomes — [arch/21](../../arch/21-valkeyworker.md) |
+| **valkey** | Кластер state; нода (v1 — одна); ротации кредов (окно двух паролей) и CA; TLS-миграция; ticket_outcomes — [arch/valkeyworker](../../arch/valkeyworker/README.md) |
 | **s3** | Кластер state; инстанс (state + placed_on + usage); connectivity `OK/DEGRADED/DOWN`; sync `SYNCED/LAGGING/DIVERGED`; denylist; ротации — [arch/s3worker](../../arch/s3worker/README.md) |
 
 Общий паттерн: **«нет status-ключа = штатное состояние»**; статус-ключи —
-переходные; «последняя фаза побеждает» (журналы не копят историю — S6 arch/17).
+переходные; «последняя фаза побеждает» (журналы не копят историю — S6 ../../arch/synchronization/README.md).
 
 ### 3.2. События/нотификации: носители и видимость
 
@@ -167,7 +167,7 @@ PG P3/P4, TTL lease, порт-тройки, env брокеров/нод, тай�
   пороги — `AdminPanel:Alerts` (appsettings, рестарт).
 - **Prometheus/Alertmanager** — независимый канал: `WorkerLoopStalled`,
   `SnapshotStale`, группа `backups` (FullStale/WalLag/VerifyFailed/…),
-  ServiceDown. Панель метрики не потребляет (граница по [arch/18](../../arch/18-metrics.md)).
+  ServiceDown. Панель метрики не потребляет (граница по [arch/metrics](../../arch/metrics/README.md)).
 
 ### 3.4. Присутствует в системе, но не наблюдаемо из панели
 

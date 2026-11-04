@@ -53,7 +53,7 @@ arch/                  ← вся документация (рецепты де�
                            init-cluster, add/remove-shard, move-bucket и др.)
 ```
 
-## Защищённый транспорт к Docker Engine API (t03, arch/14 §2.2.1)
+## Защищённый транспорт к Docker Engine API (t03, arch/pgworker/01-placement.md §4)
 
 Воркеры (PgWorker/KafkaWorker) ходят в docker-хосты по endpoint-схемам
 `PgWorker:Docker:Hosts[*].Endpoint`; канон прода — **без plaintext**:
@@ -74,7 +74,7 @@ arch/                  ← вся документация (рецепты де�
   `group_add: [<gid docker>]` (шаблон — комментарий в `deploy/docker-compose.yml`);
   демоны под `--tlsverify`, `:2375` наружу не слушать (firewall).
 
-## Per-cluster секреты и их ротация (t02/t07, arch/14 §5 I / arch/16 §5 K)
+## Per-cluster секреты и их ротация (t02/t07, arch/pgworker/processes/i-secret-rotator.md / arch/kafkaworker/processes/k-ca-rotator.md)
 
 etcd — единственное хранилище per-cluster секретов; воркер генерирует их при
 provisioning (ensure put-if-absent) и ротирует по заявке без остановки записи.

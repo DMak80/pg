@@ -3,7 +3,7 @@
 Уровень 4. Аварийная эвакуация бакетов полностью умершего шарда. Функция —
 [05-bucket-evacuation.md](../05-bucket-evacuation.md); перечисления —
 [enums.md](enums.md); принцип «данные не выбрасываем» —
-[17-synchronization-principles.md](../../17-synchronization-principles.md).
+[synchronization/README.md](../../synchronization/README.md).
 
 Guard'ы перед любым действием (journal-before-manipulations, P7): шард
 недоступен целиком ≥ `ShardDeadSec`; ни один бакет шарда не в

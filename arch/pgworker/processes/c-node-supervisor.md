@@ -7,7 +7,7 @@ DCS-конфига, HA-факты, сверка мастер-ключа, усы�
 §4; модель — [01-placement.md](../01-placement.md); секреты и статусная
 машина агента — [04-security.md](../04-security.md) §3–§4,
 [F](../../pgnode/processes/f-node-agent.md); принципы —
-[17-synchronization-principles.md](../../17-synchronization-principles.md).
+[synchronization/README.md](../../synchronization/README.md).
 
 ## 1. Сверка декларации с фактом
 

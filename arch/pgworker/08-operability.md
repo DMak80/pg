@@ -4,7 +4,7 @@
 надёжность, наблюдаемость, конфигурация и риски. Процессы —
 [A](processes/a-provisioning.md)…[K](processes/k-move-repair.md); перечисления
 состояний — [processes/enums.md](processes/enums.md); общие принципы —
-[17-synchronization-principles.md](../17-synchronization-principles.md).
+[synchronization/README.md](../synchronization/README.md).
 
 ## 1. Тик и порядок веток
 
@@ -14,7 +14,7 @@ provisioning в waiting-фазах, restore, надзор ждут не-etcd с�
 недоведённую работу навсегда). etcd в тике не читается: контроль-плейн
 берётся из опросного кэша наблюдаемых префиксов (`/clusters/`,
 `/service/`, `/pgworker/backups/`, `/pgworker/claims/` — S10
-[17-synchronization-principles.md](../17-synchronization-principles.md),
+[synchronization/README.md](../synchronization/README.md),
 реестр E10). Смерть инстанса гасит его клэймы-lease ≤ 15 с — takeover
 очередным тиком.
 
@@ -39,7 +39,7 @@ provisioning в waiting-фазах, restore, надзор ждут не-etcd с�
   протяжении мутации: потеря lease прерывает исполняющийся тик
   (cancellation-гвард), критические мутации длинных процессов — только
   после живой сверки клэйма (S5
-  [17-synchronization-principles.md](../17-synchronization-principles.md));
+  [synchronization/README.md](../synchronization/README.md));
   journal-before-manipulations, журнал несёт фазы `lease-lost`/
   `claim-lost/<фаза>`.
 - **Идемпотентность**: каждый шаг перепроверяет факт (контейнер есть? БД
@@ -164,6 +164,14 @@ provisioning в waiting-фазах, restore, надзор ждут не-etcd с�
   docker HEALTHCHECK, watchdog закрывает только «цикл завис, процесс жив».
   Анти-луп рестартов не вводится: сдерживание — docker restart-backoff,
   видимость — метрика/журнал.
+- **Легитимное выключение** (только диагностика/временно): `Loops:Watchdog:
+  Enabled=false` — компонент не регистрируется, поведение как без watchdog;
+  после разбора вернуть `true`.
+- **Связь с чеком 35** (`dev-stand/adminpanel/checks/35-worker-second-instance.sh`,
+  kill→takeover): watchdog — та же точка самовосстановления, но по отсутствию
+  активности цикла (тик или прогресс-отметка), а не по смерти контейнера;
+  второй инстанс подхватывает клэймы в обоих случаях (идемпотентность +
+  takeover).
 
 ## 4. Наблюдаемость
 
@@ -176,7 +184,7 @@ provisioning в waiting-фазах, restore, надзор ждут не-etcd с�
   мастер-ключа с коррекцией.
 - **Diag-ключи etcd** несут наблюдаемость для панели/оператора:
   `/pgworker/work/<C>` (живая фаза), `nodes/<n>/state`, journal эвакуаций.
-- Prometheus-метрики — единый каркас [18-metrics.md](../18-metrics.md):
+- Prometheus-метрики — единый каркас [metrics/02-dictionary.md](../metrics/02-dictionary.md):
   `/metrics` на том же порту `:8080` (словарь §2.2 — циклы/клэймы/фазы/
   операции/снапшоты/рестарты watchdog), репликация PG — scrape Patroni
   `:8008` напрямую.
@@ -278,9 +286,60 @@ master-ключ `host:<doorman>` полноценный): узлов без пу
 | R8 | Усыновление: master-ключ внешнего формата `node:port` vs reconciler `host:doorman` — война писателей | MasterKeyReconciler пропускает усыновлённые шарды; master-ключ пишет внешний HA-контур, резолв мастера понимает оба формата ([06-bucket-moves.md](06-bucket-moves.md) §2) |
 | R9 | Rebuild усыновлённой ноды поднял бы дубль (второй Patroni на scope, конфликт портов) | self-healing для `object`-нод отключён: `UNREACHABLE` + journal, разбор оператором |
 | R10 | Репарация прибивает живой переезд, запущенный вне воркера (писатель статуса не тикает updated_unix в copy-wait) | скриптовый путь исключён из живой системы — мутации только заявками; статус без тика = брошенный по построению; порог RepairStaleSec = панельному stale; заявка репарации помечена `requested_by=pgworker-repair` |
-| R11 | Чистка HA-scope (Д3) при живых данных = потеря кластера | трёхуровневая проба данных (Present/Absent/Unknown — `GET /api/node/pgdata` приёмнику ноды, канал [25-component-communications.md](../25-component-communications.md) №22; Unknown — транспортный отказ): чистка ТОЛЬКО при Absent у ВСЕХ нод scope; Unknown и хоть одна Present — не лечить (Present → журнал-фейл «разбор оператора»); одна чистка на scope за бюджет (новый бюджет после чистки); journal phase=reset-scope — оператор видит каждую чистку |
+| R11 | Чистка HA-scope (Д3) при живых данных = потеря кластера | трёхуровневая проба данных (Present/Absent/Unknown — `GET /api/node/pgdata` приёмнику ноды, канал [communications/02-channel-registry.md](../communications/02-channel-registry.md) №22; Unknown — транспортный отказ): чистка ТОЛЬКО при Absent у ВСЕХ нод scope; Unknown и хоть одна Present — не лечить (Present → журнал-фейл «разбор оператора»); одна чистка на scope за бюджет (новый бюджет после чистки); journal phase=reset-scope — оператор видит каждую чистку |
 | R12 | Перепланирование портов (Д1/Д2) меняет dsn — клиенты держат старые адреса | dsn-ключ — единственная точка входа (клиенты перечитывают etcd, паттерн app_password-ротации); репарация только при расхождении с фактом (стабильный кластер не трогается); journal repaired-dsn — событие видно |
 | R13 | SAN серверного серта API не покрывает фактический advertise-хост → строгие клиенты (curl, Prometheus server_name) получают TLS-отказ | канон SAN-набора пакета: `pgworker`, `localhost`, `host.docker.internal`, `127.0.0.1`; генерация — `deploy/tls/gen.sh` с полным SAN; панель валидирует цепочку (CustomRootTrust) — hostname-check не ломает её даже при расхождении, строгие клиенты защищены каноном SAN |
 | R14 | SSH-туннель без pinned host-key — MITM на первичном подключении (TOFU) | `PgWorker:Docker:Ssh:FingerprintSha256` — pin строго; не задан → accept + warning-лог при старте хоста (диагностируемое ослабление); канон прода — pin задан |
 | R15 | Plaintext `tcp://:2375` к Engine API остаётся технически возможным (dev/тесты) | канон [01-placement.md](01-placement.md) §3.1: прод — только 2376+mTLS или ssh; plaintext → warning-лог воркера на каждом старте хоста; 2375 в firewall-матрице [pg-clusters/13-network-security.md](../pg-clusters/13-network-security.md) §2 отсутствует (default deny) |
-| R16 | Компрометация `ca.key` = выпуск серверных сертов REST/API от имени установки | ключ в TLS-томе поставки (ro), права 600, в etcd/registry не попадает; на стенде панель/as-prometheus монтируют `deploy/tls` целиком (bind ro — домашний контур, принято; точечное монтирование — опция поставки); потеря deploy-хоста = потеря `ca.key` — обязательный бэкап пакета `deploy/tls` (runbook), серты живых нод не инвалидируются |
+| R16 | Компрометация `ca.key` = выпуск серверных сертов REST/API от имени установки | ключ в TLS-томе поставки (ro), права 600, в etcd/registry не попадает; на стенде панель/as-prometheus монтируют `deploy/tls` целиком (bind ro — домашний контур, принято; точечное монтирование — опция поставки); потеря deploy-хоста = потеря `ca.key` — обязательный бэкап пакета `deploy/tls` ([§7](#7-rest-tls-нод-диагностика-и-бэкап-пакета-deploytls)), серты живых нод не инвалидируются |
+
+## 7. REST-TLS нод: диагностика и бэкап пакета `deploy/tls`
+
+Транспорт REST-эндпоинтов нод — TLS: серверные серты выпускает воркер из
+per-install API-CA (`kfw-install-ca`); мутационные эндпоинты (PATCH `/config`,
+POST `/switchover` и др.) — basic-auth per-cluster (`rest_password` из etcd,
+ротация — процесс I по заявке панели; [processes/i-secret-rotator.md](processes/i-secret-rotator.md)).
+HTTP-режима не существует: воркер без env `PGW_REST_TLS_*` не стартует
+(fail-fast). SAN и TLS-инварианты — [04-security.md](04-security.md) §5.
+
+### 7.1. Диагностика TLS-отказов проб/скрейпа
+
+1. **Симптомы**: панель — Patroni-пробы кластера в ошибке; Prometheus —
+   таргеты `patroni-nodes`/`patroni` в down; воркер — пробы надзора
+   (`GET /cluster`) отказывают.
+2. **Проверка цепочки**: клиент обязан доверять `ca.pem` пакета
+   `deploy/tls`. Ручная проверка ноды:
+   `curl -fsS --cacert deploy/tls/ca.pem https://<host>:<patroni-port>/cluster`
+   (hostname не сверяется клиентами поставки — канон P17 «require, не
+   verify-full»; curl с `--cacert` без `-u` проходит — GET-эндпоинты без
+   basic-auth).
+3. **401 на мутациях** — ожидаем в окне REST-ротации (см. ниже) или при
+   расхождении пары воркер/нода. Для GET 401 не бывает.
+4. **Окно REST-ротации** (rolling-пересоздание нод до txn-коммита):
+   межнодовые REST-вызовы Patroni между нодами разных поколений получают
+   401 — HA-иниции деградированы на единицы минут; запись/репликация/
+   DCS-heartbeat/master-ключ не затронуты. Окно самозакрывается
+   txn-коммитом R3 ([processes/i-secret-rotator.md](processes/i-secret-rotator.md)) —
+   вмешательство оператора не требуется; затянувшееся окно (неделями) —
+   смотреть журнал `/pgworker/work/<C>` (фаза `rotate-rest-rolling`) и
+   инспекцию env нод надзором.
+5. **Серт ноды не покрывает имя**: серт ноды SAN = DNS `<n>` + DNS
+   `pgw-<C>-<X>-<n>` + IP `127.0.0.1`; строгие клиенты сетевых адресов
+   (Prometheus `alias:8008`) верифицируют имя — таргет advertised-ветки
+   (без alias) уходит в down ожидаемо (деградационная зона,
+   [metrics/02-dictionary.md](../metrics/02-dictionary.md) §5).
+
+### 7.2. Бэкап/восстановление пакета `deploy/tls`
+
+- `ca.key` — ключ выпуска серверных сертов REST/API от имени установки
+  (§6 R16): живёт в пакете `deploy/tls` и TLS-томе поставки, права 600, в
+  etcd/registry не попадает. **Обязательный бэкап пакета `deploy/tls`
+  целиком (вкл. `ca.key`)** — это единственная копия ключа.
+- Потеря deploy-хоста = потеря `ca.key`: серты живых нод остаются
+  валидными (верификация по `ca.pem`), но выпуск НОВЫХ сертов невозможен
+  до восстановления ключа.
+- ⚠️ **Восстанавливать пакет ДО любых новых выпусков**: `gen.sh` на пустом
+  месте поднимет НОВЫЙ CA — все rebuild-серты, выпущенные из него, не
+  доверяются клиентам старого `ca.pem`, доверие контура ломается.
+  Порядок аварии: остановить воркеры (иначе выпустят серты из нового CA) →
+  восстановить пакет из бэкапа → стартовать воркеры.

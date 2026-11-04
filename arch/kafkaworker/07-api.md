@@ -67,7 +67,7 @@ work-журналу `/kafkaworker/work/<C>` (`op=rotate` в переходных
 панели — AdvertiseUrl `host.docker.internal` — и хостовым потребителям: чеки,
 скрейп), без клиентского серта (паттерн Patroni REST `:8008` —
 [pg-clusters/13-network-security.md](../pg-clusters/13-network-security.md) §4); скрейп Prometheus —
-`https` + `ca_file` ([18-metrics.md](../18-metrics.md) §5.2). Граница доверия
+`https` + `ca_file` ([metrics/README.md](../metrics/05-storage.md) §2). Граница доверия
 грани — периметр docker-хоста, а не только docker-сеть; опциональное сужение
 (bind `127.0.0.1` отдельным env-флагом; ломает `host.docker.internal`-
 потребителей) — роадмап, каноном не предписывается. `X-Api-Key`/`KFW_API_KEY`

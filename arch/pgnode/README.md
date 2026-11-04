@@ -71,7 +71,7 @@ pg_hba и доставку секретов в компоненты ноды. О
 - **PgNode → supervisord**: управление `spilo`/`pg_doorman`; сокет
   `chmod=0770 root:postgres`.
 - **Prometheus → PgNode**: `/metrics` на `:8080` внутри контейнера ноды
-  ([18-metrics.md](../18-metrics.md) §2.8).
+  ([metrics/README.md](../metrics/02-dictionary.md) §8).
 
 ## 5. Свойства, на которые опираются все функции
 

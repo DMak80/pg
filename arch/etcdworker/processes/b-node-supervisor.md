@@ -4,7 +4,7 @@
 снос осиротевших docker-объектов. Функция —
 [03-node-supervision.md](../03-node-supervision.md); модель —
 [01-placement.md](../01-placement.md); принципы —
-[17-synchronization-principles.md](../../17-synchronization-principles.md).
+[synchronization/README.md](../../synchronization/README.md).
 
 Исполняется в тике доводки под лидер-клэймом: наблюдение — ДО
 `MembershipProcess` ([A](a-membership.md)), repair и orphan-cleanup — после

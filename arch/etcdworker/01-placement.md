@@ -22,7 +22,7 @@ volume данных, имена, адресация по именам сети �
 ## 2. Узел = контейнер/сервис `etcdw-node-<k>`
 
 - **Образ** — внешний `Images{Etcd}` (канон `quay.io/coreos/etcd:v3.5.21`,
-  зеркалируется в локальный registry, ранбук `docs/runbook.md`).
+  зеркалируется в локальный registry, ранбук `../operations/02-registry-images.md`).
 - **Имена**: контейнер `etcdw-node-<k>`, volume `etcdw-node-<k>-data`
   (`--data-dir=/etcd-data`); `<k>` — сквозной номер: замена узла получает
   СЛЕДУЮЩИЙ номер, имена не переиспользуются (data-dir старого при возврате

@@ -66,7 +66,7 @@ docker-хоста (`localhost:{PORT}`; публикации нужны пане�
 клиентского серта (паттерн Patroni REST `:8008` —
 [pg-clusters/13-network-security.md](../pg-clusters/13-network-security.md) §4, verify_client нет):
 скрейп Prometheus — `https` + `ca_file` без `cert_file`/`key_file`
-([18-metrics.md](../18-metrics.md) §5.2), docker-HEALTHCHECK — без
+([metrics/README.md](../metrics/05-storage.md) §2), docker-HEALTHCHECK — без
 клиентского серта. Граница доверия грани — периметр docker-хоста, а не
 только docker-сеть; опциональное сужение (bind `127.0.0.1` отдельным
 env-флагом; ломает `host.docker.internal`-потребителей) — роадмап, каноном

@@ -115,7 +115,7 @@ postmaster-класса применяются при ближайшем рес�
 - **DCS-конфиг ≠ bootstrap**: `bootstrap.dcs` применяется только при первой
   инициализации; живой конфиг — динамический `/service/<scope>/config`,
   который приводит к канону конвергенция PgWorker (S2
-  [17-synchronization-principles.md](../17-synchronization-principles.md)).
+  [synchronization/README.md](../synchronization/README.md)).
   Свежеподнятая нода может стартовать не на нашем наборе — первый тик
   конвергенции исправляет.
 

@@ -81,7 +81,7 @@ HA-кластер (Spilo + Patroni + pg_doorman + PgNode) на R нодах; б�
 - **PgWorker → PgNode**: HTTP API операций ноды по `alias:8080` общей сети
   воркера и нод; mTLS-канал доставки секретов `:8081`
   ([pgnode/02-api.md](../pgnode/02-api.md),
-  [25-component-communications.md](../25-component-communications.md) №22–23).
+  [communications/02-channel-registry.md](../communications/02-channel-registry.md) №22–23).
 - **Patroni ↔ etcd**: DCS-ключи `/service/<scope>/` (лидер, члены,
   инициализация, конфиг) — [04-etcd-dcs.md](04-etcd-dcs.md).
 - **Patroni-callback → etcd**: мастер-ключ
@@ -95,7 +95,7 @@ HA-кластер (Spilo + Patroni + pg_doorman + PgNode) на R нодах; б�
   (multi-host conninfo, `target_session_attrs=read-write`,
   `bucket_mover`) — [11-buckets.md](11-buckets.md) §4.
 - **Prometheus → Patroni** `:8008/metrics`, **→ PgNode** `:8080/metrics`;
-  таргеты — file_sd из portalloc ([18-metrics.md](../18-metrics.md) §2.5,
+  таргеты — file_sd из portalloc ([metrics/README.md](../metrics/02-dictionary.md) §5,
   §5.4).
 
 ## 5. Свойства, на которые опираются все функции
@@ -106,7 +106,7 @@ HA-кластер (Spilo + Patroni + pg_doorman + PgNode) на R нодах; б�
 - **Мастер-ключ — маршрутизация и кэш, не истина о роли.** Предикаты «кто
   мастер» строятся на прямых пробах Patroni REST (`/primary`); значение
   ключа может отставать и корректируется сверкой
-  ([17-synchronization-principles.md](../17-synchronization-principles.md) S4).
+  ([synchronization/README.md](../synchronization/README.md) S4).
 - **Данные — только на локальных дисках нод.** etcd хранит метаданные и
   маршрутизацию, но не данные; потеря etcd не теряет данные, потеря диска
   ноды восстанавливается репликацией/бэкапом.

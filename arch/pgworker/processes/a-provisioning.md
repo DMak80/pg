@@ -49,7 +49,7 @@ P1.5 ensure app-секрета: прочитать /clusters/<C>/{app_user,app_p
 P2 на каждый шард X:
  P2.0 вычислить тюнинг шарда: PgtuneInputsFactory.Create(resources) от уже
    прочитанных заявок request_* (Pgtune.Calculate по нормативу
-   docs/pgtune-calculation-spec.md) — ОДИН результат на все ноды прохода;
+   ../09-pgtune.md) — ОДИН результат на все ноды прохода;
    сбой расчёта — фейл фазы тика (транзиент-ретрай)
  P2.1 для каждой ноды n: создать volume + контейнер/сервис с конфигом
    (поллинг-инвариант [08-operability.md](../08-operability.md) §3:
@@ -86,7 +86,7 @@ P2 на каждый шард X:
    транзиент-толерантно); nodes/<n>/state=RUNNING.
    При исчерпании бюджета (лидера нет) — проверка данных scope (Д3):
    проба данных GET /api/node/pgdata приёмнику каждой ноды (канал
-   [25-component-communications.md](../../25-component-communications.md)
+   [communications/02-channel-registry.md](../../communications/02-channel-registry.md)
    №22; приёмник проверяет PG_VERSION файловой системой своего контейнера)
    → Present/Absent/Unknown (транспортный отказ); ВСЕ Absent (доказанная
    утрата) → чистка HA-scope (точечные initialize/leader/sync/failover +

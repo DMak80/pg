@@ -2,7 +2,7 @@
 
 > Назад: [INDEX.md](INDEX.md) · Подсистема: `src/Shared.Core (/common/; бывший AdminPanel.Infrastructure)`
 > (скопирован из `Puzzle`, обрезан до read-only: без Bus/Outbox/миграций).
-> Контракт слоёв: [arch/01](../../arch/adminpanel/01-architecture.md) §1–2.
+> Контракт слоёв: [../../arch/pg-clusters/01-ha-architecture.md](../../arch/adminpanel/01-architecture.md) §1–2.
 
 Как пользоваться (99% случаев):
 
@@ -41,7 +41,7 @@ sp.GetService(type)`), т.е. интерфейс и класс разрешаю�
 `[Config]` / `[Config("Section")]` на POCO с parameterless-конструктором (примеры:
 `EtcdOptions`, `ProbesOptions`, `AuthOptions`, `AlertsOptions`). Значения биндятся
 из `IConfiguration` секцией `AdminPanel:*`; в appsettings/env — `AdminPanel__*`
-(env-разделитель `__`, см. [arch/01](../../arch/adminpanel/01-architecture.md) §6).
+(env-разделитель `__`, см. [../../arch/pg-clusters/01-ha-architecture.md](../../arch/adminpanel/01-architecture.md) §6).
 
 ## CQRS (только queries) и Result
 
@@ -57,7 +57,7 @@ sp.GetService(type)`), т.е. интерфейс и класс разрешаю�
 ## Health-checks
 
 `Program.cs`: `AddCheck("self", …, ["live"])` и `AddCheck<EtcdHealthCheck>("etcd")`;
-`/api/healthz` фильтрует по тегу `live` — живость панели не зависит от etcd (arch/03
+`/api/healthz` фильтрует по тегу `live` — живость панели не зависит от etcd (../../arch/pg-clusters/03-prerequisites.md
 §1). `EtcdHealthCheck` отражает состояние `SnapshotRefresher` (Unhealthy после
 отказных тиков). Базис hosted-сервисов — `HealthChecks/HealthCheckAbstract.cs`
 (референс 01.12).

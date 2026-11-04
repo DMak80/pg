@@ -38,7 +38,7 @@
 ## 4. Свойства, на которые опираются все разделы
 
 - **Один общий etcd-контур** со стендом pg
-  ([17-synchronization-principles.md](../17-synchronization-principles.md) S1);
+  ([synchronization/README.md](../synchronization/README.md) S1);
   динамика покрывается тиками воркера (5 с) и панели (3 с) — watch не
   используется ([01-transport.md](01-transport.md) §1).
 - **Декларативная модель**: отсутствие `config.state` = Active-кластер;

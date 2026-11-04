@@ -31,7 +31,7 @@ per-cluster SASL-креды (роли admin/app и per-cluster CA), пишет �
 - **Не входит**: бэкапы Kafka (их нет; RPO держится RF×minISR —
   [kafka-clusters/README.md](../kafka-clusters/README.md)), метрики самих брокеров
   (JMX-exporter, лаги/USR снимает коллектор —
-  [18-metrics.md](../18-metrics.md) §4), bandwidth-throttle reassignment,
+  [metrics/README.md](../metrics/04-collectors.md)), bandwidth-throttle reassignment,
   preferred leader election, клиентская библиотека дискавери —
   [roadmap/kafkaworker.md](../roadmap/kafkaworker.md). Ротация per-cluster CA и сертов брокеров — входит
   ([04-security.md](04-security.md)).
@@ -65,19 +65,19 @@ per-cluster SASL-креды (роли admin/app и per-cluster CA), пишет �
 - **KafkaWorker → docker / Kafka**: управление контейнерами и Kafka-протокол
   (AdminClient, протокольный миниклиент reassignment) — только штатные
   протоколы, границы оркестрации
-  [25-component-communications.md](../25-component-communications.md).
+  [communications/02-channel-registry.md](../communications/02-channel-registry.md).
 - **Приложения → etcd**: клиентский дискавери (`endpoints`, `ca_pem`,
   `app_user`/`app_password`, реестр `topics/`) —
   [kafka-clusters/05-client-discovery.md](../kafka-clusters/05-client-discovery.md).
 - **Prometheus → KafkaWorker**: `/metrics` на порту Kestrel `:8080` —
-  [18-metrics.md](../18-metrics.md).
+  [metrics/README.md](../metrics/README.md).
 
 ## 5. Свойства, на которые опираются все функции
 
 - Идемпотентность каждого шага: повторная сверка факта (контейнер есть?
   брокер в кластере? заявка уже применена?) — [08-operability.md](08-operability.md) §2.
 - Journal-before-manipulations, фиксированный порядок записей, клэймы и
-  txn-сравнения — [17-synchronization-principles.md](../17-synchronization-principles.md)
+  txn-сравнения — [synchronization/README.md](../synchronization/README.md)
   (S5–S7), [08-operability.md](08-operability.md) §2.
 - Декларативная модель: отсутствие `config.state` = Active-кластер;
   `NOT_INITIALIZED`/`TO_REMOVE` — заявки панели; состояния брокеров и

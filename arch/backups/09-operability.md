@@ -112,9 +112,35 @@ PG → цепочка рвётся → алерт панели + пересня�
 
 Статусы — ключи `/pgworker/backups/*` ([05-etcd-contract.md](05-etcd-contract.md));
 метрики приёмника — Prometheus `:8080` внутри контейнера ноды
-([18-metrics.md](../18-metrics.md) §2.8); живость циклов воркера — серия
+([metrics/02-dictionary.md](../metrics/02-dictionary.md) §8); живость циклов воркера — серия
 `worker_loop_last_success_timestamp_seconds{loop=…}`; алерты панели —
 `backup-full-stale`, `backup-verify-failed`, `backup-storage-quota`,
 `backup-pool-unreachable`, `backup-pool-missing`, `backup-deleting-stuck`,
 `backup-wal-tli-gap`, `slot-wal-lost`, `OrphanSweepStalled` (расчёт — над
 снапшотом, [07-retention.md](07-retention.md) §6).
+
+## 7. Потеря WAL-слота (`wal_status='lost'`)
+
+Что происходит: при длительном неподтверждении приёма (S3 недоступен — приёмник
+в backpressure) WAL под слотом `pgw_bkp_<C>_<X>` копится на источнике до потолка
+`max_slot_wal_keep_size`; затем PG срезает WAL и слот переходит в
+`wal_status='lost'` — стрим через него невозможен (нужные сегменты удалены).
+
+Что делает воркер (тик контроля WAL, зонд на КАЖДОМ источнике — мастер и
+sync-standby):
+
+- lost ОДНОГО источника при живом втором — слот потерянного пересоздаётся
+  (drop + create immediate+reserved) автоматически, журнальная фаза
+  `slot-recreate/<X>` (op `backup-wal` в `/pgworker/work/<C>`); потерянный агент
+  возвращается сам от хвоста S3 (вечный ретрай приёмника), живой продолжает
+  доставку — WAL_CHAIN_ERROR не ставится, цепочка не рвётся;
+- lost/исчезновение слотов ВСЕХ источников при живой цепочке — wal-ключ WAL_CHAIN_ERROR,
+  агенты останавливаются, воркер переснимает полный бэкап; архивация
+  восстанавливается от `wal_start` нового полного.
+
+Границы (RPO): неподтверждённый хвост WAL теряется в момент среза PG — свойство
+аварии до любой автоматики; автоматика ускоряет RTO восстановления архивации.
+
+Ручная чистка слота не требуется. Если алерт `slot-wal-lost` висит после
+автолечения (слот не lost, но алерт жив) — воркер не лечит: смотрите журнал
+`backup-wal` (`/pgworker/work/<C>`) и healthz воркера.

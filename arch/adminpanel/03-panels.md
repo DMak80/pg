@@ -464,7 +464,7 @@ NOT_INITIALIZED/TO_REMOVE — серым, режимы, endpoints, заявки 
 | **Обзор** (`/`) | бейджи свежести 5 доменов в шапке layout'а (§3.0-группы «НАБЛЮДЕНИЕ» не касаются — рендер в layout'е); карточки: etcd (reachable, endpoints ok/total; alarms — в ленте алертов и на панели etcd), кластеры pg (шарды/бакеты/переезды), карточка Valkey (порт KafkaCard: clustersTotal/clustersCritical; null до первого тика — «Снапшот valkey ещё не собран»); карточки доменов дублируют возраст данных из `freshness` (жёлтый при старше 3×`freshness.intervalSeconds` — серверный интервал тика); при `backupsDisabled` — жёлтый баннер «Бэкапы остановлены (глобальный стоп)» над карточками; секция «Активные операции» — таблица `operations` (Домен \| Тип \| Кластер \| Сущность \| Детали \| Обновлено; пусто → «Нет активных операций»; — замена прежней таблицы activeMoves, переезды — подмножество операций pg); секция «Требуют оператора» рядом с лентой алертов — только алерты с remedy `OperatorApi`/`OperatorRunbook`; лента алертов critical/warning; сводка HA (`data.ha`: scopesTotal/withoutLeader/unmatched), карточка «Бэкапы» (`data.backups`), карточка «Надёжность» (`data.reliability`) — все числа с сервера `/api/overview` (клиентские доборы `/api/ha`, `/api/backups/storage`, `/api/reliability` с дашборда удалены; сами эндпоинты остаются — потребители-страницы есть) |
 | **События** (`/events`) | клиентская лента событий из query-кэша (диффы prev→next ответов polling'а: overview/clusters/cluster-details/ha/kafka/valkey/s3/backups-storage/etcd-domain): таблица Время \| Домен \| Тип сущности \| Сущность \| Событие (from→to) \| Детали; фильтры Select домена (Все/pg/kafka/valkey/s3/etcd) и entityKind; клик по событию — deep-link на сущность (та же функция маршрутизации, что у алертов — §3.9); события типа state-change/appeared/gone/outcome (заявка: появление = «поставлена», исчезновение = «исполнена или отвергнута»); события etcd-домена: state-change/appeared/gone managed-узла (`etcdw-node-<k>`), state-change статуса DR-слепков (OK↔FAILED; появление/исчезновение ключа — `—`), state-change декларации «поддерживать N» (null↔N, N→N', null отображается «—»); эмитятся, пока опрашивается запрос etcdDomain (страница /etcd открыта) — общая модель ленты «живёт в открытой вкладке»; подпись «Лента живёт в открытой вкладке; после перезагрузки пуста» — persistence нет (02 §3-инварианты истории); freshness-события не эмитятся |
 | **etcd** | таблица endpoints (reachable, latency, версия, raftTerm, ошибки, метка «активный»), members (+лидер; пометки managed/external — managed по
- peer-URL-паттерну `http://etcdw-node-<k>:2380`, arch/25 §3.1; unstarted-learner
+ peer-URL-паттерну `http://etcdw-node-<k>:2380`, ../etcdworker/processes/b-node-supervisor.md; unstarted-learner
 без имени классифицируется по peer-URL), alarms; блок «Состав»: заявлено N (`/etcd/config`, 0/нет ключа — «только наблюдение»), managed-узлы (`/etcd/nodes/<k>/state` + `placed_on`, бейджи состояния), фактическое число членов; форма «Поддерживать N узлов» (модал по образцу прочих мутаций, `PUT /api/etcd/config` через API воркера — 02 §9.14; валидация 0..7, гвард кворума отображается текстом 409); карточка «DR-слепки» (`/etcdworker/snapshots`: состояние, возраст последней выгрузки, sha256-префикс, размер, ошибка); `lastRefreshUtc` |
 | **Clusters** | список: имя, dbname, N, шард мастеровых/всего, активные переезды, бейдж режима `strict`/`availability` (по `synchronousModeStrict`), пометки (incomplete, not-initialized, «к удалению» при `toRemove`); кнопка «Создать кластер» → модальная форма (§3.1) |
 | **Cluster details** | вкладки: Шарды (dsn, replicas, master+leaseAlive, sync-standby, лаг слотов; ноды: имя+state; имя шарда в строке — ссылка на страницу шарда `/clusters/:c/shards/:x`; заявка ресурсов на ноду cpu/mem/disk; колонка действий — кнопка «Убрать шард» (красная, per-row; диалог со счётчиком бакетов шарда, дизейбл при N>0 с пояснением «сначала перевезите бакеты», серверный 409 — текстом ProblemDetails); бейдж «к удалению» у шарда state=TO_REMOVE; кнопка «Добавить шард» в заголовке вкладки — модальная форма §3.2: реплики/CPU/память/диск, без имени — генерируется; подпись «Шард стартует пустым — перераспределение бакетов выполняется отдельными явными переездами»; кнопки скрыты, когда кластер не Active — симметрия с «Удалить кластер»), Бакеты (грид id×owner×state, фильтр по owner/state, подсветка не-ACTIVE, возраст; клик по не-ACTIVE бакету — переход к вкладке «Переезды» с подсветкой его строки; вкладка скрыта при `sharded=false` — нешардированная БД 1×1 без карты бакетов, 02 §9.1; кнопка «Перенести бакеты» в заголовке вкладки (только Active && sharded — canScale) — модальная форма §3.3; колонка действий per-row у ACTIVE-бакетов при canScale — пост-переездные операции: «Откатить» (модал §3.4) и «Финализировать» (модал §3.5); у бакета со стоящей заявкой вместо кнопок бейдж «в очереди: <op>»), Переезды (только не-ACTIVE, кроме NOT_INITIALIZED: phase, updated, last_error; колонка действий per-row — красная «Отменить переезд» (abort, модал §3.6 с чекбоксом force) при canScale; блок «Очередь заявок» — `pendingMoves` по возрастанию requestedUnix: бакет, op, to, возраст заявки, кем поставлена, колонка действий «Снять заявку» (DELETE moves/{bucket}, подтверждение «начатый переезд доедет — остановка только abort») при canScale; исчезновение заявки без смены routing/status = отвергнута PgWorker'ом; журнал воркера — во вкладке «Журнал»), Бэкапы (срез) — НОВАЯ вкладка (связь «кластер → его бэкапы/RPO»: RPO/WAL/полные этого кластера из существующего `GET /api/backups/storage` клиентским фильтром + policy кластера; ссылки на `/backups-storage` и `/reliability`, строки полных — на детали шарда бэкапов; кнопка «Policy бэкапов» — модал §3.8), Секреты — НОВАЯ вкладка (: заявка ротации per-cluster секретов — кнопка «Сменить app-пароль» перенесена сюда из шапки; состав ротируемых ролей текстом app/bucket_admin/bucket_mover без значений; предупреждение о разрыве подключений; живая заявка — бейдж «ротация…» из `secretsRotationPending`), Журнал — НОВАЯ вкладка (: work-журнал `/pgworker/work/<C>` — op/phase/updated/last_error/fail-серия (блок «Журнал воркера» перенесён из вкладки Переезды), heals (перенос прежней вкладки Heals), блок «Эвакуации» — `evacuations`: шард/причина/план (старый→новый)/state-бейдж DONE=gray, QUARANTINED=yellow, returnedUnix); «Стендовая топология» — блок ПОД вкладками (по `standNodes` деталей — реестр `/cluster/nodes/`, скрыт при пустом; статус-кво — вне дерева вкладок); шапка: state-бейджи (TO_REMOVE — серым, штатная тишина), бейдж режима «strict»/«availability» (по
@@ -505,7 +505,7 @@ Active; не-Active — контрол заблокирован с подска�
 Модальный диалог с кнопки «Добавить шард» в заголовке вкладки Шарды на
 Cluster details (только Active-кластер). Поля: реплики (дефолт 2, минимум 1 —
 только мастер; у strict-кластера минимум 2 — клиентская валидация;
-серверная — arch/14 §5 G), группа «Ресурсы нод (заявка, на каждую ноду)»: CPU (ядра,
+серверная — ../pgworker/processes/g-add-shard.md), группа «Ресурсы нод (заявка, на каждую ноду)»: CPU (ядра,
 шаг 0.1), память (GiB), диск (GiB); поля имени НЕТ — имя генерирует сервер
 (`shard<max+1>`, 02 §9.5). Подпись в форме: «Шард стартует пустым —
 перераспределение бакетов выполняется отдельными явными переездами (UI
@@ -653,7 +653,7 @@ per-кластера на `/backups-storage` (таблица «Кластеры 
 Checkbox — без DnD-библиотек. Поля (полное тело, канон замещения целиком —
 02 §9.12):
 
-- **Retention**: days/weeks/months (числа канона arch/19 §4).
+- **Retention**: days/weeks/months (числа канона ../backups/05-etcd-contract.md).
 - **full_max_age_sec** (окно валидного полного).
 - **verify.on_create** (чекбокс).
 - **Дрилл каждые N суток** (0 = выкл, 0..3650).
@@ -728,11 +728,11 @@ per-shard (target `<C>/<X>`) → `/backups-storage/:c/:x`; `probe-failed` →
 | `inventory-mismatch` | warning | фактические схемы `bucket_%` ≠ routing (P21/P23) | SQL-проба |
 | `probe-failed` | по цели (critical/warning) | ошибки проб **Active-целей**: SQL-проба шарда упала → **critical** («шард недоступен»: ни один хост DSN не принял подключение или writable-мастер не найден — 02 §6.2); Patroni-проба одного члена скопа упала → **warning**; Patroni-пробы **всех** членов matched-скопа упали → один **critical** на скоп (id `probe-failed:patroni-scope:<scope>`, per-member warning этого скопа не эмитятся — один факт, один алерт) | пробы |
 | `backup-s3-unreachable` | warning | грань настроена && S3-инвентарь-тик падал ≥ 2 подряд (configured && consecutiveFailures ≥ 2); снимается первым успешным тиком | S3 live-тик (02 §2.5) |
-| `etcd-snapshot-export-failed` | critical | `state=FAILED` статуса DR-выгрузки — текст `error` (в т.ч. маркер `etcd-backup-missing`: цель не заявлена/недоступна); контроль-плейн не защищён от потери хоста | `/etcdworker/snapshots` (02 §2.3.5, arch/25 §5) |
+| `etcd-snapshot-export-failed` | critical | `state=FAILED` статуса DR-выгрузки — текст `error` (в т.ч. маркер `etcd-backup-missing`: цель не заявлена/недоступна); контроль-плейн не защищён от потери хоста | `/etcdworker/snapshots` (02 §2.3.5, ../etcdworker/00-etcd-contract.md) |
 | `etcd-snapshot-export-stale` | warning | `last_uploaded_unix` отсутствует или старше `2×interval_min` (панельный дефолт 360 мин); «выгрузка молчит» (обе инстанции воркера лежат / вечный transient) | `/etcdworker/snapshots` (02 §2.3.5) |
-| `etcd-backup-cluster-missing` | critical | в `/s3/clusters/` нет кластера с признаком `etcd_backup=true` (или он `TO_REMOVE`) — DR-слепкам некуда выгружаться (Remedy: «создай etcd-backup S3-кластер — признак и спец-ключ у S3Worker, arch/23 §6») | `/s3/clusters/` (02 §12) |
+| `etcd-backup-cluster-missing` | critical | в `/s3/clusters/` нет кластера с признаком `etcd_backup=true` (или он `TO_REMOVE`) — DR-слепкам некуда выгружаться (Remedy: «создай etcd-backup S3-кластер — признак и спец-ключ у S3Worker, ../s3worker/04-security.md») | `/s3/clusters/` (02 §12) |
 | `backup-pool-missing` | critical | per-cluster: Active-кластер с включённой подсистемой, policy без секции `s3` — пул не выбран, бэкапы кластера не пишутся («только явный выбор»; Remedy: «выбери пул на странице "Хранилище бэкапов" — без выбора бэкапы кластера не пишутся») | policy-ключ `/pgworker/backups/<C>/policy` |
-| `backup-pool-unreachable` | critical | per-cluster: маркер `s3-pool-exhausted` в `error` статусов воркера — wal `DEGRADED` (приёмник в ретрай-цикле) или любой full `FAILED` (исчерпание списка/Failed-резолв пула, arch/19 §4); Remedy: «проверь ноды пула `<имя>` (/s3/): воркер не доставил запись ни на одну ноду списков» | wal/full-ключи `/pgworker/backups/<C>/<X>/…` |
+| `backup-pool-unreachable` | critical | per-cluster: маркер `s3-pool-exhausted` в `error` статусов воркера — wal `DEGRADED` (приёмник в ретрай-цикле) или любой full `FAILED` (исчерпание списка/Failed-резолв пула, ../backups/05-etcd-contract.md); Remedy: «проверь ноды пула `<имя>` (/s3/): воркер не доставил запись ни на одну ноду списков» | wal/full-ключи `/pgworker/backups/<C>/<X>/…` |
 | `backup-full-stale` | critical | per-shard живого Active-кластера: возраст последнего COMPLETED полного > `full_max_age_sec` policy кластера (нет policy — панельный дефолт 86400); COMPLETED нет вовсе — «полного никогда не было»; пустой префикс кластера (подсистема не включена) — молчим | `/pgworker/backups/<C>/<X>/full/*` |
 | `backup-verify-failed` | critical | в статусе COMPLETED-полного `verify.state=FAILED` — полный невалиден (checksums/цепочка); текст — `verify.error`; воркер переснимает автоматически | `/pgworker/backups/<C>/<X>/…` |
 | `backup-chain-broken` | critical | `state=WAL_CHAIN_ERROR` wal-ключа шарда живого Active-кластера — разрыв цепочки; воркер сам лечит пересъёмом полного (Remedy WorkerAuto); DEGRADED — transient, остаётся правилу `wal-chain-broken` | wal-ключ `/pgworker/backups/<C>/<X>/wal` |
@@ -746,7 +746,7 @@ per-shard (target `<C>/<X>`) → `/backups-storage/:c/:x`; `probe-failed` →
 | `backup-storage-quota` | critical→warning по state | занятость bucket по `state` ключа `/pgworker/backups/storage` (CRIT→critical, WARN→warning); ключа нет — молчим (подсистема не включена) | `/pgworker/backups/storage` |
 | `restore-failed` | critical | FAILED restore-заявки живого шарда Active-кластера — восстановление не удалось (разбор по runbook и повтор заявки); активные фазы PLANNED/RUNNING/REJOINING без алерта | `/pgworker/backups/<C>/<X>/restore/*` |
 | `backups-disabled` | warning | глобальный стоп бэкапов: ключ `/pgworker/backups-disabled` жив; Hint «глобальный стоп бэкапов: ключ /pgworker/backups-disabled»; Remedy `OperatorRunbook` — «запуск — снять ключ /pgworker/backups-disabled или включить Backups:Enabled» | `/pgworker/backups-disabled` (02 §2.3.1) |
-| `backup-wal-tli-gap` | critical | per-shard: живое поле `gap` wal-ключа шарда живого Active-кластера — RPO-зазор tli-прыжка приёмника (58P01 пережит, сегменты между `from`/`to` невосстановимы из бэкапов, arch/19 §3/§4; границы `from`/`to` — в тексте и атрибутах); Remedy WorkerAuto (воркер переснимает полный, снимается заживлением; оператор проверяет окно потери) | wal-ключ `/pgworker/backups/<C>/<X>/wal` |
+| `backup-wal-tli-gap` | critical | per-shard: живое поле `gap` wal-ключа шарда живого Active-кластера — RPO-зазор tli-прыжка приёмника (58P01 пережит, сегменты между `from`/`to` невосстановимы из бэкапов, ../backups/02-wal-archive.md/§4; границы `from`/`to` — в тексте и атрибутах); Remedy WorkerAuto (воркер переснимает полный, снимается заживлением; оператор проверяет окно потери) | wal-ключ `/pgworker/backups/<C>/<X>/wal` |
 
 SQL-алерты вычисляются только при включённых пробах; etcd-алерты — всегда.
 `probe-failed` считается по целям текущего снапшота (исчезнувшая цель не
@@ -847,9 +847,9 @@ select pg_is_in_recovery;
 ## 7. Kafka: панель и REST API (`/api/kafka/*`)
 
 Третий домен (спец-файл kafka-admin-worker §5; etcd-контракт — 02 §10,
-канон ключей — arch/15). Источник данных — отдельный снапшот `KafkaSnapshot`
+канон ключей — ../kafka-clusters/README.md). Источник данных — отдельный снапшот `KafkaSnapshot`
 (свой refresher, тик 3 с) + опциональная live-проба (тип 15 с, DescribeCluster;
-группы/лаги — arch/15 §3-домен волны C). Пароль `app_password` в UI/API
+группы/лаги — ../kafka-clusters/03-topics.md). Пароль `app_password` в UI/API
 не отдаётся никогда (02 §10.1).
 
 ### 7.1. Список эндпоинтов
@@ -957,8 +957,8 @@ ProblemDetails в теле формы. Двойной клик — блокир�
 Чистая функция `KafkaSnapshot (prev, next) → Alert[]`; пороги —
 `AdminPanel:KafkaAlerts`. sinceUnix — по стабильному `id = kind:target`
 (§2-механика). Ротационный алерт живёт только у живого кластера: заявка
-ротации удаляется демонтажем кластера (arch/16 X-фазы), исполнением или
-возрастным таймаутом не-начатой (arch/16 §5) — вечный
+ротации удаляется демонтажем кластера (../kafkaworker/processes/b-deprovisioning.md), исполнением или
+возрастным таймаутом не-начатой (../kafkaworker/08-operability.md) — вечный
 `kafka-rotation-pending` невозможен по построению; зависание ДО снятия
 видно stale-алертом, факт снятия — алертом исхода.
 
@@ -971,7 +971,7 @@ ProblemDetails в теле формы. Двойной клик — блокир�
 | `kafka-rotation-pending` | info | живая заявка ротации `/kafkaworker/rotations/<C>` |
 | `kafka-admin-rotation-pending` | info | живая заявка ротации `/kafkaworker/admin_rotations/<C>` |
 | `kafka-ca-rotation-pending` | info | живая заявка CA-ротации `/kafkaworker/ca_rotations/<C>` |
-| `kafka-security-missing` | critical | Active-кластер без `ca_pem` (arch/15 §6 — миграция TLS не доиграна/ключ потерян) |
+| `kafka-security-missing` | critical | Active-кластер без `ca_pem` (../kafkaworker/04-security.md — миграция TLS не доиграна/ключ потерян) |
 | `kafka-rotation-stale` | warning | заявка ротации (app/admin) жива дольше `RotationStaleSeconds` (1800; до таймаута воркера остаётся полчаса) |
 | `kafka-ca-rotation-stale` | warning | заявка CA-ротации жива дольше `RotationStaleSeconds` (1800) |
 | `kafka-rebalance-stale` | warning | заявка ребалансировки жива дольше `RotationStaleSeconds` (1800) |
@@ -991,8 +991,8 @@ ProblemDetails в теле формы. Двойной клик — блокир�
 
 ## 8. Valkey: панель и REST API (`/api/valkey/*`)
 
-Четвёртый домен (etcd-контракт — 02 §11, канон ключей — arch/20; мутации
-исполняет ValkeyWorker, arch/21 §1.1). Источник данных — отдельный снапшот
+Четвёртый домен (etcd-контракт — 02 §11, канон ключей — ../valkey-clusters/README.md; мутации
+исполняет ValkeyWorker, ../valkeyworker/05-api.md). Источник данных — отдельный снапшот
 `ValkeySnapshot` (свой refresher, тик 3 с) + опциональная live-проба (тик 15 с,
 PING по admin-креду из etcd; пароль в UI/API не отдаётся никогда — 02 §11.1).
 v1: топология standalone `nodes=1` (всегда нода `node1`).
@@ -1070,8 +1070,8 @@ allkeys-lru); группа «Ресурсы ноды»: CPU/память/дис�
 Чистая функция `ValkeySnapshot (prev, next) → Alert[]`; пороги —
 `AdminPanel:ValkeyAlerts`. sinceUnix — по стабильному `id = kind:target`
 (§2-механика). Ротационный алерт живёт только у живого кластера: заявка
-ротации удаляется исполнением E2/E3/K-C, демонтажом кластера (arch/21 X2)
-или возрастным таймаутом не-начатой (arch/21 §5 E/K) — вечный
+ротации удаляется исполнением E2/E3/K-C, демонтажом кластера (../valkeyworker/processes/b-deprovisioning.md)
+или возрастным таймаутом не-начатой (../valkeyworker/processes/e-password-rotator.md`/`../valkeyworker/processes/k-ca-rotator.md) — вечный
 `valkey-rotation-pending` невозможен по построению; зависание ДО снятия
 видно stale-алертом, факт снятия — алертом исхода.
 
@@ -1080,13 +1080,13 @@ allkeys-lru); группа «Ресурсы ноды»: CPU/память/дис�
 | `valkey-cluster-not-initialized` | info | state=NOT_INITIALIZED |
 | `valkey-cluster-to-remove` | info | state=TO_REMOVE |
 | `valkey-node-not-running` | critical | Active-кластер, нода state ∉ {RUNNING}, кроме fresh-PROVISIONING (< 60 с) |
-| `valkey-endpoints-missing` | critical | Active без `endpoints` (arch/20 §5) |
+| `valkey-endpoints-missing` | critical | Active без `endpoints` (../valkey-clusters/02-keys.md) |
 | `valkey-rotation-pending` | info | живая заявка ротации `/valkeyworker/rotations/<C>` |
 | `valkey-rotation-stale` | warning | заявка ротации креда жива дольше `RotationStaleSeconds` (1800) |
 | `valkey-ca-rotation-stale` | warning | заявка CA-ротации жива дольше `RotationStaleSeconds` (1800) |
-| `valkey-security-missing` | critical | Active-кластер без `ca_pem` (arch/20 §5 — миграция TLS не доиграна/ключ потерян) |
+| `valkey-security-missing` | critical | Active-кластер без `ca_pem` (../valkey-clusters/02-keys.md — миграция TLS не доиграна/ключ потерян) |
 | `valkey-ticket-expired` | warning | `/valkeyworker/ticket_outcomes/<C>` outcome=expired — заявка снята таймаутом воркера; Hint: устранить причину reason и повторить заявку |
-| `valkey-key-malformed` | warning | valkey-ключ не разобран (parseError; arch/20 §5) |
+| `valkey-key-malformed` | warning | valkey-ключ не разобран (parseError; ../valkey-clusters/02-keys.md) |
 | `worker-api-unreachable` | critical | нет живых ключей `/valkeyworker/api/` (02 §2.3.3) — valkey-мутации панели 503; target `valkeyworker` |
 | `worker-unhealthy` | warning | живой ключ, но `/healthz` ≠ 200 (02 §2.3.3); target `valkeyworker/<id>` |
 
@@ -1098,8 +1098,8 @@ allkeys-lru); группа «Ресурсы ноды»: CPU/память/дис�
 
 ## 12. S3: панель и REST API (`/api/s3/*`)
 
-Пятый домен (etcd-контракт — 02 §12, канон ключей — arch/23; мутации
-исполняет S3Worker, arch/24 §1.1). Источник данных — отдельный снапшот
+Пятый домен (etcd-контракт — 02 §12, канон ключей — ../s3worker/README.md; мутации
+исполняет S3Worker, ../s3worker/07-api.md). Источник данных — отдельный снапшот
 `S3Snapshot` (свой refresher, тик 3 с); live-проб нод нет (живость —
 `nodes/*/state`, связность/синхронность — ключи зонда).
 
@@ -1181,7 +1181,7 @@ secrets-ключ etcd, 02 §12).
 | `s3-sync-diverged` | critical | sync.state=DIVERGED |
 | `s3-sync-stale` | warning | у Active-кластера с RUNNING-нодами connectivity/sync отсутствуют или `checked_unix` старше `SyncStaleSec` (def 300) — зонд молчит |
 | `s3-node-disk-usage-high` | warning | `usage.used/usage.total > DiskUsagePercent` (def 85) или `used > resources.disk`-декларации |
-| `s3-nodes-same-host` | warning | ≥2 нод кластера с одинаковым `placed_on` (гео-раснос — обязанность оператора, arch/23 §4) |
+| `s3-nodes-same-host` | warning | ≥2 нод кластера с одинаковым `placed_on` (гео-раснос — обязанность оператора, ../s3-clusters/04-placement.md) |
 | `s3-node-not-in-mesh` | warning | нода Active-кластера без единой связи в `links` (частичный граф — риск безрепликационной доли) |
 | `s3-rotation-pending` | info | живая заявка `/s3worker/rotations/<C>` |
 | `s3-rotation-stale` | warning | заявка ротации жива дольше `RotationStaleSeconds` (def 1800) |

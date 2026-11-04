@@ -4,7 +4,7 @@
 лимиты, молчание, восстановление адресов. Функция —
 [02-cluster-lifecycle.md](../02-cluster-lifecycle.md) §4; модель —
 [01-placement.md](../01-placement.md); принципы —
-[17-synchronization-principles.md](../../17-synchronization-principles.md).
+[synchronization/README.md](../../synchronization/README.md).
 
 Сверка декларации с фактом docker + PING-проба (с admin-кредом, **по TLS**).
 
@@ -37,12 +37,12 @@
   контейнера **без тома — данных не жалко** (кеш восполним; документированное
   поведение). **Слепая проба — никаких действий**: собственная слепота
   воркера не повод трогать ноду (S7,
-  [17](../../17-synchronization-principles.md)).
+  [synchronization](../../synchronization/README.md)).
 - **Одно пересоздание за тик** — никаких массовых пересозданий подряд.
 - **Кеш неприкосновенен на etcd-уровне**: надзор никогда не чистит ключи
   домена из-за недоступности ноды (декларация/креды переживают всё;
   содержимое кеша — дело приложений).
-- **Лестница E9** ([17](../../17-synchronization-principles.md)): нода без
+- **Лестница E9** ([synchronization](../../synchronization/README.md)): нода без
   записи portalloc — до любых деструктивных действий — реконструкция из
   inspect живого контейнера (published-порт + host, put-if-absent под
   `locks/portalloc`, проигрыш txn → re-read) → новая аллокация

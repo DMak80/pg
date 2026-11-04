@@ -43,7 +43,7 @@ managed-механика на стенде не используется.
 - **Не входит**: disaster-recovery при потере кворума (2/3 недоступны —
   runbook [pg-clusters/09-troubleshooting.md](../pg-clusters/09-troubleshooting.md) §5, автоматика
   без кворума невозможна); восстановление контура из слепка
-  (`docs/runbook.md`); Patroni-ноды и прочие потребители контура (их
+  (`../operations/02-registry-images.md`); Patroni-ноды и прочие потребители контура (их
   адресация — env поставки); S3-кластеры и их секреты — зона S3Worker
   ([s3worker/README.md](../s3worker/README.md)).
 
@@ -76,7 +76,7 @@ managed-механика на стенде не используется.
   ([04-snapshots.md](04-snapshots.md)); креды/endpoints — из
   `/s3/clusters/<C>/secrets` (ключ `backups`), как у остальных клиентов пула.
 - **Prometheus → EtcdWorker**: `/metrics` на порту Kestrel `:8080` —
-  [18-metrics.md](../18-metrics.md).
+  [metrics/README.md](../metrics/README.md).
 
 ## 5. Свойства, на которые опираются все функции
 
@@ -84,7 +84,7 @@ managed-механика на стенде не используется.
   контейнер есть? порт закреплён? слепок выгружен?) —
   [06-operability.md](06-operability.md) §2.
 - Journal-before-manipulations, фиксированный порядок операций, клэймы и
-  txn-сравнения — [17-synchronization-principles.md](../17-synchronization-principles.md)
+  txn-сравнения — [synchronization/README.md](../synchronization/README.md)
   (S5–S7), [00-etcd-contract.md](00-etcd-contract.md) §2.
 - Операции состава — только при здоровом кворуме контура; недобор и замена
   идут через learner (кворум не проседает ни на одном шаге) —

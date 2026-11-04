@@ -9,7 +9,7 @@
 [pgworker/00-etcd-contract.md](../pgworker/00-etcd-contract.md) §1): `HttpClient` против gRPC-gateway
 etcd (JSON+base64), `POST /v3/kv/range` / `/v3/kv/put` / `/v3/kv/txn` /
 `/v3/lease/*`. Один общий etcd-контур со стендом
-([17-synchronization-principles.md](../17-synchronization-principles.md) S1).
+([synchronization/README.md](../synchronization/README.md) S1).
 
 **Poll, без watch** — тик воркера 5 с / панели 3 с покрывают динамику
 домена.

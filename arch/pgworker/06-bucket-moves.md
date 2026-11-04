@@ -53,7 +53,7 @@ dsn-ключа напрямую, подмена `AdvertisedPublisherHost` сло
   **обязателен** (сбой → фаза waiting-snapshot, ретрай).
 - **M1 DDL-перенос**: pg_dump-операция приёмника ноды-источника — воркер
   командует приёмнику `/api/node/pgdump` (канал
-  [25-component-communications.md](../25-component-communications.md) №22),
+  [communications/02-channel-registry.md](../communications/02-channel-registry.md) №22),
   тот снимает `pg_dump --schema-only` локально в контейнере ноды (локальный
   socket-коннект, без секретов) → применение на приёмнике → гранты app →
   сверка инвентаря P5.

@@ -39,7 +39,7 @@
 - **Внешние образы** (Spilo, etcd, pg_doorman и пр.) — из локального
   registry установки (`192.168.0.1:5000`); недоступен — Docker Hub/апстрим.
   Зеркалирование и список образов — `dev-stand/images/`, канон —
-  [docs/runbook.md](../../docs/runbook.md). Локально собираемые образы
+  [operations/02-registry-images.md](../operations/02-registry-images.md). Локально собираемые образы
   (`pgworker*:dev` и т.п.) в registry **не** кладутся.
 - **Образ ноды `pgworker-node`** собирается из Spilo + `pg_doorman` +
   PgNode; мульти-арх, целевая платформа x64. Обязательный build-arg

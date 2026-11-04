@@ -30,7 +30,7 @@ S3-порт, placement-селекторы и привязка к хостам, a
 
 - **Образ** — `owns3:dev` (`Images{OwnS3}`): внешний, собирается
   репозиторием `../OwnS3` (`deploy/build-image.sh`), pg его не собирает и в
-  registry не кладёт (правило — `docs/runbook.md`). Инстанс — ownS3
+  registry не кладёт (правило — `../operations/02-registry-images.md`). Инстанс — ownS3
   single-drive: данные в одном каталоге `OWNS3_DATA_DIR=/data`.
 - **Volume данных** `s3w-<C>-<I>-data` → `/data`: данные объектов и
   targets/cursors репликации переживают пересоздание контейнера.
@@ -87,7 +87,7 @@ S3-порт, placement-селекторы и привязка к хостам, a
   оператора. Полностью закреплённый portalloc (rebuild, повторный проход)
   клэйма не требует.
 - **Восстановление адреса** безадресного инстанса — лестница E9
-  ([17-synchronization-principles.md](../17-synchronization-principles.md)):
+  ([synchronization/README.md](../synchronization/README.md)):
   до любых деструктивных действий — portalloc → реконструкция из inspect
   живого контейнера (published-порт) → новая аллокация
   ([02-cluster-lifecycle.md](02-cluster-lifecycle.md) §4).

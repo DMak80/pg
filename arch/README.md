@@ -39,16 +39,18 @@
 
 ## 3. Сквозные документы
 
-- [17-synchronization-principles.md](17-synchronization-principles.md) —
-  принципы синхронизации распределённого состояния (единый etcd,
-  конвергенция DCS, предикаты на первоисточнике, порядок мутаций,
-  флап≠смерть, реестр ошибок).
-- [18-metrics.md](18-metrics.md) — единая телеметрия: каркас
+- [synchronization/README.md](synchronization/README.md) — принципы
+  синхронизации распределённого состояния (единый etcd, конвергенция DCS,
+  предикаты на первоисточнике, порядок мутаций, флап≠смерть, реестр ошибок).
+- [metrics/README.md](metrics/README.md) — единая телеметрия: каркас
   `Shared.Metrics`, словарь имён, коллекторы, таргеты file_sd,
   Prometheus/Grafana/Alertmanager.
-- [25-component-communications.md](25-component-communications.md) —
-  реестр каналов и границ оркестрации: стандартные протоколы, владелец
-  контейнеров, допустимые отклонения.
+- [communications/README.md](communications/README.md) — реестр каналов и
+  границ оркестрации: стандартные протоколы, владелец контейнеров,
+  допустимые отклонения.
+- [operations/README.md](operations/README.md) — общие операционные
+  процедуры: вторые инстансы, registry, серт API, E2E; тематические
+  runbook-разделы — по ссылкам компонентов.
 - [stand/README.md](stand/README.md) — docker-стенд проверки решений
   канона (проверочные сценарии, карта «риск → проверка»).
 
@@ -92,19 +94,27 @@ arch/
 │                                  эксплуатация; процессы и перечисления
 ├── adminpanel/                ← AdminPanel: архитектура, etcd-контракт,
 │                                  панели/API, локальный стенд, roadmap
-├── 17-synchronization-principles.md
-├── 18-metrics.md
-├── 25-component-communications.md
+├── synchronization/           ← принципы синхронизации: контур истины,
+│                                  конвергенция, предикаты, мутации, журналы,
+│                                  отказоустойчивость, расследование, реестр ошибок
+├── metrics/                   ← телеметрия: каркас, словарь, экспозиция,
+│                                  коллекторы, хранение, тесты, риски
+├── communications/            ← коммуникации: правила, граница оркестрации,
+│                                  реестр каналов, отклонения
+├── operations/                ← общие runbook-процедуры: вторые инстансы,
+│                                  registry, серт API, E2E
 ├── stand/                     ← docker-стенд проверки канона
 ├── roadmap/                   ← несделанные задачи и известные дефекты
 └── 01-architecture.md, 02-topology.md, 03-prerequisites.md,
     04-deploy-etcd.md, 05-deploy-postgres.md, 07-identify-master.md,
     08-operations.md, 09-troubleshooting.md, 10-four-nodes.md,
     11-bucket-sharding.md, 12-bucket-pitfalls.md, 13-network-security.md,
-    14-pgworker.md, 15-kafka-clusters.md, 16-kafkaworker.md,
-    19-backups.md, 21-valkeyworker.md, 23-s3-clusters.md, 24-s3worker.md,
-    25-etcdworker.md          ← указатели на переработанные документы
-                                  (сохранены для старых ссылок)
+    14-pgworker.md, kafka-clusters/README.md, kafkaworker/README.md,
+    synchronization/README.md, metrics/README.md, backups/README.md,
+    valkeyworker/README.md, s3-clusters/README.md, s3worker/README.md,
+    communications/02-channel-registry.md, 25-etcdworker.md
+                              ← указатели на переработанные документы
+                                (сохранены для старых ссылок)
 ```
 
 ## 5. Что вне канона

@@ -11,7 +11,7 @@
 |---|---|---|
 | `/s3worker/leader` | lease TTL 15 с | лидер singleton-процессов |
 | `/s3worker/claims/<C>` | lease TTL 15 с | пер-кластерный клэйм (exclusivity обработки одним инстансом) |
-| `/s3worker/work/<C>` | обычный | журнал фаз `{"op","phase","updated_unix","instance","last_error"?}` — сохранение накопленных треков S6 ([17-synchronization-principles.md](../17-synchronization-principles.md)) |
+| `/s3worker/work/<C>` | обычный | журнал фаз `{"op","phase","updated_unix","instance","last_error"?}` — сохранение накопленных треков S6 ([synchronization/README.md](../synchronization/README.md)) |
 | `/s3worker/portalloc/<C>` | обычный | `{"<I>":{"host":"h","s3":18001}}` — закрепление S3-портов за инстансами, переживает rebuild |
 | `/s3worker/locks/portalloc` | lease TTL 15 с | глобальный portalloc-клэйм (взаимоисключение секции довыделения портов; txn `version==0` + put-with-lease) |
 | `/s3worker/instances/<id>` | lease TTL 15 с | живость инстансов (диагностика) |

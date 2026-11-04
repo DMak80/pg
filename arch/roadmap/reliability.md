@@ -26,25 +26,25 @@ P3 (t13–t17) — наблюдаемость, P4 (t21) — долговреме
 
 - **`t01-backup-encryption`** — шифрование бэкапов (SSE-S3/SSE-KMS или
   клиентское): сейчас компрометация S3-кредов/бакета = доступ ко всем данным
-  всех кластеров установки; риск признан каноном (arch/19 §10), технически
+  всех кластеров установки; риск признан каноном (../backups/README.md §10), технически
   не закрыт. Частично пересекается с `t02-external-secret-manager`
   (pgworker-трек) — креды, но шифрование самих объектов — отдельная работа.
 - **`t03-backup-second-copy`** — вторая копия бэкап-бакета (mirror /
   bucket replication в отдельный endpoint-хранилище): DR-сценарий опирается
   на выживание того же S3, что и основной (один bucket на установку,
-  arch/19 §5).
+  ../backups/07-retention.md).
 - **`t11-swarm-running-inspection`** — реализовать `SupportsRunningInspection`
   Swarm-драйвером: сейчас заглушка отключает ускоренный failover мёртвого
   лидера (промоушен ждёт Patroni ttl=20 с) и сверку портов EnsureNode
-  (S7/E6, arch/14 §5 C).
+  (S7/E6, ../pgworker/processes/c-node-supervisor.md).
 - **`t13-alert-notifications`** — внешняя нотификация алертов + история:
   алерты живут в памяти панели (при её падении невидимы, истории нет);
-  Alertmanager стенда стоит с пустым `METRICS_ALERT_WEBHOOK_URL` (arch/18).
+  Alertmanager стенда стоит с пустым `METRICS_ALERT_WEBHOOK_URL` (../metrics/README.md).
 - **`t16-cert-expiry-monitoring`** — мониторинг сроков сертификатов
   (API-серты воркеров/панели, серты нод): expiry нигде не проверяется.
 - **`t21-host-failure-scenarios`** — сценарии отказа docker-хоста/DC:
   анти-аффинити placement есть, мульти-хостовая эвакуация нод kafka/valkey
-  и split-brain-пробы — только документация (arch/18, прод-мультихост).
+  и split-brain-пробы — только документация (../metrics/README.md, прод-мультихост).
 - **`t29-flaky-tests`** — флакающие тесты при каноническом параллелизме
   E2E-серии N*=5 (runner.json=5, рельса CanonMaxLiveEnvironments=5):
   стабильная зелёная серия есть, но отдельные классы падают эпизодически —

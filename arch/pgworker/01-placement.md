@@ -56,7 +56,7 @@ WAL-архивация с неё невозможна, обновление об
 | PostgreSQL | `:5432` | подписки переездов (прямой порт master из portalloc, P2) и админка |
 | Patroni (в Spilo) | REST `:8008` | управляет локальным PG; callback `on_start`/`on_role_change` → lease-put `shards/X/master` (P11); REST `/primary` потребляет PgWorker (пробы/сверка) |
 | pg_doorman | `:6432` | пулер приложений, бэкенд только `127.0.0.1:5432`; единственный пул `<dbname>` (`pool_mode=transaction`, TLS `sslmode=require`, P13/P14/P17); обязателен — сборка образа без `DOORMAN_IMAGE` — fail-fast (R1); конфиг/серты ведёт загрузочный агент ([04-security.md](04-security.md) §3) |
-| pgnode (агент PgNode) | `:8080` (/metrics + API операций бэкапов), `:8081` (mTLS-канал доставки) | приёмник WAL бэкапов ([backups/02-wal-archive.md](../backups/02-wal-archive.md)): стрим `127.0.0.1:5432` → S3-пул; на `:8080` — `/metrics` (Prometheus через ScrapeNetwork, [18-metrics.md](../18-metrics.md) §2.8/§5.4) И HTTP API операций бэкапов ([pgnode/02-api.md](../pgnode/02-api.md)) по каналу `alias:8080` — общей сети воркера и нод ([25-component-communications.md](../25-component-communications.md) №22); на `:8081` — mTLS-сервер загрузочного агента (канал доставки секретов, [04-security.md](04-security.md) §3; только для PgWorker); наружу хоста НЕ публикуются оба порта (docker и swarm) |
+| pgnode (агент PgNode) | `:8080` (/metrics + API операций бэкапов), `:8081` (mTLS-канал доставки) | приёмник WAL бэкапов ([backups/02-wal-archive.md](../backups/02-wal-archive.md)): стрим `127.0.0.1:5432` → S3-пул; на `:8080` — `/metrics` (Prometheus через ScrapeNetwork, [metrics/README.md](../metrics/02-dictionary.md) §8/§5.4) И HTTP API операций бэкапов ([pgnode/02-api.md](../pgnode/02-api.md)) по каналу `alias:8080` — общей сети воркера и нод ([communications/02-channel-registry.md](../communications/02-channel-registry.md) №22); на `:8081` — mTLS-сервер загрузочного агента (канал доставки секретов, [04-security.md](04-security.md) §3; только для PgWorker); наружу хоста НЕ публикуются оба порта (docker и swarm) |
 
 Наружу (хост) публикуются порты: `pg` (5432→выделенный), `patroni`
 (8008→выделенный), `doorman` (6432→выделенный) — тройка из порт-аллокатора
@@ -99,11 +99,11 @@ DCS — динамический параметр, без рестартов PG)
 канону. Общие принципы синхронизации распределённого состояния (единый
 контур etcd, конвергенция DCS, инварианты внешних систем, детерминизм
 мутаций, флап≠смерть, порядок расследования) —
-[17-synchronization-principles.md](../17-synchronization-principles.md).
+[synchronization/README.md](../synchronization/README.md).
 
 **Параметры PG в `bootstrap.dcs` — PGTune**: `postgresql.parameters` ноды
 рассчитываются ядром `PgTune.Calculate` (чистая функция по нормативу
-`docs/pgtune-calculation-spec.md`: формулы §4, порядок вывода §5, псевдокод
+[09-pgtune.md](09-pgtune.md): формулы §4, порядок вывода §5, псевдокод
 §6) от характеристик ноды — память/CPU из заявок
 `/service/<scope>/request_{mem,cpu}`, остальные входы — опции
 `PgWorker:Pgtune` ([08-operability.md](08-operability.md) §5). Применение —
@@ -306,7 +306,7 @@ authz-плагины вне скоупа, граница зафиксирова�
    Read-modify-write portalloc (remove-shard, adoption-merge, repair) поля
    сохраняет, а не стирает (симметричная сериализация). `alias` НЕ входит в
    dsn/endpoints/панельные пробы (потребитель один — file_sd-генератор
-   [18-metrics.md](../18-metrics.md) §5.4); записи без полей —
+   [metrics/README.md](../metrics/05-storage.md) §4); записи без полей —
    легаси/деградационный контур.
    **Глобальный portalloc-клэйм**: довыделение новых троек (недобор нод, а
    не переиспользование закреплений) — глобально взаимоисключающая секция
@@ -358,7 +358,7 @@ authz-плагины вне скоупа, граница зафиксирова�
    хост-часть информативна — войны писателей нет. Факт смены мастера
    потребители читают из проб Patroni (`/primary` по patroni-портам
    portalloc) или `pg_is_in_recovery`, а не из сравнения значений ключа
-   ([17-synchronization-principles.md](../17-synchronization-principles.md) S4).
+   ([synchronization/README.md](../synchronization/README.md) S4).
 6. **SAN-канон серта REST-эндпоинта ноды** (§1): DNS `<n>` (короткий alias
    в `pgw-net-<C>`) + DNS `pgw-<C>-<X>-<n>` (полное docker-имя) + IP
    `127.0.0.1` (loopback lease-скрипта). Advertised-хост в SAN не входит —
@@ -387,12 +387,12 @@ docker-хоста — перекрёстная видимость алиасов
 контура мониторинга поставки) канонические ноды Ensure-attach'атся движком
 к этой сети (поверх `pgw-net-<C>`, идемпотентно по inspect) — сеть несёт и
 скрейп метрик приёмника WAL (`:8080` внутри контейнера ноды,
-[18-metrics.md](../18-metrics.md) §2.8). Сеть контура движком НЕ создаётся и
+[metrics/README.md](../metrics/02-dictionary.md) §8). Сеть контура движком НЕ создаётся и
 НЕ удаляется (владелец — поставка/сценарий); отсутствует при включённом
 ключе — fail-fast провижининга с diagnose. Усыновлённые контейнеры
 (`object`) не подключаются (R9 — чужой контейнер движок не трогает).
 Назначение сети — скрейп Prometheus по сетевым адресам
-([18-metrics.md](../18-metrics.md) §5.4); клиентская адресация
+([metrics/README.md](../metrics/05-storage.md) §4); клиентская адресация
 (dsn/endpoints/пробы) сетью НЕ меняется (advertised-правило §5 п.5).
 
 **Сеть контура (режим поставки, опционально)**: настройка
@@ -413,7 +413,7 @@ docker-хоста — перекрёстная видимость алиасов
 docker/swarm (per-cluster `pgw-net-<C>`/overlay — воркер в ней по
 построению поставки). Этим построением адресация HTTP API приёмника
 `alias:8080` по имени ноды работает в обоих режимах
-([25-component-communications.md](../25-component-communications.md) №22;
+([communications/02-channel-registry.md](../communications/02-channel-registry.md) №22;
 [backups/01-full-backup.md](../backups/01-full-backup.md)/[backups/03-restore.md](../backups/03-restore.md)) — приёмник `:8080` наружу хоста
 НЕ публикуется. Недостижимость alias (DNS/отказ/5xx/таймаут) — transient
 тика процесса воркера с journal-диагностикой (факт с адресом), статус не

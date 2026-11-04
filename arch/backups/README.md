@@ -32,7 +32,7 @@ WAL-G/pgBackRest НЕ встраиваются (параллельное исп�
   per-cluster/per-shard, файлы `pg_basebackup` 1:1
   ([06-s3-layout.md](06-s3-layout.md)); цели записи — per-cluster пул S3,
   креды — per-cluster secrets в etcd ([08-secrets.md](08-secrets.md)).
-- **Паттерны arch/17** — идемпотентность каждого шага,
+- **Паттерны ../synchronization/README.md** — идемпотентность каждого шага,
   journal-before-manipulations, transient vs permanent-отказы.
 - **Не входит**: UI/алерты панели (вычисления над снапшотом — зона
   AdminPanel); управление нодами/HA-контуром при СОЗДАНИИ бэкапов (полные и
@@ -54,6 +54,7 @@ WAL-G/pgBackRest НЕ встраиваются (параллельное исп�
 | Ретенция и гигиена | GFS-отбор, guard последнего валидного, чистка WAL, wal-sweeper, гейты мусора, storage/quota, алерты | [07-retention.md](07-retention.md) |
 | Секреты | `backup_exec`, `backup_password`, per-cluster secrets пула, CA, pg_hba-гвард | [08-secrets.md](08-secrets.md) |
 | Эксплуатация | конфигурация `PgWorker:Backups`, бюджеты операций, риски, наблюдаемость | [09-operability.md](09-operability.md) |
+| Runbook восстановления | сценарии (потеря ноды, PITR, DR), команды, таблица ошибок FAILED, дрилл | [10-runbook-restore.md](10-runbook-restore.md) |
 
 Точные автоматы оркестрации — в процессах уровня 4
 (`processes/`), механика исполнения на ноде — в
@@ -68,7 +69,7 @@ WAL-G/pgBackRest НЕ встраиваются (параллельное исп�
 - **PgWorker → PgNode**: команды операций (`/api/backup/full*`,
   `/api/ops/*`, `/api/node/*`) по `alias:8080` общей сети воркера и нод
   ([pgnode/02-api.md](../pgnode/02-api.md),
-  [25-component-communications.md](../25-component-communications.md) №22).
+  [communications/02-channel-registry.md](../communications/02-channel-registry.md) №22).
 - **PgNode → PostgreSQL**: физическая репликация, `pg_basebackup`,
   `pg_verifybackup`, локальный restore — только `127.0.0.1`
   ([pgnode/README.md](../pgnode/README.md)).

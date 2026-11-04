@@ -4,7 +4,7 @@
 надёжность, наблюдаемость, конфигурация и риски. Процессы —
 [A](processes/a-provisioning.md)…[H](processes/h-credentials-rotator.md);
 перечисления состояний — [processes/enums.md](processes/enums.md); общие
-принципы — [17-synchronization-principles.md](../17-synchronization-principles.md).
+принципы — [synchronization/README.md](../synchronization/README.md).
 
 ## 1. Тик и порядок веток
 
@@ -18,7 +18,7 @@
 provision/надзор/зонд ждут не-etcd события — health-грань инстанса,
 docker-факты). etcd в тике не читается: контроль-плейн берётся из слепка
 опросного кэша `/s3/` (S10
-[17](../17-synchronization-principles.md), реестр E10 — чтение уходит в
+[synchronization](../synchronization/README.md), реестр E10 — чтение уходит в
 фоновый опрос, единая точка failover S7; заявки ротации кредов и
 по-командного зонда, клэймы и portalloc-клэйм процессы читают из etcd
 напрямую при исполнении). Применения etcd-значений процессами (ensure
@@ -43,7 +43,7 @@ docker-факты). etcd в тике не читается: контроль-п�
 Все операции — только под живым клэймом `<C>`; владение держится на всём
 протяжении мутации: потеря lease прерывает исполняющийся тик
 (cancellation-гвард), критические шаги — после живой сверки клэйма
-(S5 [17](../17-synchronization-principles.md)); journal-before-manipulations
+(S5 [synchronization](../synchronization/README.md)); journal-before-manipulations
 (`/s3worker/work/<C>`).
 
 ## 2. Клэймы, идемпотентность, takeover
@@ -106,7 +106,7 @@ Etcd-клиент воркера — SocketsHttpHandler с периодичес�
 **Единая правда для панели**: опрос `/healthz` живых инстансов по URL из
 `/s3worker/api/<id>` ([07-api.md](07-api.md) §4).
 
-Prometheus-метрики — единый каркас [18-metrics.md](../18-metrics.md)
+Prometheus-метрики — единый каркас [metrics/README.md](../metrics/README.md)
 (`/metrics` на порту API): циклы/клэймы/фазы процессов/операции воркера
 (`s3worker_*` в Meter-именах), счётчики API по эндпоинтам и фактическим
 кодам. Телеметрия самих нод — метрики ownS3
@@ -120,8 +120,8 @@ ok/offline, пары synced/lagging/diverged).
 ## 5. Конфигурация (appsettings + env)
 
 ```
-S3Worker:Etcd { Endpoints[] }                      # единый etcd-контур (arch/17 S1)
-S3Worker:Bucket                                    # имя per-install bucket (arch/19 §5;
+S3Worker:Etcd { Endpoints[] }                      # единый etcd-контур (../synchronization/README.md S1)
+S3Worker:Bucket                                    # имя per-install bucket (../backups/07-retention.md;
                                                    #   создаётся оркестратором на каждой ноде)
 S3Worker:Docker { Mode: Plain|Swarm, Hosts[{Name,Endpoint}], SwarmManager,
                   PortRange{From=18000,To=18999}, Images{OwnS3="owns3:dev"},
@@ -146,7 +146,7 @@ S3Worker:Api { AdvertiseUrl, EnableSeedEndpoint=false, Tls{...} }   # HTTPS-гр
 # env-секреты S3W_*: S3W_API_TLS_{CERT,KEY,CLIENT_CA}, S3W_DOCKER_TLS_{CA,CERT,KEY},
 #   S3W_DOCKER_SSH_KEY[_PATH], S3W_ETCD_BACKUP_{ACCESSKEY,SECRETKEY} (04 §1;
 #   полупара — fail-fast старта, пара целиком опциональна — обязательна
-#   к моменту создания etcd-backup кластера, arch/23 §6)
+#   к моменту создания etcd-backup кластера, ../s3worker/04-security.md)
 ```
 
 Fail-fast валидации старта — по образцу pg (неполные секретные пары,
@@ -163,4 +163,4 @@ Fail-fast валидации старта — по образцу pg (непол
 | R4 | Отсутствие per-cluster сети — межнодовые линки зависят от advertised-адресов и открытых межхостовых портов | ограничение фиксируется явно ([01](01-placement.md) §5); раснос по площадкам — явные селекторы оператора |
 | R5 | Смена per-install advertised-адресов (`AdvertisedHost`) — target-записи соседей держат прежние endpoint'ы | join идемпотентно обновляет endpoint (owns3/07 §2); лечение — переприсвоение пары в `links` (снос + повторный join) или пересоздание связей; плановая смена адресов — вне штатных операций |
 | R6 | Ротация ключей репликации/CA не автоматизирована (сертификаты бессрочные) | отзыв компрометации — deny-list ([05](05-mesh-governance.md), мгновенный); плановая ротация — roadmap (owns3/07 §12); enterprise-CRL — вне |
-| R7 | DR-окно ротации спец-ключа бэкапа etcd: спец-ключ живёт в env воркера и (копией) в secrets-ключе etcd; слепок etcd, снятый до ротации, несёт старое значение — восстановление из него даёт etcdworker'у устаревший ключ до первой свежей записи | фиксируется риск-строкой; оперативное лечение — пере-подстановка значения через заявку ротации (runbook `docs/runbook.md`; зона выгрузки — [etcdworker/04-snapshots.md](../etcdworker/04-snapshots.md)); механик DR нет |
+| R7 | DR-окно ротации спец-ключа бэкапа etcd: спец-ключ живёт в env воркера и (копией) в secrets-ключе etcd; слепок etcd, снятый до ротации, несёт старое значение — восстановление из него даёт etcdworker'у устаревший ключ до первой свежей записи | фиксируется риск-строкой; оперативное лечение — пере-подстановка значения через заявку ротации ([etcdworker/06-operability.md](../etcdworker/06-operability.md) §8; зона выгрузки — [etcdworker/04-snapshots.md](../etcdworker/04-snapshots.md)); механик DR нет |

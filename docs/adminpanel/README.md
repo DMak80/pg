@@ -5,7 +5,7 @@ Read-only панель администрирования шардированн
 кластеры/шарды/бакеты/переезды/heals, HA (Patroni), live-пробы и алерты.
 Панель read-only по отношению ко всему, кроме единственной мутации —
 создание кластера `POST /api/clusters` (запись структуры в etcd,
-arch/02 §9); все прочие операции записи в etcd/PG по-прежнему запрещены.
+../../arch/adminpanel/02-etcd-contract.md); все прочие операции записи в etcd/PG по-прежнему запрещены.
 
 Стек: .NET 10 (Minimal API, warnings как ошибки, CPM, `.slnx`) + React/Vite/TS
 (Mantine, TanStack Query); снапшот-модель из etcd (тик 3 c), опциональные live-пробы
@@ -68,7 +68,7 @@ docker run -d --name adminpanel -p 8080:8080 \
 # через host.docker.internal (Linux: --add-host=host.docker.internal:host-gateway).
 ```
 
-Прод-настройки — только ENV (`AdminPanel__*`; секции arch/01 §6): etcd-endpoints
+Прод-настройки — только ENV (`AdminPanel__*`; секции ../../arch/pg-clusters/01-ha-architecture.md §6): etcd-endpoints
 (обязательно), auth (`PasswordHash` PBKDF2 либо `Password`), probes (отключение,
 `HostMap`, SQL-пароль). Секретов в образе и appsettings.json нет: без пароля логин
 отключён (fail-closed). Пробы из контейнера против стенда по умолчанию выключайте

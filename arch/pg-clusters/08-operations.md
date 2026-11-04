@@ -113,7 +113,7 @@ graceful switchover живой ноды, `hard` — снос/пересозда�
   `patroni_replica`, `patroni_sync_standby`,
   `patroni_postgres_timeline`, `patroni_xlog_replayed_timestamp`,
   `patroni_postgres_running`, `patroni_pending_restart`, …); scrape —
-  [18-metrics.md](../18-metrics.md) §2.5, таргеты — file_sd из portalloc
+  [metrics/README.md](../metrics/02-dictionary.md) §5, таргеты — file_sd из portalloc
   §5.4.
 - **Репликация** — лаг (`pg_stat_replication`, `patroni_xlog_*`),
   `sync_state`; пропажа sync-standby — алерт (условие переездов P8).

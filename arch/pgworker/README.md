@@ -1,7 +1,7 @@
 # PgWorker — оркестратор шардированных PG-кластеров
 
 Уровень 2. Описание компонента, его обязанностей и перечень функций.
-Уровень 3 — документы функций (`00`–`08`), уровень 4 — процессы и
+Уровень 3 — документы функций (`00`–`09`), уровень 4 — процессы и
 перечисления в `processes/`.
 
 ## 1. Назначение
@@ -42,7 +42,8 @@ API воркера** ([07-api.md](07-api.md)) — воркер записыва�
   переездов в каноне нет); балансировка по метрикам; управление etcd-слоем
   (зона [etcdworker/README.md](../etcdworker/README.md)); тонкий RBAC Engine
   API (authz-плагины Docker CE); метрики PG-репликации прод-нод (scrape
-  Patroni — [18-metrics.md](../18-metrics.md) §5.4); enterprise-доработки.
+  Patroni — [metrics/02-dictionary.md](../metrics/02-dictionary.md) §5);
+  enterprise-доработки.
 
 ## 3. Функции
 
@@ -57,6 +58,7 @@ API воркера** ([07-api.md](07-api.md)) — воркер записыва�
 | Плановые переезды бакетов | move/rollback/finalize/abort по заявкам, cutover, репарация брошенных статусов | [06-bucket-moves.md](06-bucket-moves.md) |
 | Внешний HTTP API | приём мутаций панели и сида, mTLS, дискавери, restart, `GET /api/config` | [07-api.md](07-api.md) |
 | Эксплуатация | классификация тика, клэймы и takeover, надёжность, наблюдаемость, конфигурация, риски | [08-operability.md](08-operability.md) |
+| PGTune | норматив расчёта `postgresql.conf` нод: входы, формулы, псевдокод, контрольные примеры, эксплуатационные правила | [09-pgtune.md](09-pgtune.md) |
 
 Точные автоматы состояний — в процессах уровня 4, на которые ссылается
 каждая функция; перечисления — [processes/enums.md](processes/enums.md).
@@ -72,7 +74,7 @@ API воркера** ([07-api.md](07-api.md)) — воркер записыва�
   [00-etcd-contract.md](00-etcd-contract.md).
 - **PgWorker → docker / PostgreSQL / Patroni**: управление контейнерами,
   SQL-операции и REST-пробы Patroni — только штатные протоколы, границы
-  оркестрации [25-component-communications.md](../25-component-communications.md).
+  оркестрации [communications/02-channel-registry.md](../communications/02-channel-registry.md).
 - **PgWorker → PgNode**: HTTP API приёмника WAL (`alias:8080`: операции
   бэкапов, `pgdump`, `pgdata`) и mTLS-канал доставки секретов (`:8081`) —
   [pgnode/02-api.md](../pgnode/02-api.md), [04-security.md](04-security.md) §4.
@@ -80,14 +82,14 @@ API воркера** ([07-api.md](07-api.md)) — воркер записыва�
   `app_password`, `app_params`) —
   [pg-clusters/11-buckets.md](../pg-clusters/11-buckets.md) §3.
 - **Prometheus → PgWorker / PgNode**: `/metrics` на порту Kestrel `:8080`
-  и в контейнере ноды — [18-metrics.md](../18-metrics.md).
+  и в контейнере ноды — [metrics/02-dictionary.md](../metrics/02-dictionary.md).
 
 ## 5. Свойства, на которые опираются все функции
 
 - Идемпотентность каждого шага: повторная сверка факта (контейнер есть?
   БД/схема есть? routing уже переведён?) — [08-operability.md](08-operability.md) §2.
 - Journal-before-manipulations, фиксированный порядок записей, клэймы и
-  txn-сравнения — [17-synchronization-principles.md](../17-synchronization-principles.md)
+  txn-сравнения — [synchronization/README.md](../synchronization/README.md)
   (S5–S7), [08-operability.md](08-operability.md) §2.
 - Декларативная модель: отсутствие `config.state` = Active-кластер;
   `NOT_INITIALIZED`/`TO_REMOVE` — заявки панели; состояния нод и заявок —

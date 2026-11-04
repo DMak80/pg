@@ -26,7 +26,7 @@ docker logs --tail 200 pgw-<C>-<X>-<n>
 ```
 
 Порядок разбора — от стабильного к меняемому
-([17-synchronization-principles.md](../17-synchronization-principles.md) S9):
+([synchronization/README.md](../synchronization/README.md) S9):
 сначала DCS/кворум и факт роли, затем контейнер/нода, затем конфиг.
 
 ## 2. Реплика отстаёт (lag > 0)
@@ -89,7 +89,7 @@ Patroni не может проводить выборы: контрол-плей
 2. `endpoint health --cluster` — все healthy; Patroni продолжит через
    `loop_wait`.
 3. **Полная потеря etcd-данных**: данные PostgreSQL на нодах целы;
-   восстановление — [docs/runbook.md](../../docs/runbook.md)
+   восстановление — [etcdworker/06-operability.md](../etcdworker/06-operability.md)
    §«Восстановление etcd из S3-выгрузки», DR-слепки —
    [etcdworker/04-snapshots.md](../etcdworker/04-snapshots.md). Снапшот
    общий: restore возвращает ВСЕ системы к моменту слепка; после restore —

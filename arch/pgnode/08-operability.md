@@ -46,7 +46,7 @@ txn-сравнением, стартует компоненты (до 3 попы
 ## 3. Наблюдаемость
 
 - `/metrics` на `:8080` внутри контейнера ноды — метрики приёмника WAL
-  ([18-metrics.md](../18-metrics.md) §2.8); scrape — через ScrapeNetwork.
+  ([metrics/README.md](../metrics/02-dictionary.md) §8); scrape — через ScrapeNetwork.
 - Статус-ключи: `/pgworker/backups/<C>/<X>/agent/<N>` (факт сессии
   приёмника: роль, state, `last_delivered`, `pool_exhausted`, `tli_jump`,
   `history_missing_tli`, `error`) и `/pgworker/nodes/<C>/<X>/<N>/status`

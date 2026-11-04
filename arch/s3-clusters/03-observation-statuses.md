@@ -30,7 +30,7 @@
 - **Состав/здоровье нод** наблюдаются `nodes/*/state` + `usage`
   ([02-keys.md](02-keys.md) §1); отдельного health-ключа НЕТ — состояние
   живости несёт `state`, детальная телеметрия — метрики
-  [18-metrics.md](../18-metrics.md).
+  [metrics/README.md](../metrics/README.md).
 - **Зонд ничего не настраивает и не лечит**: состав mesh доводит оркестратор
   ([s3worker/05-mesh-governance.md](../s3worker/05-mesh-governance.md)),
   восстановление полноты — reconcile-механика ownS3.

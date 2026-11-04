@@ -13,7 +13,7 @@
 порядок расследования. Каждый принцип описан как правило → почему критично →
 кейс → чем проверяется; реестр ошибок использования пополняется.
 
-→ [17-synchronization-principles.md](17-synchronization-principles.md)
+→ [synchronization/README.md](synchronization/README.md)
 
 ### 1.2. Межкомпонентные коммуникации и границы оркестрации
 
@@ -22,7 +22,7 @@
 Управление контейнерами — только запуск/остановка/удаление и проверка факта
 (list/inspect); чтение логов, exec, stats/events — вне продукта.
 
-→ [25-component-communications.md](25-component-communications.md)
+→ [communications/01-rules.md](communications/01-rules.md)
 
 ## 2. Технологии
 
@@ -33,7 +33,7 @@
 Patroni и дискавери API. Адрес задаётся явно при старте; «вторых» etcd нет.
 
 → [pg-clusters/04-etcd-dcs.md](pg-clusters/04-etcd-dcs.md) — контур и развёртывание,
-[17-synchronization-principles.md](17-synchronization-principles.md) — правила
+[synchronization/README.md](synchronization/README.md) — правила
 работы с общим состоянием
 
 ### 2.2. Docker Engine API и контейнерная оркестрация
@@ -42,7 +42,7 @@ Plain docker и docker swarm; транспорт к Engine API — `tcp://` + mT
 `ssh://`-туннель, `unix://` только для стенда. Воркеры — несколько инстансов с
 lease-координацией; операции идемпотентны.
 
-→ [25-component-communications.md](25-component-communications.md) §2,
+→ [communications/01-rules.md](communications/01-rules.md) §2,
 [pgworker/01-placement.md](pgworker/01-placement.md) §3
 
 ### 2.3. TLS, mTLS и PKI
@@ -60,7 +60,7 @@ firewall-матрицу и аутентификацию.
 Kestrel-порту рядом с `/healthz`; единый словарь имён, типов и лейблов; стек
 Prometheus + Grafana + Alertmanager.
 
-→ [18-metrics.md](18-metrics.md)
+→ [metrics/README.md](metrics/README.md)
 
 ### 2.5. Объектное хранилище S3
 
