@@ -3,7 +3,7 @@
 Уровень 3. Функция «DR-слепки»: плановое и внеочередное снятие слепков etcd,
 выгрузка в etcd-backup кластер, доводка отставания и обслуживание контура.
 Форматы объектов и статус-ключа —
-[00-etcd-contract.md](00-etcd-contract.md) §3, [19-backups.md](../19-backups.md) §5;
+[00-etcd-contract.md](00-etcd-contract.md) §3, [backups/06-s3-layout.md](../backups/06-s3-layout.md);
 полный автомат — [C. SnapshotExport](processes/c-snapshot-export.md).
 
 ## 1. Цель выгрузки
@@ -50,7 +50,7 @@
 Каждый снятый слепок уезжает **новой парой** объектов:
 `etcd/snapshot-<id>.db` + `etcd/snapshot-<id>.meta.json`
 (sha256/size/revision/taken/uploaded/instance; layout
-[19-backups.md](../19-backups.md) §5 без изменений).
+[backups/06-s3-layout.md](../backups/06-s3-layout.md) без изменений).
 
 - **Порядок**: put `.db` (серверная SHA256-проверка транспорта) → put
   `.meta.json` → ретенция N=28 пар (guard ≥ 1) → статус-ключ.

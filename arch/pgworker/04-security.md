@@ -4,7 +4,7 @@
 транспортный TLS, доставка секретов в ноду каналом агента, ротация
 per-cluster секретов без остановки записи. Полные автоматы — процессы
 [I. ClusterSecretRotator](processes/i-secret-rotator.md),
-[L. NodeAgent](processes/l-node-agent.md); ключи —
+[F. NodeAgent](../pgnode/processes/f-node-agent.md); ключи —
 [00-etcd-contract.md](00-etcd-contract.md) §2–§3; TLS-модель —
 [13-network-security.md](../13-network-security.md).
 
@@ -126,7 +126,7 @@ docker-env контейнера при этом чист.
 Рестарт контейнера — секреты tmpfs утрачены, нода НЕ поднимается сама:
 агент PgNode работает (его идентичность — в docker-env) и ждёт доставки;
 воркер тиком надзора доставляет заново (статусная машина —
-[L. NodeAgent](processes/l-node-agent.md)). Нода без воркера не
+[F. NodeAgent](../pgnode/processes/f-node-agent.md)). Нода без воркера не
 перезапускается — осознанная граница (воркер — инициатор всех переходов
 ноды). Recreate делает только воркер — он же тут же доставляет данные.
 Ротация `rest_password` — БЕЗ пересоздания контейнера и БЕЗ рестарта
@@ -142,7 +142,7 @@ lease-сессией TTL 15 с (как статус приёмника), вор�
 смерть процесса гасит ключ — статус не «застревает» от мёртвого агента.
 Состояния: `not_initialized` → `initializing` → `ready` | `start_failed`;
 полный автомат, фазы `initializing`, tool-путь и реакции воркера —
-[L. NodeAgent](processes/l-node-agent.md).
+[F. NodeAgent](../pgnode/processes/f-node-agent.md).
 
 Кратко: агент публикует `not_initialized` при старте (листенер `:8081` уже
 поднят); воркер, увидев его, доставляет bootstrap-ключ и per-install пароли

@@ -6,7 +6,7 @@ DCS-конфига, HA-факты, сверка мастер-ключа, усы�
 секретов. Функция — [02-cluster-lifecycle.md](../02-cluster-lifecycle.md)
 §4; модель — [01-placement.md](../01-placement.md); секреты и статусная
 машина агента — [04-security.md](../04-security.md) §3–§4,
-[L](l-node-agent.md); принципы —
+[F](../../pgnode/processes/f-node-agent.md); принципы —
 [17-synchronization-principles.md](../../17-synchronization-principles.md).
 
 ## 1. Сверка декларации с фактом
@@ -199,7 +199,7 @@ leader to bootstrap» навсегда):
    фаза `start-failed-waiting-quorum`), сигнализация оператору. Одноузловой
    шард: лидер = единственная копия — снос только через restore-контур
    (восстановление данными из бэкапа,
-   [19-backups.md](../../19-backups.md) §3.5), не «в пустоту».
+   [backups/03-restore.md](../../backups/03-restore.md)), не «в пустоту».
 2. **scope живого кластера неприкосновенен**: RemoveNode старт-реакции НЕ
    чистит Patroni-scope-ключи (`/service/<scope>/initialize`, `leader` и
    смежные) — чистка scope допустима ТОЛЬКО при демонтаже

@@ -69,7 +69,7 @@ S3-совместимое объектное хранилище: домен S3-�
 per-cluster/per-shard, один bucket на установку).
 
 → [s3-clusters/README.md](s3-clusters/README.md),
-[19-backups.md](19-backups.md) §5
+[backups/06-s3-layout.md](backups/06-s3-layout.md)
 
 ### 2.6. PostgreSQL: физическая и логическая репликация
 
@@ -78,4 +78,4 @@ Streaming replication (WAL) — основа HA и приёмника WAL; ло�
 sequence).
 
 → [11-bucket-sharding.md](11-bucket-sharding.md) §4/§7/§10,
-[19-backups.md](19-backups.md) §3
+[backups/02-wal-archive.md](backups/02-wal-archive.md)

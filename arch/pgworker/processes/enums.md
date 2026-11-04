@@ -2,7 +2,7 @@
 
 Уровень 4. Таблицы всех значений ограниченных наборов, которые использует
 воркер. Формат ключей и контракт — [../00-etcd-contract.md](../00-etcd-contract.md);
-процессы, меняющие состояния, — [A](a-provisioning.md)…[L](l-node-agent.md).
+процессы, меняющие состояния, — [A](a-provisioning.md)…[K](k-move-repair.md).
 
 ## 1. Состояние кластера (`/clusters/<C>/config.state`)
 
@@ -52,35 +52,18 @@ leader + Patroni REST отвечает И идентифицирует ноду 
 | отсутствует | Обычный шард | — |
 | `TO_REMOVE` | Маркер демонтажа шарда (guards G1–G7) | панель (через API воркера) |
 
-## 5. Состояние агента PgNode (`/pgworker/nodes/<C>/<X>/<N>/status.state`)
+## 5. Состояние агента PgNode
 
-| Значение | Что означает | Выходы |
-|---|---|---|
-| `not_initialized` | Агент стартовал, листенер `:8081` поднят, доставки секретов ещё не было | `initializing` — txn после проверки аргументов [L](l-node-agent.md) |
-| `initializing` | Идёт старт компонентов или ожидание готовности (`SELECT 1` без бюджета) | `ready` — все компоненты готовы / параметры подготовлены (tool-путь); `start_failed` — исчерпаны попытки старта/ошибка рендера |
-| `ready` | Компоненты готовы; `applied_revision` = `mod_revision` применённого bootstrap-ключа | `initializing` — новый материал/рестарт агента (хендшейк повторяется); `start_failed` — ошибка применения материала |
-| `start_failed` | Сбой старта/применения; `error` несёт диагностику | пересоздание ноды с новым диском — [C](c-node-supervisor.md) |
-
-`applied_revision`: `null` в `not_initialized` и `initializing`; в `ready` —
-ревизия применённого bootstrap-ключа; в `start_failed` — ревизия, если сбой
-произошёл после начала применения (рендер/старт/рестарты).
-
-## 6. Компоненты агента (`status.components.pg`, `status.components.doorman`)
-
-Набор ключей фиксирован: только `pg` и `doorman`.
-
-| Значение | Что означает |
-|---|---|
-| `starting` | Фаза старта/ожидания `SELECT 1` |
-| `ready` | Проба `SELECT 1` успешна (в tool-пути не используется) |
-| `failed` | Исчерпаны 3 попытки старта |
-| `stopped` | Не запускался (рендер-ошибка/применение) |
-| `prepared` | Параметры готовы, запуск — за tool-командой (`is_tool_start=true`, обе компоненты) |
+Состояния агента (`not_initialized`, `initializing`, `ready`,
+`start_failed`), компоненты (`starting`, `ready`, `failed`, `stopped`,
+`prepared`) и `applied_revision` — перечисление компонента:
+[pgnode/processes/enums.md](../../pgnode/processes/enums.md) §1–§2; процесс —
+[F. NodeAgent](../../pgnode/processes/f-node-agent.md).
 
 В `not_initialized` и сразу после txn-перехода в `initializing` —
 пустой объект `{}`.
 
-## 7. Состояние бакета (`/clusters/<C>/buckets/status/bucket_<i>`)
+## 6. Состояние бакета (`/clusters/<C>/buckets/status/bucket_<i>`)
 
 Формат и семантика — [11-bucket-sharding.md](../../11-bucket-sharding.md) §2;
 отсутствие ключа = `ACTIVE`.
@@ -97,7 +80,7 @@ leader + Patroni REST отвечает И идентифицирует ноду 
 `rollback-post-flip`, `blocked`; transient-отказ фиксируется в
 `fail_state`/`last_error` статус-ключа, заявка при этом жива.
 
-## 8. Заявка переезда (`/pgworker/moves/<C>/bucket_<i>.op`)
+## 7. Заявка переезда (`/pgworker/moves/<C>/bucket_<i>.op`)
 
 | Значение | Что означает | Процесс |
 |---|---|---|
@@ -106,7 +89,7 @@ leader + Patroni REST отвечает И идентифицирует ноду 
 | `finalize` | Уборка старого шарда после переезда | [F](f-move.md) |
 | `abort` | Отмена/уборка незавершённого переезда (в т.ч. `force`) | [F](f-move.md) |
 
-## 9. Журнал работы (`/pgworker/work/<C>.op`)
+## 8. Журнал работы (`/pgworker/work/<C>.op`)
 
 | `op` | Процесс |
 |---|---|
@@ -121,21 +104,21 @@ leader + Patroni REST отвечает И идентифицирует ноду 
 Набор `phase` — свой у каждого процесса и описан в его документе
 (waiting-*, phase-*, done, lease-lost/claim-lost).
 
-## 10. HA-факты журнала (`work.last_failover`, `work.last_rebuild`)
+## 9. HA-факты журнала (`work.last_failover`, `work.last_rebuild`)
 
 | Поле | Значения |
 |---|---|
 | `last_failover.cause` | `accelerated` — ускорение failover мёртвого лидера (docker-объект отсутствует/не running); `elections` — промоушен ждал выборов Patroni |
 | `last_rebuild.cause` | `auto-dead` — rebuild-ветка надзора; `operator-recreate` — исполнение маркера `TO_RECREATE` |
 
-## 11. Эвакуация (`/pgworker/evacuations/<C>/<X>.state`)
+## 10. Эвакуация (`/pgworker/evacuations/<C>/<X>.state`)
 
 | Значение | Что означает |
 |---|---|
 | `DONE` | Эвакуация завершена: бакеты переведены, ноды `QUARANTINED` |
 | `QUARANTINED` | Шард вернулся после эвакуации; ноды остановлены и удерживаются в карантине до ручного разбора |
 
-## 12. Режимы и перечисления конфигурации
+## 11. Режимы и перечисления конфигурации
 
 | Набор | Значения |
 |---|---|

@@ -86,7 +86,7 @@ shards/*/replicas, nodes/*, routing всех N), иначе `waiting-keys`:
   внешним orchestration-кругом). Мёртвая усыновлённая нода получает
   `UNREACHABLE` + journal, разбор оператором.
 - **Доставка секретов**: статусный ключ ноды
-  ([04-security.md](04-security.md) §5) — доставка по `not_initialized`,
+  ([04-security.md](04-security.md) §4) — доставка по `not_initialized`,
   ожидание `initializing`, применение по расхождению `applied_revision`,
   пересоздание с новым диском по `start_failed` (с failover-first для
   лидера и неприкосновенностью scope живого кластера). Повтор команды

@@ -14,19 +14,19 @@
 - **Синхронизация между серверами** — не забота клиентов: это mesh-репликация
   платформы ([05-platform.md](05-platform.md) §2) и зонд
   ([03-observation-statuses.md](03-observation-statuses.md)).
-- **Layout объектов** — [19-backups.md](../19-backups.md) §5 без изменений.
+- **Layout объектов** — [backups/06-s3-layout.md](../backups/06-s3-layout.md) без изменений.
 
 Канон фиксирует границу; реализация — PgWorker, правки контракта —
-[19-backups.md](../19-backups.md)/[pgworker/04-security.md](../pgworker/04-security.md).
+[backups/README.md](../backups/README.md)/[pgworker/04-security.md](../pgworker/04-security.md).
 
 ## 2. Реализация (фиксируется)
 
 - **PgWorker — читатель** `/s3/clusters/<C>/{config,nodes/<I>/state,endpoints,secrets}`
   (ключ `secrets` — креды `backups`, read-write,
-  [19-backups.md](../19-backups.md) §7) плюс `/s3worker/portalloc/<C>` для
+  [backups/08-secrets.md](../backups/08-secrets.md)) плюс `/s3worker/portalloc/<C>` для
   резолва имён инстансов в адреса; **в `/s3/` PgWorker НЕ пишет**.
 - **Приоритеты записи per-PG-кластер** живут в policy бэкапов
-  ([19-backups.md](../19-backups.md) §4) ссылками на имена инстансов
+  ([backups/05-etcd-contract.md](../backups/05-etcd-contract.md)) ссылками на имена инстансов
   (`write_master`/`write_replica` — по роли источника, не по роли ноды);
   чтение — все ноды пула без приоритетов (порядок `endpoints`-ключа).
 - **EtcdWorker** читает `config`/`endpoints`/`secrets` (ключ `backups`)

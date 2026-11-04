@@ -75,7 +75,7 @@ volume, копия — лишь у инстансов, связанных в `li
   [25-component-communications.md](../25-component-communications.md).
 - **PgWorker → etcd**: клиент пула (`endpoints`, `secrets`-ключ `backups`,
   `/s3worker/portalloc/<C>`) — [s3-clusters/07-client-pool.md](../s3-clusters/07-client-pool.md); bucket
-  per-install и раскладка объектов бэкапов — [19-backups.md](../19-backups.md)
+  per-install и раскладка объектов бэкапов — [backups/README.md](../backups/README.md)
   §5/§7.
 - **Prometheus → S3Worker**: `/metrics` на порту Kestrel `:8080` —
   [18-metrics.md](../18-metrics.md).

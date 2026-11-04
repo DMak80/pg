@@ -6,7 +6,7 @@
 `/pgworker/rotations/<C>`. Функция — [04-security.md](../04-security.md) §6;
 ключи — [../00-etcd-contract.md](../00-etcd-contract.md) §4; доставка
 секретов и статус агента — [04-security.md](../04-security.md) §3–§4,
-[L](l-node-agent.md); перечисления — [enums.md](enums.md).
+[F](../../pgnode/processes/f-node-agent.md); перечисления — [enums.md](enums.md).
 
 Исполнитель — держатель клэйма `<C>`; цикл ReconcileLoop зовёт процесс в
 Active-ветке после scale-прохода (короткая секундная операция — не ждёт
@@ -139,7 +139,7 @@ R3 rolling применение НОД (rest_password, каналом агент
    обновлённую реплику. ГРАНИЦА ЗАПРЕТА: запрет рестарта
    Patroni-процесса/контейнера (R3-пароль выше) касается ТОЛЬКО применения
    rest-пароля; R3-серт (рестарт реплик, пересоздание мастера),
-   restore-контур ([19-backups.md](../../19-backups.md) §3.5 — stop/return
+   restore-контур ([backups/03-restore.md](../../backups/03-restore.md) — stop/return
    Patroni ноды) и start_failed-пути [C](c-node-supervisor.md) — отдельные
    легитимные пути, запрет на них НЕ переносится
 R4 (ПОСЛЕДНИЙ — закрытие окна; вход — полное схождение R3 ИЛИ

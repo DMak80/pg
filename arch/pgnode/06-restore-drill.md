@@ -1,0 +1,134 @@
+# PgNode: restore и drill
+
+Уровень 3. Механика restore-операции (PITR на PGDATA ноды) и drill-операции
+(тот же прогон в scratch-каталог). Оркестрация — [backups/03-restore.md](../backups/03-restore.md),
+[backups/04-drill.md](../backups/04-drill.md); процессы —
+[processes/d-restore.md](processes/d-restore.md),
+[processes/e-drill.md](processes/e-drill.md).
+
+## 1. Команда
+
+`POST /api/ops/restore` от воркера на `alias:8080` ноды: тело `backup_id`,
+`target_time`? (PG-совместимый формат `yyyy-MM-dd HH:mm:sszzz`; воркер
+разбирает RFC3339 заявки и нормализует — parser postgres не принимает
+«T»-сепаратор/суффикс «Z»; отсутствует = latest), `recovery_timeout_sec`,
+S3-контекст. Для дрилла — то же API с полем `id` (id дрилла — как у полных;
+отличает drill-запуск от restore). Фазы — `downloading|recovering`,
+`restored_to_lsn`?, `system_id`?, `started_unix`?, `error`?; `GET
+/api/ops/restore`. Restore — ops-операция общего реестра (409 при чужой;
+снимок 409 не различает свою/чужую).
+
+## 2. Restore на PGDATA ноды
+
+PgNode — .NET, child-процессы PG-утилит `Process.Start`; PgNode ноды
+работает под `postgres` (uid 101) — файлы скачиваются сразу нужным
+владельцем: chown недоступен и не нужен, `chmod 700` PGDATA делает владелец.
+PGDATA операции — PGDATA САМОЙ ноды (`/home/postgres/pgdata/pgroot/data`,
+Spilo-layout, uid:gid `101:101`); volume ноды в этот момент пуст.
+
+1. Скачивание `full/<id>/` файлами 1:1 .NET S3-клиентом в PGDATA.
+2. `restore_command = '/opt/pgw-node/pgnode fetch-wal %f %p'` — sub-режим
+   того же бинаря (S3-контекст — env процесса postgres, секреты не в argv):
+   скачивает сегмент/`.history` из `wal/` префикса S3 прямо в запрошенный
+   путь; объекта нет → ненулевой exit — конец WAL; финала сегмента нет ни на
+   одной ноде — скачивается лучший `.partial` этого сегмента (хвост потока)
+   и добивается нулями до полного `wal_segment_size`: postgres отвергает
+   архивный файл размером ≠ `wal_segment_size` («archive file … has wrong
+   size»), а нули за концом последней валидной записи — штатный конец WAL
+   (recovery встаёт на нём). Если запрошенный сегмент лежит в layout полного
+   (`full/<id>/pg_wal/`, уже скачан в PGDATA) и содержимое этой копии НЕ
+   КОРОЧЕ лучшего `.partial`, fetch-wal отвечает «объекта нет» — postgres
+   (archive-first) читает layout сам и останавливается на его реальном
+   конце: разреженную/добитую копию набора эвристиками не режем. Длиннее —
+   отдаётся `.partial`. Транспортные попытки fetch-wal — БЫСТРЫЕ и под
+   ЖЁСТКИМ общим дедлайном вызова: внутренние ретраи S3-клиента на транспорт
+   выключены (ретраит сам fetch-wal, ограниченно), и вызов в любом исходе
+   укладывается в секунды. Без этого мёртвая/недостижимая нода пула
+   растягивает КАЖДЫЙ вызов restore_command на минуты, целевое
+   восстановление не доходит до «исчерпание архива → promote» в бюджете
+   операции (restore висит в recovering до сноса). Длительные моргания сети
+   покрываются повторными вызовами restore_command самим postgres'ом — их не
+   компенсируют долгие ретраи внутри одного вызова; имя из `%f` postgres
+   передаёт ВЕРХНИМ hex, а объекты `wal/` строчные — fetch-wal нормализует
+   регистр, иначе первый буквенный сегмент даёт ложный 404 и обрывает
+   recovery до цели.
+3. `postgresql.auto.conf` override-строки: `data_directory`/`hba_file`/
+   `ident_file`, `wal_level=replica`, `summarize_wal=off`,
+   `shared_preload_libraries=''`, `ssl=off`, `logging_collector=off`,
+   recovery-параметры (`recovery_target_time` при цели time,
+   `recovery_target_action=promote`; цель latest — БЕЗ target: конец WAL =
+   promote); pristine `auto.conf` приберегается в `.orig` и возвращается
+   после promote, из него вычищаются управляющие Patroni параметры архивации
+   (`archive_mode`/`archive_command`): pristine снят `pg_basebackup`-ом с
+   ноды-источника и несёт её `archive_mode`, а Patroni нового HA-scope
+   навязывает свой → reload для `archive_mode` недостаточен → «Pending
+   restart» → отложенный рестарт postmaster рвёт соединения клиентов сразу
+   после restore; WAL-архивация системы — приёмник WAL внутри нод,
+   `archive_mode` постгреса не используется.
+4. Инцидентные правки: `standby.signal` удаляется → создаётся пустой
+   `recovery.signal` (pristine-набор снят `pg_basebackup`-ом со
+   standby-источника — приоритет sync-реплики — и несёт его
+   `standby.signal`; не убрав, postgres стартует standby-режимом и
+   бесконечно ждёт WAL из restore_command, не входя в recovery);
+   `standby.signal` удаляется ПОВТОРНО НЕПОСРЕДСТВЕННО ПЕРЕД `pg_ctl start`
+   — живой Patroni ноды (нода поднята воркером на время restore) может
+   воссоздать файл в окне между правками и стартом, и postgres уйдёт в
+   standby-ожидание WAL вместо recovery (бесконечный цикл «ждать сегмент»
+   вместо промоута), канонический набор каталогов initdb, trust-строка
+   pg_hba на время поллинга, права `chmod 700` PGDATA после модификаций
+   (владелец файлов — уже `postgres`), PG-процессы под uid/gid 101
+   (`pg_ctl` — процесс уже работает под `postgres`), `HOME=/tmp`.
+5. Локальный postgres (`pg_ctl` под setpriv, unix-socket,
+   `listen_addresses=''` — сеть не слушает, кредов PG не нужно), стартовое
+   ожидание готовности `pg_ctl start -w -t` = тот же бюджет
+   `recovery_timeout_sec` из команды, не фиксированный литерал — до
+   консистентной точки postgres скачивает сегменты `restore_command`-ом
+   (fetch-wal), под нагрузкой/узкой полосой S3 это минуты, и короткий
+   старт-таймаут рвал операцию до поллинга; затем поллинг
+   `pg_is_in_recovery` с бюджетом `Restore:RecoveryTimeoutSec` из команды
+   (promote-окно рестарта postmaster ретраится до бюджета), снятие
+   `pg_current_wal_lsn`, `pg_ctl stop -m fast`, чистка recovery-остатков
+   (возврат pristine `auto.conf`, снятие trust-строки), `system_id` из
+   `pg_controldata`. Фазы/итог — статус API (GET): воркер поллит GET тиками;
+   exit-кодов/docker-логов нет.
+
+Накат большого объёма — одним проходом, резюмов нет (осознанная плата
+plain-механики). REJOINING: воркер перезаписывает щит `initialize`
+настоящим `system_id` восстановленного PGDATA (из статуса операции) и
+перезапускает контейнер первой ноды — Patroni стартует на восстановленных
+данных (сверка system_id сходится, лидерится); контейнер жив и идемпотентен
+(EnsureNode — no-op).
+
+## 3. Drill в scratch-каталог
+
+Drill — та же механика ЦЕЛИКОМ (recovery latest — БЕЗ target: скачивание
+`full/<id>/` в scratch-каталог, fetch-wal, локальный postgres unix-socket,
+поллинг `pg_is_in_recovery`, снятие `pg_current_wal_lsn`, stop; лишнее
+дриллу поле `system_id` результата воркер дрилла игнорирует). Изоляция ПО
+ПОСТРОЕНИЮ: scratch-каталог
+`/home/postgres/pgdata/backup-drill/<id>/pgdata` на data-volume ПЕРВОЙ ноды
+(НЕ PGDATA ноды — прод-данные недостижимы для записи); приёмник чистит
+scratch при ЛЮБОМ исходе операции (вкл. отмену и failed) — терминальный ключ
+дрилла сразу чистый (фазы docker-сноса нет). Сеть не нужна сверх общей
+(`alias:8080` воркер↔нода; S3 приёмник адресует как стрим). Нод в кластере
+дрилл НЕ создаёт, HA-scope и synchronous-режим мастера (Patroni) не
+затрагивает, per-cluster сети не входят.
+
+## 4. Останов и возврат Patroni
+
+PgNode ноды ПЕРЕД RESTORE-восстановлением ОСТАНАВЛИВАЕТ Patroni ноды (только
+restore: дрилл на живой ноде Patroni не трогает — `stop spilo` там гасит
+прод-постгрес) (`supervisorctl stop spilo`; supervisord-сокет контейнера —
+`chmod=0770 root:postgres` в supervisord.conf образа — приёмник работает под
+`postgres`) с ПОДТВЕРЖДЕНИЕМ останова: stop не удался — операция не
+начинается (честный failed-снимок, не тихая гонка) — и возвращает Patroni в
+finally ПОСЛЕ любого исхода — живой Patroni иначе вмешивается в заполняемую
+PGDATA (стартует постгрес «secondary» на полуданных, воссоздаёт
+`standby.signal`, убивает restore-постгрес «чужим» процессом).
+
+## 5. Отмена
+
+Операторская отмена идущей операции (`POST /api/ops/cancel` — внешний канал
+мимо воркера) → операция завершается снимком `state=cancelled` (НЕ failed);
+scratch-каталог приёмник чистит при отмене — следов на ноде не остаётся;
+воркер-супервиз по GET `cancelled` удаляет ключ операции/дрилла.

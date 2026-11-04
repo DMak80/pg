@@ -128,7 +128,7 @@ kafka-пробу и kafka-шаги Active-ветки; в etcd backoff ничег
   обеспечивает репликация, а не копирование (RF/minISR — per-cluster
   конфиги, [02](02-cluster-lifecycle.md) §5; служебные топики — формулы
   [01](01-placement.md) §1; отставание реплик видно метрикой USR, §5).
-  Подсистема бэкапов [19-backups.md](../19-backups.md) покрывает только
+  Подсистема бэкапов [backups/README.md](../backups/README.md) покрывает только
   PG-шарды.
 - **Watchdog зависших циклов**: внутренний компонент `LoopWatchdog`
   (`Shared.Core`, `BackgroundService`) следит за активностью (тик или

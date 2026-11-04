@@ -110,9 +110,13 @@ arch/
 ├── 18-metrics.md               ← ★ единая телеметрия: Prometheus-метрики всех сервисов
 │                                  (каркас Shared.Metrics / Puzzle-модуль, словарь имён,
 │                                   коллектор Kafka, стек Prometheus+Grafana+Alertmanager)
-├── 19-backups.md               ← ★ подсистема бэкапов шардов: PgWorker-оркестрация
-│                                  (pg_basebackup + приёмник WAL внутри PG-нод, S3-хранилище,
-│                                   контракт /pgworker/backups/*)
+├── backups/                    ← ★ подсистема бэкапов шардов: домен
+│                                  (иерархия: README — уровень 2, функции 01–09,
+│                                   процессы и перечисления — processes/)
+├── pgnode/                     ← ★ PgNode: агент ноды (приёмник WAL, полные,
+│                                  verify/restore/drill, API ноды)
+│                                  (иерархия: README — уровень 2, функции 01–08,
+│                                   процессы и перечисления — processes/)
 ├── valkey-clusters/           ← ★ Valkey-кластера: контракт etcd /valkey/ + координация /valkeyworker/
 │                                  (иерархия: README — уровень 2, разделы канона 01–05)
 ├── valkeyworker/              ← ★ ValkeyWorker: оркестратор Valkey-кластеров
@@ -222,9 +226,11 @@ arch/
     конвергенция динамического DCS-конфига, инварианты внешних систем,
     недискриминантные ключи, детерминизм мутаций, флап≠смерть, реестр
     ошибок использования).
-16. [19-backups.md](19-backups.md) — подсистема бэкапов шардов: механика
-    (полные `pg_basebackup`, online-WAL `pg_receivewal`-агент), layout S3,
-    контракт `/pgworker/backups/*`.
+16. [backups/README.md](backups/README.md) — подсистема бэкапов шардов:
+    полные `pg_basebackup`, online-WAL (приёмник внутри PG-нод), verify,
+    restore/PITR, drill, S3-layout, ретенция, контракт
+    `/pgworker/backups/*`; компонент-исполнитель —
+    [pgnode/README.md](pgnode/README.md) (иерархия уровней 2–4).
 17. [valkey-clusters/README.md](valkey-clusters/README.md) — Valkey-кластера:
     контракт etcd `/valkey/` (контроль-плейн кластеров, координация
     `/valkeyworker/`) и клиентский дискавери (endpoints + ACL-креды;

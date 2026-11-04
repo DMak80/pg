@@ -1,7 +1,7 @@
 # Runbook: восстановление шарда из бэкапа
 
 Операционное руководство по PITR-восстановлению шардов кластеров из S3-бэкапов.
-Канон механики — [arch/19-backups.md](../arch/19-backups.md) §3.5/§4; API —
+Канон механики — [arch/backups/03-restore.md](../arch/backups/03-restore.md)/[arch/backups/05-etcd-contract.md](../arch/backups/05-etcd-contract.md); API —
 arch/14 §1.1. Тон — по [docs/runbook.md](runbook.md).
 
 ## 1. Сводка механики

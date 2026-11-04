@@ -246,9 +246,9 @@ Prometheus-алерты группы `backups` (rules.yml; severity — зерк
 экспозиция — Kestrel `:8080` ВНУТРИ контейнера ноды, `/metrics`
 (`Shared.Metrics`, Meter `PgWorker.PgNode`; порт наружу хоста НЕ
 публикуется). Тот же порт `:8080` несёт HTTP API операций бэкапов
-([19](19-backups.md) §2/§3.5/§3.6/§5, канал [25](25-component-communications.md) №22);
+([pgnode/02-api.md](pgnode/02-api.md), канал [25](25-component-communications.md) №22);
 новых серий приёмника операции не вводят — наблюдаемость операций
-бэкапов: etcd-статусы воркера ([19](19-backups.md) §4) и журнал воркера.
+бэкапов: etcd-статусы воркера ([backups/05-etcd-contract.md](backups/05-etcd-contract.md)) и журнал воркера.
 Скрейп — Prometheus по `alias:8080` через
 `Docker:ScrapeNetwork` (та же сеть/та же file_sd-запись, что patroni-нод
 §2.5 — порт другой), джоба `pgnode-nodes` — http (закрытая сеть

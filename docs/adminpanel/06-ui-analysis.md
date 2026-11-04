@@ -26,10 +26,10 @@
 | **ValkeyWorker** | Оркестратор Valkey-кластеров (standalone-кеш, 1 нода, persistence off): контейнер, ACL-креды, TLS, ротации. Единственный писатель `/valkey/`, `/valkeyworker/` | [arch/21](../../arch/21-valkeyworker.md) |
 | **S3Worker** | Оркестратор пулов S3-хранилища бэкапов (ownS3): инстансы по placement-селекторам, mesh-репликация (`links`), PKI, deny-list, зонд синхронности. Единственный писатель `/s3/`, `/s3worker/` | [arch/s3worker](../../arch/s3worker/README.md), [arch/s3-clusters](../../arch/s3-clusters/README.md) |
 | **AdminPanel** | Декларатор и наблюдатель: 5 доменных снапшотов etcd (тик 3 с) + live-пробы (15 с) + healthz-поллер. Все доменные мутации — прокси в HTTP API воркеров (mTLS); в etcd напрямую пишет только `/workers/api_tls/*` | [arch/adminpanel/01](../../arch/adminpanel/01-architecture.md) |
-| **PG-нода** (`pgworker-node`) | Контейнер Spilo (PG + Patroni) + pg_doorman + приёмник WAL (стрим в S3, полные бэкапы, verify, restore, drill) — один процесс, API `alias:8080` без публикации на хост | [arch/pgworker/01 §1](../../arch/pgworker/01-placement.md), [arch/19](../../arch/19-backups.md) |
+| **PG-нода** (`pgworker-node`) | Контейнер Spilo (PG + Patroni) + pg_doorman + приёмник WAL (стрим в S3, полные бэкапы, verify, restore, drill) — один процесс, API `alias:8080` без публикации на хост | [arch/pgworker/01 §1](../../arch/pgworker/01-placement.md), [arch/pgnode](../../arch/pgnode/README.md) |
 | **Patroni / HA-контур шарда** | Репликация и failover внутри нод; DCS `/service/<scope>/`; Patroni-callback — единственный писатель `shards/X/master` (lease TTL 5 с) | [arch/01 §1.2](../../arch/01-architecture.md), [arch/11 §2](../../arch/11-bucket-sharding.md) |
-| **Подсистема бэкапов** | Хозяин PgWorker: полные + WAL (двойная архивация мастер+sync-реплика), verify, restore/PITR, drill, GFS-ретенция, реестр сирот, DR-слепки etcd → S3. Контракт `/pgworker/backups/*` | [arch/19](../../arch/19-backups.md) |
-| **S3-хранилище (OwnS3)** | Durability-хранилище: бэкапы шардов (`<C>/<X>/full|wal`), слепки etcd; избыточность — mesh-репликация внутри пула. Внешний репозиторий `../OwnS3` | [arch/19 §5](../../arch/19-backups.md), [arch/s3-clusters](../../arch/s3-clusters/README.md) |
+| **Подсистема бэкапов** | Хозяин PgWorker: полные + WAL (двойная архивация мастер+sync-реплика), verify, restore/PITR, drill, GFS-ретенция, реестр сирот, DR-слепки etcd → S3. Контракт `/pgworker/backups/*` | [arch/backups](../../arch/backups/README.md) |
+| **S3-хранилище (OwnS3)** | Durability-хранилище: бэкапы шардов (`<C>/<X>/full|wal`), слепки etcd; избыточность — mesh-репликация внутри пула. Внешний репозиторий `../OwnS3` | [arch/backups/06 §1](../../arch/backups/06-s3-layout.md), [arch/s3-clusters](../../arch/s3-clusters/README.md) |
 | **Docker-движки (plain/swarm)** | Исполнитель размещения: контейнеры/сети/тома через Engine API; воркер — строго управление запуском + проверка факта | [arch/25 §2–3](../../arch/25-component-communications.md) |
 | **Мониторинг** | Prometheus + Grafana + Alertmanager; таргеты — file_sd из portalloc. Канал наблюдения, независимый от панели | [arch/18](../../arch/18-metrics.md) |
 | **EtcdWorker** | Оркестратор etcd-контура: поддержание состава (managed-узлы, кворум-гварды, rolling-доводка), DR-слепки etcd → S3 (безусловная выгрузка, ключ `/etcdworker/snapshots`). Единственный писатель `/etcd/`, `/etcdworker/` | [arch/etcdworker](../../arch/etcdworker/README.md) |
@@ -90,7 +90,7 @@ API воркеров** (живое etcd, применяется тиками/rol
 | **5. Рантайм** | per-cluster policy бэкапов (retention/full_max_age/verify/drill/s3-пул), заявки (переезды/ротации/rebalance/зонды/recreate), рестарты, серты API | etcd (ключи заявок/policy) | живое, тиками воркера |
 
 Каталоги параметров: pg — [arch/pgworker/08 §5](../../arch/pgworker/08-operability.md), бэкапы —
-[arch/19 §4](../../arch/19-backups.md), kafka — [arch/kafkaworker](../../arch/kafkaworker/README.md),
+[arch/backups/05](../../arch/backups/05-etcd-contract.md), kafka — [arch/kafkaworker](../../arch/kafkaworker/README.md),
 valkey — [arch/21 §8](../../arch/21-valkeyworker.md), s3 — [arch/s3worker](../../arch/s3worker/README.md),
 панель — `src/AdminPanel.Api/appsettings.json`.
 

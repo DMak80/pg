@@ -36,7 +36,7 @@ API воркера** ([07-api.md](07-api.md)) — воркер записыва�
   смерть контроллера (etcd + сами ноды).
 - **Хозяин подсистемы бэкапов шардов**: оркестрация полных `pg_basebackup`,
   restore/drill, политика бэкапов; механика приёмника WAL, layout S3 и
-  контракт `/pgworker/backups/*` — [19-backups.md](../19-backups.md).
+  контракт `/pgworker/backups/*` — [backups/README.md](../backups/README.md).
 - **Не входит**: переезды бакетов скриптовым путём (в живой системе путь
   мутаций один — панель → API воркера → заявки в etcd; скрипты
   [11-bucket-sharding.md](../11-bucket-sharding.md) §4.5/§5 — инструмент
@@ -77,7 +77,7 @@ API воркера** ([07-api.md](07-api.md)) — воркер записыва�
   оркестрации [25-component-communications.md](../25-component-communications.md).
 - **PgWorker → PgNode**: HTTP API приёмника WAL (`alias:8080`: операции
   бэкапов, `pgdump`, `pgdata`) и mTLS-канал доставки секретов (`:8081`) —
-  [19-backups.md](../19-backups.md) §2/§3, [04-security.md](04-security.md) §4.
+  [pgnode/02-api.md](../pgnode/02-api.md), [04-security.md](04-security.md) §4.
 - **Приложения → etcd**: клиентский дискавери (`dsn`, `app_user`/
   `app_password`, `app_params`) —
   [11-bucket-sharding.md](../11-bucket-sharding.md) §3.

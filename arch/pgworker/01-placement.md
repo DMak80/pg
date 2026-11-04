@@ -15,7 +15,7 @@ pg_doorman, обязательный build-arg `DOORMAN_IMAGE` — fail-fast б�
 целевая платформа x64 — amd64-сборка, arm64 — платформа разработки,
 [03-prerequisites.md](../03-prerequisites.md) §1) + **агент ноды PgNode**
 (программа `pgnode` supervisord'а: приём WAL бэкапов —
-[19-backups.md](../19-backups.md) §3, физическая репликация
+[backups/02-wal-archive.md](../backups/02-wal-archive.md), физическая репликация
 `127.0.0.1:5432` своей ноды → S3-пул; загрузочный агент ноды и менеджер
 пулера — доставляет секреты по каналу воркера —
 [04-security.md](04-security.md) §3, поднимает spilo/pg_doorman после
@@ -32,7 +32,7 @@ keepalive цикл 1 с, TTL 5 с. Supervisord автостартует ТОЛЬ
 групповой stop/kill supervisord'а `stopasgroup`/`killasgroup` их не
 достаёт; сироты держат `supervise/lock`, и Patroni следующего запуска не
 стартует никогда — «unable to lock supervise/lock», ломает restore-стоп/
-старт Patroni ноды, [19-backups.md](../19-backups.md) §3.5). Обёртка гасит
+старт Patroni ноды, [backups/03-restore.md](../backups/03-restore.md)). Обёртка гасит
 runit-дерево сама: TERM → штатный `sv stop patroni` + сервисы (бюджет, до
 окна supervisord'а), затем точечный добор `runsv`/`runsvdir` — лок
 освобождён, `start spilo` поднимает Patroni чисто. Внутри контейнера всё
@@ -41,10 +41,10 @@ host-network и «подов»; sidecar'ы отдельными сервисам
 
 Приёмник WAL идентичность получает env'ом ноды (`PGW_BACKUP_CLUSTER/SHARD/
 NODE` + per-install `PGW_BACKUP_S3_BUCKET`, опц. `PGW_BACKUP_S3_CA_PEM` —
-[19-backups.md](../19-backups.md) §3/§7; адреса etcd — уже существующий
+[backups/02-wal-archive.md](../backups/02-wal-archive.md)/[backups/08-secrets.md](../backups/08-secrets.md); адреса etcd — уже существующий
 `PGW_ETCD`); всё остальное (роль источника, цели S3, креды, слот) резолвит
 сам из etcd — воркер приёмником не управляет, стоп-семантика — через
-etcd-ключи ([19-backups.md](../19-backups.md) §3/§4). Нода, созданная до
+etcd-ключи ([backups/02-wal-archive.md](../backups/02-wal-archive.md)/[backups/05-etcd-contract.md](../backups/05-etcd-contract.md)). Нода, созданная до
 включения приёмника в образ (без env `PGW_BACKUP_*`), приёмника не несёт:
 WAL-архивация с неё невозможна, обновление образа ноды — пересозданием
 (rebuild/recreate, данные в volume сохраняются).
@@ -56,7 +56,7 @@ WAL-архивация с неё невозможна, обновление об
 | PostgreSQL | `:5432` | подписки переездов (прямой порт master из portalloc, P2) и админка |
 | Patroni (в Spilo) | REST `:8008` | управляет локальным PG; callback `on_start`/`on_role_change` → lease-put `shards/X/master` (P11); REST `/primary` потребляет PgWorker (пробы/сверка) |
 | pg_doorman | `:6432` | пулер приложений, бэкенд только `127.0.0.1:5432`; единственный пул `<dbname>` (`pool_mode=transaction`, TLS `sslmode=require`, P13/P14/P17); обязателен — сборка образа без `DOORMAN_IMAGE` — fail-fast (R1); конфиг/серты ведёт загрузочный агент ([04-security.md](04-security.md) §3) |
-| pgnode (агент PgNode) | `:8080` (/metrics + API операций бэкапов), `:8081` (mTLS-канал доставки) | приёмник WAL бэкапов ([19-backups.md](../19-backups.md) §3): стрим `127.0.0.1:5432` → S3-пул; на `:8080` — `/metrics` (Prometheus через ScrapeNetwork, [18-metrics.md](../18-metrics.md) §2.8/§5.4) И HTTP API операций бэкапов ([19-backups.md](../19-backups.md) §2/§3.5/§3.6/§5) по каналу `alias:8080` — общей сети воркера и нод ([25-component-communications.md](../25-component-communications.md) №22); на `:8081` — mTLS-сервер загрузочного агента (канал доставки секретов, [04-security.md](04-security.md) §3; только для PgWorker); наружу хоста НЕ публикуются оба порта (docker и swarm) |
+| pgnode (агент PgNode) | `:8080` (/metrics + API операций бэкапов), `:8081` (mTLS-канал доставки) | приёмник WAL бэкапов ([backups/02-wal-archive.md](../backups/02-wal-archive.md)): стрим `127.0.0.1:5432` → S3-пул; на `:8080` — `/metrics` (Prometheus через ScrapeNetwork, [18-metrics.md](../18-metrics.md) §2.8/§5.4) И HTTP API операций бэкапов ([pgnode/02-api.md](../pgnode/02-api.md)) по каналу `alias:8080` — общей сети воркера и нод ([25-component-communications.md](../25-component-communications.md) №22); на `:8081` — mTLS-сервер загрузочного агента (канал доставки секретов, [04-security.md](04-security.md) §3; только для PgWorker); наружу хоста НЕ публикуются оба порта (docker и swarm) |
 
 Наружу (хост) публикуются порты: `pg` (5432→выделенный), `patroni`
 (8008→выделенный), `doorman` (6432→выделенный) — тройка из порт-аллокатора
@@ -380,7 +380,7 @@ docker-хоста — перекрёстная видимость алиасов
 движком при provisioning (идемпотентно, 409 already exists = успех) и
 удаляется при полном демонтаже кластера (пул subnet'ов конечен — сиротские
 сети не копим). Приёмник WAL живёт процессом внутри контейнера ноды
-([19-backups.md](../19-backups.md) §3) — отдельной сетевой сущности не
+([backups/02-wal-archive.md](../backups/02-wal-archive.md)) — отдельной сетевой сущности не
 образует, источник репликации для него — `127.0.0.1:5432` своей ноды.
 
 Дополнительно, при заданном `PgWorker:Docker:ScrapeNetwork` (имя docker-сети
@@ -414,7 +414,7 @@ docker/swarm (per-cluster `pgw-net-<C>`/overlay — воркер в ней по
 построению поставки). Этим построением адресация HTTP API приёмника
 `alias:8080` по имени ноды работает в обоих режимах
 ([25-component-communications.md](../25-component-communications.md) №22;
-[19-backups.md](../19-backups.md) §2/§3.5) — приёмник `:8080` наружу хоста
+[backups/01-full-backup.md](../backups/01-full-backup.md)/[backups/03-restore.md](../backups/03-restore.md)) — приёмник `:8080` наружу хоста
 НЕ публикуется. Недостижимость alias (DNS/отказ/5xx/таймаут) — transient
 тика процесса воркера с journal-диагностикой (факт с адресом), статус не
 портится, краш тика недопустим.
