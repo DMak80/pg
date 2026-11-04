@@ -161,7 +161,7 @@ docker-E2E (§6, M3): полный фактический набор шире �
 (REST `:8008` — TLS, arch/13 §4).
 Семантика per-node: запись с `"alias"` → сетевой таргет `<alias>:8008`
 (контейнерный порт Patroni REST;
-штатная ветка единой сети контура — [14](14-pgworker.md) §2.4),
+штатная ветка единой сети контура — [pgworker/01-placement.md](pgworker/01-placement.md) §5),
 верифицируется полностью (имя = SAN серта); запись без
 `"alias"` (легаси-переходный контур, усыновлённая нода) → advertised
 `host:patroni` по host-публикации — деградационная ветка: не только
@@ -396,7 +396,7 @@ slaves/коллектор),
 (`name: ${PGW_METRICS_NETWORK:-pgw-metrics}`) — в ней deploy-воркеры
 PgWorker (aliases `pgworker`/`pgworker-2`), Prometheus (external-attach
 из стендового компоуза) и подключаемые движком кластерные ноды
-(PgWorker:Docker:ScrapeNetwork, [14](14-pgworker.md) §2.1/§2.4): скрейп
+(PgWorker:Docker:ScrapeNetwork, [pgworker/01-placement.md](pgworker/01-placement.md) §1/§5): скрейп
 patroni-nodes — по `alias:8008` из portalloc, джоба pgworker — по
 сетевым адресам воркеров; host-форвардинг и extra_hosts из контура
 скрейпа удалены. Advertised-ветка (запись без alias) — деградационная:
@@ -502,6 +502,6 @@ METRICS_ALERTMANAGER_PORT=9093, METRICS_ALERT_WEBHOOK_URL=   # пусто — т
 
 ---
 
-→ Возврат к [README.md](README.md). Воркеры — [14-pgworker.md](14-pgworker.md)
-§7, [kafkaworker/README.md](kafkaworker/README.md); панель —
+→ Возврат к [README.md](README.md). Воркеры — [pgworker/08-operability.md](pgworker/08-operability.md)
+§4, [kafkaworker/README.md](kafkaworker/README.md); панель —
 [adminpanel/01-architecture.md](adminpanel/01-architecture.md)

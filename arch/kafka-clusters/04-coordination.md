@@ -1,7 +1,7 @@
 # Kafka-кластеры: координация воркера `/kafkaworker/`
 
 Уровень 3. Служебный слой KafkaWorker. Порт схемы `/pgworker/`
-([14-pgworker.md](../14-pgworker.md) §3.3) один в один, свой префикс.
+([pgworker/00-etcd-contract.md](../pgworker/00-etcd-contract.md) §4) один в один, свой префикс.
 
 ## 1. Ключи
 

@@ -43,7 +43,7 @@ Plain docker и docker swarm; транспорт к Engine API — `tcp://` + mT
 lease-координацией; операции идемпотентны.
 
 → [25-component-communications.md](25-component-communications.md) §2,
-[14-pgworker.md](14-pgworker.md) §2
+[pgworker/01-placement.md](pgworker/01-placement.md) §3
 
 ### 2.3. TLS, mTLS и PKI
 

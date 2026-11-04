@@ -9,7 +9,7 @@
 | Компонент | Роль | Документ |
 |---|---|---|
 | **AdminPanel** | Веб-панель (React SPA + ASP.NET Core API): read-only инспекция etcd, шардирования, HA, алертов и S3; мутации (кластеры, шарды, переезды, ротации, перезапуск воркеров) проксирует в HTTP API воркеров. В etcd пишет только серверные серты API воркеров (`/workers/api_tls/*`). | [adminpanel/README.md](adminpanel/README.md) |
-| **PgWorker** | Оркестратор шардированных PG-кластеров: provisioning/deprovisioning, надзор нод, эвакуация и онлайн-переезды бакетов, добавление/снятие шарда, ротации per-cluster секретов, adoption, репарация переездов; хозяин подсистемы бэкапов шардов. Несколько инстансов координируются lease-клэймами в etcd. | [14-pgworker.md](14-pgworker.md) |
+| **PgWorker** | Оркестратор шардированных PG-кластеров: provisioning/deprovisioning, надзор нод, эвакуация и онлайн-переезды бакетов, добавление/снятие шарда, ротации per-cluster секретов, adoption, репарация переездов; хозяин подсистемы бэкапов шардов. Несколько инстансов координируются lease-клэймами в etcd. | [pgworker/README.md](pgworker/README.md) |
 | **KafkaWorker** | Оркестратор Kafka-кластеров (KRaft, docker plain/swarm): подъём и демонтаж, per-cluster SASL-креды и CA, автосинк топиков, reassignment партиций. | [kafkaworker/README.md](kafkaworker/README.md) |
 | **ValkeyWorker** | Оркестратор Valkey-кластеров (standalone, `nodes=1`): подъём и демонтаж, per-cluster ACL-креды, надзор и ротации без рестартов. | [valkeyworker/README.md](valkeyworker/README.md) |
 | **S3Worker** | Оркестратор S3-кластеров (ownS3): инстансы по placement-селекторам, bucket per-install, mesh-репликация, deny-list, публикация `endpoints`. | [s3worker/README.md](s3worker/README.md) |

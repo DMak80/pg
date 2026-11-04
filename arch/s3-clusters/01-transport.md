@@ -6,7 +6,7 @@
 ## 1. HTTP JSON gateway `/v3/*`
 
 Как панель и PgWorker ([adminpanel/02-etcd-contract.md](../adminpanel/02-etcd-contract.md) §1,
-[14-pgworker.md](../14-pgworker.md) §3): `HttpClient` против gRPC-gateway
+[pgworker/00-etcd-contract.md](../pgworker/00-etcd-contract.md) §1): `HttpClient` против gRPC-gateway
 etcd (JSON+base64), `POST /v3/kv/range` / `/v3/kv/put` / `/v3/kv/txn` /
 `/v3/lease/*`. Один общий etcd-контур со стендом
 ([17-synchronization-principles.md](../17-synchronization-principles.md) S1).

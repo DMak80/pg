@@ -2,7 +2,7 @@
 
 Отложенные задачи оркестратора PgWorker (out of scope MVP — спецификация
 `docs/superpowers/2026-08-23-pgworker-backend/spec.md` §2; канон сервиса —
-[../14-pgworker.md](../14-pgworker.md)).
+[../pgworker/README.md](../pgworker/README.md)).
 
 ## Задачи
 

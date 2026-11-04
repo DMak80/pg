@@ -76,7 +76,7 @@
 Compact + defrag каждой ноды последовательно, не чаще
 `MaintenanceIntervalMin=60` — этот же лидерный цикл (второй исполнитель
 исключён; зоны maintenance/экспорта у PgWorker демонтированы,
-[14-pgworker.md](../14-pgworker.md) §6/§8). Отказ обслуживания — warning, тик
+[pgworker/08-operability.md](../pgworker/08-operability.md) §3/§5). Отказ обслуживания — warning, тик
 не фейлит.
 
 ## 6. S3-клиент

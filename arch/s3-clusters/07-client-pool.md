@@ -17,7 +17,7 @@
 - **Layout объектов** — [19-backups.md](../19-backups.md) §5 без изменений.
 
 Канон фиксирует границу; реализация — PgWorker, правки контракта —
-[19-backups.md](../19-backups.md)/[14-pgworker.md](../14-pgworker.md).
+[19-backups.md](../19-backups.md)/[pgworker/04-security.md](../pgworker/04-security.md).
 
 ## 2. Реализация (фиксируется)
 

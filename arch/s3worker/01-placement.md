@@ -10,7 +10,7 @@ S3-порт, placement-селекторы и привязка к хостам, a
 ## 1. Транспорт docker и конфигурация
 
 - **Транспорт** — общий клиент `Shared.Docker` (канон-суперсет, образец
-  [14-pgworker.md](../14-pgworker.md) §2.2.1): plain/swarm, транспорт
+  [pgworker/01-placement.md](../pgworker/01-placement.md) §4): plain/swarm, транспорт
   unix/tcp+TLS/SSH; env-секреты `S3W_DOCKER_TLS_{CA,CERT,KEY}`,
   `S3W_DOCKER_SSH_KEY[_PATH]`, `S3W_DOCKER_SSH_FINGERPRINT`.
 - **Конфиг** ([08-operability.md](08-operability.md) §5):
@@ -18,7 +18,7 @@ S3-порт, placement-селекторы и привязка к хостам, a
   PortRange{From,To}, Images{OwnS3}, Tls, Ssh, ContourNetwork,
   AdvertisedHost }`.
 - **Режимы Plain / Swarm** (порт режимов PgWorker,
-  [14-pgworker.md](../14-pgworker.md) §2.2–2.3): plain — `Hosts[{Name,
+  [pgworker/01-placement.md](../pgworker/01-placement.md) §3): plain — `Hosts[{Name,
   Endpoint}]`, per-host клиент Engine API, контейнеры `s3w-<C>-<I>`,
   restart-политика `unless-stopped`; swarm — `SwarmManager`, инстанс =
   сервис `replicas=1`, placement constraint, `publish mode=host`.
@@ -82,7 +82,7 @@ S3-порт, placement-селекторы и привязка к хостам, a
 - **Занятость** для довыделения = docker-публикации ∪ portalloc ВСЕХ
   кластеров; довыделение — только держателем глобального клэйма
   `/s3worker/locks/portalloc` (паттерн portalloc-клэйма:
-  [14-pgworker.md](../14-pgworker.md) §2.4). Не взял клэйм — InProgress
+  [pgworker/01-placement.md](../pgworker/01-placement.md) §5). Не взял клэйм — InProgress
   (следующий тик); смерть держателя гасит lease ≤ 15 с — takeover без
   оператора. Полностью закреплённый portalloc (rebuild, повторный проход)
   клэйма не требует.
@@ -93,7 +93,7 @@ S3-порт, placement-селекторы и привязка к хостам, a
   ([02-cluster-lifecycle.md](02-cluster-lifecycle.md) §4).
 - **Advertised-адрес** — только от фактических публикаций: хост —
   `S3Worker:Docker:AdvertisedHost`, если задан, иначе имя docker-хоста
-  размещения (single-host/стенд — [14-pgworker.md](../14-pgworker.md) §2.4
+  размещения (single-host/стенд — [pgworker/01-placement.md](../pgworker/01-placement.md) §5
   п.5; multi-host — фактические имена хостов). Требование: значение обязано
   резолвиться клиентами — оно попадает в `endpoints` и в
   `OWNS3_REPLICATION_ADVERTISED_ENDPOINT` ([04-security.md](04-security.md) §3).
@@ -108,7 +108,7 @@ S3-порт, placement-селекторы и привязка к хостам, a
 - **Опция `ContourNetwork`** (стенд/E2E) — инстансы создаются в сети
   контура поставки; адресация остаётся advertised-правилом §4, сеть
   воркером не создаётся и не удаляется (владелец — поставка/сценарий;
-  образец — [14-pgworker.md](../14-pgworker.md) §2.1). Не поддерживается в
+  образец — [pgworker/01-placement.md](../pgworker/01-placement.md) §1). Не поддерживается в
   `Mode=Swarm` — fail-fast старта: сеть overlay назначает сам Swarm.
 
 ## 6. Инстансы самого воркера
@@ -116,7 +116,7 @@ S3-порт, placement-селекторы и привязка к хостам, a
 - S3Worker — контейнер с `docker.sock` (или swarm-manager), volume
   снапшотов и TLS-секретов API, поставка через `deploy/docker-compose.yml`.
 - **Два инстанса по умолчанию** (образец pg —
-  [14-pgworker.md](../14-pgworker.md) §2.4): уникальный хост-порт API и
+  [pgworker/01-placement.md](../pgworker/01-placement.md) §5): уникальный хост-порт API и
   уникальный `Api:AdvertiseUrl` на инстанс, общие тома снапшотов и
   API-TLS; уникальность — случайный `InstanceId` без env-идентификации,
   дискавери-ключ `/s3worker/api/<id>` ([07-api.md](07-api.md) §4).

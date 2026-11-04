@@ -145,7 +145,7 @@ kafka-пробу и kafka-шаги Active-ветки; в etcd backoff ничег
   метрика `worker_watchdog_restarts_total{loop}` + graceful `StopApplication` —
   контейнер поднимает docker-политика, lease гаснут ≤15 с, takeover вторым
   инстансом. Механика (инварианты живости/поллинга, границы) — канон
-  [14-pgworker.md](../14-pgworker.md) §6; формулы порогов healthz
+  [pgworker/08-operability.md](../pgworker/08-operability.md) §3; формулы порогов healthz
   loops-alive — общий хелпер `LoopStaleness` Shared.Core (healthz watchdog
   больше не потребляет).
 

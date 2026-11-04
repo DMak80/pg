@@ -83,7 +83,7 @@ AdminPanel (UI) PgWorker (оркестратор бэкапов)
  `pgworker-node`, .NET-бинарь self-contained publish'а). PgWorker подаёт
  команду `POST /api/backup/full` `{"id"}` на `http://<имя ноды>:8080`
  (канал `alias:8080` по имени ноды в общей сети воркера и нод; порт
- наружу хоста НЕ публикуется — [14-pgworker.md](14-pgworker.md) §2.1/§2.4),
+ наружу хоста НЕ публикуется — [pgworker/01-placement.md](pgworker/01-placement.md) §1/§5),
  статус — `GET /api/backup/full` (404 = операция исчезла — vanished),
  отмена — `POST /api/backup/full/cancel` (best-effort). `pg_basebackup`
  исполняется ЛОКАЛЬНО в контейнере ноды — подключение `127.0.0.1:5432`
@@ -123,7 +123,7 @@ AdminPanel (UI) PgWorker (оркестратор бэкапов)
 - **Источник**: реплика шарда (sync-standby из Patroni `GET /cluster`:
  member с `state=running`, `role=replica`, sync-статусом);
  реплика недоступна/отстала → fallback на мастер (резолв мастера —
- существующий `ShardEndpoints`, [14-pgworker.md](14-pgworker.md) §5 F).
+ существующий `ShardEndpoints`, [pgworker/processes/f-move.md](pgworker/processes/f-move.md)).
  Источник фиксируется в etcd-статусе (`node`, `role`).
  Первое окно: до избрания sync-standby полный снимается с мастера
  (fallback); ПОСЛЕ избрания sync-standby самый свежий COMPLETED с
@@ -175,13 +175,13 @@ AdminPanel (UI) PgWorker (оркестратор бэкапов)
  чужой цепочки», полный завершается FAILED с причиной.
 - **Идентификатор**: `id = YYYYMMDDHHMMSSZ` (UTC старта, сортируемый);
  коллизия в пределах шарда — суффикс `-2`, `-3`…; детерминизм имён — как у
- `pgw-<C>-<X>-<n>` ([14-pgworker.md](14-pgworker.md) §6).
+ `pgw-<C>-<X>-<n>` ([pgworker/08-operability.md](pgworker/08-operability.md) §3).
 - **Подключение**: `pg_basebackup` — всегда `127.0.0.1:5432` своей ноды
  (приёмник живёт в контейнере ноды — сеть источника не нужна; БД-роль —
  §7). Канал команды/статуса — `alias:8080` по имени ноды в общей сети
  воркера и нод (инвариант поставки: контейнеры воркера и нод всегда в
  одной сети — контур или per-cluster сеть развёртывания,
- [14-pgworker.md](14-pgworker.md) §2.4; недостижимость alias — transient
+ [pgworker/01-placement.md](pgworker/01-placement.md) §5; недостижимость alias — transient
  тика воркера с journal-фактом адреса, НЕ краш тика); адресация S3
  приёмника — та же, что у стрима (§5/§7).
 - **Планировщик (rolling)**: воркер тиками под клэймом `<C>` для
@@ -251,7 +251,7 @@ AdminPanel (UI) PgWorker (оркестратор бэкапов)
 
 - **Агент**: процесс-приёмник ВНУТРИ контейнера КАЖДОЙ ноды шарда
  (программа `pgnode` (агент PgNode) supervisord'а образа `pgworker-node`,
- [14-pgworker.md](14-pgworker.md) §2.1; приёмник живёт во всех нодах,
+ [pgworker/01-placement.md](pgworker/01-placement.md) §1; приёмник живёт во всех нодах,
  стримят — только ноды-источники). Внутри — собственный .NET-приёмник:
  физическая репликация (COPY-протокол `START_REPLICATION ... PHYSICAL` по
  слоту, источник — `127.0.0.1:5432` своей ноды), приём XLogData,
@@ -615,7 +615,7 @@ AdminPanel (UI) PgWorker (оркестратор бэкапов)
  потеря шарда/DR) или `target_time` (порча данных, откат к
  моменту до порчи). Запуск — команда оператора через HTTP API воркера
  (`POST /api/clusters/<C>/shards/<X>/restore`,
- [14-pgworker.md](14-pgworker.md) §1.1): тело задаёт `backup_id` (нет —
+ [pgworker/07-api.md](pgworker/07-api.md) §1): тело задаёт `backup_id` (нет —
  новейший COMPLETED/list-S3; при own-source и живых etcd-статусах текущей
  инкарнации кандидат DR — новейший полный S3 БЕЗ etcd-статуса: такие
  orphan-полные остаются от инкарнации, чьи статусы стёр deprovision (D2),
@@ -1128,7 +1128,7 @@ AdminPanel (UI) PgWorker (оркестратор бэкапов)
  COMPLETED, `verify.interval_sec` — периодическая перепроверка каждого
  оставшегося COMPLETED-полного по возрасту `verify.checked_unix`
  (тихая порча/утеря объектов S3).
-- **Deprovisioning кластера** (D2, [14-pgworker.md](14-pgworker.md) §5 B)
+- **Deprovisioning кластера** (D2, [pgworker/processes/b-deprovisioning.md](pgworker/processes/b-deprovisioning.md))
  чистит etcd-префикс `/pgworker/backups/<C>/` тем же `del --prefix`
  (идущие операции бэкапов уходят вместе с нодами шарда — D1 сносит
  контейнеры нод с приёмниками; отдельных контейнеров/джобов бэкапов
@@ -1311,7 +1311,7 @@ s3://<bucket>/<C>/<X>/
  (бэкофф §2).
 - **Слот на источнике**: WAL копится, пока приёмник не подтвердил доставку;
  потолок — `max_slot_wal_keep_size` (уже в каноне нод,
- [14-pgworker.md](14-pgworker.md) §2.1 P3/P4): смерть обоих приёмников → WAL в
+ [pgworker/01-placement.md](pgworker/01-placement.md) §2 P3/P4): смерть обоих приёмников → WAL в
  пределах лимита → по исчерпании слот инвалидируется PG → цепочка рвётся →
  алерт панели + переснятие полного. Диск источника переполнить нельзя.
  Слоты per-instance (§3): инвалидация одного не касается второго.
@@ -1356,7 +1356,7 @@ s3://<bucket>/<C>/<X>/
 - **Per-install, env воркера** (не etcd, не git): (а) **bucket
  per-install** — env `PGW_BACKUP_S3_BUCKET` (конфиг-биндинг
  `PgWorker:Backups:S3:Bucket`, группа транспортных секретов
- [14-pgworker.md](14-pgworker.md) §4 п.3; единый на всех нодах всех пулов
+ [pgworker/04-security.md](pgworker/04-security.md) §2; единый на всех нодах всех пулов
  установки, §5); (б) **креды пулов — per-cluster secrets в etcd**:
  `/s3/clusters/<C>/secrets` ([s3-clusters/06-secrets.md](s3-clusters/06-secrets.md) §6;
  ключ `name=backups`, read-write) — воркер читает их резолвером пула

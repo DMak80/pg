@@ -71,7 +71,7 @@
    считается смертью. ([17](17-synchronization-principles.md) S5–S7)
 6. **Несколько инстансов воркера — норма.** Они координируются lease-клэймами
    в etcd; смерть контролирующего инстанса не останавливает процессы —
-   takeover укладывается в TTL. ([14](14-pgworker.md) §3)
+   takeover укладывается в TTL. ([pgworker/00-etcd-contract.md](pgworker/00-etcd-contract.md) §4)
 
 ## 5. Навигация
 

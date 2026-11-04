@@ -252,7 +252,7 @@ SELECT pg_last_wal_replay_lsn();
 
 ## 11. Сироты `pgw-*`: контейнеры воркера без etcd-деклараций (домен PgWorker)
 
-Терминология: [14-pgworker.md](14-pgworker.md). PgWorker управляет только тем,
+Терминология: [pgworker/README.md](pgworker/README.md). PgWorker управляет только тем,
 что заявлено в etcd (`/clusters/<C>/…`); docker-объекты без живой декларации
 воркер НЕ трогает (Deprovisioning D1 убирает сирот только в рамках
 TO_REMOVE-кластера). Типовой источник: ручная чистка `etcdctl del --prefix

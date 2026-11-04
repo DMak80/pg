@@ -12,7 +12,7 @@ PostgreSQL в Docker на 3 физических (или виртуальных)
 > Нужно **несколько таких кластеров-шардов** с «бакетами» (схемами) поверх них и
 > онлайн-переездом бакета между шардами? См. [11-bucket-sharding.md](11-bucket-sharding.md).
 > В живой системе кластер создаёт панель + оркестратор **PgWorker**
-> ([14-pgworker.md](14-pgworker.md)) — путь мутаций один; скриптовый путь
+> ([pgworker/README.md](pgworker/README.md)) — путь мутаций один; скриптовый путь
 > (`init-cluster.sh`, …) — вне живой системы ([11](11-bucket-sharding.md)
 > §4.5/§5). Константы те же (число бакетов N и имя БД), один etcd обслуживает
 > несколько независимых кластеров (префиксы `/clusters/<C>/`).
@@ -97,8 +97,9 @@ arch/
 │                                  онлайн-переезд бакета между шардами
 ├── 12-bucket-pitfalls.md      ← ★ реестр рисков топологии бакетов (etcd + pg_doorman)
 ├── 13-network-security.md     ← ★ сетевая модель бакетов: firewall-матрица, TLS, аутентификация (P17)
-├── 14-pgworker.md             ← ★ оркестратор PgWorker: provisioning/deprovisioning/надзор/эвакуация
-│                                  (docker-управление кластерами, префикс /pgworker/, roadmap/)
+├── pgworker/                  ← ★ PgWorker: оркестратор шардированных PG-кластеров
+│                                  (иерархия: README — уровень 2, контракт etcd и функции 00–08,
+│                                   процессы и перечисления — processes/)
 ├── kafka-clusters/            ← ★ Kafka-кластера: контракт etcd /kafka/ + координация /kafkaworker/
 │                                  (иерархия: README — уровень 2, разделы канона 01–06)
 ├── kafkaworker/               ← ★ KafkaWorker: оркестратор Kafka-кластеров
@@ -206,9 +207,10 @@ arch/
     (константа N, etcd-контрол-плейн, pg_doorman).
 11. [13-network-security.md](13-network-security.md) — **опционально**: сетевая
     модель бакетов (firewall-матрица, TLS, аутентификация).
-12. [14-pgworker.md](14-pgworker.md) — оркестратор PgWorker: декларативный
-    provisioning/deprovisioning кластеров, контроль нод, эвакуация бакетов
-    (отложенные задачи — [roadmap/](roadmap/)).
+12. [pgworker/README.md](pgworker/README.md) — оркестратор PgWorker:
+    декларативный жизненный цикл шардированных PG-кластеров, надзор нод,
+    эвакуация и онлайн-переезды бакетов, секреты и ротации (иерархия
+    уровней 2–4; отложенные задачи — [roadmap/](roadmap/)).
 13. [kafka-clusters/README.md](kafka-clusters/README.md) — Kafka-кластера: контракт
     etcd (контроль-плейн `/kafka/`, координация `/kafkaworker/`) и клиентский
     дискавери (иерархия уровней 2–3).

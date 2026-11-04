@@ -37,4 +37,4 @@
 
 Контекст всех задач — [`../`](../README.md) (особенно
 [11-bucket-sharding.md](../11-bucket-sharding.md),
-[14-pgworker.md](../14-pgworker.md)).
+[pgworker/README.md](../pgworker/README.md)).
