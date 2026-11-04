@@ -16,6 +16,12 @@ public static class BackupNames
     public static string RestoreKey(string cluster, string shard, string id)
         => $"/pgworker/backups/{cluster}/{shard}/restore/{id}";
 
+    /// <summary>Ключ счётчика жизни цепочки WAL шарда (arch/backups/05 §1):
+    /// /pgworker/backups/&lt;C&gt;/&lt;X&gt;/wal-life; отсутствие ключа = жизнь 0;
+    /// пишет ТОЛЬКО воркер (единственный писатель счётчика).</summary>
+    public static string WalLifeKey(string cluster, string shard)
+        => $"/pgworker/backups/{cluster}/{shard}/wal-life";
+
     /// <summary>Ключ дрилла шарда (reliability, arch/19 §4):
     /// /pgworker/backups/&lt;C&gt;/&lt;X&gt;/drill — один на шард.</summary>
     public static string DrillKey(string cluster, string shard)
