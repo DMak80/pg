@@ -303,7 +303,8 @@ public static class BackupsParser
                 id, state.Value, node, role.Value, startedUnix.Value,
                 ReadLong(root, "finished_unix"), ReadString(root, "wal_start_segment"),
                 ReadLong(root, "size_bytes"), ReadString(root, "error"), verify,
-                ReadChainLife(root));
+                ReadChainLife(root), ReadString(root, "sha256"),
+                ReadProgressLong(root, "bytes"), ReadProgressLong(root, "parts"));
         }
         catch (JsonException)
         {
@@ -508,6 +509,15 @@ public static class BackupsParser
         => ReadLong(root, "chain_life") is { } life && life is > 0 and <= uint.MaxValue
             ? (uint)life
             : null;
+
+    // progress{bytes,parts} (spec t01 §3.7): объект опционален; отсутствие
+    // объекта/поля — null (терминальные состояния прогресс не несут).
+    private static long? ReadProgressLong(JsonElement root, string field)
+        => root.ValueKind == JsonValueKind.Object
+            && root.TryGetProperty("progress", out var progress)
+            && progress.ValueKind == JsonValueKind.Object
+                ? ReadLong(progress, field)
+                : null;
 
     private static long? ReadLong(JsonElement root, string name)
     {

@@ -14,7 +14,13 @@ public sealed record FullStatusResponse(
     [property: JsonPropertyName("id")] string? Id = null,
     [property: JsonPropertyName("wal_start_segment")] string? WalStartSegment = null,
     [property: JsonPropertyName("size_bytes")] long? SizeBytes = null,
-    [property: JsonPropertyName("error")] string? Error = null);
+    [property: JsonPropertyName("error")] string? Error = null,
+    // Прогресс полного (spec t01 §3.7): прочитано байт / залито частей
+    // multipart; терминальные снимки прогресс не несут.
+    [property: JsonPropertyName("bytes_done")] long? BytesDone = null,
+    [property: JsonPropertyName("parts_done")] long? PartsDone = null,
+    // Сквозной sha256 tar-объекта полного (hex) — сверка verify/статус.
+    [property: JsonPropertyName("sha256")] string? Sha256 = null);
 
 /// <summary>S3-контекст ops-операций (verify/restore/drill; секреты — ТОЛЬКО
 /// в POST-теле, spec §3.2).</summary>

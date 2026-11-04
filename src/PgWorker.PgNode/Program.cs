@@ -432,7 +432,9 @@ internal partial class Program
                         snapshot.State, snapshot.Phase,
                         Id: snapshot.Id,
                         WalStartSegment: snapshot.WalStartSegment, SizeBytes: snapshot.SizeBytes,
-                        Error: snapshot.Error),
+                        Error: snapshot.Error,
+                        BytesDone: snapshot.BytesDone, PartsDone: snapshot.PartsDone,
+                        Sha256: snapshot.Sha256),
                     JsonOpts)
                 : Results.Json(
                     new ErrorResponse("no active operation"), JsonOpts, statusCode: 404));
@@ -458,6 +460,8 @@ internal partial class Program
             Id: snapshot?.Id,
             WalStartSegment: snapshot?.WalStartSegment,
             SizeBytes: snapshot?.SizeBytes,
-            Error: error);
+            Error: error,
+            BytesDone: snapshot?.BytesDone, PartsDone: snapshot?.PartsDone,
+            Sha256: snapshot?.Sha256);
     }
 }

@@ -581,6 +581,8 @@ public sealed class BackupProcess(
                     State = FullBackupStatus.Failed,
                     FinishedUnix = nowUnix,
                     Error = $"job-timeout: {nowUnix - active.StartedUnix} s > {options.JobFullTimeoutSec}",
+                    ProgressBytes = null,
+                    ProgressParts = null,
                 };
                 var putTimeout = await PutAsync(
                     BackupNames.FullKey(cluster, shard.Name, active.Id), BackupStatusJson.Serialize(timedOut), ct);
@@ -655,6 +657,8 @@ public sealed class BackupProcess(
                     State = FullBackupStatus.Failed,
                     FinishedUnix = time.GetUtcNow().ToUnixTimeSeconds(),
                     Error = "operation-vanished",
+                    ProgressBytes = null,
+                    ProgressParts = null,
                 };
                 var putVanished = await PutAsync(
                     BackupNames.FullKey(cluster, shard.Name, active.Id), BackupStatusJson.Serialize(vanished), ct);
@@ -672,6 +676,23 @@ public sealed class BackupProcess(
             switch (snapshot.State)
             {
                 case "running":
+                    // Прогресс полного (spec t01 §3.7): bytes_done/parts_done из
+                    // снимка приёмника — в etcd; запись только при изменении
+                    // (штатная частота тика супервизии).
+                    if (snapshot.BytesDone != active.ProgressBytes
+                        || snapshot.PartsDone != active.ProgressParts)
+                    {
+                        var progressing = active with
+                        {
+                            ProgressBytes = snapshot.BytesDone,
+                            ProgressParts = snapshot.PartsDone,
+                        };
+                        var putProgress = await PutAsync(
+                            BackupNames.FullKey(cluster, shard.Name, active.Id),
+                            BackupStatusJson.Serialize(progressing), ct);
+                        if (!putProgress.IsSuccess)
+                            return putProgress;
+                    }
                     continue; // жив — ждём следующие тики
 
                 case "uploading":
@@ -681,6 +702,9 @@ public sealed class BackupProcess(
                         {
                             State = FullBackupStatus.Uploading,
                             WalStartSegment = snapshot.WalStartSegment,
+                            // База прочитана/залита: прогресс basebackup не жив.
+                            ProgressBytes = null,
+                            ProgressParts = null,
                         };
                         var put = await PutAsync(
                             BackupNames.FullKey(cluster, shard.Name, active.Id), BackupStatusJson.Serialize(uploading), ct);
@@ -702,6 +726,10 @@ public sealed class BackupProcess(
                         FinishedUnix = time.GetUtcNow().ToUnixTimeSeconds(),
                         WalStartSegment = snapshot.WalStartSegment ?? active.WalStartSegment,
                         SizeBytes = snapshot.SizeBytes,
+                        Sha256 = snapshot.Sha256,
+                        // Терминальное состояние прогресс не несёт.
+                        ProgressBytes = null,
+                        ProgressParts = null,
                         Verify = verifyOnCreate ? new BackupVerify(BackupVerifyStatus.Pending, null) : null,
                     };
                     var putOutcome = await PutAsync(
@@ -720,6 +748,8 @@ public sealed class BackupProcess(
                         State = FullBackupStatus.Failed,
                         FinishedUnix = time.GetUtcNow().ToUnixTimeSeconds(),
                         Error = snapshot.Error ?? "receiver reported failed",
+                        ProgressBytes = null,
+                        ProgressParts = null,
                     };
                     var putOutcome = await PutAsync(
                         BackupNames.FullKey(cluster, shard.Name, active.Id), BackupStatusJson.Serialize(outcome), ct);

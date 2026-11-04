@@ -52,7 +52,12 @@ public sealed record ReceiverStatus(
     [property: JsonPropertyName("restored_to_lsn")] string? RestoredToLsn = null,
     [property: JsonPropertyName("system_id")] string? SystemId = null,
     [property: JsonPropertyName("started_unix")] long? StartedUnix = null,
-    [property: JsonPropertyName("error")] string? Error = null);
+    [property: JsonPropertyName("error")] string? Error = null,
+    // Прогресс полного (spec t01 §3.7): bytes_done/parts_done и сквозной
+    // sha256 объекта — опциональны (терминальные снимки без прогресса).
+    [property: JsonPropertyName("bytes_done")] long? BytesDone = null,
+    [property: JsonPropertyName("parts_done")] long? PartsDone = null,
+    [property: JsonPropertyName("sha256")] string? Sha256 = null);
 
 /// <summary>Тело POST /api/node/pgdump (pg_dump схемы — arch/14 §Move M1).</summary>
 public sealed record StartPgDumpRequest(

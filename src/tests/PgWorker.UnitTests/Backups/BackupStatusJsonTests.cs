@@ -131,6 +131,43 @@ public class BackupStatusJsonTests
         doc.RootElement.GetProperty("verify").TryGetProperty("error", out _).Should().BeFalse();
     }
 
+    // AAA (spec t01 §3.7): sha256 и progress{bytes,parts} пишутся при наличии
+    // и восстанавливаются парсером; без них полей нет.
+    [Fact]
+    public void Serialize_Sha256AndProgress_RoundTrip()
+    {
+        // Arrange — RUNNING с живым прогрессом и sha256; COMPLETED без них.
+        var running = new FullBackupState(
+            "20260910030000Z", FullBackupStatus.Running, "n1", BackupSourceRole.Master,
+            1757463600, null, "000000010000000000000002", null, null, null,
+            Sha256: "deadbeef", ProgressBytes: 33554432, ProgressParts: 2);
+        var completed = new FullBackupState(
+            "20260910040000Z", FullBackupStatus.Completed, "n1", BackupSourceRole.Master,
+            1757463600, 1757464000, "000000010000000000000002", 4096, null, null);
+
+        // Act
+        var jsonRunning = BackupStatusJson.Serialize(running);
+        var jsonCompleted = BackupStatusJson.Serialize(completed);
+        var parsed = BackupsParser.Parse(
+            (IReadOnlyList<Kv>)
+            [
+                new Kv(BackupNames.FullKey("c", "s1", running.Id), jsonRunning, 1),
+                new Kv(BackupNames.FullKey("c", "s1", completed.Id), jsonCompleted, 1),
+            ], out var errors);
+
+        // Assert
+        errors.Should().BeEmpty();
+        var fulls = parsed.Value[0].Shards["s1"].Full;
+        var parsedRunning = fulls.Single(f => f.Id == running.Id);
+        parsedRunning.Sha256.Should().Be("deadbeef");
+        parsedRunning.ProgressBytes.Should().Be(33554432);
+        parsedRunning.ProgressParts.Should().Be(2);
+        var parsedCompleted = fulls.Single(f => f.Id == completed.Id);
+        parsedCompleted.ProgressBytes.Should().BeNull();
+        parsedCompleted.ProgressParts.Should().BeNull();
+        jsonCompleted.Should().NotContain("progress").And.NotContain("sha256");
+    }
+
     // AAA: FAILED — error, без wal/size
     [Fact]
     public void Serialize_FailedWithError_RoundTrip()
