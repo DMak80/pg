@@ -1,8 +1,8 @@
 # 03 — Live-пробы и алерты
 
 > Назад: [INDEX.md](INDEX.md) · Подсистемы: `src/AdminPanel.Probes` +
-> `src/AdminPanel.Core/Alerting`. Контракт: [arch/02](../../arch/adminpanel/02-etcd-contract.md)
-> §4/§6, [arch/03](../../arch/adminpanel/03-panels.md) §4–5.
+> `src/AdminPanel.Core/Alerting`. Контракт: [../../arch/pg-clusters/02-topology.md](../../arch/adminpanel/02-etcd-contract.md)
+> §4/§6, [../../arch/pg-clusters/03-prerequisites.md](../../arch/adminpanel/03-panels.md) §4–5.
 
 Кратко: `ProbeOrchestrator` (`BackgroundService`, `[InjectAsSingleton(typeof(IHostedService))]`)
 раз в `Probes.IntervalSeconds` (15 c) берёт цели из текущего снапшота и гонит пробы
@@ -15,7 +15,7 @@
 - **Patroni REST** (`PatroniRestProbe`): `GET http://<host>:8008/cluster` на каждый
  member scope'а; ответ парсит `PatroniClusterParser` (роль/state/timeline/lag).
 - **SQL** (`SqlProbe`): Npgsql по DSN шарда из etcd (`host=s1a,s1b port=5432 …`);
- **один коннект на шард**; каталог arch/03 §5 (слоты, sync-standby, подписки,
+ **один коннект на шард**; каталог ../../arch/pg-clusters/03-prerequisites.md §5 (слоты, sync-standby, подписки,
  инвентарь `bucket_%`); пароль — `Probes.Password` (DSN его не несёт).
 - **HostMap** (`HostMapResolver.Resolve(hostMap, host, port)`): override адреса
  «etcd-адрес ноды `host:port`» → «достижимый с панели»; точное совпадение,
@@ -31,14 +31,14 @@
 переносится из предыдущего снапшота («присутствует с…»), сортировка: severity ↓,
 затем kind/target (Ordinal). Пороги — `AdminPanel:Alerts` (`AlertsOptions`).
 Полный перечень ниже — сверяется с кодом правил; условие/severity каждого kind —
-arch/03 §4 (источник истины каталога).
+../../arch/pg-clusters/03-prerequisites.md §4 (источник истины каталога).
 
 | Группа | Правила (kind) |
 |---|---|
 | etcd-здоровье (8) | `etcd-unreachable`, `etcd-endpoint-down`, `etcd-no-quorum`, `etcd-alarm`, `etcd-snapshot-export-failed`, `etcd-snapshot-export-stale`, `snapshot-stale`, `etcd-backup-cluster-missing` |
 | шардирование/переезды (12) | `cluster-not-initialized`, `cluster-incomplete`, `key-malformed`, `shard-no-master`, `bucket-no-routing`, `bucket-lost`, `bucket-out-of-range`, `move-stale`, `move-frozen-long`, `move-aborting`, `move-flipped-status-stuck`, `inventory-mismatch` |
 | HA/слоты (7) | `shard-no-leader`, `ha-member-not-streaming`, `replica-lag-high`, `sync-standby-missing`, `slot-lag-high`, `slot-invalidation-risk`, `slot-wal-lost` |
-| пробы (1) | `probe-failed` (sql→critical, patroni→warning, весь скоп молчит→critical один на скоп; lifecycle-цели NOT_INITIALIZED/TO_REMOVE подавлены — arch/03 §4) |
+| пробы (1) | `probe-failed` (sql→critical, patroni→warning, весь скоп молчит→critical один на скоп; lifecycle-цели NOT_INITIALIZED/TO_REMOVE подавлены — ../../arch/pg-clusters/03-prerequisites.md §4) |
 | бэкапы/S3/WAL (16) | `backup-chain-broken`, `backup-deleting-stuck`, `backup-drill-failed`, `backup-drill-stale`, `backup-full-stale`, `backup-orphan`, `backup-pool-missing`, `backup-pool-unreachable`, `backup-s3-unreachable`, `backup-storage-quota`, `backup-verify-failed`, `backup-wal-tli-gap`, `restore-failed`, `wal-chain-broken`, `wal-stream-lag`, `wal-stream-stopped` |
 | процессы/доступность воркера (3) | `provision-stuck`, `worker-api-unreachable`, `worker-unhealthy` |
 | глобальный стоп (1) | `backups-disabled` (warning: ключ `/pgworker/backups-disabled` — Remedy OperatorRunbook «запуск — снять ключ /pgworker/backups-disabled или включить Backups:Enabled») |
@@ -51,13 +51,13 @@ arch/03 §4 (источник истины каталога).
 
 ## Чек-лист «добавить правило/поле пробы»
 
-1. Контракт arch/03 §4 (kind, severity, условие) — первой; порог — в `AlertsOptions`
+1. Контракт ../../arch/pg-clusters/03-prerequisites.md §4 (kind, severity, условие) — первой; порог — в `AlertsOptions`
  + `appsettings.json`.
 2. Правило: `Rules/<Kind>Rule.cs : IAlertRule` (+ `[InjectAsSingleton(typeof(IAlertRule))]`);
  `Evaluate(snapshot, ctx)` возвращает алерты со стабильным `kind:target`.
 3. Unit-сценарий: fixture-снапшот (`TestSnapshots`) → ожидаемые алерты; при правке
  порога — `AlertTestRules`.
-4. Порог/поле наружу: DTO (`AlertsDto`/`HaDto`…), фронт `api/dto.ts` — по arch/03 §2.
+4. Порог/поле наружу: DTO (`AlertsDto`/`HaDto`…), фронт `api/dto.ts` — по ../../arch/pg-clusters/03-prerequisites.md §2.
 5. Живой прогон: интеграционный сценарий или чек стенда (20-alerts) на появление/гашение.
 
 ## Грабли
@@ -70,7 +70,7 @@ arch/03 §4 (источник истины каталога).
 - **Тайминги ожиданий**: тик проб 15 c — e2e-чеки ждут поля проб с запасом (≤40 c),
  алерты — ≤2 KV-тиков; «не дождались за 5 c» — не баг, а недостаток таймаута.
 - **`probe-failed` ≠ пустые данные**: отказ пробы оставляет etcd-часть (поля null),
- SQL-поля в UI скрываются с пометкой (arch/01 §8).
+ SQL-поля в UI скрываются с пометкой (../../arch/pg-clusters/01-ha-architecture.md §8).
 - **`probe-failed` — severity по цели **: SQL-проба Active-шарда
  упала = critical («кластер не работает»); Patroni одного члена — warning,
  все члены скопа — один critical; NOT_INITIALIZED/TO_REMOVE не алертятся

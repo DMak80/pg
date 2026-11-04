@@ -13,7 +13,7 @@
 порядок расследования. Каждый принцип описан как правило → почему критично →
 кейс → чем проверяется; реестр ошибок использования пополняется.
 
-→ [17-synchronization-principles.md](17-synchronization-principles.md)
+→ [synchronization/README.md](synchronization/README.md)
 
 ### 1.2. Межкомпонентные коммуникации и границы оркестрации
 
@@ -22,7 +22,7 @@
 Управление контейнерами — только запуск/остановка/удаление и проверка факта
 (list/inspect); чтение логов, exec, stats/events — вне продукта.
 
-→ [25-component-communications.md](25-component-communications.md)
+→ [communications/01-rules.md](communications/01-rules.md)
 
 ## 2. Технологии
 
@@ -32,8 +32,8 @@
 клэймы и txn. В нём — декларации доменов, координация воркеров, scopes
 Patroni и дискавери API. Адрес задаётся явно при старте; «вторых» etcd нет.
 
-→ [04-deploy-etcd.md](04-deploy-etcd.md) — контур и развёртывание,
-[17-synchronization-principles.md](17-synchronization-principles.md) — правила
+→ [pg-clusters/04-etcd-dcs.md](pg-clusters/04-etcd-dcs.md) — контур и развёртывание,
+[synchronization/README.md](synchronization/README.md) — правила
 работы с общим состоянием
 
 ### 2.2. Docker Engine API и контейнерная оркестрация
@@ -42,8 +42,8 @@ Plain docker и docker swarm; транспорт к Engine API — `tcp://` + mT
 `ssh://`-туннель, `unix://` только для стенда. Воркеры — несколько инстансов с
 lease-координацией; операции идемпотентны.
 
-→ [25-component-communications.md](25-component-communications.md) §2,
-[14-pgworker.md](14-pgworker.md) §2
+→ [communications/01-rules.md](communications/01-rules.md) §2,
+[pgworker/01-placement.md](pgworker/01-placement.md) §3
 
 ### 2.3. TLS, mTLS и PKI
 
@@ -52,7 +52,7 @@ PgWorker ↔ PgNode (per-install REST-CA), per-cluster CA у Kafka; у клие�
 грани PG — TLS (`sslmode=require`). Сетевая модель описывает зоны,
 firewall-матрицу и аутентификацию.
 
-→ [13-network-security.md](13-network-security.md)
+→ [pg-clusters/13-network-security.md](pg-clusters/13-network-security.md)
 
 ### 2.4. Prometheus-метрики и наблюдаемость
 
@@ -60,7 +60,7 @@ firewall-матрицу и аутентификацию.
 Kestrel-порту рядом с `/healthz`; единый словарь имён, типов и лейблов; стек
 Prometheus + Grafana + Alertmanager.
 
-→ [18-metrics.md](18-metrics.md)
+→ [metrics/README.md](metrics/README.md)
 
 ### 2.5. Объектное хранилище S3
 
@@ -69,7 +69,7 @@ S3-совместимое объектное хранилище: домен S3-�
 per-cluster/per-shard, один bucket на установку).
 
 → [s3-clusters/README.md](s3-clusters/README.md),
-[19-backups.md](19-backups.md) §5
+[backups/06-s3-layout.md](backups/06-s3-layout.md)
 
 ### 2.6. PostgreSQL: физическая и логическая репликация
 
@@ -77,5 +77,20 @@ Streaming replication (WAL) — основа HA и приёмника WAL; ло�
 со слотами — основа онлайн-переезда бакетов (failover slots, синхронизация
 sequence).
 
-→ [11-bucket-sharding.md](11-bucket-sharding.md) §4/§7/§10,
-[19-backups.md](19-backups.md) §3
+→ [pg-clusters/05-postgres-patroni.md](pg-clusters/05-postgres-patroni.md),
+[pg-clusters/11-buckets.md](pg-clusters/11-buckets.md) §4/§7,
+[backups/02-wal-archive.md](backups/02-wal-archive.md)
+
+### 2.7. E2E-тестирование
+
+Сквозные правила docker-E2E для всех E2E-проектов монорепо: единица
+окружения — тестовый класс с полностью своим контуром (сеть, etcd, S3,
+SUT-воркер), динамические хост-порты, чистка строго по своим объектам,
+обязательный teardown и ассерт чистоты; телеметрия прогона снимается до
+удаления, падение разбирается по логам без перезапуска, статика собирается
+отдельной фазой.
+
+→ [testing/README.md](testing/README.md) — канон;
+[testing/01-e2e-launch.md](testing/01-e2e-launch.md) — запуск и телеметрия;
+[testing/02-e2e-isolation.md](testing/02-e2e-isolation.md) — изоляция и
+чек-лист; команды — [operations/04-e2e-runs.md](operations/04-e2e-runs.md)

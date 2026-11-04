@@ -36,5 +36,5 @@
 обновляется **тем же мерж-коммитом**, что снимает задачу трека.
 
 Контекст всех задач — [`../`](../README.md) (особенно
-[11-bucket-sharding.md](../11-bucket-sharding.md),
-[14-pgworker.md](../14-pgworker.md)).
+[pg-clusters/11-buckets.md](../pg-clusters/11-buckets.md),
+[pgworker/README.md](../pgworker/README.md)).

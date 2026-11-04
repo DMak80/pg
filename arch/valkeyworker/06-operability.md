@@ -4,7 +4,7 @@
 надёжность, наблюдаемость, конфигурация и риски. Процессы —
 [A](processes/a-provisioning.md)…[K](processes/k-ca-rotator.md); перечисления —
 [processes/enums.md](processes/enums.md); общие принципы —
-[17-synchronization-principles.md](../17-synchronization-principles.md).
+[synchronization/README.md](../synchronization/README.md).
 
 ## 1. Тик и порядок веток
 
@@ -18,7 +18,7 @@
 provision/надзор/ротации ждут не-etcd события — PING-готовность ноды,
 docker-факты). etcd в тике не читается: контроль-плейн берётся из слепка
 опросного кэша `/valkey/clusters/` (S10
-[17](../17-synchronization-principles.md), реестр E10 — чтение уходит в
+[synchronization](../synchronization/README.md), реестр E10 — чтение уходит в
 фоновый опрос, единая точка failover S7; заявки ротаций, клэймы и
 portalloc-клэйм процессы читают из etcd напрямую при исполнении).
 Применения etcd-значений процессами (ensure кредов/CA, RMW, снятие state) —
@@ -56,7 +56,7 @@ portalloc-клэйм процессы читают из etcd напрямую п
 Все операции — только под живым клэймом `<C>`; владение держится на всём
 протяжении мутации: потеря lease прерывает исполняющийся тик
 (cancellation-гвард), критические шаги — после живой сверки клэйма
-(S5 [17](../17-synchronization-principles.md)); journal-before-manipulations.
+(S5 [synchronization](../synchronization/README.md)); journal-before-manipulations.
 
 ## 2. Клэймы, идемпотентность, takeover
 
@@ -107,7 +107,7 @@ portalloc-клэйм процессы читают из etcd напрямую п
   метрика `worker_watchdog_restarts_total{loop}` + graceful
   `StopApplication` — контейнер поднимает docker-политика, lease гаснут
   ≤15 с, takeover вторым инстансом. Механика (инварианты живости/поллинга,
-  границы) — канон [14-pgworker.md](../14-pgworker.md) §6; формулы порогов
+  границы) — канон [pgworker/08-operability.md](../pgworker/08-operability.md) §3; формулы порогов
   healthz loops-alive — общий хелпер `LoopStaleness` Shared.Core (healthz
   watchdog больше не потребляет).
 
@@ -121,9 +121,9 @@ Health `/healthz` по канону честного health: последнее 
 
 **Единая правда для панели**: опрос `/healthz` живых инстансов по URL из
 `/valkeyworker/api/<id>`. Prometheus-метрики — единый каркас
-[18-metrics.md](../18-metrics.md) §2.2 (воркер-паттерн: циклы/клэймы/фазы/
+[metrics/README.md](../metrics/02-dictionary.md) §2 (воркер-паттерн: циклы/клэймы/фазы/
 операции/снапшоты; `ValkeyWorker` в Meter-именах); коллектор доменных метрик
-INFO и дашборд — [18-metrics.md](../18-metrics.md) §4.2/§2.6; обязан ходить
+INFO и дашборд — [metrics/README.md](../metrics/04-collectors.md) §2/§2.6; обязан ходить
 по TLS-транспорту воркера ([01-placement.md](01-placement.md) §2). Diag-ключи:
 `/valkeyworker/work/<C>`, `nodes/node<k>/state`.
 
@@ -173,3 +173,82 @@ ValkeyWorker:Api { AdvertiseUrl, EnableSeedEndpoint=false,
 | R9 | Окно миграции plain→TLS: TLS-неготовые клиенты получают отказ после пересоздания | заявлено одним релизом (панель, воркер, Puzzle-библиотеки обновляются тем же релизом); окно = одно пересоздание контейнера |
 | R10 | `ca_key` в etcd — компрометация etcd = выпуск валидных сертов | зона доверия контроль-плейна (как все per-cluster-секреты, R7); ротация CA — процесс K: компрометированный OLD-ключ уничтожается перезаписью в коммите C, серт ноды перевыпускается от NEW CA, клиенты забирают NEW из `ca_pem` (окно двойного доверия — без недоступности) |
 | R11 | Окно ротации CA: клиенты с закэшированным OLD-доверием получают TLS-отказ после R до перечитывания `ca_pem`; одноблочные читатели (панельные пробы, метрики-коллектор) транзиентно недоверяют NEW-серту между D и C | poll-дискавери библиотеки перечитывает снапшот (секунды); окно D→C — один тик воркера (nodes=1 — одно пересоздание); панельные пробы/метрики самокорректируются следующим poll-циклом; многосертовые читатели окна не видят ([valkey-clusters/04-client-discovery.md](../valkey-clusters/04-client-discovery.md) §1) |
+
+## 7. TLS-подключения, осиротевшие тома и ротация CA
+
+### 7.1. Клиентские подключения
+
+Клиентский порт Valkey-кластеров — TLS (`--tls-port 6379 --port 0`):
+plain-подключения отклоняются, адреса/portalloc не менялись (адрес тот же,
+транспорт TLS). Подключение требует per-cluster CA из etcd —
+`/valkey/clusters/<C>/ca_pem` (PEM одной строкой с `\n`):
+
+- `valkey-cli`/`redis-cli`:
+  `valkey-cli --tls --cacert ca.pem -h <host> -p <port> -u app -a <app_password>`
+  (значение из etcd развернуть на многострочный PEM: `sed 's/\\n/\n/g'`);
+- StackExchange.Redis: `Ssl=true` + доверие `ca_pem` через
+  certificate-validation callback (образец — `PuzzleServer.Infrastructure.App.Valkey`);
+- клиенты библиотеки HA.Valkey: `GetClientConfig()` отдаёт `ssl=true` и CA
+  автоматически (`ssl=true ⟺ ca_pem` прочитан).
+
+Plain-порт закрыт — это заявленный breaking change релиза: клиенты без
+TLS после обновления получают отказ на хендшейке. Сертификаты нод доставляются
+env контейнера (`VALKEY_TLS_{CERT,KEY,CA}`); перевыпуск — пересозданием
+контейнера (надзор/ротация), вмешательство не требуется. Остаточный вектор —
+сеть контроль-плейна (§6 R5); ротация CA — roadmap.
+
+### 7.2. Осиротевшие TLS-тома `vwk-*-tls`
+
+Per-cluster TLS-тома в текущей модели нет (сертификаты — env ноды). Живые
+кластеры, поднятые до перехода на env-модель, чистит сам воркер: надзорная
+легаси-чистка удаляет осиротевший `vwk-<C>-tls` после пересоздания нод с env
+(409 volume-in-use — ретрай следующим тиком). Том кластера, демонтированного
+ДО миграции, не убирает никто (домен удалён, надзора нет) — удаляйте вручную:
+`docker volume rm vwk-<C>-tls` (сначала `docker volume ls -q | grep vwk-` —
+не заденьте том живого кластера в ожидании легаси-чистки).
+
+### 7.3. Ротация CA: ручная проверка состояния окна
+
+Ротация per-cluster CA и серверного серта выполняется воркером (процесс
+CaRotator, [processes/k-ca-rotator.md](processes/k-ca-rotator.md)) по заявке
+`/valkeyworker/ca_rotations/<C>` — окно двойного доверия P→D→R→C без
+остановки обслуживания:
+
+- (P) staging новой CA в `ca_next_pem`/`ca_next_key` (put-if-absent);
+- (D) `ca_pem` = bundle OLD+NEW — перечитавшие дискавери доверяют обоим;
+- (R) пересоздание node1 с сертом от NEW (env ноды `VALKEY_TLS_*`);
+- (C) атомарный txn: `ca_pem`/`ca_key` ← NEW, del staging, del заявки.
+
+Ручная проверка состояния окна:
+
+- `ca_pem` содержит ДВА блока `BEGIN CERTIFICATE` → окно D→C открыто
+  (один блок — ротации нет/коммит завершён);
+- ключи `ca_next_pem`/`ca_next_key` есть → staging жив (окно открыто);
+- ключ `/valkeyworker/ca_rotations/<C>` есть → заявка ждёт/исполняется;
+- журнал `/valkeyworker/work/<C>`: op `rotate-ca` c фазой `phase-p`,
+  `phase-d`, `phase-r`, `phase-r/node1`, `committed` или `done`;
+  `waiting-*` — заявка отложена (кластер не поднят/жива ротация пароля).
+
+### 7.4. Снятие зависшей заявки
+
+`etcdctl del /valkeyworker/ca_rotations/<C>` — заявка снимается; если окно
+ещё не открыто (staging нет), ротация не начнётся. Открытое окно снимением
+заявки НЕ откатывается — цикл доигрывается по факту staging (идемпотентно,
+без заявки): последний тик коммитит NEW и удаляет staging.
+
+### 7.5. Осиротевший staging
+
+Если воркер упал между P и C, staging `ca_next_*` остаётся. Отдельно чистить
+НЕ нужно: re-read следующего тика переиспользует существующую staging (одна
+генерация на жизнь ротации), доигрывает R и коммитит. Ручное удаление
+`ca_next_*` при открытом bundle-окне оставит кластер с двойным доверием и
+сертом OLD — не делать без полного понимания.
+
+### 7.6. Примечание для клиентов (окно D→C)
+
+Между D и C `ca_pem` — bundle OLD+NEW: клиенты, читающие `ca_pem` из etcd и
+доверяющие ВСЕМ блокам сертификата (многосертовое чтение), работают
+непрерывно. Клиенты с одноблочным парсером слепы к NEW-серту: обновить их ДО
+первой ротации (правка Puzzle-клиента).
+После коммита `ca_pem` = NEW — клиенты с закешированным OLD перечитывают
+`ca_pem` из etcd.

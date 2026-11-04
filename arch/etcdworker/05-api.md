@@ -9,20 +9,20 @@
 ## 1. Грань и аутентификация
 
 Та же mTLS-грань, что `/healthz` и `/metrics` (порт `:8080`, канон
-[14-pgworker.md](../14-pgworker.md) §1.1): клиентский сертификат на
+[pgworker/07-api.md](../pgworker/07-api.md) §2): клиентский сертификат на
 TLS-хендшейке опционален, но для префикса `/api` обязателен — клиенты
 (панель) аутентифицируются клиентским сертом per-install API-CA; запрос
 `/api` без валидного серта — 401. `/healthz` и `/metrics` — открытая грань
 доверенной docker-сети и хост-публикаций портов API (паттерн Patroni REST,
-[13-network-security.md](../13-network-security.md) §4; скрейп — `https` +
-`ca_file`, [18-metrics.md](../18-metrics.md) §5.2).
+[pg-clusters/13-network-security.md](../pg-clusters/13-network-security.md) §4; скрейп — `https` +
+`ca_file`, [metrics/README.md](../metrics/05-storage.md) §2).
 
 ## 2. Эндпоинты
 
 | Метод+путь | Назначение | Коды |
 |---|---|---|
 | `PUT /api/etcd/config` | декларация состава: тело `{"nodes":N}` → put `/etcd/config` (замещение целиком; 0 — managed-узлов нет, только наблюдение). Валидация `N` — целое 0..7; гвард кворума — итоговое число членов (external + N) ≥ 3; понижение N запускает rolling-вывод managed-узлов (по одному за тик, [02-membership.md](02-membership.md) §3) | 200 / 400 / 409 / 503 |
-| `POST /api/restart` | graceful self-stop инстанса (паттерн [14-pgworker.md](../14-pgworker.md) §1.1): 202, затем остановка хоста; контейнер поднимает docker-политика, lease гаснут ≤ 15 с, takeover вторым инстансом | 202 |
+| `POST /api/restart` | graceful self-stop инстанса (паттерн [pgworker/07-api.md](../pgworker/07-api.md) §2): 202, затем остановка хоста; контейнер поднимает docker-политика, lease гаснут ≤ 15 с, takeover вторым инстансом | 202 |
 | `GET /api/config` | эффективный конфиг установки (read-only, mTLS-зона `/api`): тело-объект `source:"env"` + группы camelCase — `thresholds{nodeBootSec,nodeDeadSec,healthIntervalSec}`, `loops{scanIntervalSec,keepaliveSec,watchdog{...}}`, `snapshots{intervalMin,minIntervalSec,maintenanceIntervalMin,retentionFiles,retentionObjects,retryIntervalSec,timeoutSec}`, `docker{mode,network,advertisedHost,portRange{from,to},images{etcd}}`. Наружу НЕ выходят: etcd-endpoints, `Api`/TLS, `Docker.Tls`/`Ssh`, `Snapshots.Dir`. Применяется рестартом воркера; etcd не читается | 200 |
 
 Протокол записи декларации: RMW по `mod_revision` (ключа нет — txn

@@ -27,11 +27,11 @@
 
 | Контур | Что входит | Канон |
 |---|---|---|
-| **Состояние и координация** | Единый etcd-кластер установки: декларации доменов (`/clusters/`, `/kafka/`, `/valkey/`, `/s3/`, `/etcd/`), координация воркеров (`/pgworker/`, `/kafkaworker/`, `/valkeyworker/`, `/s3worker/`, `/etcdworker/`), scopes Patroni (`/service/`), клэймы и дискавери API | [17-synchronization-principles.md](17-synchronization-principles.md), [04-deploy-etcd.md](04-deploy-etcd.md) |
-| **Оркестрация** | Воркеры и их процессы: подъём, демонтаж и надзор контейнеров через docker/swarm, приём и исполнение заявок, конвергенция конфигов | [00-components.md](00-components.md), [25-component-communications.md](25-component-communications.md) |
+| **Состояние и координация** | Единый etcd-кластер установки: декларации доменов (`/clusters/`, `/kafka/`, `/valkey/`, `/s3/`, `/etcd/`), координация воркеров (`/pgworker/`, `/kafkaworker/`, `/valkeyworker/`, `/s3worker/`, `/etcdworker/`), scopes Patroni (`/service/`), клэймы и дискавери API | [synchronization/README.md](synchronization/README.md), [pg-clusters/04-etcd-dcs.md](pg-clusters/04-etcd-dcs.md) |
+| **Оркестрация** | Воркеры и их процессы: подъём, демонтаж и надзор контейнеров через docker/swarm, приём и исполнение заявок, конвергенция конфигов | [00-components.md](00-components.md), [communications/README.md](communications/README.md) |
 | **Данные** | Контейнеры кластеров: PG-шарды (Spilo + Patroni, pg_doorman), Kafka, Valkey, ownS3; протоколы SQL и репликации, Kafka, RESP, S3 | [00-components.md](00-components.md) |
-| **Наблюдаемость** | Метрики Prometheus, алерты, read-only инспекция панели | [18-metrics.md](18-metrics.md), [adminpanel/README.md](adminpanel/README.md) |
-| **Восстановление** | Бэкапы шардов в S3 (полные + WAL), DR-слепки etcd, PITR и дрилл восстановимости | [19-backups.md](19-backups.md), [etcdworker/README.md](etcdworker/README.md) |
+| **Наблюдаемость** | Метрики Prometheus, алерты, read-only инспекция панели | [metrics/README.md](metrics/README.md), [adminpanel/README.md](adminpanel/README.md) |
+| **Восстановление** | Бэкапы шардов в S3 (полные + WAL), DR-слепки etcd, PITR и дрилл восстановимости | [backups/README.md](backups/README.md), [etcdworker/README.md](etcdworker/README.md) |
 
 ## 3. Модель развёртывания
 
@@ -53,25 +53,25 @@
 
 1. **Один etcd на установку.** Все участники работают с одним кластером,
    адрес передаётся явно при старте; «второй etcd» в контуре невозможен.
-   ([17](17-synchronization-principles.md) S1)
+   ([synchronization](synchronization/README.md) S1)
 2. **У каждого префикса etcd один писатель.** Домены (`/clusters/`, `/kafka/`,
    `/valkey/`, `/s3/`, `/etcd/`) пишут только их воркеры;
    панель в etcd пишет лишь серверные серты API воркеров
    (`/workers/api_tls/*`), все мутации идут через HTTP API исполнителей.
-   ([25](25-component-communications.md), [adminpanel/README.md](adminpanel/README.md))
+   ([communications](communications/README.md), [adminpanel/README.md](adminpanel/README.md))
 3. **Каналы — только стандартные протоколы.** HTTP(S), PostgreSQL, Kafka,
    RESP, S3, etcd; stdout/stderr контейнера — не канал связи. Оркестрация —
    только запуск/остановка/удаление и проверка факта (list/inspect).
-   ([25](25-component-communications.md) §1–2)
+   ([communications](communications/01-rules.md) §1–2)
 4. **Предикаты — по первоисточнику.** «Кто мастер», «чей ключ» определяются
    прямыми пробами владельца истины, а не значением etcd-ключа; etcd-ключи —
-   маршрутизация и кэш. ([17](17-synchronization-principles.md) S4)
+   маршрутизация и кэш. ([synchronization](synchronization/README.md) S4)
 5. **Мутации идемпотентны.** Фиксированный порядок записей, клэйм или
    периодический тик, journal-before-manipulations; транспортный флап не
-   считается смертью. ([17](17-synchronization-principles.md) S5–S7)
+   считается смертью. ([synchronization](synchronization/README.md) S5–S7)
 6. **Несколько инстансов воркера — норма.** Они координируются lease-клэймами
    в etcd; смерть контролирующего инстанса не останавливает процессы —
-   takeover укладывается в TTL. ([14](14-pgworker.md) §3)
+   takeover укладывается в TTL. ([pgworker/00-etcd-contract.md](pgworker/00-etcd-contract.md) §4)
 
 ## 5. Навигация
 
@@ -80,5 +80,5 @@
   технические правила.
 - [roadmap/README.md](roadmap/README.md) — отложенные задачи и известные
   дефекты; ведётся вне иерархии компонентов.
-- `configs/`, `scripts/`, `stand/` — артефакты стенда и операторские скрипты,
-  а не документы архитектуры.
+- [stand/README.md](stand/README.md) — docker-стенд проверки канона; каталоги
+  `configs/` и `scripts/` — артефакты вне канона живой системы.

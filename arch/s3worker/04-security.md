@@ -5,7 +5,7 @@ PKI, доставка секретов в инстансы и ротация к�
 [s3-clusters/06-secrets.md](../s3-clusters/06-secrets.md) (единственный источник истины по составу и
 форматам ключей); полный автомат ротации —
 [H. SecretRotator](processes/h-credentials-rotator.md); сетевая модель и TLS
-установки — [13-network-security.md](../13-network-security.md).
+установки — [pg-clusters/13-network-security.md](../pg-clusters/13-network-security.md).
 
 ## 1. Креды клиентской S3-грани
 

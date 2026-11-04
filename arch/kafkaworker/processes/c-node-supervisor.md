@@ -4,7 +4,7 @@
 контейнеров, реакция на молчание брокера, восстановление адресов. Функция —
 [02-cluster-lifecycle.md](../02-cluster-lifecycle.md) §4; модель —
 [01-placement.md](../01-placement.md); принципы —
-[17-synchronization-principles.md](../../17-synchronization-principles.md).
+[synchronization/README.md](../../synchronization/README.md).
 
 Сверка декларации с фактом docker + AdminClient-проба (DescribeCluster —
 кто реально в кластере). **Данные неприкосновенны**: надзор никогда не
@@ -40,7 +40,7 @@
   клиента; unreachable-трек заморожен — флап ≠ смерть, S7) и kafka-шаги
   Active-ветки; docker-часть надзора и provisioning не гейтятся. В etcd
   backoff ничего не пишет. **Лестница E9**
-  ([17-synchronization-principles.md](../../17-synchronization-principles.md)):
+  ([synchronization/README.md](../../synchronization/README.md)):
   безадресные Supervisable-брокеры — до любых деструктивных действий —
   portalloc → реконструкция из inspect живого контейнера (published-порт
   CLIENT + host), закрепление — RMW `/kafkaworker/portalloc/<C>` под

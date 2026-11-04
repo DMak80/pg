@@ -3,7 +3,7 @@
 Уровень 3. Функция «безопасность»: per-cluster PKI, SASL/ACL, секреты кластера
 и ротации. Полные автоматы — [H](processes/h-password-rotator.md),
 [K](processes/k-ca-rotator.md), [M](processes/m-security-migrator.md); сетевая
-модель и TLS установки — [13-network-security.md](../13-network-security.md).
+модель и TLS установки — [pg-clusters/13-network-security.md](../pg-clusters/13-network-security.md).
 
 ## 1. Per-cluster CA и сертификаты брокеров
 

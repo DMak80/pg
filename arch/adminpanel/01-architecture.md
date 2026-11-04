@@ -32,7 +32,7 @@
         └────────────────────────┬───────────────┘
                                  │ опционально, отдельный тик ~15 c
                  ┌────────────────────────┴───────────────┐
-                 │ Probes (Patroni REST :8008, Npgsql)    │──► PG-ноды и HAProxy
+                 │ Probes (Patroni REST :8008, Npgsql)    │──► PG-ноды
                  │  обогащают снапшот полями runtime      │    шардов
                  └────────────────────────────────────────┘
 
@@ -66,15 +66,15 @@
   (создание/удаление кластера, добавление/демонтаж шарда, заявки, ротации,
   recreate, kafka-домен, valkey-домен, s3-домен, перезапуск воркеров)
   проксируются в HTTP API исполнителей, воркер сам валидирует и записывает
-  ключи в etcd: PgWorker (arch/14 §1.1), KafkaWorker (arch/16 §1.1),
-  ValkeyWorker (arch/21 §1.1), S3Worker (arch/24 §1.1); URL живого инстанса —
+  ключи в etcd: PgWorker (../pgworker/07-api.md), KafkaWorker (../kafkaworker/07-api.md),
+  ValkeyWorker (../valkeyworker/05-api.md), S3Worker (../s3worker/07-api.md); URL живого инстанса —
   lease-ключи дискавери `/pgworker/api/<id>`, `/kafkaworker/api/<id>`,
   `/valkeyworker/api/<id>`, `/s3worker/api/<id>` (02 §2.3.1–§2.3.4) из того
   же снапшота. Единственное исключение — серверные серты API воркеров
   `/workers/api_tls/*` (02 §9.9): воркер применяет серт только перезапуском,
   а серт должен лежать в etcd до первого запуска воркера, — эти ключи пишет
   панель (единственный писатель), воркеры читают их при старте
-  (arch/14/16/21/24 §1.1). Отказ API воркера → 503 + critical-алерт
+  (../pgworker/README.md/16/21/24 §1.1). Отказ API воркера → 503 + critical-алерт
   `worker-api-unreachable` (03 §4.1); чтение при этом работает.
 - **Refresher — единственный писатель снапшота**; пробы пишут в него же
   (отдельным тиком, реже). Всё, что видит пользователь, — производные от
@@ -181,7 +181,7 @@ FluentAssertions, Testcontainers, Npgsql, Microsoft.Extensions.*); новые
 | `AdminPanel:Probes` | `PatroniEnabled` (true), `SqlEnabled` (true), `Interval` (15 c), `Timeout` (3 c), `Password` (для SQL; DSN берётся из etcd), `HostMap` (пусто; словарь «etcd-адрес ноды `host:port`» → «адрес, достижимый с хоста панели») | live-пробы; отключаются целиком; `HostMap` — override адресов проб для локальных стендов ([02](02-etcd-contract.md) §6, [04](04-local-stand.md) §2.3) |
 | `AdminPanel:Auth` | `Username`, `Password`, `PasswordHash`, `SessionHours` (8), `AllowHttp` (false) | аутентификация |
 | `AdminPanel:Alerts` | `StaleMoveSeconds` (600), `FrozenSeconds` (60), `ReplicaLagBytes` (16 МБ) | пороги алертов |
-| `AdminPanel:Backups` | `S3 {Endpoint, Region?, Bucket, AccessKey, SecretKey, PathStyle=true}`, `IntervalSec` (60), `TimeoutSec` (5) | грань «Хранилище бэкапов»; пустой `Endpoint` — грань выключена (тик не стартует, API `configured=false`); креды только env (arch/19 §7) |
+| `AdminPanel:Backups` | `S3 {Endpoint, Region?, Bucket, AccessKey, SecretKey, PathStyle=true}`, `IntervalSec` (60), `TimeoutSec` (5) | грань «Хранилище бэкапов»; пустой `Endpoint` — грань выключена (тик не стартует, API `configured=false`); креды только env (../backups/08-secrets.md) |
 
 Секреты (SQL-пароль, пароль админа) — env-переменными поверх `appsettings.json`
 (`AdminPanel__Probes__Password` и т.п.), в git их нет.

@@ -4,7 +4,7 @@
 etcd-backup кластер, доводка отставания и обслуживание контура. Функция —
 [04-snapshots.md](../04-snapshots.md); формат объектов и статус-ключа —
 [00-etcd-contract.md](../00-etcd-contract.md) §3,
-[19-backups.md](../../19-backups.md) §5.
+[backups/06-s3-layout.md](../../backups/06-s3-layout.md).
 
 Исполняется лидерным `SnapshotLoop` (singleton-цикл; второй исполнитель
 исключён). Journal не ведётся — носитель состояния цикла: статус-ключ

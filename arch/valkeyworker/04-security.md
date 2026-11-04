@@ -4,7 +4,7 @@
 порта, ACL-роли, секреты и ротации. Полные автоматы —
 [E](processes/e-password-rotator.md), [T](processes/t-tls-migrator.md),
 [K](processes/k-ca-rotator.md); сетевая модель и TLS установки —
-[13-network-security.md](../13-network-security.md).
+[pg-clusters/13-network-security.md](../pg-clusters/13-network-security.md).
 
 ## 1. Per-cluster CA и серты
 

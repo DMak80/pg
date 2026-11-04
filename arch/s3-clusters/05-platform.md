@@ -17,12 +17,12 @@
   ([owns3/05-access-config.md](../../../OwnS3/arch/owns3/05-access-config.md) §5);
 - занятость диска — админ-грань `GET /admin/storage` (там же);
 - удаления ownS3 — физические (versioning отсутствует): ретенция
-  [19-backups.md](../19-backups.md) §4 работает напрямую, чистки версий не
+  [backups/05-etcd-contract.md](../backups/05-etcd-contract.md) работает напрямую, чистки версий не
   требуется.
 
 ## 2. Bucket'ы и mesh-репликация
 
-- **bucket per-install** ([19-backups.md](../19-backups.md) §5) — на каждом
+- **bucket per-install** ([backups/06-s3-layout.md](../backups/06-s3-layout.md)) — на каждом
   инстансе, единое имя на всех инстансах кластера (клиент с одним комплектом
   кредов работает с любым инстансом); создание/поддержание — обязанность
   оркестратора (идемпотентный `CreateBucket` admin-кредом,

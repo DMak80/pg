@@ -78,7 +78,11 @@ public sealed class E2eWalStreamScenarios(E2eWalStreamScenariosFx Ctx) : IClassF
             if (!list.IsSuccess)
                 return false;
             listed = [.. list.Value];
-            return listed.Count >= 2;
+            // t14: `.partial`-версии живого сегмента — штатные объекты wal/;
+            // AC1 считает доставленные ФИНАЛЬНЫЕ сегменты.
+            return listed.Count(n =>
+                !n.Name.EndsWith(".partial", StringComparison.Ordinal)
+                && !n.Name.EndsWith(".history", StringComparison.Ordinal)) >= 2;
         }, TimeSpan.FromSeconds(90), ct);
         if (!uploaded)
         {
@@ -97,7 +101,13 @@ public sealed class E2eWalStreamScenarios(E2eWalStreamScenariosFx Ctx) : IClassF
                 $"receivers=[{factsDump}]");
         }
         uploaded.Should().BeTrue("segments must appear on the ownS3 node within the budget (AC1)");
-        listed.Select(o => o.Name).Should().OnlyContain(n => !n.EndsWith(".partial"));
+        // t14 (arch/19 §3): `.partial`-версии незакрытого сегмента — штатные
+        // объекты wal/ (поглощаются финалом/чистятся sweeper'ом); AC1 — не менее
+        // двух ФИНАЛЬНЫХ сегментов доставлено.
+        listed.Where(n => !n.Name.EndsWith(".partial", StringComparison.Ordinal)
+                          && !n.Name.EndsWith(".history", StringComparison.Ordinal))
+            .Should().HaveCountGreaterThanOrEqualTo(2,
+                "closed segments must be delivered (AC1); .partial versions are legitimate");
 
         // Assert 2 — ключ wal ACTIVE и СОГЛАСОВАННЫЙ снапшот «ключ × list»: воркер
         // и агент живут, пары (wal, listed) берутся поллингом до совпадения

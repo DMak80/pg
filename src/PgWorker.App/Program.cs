@@ -357,7 +357,9 @@ builder.Services.AddSingleton<IClusterDriver>(sp =>
     var nodeBackupEnv = new NodeBackupEnv(
         Bucket: string.IsNullOrWhiteSpace(opts.Backups.S3.Bucket) ? null : opts.Backups.S3.Bucket,
         CaPem: BackupCaPem.ReadIfConfigured(opts.Backups.S3.CaBundlePath),
-        StagingDir: string.IsNullOrWhiteSpace(opts.Backups.Staging.Dir) ? null : opts.Backups.Staging.Dir);
+        StagingDir: string.IsNullOrWhiteSpace(opts.Backups.Staging.Dir) ? null : opts.Backups.Staging.Dir,
+        PartialIntervalSec: opts.Backups.Wal.PartialIntervalSec >= 1
+            ? opts.Backups.Wal.PartialIntervalSec : null);
 
     if (string.Equals(docker.Mode, "Swarm", StringComparison.OrdinalIgnoreCase))
     {
@@ -836,6 +838,29 @@ builder.Services.AddSingleton(sp => new PgWorker.App.Loops.BackupOrphanSweeperLo
     sp.GetRequiredService<IEtcdGateway>(),
     etcdEndpoints));
 builder.Services.AddHostedService(sp => sp.GetRequiredService<PgWorker.App.Loops.BackupOrphanSweeperLoop>());
+
+// Чистка мусора wal/ (arch/19 §4 «wal-sweeper»): per-shard .partial-гигиена и
+// срез финалов ниже cutoff — только глобальный лидер, отдельным циклом 60 с
+// (Supervisor:IntervalSec=600 нарушал бы «не реже раза в минуту»).
+builder.Services.AddSingleton(sp => new PgWorker.Backups.Supervisor.WalSweeperProcess(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
+    sp.GetRequiredService<BackupS3Factory>(),
+    sp.GetRequiredService<ClaimStore>(),
+    sp.GetRequiredService<WorkJournal>(),
+    () => sp.GetRequiredService<IOptionsMonitor<PgWorkerOptions>>().CurrentValue.Backups.Enabled
+        ? sp.GetRequiredService<IOptionsMonitor<PgWorkerOptions>>().CurrentValue.BackupsRuntime()
+        : null,
+    sp.GetRequiredService<TimeProvider>(),
+    sp.GetRequiredService<ILoggerFactory>().CreateLogger<PgWorker.Backups.Supervisor.WalSweeperProcess>(),
+    sp.GetRequiredService<Shared.Metrics.Worker.WorkerMetricsInstrumentation>()));
+builder.Services.AddSingleton(sp => new PgWorker.App.Loops.WalSweeperLoop(
+    sp.GetRequiredService<IOptionsMonitor<PgWorkerOptions>>(),
+    sp.GetRequiredService<ClaimStore>(),
+    sp.GetRequiredService<PgWorker.Backups.Supervisor.WalSweeperProcess>(),
+    sp.GetRequiredService<Shared.Metrics.Worker.WorkerMetricsInstrumentation>(),
+    sp.GetRequiredService<ILogger<PgWorker.App.Loops.WalSweeperLoop>>()));
+builder.Services.AddHostedService(sp => sp.GetRequiredService<PgWorker.App.Loops.WalSweeperLoop>());
 
 // Циклы (§6.2): keepalive первым (lease живут до Reconcile), затем снапшоты и reconcile.
 // Регистрируются синглтонами — health-обёртки читают их состояние напрямую.

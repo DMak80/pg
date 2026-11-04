@@ -6,7 +6,7 @@
 Канон-образцы — [kafka-clusters/README.md](../kafka-clusters/README.md)
 (контракт etcd `/kafka/` + клиентский дискавери),
 [../kafkaworker/README.md](../kafkaworker/README.md) (воркер),
-[../17-synchronization-principles.md](../17-synchronization-principles.md).
+[../synchronization/README.md](../synchronization/README.md).
 Клиентская библиотека исполняется в репозитории Puzzle
 (`PuzzleServer.Infrastructure.App.HA.Valkey` по образцу HA.Kafka —
 `docs/01.19-ha-kafka.md` там). Канон домена —

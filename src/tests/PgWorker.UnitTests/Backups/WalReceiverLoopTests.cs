@@ -163,9 +163,23 @@ public class WalReceiverLoopTests
         public Task<Result<bool>> BucketExistsAsync(CancellationToken ct) => throw new NotSupportedException();
         public Task<Result<IReadOnlyList<S3ObjectInfo>>> ListPrefixAsync(
             string prefix, int? maxKeysPerTest = null, CancellationToken ct = default) => throw new NotSupportedException();
-        public Task<Result> DeleteKeysAsync(IReadOnlyList<string> keys, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result> DeleteKeysAsync(IReadOnlyList<string> keys, CancellationToken ct = default)
+        {
+            // Поглощение .partial финалом (arch/19 §3) — идемпотентный batch-delete.
+            foreach (var key in keys)
+                Objects.Remove(key);
+            return Task.FromResult(Result.Success());
+        }
+
         public Task<Result<IReadOnlyList<WalObject>>> ListAsync(
-            string cluster, string shard, string prefix, int? maxKeysPerTest = null, CancellationToken ct = default) => throw new NotSupportedException();
+            string cluster, string shard, string prefix, int? maxKeysPerTest = null, CancellationToken ct = default)
+        {
+            // Узкий листинг версий .partial (сверка/поглощение приёмника).
+            var fullPrefix = $"{cluster}/{shard}/{prefix}";
+            return Task.FromResult(Result<IReadOnlyList<WalObject>>.Success([.. Objects.Keys
+                .Where(k => k.StartsWith(fullPrefix, StringComparison.Ordinal))
+                .Select(k => new WalObject(k[(k.LastIndexOf('/') + 1)..], DateTimeOffset.UnixEpoch))]));
+        }
         public Task<Result<string>> GetObjectAsync(
             string cluster, string shard, string key, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<Result<IReadOnlyList<string>>> ListFullsAsync(

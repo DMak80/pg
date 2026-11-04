@@ -334,7 +334,8 @@ public sealed class WalReceiverLoop : BackgroundService
                     "127.0.0.1", 5432, "backup_exec", targets.Password!,
                     "postgres", targets.Slot!, identity.Cluster, identity.Shard,
                     writeTargets, pool.ReadAll, bucket,
-                    pool.AccessKey, pool.SecretKey);
+                    pool.AccessKey, pool.SecretKey,
+                    PartialIntervalSec: ReadPartialIntervalSec());
                 IBackupS3 s3 = _s3Factory is { } factory
                     ? factory(options)
                     : new PoolBackupS3(
@@ -753,6 +754,14 @@ public sealed class WalReceiverLoop : BackgroundService
     };
 
     private static long NowUnix() => DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+
+    // env PGW_WAL_PARTIAL_INTERVAL_SEC (arch/19 §9): мусор/отсутствие → дефолт 3;
+    // клэмп ≥1 — приёмник живёт на любом env (пересоздание ноды не требуется).
+    private static int ReadPartialIntervalSec()
+    {
+        var raw = Environment.GetEnvironmentVariable("PGW_WAL_PARTIAL_INTERVAL_SEC");
+        return int.TryParse(raw, out var sec) && sec >= 1 ? sec : 3;
+    }
 
     // Задержка, устойчивая к отмене (SIGTERM не бросает из цикла состояний).
     private static async Task SafeDelay(TimeSpan delay, CancellationToken ct)

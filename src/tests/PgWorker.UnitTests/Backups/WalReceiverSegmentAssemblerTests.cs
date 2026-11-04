@@ -210,4 +210,76 @@ public class WalReceiverSegmentAssemblerTests
         second[0].Tli.Should().Be(2);
         second[0].Data[4].Should().Be(2, "the pooled buffer is fully rewritten by the new segment");
     }
+
+    // AAA (снимок префикса, arch/19 §3): нет незакрытого сегмента — снимка нет.
+    [Fact]
+    public void PartialSnapshot_NoSegment_ReturnsNull()
+    {
+        // Arrange — сборщик без принятых чанков
+        var assembler = new SegmentAssembler(0);
+
+        // Act
+        var snapshot = assembler.PartialSnapshot();
+
+        // Assert
+        snapshot.Should().BeNull();
+    }
+
+    // AAA: long-заголовок без единой полной записи — валидного префикса нет.
+    [Fact]
+    public void PartialSnapshot_WithoutValidRecord_ReturnsNull()
+    {
+        // Arrange — 100 байт: header tli=1/boundary=0, записи нулевые
+        var assembler = new SegmentAssembler(0);
+        assembler.Append(new XLogChunk(0, 100, SegmentBytesWithHeader(1, 0, 100)));
+
+        // Act
+        var snapshot = assembler.PartialSnapshot();
+
+        // Assert
+        snapshot.Should().BeNull();
+    }
+
+    // AAA: валидный префикс — имя сегмента из математики Close, КОПИЯ префикса,
+    // EndLsn = граница сегмента + длина префикса.
+    [Fact]
+    public void PartialSnapshot_ReturnsValidPrefix()
+    {
+        // Arrange — header 40 байт + запись 60 байт (xl_tot_len LE u32 @0 записи)
+        var data = SegmentBytesWithHeader(1, 0, 100);
+        data[40] = 60;
+        var assembler = new SegmentAssembler(0);
+        assembler.Append(new XLogChunk(0, 100, data));
+
+        // Act
+        var snapshot = assembler.PartialSnapshot();
+
+        // Assert
+        snapshot.Should().NotBeNull();
+        snapshot!.Value.Name.Should().Be("000000010000000000000000");
+        snapshot.Value.Prefix.Length.Should().Be(100);
+        snapshot.Value.EndLsn.Should().Be(100UL);
+    }
+
+    // AAA: снимок не задевает прежнюю механику закрытия — досылка до полного
+    // сегмента по-прежнему даёт ровно один ClosedSegment.
+    [Fact]
+    public void PartialSnapshot_DoesNotDisturbClose()
+    {
+        // Arrange — частичный сегмент и снимок префикса
+        var data = SegmentBytesWithHeader(1, 0, 100);
+        data[40] = 60;
+        var assembler = new SegmentAssembler(0);
+        assembler.Append(new XLogChunk(0, 100, data));
+        assembler.PartialSnapshot().Should().NotBeNull();
+
+        // Act — добор до полного сегмента (16 МиБ от границы 0)
+        var closed = assembler.Append(new XLogChunk(100, (ulong)SegmentBytes,
+            new byte[SegmentBytes - 100]));
+
+        // Assert
+        closed.Should().HaveCount(1);
+        closed[0].Name.Should().Be("000000010000000000000000");
+        closed[0].EndLsn.Should().Be((ulong)SegmentBytes);
+    }
 }

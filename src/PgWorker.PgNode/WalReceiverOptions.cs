@@ -22,4 +22,8 @@ public sealed record WalReceiverOptions(
     IReadOnlyList<string> S3ReadEndpoints,
     string S3Bucket,
     string S3AccessKey,
-    string S3SecretKey);
+    string S3SecretKey,
+    // Период .partial-доотправки префикса живого сегмента, с (arch/19 §3/§9);
+    // env PGW_WAL_PARTIAL_INTERVAL_SEC ноды, дефолт 3; клэмп ≥1 — приёмник
+    // не падает на мусорном env.
+    int PartialIntervalSec = 3);

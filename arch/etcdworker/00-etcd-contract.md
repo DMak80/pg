@@ -3,7 +3,7 @@
 Уровень 3. Ключи домена и координационного слоя, их форматы, писатели и
 инварианты записи. Перечисления значений — [processes/enums.md](processes/enums.md);
 пространства соседних доменов — [s3-clusters/README.md](../s3-clusters/README.md)
-(читаемые воркером), [19-backups.md](../19-backups.md) §5 (layout объектов
+(читаемые воркером), [backups/06-s3-layout.md](../backups/06-s3-layout.md) (layout объектов
 слепков).
 
 ## 1. Ключи

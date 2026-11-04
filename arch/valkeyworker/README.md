@@ -59,12 +59,12 @@
   [valkey-clusters/README.md](../valkey-clusters/README.md).
 - **ValkeyWorker → docker / Valkey**: управление контейнерами и RESP-команды
   (PING, CONFIG, ACL) — только по TLS; границы оркестрации
-  [25-component-communications.md](../25-component-communications.md).
+  [communications/02-channel-registry.md](../communications/02-channel-registry.md).
 - **Приложения → etcd**: клиентский дискавери (`endpoints`, `ca_pem`,
   `app_user`/`app_password`) —
   [valkey-clusters/04-client-discovery.md](../valkey-clusters/04-client-discovery.md) §1.
 - **Prometheus → ValkeyWorker**: `/metrics` на порту Kestrel `:8080` —
-  [18-metrics.md](../18-metrics.md).
+  [metrics/README.md](../metrics/README.md).
 
 ## 5. Свойства, на которые опираются все функции
 
@@ -72,7 +72,7 @@
   PING по TLS отвечает? конфиг == декларации? ACL-план == канону? env серта
   валиден?) — [06-operability.md](06-operability.md) §2.
 - Journal-before-manipulations, фиксированный порядок записей, клэймы и
-  txn-сравнения — [17-synchronization-principles.md](../17-synchronization-principles.md)
+  txn-сравнения — [synchronization/README.md](../synchronization/README.md)
   (S5–S7), [06-operability.md](06-operability.md) §1.
 - Декларативная модель: отсутствие `config.state` = Active-кластер;
   `NOT_INITIALIZED`/`TO_REMOVE` — заявки панели; состояния ноды и заявок —

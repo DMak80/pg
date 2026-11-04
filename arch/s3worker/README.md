@@ -72,13 +72,13 @@ volume, копия — лишь у инстансов, связанных в `li
 - **S3Worker → docker / инстансы ownS3**: управление контейнерами и
   админ-грань инстансов (`/healthz`, bucket'ы, replication/join/targets/
   denylist/probe) — только штатные протоколы, границы оркестрации
-  [25-component-communications.md](../25-component-communications.md).
+  [communications/02-channel-registry.md](../communications/02-channel-registry.md).
 - **PgWorker → etcd**: клиент пула (`endpoints`, `secrets`-ключ `backups`,
   `/s3worker/portalloc/<C>`) — [s3-clusters/07-client-pool.md](../s3-clusters/07-client-pool.md); bucket
-  per-install и раскладка объектов бэкапов — [19-backups.md](../19-backups.md)
+  per-install и раскладка объектов бэкапов — [backups/README.md](../backups/README.md)
   §5/§7.
 - **Prometheus → S3Worker**: `/metrics` на порту Kestrel `:8080` —
-  [18-metrics.md](../18-metrics.md).
+  [metrics/README.md](../metrics/README.md).
 
 ## 5. Свойства, на которые опираются все функции
 
@@ -86,7 +86,7 @@ volume, копия — лишь у инстансов, связанных в `li
   health-грань отвечает? bucket существует? правило mesh стоит? `state` уже
   снят?) — [08-operability.md](08-operability.md) §2.
 - Journal-before-manipulations, фиксированный порядок записей, клэймы и
-  txn-сравнения — [17-synchronization-principles.md](../17-synchronization-principles.md)
+  txn-сравнения — [synchronization/README.md](../synchronization/README.md)
   (S5–S7), [08-operability.md](08-operability.md) §2.
 - Декларативная модель: отсутствие `config.state` = Active-кластер;
   `NOT_INITIALIZED`/`TO_REMOVE` — заявки панели; состояния инстанса и

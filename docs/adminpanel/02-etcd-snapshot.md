@@ -1,7 +1,7 @@
 # 02 — etcd-клиент и снапшот
 
 > Назад: [INDEX.md](INDEX.md) · Подсистема: `src/AdminPanel.Etcd`.
-> Контракт ключей/модели: [arch/02](../../arch/adminpanel/02-etcd-contract.md) — здесь только
+> Контракт ключей/модели: [../../arch/pg-clusters/02-topology.md](../../arch/adminpanel/02-etcd-contract.md) — здесь только
 > реализация и её грабли.
 
 Кратко: `SnapshotRefresher` (тик 3 c, `EtcdOptions.RefreshIntervalSeconds`) —
@@ -14,7 +14,7 @@ Etcdworker-часть тика: пять range-чтений — `/etcdworker/sna
 `/workers/api_tls/etcdworker` (точечный); транспортный провал ЛЮБОГО
 KV-чтения роняет весь тик (прежний снапшот сохраняется — значения домена
 переносятся из прежнего). Парсеры — `EtcdDomainParser` (config+nodes) и
-`EtcdSnapshotsParser` (формат arch/25 §5, без `enabled`); health-поллер
+`EtcdSnapshotsParser` (формат ../../arch/etcdworker/00-etcd-contract.md, без `enabled`); health-поллер
 инстансов EtcdWorker — стор `EtcdWorkerHealthStore` (02 §2.3.5).
 
 ## Gateway: HTTP JSON `/v3/*`
@@ -39,20 +39,20 @@ Sticky+failover: активный endpoint держится, отказ → сл
 
 ## Чек-лист «добавить ключ/поле снапшота»
 
-1. Контракт: правка [arch/02](../../arch/adminpanel/02-etcd-contract.md) (формат ключа, семантика) —
+1. Контракт: правка [../../arch/pg-clusters/02-topology.md](../../arch/adminpanel/02-etcd-contract.md) (формат ключа, семантика) —
    первой.
 2. Модель: поле в `Core` (`ClusterInfo`/`ShardInfo`/…), immutable.
 3. Парсер: чтение ключа/поля (`Parsing/*`, толерантный `JsonValues`). Пример домена — ключи `/etcd/`
    (config/nodes → `EtcdDomainParser`).
 4. Сид синхронно в 3 местах: `seed.sh` (стенд), `EtcdSeed` (integration),
    `EtcdFixtures/*.json` (unit) — расхождение ломает тесты и e2e.
-5. DTO API + фронт (arch/03 §2 → `api/dto.ts`) — по потребности.
+5. DTO API + фронт (../../arch/pg-clusters/03-prerequisites.md §2 → `api/dto.ts`) — по потребности.
 6. Тесты: unit-парсер (fixture-JSON), integration-сценарий на живом etcd.
 
 ## Грабли
 
 - **API не ходит в etcd на запрос** — только `SnapshotStore.Current`; иначе латентность
-  etcd ломает UI, а отказ etcd — панель (инвариант arch/01 §1).
+  etcd ломает UI, а отказ etcd — панель (инвариант ../../arch/pg-clusters/01-ha-architecture.md §1).
 - **Числа int64 из gateway — decimal-строки** (`mod_revision`, `dbSize`, `raftTerm`,
   lease-ID): DTO читаются `System.Text.Json` с `JsonNumberHandling.
   AllowReadingFromString|WriteAsString`); lease-ID — десятичная строка

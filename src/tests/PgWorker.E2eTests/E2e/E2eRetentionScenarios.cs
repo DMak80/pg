@@ -145,12 +145,17 @@ public sealed class E2eRetentionScenarios(E2eRetentionScenariosFx Ctx) : IClassF
         seedsGone.Should().BeTrue("the seed segments strictly below the cutoff are removed");
         var walListed = await backupS3.ListPrefixAsync($"{cluster}/shard1/wal/", ct: ct);
         walListed.Value.Should().NotBeNull();
+        // t14: живой незакрытый сегмент лежит в wal/ только `.partial`-версией
+        // (финал появится при закрытии источником), поэтому набор ФИНАЛОВ ≥ cutoff
+        // может быть пуст — инвариант «ничего живого не ниже cutoff» проверяется
+        // отрицанием (пустой набор ему удовлетворяет).
         walListed.Value
             .Select(o => o.Key.Split('/')[^1])
             .Where(n => PgWorker.Backups.WalFileName.TryParse(n) is not null)
             .Select(n => (long)PgWorker.Backups.WalFileName.TryParse(n)!.Value.Log * 256
                          + PgWorker.Backups.WalFileName.TryParse(n)!.Value.Seg)
-            .Should().OnlyContain(p => p >= realPos, "everything alive in wal/ is not below the cutoff");
+            .Should().NotContain(p => p < realPos,
+                "nothing alive in wal/ is below the cutoff (an empty finals set is legitimate: the live segment is .partial)");
 
         // Assert 3 — ключ storage: существует, used > 0, state OK (квота не задана)
         var storage = await GetOrNullAsync("/pgworker/backups/storage");

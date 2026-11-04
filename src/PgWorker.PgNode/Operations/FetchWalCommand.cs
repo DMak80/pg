@@ -102,22 +102,219 @@ internal static class FetchWalCommand
         => attempt < TransportAttempts
            && TimeSpan.FromTicks(nowTick - startTick) < CallDeadline;
 
+    /// <summary>Чистая функция для тестов: лучший (длиннейший по EndLsn)
+    /// .partial-ключ из списка имён; null — версий нет.</summary>
+    internal static string? BestPartialKey(IEnumerable<string> names)
+    {
+        string? best = null;
+        ulong bestLsn = 0;
+        foreach (var name in names)
+            if (PgWorker.Backups.WalPartialName.TryParse(name) is { } v
+                && v.EndLsn >= bestLsn)
+            {
+                bestLsn = v.EndLsn;
+                best = name;
+            }
+        return best;
+    }
+
+    /// <summary>Лучший .partial по ВСЕМ нодам пула (лаг mesh допускается —
+    /// arch/19 §5): перебор листингов узкого префикса; транспортный отказ ноды
+    /// пропускает ноду. Возврат: (ключ, есть ли хоть один ответивший, первая
+    /// транспортная ошибка) — никто не ответил ⇒ транспорт, не «конец WAL».</summary>
+    private static async Task<(string? Key, bool AnyResponded, string? FirstError)> ListBestPartialAsync(
+        IReadOnlyList<IBackupS3> clients, string cluster, string shard,
+        string normalizedSegment, CancellationToken ct)
+    {
+        string? best = null;
+        var anyResponded = false;
+        string? firstError = null;
+        foreach (var client in clients)
+        {
+            var listed = await client.ListAsync(
+                cluster, shard, $"wal/{normalizedSegment}.", ct: ct);
+            if (!listed.IsSuccess)
+            {
+                firstError ??= listed.Error!.Message.Split('\n')[0];
+                continue;
+            }
+            anyResponded = true;
+            if (BestPartialKey(listed.Value.Select(o => o.Name)) is not { } candidate)
+                continue;
+            if (best is null
+                || PgWorker.Backups.WalPartialName.TryParse(candidate)!.Value.EndLsn
+                   > PgWorker.Backups.WalPartialName.TryParse(best)!.Value.EndLsn)
+                best = candidate;
+        }
+        return (best, anyResponded, firstError);
+    }
+
+    /// <summary>true — предпочесть локальную копию набора: архивный `.partial`
+    /// не длиннее РЕАЛЬНОГО содержимого копии (её последний ненулевой байт —
+    /// верхняя граница конца: копия набора у бэкапа со standby разрежена и
+    /// добита), false — отдать `.partial` (он длиннее), null — копии нет/пуста.
+    /// postgres при restore_command сначала идёт в архив; exit 1 заставляет его
+    /// прочитать layout самому — и остановиться там, где кончается копия набора
+    /// (сканировать разреженный файл эвристиками нельзя).</summary>
+    internal static bool? LocalSetCoversPartial(
+        string normalizedSegment, string? bestPartialKey, string? pgDataRoot = null)
+    {
+        var root = pgDataRoot ?? PgDataRoot;
+        var local = Path.Combine(root, "pg_wal", normalizedSegment);
+        if (!File.Exists(local) || new FileInfo(local).Length != WalFileName.SegmentBytes)
+            return null;
+        if (WalFileName.TryParse(normalizedSegment) is not { } seg)
+            return null;
+
+        // Последний ненулевой байт копии (верхняя граница её содержимого).
+        long lastNonZero = -1;
+        using (var stream = new FileStream(local, FileMode.Open, FileAccess.Read, FileShare.Read))
+        {
+            var buffer = new byte[64 * 1024];
+            long offset = 0;
+            int read;
+            while ((read = stream.Read(buffer, 0, buffer.Length)) > 0)
+            {
+                for (var i = read - 1; i >= 0; i--)
+                    if (buffer[i] != 0)
+                    {
+                        lastNonZero = offset + i;
+                        break;
+                    }
+                offset += read;
+            }
+        }
+        if (lastNonZero < 0)
+            return null; // пустая копия — не опора
+
+        var segmentStart = ((ulong)seg.Log * WalFileName.SegsPerLog + seg.Seg)
+            * (ulong)WalFileName.SegmentBytes;
+        var setEnd = (ulong)lastNonZero + 1;
+        var partialAbsEnd = bestPartialKey is { } key
+            ? WalPartialName.TryParse(key)?.EndLsn ?? 0
+            : 0;
+        var partialEnd = partialAbsEnd > segmentStart ? partialAbsEnd - segmentStart : 0;
+        return setEnd >= partialEnd;
+    }
+
+    /// <summary>Дописать валидный префикс `.partial` нулями до полного
+    /// `wal_segment_size` и положить в запрошенный путь (arch/19 §2/§3.5):
+    /// postgres отвергает архивный файл размера ≠ `wal_segment_size`
+    /// («archive file … has wrong size»); нули за концом последней валидной
+    /// записи — штатный конец WAL. false — префикс пуст/больше сегмента/ошибка
+    /// ФС.</summary>
+    internal static bool TryWritePaddedSegment(string sourcePath, string targetPath)
+    {
+        try
+        {
+            var prefix = File.ReadAllBytes(sourcePath);
+            var segmentBytes = (int)WalFileName.SegmentBytes;
+            if (prefix.Length == 0 || prefix.Length > segmentBytes)
+                return false;
+            using var stream = new FileStream(
+                targetPath, FileMode.Create, FileAccess.Write, FileShare.None);
+            stream.Write(prefix);
+            var zeros = new byte[64 * 1024];
+            var remaining = segmentBytes - prefix.Length;
+            while (remaining > 0)
+            {
+                var chunk = Math.Min(remaining, zeros.Length);
+                stream.Write(zeros, 0, chunk);
+                remaining -= chunk;
+            }
+            stream.Flush(true);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     /// <summary>Чистая функция для тестов: ОДИН проход по клиентам пула (перебор
     /// read-списка до найденного); transportError — первая транспортная ошибка
-    /// прохода (null — «сегмента нет нигде», все ответили not found).</summary>
+    /// прохода (null — «сегмента нет нигде», все ответили not found). Финала нет
+    /// нигде — лучший .partial версии (валидный префикс живого сегмента).</summary>
     internal static async Task<(int ExitCode, string? TransportError)> FetchOnceAsync(
         IReadOnlyList<IBackupS3> clients, string cluster, string shard,
         string segment, string target, CancellationToken ct)
     {
         string? transportError = null;
+        var normalized = NormalizeSegment(segment);
         foreach (var client in clients)
         {
             var got = await client.GetObjectToFileAsync(
-                cluster, shard, $"wal/{NormalizeSegment(segment)}", target, ct);
+                cluster, shard, $"wal/{normalized}", target, ct);
             if (got.IsSuccess)
                 return (0, null);
             if (!IsNotFound(got))
                 transportError ??= got.Error!.Message.Split('\n')[0];
+        }
+
+        // Финала нет нигде — лучший .partial (хвост потока, arch/19 §3.5):
+        // префикс валиден по построению, но postgres принимает архивный файл
+        // только полного размера — добивается нулями; ничего нет нигде ⇒
+        // конец WAL (exit 1).
+        var (bestKey, anyResponded, listError) = await ListBestPartialAsync(
+            clients, cluster, shard, normalized, ct);
+        if (!anyResponded)
+            return (1, listError ?? "wal partial listing failed on all nodes");
+
+        // Локальная копия набора полного (`full/<id>/pg_wal/` скачана в PGDATA):
+        // restore_command у postgres ПРИОРИТЕТНЕЕ pg_wal — архивный .partial
+        // отдаётся, только если он ДЛИННЕЕ копии (верхняя граница содержимого
+        // копии — её последний ненулевой байт: у бэкапа со standby копия
+        // разрежена и добита — эвристиками префикса её не режем). Копия не
+        // короче — exit 1: postgres прочитает layout сам (остановится на его
+        // реальном конце), битого хвоста из архива не возьмёт.
+        if (LocalSetCoversPartial(normalized, bestKey) is { } preferLayout
+            && preferLayout)
+            return (1, null);
+
+        if (bestKey is { } partial)
+        {
+            var temp = target + ".partial";
+            try
+            {
+                foreach (var client in clients)
+                {
+                    var got = await client.GetObjectToFileAsync(
+                        cluster, shard, $"wal/{partial}", temp, ct);
+                    if (got.IsSuccess)
+                    {
+                        if (!TryWritePaddedSegment(temp, target))
+                        {
+                            transportError ??= $"wal partial {partial}: pad to segment size failed";
+                            break;
+                        }
+                        return (0, null);
+                    }
+                    if (!IsNotFound(got))
+                        transportError ??= got.Error!.Message.Split('\n')[0];
+                    // Недокачанный/отсутствующий объект на этой ноде — следующая.
+                    try
+                    {
+                        if (File.Exists(temp))
+                            File.Delete(temp);
+                    }
+                    catch
+                    {
+                        // Не удалось — следующая попытка перезапишет.
+                    }
+                }
+            }
+            finally
+            {
+                try
+                {
+                    if (File.Exists(temp))
+                        File.Delete(temp);
+                }
+                catch
+                {
+                    // Временный файл вне контракта вызова.
+                }
+            }
         }
         return (1, transportError);
     }

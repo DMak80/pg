@@ -1,8 +1,8 @@
 # Стенд практической проверки P1–P8 (PostgreSQL 18.4)
 
-Docker-стенд для проверки решений реестра рисков [12-bucket-pitfalls.md](../12-bucket-pitfalls.md)
+Docker-стенд для проверки решений реестра рисков [pg-clusters/12-bucket-pitfalls.md](../pg-clusters/12-bucket-pitfalls.md)
 практически — имитацией ситуаций, а не чтением документации. Результаты внесены
-в [11-bucket-sharding.md](../11-bucket-sharding.md) и [05-deploy-postgres.md](../05-deploy-postgres.md).
+в [pg-clusters/11-buckets.md](../pg-clusters/11-buckets.md) и [pg-clusters/05-postgres-patroni.md](../pg-clusters/05-postgres-patroni.md).
 
 ## Топология
 

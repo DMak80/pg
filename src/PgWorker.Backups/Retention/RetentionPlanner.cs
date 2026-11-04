@@ -132,6 +132,53 @@ public static partial class RetentionPlanner
         return result;
     }
 
+    /// <summary>Мусорные .partial-объекты (arch/19 §4 п.5, чистая функция):
+    /// (а) поглощённые финалом — лежит wal/&lt;seg&gt; ⇒ все версии мусор;
+    /// (б) устаревшие версии живого сегмента — остаётся длиннейшая по EndLsn
+    /// (равные — остаётся одна, любая); (в) .partial сегмента ниже cutoff
+    /// (cutoff null — ветка не выполняется). Финалы/.history не трогает.</summary>
+    public static IReadOnlyList<string> SelectPartialForDeletion(
+        IReadOnlyList<string> objectNames, WalFileName? cutoff)
+    {
+        var finals = new HashSet<WalFileName>();
+        var partials = new Dictionary<WalFileName, List<(string Name, ulong EndLsn)>>();
+        foreach (var name in objectNames)
+        {
+            if (WalFileName.TryParse(name) is { } final)
+                finals.Add(final);
+            else if (WalPartialName.TryParse(name) is { } p)
+            {
+                if (!partials.TryGetValue(p.Segment, out var list))
+                    partials[p.Segment] = list = [];
+                list.Add((name, p.EndLsn));
+            }
+        }
+
+        var doomed = new List<string>();
+        foreach (var (segment, versions) in partials)
+        {
+            if (finals.Contains(segment))
+            {
+                doomed.AddRange(versions.Select(v => v.Name)); // (а) поглощено финалом
+                continue;
+            }
+            if (cutoff is { } limit
+                && (segment.Tli < limit.Tli
+                    || (segment.Tli == limit.Tli
+                        && (long)segment.Log * WalFileName.SegsPerLog + segment.Seg
+                           < (long)limit.Log * WalFileName.SegsPerLog + limit.Seg)))
+            {
+                doomed.AddRange(versions.Select(v => v.Name)); // (в) ниже cutoff
+                continue;
+            }
+
+            var keep = versions.MaxBy(v => v.EndLsn).Name; // (б) живой сегмент
+            doomed.AddRange(versions.Where(v => v.Name != keep).Select(v => v.Name));
+        }
+
+        return doomed;
+    }
+
     /// <summary>Вердикт занятости (spec §3.1): квота 0/не задана → OK без
     /// процентов; иначе usedPercent &gt;= crit → CRIT, &gt;= warn → WARN, иначе OK.</summary>
     public static StorageVerdict EvaluateStorage(long usedBytes, long quotaBytes, int warnPercent, int critPercent)

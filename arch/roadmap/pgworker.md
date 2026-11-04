@@ -2,14 +2,14 @@
 
 Отложенные задачи оркестратора PgWorker (out of scope MVP — спецификация
 `docs/superpowers/2026-08-23-pgworker-backend/spec.md` §2; канон сервиса —
-[../14-pgworker.md](../14-pgworker.md)).
+[../pgworker/README.md](../pgworker/README.md)).
 
 ## Задачи
 
 - **`t02-external-secret-manager`** — интеграция с внешним secret-manager:
   публикация/чтение per-install/per-cluster секретов внешним SM поверх
-  etcd-канона (per-cluster app/bucket_admin/mover + backup — arch/14 §4/§5 I,
-  arch/19 §7; слито 2026-09-06, merge 5bcd467). Решение пользователя
+  etcd-канона (per-cluster app/bucket_admin/mover + backup — ../pgworker/04-security.md/§5 I,
+  ../backups/08-secrets.md; слито 2026-09-06, merge 5bcd467). Решение пользователя
   (2026-09-06): etcd остаётся единственным хранилищем per-cluster секретов
   до этой интеграции.
 
@@ -38,15 +38,15 @@
   хост-публикаций API воркеров отдельным env-флагом
   (`deploy/docker-compose.yml:245,264,278,288,296,306,317,327` — сейчас на
   `0.0.0.0`): сужение границы доверия открытой грани (`/healthz`, `/metrics`)
-  до периметра docker-хоста (arch/18 §5.2); ломает
+  до периметра docker-хоста (../metrics/README.md §5.2); ломает
   `host.docker.internal`-потребителей (панель) — по умолчанию выключен,
   включается осознанно.
 
 - **`t06-rotate-backup-creds`** — ротация per-cluster backup-кредов
   (`/clusters/<C>/backup_password`, роль `backup_exec`): в общий тикет
-  ротации (ETCD-FIRST, arch/14 §5 I — app/bucket_admin/bucket_mover/
+  ротации (ETCD-FIRST, ../pgworker/processes/i-secret-rotator.md — app/bucket_admin/bucket_mover/
   rest + dsn) backup-креды t05 НЕ включил — пароль статичен с ensure
-  (arch/19 §7). Канон той же модели: NEW в etcd в начале окна →
+  (../backups/08-secrets.md). Канон той же модели: NEW в etcd в начале окна →
   потребители (стрим-сессии PgNode, джобы полного — креды читают из
   etcd на сессию/операцию, рестарты нод не нужны) подхватывают NEW →
   финальный ALTER ROLE backup_exec на мастерах каждого шарда («etcd —

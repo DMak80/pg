@@ -1,7 +1,7 @@
 # 04 — Фронтенд: каркас SPA
 
 > Назад: [INDEX.md](INDEX.md) · Подсистема: `frontend/` (React+Vite+TS7+Mantine,
-  вне .slnx). Контракт: [arch/01](../../arch/adminpanel/01-architecture.md) §5, [arch/03](../../arch/adminpanel/03-panels.md).
+  вне .slnx). Контракт: [../../arch/pg-clusters/01-ha-architecture.md](../../arch/adminpanel/01-architecture.md) §5, [../../arch/pg-clusters/03-prerequisites.md](../../arch/adminpanel/03-panels.md).
 
 Кратко: `npm run build` кладёт бандл в `src/AdminPanel.Api/wwwroot` (vite `outDir`
 вне корня проекта — `emptyOutDir: true` обязателен), Kestrel раздаёт его без auth и
@@ -27,14 +27,14 @@
 - `components/actions/`: общие компоненты действий (`DeleteEntityButton`,
   `RotateSecretButton`, `ResourcesForm`, `ConfirmModal`) — единые замены
   доменных дубликатов; `utils/validation.ts` — единый модуль границ валидации
-  (зеркало arch/02 §9.3/§10.3/§11.3/§12.3).
+  (зеркало ../../arch/adminpanel/02-etcd-contract.md.3/§10.3/§11.3/§12.3).
 - `events/`: клиентский событийный слой ленты `/events`  — подписка на
   query-кэш TanStack Query, диффы prev→next снимков, in-memory store (cap 500,
   без persistence).
 
 ## Чек-лист «добавить страницу/эндпоинт-клиент»
 
-1. DTO: поля в `api/dto.ts` (camelCase, строго по arch/03 §2 — не по C#-типам).
+1. DTO: поля в `api/dto.ts` (camelCase, строго по ../../arch/pg-clusters/03-prerequisites.md §2 — не по C#-типам).
 2. Запрос: queryKey + fetch в `api/queries.ts`; polling-интервал — через
    `usePollingIntervalMs()` в `refetchInterval`.
 3. Страница: `pages/<Name>Page.tsx`, маршрут в `App.tsx` (+ подсветка навигации по

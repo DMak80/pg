@@ -11,7 +11,7 @@
 `AlterPartitionReassignments` (KIP-455, apiKey 45, версия 0) из процесса
 воркера: Confluent.Kafka/librdkafka операцию не экспонирует, docker exec с
 `kafka-reassign-partitions.sh` не применяется
-([25-component-communications.md](../25-component-communications.md) §1 —
+([communications/02-channel-registry.md](../communications/01-rules.md) §1 —
 только сетевые протоколы). Мини-клиент — внутренний компонент адаптера
 AdminClient (seam `AlterReassignmentsAsync`):
 

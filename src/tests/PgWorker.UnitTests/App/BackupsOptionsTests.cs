@@ -384,4 +384,25 @@ public class BackupsOptionsTests
         options.IsValid().Should().BeTrue("0 is a legitimate switch-off of new runs");
         options.ToRuntime().DrillIntervalDays.Should().Be(0);
     }
+
+    // ---- Wal:PartialIntervalSec — период .partial-доотправки (arch/19 §9) ----
+
+    // AAA: дефолт 3 (канон §9), значение <1 — fail-fast; ToRuntime проксирует.
+    [Fact]
+    public void Wal_PartialIntervalSec_DefaultAndValidation()
+    {
+        // Arrange — дефолтная секция
+        var options = new BackupsOptions();
+
+        // Act
+        var defaultSec = options.Wal.PartialIntervalSec;
+        var zeroValid = new BackupsOptions { Wal = new BackupsWalOptions { PartialIntervalSec = 0 } }
+            .IsValid();
+
+        // Assert — дефолт канона 3, <1 невалиден, 3 валиден и доезжает до runtime
+        defaultSec.Should().Be(3);
+        zeroValid.Should().BeFalse("PartialIntervalSec < 1 is garbage config (arch/19 §9)");
+        options.IsValid().Should().BeTrue();
+        options.ToRuntime().WalPartialIntervalSec.Should().Be(3);
+    }
 }

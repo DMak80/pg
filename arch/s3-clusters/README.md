@@ -9,7 +9,7 @@
 
 **Пул S3-серверов хранилища бэкапов с гео-распределением** (привязка нод к
 docker/swarm-хостам) и mesh-репликацией между нодами. Потребитель —
-подсистема бэкапов ([19-backups.md](../19-backups.md)); для клиентов пул —
+подсистема бэкапов ([backups/README.md](../backups/README.md)); для клиентов пул —
 обычный S3 ([07-client-pool.md](07-client-pool.md)).
 
 **Разделение ответственности**: панель AdminPanel **декларирует** кластеры
@@ -49,7 +49,7 @@ docker/swarm-хостам) и mesh-репликацией между нодам�
 
 ## 4. Свойства, на которые опираются все разделы
 
-- **Один общий etcd-контур** установки ([17-synchronization-principles.md](../17-synchronization-principles.md) S1);
+- **Один общий etcd-контур** установки ([synchronization/README.md](../synchronization/README.md) S1);
   динамика покрывается тиками воркера (5 с) и панели (3 с) — watch не
   используется ([01-transport.md](01-transport.md) §1).
 - **Декларативная модель**: отсутствие `config.state` = Active-кластер;

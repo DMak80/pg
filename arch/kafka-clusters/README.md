@@ -9,7 +9,7 @@
 
 Приложение читает адреса, SASL-креды и **реестр топиков** исключительно
 отсюда — полная аналогия pg dsn/`app_password`/routing
-([11-bucket-sharding.md](../11-bucket-sharding.md) §2).
+([pg-clusters/11-buckets.md](../pg-clusters/11-buckets.md) §2).
 
 **Разделение ответственности**: панель AdminPanel **декларирует** кластер
 через HTTP API воркера, **KafkaWorker исполняет**
@@ -38,7 +38,7 @@
 ## 4. Свойства, на которые опираются все разделы
 
 - **Один общий etcd-контур** со стендом pg
-  ([17-synchronization-principles.md](../17-synchronization-principles.md) S1);
+  ([synchronization/README.md](../synchronization/README.md) S1);
   динамика покрывается тиками воркера (5 с) и панели (3 с) — watch не
   используется ([01-transport.md](01-transport.md) §1).
 - **Декларативная модель**: отсутствие `config.state` = Active-кластер;

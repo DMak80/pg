@@ -143,7 +143,7 @@ NOT_ENOUGH_REPLICAS при minISR≥2; вскрыто 3-брокерным e2e �
 
 ## 4. Режимы Plain / Swarm
 
-Порт режимов PgWorker ([14-pgworker.md](../14-pgworker.md) §2.2–2.3): plain —
+Порт режимов PgWorker ([pgworker/01-placement.md](../pgworker/01-placement.md) §3): plain —
 `Hosts[{Name,Endpoint}]`, per-host клиент Engine API, контейнеры
 `kfw-<C>-<b>`, restart-политика `unless-stopped`; swarm — `SwarmManager`,
 нода = сервис `replicas=1`, placement constraint, `publish mode=host`.

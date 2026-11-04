@@ -4,7 +4,7 @@
 политика ожиданий и экспирации, надёжность, наблюдаемость, конфигурация и
 риски. Процессы — [A](processes/a-provisioning.md)…[M](processes/m-security-migrator.md);
 перечисления состояний — [processes/enums.md](processes/enums.md); общие
-принципы — [17-synchronization-principles.md](../17-synchronization-principles.md).
+принципы — [synchronization/README.md](../synchronization/README.md).
 
 ## 1. Тик и порядок веток
 
@@ -18,7 +18,7 @@
 provision/надзор/ротации ждут не-etcd события — готовность брокеров,
 docker-факты). etcd в тике не читается: контроль-плейн берётся из слепка
 опросного кэша `/kafka/clusters/` (S10
-[17](../17-synchronization-principles.md), реестр E10 — чтение уходит в
+[synchronization](../synchronization/README.md), реестр E10 — чтение уходит в
 фоновый опрос, единая точка failover S7; заявки ротаций/ребалансировок,
 клэймы и portalloc-клэйм процессы читают из etcd напрямую при исполнении).
 Применения etcd-значений процессами (ensure секретов/CA, RMW, снятие
@@ -48,7 +48,7 @@ Reassignment стоит перед remove — к моменту G дрениру
 - Все операции — только под живым клэймом `<C>`; владение держится на всём
   протяжении мутации: потеря lease прерывает исполняющийся тик
   (cancellation-гвард), критические шаги — после живой сверки клэйма
-  ([17](../17-synchronization-principles.md) S5); journal-before-manipulations.
+  ([synchronization](../synchronization/README.md) S5); journal-before-manipulations.
 - **Идемпотентность**: каждый шаг перепроверяет факт (контейнер есть? брокер в
   кластере? desired уже применён? reassignment-батч завершён?); именование
   детерминировано (`kfw-<C>-<b>[-data]`, порты в portalloc); повторная подача
@@ -128,7 +128,7 @@ kafka-пробу и kafka-шаги Active-ветки; в etcd backoff ничег
   обеспечивает репликация, а не копирование (RF/minISR — per-cluster
   конфиги, [02](02-cluster-lifecycle.md) §5; служебные топики — формулы
   [01](01-placement.md) §1; отставание реплик видно метрикой USR, §5).
-  Подсистема бэкапов [19-backups.md](../19-backups.md) покрывает только
+  Подсистема бэкапов [backups/README.md](../backups/README.md) покрывает только
   PG-шарды.
 - **Watchdog зависших циклов**: внутренний компонент `LoopWatchdog`
   (`Shared.Core`, `BackgroundService`) следит за активностью (тик или
@@ -145,7 +145,7 @@ kafka-пробу и kafka-шаги Active-ветки; в etcd backoff ничег
   метрика `worker_watchdog_restarts_total{loop}` + graceful `StopApplication` —
   контейнер поднимает docker-политика, lease гаснут ≤15 с, takeover вторым
   инстансом. Механика (инварианты живости/поллинга, границы) — канон
-  [14-pgworker.md](../14-pgworker.md) §6; формулы порогов healthz
+  [pgworker/08-operability.md](../pgworker/08-operability.md) §3; формулы порогов healthz
   loops-alive — общий хелпер `LoopStaleness` Shared.Core (healthz watchdog
   больше не потребляет).
 
@@ -177,7 +177,7 @@ URL из `/kafkaworker/api/<id>` (порт паттерна PgWorker,
 Логи: claim/takeover, фазы процессов (journal-фаза), rebuild ноды,
 converge-изменения. Diag-ключи: `/kafkaworker/work/<C>`,
 `brokers/<b>/state`. Prometheus-метрики — единый каркас
-[18-metrics.md](../18-metrics.md): `/metrics` на том же порту `:8080` (словарь
+[metrics/README.md](../metrics/README.md): `/metrics` на том же порту `:8080` (словарь
 §2.2 воркер-паттерн + §2.3 коллектор лагов/USR).
 
 ## 6. Конфигурация (appsettings + env-оверрайды)

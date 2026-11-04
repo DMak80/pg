@@ -5,7 +5,7 @@
 `usage`, восстановление адресов. Функция —
 [02-cluster-lifecycle.md](../02-cluster-lifecycle.md) §4; модель —
 [01-placement.md](../01-placement.md); принципы —
-[17-synchronization-principles.md](../../17-synchronization-principles.md).
+[synchronization/README.md](../../synchronization/README.md).
 
 Сверка декларации с фактом docker + health-проба платформенной грани по
 advertised-адресу. Journal — `op=supervise` со стационарной записью трека
