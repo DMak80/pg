@@ -105,7 +105,10 @@ public sealed record FullBackupState(
     string? WalStartSegment,
     long? SizeBytes,
     string? Error,
-    BackupVerify? Verify);
+    BackupVerify? Verify,
+    // t15 (arch/backups/01 §6): номер жизни цепочки на момент создания записи —
+    // задание restore несёт его в fetch-wal (фильтр кусков). null — старый ключ.
+    uint? ChainLife = null);
 
 /// <summary>Факт приёмника WAL на ноде (arch/19 §4): running — живой
 /// lease-ключ статус-приёмника; absent — ключа нет (процесс мёртв/нода вниз);
@@ -164,7 +167,11 @@ public sealed record RestoreOperationState(
     string? Error = null,
     //  (arch/14 §1.1): пул чтения DR-источника (source_pool); null —
     // собственный пул кластера policy.s3. null у старых ключей — совместимо.
-    string? SourcePool = null)
+    string? SourcePool = null,
+    // t15 (arch/backups/05 §1): номер жизни цепочки выбранного полного —
+    // фильтр кусков fetch-wal; DR-orphan (статуса полного нет) — поля нет,
+    // фильтр не активен. null у старых ключей — совместимо.
+    uint? ChainLife = null)
 {
     /// <summary>System id восстановленного PGDATA (из result-джоба): щит
     /// /service/&lt;scope&gt;/initialize в rejoin'е — пустые ноды в гонке не

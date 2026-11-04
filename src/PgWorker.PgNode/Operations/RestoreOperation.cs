@@ -503,6 +503,10 @@ public sealed class RestoreOperation : IReceiverOperation
         psi.EnvironmentVariables["PGW_S3_SECRET_KEY"] = _request.S3.SecretKey;
         if (!string.IsNullOrEmpty(_request.S3.CaPem))
             psi.EnvironmentVariables["PGW_S3_CA_PEM"] = _request.S3.CaPem;
+        // t15 (arch/pgnode/06 §1): номер жизни выбранного полного — fetch-wal
+        // собирает хвост только этой жизни; отсутствие — DR-orphan (фильтр off).
+        if (_request.ChainLife is { } chainLife)
+            psi.EnvironmentVariables["PGW_WAL_CHAIN_LIFE"] = chainLife.ToString();
         return psi;
     }
 

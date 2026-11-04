@@ -56,6 +56,38 @@ public class RestoreStatusJsonTests
         op.Phase.Should().Be("recovering");
     }
 
+    // AAA (t15, arch/backups/05 §1): chain_life выбранного полного —
+    // roundtrip writer→парсер (snake_case); без поля — null (DR-orphan/старый ключ).
+    [Fact]
+    public void Serialize_ChainLife_RoundtripsThroughParser()
+    {
+        // Arrange — заявка с номером жизни и без него
+        var withLife = new RestoreOperationState(
+            "id3", RestoreStatus.Running, "b", "c/x", "latest", "n", 1, "api",
+            StartedUnix: 100, ChainLife: 7);
+        var withoutLife = new RestoreOperationState(
+            "id4", RestoreStatus.Running, "b", "c/x", "latest", "n", 1, "api",
+            StartedUnix: 100);
+        string[] kvs =
+        [
+            RestoreStatusJson.Serialize(withLife),
+            RestoreStatusJson.Serialize(withoutLife),
+        ];
+
+        // Act
+        var parsed = BackupsParser.Parse(
+            [new Kv("/pgworker/backups/c/shard1/restore/id3", kvs[0], 1),
+             new Kv("/pgworker/backups/c/shard1/restore/id4", kvs[1], 1)], out var errors);
+
+        // Assert — номер жизни восстановлен; отсутствие поля читается как null
+        errors.Should().BeEmpty();
+        parsed.Value.Single().Shards["shard1"].Restores
+            .Single(r => r.Id == "id3").ChainLife.Should().Be(7u);
+        parsed.Value.Single().Shards["shard1"].Restores
+            .Single(r => r.Id == "id4").ChainLife.Should().BeNull();
+        kvs[1].Should().NotContain("chain_life");
+    }
+
     // AAA: null-поля не сериализуются (канон §4 — по факту).
     [Fact]
     public void Serialize_NullOptionalFields_AbsentFromJson()

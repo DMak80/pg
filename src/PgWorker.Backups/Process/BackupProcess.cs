@@ -339,9 +339,24 @@ public sealed class BackupProcess(
                     && p.Value.Host == source.Value.Host && p.Value.Ports == source.Value.Ports);
             var node = nodeKv.Key?.Split('/')[1] ?? source.Value.Host;
 
+            // t15 (arch/backups/01 §6, spec §4.6): номер жизни цепочки на момент
+            // создания записи полного — задание restore понесёт его в fetch-wal.
+            // Отказ чтения — transient-пропуск шарда тика (тик повторит); НЕ дефолт 0:
+            // неверный номер отрезал бы restore-заявке её собственный хвост.
+            var lifeRead = await new WalLifeStore(etcd, endpoints)
+                .ReadValueAsync(cluster, shard.Name, ct);
+            if (!lifeRead.IsSuccess)
+            {
+                logger.LogWarning(
+                    "backups {Cluster}/{Shard}: retake skipped — wal-life read failed: {Error}",
+                    cluster, shard.Name, lifeRead.Error!.Message.Split('\n')[0]);
+                continue;
+            }
+
             // journal-before-manipulations: PLANNED до команды запуска.
             var planned = new FullBackupState(
-                id, FullBackupStatus.Planned, node, role, nowUnix, null, null, null, null, null);
+                id, FullBackupStatus.Planned, node, role, nowUnix, null, null, null, null, null,
+                ChainLife: lifeRead.Value);
             var put = await PutAsync(BackupNames.FullKey(cluster, shard.Name, id), BackupStatusJson.Serialize(planned), ct);
             if (!put.IsSuccess)
                 return Result<ProcessOutcome>.Failed(put.Error!);

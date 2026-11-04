@@ -45,6 +45,10 @@ public static class RestoreStatusJson
         // в transient «пул не выбран» (PLANNED без продвижения).
         if (state.SourcePool is { Length: > 0 } sourcePool)
             o["source_pool"] = sourcePool;
+        // t15 (arch/backups/05 §1): номер жизни выбранного полного —
+        // roundtrip с BackupsParser (snake_case, ручной ключ).
+        if (state.ChainLife is { } chainLife)
+            o["chain_life"] = chainLife;
 
         return JsonSerializer.Serialize(o, Options);
     }

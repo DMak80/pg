@@ -5,6 +5,7 @@ using PgWorker.Core.Model;
 using PgWorker.Core.Templates;
 using PgWorker.Docker.Drivers;
 using Shared.Etcd.Client;
+using PgWorker.Backups.Job;
 using PgWorker.Etcd.Parsing;
 using PgWorker.Provisioning.Endpoints;
 using PgWorker.Provisioning.Processes;
@@ -266,6 +267,14 @@ public sealed class RestoreProcess(
             backupId = fulls.Value[^1];
         }
 
+        // 3.5. Номер жизни выбранного полного (t15, arch/backups/05 §1):
+        // full-статус по id (етcd); DR-orphan (статуса нет или поля нет) —
+        // null — fetch-wal фильтр по номеру не активирует.
+        FullBackupState? selectedFull = null;
+        if (mine?.Shards.TryGetValue(srcX, out var lifeSb) == true)
+            selectedFull = lifeSb.Full.FirstOrDefault(f => f.Id == backupId);
+        var chainLife = selectedFull?.ChainLife;
+
         // 4. Факт целостности кандидата: upload (mc cp --recursive) не
         // атомарен и не гарантирует «манифест последним» — упавший на середине
         // джоб оставляет частичный префикс full/<id>/, а при DR etcd-статусов
@@ -322,6 +331,7 @@ public sealed class RestoreProcess(
             State = RestoreStatus.Running,
             BackupId = backupId,
             StartedUnix = NowUnix(),
+            ChainLife = chainLife, // t15: номер жизни выбранного полного → fetch-wal
         };
         var put = await PutStatusAsync(cluster, shard.Name, running, ct);
         if (!put.IsSuccess)
@@ -473,6 +483,17 @@ public sealed class RestoreProcess(
             () => DemolishAsync(cluster, shard, op, ct));
         if (!demolished.IsSuccess)
             return Result<ProcessOutcome>.Failed(demolished.Error!);
+
+        // t15 (spec §4.6, решение №32б): ПЕРВЫЙ переход в demolished — инкремент
+        // жизни цепочки (причина restore), идемпотентно на заявку (маркер времени
+        // started_unix). Порядок обязателен: bump ДО записи фазы. Put фазы упал →
+        // повтор пропустит bump по гейту времени и доедет put; bump упал → фаза
+        // ещё не записана, повторный тик снова войдёт в демонтаж (идемпотентен).
+        var life = await new WalLifeStore(etcd, endpoints).BumpAsync(
+            cluster, shard.Name, WalLifeReason.Restore, startedUnix: op.StartedUnix, ct);
+        if (!life.IsSuccess)
+            return Result<ProcessOutcome>.Failed(life.Error!);
+
         var put = await PutStatusAsync(cluster, shard.Name, op with { Phase = "demolished" }, ct);
         if (!put.IsSuccess)
             return Result<ProcessOutcome>.Failed(put.Error!);
@@ -569,7 +590,10 @@ public sealed class RestoreProcess(
                         SecretKey: poolCtx.SecretKey,
                         Bucket: options.S3Bucket,
                         Prefix: $"{SrcCluster(op)}/{SrcShard(op)}",
-                        CaPem: BackupCaPem.ReadIfConfigured(options.S3CaBundlePath))), ct));
+                        CaPem: BackupCaPem.ReadIfConfigured(options.S3CaBundlePath)),
+                    // t15: номер жизни выбранного полного → fetch-wal фильтрует
+                    // куски по нему (DR-orphan — null, фильтр не активен).
+                    ChainLife: op.ChainLife), ct));
         if (launch.IsConflict)
         {
             // 409 — в общем ops-реестре приёмника ЧУЖАЯ ops-операция (verify

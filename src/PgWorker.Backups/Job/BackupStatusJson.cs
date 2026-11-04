@@ -23,6 +23,10 @@ public static class BackupStatusJson
             o["finished_unix"] = finished;
         if (state.WalStartSegment is { } wal)
             o["wal_start_segment"] = wal;
+        // t15 (arch/backups/01 §6): номер жизни цепочки записи полного —
+        // roundtrip с BackupsParser (snake_case, ручной ключ); null не пишется.
+        if (state.ChainLife is { } chainLife)
+            o["chain_life"] = chainLife;
         if (state.SizeBytes is { } size)
             o["size_bytes"] = size;
         if (state.Error is { } error)
