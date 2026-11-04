@@ -32,7 +32,7 @@
 клэймы и txn. В нём — декларации доменов, координация воркеров, scopes
 Patroni и дискавери API. Адрес задаётся явно при старте; «вторых» etcd нет.
 
-→ [04-deploy-etcd.md](04-deploy-etcd.md) — контур и развёртывание,
+→ [pg-clusters/04-etcd-dcs.md](pg-clusters/04-etcd-dcs.md) — контур и развёртывание,
 [17-synchronization-principles.md](17-synchronization-principles.md) — правила
 работы с общим состоянием
 
@@ -52,7 +52,7 @@ PgWorker ↔ PgNode (per-install REST-CA), per-cluster CA у Kafka; у клие�
 грани PG — TLS (`sslmode=require`). Сетевая модель описывает зоны,
 firewall-матрицу и аутентификацию.
 
-→ [13-network-security.md](13-network-security.md)
+→ [pg-clusters/13-network-security.md](pg-clusters/13-network-security.md)
 
 ### 2.4. Prometheus-метрики и наблюдаемость
 
@@ -77,5 +77,6 @@ Streaming replication (WAL) — основа HA и приёмника WAL; ло�
 со слотами — основа онлайн-переезда бакетов (failover slots, синхронизация
 sequence).
 
-→ [11-bucket-sharding.md](11-bucket-sharding.md) §4/§7/§10,
+→ [pg-clusters/05-postgres-patroni.md](pg-clusters/05-postgres-patroni.md),
+[pg-clusters/11-buckets.md](pg-clusters/11-buckets.md) §4/§7,
 [backups/02-wal-archive.md](backups/02-wal-archive.md)

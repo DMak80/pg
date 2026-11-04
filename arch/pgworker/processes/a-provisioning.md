@@ -6,8 +6,8 @@
 [04-security.md](../04-security.md) §1; перечисления —
 [enums.md](enums.md).
 
-Все шаги идемпотентны — перепроверяют факт (guard'ы те же, что в скриптовом
-пути — P23, [11-bucket-sharding.md](../../11-bucket-sharding.md) §4.5).
+Все шаги идемпотентны — перепроверяют факт (guard'ы жизненного цикла —
+P23, [pg-clusters/11-buckets.md](../../pg-clusters/11-buckets.md) §4.5).
 Guard входа: полный набор ключей панели (config, shards/*/replicas,
 nodes/*, routing всех N) — иначе journal `phase=waiting-keys`, ожидание
 доустойчивости ключей (полуфабрикат не provisioning'уем).
@@ -100,7 +100,7 @@ P2 на каждый шард X:
    docker) → ждать, не лечить
  P2.3 на мастере шарда (адрес из master-ключа/Patroni): создать БД <dbname>
    (если нет), роли app/bucket_admin/bucket_mover + GRANT'ы (канон —
-   [11-bucket-sharding.md](../../11-bucket-sharding.md)), если нет
+   [pg-clusters/11-buckets.md](../../pg-clusters/11-buckets.md)), если нет
  P2.4 создать схемы bucket_<i> по routing (только шардовы бакеты;
    CREATE SCHEMA IF NOT EXISTS, GRANT USAGE) — идемпотентно
  P2.5 записать shards/X/dsn (multi-host, с per-cluster bucket_admin user+password)

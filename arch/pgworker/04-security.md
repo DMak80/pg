@@ -6,7 +6,7 @@ per-cluster секретов без остановки записи. Полны�
 [I. ClusterSecretRotator](processes/i-secret-rotator.md),
 [F. NodeAgent](../pgnode/processes/f-node-agent.md); ключи —
 [00-etcd-contract.md](00-etcd-contract.md) §2–§3; TLS-модель —
-[13-network-security.md](../13-network-security.md).
+[pg-clusters/13-network-security.md](../pg-clusters/13-network-security.md).
 
 ## 1. Per-cluster секреты в etcd
 
@@ -97,7 +97,7 @@ autostart=false): PgNode — загрузочный агент ноды и ме�
 **Канал** — mTLS, инициатор ВСЕГДА воркер (нода про PgWorker ничего не
 знает и ничего не инициирует): сервер — агент, порт `:8081` ВНУТРИ
 docker-сети кластера, на хост не публикуется (строка матрицы —
-[13-network-security.md](../13-network-security.md) §2). Верификация:
+[pg-clusters/13-network-security.md](../pg-clusters/13-network-security.md) §2). Верификация:
 воркер проверяет серверный серт агента по per-install REST-CA (SAN имени
 ноды); агент проверяет клиентский серт воркера по публичному CA из env
 контейнера + EKU ClientAuth + CN=pgworker (серверные серты нод того же CA
@@ -159,7 +159,7 @@ txn-сравнением, стартует компоненты (до 3 попы
 - SAN серверного серта REST-ноды — DNS `<n>`, DNS `pgw-<C>-<X>-<n>`, IP
   `127.0.0.1`; advertised-хост в SAN не входит (клиенты advertised-адресов
   верифицируют цепочку без hostname-проверки,
-  [13-network-security.md](../13-network-security.md) §4).
+  [pg-clusters/13-network-security.md](../pg-clusters/13-network-security.md) §4).
 - SAN серверного серта API воркера — `pgworker`, `localhost`,
   `host.docker.internal`, `127.0.0.1` (R13,
   [08-operability.md](08-operability.md) §6); панель валидирует цепочку

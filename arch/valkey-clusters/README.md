@@ -13,7 +13,7 @@
 
 Приложение читает адрес и ACL-креды **исключительно отсюда** — аналогия
 pg dsn/`app_password` и kafka endpoints
-([11-bucket-sharding.md](../11-bucket-sharding.md) §2).
+([pg-clusters/11-buckets.md](../pg-clusters/11-buckets.md) §2).
 
 **Разделение ответственности**: панель AdminPanel **декларирует** кластер
 через HTTP API воркера, **ValkeyWorker исполняет**

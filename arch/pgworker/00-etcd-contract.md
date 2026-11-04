@@ -2,7 +2,7 @@
 
 Уровень 3. Ключи домена, которые читает и пишет воркер, координационный
 префикс `/pgworker/` и инварианты мутаций. Контракт домена кластеров
-(`/clusters/…`) — [11-bucket-sharding.md](../11-bucket-sharding.md) §2;
+(`/clusters/…`) — [pg-clusters/11-buckets.md](../pg-clusters/11-buckets.md) §2;
 ключи бэкапов — [backups/05-etcd-contract.md](../backups/05-etcd-contract.md); протоколы записи
 панели — [adminpanel/02-etcd-contract.md](../adminpanel/02-etcd-contract.md) §9.
 Здесь — состав ключей с точки зрения исполнителя-воркера, без дублирования
@@ -41,7 +41,7 @@ S10).
 
 ## 2. Читаемые ключи
 
-Существующая схема — [11-bucket-sharding.md](../11-bucket-sharding.md) §2.
+Существующая схема — [pg-clusters/11-buckets.md](../pg-clusters/11-buckets.md) §2.
 
 | Ключ | Зачем |
 |---|---|
@@ -59,7 +59,7 @@ S10).
 | `/clusters/<C>/mover_password` | per-cluster пароль роли `bucket_mover` (REPLICATION — подписки переездов P2/P3); строка 32 симв `[A-Za-z0-9]`; имя роли фиксировано — отдельного user-ключа нет; пишет ТОЛЬКО PgWorker (ensure P1.5/adopt, txn put-if-absent; env `PGW_BUCKET_MOVER_PASSWORD` — fallback до ensure); читает PgWorker (mover-DSN переездов/проб); ротация — [I](processes/i-secret-rotator.md) |
 | `/clusters/<C>/bucket_admin_user` | per-cluster логин DSN-точки входа; канон — ключ etcd: ensure P1.5/adopt (значение из config или `"bucket_admin"`, txn put-if-absent); порядок чтения: ключ → config → env `PGW_BUCKET_ADMIN_USER`; пишет/читает PgWorker |
 | `/clusters/<C>/bucket_admin_password` | per-cluster пароль DSN-точки входа; тот же ensure и порядок чтения (ключ → config → env `PGW_BUCKET_ADMIN_PASSWORD`); попадает в dsn-ключи шардов (перезапись при ротации, [I](processes/i-secret-rotator.md)); панель не читает |
-| `/clusters/<C>/shards/<X>/nodes/<n>/app_params` | per-node серверные параметры подключения (libpq `keyword=value` через пробел, дефолт `sslmode=require` из `PgWorker:AppParams:Default`); пишет ТОЛЬКО PgWorker put-if-absent (существующее значение — ручные правки оператора — НЕ перезаписывается); ensure в provisioning P2.5'/AddShard A5 и миграционно в надзоре C; читает приложение (concat к DSN, [11-bucket-sharding.md](../11-bucket-sharding.md) §3); панель не читает |
+| `/clusters/<C>/shards/<X>/nodes/<n>/app_params` | per-node серверные параметры подключения (libpq `keyword=value` через пробел, дефолт `sslmode=require` из `PgWorker:AppParams:Default`); пишет ТОЛЬКО PgWorker put-if-absent (существующее значение — ручные правки оператора — НЕ перезаписывается); ensure в provisioning P2.5'/AddShard A5 и миграционно в надзоре C; читает приложение (concat к DSN, [pg-clusters/11-buckets.md](../pg-clusters/11-buckets.md) §3); панель не читает |
 
 Формат config-JSON дополнен полем `"synchronous_mode_strict"?: true|false`
 — per-cluster HA-режим: отсутствие поля или не-bool значение = `true`
@@ -76,7 +76,7 @@ S10).
 | `/clusters/<C>/shards/<X>/dsn` | после поднятия нод шарда | `host=h1,h2 port=15432,15433 dbname=<C> user=<bucket_admin> password=<per-cluster bucket_admin>` (multi-host; креды bucket_admin per-cluster — канон ключи `bucket_admin_*`, порядок чтения ключи → config → env; порты — выделенные аллокатором, [01-placement.md](01-placement.md) §5; app-секрет в DSN не попадает никогда) |
 | `/clusters/<C>/shards/<X>/nodes/<n>/state` | весь жизненный цикл | таблица состояний — [processes/enums.md](processes/enums.md) |
 | `/clusters/<C>/shards/<X>/nodes/<n>/bootstrap` | каждый EnsureNode-путь (provision/add-shard/надзор/rebuild) и ротация `rest_password` (процесс I) | per-node данные доставки секретов ([04-security.md](04-security.md) §4): JSON из трёх полей, других полей НЕТ — `spilo_configuration` (string, НЕпустой YAML SPILO_CONFIGURATION, rest_password внутри), `cert_pem` (string, НЕпустой PEM серта ноды), `key_pem` (string, НЕпустой PEM ключа) — серверный серт ноды per-install REST-CA, SAN — [01-placement.md](01-placement.md) §5. Валидность для старта (агент): пара cert/key парсится X509-провайдером, YAML непуст; невалидный/битый ключ агент перечитывает (воркер перезапишет). Пишет ТОЛЬКО PgWorker (секретный ключ: класс экспозиции per-cluster секретов — etcd без per-key ACL); читает агент ноды (PgNode, по сигналу канала — [04-security.md](04-security.md) §3) при старте контейнера и по сигналу проверки/замены; ревизия применения — `mod_revision` ключа (конвергенция надзора); per-install пароли PG сюда НЕ входят (прямая передача по mTLS-каналу). Удаляется с префиксом кластера (D2) и ноды (S3) |
-| `/clusters/<C>/buckets/status/bucket_<i>` | DELETE при завершении provisioning | снятие = бакет ACTIVE (семантика [11-bucket-sharding.md](../11-bucket-sharding.md) §2) |
+| `/clusters/<C>/buckets/status/bucket_<i>` | DELETE при завершении provisioning | снятие = бакет ACTIVE (семантика [pg-clusters/11-buckets.md](../pg-clusters/11-buckets.md) §2) |
 | `/clusters/<C>/config` | txn по завершении provisioning | пере-put канонического JSON **без поля `state`** (инициализирован = поле отсутствует; compare по `mod_revision`); `synchronous_mode_strict` — переносится из прочитанного config БЕЗ изменения (per-cluster опция не стирается: созданный со strict=false кластер не «молча» становится strict) |
 | `/clusters/<C>/…` (весь префикс) | TO_REMOVE, финал | `del --prefix` |
 | `/service/<C>-shard<k>/request_*` | TO_REMOVE, финал | точечные `del` (свои заявки; остальное пространство Patroni не трогаем) |
@@ -92,10 +92,9 @@ S10).
 | `/pgworker/moves/<C>/` (префикс) | TO_REMOVE, финал (D2) | `del --prefix` — заявки переездов не переживают удаление кластера |
 
 **Финальное состояние кластера после provisioning**: `config` без поля
-`state` (формат значения единый со скриптовым путём,
-[11-bucket-sharding.md](../11-bucket-sharding.md) §4.5 — панель видит
-«Active» без правок), все `status/bucket_<i>` удалены (бакеты ACTIVE), у
-каждого шарда есть `dsn`, у каждой ноды `state=RUNNING`.
+`state` (формат значения — [pg-clusters/11-buckets.md](../pg-clusters/11-buckets.md)
+§4.5; панель видит «Active» без правок), все `status/bucket_<i>` удалены
+(бакеты ACTIVE), у каждого шарда есть `dsn`, у каждой ноды `state=RUNNING`.
 
 Дельта add/remove шарда живого кластера (процессы
 [G](processes/g-add-shard.md)/[H](processes/h-remove-shard.md)):
@@ -153,7 +152,7 @@ S10).
   держателем клэйма** `<C>`; txn-записи в `/clusters/` сопровождаются
   compare (routing=старое значение, config.mod_revision) — «применилось, а
   контрол-плейн не знает» невозможно (как flip в
-  [11-bucket-sharding.md](../11-bucket-sharding.md) §5 шаг 4.7).
+  [pg-clusters/11-buckets.md](../pg-clusters/11-buckets.md) §5 шаг 4.7).
 - Владение клэймом держится на всём протяжении мутации: потеря lease
   прерывает исполняющийся тик (cancellation-гвард), критические мутации
   длинных процессов — только после живой сверки клэйма (механика — S5

@@ -27,7 +27,7 @@
 
 | Контур | Что входит | Канон |
 |---|---|---|
-| **Состояние и координация** | Единый etcd-кластер установки: декларации доменов (`/clusters/`, `/kafka/`, `/valkey/`, `/s3/`, `/etcd/`), координация воркеров (`/pgworker/`, `/kafkaworker/`, `/valkeyworker/`, `/s3worker/`, `/etcdworker/`), scopes Patroni (`/service/`), клэймы и дискавери API | [17-synchronization-principles.md](17-synchronization-principles.md), [04-deploy-etcd.md](04-deploy-etcd.md) |
+| **Состояние и координация** | Единый etcd-кластер установки: декларации доменов (`/clusters/`, `/kafka/`, `/valkey/`, `/s3/`, `/etcd/`), координация воркеров (`/pgworker/`, `/kafkaworker/`, `/valkeyworker/`, `/s3worker/`, `/etcdworker/`), scopes Patroni (`/service/`), клэймы и дискавери API | [17-synchronization-principles.md](17-synchronization-principles.md), [pg-clusters/04-etcd-dcs.md](pg-clusters/04-etcd-dcs.md) |
 | **Оркестрация** | Воркеры и их процессы: подъём, демонтаж и надзор контейнеров через docker/swarm, приём и исполнение заявок, конвергенция конфигов | [00-components.md](00-components.md), [25-component-communications.md](25-component-communications.md) |
 | **Данные** | Контейнеры кластеров: PG-шарды (Spilo + Patroni, pg_doorman), Kafka, Valkey, ownS3; протоколы SQL и репликации, Kafka, RESP, S3 | [00-components.md](00-components.md) |
 | **Наблюдаемость** | Метрики Prometheus, алерты, read-only инспекция панели | [18-metrics.md](18-metrics.md), [adminpanel/README.md](adminpanel/README.md) |
@@ -80,5 +80,5 @@
   технические правила.
 - [roadmap/README.md](roadmap/README.md) — отложенные задачи и известные
   дефекты; ведётся вне иерархии компонентов.
-- `configs/`, `scripts/`, `stand/` — артефакты стенда и операторские скрипты,
-  а не документы архитектуры.
+- [stand/README.md](stand/README.md) — docker-стенд проверки канона; каталоги
+  `configs/` и `scripts/` — артефакты вне канона живой системы.

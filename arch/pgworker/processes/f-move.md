@@ -3,8 +3,8 @@
 Уровень 4. Онлайн-переезды, откаты, уборка и отмена по заявкам
 `/pgworker/moves/<C>/bucket_<i>`. Функция —
 [06-bucket-moves.md](../06-bucket-moves.md); механика логической
-репликации и ловушки — [11-bucket-sharding.md](../../11-bucket-sharding.md)
-§4–§5, [12-bucket-pitfalls.md](../../12-bucket-pitfalls.md); перечисления —
+репликации и ловушки — [pg-clusters/11-buckets.md](../../pg-clusters/11-buckets.md)
+§4–§5, [pg-clusters/12-bucket-pitfalls.md](../../pg-clusters/12-bucket-pitfalls.md); перечисления —
 [enums.md](enums.md).
 
 ## 1. Резолв мастера шарда для SQL
@@ -32,11 +32,11 @@ dsn-ключа напрямую, подмена `AdvertisedPublisherHost` сло
 отказ → заявка удаляется (отказ — `work.last_error` с подсказкой);
 transient-сбой → заявка жива, ретраи тиками с фазы из статус-ключа.
 
-Статус переезда — `/clusters/<C>/buckets/status/bucket_<i>` в **формате
-скриптов 1:1** (`SYNCING|FROZEN|ABORTING` + `phase`; нет ключа = ACTIVE):
-формат унаследован от скриптов, исполнитель один — скриптовых переездов в
-живой системе нет, панель читает ключ как есть. Фазы — [enums.md](enums.md)
-§7.
+Статус переезда — `/clusters/<C>/buckets/status/bucket_<i>`
+(`SYNCING|FROZEN|ABORTING` + `phase`; нет ключа = ACTIVE); семантика и
+таблица состояний — [pg-clusters/processes/enums.md](../../pg-clusters/processes/enums.md)
+§3. Исполнитель один — PgWorker; скриптовых переездов в живой системе нет,
+панель читает ключ как есть. Фазы — [enums.md](enums.md) §7.
 
 ## 3. Move (M0–M6)
 

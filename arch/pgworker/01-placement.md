@@ -13,7 +13,7 @@ PGTune, режимы Plain/Swarm, транспорт Engine API, placement и а
 `pg_doorman` (обязателен: бинарник — пин мульти-арх контейнер-образа проекта
 pg_doorman, обязательный build-arg `DOORMAN_IMAGE` — fail-fast без него, R1;
 целевая платформа x64 — amd64-сборка, arm64 — платформа разработки,
-[03-prerequisites.md](../03-prerequisites.md) §1) + **агент ноды PgNode**
+[pg-clusters/03-prerequisites.md](../pg-clusters/03-prerequisites.md) §1) + **агент ноды PgNode**
 (программа `pgnode` supervisord'а: приём WAL бэкапов —
 [backups/02-wal-archive.md](../backups/02-wal-archive.md), физическая репликация
 `127.0.0.1:5432` своей ноды → S3-пул; загрузочный агент ноды и менеджер
@@ -66,7 +66,7 @@ WAL-архивация с неё невозможна, обновление об
 агент; DOORMAN_CONFIG_TEMPLATE — неконфиденциальный шаблон конфига пулера в
 docker-env (пароль — плейсхолдер), пароль подставляет агент (параметры
 пулера — [04-security.md](04-security.md) §4,
-[11-bucket-sharding.md](../11-bucket-sharding.md)).
+[pg-clusters/11-buckets.md](../pg-clusters/11-buckets.md)).
 
 Volume: `pgw-<C>-<X>-<n>-data` → `/home/postgres/pgdata` (дефолтный
 PGDATA-корень Spilo; переопределение `PGROOT` ломает bootstrap —
@@ -150,19 +150,19 @@ postmaster идёт через rebuild — пересоздание контей
   — прямой pg-порт master-ноды (portalloc, multi-host DSN,
   `target_session_attrs=read-write` — писателя находит libpq); подписки
   переездов — тот же multi-host DSN
-  ([11-bucket-sharding.md](../11-bucket-sharding.md) §4).
+  ([pg-clusters/11-buckets.md](../pg-clusters/11-buckets.md) §4).
 - **Patroni DCS — etcd v3 API** (env `ETCD3_HOSTS`, формат `host:port` БЕЗ
   scheme; v2-клиент Spilo с etcd 3.5 несовместим). Адреса etcd для нод —
   отдельная настройка `PgWorker:Etcd:AdvertisedEndpoints` (ноды ходят в etcd
   через docker-сеть, а не через endpoint'ы самого PgWorker). HA-контур
   контроль-плейна: список ВСЕХ узлов etcd —
-  [04-deploy-etcd.md](../04-deploy-etcd.md) §8 (advertised-правила
+  [pg-clusters/04-etcd-dcs.md](../pg-clusters/04-etcd-dcs.md) §2 (advertised-правила
   потребителей).
 - Callback мастер-ключа — `on_start` + `on_role_change` (в `on_start`
   Patroni роль аргументами не передаёт — скрипт узнаёт её сам по
   `GET /primary`).
 - **Механика REST-TLS ноды** (REST `:8008` — только HTTPS,
-  [13-network-security.md](../13-network-security.md) §4): серт/ключ ноды
+  [pg-clusters/13-network-security.md](../pg-clusters/13-network-security.md) §4): серт/ключ ноды
   доставляет загрузочный агент (bootstrap-ключ etcd,
   [04-security.md](04-security.md) §3) и материализует в tmpfs `/run/pgw`;
   обёртка spilo-supervised.sh перед launch.sh экспортирует их как env
@@ -170,7 +170,7 @@ postmaster идёт через rebuild — пересоздание контей
   (материализация файлов и `restapi.certfile/keyfile` — штатный Spilo); в
   docker-env остаётся только публичный `SSL_RESTAPI_CA` (REST-слой
   верифицируется клиентами по цепочке к CA без hostname-проверки —
-  [13-network-security.md](../13-network-security.md) §4). Секция `restapi`
+  [pg-clusters/13-network-security.md](../pg-clusters/13-network-security.md) §4). Секция `restapi`
   SPILO_CONFIGURATION: `connect_address: <полное имя ноды>:8008` (DNS
   per-cluster сети, перекрывает шаблонный IP; api_url в DCS = DNS из SAN) +
   `authentication {username, password}` — per-cluster пара `rest_password`
@@ -257,7 +257,7 @@ authz-плагины вне скоупа, граница зафиксирова�
   root-эквивалент хоста — запуск с `group_add: [<gid docker>]` и выделенным
   пользователем (compose deploy — комментарий/пример); firewall: 2375 НЕ
   слушается никогда, 2376 — только с mTLS и только из сети
-  воркеров/админки (матрица [13-network-security.md](../13-network-security.md)
+  воркеров/админки (матрица [pg-clusters/13-network-security.md](../pg-clusters/13-network-security.md)
   §2); каждый хост — свой серверный серт; компрометация клиентского серта
   воркера = root всех docker-хостов установки → серт в env-секрете,
   ротация — перегенерация пакета.
@@ -363,7 +363,7 @@ authz-плагины вне скоупа, граница зафиксирова�
    в `pgw-net-<C>`) + DNS `pgw-<C>-<X>-<n>` (полное docker-имя) + IP
    `127.0.0.1` (loopback lease-скрипта). Advertised-хост в SAN не входит —
    клиенты advertised-адресов верифицируют цепочку без hostname-проверки
-   ([13-network-security.md](../13-network-security.md) §4).
+   ([pg-clusters/13-network-security.md](../pg-clusters/13-network-security.md) §4).
 
 ### 5.1. Сети
 
@@ -372,7 +372,7 @@ authz-плагины вне скоупа, граница зафиксирова�
 адресам (в default bridge hostname-резолва нет). Per-cluster (как
 `kfw-net-<C>` у KafkaWorker, [kafkaworker/README.md](../kafkaworker/README.md);
 согласовано с advertised-правилами
-[04-deploy-etcd.md](../04-deploy-etcd.md) §8 п.3 — «per-cluster сети
+[pg-clusters/04-etcd-dcs.md](../pg-clusters/04-etcd-dcs.md) §2 — «per-cluster сети
 воркера»): единая сеть делала DNS-зону общей для всех кластеров
 docker-хоста — перекрёстная видимость алиасов чужих кластеров/тестов,
 сетевая изоляция контуров отсутствовала; per-cluster сеть даёт её по

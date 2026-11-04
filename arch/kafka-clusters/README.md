@@ -9,7 +9,7 @@
 
 Приложение читает адреса, SASL-креды и **реестр топиков** исключительно
 отсюда — полная аналогия pg dsn/`app_password`/routing
-([11-bucket-sharding.md](../11-bucket-sharding.md) §2).
+([pg-clusters/11-buckets.md](../pg-clusters/11-buckets.md) §2).
 
 **Разделение ответственности**: панель AdminPanel **декларирует** кластер
 через HTTP API воркера, **KafkaWorker исполняет**

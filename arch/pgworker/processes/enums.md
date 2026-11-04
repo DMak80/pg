@@ -65,20 +65,12 @@ leader + Patroni REST отвечает И идентифицирует ноду 
 
 ## 6. Состояние бакета (`/clusters/<C>/buckets/status/bucket_<i>`)
 
-Формат и семантика — [11-bucket-sharding.md](../../11-bucket-sharding.md) §2;
-отсутствие ключа = `ACTIVE`.
-
-| Значение | Что означает |
-|---|---|
-| отсутствует | `ACTIVE` — бакет принадлежит владельцу из routing |
-| `NOT_INITIALIZED` | Начальное состояние бакетов создаваемого кластера (снимает provisioning) |
-| `SYNCING` | Идёт перенос (DDL/copy), DDL-мораторий; `phase` — фаза процесса F |
-| `FROZEN` | Источник заморожен (cutover/rollback), запись приложению запрещена |
-| `ABORTING` | Журнал уборки незавершённого переезда (план + `phase`) |
-
-Фазы `phase` определяет процесс [F](f-move.md): `ddl`, `frozen`, `flip`,
-`rollback-post-flip`, `blocked`; transient-отказ фиксируется в
-`fail_state`/`last_error` статус-ключа, заявка при этом жива.
+Формат, семантика и таблица всех значений — перечисление домена
+[pg-clusters/processes/enums.md](../../pg-clusters/processes/enums.md) §3;
+отсутствие ключа = `ACTIVE`. Фазы `phase` определяет процесс
+[F](f-move.md): `ddl`, `frozen`, `flip`, `rollback-post-flip`, `blocked`;
+transient-отказ фиксируется в `fail_state`/`last_error` статус-ключа,
+заявка при этом жива.
 
 ## 7. Заявка переезда (`/pgworker/moves/<C>/bucket_<i>.op`)
 

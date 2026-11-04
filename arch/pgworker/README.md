@@ -37,14 +37,12 @@ API воркера** ([07-api.md](07-api.md)) — воркер записыва�
 - **Хозяин подсистемы бэкапов шардов**: оркестрация полных `pg_basebackup`,
   restore/drill, политика бэкапов; механика приёмника WAL, layout S3 и
   контракт `/pgworker/backups/*` — [backups/README.md](../backups/README.md).
-- **Не входит**: переезды бакетов скриптовым путём (в живой системе путь
-  мутаций один — панель → API воркера → заявки в etcd; скрипты
-  [11-bucket-sharding.md](../11-bucket-sharding.md) §4.5/§5 — инструмент
-  исследований и стендов, к кластерам под управлением PgWorker не
-  применяется); балансировка по метрикам; управление etcd-слоем (зона
-  [etcdworker/README.md](../etcdworker/README.md)); тонкий RBAC Engine API
-  (authz-плагины Docker CE); метрики PG-репликации прод-нод (scrape Patroni —
-  [18-metrics.md](../18-metrics.md) §5.4); enterprise-доработки.
+- **Не входит**: скриптовый путь мутаций (в живой системе путь один —
+  панель → API воркера → заявки в etcd; ручных скриптов жизненного цикла и
+  переездов в каноне нет); балансировка по метрикам; управление etcd-слоем
+  (зона [etcdworker/README.md](../etcdworker/README.md)); тонкий RBAC Engine
+  API (authz-плагины Docker CE); метрики PG-репликации прод-нод (scrape
+  Patroni — [18-metrics.md](../18-metrics.md) §5.4); enterprise-доработки.
 
 ## 3. Функции
 
@@ -80,7 +78,7 @@ API воркера** ([07-api.md](07-api.md)) — воркер записыва�
   [pgnode/02-api.md](../pgnode/02-api.md), [04-security.md](04-security.md) §4.
 - **Приложения → etcd**: клиентский дискавери (`dsn`, `app_user`/
   `app_password`, `app_params`) —
-  [11-bucket-sharding.md](../11-bucket-sharding.md) §3.
+  [pg-clusters/11-buckets.md](../pg-clusters/11-buckets.md) §3.
 - **Prometheus → PgWorker / PgNode**: `/metrics` на порту Kestrel `:8080`
   и в контейнере ноды — [18-metrics.md](../18-metrics.md).
 

@@ -18,7 +18,7 @@ DCS-конфига, HA-факты, сверка мастер-ключа, усы�
   (PgtuneInputsFactory.Create: пересчёт на каждый EnsureNode-путь).
 - Patroni-REST каждой ноды по HTTPS (`GET /cluster`, timeout 3 с;
   верификация цепочки к kfw-install-ca без hostname-проверки —
-  [13-network-security.md](../../13-network-security.md) §4; адрес —
+  [pg-clusters/13-network-security.md](../../pg-clusters/13-network-security.md) §4; адрес —
   `host:patroni-port` portalloc).
 
 ## 2. Rebuild мёртвой ноды

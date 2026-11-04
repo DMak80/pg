@@ -165,7 +165,7 @@ PgWorker без подготовки статики — мгновенный п�
 
 - серийные `getaddrinfo … empty` / `failed to resolve host` в docker-логах
   PG-нод (DNS-контур: сверять advertise-лист и сеть контейнера — алиас чужой
-  сети в advertise недопустим, arch/04 §8 п.3);
+  сети в advertise недопустим, arch/pg-clusters/04-etcd-dcs.md §2);
 - мгновенные (~0,3 с) фейлы коннекта в transient-циклах воркера (docker logs
   воркеров);
 - рост `[PHASE] … elapsed` у фаз, которые в тишине проходят быстро.

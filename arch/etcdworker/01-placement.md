@@ -30,7 +30,7 @@ volume данных, имена, адресация по именам сети �
   объектов идёт по label (имена произвольны после замен).
   Restart-политика `unless-stopped`.
 - **Флаги узла** (генерирует `EtcdNodeSpecBuilder`; параметры контура —
-  [04-deploy-etcd.md](../04-deploy-etcd.md) §3):
+  [pg-clusters/04-etcd-dcs.md](../pg-clusters/04-etcd-dcs.md) §2):
 
   | Флаг | Значение |
   |---|---|
@@ -57,7 +57,7 @@ volume данных, имена, адресация по именам сети �
   идемпотентно воркером), Swarm — overlay-сеть (создаёт воркер), стенд/E2E —
   имя сети контура поставки.
 - **Peer-адресация — только по именам узлов** (`http://etcdw-node-<k>:2380`,
-  [04-deploy-etcd.md](../04-deploy-etcd.md) §8 п.1): имя docker-хоста и
+  [pg-clusters/04-etcd-dcs.md](../pg-clusters/04-etcd-dcs.md) §2): имя docker-хоста и
   `AdvertisedHost` в peer-адресах НЕ фигурируют. Peer-порт 2380 на хост НЕ
   публикуется — межузловой трафик остаётся внутри сети.
 - **Клиентский порт 2379 публикуется** на host-порт из `PortRange` —
@@ -66,7 +66,7 @@ volume данных, имена, адресация по именам сети �
 - `--advertise-client-urls` — список «имя сети + advertised-host:client-port»:
   потребители внутри сети ходят по имени, потребители на хосте — по
   публикации; в список попадают только резолвимые URL (правило NXDOMAIN
-  [04-deploy-etcd.md](../04-deploy-etcd.md) §8 п.3). Прецедент — `as-etcd`
+  [pg-clusters/04-etcd-dcs.md](../pg-clusters/04-etcd-dcs.md) §2). Прецедент — `as-etcd`
   стенда.
 - **Смена адресов публикаций** (`AdvertisedHost`, `PortRange`): peer-URL
   членов не меняются, переиздание client-публикаций переживает rebuild;

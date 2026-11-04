@@ -1,11 +1,12 @@
 # 02. Контракт etcd (чтение панели + мутации через API воркеров)
 
 AdminPanel читает etcd для инспекции. Источник схемы — инспектируемая система
-(pg (этот монорепозиторий): `arch/11-bucket-sharding.md` §2, `arch/12-bucket-pitfalls.md` §3,
-скрипты `arch/scripts/`). **Панель в etcd не пишет ничего**: все мутации
+(pg (этот монорепозиторий): `arch/pg-clusters/11-buckets.md` §2,
+`arch/pgworker/00-etcd-contract.md`). **Панель в etcd не пишет ничего**: все мутации
 декларативного контракта отправляются в **HTTP API исполнителя** —
-PgWorker (arch/14 §1.1) для pg-домена и KafkaWorker (arch/16 §1.1) для
-kafka-домена — воркер сам валидирует и записывает ключи (протоколы записи
+PgWorker ([07-api.md](../pgworker/07-api.md)) для pg-домена и
+KafkaWorker ([07-api.md](../kafkaworker/07-api.md)) для kafka-домена — воркер
+сам валидирует и записывает ключи (протоколы записи
 ниже — канон поведения ИСПОЛНИТЕЛЯ; `claim-txn`/`PUT`/компенсации выполняет
 воркер, панель лишь передаёт команду). URL API каждого воркера панель
 берёт из etcd — lease-ключи дискавери `/pgworker/api/<id>` и
@@ -85,7 +86,7 @@ DELETE-отмена живых заявок ротаций (§11.2). Отдел�
 `/clusters/<C>/app_password` — per-cluster креды приложения (генерирует
 PgWorker), а также `/clusters/<C>/shards/<X>/nodes/<n>/app_params` —
 per-node серверные параметры подключения (libpq-строка, `sslmode=require`;
-ведёт PgWorker, [11](../11-bucket-sharding.md) §2). Панель их НЕ читает и
+ведёт PgWorker, [11](../pg-clusters/11-buckets.md) §2). Панель их НЕ читает и
 НЕ отображает: парсер пропускает без `unknownKeys`-счётчика, значение не
 попадает в модель/UI/API.
 
@@ -538,8 +539,8 @@ override из `HostMap` при точном совпадении ключа → 
 - Даёт: фактическое состояние нод (`running`/`streaming`/`stopped`), лаг
   реплик в байтах, timeline — то, чего в etcd-DCS нет «в реальном времени».
   User-Agent `AdminPanel` — идентификация панели в журналах REST.
-- Порт `:8008` и путь — стандарт Patroni (pg (этот монорепозиторий) `arch/01-architecture.md`,
-  HAProxy health-check использует те же).
+- Порт `:8008` и путь — стандарт Patroni (pg (этот монорепозиторий) `arch/pg-clusters/01-ha-architecture.md`,
+  те же эндпоинты используют PgWorker и панель).
 
 ### 6.2. SQL через Npgsql (по умолчанию включена; в проде — на усмотрение)
 

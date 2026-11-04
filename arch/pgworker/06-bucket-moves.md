@@ -4,14 +4,14 @@
 отмена по заявкам в etcd, а также репарация брошенных статусов. Полные
 автоматы — процессы [F. MoveProcess](processes/f-move.md),
 [K. MoveRepairProcess](processes/k-move-repair.md); механика логической
-репликации и ловушки — [11-bucket-sharding.md](../11-bucket-sharding.md) §4–§5,
-[12-bucket-pitfalls.md](../12-bucket-pitfalls.md).
+репликации и ловушки — [pg-clusters/11-buckets.md](../pg-clusters/11-buckets.md) §4–§5,
+[pg-clusters/12-bucket-pitfalls.md](../pg-clusters/12-bucket-pitfalls.md).
 
 ## 1. Заявки и владение
 
 Порт `move-bucket.sh`/`abort-move.sh` (runbook
-[11-bucket-sharding.md](../11-bucket-sharding.md) §5–§7, ловушки P1–P8 —
-[12-bucket-pitfalls.md](../12-bucket-pitfalls.md)) в тиковый процесс по
+[pg-clusters/11-buckets.md](../pg-clusters/11-buckets.md) §5–§7, ловушки P1–P8 —
+[pg-clusters/12-bucket-pitfalls.md](../pg-clusters/12-bucket-pitfalls.md)) в тиковый процесс по
 **заявкам** `/pgworker/moves/<C>/bucket_<i>`
 ([00-etcd-contract.md](00-etcd-contract.md) §4): `op=move|rollback|
 finalize|abort`. Обрабатывается только держателем клэйма `<C>`; одновременно
@@ -20,11 +20,11 @@ finalize|abort`. Обрабатывается только держателем 
 подсказкой); transient-сбой → заявка жива, ретраи тиками с фазы из
 статус-ключа.
 
-Статус переезда — существующий
-`/clusters/<C>/buckets/status/bucket_<i>` в **формате скриптов 1:1**
-(`SYNCING|FROZEN|ABORTING` + `phase`; нет ключа = ACTIVE): формат
-унаследован от скриптов, исполнитель один — скриптовых переездов в живой
-системе нет ([README.md](README.md) §2), панель читает ключ как есть.
+Статус переезда — `/clusters/<C>/buckets/status/bucket_<i>`
+(`SYNCING|FROZEN|ABORTING` + `phase`; нет ключа = ACTIVE); семантика и
+таблица состояний — [pg-clusters/processes/enums.md](../pg-clusters/processes/enums.md)
+§3. Исполнитель один — PgWorker; скриптовых переездов в живой системе нет
+([README.md](README.md) §2), панель читает ключ как есть.
 
 ## 2. Резолв мастера шарда для SQL
 

@@ -48,7 +48,7 @@ leader-lease прерывает тик (cancellation-гвард, S5
   активности); замена члена — автоматикой ([02-membership.md](02-membership.md) §4).
   Потеря кворума — заморозка контроль-плейна (датаплейн живёт сам),
   восстановление — runbook `docs/runbook.md`,
-  [09-troubleshooting.md](../09-troubleshooting.md) §4.
+  [pg-clusters/09-troubleshooting.md](../pg-clusters/09-troubleshooting.md) §5.
 - **Том слепков** (`/snapshots`) — кэш доводки: гарантией не является,
   источник истины для восстановления — выгруженные объекты S3.
 - **Watchdog зависших циклов**, поллинг-инвариант долгих фаз (серия проб

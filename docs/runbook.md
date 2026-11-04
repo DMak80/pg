@@ -207,7 +207,7 @@ CA-сертификат registry должен быть доверен Docker и 
 часть образа ноды, arch/14 §2.1 R1): мульти-арх (amd64+arm64) контейнер-образ
 проекта pg_doorman — docker выбирает архитектуру под платформу сборки
 автоматически (целевая платформа x64 — amd64-сборка; arm64 — платформа
-разработки, arch/03 §1). Сборка без build-arg падает fail-fast. Перед
+разработки, arch/pg-clusters/03-prerequisites.md §1). Сборка без build-arg падает fail-fast. Перед
 сборкой на офлайн-хосте — `dev-stand/images/pull-images.sh` (ретаг
 канонического имени из локального registry). Обновление версии пина —
 рутина ниже («Обновить пин pg_doorman»).
@@ -287,7 +287,7 @@ Go-1.24-клиентами с ошибкой `x509: certificate is not standards
 
 ## HA-etcd контур контроль-плейна (имена/сеть — arch/25)
 
-Канон — `arch/04-deploy-etcd.md` §8 (адресация по именам узлов в общей сети,
+Канон — `arch/pg-clusters/04-etcd-dcs.md` §2 (адресация по именам узлов в общей сети,
 бутстрап seed-узлом, состав доводит EtcdWorker — arch/25; параметры,
 advertised-правила потребителей, кворум-семантика, чек-лист). Кратко:
 
@@ -308,12 +308,12 @@ advertised-правила потребителей, кворум-семанти�
   наблюдение (декларация не ставится).
 - **Чеки**: стендовый `dev-stand/adminpanel/checks/43-etcd-ha.sh` (member list
   3 started → stop узла: запись/healthz/master-ключ живы → start → 3/3);
-  прод-чек-лист — arch/04 §8 п.6 (member list — все peer-URL имена;
+  прод-чек-лист — arch/pg-clusters/04-etcd-dcs.md §2 (member list — все peer-URL имена;
   `endpoint health --cluster`; панель `/api/etcd/status` = N членов/единый
   leader).
 - **Потеря узла/кворума**: 1 узел — не-событие (кворум жив); большинство
   недоступно — контроль-плейн заморожен, датаплейн живёт сам, восстановление
-  — arch/09 §4; managed-узел навсегда — авто-замена EtcdWorker
+  — arch/pg-clusters/09-troubleshooting.md §5; managed-узел навсегда — авто-замена EtcdWorker
   (member remove + learner + promote, arch/25 §3.1), seed/внешний —
   `member remove` руками (peer-URL нового — имя в той же сети контура).
 

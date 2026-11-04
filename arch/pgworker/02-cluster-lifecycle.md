@@ -12,7 +12,7 @@
 - `config.state=NOT_INITIALIZED` — заявка панели на создание; `TO_REMOVE`
   — заявка на полный демонтаж; отсутствие `state` — Active-кластер.
   Семантика полей `config` —
-  [11-bucket-sharding.md](../11-bucket-sharding.md) §2.
+  [pg-clusters/11-buckets.md](../pg-clusters/11-buckets.md) §2.
 - Состояния нод (`NOT_INITIALIZED`, `PROVISIONING`, `RUNNING`,
   `REBUILDING`, `UNREACHABLE`, `QUARANTINED`, `REMOVING`, `TO_RECREATE`)
   и их владельцы —

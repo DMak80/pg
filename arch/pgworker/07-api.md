@@ -64,7 +64,7 @@ routing, `/service/<scope>/members`, очереди заявок): это уст
 docker-хоста (`localhost:{PORT}`; публикации нужны панели — AdvertiseUrl
 `host.docker.internal` — и хостовым потребителям: чеки, скрейп), без
 клиентского серта (паттерн Patroni REST `:8008` —
-[13-network-security.md](../13-network-security.md) §4, verify_client нет):
+[pg-clusters/13-network-security.md](../pg-clusters/13-network-security.md) §4, verify_client нет):
 скрейп Prometheus — `https` + `ca_file` без `cert_file`/`key_file`
 ([18-metrics.md](../18-metrics.md) §5.2), docker-HEALTHCHECK — без
 клиентского серта. Граница доверия грани — периметр docker-хоста, а не
@@ -149,4 +149,4 @@ critical-алерт `worker-api-unreachable`,
 - **Стендовый сид** — `POST /api/seed/demo` (флаг включения).
 - **Приложения** в API не ходят: читают только дискавери-ключи etcd
   (`dsn`, `app_user`/`app_password`, `app_params`) —
-  [11-bucket-sharding.md](../11-bucket-sharding.md) §3.
+  [pg-clusters/11-buckets.md](../pg-clusters/11-buckets.md) §3.
