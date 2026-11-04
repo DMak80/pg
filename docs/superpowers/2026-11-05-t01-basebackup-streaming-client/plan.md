@@ -148,7 +148,7 @@ public interface IMultipartS3
 public interface IStreamObjectS3
 {
     Task<Result<(Stream Body, long Size)>> GetObjectStreamAsync(string cluster, string shard, string key, CancellationToken ct);
-    Task<Result<(byte[] Data, long TotalSize)>> GetObjectRangeAsync(string cluster, string shard, string key, long start, long end, CancellationToken ct); // [start, end] включительно
+    Task<Result<byte[]>> GetObjectRangeAsync(string cluster, string shard, string key, long start, long end, CancellationToken ct); // тело диапазона [start, end]; 404 → Failed(": not found"); полный размер объекта не нужен — он из HeadObjectAsync (spec §6.23)
     Task<Result<(bool Exists, long SizeBytes)>> HeadObjectAsync(string cluster, string shard, string key, CancellationToken ct); // NotFound → Success((false, 0)); размер — из GetObjectMetadataAsync.ContentLength (spec §6.23)
 }
 public interface IDeleteObjectS3
@@ -560,10 +560,11 @@ IDeleteObjectS3`:
 - `GetObjectStreamAsync` → `GetObjectAsync` → `(response.ResponseStream,
   response.ContentLength)` (стрим диспозить вызывающий).
 - `GetObjectRangeAsync` → `GetObjectRequest { ByteRange = new ByteRange(
-  $"{start}-{end}") }` → `(bytes тела, totalSize из
-  response.ContentLength при 206... вместо этого парсить
-  response.Headers["Content-Range"] "bytes s-e/total")`. 404 →
-  Failed(": not found") (симметрия существующих GET).
+  $"{start}-{end}") }` → `Result<byte[]>` — тело диапазона `[start, end]`
+  (вычитать `ResponseStream` целиком); 404 →
+  Failed(": not found") (симметрия существующих GET). Полный размер объекта
+  из ответа НЕ берётся (при 206 `ContentLength` — размер диапазона, не
+  объекта; полный размер даёт `HeadObjectAsync`, spec §6.23).
 - `HeadObjectAsync` → `GetObjectMetadataAsync`; NotFound → `Success((false,
   0L))`; иначе `Success((true, response.ContentLength))` — размер нужен
   verify ДО первого Range-запроса хвоста (spec §6.23; HEAD и так выполняется
@@ -615,8 +616,10 @@ partSizeBytes]`, заполнение `WriteAsync`), при заполнении
 очередь `UploadPartAsync(nextPartNumber++, buffer.Copy)` с ограничением
 4 в полёте (`SemaphoreSlim(4)`; очередные части — копия буфера — кладутся в
 `Channel<Task<Result<string>>>`/`List<Task>` — простейшее: `List<Task<
-Result<string>>>`, await всех в CompleteAsync); часть > 5 МиБ только
-финальная (буфер 16 МиБ гарантирует); ошибка любой части — запоминается
+Result<string>>>`, await всех в CompleteAsync); промежуточные части —
+ровно 16 МиБ (каждая выше S3-минимума 5 МиБ), часть МЕНЬШЕ 5 МиБ
+допускается только финальная (остаток буфера, выгружаемый CompleteAsync);
+ошибка любой части — запоминается
 первой (`Interlocked.CompareExchange`) и все последующие Write/Complete
 возвращают её. `BytesDone` — всего записано байт; `PartsDone` — успешно
 завершённые `UploadPartAsync` (awaited). `CompleteAsync(ct)`: дождаться всех
@@ -694,7 +697,10 @@ DirectorySize/UploadParallelism удалить). Пайплайн (`RunAsync`):
    - Успех → `break`; исключение (транспорт/протокол) → `await parts.
      AbortAsync()` → continue (следующий endpoint). Отдельно ДО общего
      catch: `catch (OperationCanceledException) when (token.
-     IsCancellationRequested)` — прерывает цикл попыток БЕЗ следующего
+     IsCancellationRequested)` — ПЕРЕД выходом из цикла best-effort
+     `await parts.AbortAsync()` (spec §3.4: отмена гасит и
+     BASE_BACKUP-соединение, и multipart-сессию — иначе висячая сессия
+     живёт до гигиены супервизора), прерывает цикл попыток БЕЗ следующего
      endpoint (отмена — не отказ endpoint'а; деградация отмены в
      s3-pool-exhausted недопустима), наружу — в общий `catch
      (OperationCanceledException)` → `Fail("cancelled")` (п. «Отмена»).
@@ -716,9 +722,12 @@ DirectorySize/UploadParallelism удалить). Пайплайн (`RunAsync`):
    null → skip — не-сегментные файлы pg_wal/archive_status и т.п.)
    < активной позиции источника → `GetObjectRangeAsync(cluster, shard,
    "full/<id>.tar", offset, offset + size - 1)` (клиент ПОПЫТКИ — объект
-   только что залит на этот endpoint) → `((IBackupS3)client).
-   PutWalSegmentAsync($"{Cluster}/{Shard}/wal/{normalized}", data, null,
-   token)`; `WalArchiveConflict`/отказ → Fail(строка).
+   только что залит на этот endpoint) → put дубля через гвард:
+   `client is IWalSegmentGuard guard ? guard.PutWalSegmentAsync(
+   $"{Cluster}/{Shard}/wal/{normalized}", data, null, token) : Fail(...)` —
+   `PutWalSegmentAsync` живёт в `IWalSegmentGuard`, НЕ в `IBackupS3`
+   (образец — старый `FullBackupOperation.cs` ~строка 300); каст
+   `(IBackupS3)` не компилируется; `WalArchiveConflict`/отказ → Fail(строка).
    НЕ ниже активного → `Prog("wal duplicate skipped: ...")` (как старый).
 6. Итог `succeeded`: снимок `(_id, succeeded, uploading, WalStartSegment:
    _walStart, SizeBytes: _sizeBytes, Sha256: hex, BytesDone: parts.
@@ -1150,7 +1159,7 @@ E2eRestoreScenarios|FullyQualifiedName~E2eRestoreNewClusterScenarios`;
      { var start = Math.Max(0, size - tail); var range = await
      streamClient.GetObjectRangeAsync(cluster, shard, key, start, size - 1,
      token); if (!range.IsSuccess) { Fail(downloading, ...); return; }
-     if (TryFindManifest(range.Value.Data, start, out var manifestJson))
+     if (TryFindManifest(range.Value, start, out var manifestJson))
      break; tail <<= 1; }` — не найден за 4 попытки → Fail(downloading,
      "backup_manifest not found in tail") (transient-семантика:
      транспортный сбой — тоже failed/downloading; различие permanent здесь
@@ -1285,8 +1294,11 @@ wal_start_segment — set is not archiveable» + «invalid wal_start_segment»
 в verify-операции (канон §7). Комментарий перед (4) обновить: «Полнота
 набора (вкл. pg_wal) — манифестом в потоковой verify-оперции; дубль wal/ —
 общий контроль цепочки (02-wal-archive §3)».
-2. `StartVerifyRequest`-вызов в этом же файле: добавить `Sha256:
-   candidate.Sha256` (поле из шага 9).
+2. `StartVerifyRequest`-вызовы в этом же файле — их ДВА: старт операции
+   (~строка 256) и relaunch после GET 404/vanished (~строка 334); добавить
+   `Sha256: candidate.Sha256` (поле из шага 9) в ОБА вызова — поле
+   опционально, пропуск relaunch-места компилятор не заметит, а
+   перезапущенная verify молча потеряет sha256-сверку сквозного хэша.
 3. Проверить неиспользуемые using (`WalChain`, `WalHistory` и т.п. —
    компилятор подскажет: TreatWarningsAsErrors).
 
