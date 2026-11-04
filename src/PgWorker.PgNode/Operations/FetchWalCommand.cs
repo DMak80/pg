@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using PgWorker.Backups;
 using PgWorker.Etcd.S3;
 using Shared.Core;
@@ -9,7 +10,7 @@ namespace PgWorker.PgNode.Operations;
 /// restore_command).</summary>
 internal sealed record FetchWalContext(
     string[] Endpoints, string Bucket, string Prefix,
-    string AccessKey, string SecretKey, string? CaPem);
+    string AccessKey, string SecretKey, string? CaPem, uint? ChainLife = null);
 
 /// <summary>Sub-режим того же бинаря `walreceiver fetch-wal &lt;seg&gt; &lt;dest&gt;`
 /// (arch/19 §3.5, spec §3.4): restore_command postgres — скачивание
@@ -90,9 +91,13 @@ internal static class FetchWalCommand
             || string.IsNullOrWhiteSpace(accessKey)
             || string.IsNullOrWhiteSpace(secretKey))
             return null;
+        // t15: номер жизни цепочки выбранного полного (spec решение №34/№35);
+        // мусор/отсутствие → null — DR-orphan-режим, фильтр по номеру не активен.
+        var chainLife = uint.TryParse(env("PGW_WAL_CHAIN_LIFE"), out var life) ? life : (uint?)null;
         return new FetchWalContext(
             endpoints, bucket, prefix, accessKey, secretKey,
-            string.IsNullOrWhiteSpace(env("PGW_S3_CA_PEM")) ? null : env("PGW_S3_CA_PEM"));
+            string.IsNullOrWhiteSpace(env("PGW_S3_CA_PEM")) ? null : env("PGW_S3_CA_PEM"),
+            chainLife);
     }
 
     /// <summary>Чистая функция для тестов: продолжать ли транспортные попытки —
@@ -102,62 +107,215 @@ internal static class FetchWalCommand
         => attempt < TransportAttempts
            && TimeSpan.FromTicks(nowTick - startTick) < CallDeadline;
 
-    /// <summary>Чистая функция для тестов: лучший (длиннейший по EndLsn)
-    /// .partial-ключ из списка имён; null — версий нет.</summary>
-    internal static string? BestPartialKey(IEnumerable<string> names)
-    {
-        string? best = null;
-        ulong bestLsn = 0;
-        foreach (var name in names)
-            if (PgWorker.Backups.WalPartialName.TryParse(name) is { } v
-                && v.EndLsn >= bestLsn)
-            {
-                bestLsn = v.EndLsn;
-                best = name;
-            }
-        return best;
-    }
+    // Параллелизм скачивания кусков (spec решение №23; НЕ таймаут — бюджет
+    // CallDeadline не меняется).
+    internal static readonly int DeltaDownloadParallelism = 8;
 
-    /// <summary>Лучший .partial по ВСЕМ нодам пула (лаг mesh допускается —
-    /// arch/19 §5): перебор листингов узкого префикса; транспортный отказ ноды
-    /// пропускает ноду. Возврат: (ключ, есть ли хоть один ответивший, первая
-    /// транспортная ошибка) — никто не ответил ⇒ транспорт, не «конец WAL».</summary>
-    private static async Task<(string? Key, bool AnyResponded, string? FirstError)> ListBestPartialAsync(
-        IReadOnlyList<IBackupS3> clients, string cluster, string shard,
-        string normalizedSegment, CancellationToken ct)
+    /// <summary>Кандидат сборки покрытия (spec §4.3): кусок/безномерная t14-версия
+    /// с границами в АБСОЛЮТНЫХ LSN (spec решение №2). Md5Hex null — безномерная
+    /// t14-версия: сверка по ETag, диапазон [начало сегмента..EndLsn имени).</summary>
+    internal sealed record AssemblyCandidate(
+        string Name, ulong Start, ulong End, bool IsMaster, string? Md5Hex);
+
+    /// <summary>Чистая функция (spec §4.3 п.2): фильтры инвентаря ДО скачивания —
+    /// разбор имени, фильтр номера жизни (чужие не рассматриваются вовсе),
+    /// безномерные t14-версии только пока у сегмента нет кусков текущего номера
+    /// (решение №39), сверка end−start с размером объекта, диапазон внутри сегмента.
+    /// Неразбор/несовпадение — отброс (диагностику печатает вызывающий).</summary>
+    internal static IReadOnlyList<AssemblyCandidate> FilterDeltaInventory(
+        IReadOnlyList<(string Name, long Size)> objects, uint? chainLife, WalFileName segment)
     {
-        string? best = null;
-        var anyResponded = false;
-        string? firstError = null;
-        foreach (var client in clients)
+        var segmentStart = WalDeltaName.SegmentStartOf(segment);
+        var segmentEnd = segmentStart + (ulong)WalFileName.SegmentBytes;
+
+        // Есть ли у сегмента кусок ТЕКУЩЕГО номера жизни: безномерные legacy
+        // учитываются только пока таких кусков нет (переходное окно t14→t15).
+        var hasCurrentPiece = chainLife is { } current
+            && objects.Any(o => WalDeltaName.TryParse(o.Name) is { } p && p.ChainLife == current);
+
+        var result = new List<AssemblyCandidate>();
+        foreach (var (name, size) in objects)
         {
-            var listed = await client.ListAsync(
-                cluster, shard, $"wal/{normalizedSegment}.", ct: ct);
-            if (!listed.IsSuccess)
+            if (WalDeltaName.TryParse(name) is { } piece)
             {
-                firstError ??= listed.Error!.Message.Split('\n')[0];
+                if (chainLife is { } life && piece.ChainLife != life)
+                    continue; // чужой номер жизни — невидим вовсе
+                if (piece.End - piece.Start != (ulong)size)
+                    continue; // битый: end−start ≠ размер из листинга
+                if (piece.Start < segmentStart || piece.End > segmentEnd)
+                    continue; // вне диапазона сегмента
+                result.Add(new AssemblyCandidate(
+                    name, piece.Start, piece.End, piece.IsMaster, piece.Md5Hex));
                 continue;
             }
-            anyResponded = true;
-            if (BestPartialKey(listed.Value.Select(o => o.Name)) is not { } candidate)
-                continue;
-            if (best is null
-                || PgWorker.Backups.WalPartialName.TryParse(candidate)!.Value.EndLsn
-                   > PgWorker.Backups.WalPartialName.TryParse(best)!.Value.EndLsn)
-                best = candidate;
+
+            if (WalPartialName.TryParse(name) is { } legacy)
+            {
+                if (chainLife is not null && hasCurrentPiece)
+                    continue; // класс «чужих» после появления кусков текущего номера
+                if (legacy.EndLsn <= segmentStart
+                    || legacy.EndLsn - segmentStart != (ulong)size
+                    || legacy.EndLsn > segmentEnd)
+                    continue; // пустая/битая по размеру/вне сегмента версия
+                result.Add(new AssemblyCandidate(name, segmentStart, legacy.EndLsn, false, null));
+            }
+            // прочее (финал, history, мусор) — не кандидат
         }
-        return (best, anyResponded, firstError);
+        return result;
     }
 
-    /// <summary>true — предпочесть локальную копию набора: архивный `.partial`
-    /// не длиннее РЕАЛЬНОГО содержимого копии (её последний ненулевой байт —
-    /// верхняя граница конца: копия набора у бэкапа со standby разрежена и
-    /// добита), false — отдать `.partial` (он длиннее), null — копии нет/пуста.
+    /// <summary>Чистая функция (spec §4.3 п.4): порядок кандидатов — m над r,
+    /// затем более ранний start (база идёт первой в своей группе).</summary>
+    internal static IReadOnlyList<AssemblyCandidate> OrderCandidates(
+        IReadOnlyList<AssemblyCandidate> candidates)
+        => candidates
+            .OrderByDescending(c => c.IsMaster)
+            .ThenBy(c => c.Start)
+            .ThenBy(c => c.Name, StringComparer.Ordinal)
+            .ToList();
+
+    /// <summary>Результат сборки: покрытие (конец собранного префикса, абсолютный
+    /// LSN), факт конфликта байтов и граница дыры (минимальный start куска выше
+    /// покрытия; null — выше покрытия кусков нет).</summary>
+    internal sealed record AssemblyResult(ulong Coverage, bool Conflict, ulong? HoleStart);
+
+    /// <summary>Штатная сборка (spec §4.3 п.6): жадное применение от начала
+    /// сегмента; пересечение с собранным буфером сверяется побайтово, совпало —
+    /// union; несовпадение — конфликт, сборка останавливается; кусок ниже
+    /// покрытия пропускается молча; кусок выше покрытия — кандидат на дыру.</summary>
+    internal static AssemblyResult GreedyAssemble(
+        IReadOnlyList<AssemblyCandidate> candidates, IReadOnlyDictionary<string, byte[]> bytes)
+        => GreedyAssembleCore(candidates, bytes).Result;
+
+    // Внутренняя форма: результат + собранный буфер (нужен вызывающему для записи).
+    internal static (AssemblyResult Result, byte[] Buffer) GreedyAssembleCore(
+        IReadOnlyList<AssemblyCandidate> candidates, IReadOnlyDictionary<string, byte[]> bytes)
+    {
+        if (candidates.Count == 0)
+            return (new AssemblyResult(0, false, null), []);
+        var segmentStart = SegmentStartOfCandidate(candidates[0]);
+        var buffer = new byte[WalFileName.SegmentBytes];
+        var coverage = segmentStart;
+        var conflict = false;
+        foreach (var candidate in candidates)
+        {
+            if (candidate.End <= coverage)
+                continue; // уже покрыто — молча пропускаем
+            if (candidate.Start > coverage)
+                continue; // стык за покрытием — кандидат на дыру
+            var data = bytes[candidate.Name];
+            var startOffset = (int)(candidate.Start - segmentStart);
+            var overlapLen = (int)(Math.Min(candidate.End, coverage) - candidate.Start);
+            if (overlapLen > 0
+                && !buffer.AsSpan(startOffset, overlapLen).SequenceEqual(data.AsSpan(0, overlapLen)))
+            {
+                conflict = true; // несовпадение байтов пересечения
+                break;           // сборка останавливается на покрытии до конфликта
+            }
+
+            var copyLsn = Math.Max(candidate.Start, coverage);
+            var copyLen = (int)(candidate.End - copyLsn);
+            data.AsSpan((int)(copyLsn - candidate.Start), copyLen)
+                .CopyTo(buffer.AsSpan((int)(copyLsn - segmentStart), copyLen));
+            coverage = candidate.End;
+        }
+
+        var holeStart = HoleStartOf(candidates, coverage);
+        return (new AssemblyResult(coverage, conflict, holeStart),
+            buffer[..(int)(coverage - segmentStart)]);
+    }
+
+    /// <summary>Режим выживания (spec §4.3 п.7): сборка заново, кандидаты по
+    /// возрастанию md5 (Ordinal; безномерные — по ETag, без ETag — в конце);
+    /// каждый применённый кусок проверяется сканером (границы записей + CRC
+    /// xl_crc) на всём покрытии до его конца — несовпадение пересечения или
+    /// битые записи → кусок отбрасывается без ретрая.</summary>
+    internal static AssemblyResult SurvivalAssemble(
+        IReadOnlyList<AssemblyCandidate> candidates, IReadOnlyDictionary<string, byte[]> bytes,
+        IReadOnlyDictionary<string, string?> etags)
+        => SurvivalAssembleCore(candidates, bytes, etags).Result;
+
+    internal static (AssemblyResult Result, byte[] Buffer) SurvivalAssembleCore(
+        IReadOnlyList<AssemblyCandidate> candidates, IReadOnlyDictionary<string, byte[]> bytes,
+        IReadOnlyDictionary<string, string?> etags)
+    {
+        if (candidates.Count == 0)
+            return (new AssemblyResult(0, false, null), []);
+        var segmentStart = SegmentStartOfCandidate(candidates[0]);
+        var buffer = new byte[WalFileName.SegmentBytes];
+        var coverage = segmentStart;
+
+        // Порядок: возрастание md5-строки; безномерные — по ETag; без ETag — в конце.
+        var ordered = candidates
+            .Select(c => (Candidate: c,
+                Key: c.Md5Hex ?? (etags.TryGetValue(c.Name, out var etag) ? etag : null)))
+            .OrderBy(x => x.Key is null ? 1 : 0)
+            .ThenBy(x => x.Key, StringComparer.Ordinal)
+            .ThenBy(x => x.Candidate.Start)
+            .Select(x => x.Candidate)
+            .ToList();
+
+        foreach (var candidate in ordered)
+        {
+            if (candidate.End <= coverage || candidate.Start > coverage)
+                continue; // уже покрыт / за дырой — не применяется
+            var data = bytes[candidate.Name];
+            var startOffset = (int)(candidate.Start - segmentStart);
+            var overlapLen = (int)(Math.Min(candidate.End, coverage) - candidate.Start);
+            if (overlapLen > 0
+                && !buffer.AsSpan(startOffset, overlapLen).SequenceEqual(data.AsSpan(0, overlapLen)))
+                continue; // несовпадение пересечения — отброс без ретрая
+
+            var copyLsn = Math.Max(candidate.Start, coverage);
+            var copyLen = (int)(candidate.End - copyLsn);
+            var copyOffset = (int)(copyLsn - segmentStart);
+            var saved = buffer.AsSpan(copyOffset, copyLen).ToArray();
+            data.AsSpan((int)(copyLsn - candidate.Start), copyLen)
+                .CopyTo(buffer.AsSpan(copyOffset, copyLen));
+
+            // Скан-валидация затронутой области: всё собранное покрытие обязано
+            // остаться валидным по границам записей и CRC (уже принятое валидно,
+            // поэтому укорочение означает битые записи нового куска).
+            var target = (int)(candidate.End - segmentStart);
+            if (WalPrefixScanner.ValidatedPrefixLength(buffer, target) < target)
+            {
+                saved.CopyTo(buffer.AsSpan(copyOffset, copyLen)); // откат копии
+                continue; // записи битые — кусок отброшен
+            }
+            coverage = candidate.End;
+        }
+
+        var holeStart = HoleStartOf(ordered, coverage);
+        return (new AssemblyResult(coverage, false, holeStart),
+            buffer[..(int)(coverage - segmentStart)]);
+    }
+
+    // Начало сегмента кандидата (имя начинается с 24 hex-символов сегмента).
+    private static ulong SegmentStartOfCandidate(AssemblyCandidate candidate)
+        => WalFileName.TryParse(candidate.Name[..24]) is { } segment
+            ? WalDeltaName.SegmentStartOf(segment)
+            : 0;
+
+    // Граница дыры: минимальный start куска выше итогового покрытия (null — нет).
+    private static ulong? HoleStartOf(
+        IReadOnlyList<AssemblyCandidate> candidates, ulong coverage)
+    {
+        ulong? hole = null;
+        foreach (var candidate in candidates)
+            if (candidate.Start > coverage && (hole is null || candidate.Start < hole))
+                hole = candidate.Start;
+        return hole;
+    }
+
+    /// <summary>true — предпочесть локальную копию набора: собранное Покрытие
+    /// кусков не длиннее РЕАЛЬНОГО содержимого копии (её последний ненулевой
+    /// байт — верхняя граница конца: копия набора у бэкапа со standby разрежена
+    /// и добита), false — отдать покрытие (оно длиннее), null — копии нет/пуста.
     /// postgres при restore_command сначала идёт в архив; exit 1 заставляет его
     /// прочитать layout самому — и остановиться там, где кончается копия набора
     /// (сканировать разреженный файл эвристиками нельзя).</summary>
     internal static bool? LocalSetCoversPartial(
-        string segment, string? bestPartialKey, string? pgDataRoot = null)
+        string segment, ulong coverage, string? pgDataRoot = null)
     {
         var root = pgDataRoot ?? PgDataRoot;
         // PG/pg_basebackup пишут имена ВЕРХНИМ hex, а %f/S3-ключ нормализуются
@@ -189,14 +347,10 @@ internal static class FetchWalCommand
         if (lastNonZero < 0)
             return null; // пустая копия — не опора
 
-        var segmentStart = ((ulong)seg.Log * WalFileName.SegsPerLog + seg.Seg)
-            * (ulong)WalFileName.SegmentBytes;
-        var setEnd = (ulong)lastNonZero + 1;
-        var partialAbsEnd = bestPartialKey is { } key
-            ? WalPartialName.TryParse(key)?.EndLsn ?? 0
-            : 0;
-        var partialEnd = partialAbsEnd > segmentStart ? partialAbsEnd - segmentStart : 0;
-        return setEnd >= partialEnd;
+        var segmentStart = WalDeltaName.SegmentStartOf(seg);
+        var setEnd = (ulong)lastNonZero + 1; // конец содержимого копии (внутри сегмента)
+        var coverageEnd = coverage > segmentStart ? coverage - segmentStart : 0;
+        return setEnd >= coverageEnd;
     }
 
     // Локальная копия сегмента в pg_wal набора: точное имя, иначе — без учёта
@@ -253,13 +407,14 @@ internal static class FetchWalCommand
         }
     }
 
-    /// <summary>Чистая функция для тестов: ОДИН проход по клиентам пула (перебор
-    /// read-списка до найденного); transportError — первая транспортная ошибка
-    /// прохода (null — «сегмента нет нигде», все ответили not found). Финала нет
-    /// нигде — лучший .partial версии (валидный префикс живого сегмента).</summary>
+    /// <summary>ОДИН проход по клиентам пула (spec §4.3): финал `wal/<seg>` —
+    /// первым (перебор read-списка до найденного); финала нет нигде — сборка
+    /// покрытия из дельта-кусков по процессу g-wal-delta-assembly. transportError —
+    /// первая транспортная ошибка прохода (null — «конца WAL достигли», все
+    /// ответили not found).</summary>
     internal static async Task<(int ExitCode, string? TransportError)> FetchOnceAsync(
         IReadOnlyList<IBackupS3> clients, string cluster, string shard,
-        string segment, string target, CancellationToken ct)
+        string segment, string target, uint? chainLife, CancellationToken ct)
     {
         string? transportError = null;
         var normalized = NormalizeSegment(segment);
@@ -273,72 +428,145 @@ internal static class FetchWalCommand
                 transportError ??= got.Error!.Message.Split('\n')[0];
         }
 
-        // Финала нет нигде — лучший .partial (хвост потока, arch/19 §3.5):
-        // префикс валиден по построению, но postgres принимает архивный файл
-        // только полного размера — добивается нулями; ничего нет нигде ⇒
-        // конец WAL (exit 1).
-        var (bestKey, anyResponded, listError) = await ListBestPartialAsync(
-            clients, cluster, shard, normalized, ct);
-        if (!anyResponded)
-            return (1, listError ?? "wal partial listing failed on all nodes");
+        if (WalFileName.TryParse(normalized) is not { } segmentName)
+            return (1, transportError); // мусорное имя — не сегмент WAL
 
-        // Локальная копия набора полного (`full/<id>/pg_wal/` скачана в PGDATA):
-        // restore_command у postgres ПРИОРИТЕТНЕЕ pg_wal — архивный .partial
-        // отдаётся, только если он ДЛИННЕЕ копии (верхняя граница содержимого
-        // копии — её последний ненулевой байт: у бэкапа со standby копия
-        // разрежена и добита — эвристиками префикса её не режем). Копия не
-        // короче — exit 1: postgres прочитает layout сам (остановится на его
-        // реальном конце), битого хвоста из архива не возьмёт.
-        if (LocalSetCoversPartial(segment, bestKey) is { } preferLayout
-            && preferLayout)
-            return (1, null);
-
-        if (bestKey is { } partial)
+        // (1) Инвентарь узкого префикса ПО ВСЕМ нодам (union, дедуп по имени;
+        // размер объекта — из листинга, GET для фильтра не нужен). Ни одна нода
+        // не ответила — транспортный отказ вызова, НЕ «конец WAL».
+        var inventory = new SortedDictionary<string, long>(StringComparer.Ordinal);
+        var anyResponded = false;
+        string? listError = null;
+        foreach (var client in clients)
         {
-            var temp = target + ".partial";
-            try
+            var listed = await client.ListPrefixAsync(
+                $"{cluster}/{shard}/wal/{normalized}.", ct: ct);
+            if (!listed.IsSuccess)
             {
-                foreach (var client in clients)
-                {
-                    var got = await client.GetObjectToFileAsync(
-                        cluster, shard, $"wal/{partial}", temp, ct);
-                    if (got.IsSuccess)
-                    {
-                        if (!TryWritePaddedSegment(temp, target))
-                        {
-                            transportError ??= $"wal partial {partial}: pad to segment size failed";
-                            break;
-                        }
-                        return (0, null);
-                    }
-                    if (!IsNotFound(got))
-                        transportError ??= got.Error!.Message.Split('\n')[0];
-                    // Недокачанный/отсутствующий объект на этой ноде — следующая.
-                    try
-                    {
-                        if (File.Exists(temp))
-                            File.Delete(temp);
-                    }
-                    catch
-                    {
-                        // Не удалось — следующая попытка перезапишет.
-                    }
-                }
+                listError ??= listed.Error!.Message.Split('\n')[0];
+                continue;
             }
-            finally
+            anyResponded = true;
+            foreach (var obj in listed.Value)
+                inventory[obj.Key[(obj.Key.LastIndexOf('/') + 1)..]] = obj.SizeBytes;
+        }
+        if (!anyResponded)
+            return (1, listError ?? "wal delta listing failed on all nodes");
+
+        // (2) Фильтры ДО скачивания: жизнь, размер (= end−start), диапазон сегмента.
+        var filtered = FilterDeltaInventory(
+            inventory.Select(kv => (kv.Key, kv.Value)).ToList(), chainLife, segmentName);
+        if (filtered.Count == 0)
+            return (1, null); // (3) конец WAL: ни финала, ни кусков
+
+        // (4) Порядок кандидатов: m над r → start asc.
+        var ordered = OrderCandidates(filtered);
+
+        // (5) Скачивание параллельно (пул 8); сверка md5 байтов с именем куска
+        // (безномерная legacy — с ETag одиночного put = md5 содержимого).
+        var bytes = new System.Collections.Concurrent.ConcurrentDictionary<string, byte[]>(
+            StringComparer.Ordinal);
+        var etags = new System.Collections.Concurrent.ConcurrentDictionary<string, string?>(
+            StringComparer.Ordinal);
+        string? downloadError = null;
+        using (var gate = new SemaphoreSlim(DeltaDownloadParallelism))
+        {
+            var downloads = ordered.Select(async candidate =>
             {
+                await gate.WaitAsync(ct);
                 try
                 {
-                    if (File.Exists(temp))
-                        File.Delete(temp);
+                    foreach (var client in clients)
+                    {
+                        var got = await client.GetObjectBytesAsync(
+                            cluster, shard, $"wal/{candidate.Name}", ct);
+                        if (!got.IsSuccess)
+                        {
+                            if (!IsNotFound(got))
+                                downloadError ??= got.Error!.Message.Split('\n')[0];
+                            continue; // ноды нет объекта — следующая
+                        }
+                        var (data, etag) = got.Value;
+                        etags[candidate.Name] = etag;
+                        var actual = Convert.ToHexStringLower(MD5.HashData(data));
+                        var expected = candidate.Md5Hex ?? etag;
+                        if (expected is null
+                            || !string.Equals(actual, expected, StringComparison.OrdinalIgnoreCase))
+                        {
+                            await Console.Error.WriteLineAsync(
+                                $"fetch-wal: delta {candidate.Name}: md5 mismatch");
+                            return; // порча при хранении — отброс + факт
+                        }
+                        bytes[candidate.Name] = data;
+                        return;
+                    }
                 }
-                catch
+                finally
                 {
-                    // Временный файл вне контракта вызова.
+                    gate.Release();
                 }
+            }).ToList();
+            await Task.WhenAll(downloads);
+        }
+
+        var downloaded = ordered.Where(c => bytes.ContainsKey(c.Name)).ToList();
+        if (downloaded.Count == 0)
+            return (1, downloadError ?? transportError); // ни один кусок не скачан
+
+        // (6) Штатная сборка; несовпадение байтов пересечения — факт + выживание.
+        var (greedyResult, greedyBuffer) = GreedyAssembleCore(downloaded, bytes);
+        var coverage = greedyResult.Coverage;
+        var holeStart = greedyResult.HoleStart;
+        var assembled = greedyBuffer;
+        if (greedyResult.Conflict)
+        {
+            await Console.Error.WriteLineAsync(
+                $"fetch-wal: delta conflict at {coverage:x}, survival mode");
+            var (survivalResult, survivalBuffer) = SurvivalAssembleCore(downloaded, bytes, etags);
+            coverage = survivalResult.Coverage;
+            holeStart = survivalResult.HoleStart;
+            assembled = survivalBuffer;
+        }
+
+        // (8) Дыра — фолбэк последней надежды: закрытое покрытие до её начала.
+        if (holeStart is { } hole)
+            await Console.Error.WriteLineAsync($"fetch-wal: delta hole at {hole:x}");
+
+        var segmentStart = WalDeltaName.SegmentStartOf(segmentName);
+        if (coverage <= segmentStart)
+            return (1, transportError ?? downloadError); // покрытия нет — «конца WAL»
+
+        // (10) Локальная копия набора: не короче покрытия — postgres читает layout сам.
+        if (LocalSetCoversPartial(segment, coverage) is { } preferLayout && preferLayout)
+            return (1, null);
+
+        // (9) Финальная скан-валидация всего префикса: CRC-аномалия — усечение + факт.
+        var validated = WalPrefixScanner.ValidatedPrefixLength(assembled, assembled.Length);
+        if (validated < assembled.Length)
+            await Console.Error.WriteLineAsync(
+                $"fetch-wal: delta {normalized}: prefix truncated {assembled.Length} → {validated} (crc)");
+
+        // (9) Запись валидного префикса и добивка нулями до wal_segment_size.
+        var temp = target + ".delta";
+        try
+        {
+            await File.WriteAllBytesAsync(temp, assembled.AsMemory(0, validated), ct);
+            if (!TryWritePaddedSegment(temp, target))
+                return (1, transportError ?? $"wal delta {normalized}: pad to segment size failed");
+            return (0, null);
+        }
+        finally
+        {
+            try
+            {
+                if (File.Exists(temp))
+                    File.Delete(temp);
+            }
+            catch
+            {
+                // Временный файл вне контракта вызова.
             }
         }
-        return (1, transportError);
     }
 
     /// <summary>Точка входа sub-режима (Program.Main ДО builder): код 0 — объект
@@ -405,7 +633,8 @@ internal static class FetchWalCommand
                 try
                 {
                     var (exitCode, transportError) = await FetchOnceAsync(
-                        clients, cluster, shard, segment, target, CancellationToken.None);
+                        clients, cluster, shard, segment, target, context.ChainLife,
+                        CancellationToken.None);
                     if (exitCode == 0)
                         return 0;
                     if (transportError is null)

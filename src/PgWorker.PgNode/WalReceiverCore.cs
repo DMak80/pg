@@ -500,7 +500,10 @@ public sealed class WalReceiverCore
                         if (!putDelta.IsSuccess)
                             return; // permanent-веток нет, вечный ретрай не завершается
 
-                        if (coverage > 0)
+                        var wasBase = coverage == 0
+                            || coverage == WalDeltaName.SegmentStartOf(
+                                WalFileName.TryParse(shot.Name)!.Value);
+                        if (!wasBase)
                             deltasSinceCompact++; // инкремент для компакции (не база)
                         coverage = shot.EndLsn;
                         Volatile.Write(ref lastPartialEndLsn, shot.EndLsn);
@@ -872,9 +875,11 @@ public sealed class WalReceiverCore
     {
         if (WalFileName.TryParse(segmentName) is not { } segment)
             return Result.Failed(new ApplicationException($"delta: bad segment name {segmentName}"));
-        var segmentStart = ((ulong)segment.Log * WalFileName.SegsPerLog + segment.Seg)
-                           * (ulong)WalFileName.SegmentBytes;
-        var from = startLsn == 0 ? 0 : (int)(startLsn - segmentStart);
+        var segmentStart = WalDeltaName.SegmentStartOf(segment);
+        // coverage == 0 — «покрытия нет»: базовый кусок пишется от НАЧАЛА
+        // сегмента (абсолютный LSN; spec решение №2 — Size == end − start).
+        var start = startLsn == 0 ? segmentStart : startLsn;
+        var from = (int)(start - segmentStart);
         var to = (int)(endLsn - segmentStart);
         if (from < 0 || to > prefix.Length || from >= to)
             return Result.Failed(new ApplicationException(
@@ -883,7 +888,7 @@ public sealed class WalReceiverCore
         var bytes = prefix[from..to];
         var md5Hex = Convert.ToHexStringLower(MD5.HashData(bytes));
         var key = $"{o.Cluster}/{o.Shard}/wal/" +
-                  WalDeltaName.Key(segment, startLsn, endLsn, o.ChainLife, o.IsMasterSource, md5Hex);
+                  WalDeltaName.Key(segment, start, endLsn, o.ChainLife, o.IsMasterSource, md5Hex);
         return await PutDeltaWithRetryAsync(s3, events, o, key, bytes, md5Hex, retry, ct, exhaustion);
     }
 

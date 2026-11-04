@@ -826,13 +826,16 @@ public class RetentionPlannerTests
 
     private static string PieceMd5(char c) => new(c, 32);
 
+    // Абсолютный LSN начала сегмента (координаты кусков — абсолютные LSN).
+    private static ulong Start(WalFileName segment) => WalDeltaName.SegmentStartOf(segment);
+
     // AAA (д1): кусок ЧУЖОГО номера жизни — мусор сразу, даже выше cutoff.
     [Fact]
     public void Piece_ForeignLife_DoomedWithoutCutoff()
     {
         // Arrange — кусок жизни 2 при текущей жизни 1; cutoff ниже сегмента
         var segment = Segment(0, 8);
-        var foreign = WalDeltaName.Key(segment, 0, 0x100, 2, true, PieceMd5('a'));
+        var foreign = WalDeltaName.Key(segment, Start(segment), Start(segment) + 0x100, 2, true, PieceMd5('a'));
 
         // Act
         var doomed = RetentionPlanner.SelectPartialForDeletion(
@@ -851,7 +854,7 @@ public class RetentionPlannerTests
         var segA = Segment(0, 9);
         var segB = Segment(0, 10);
         var legacyA = WalPartialName.Key(segA.Name, 0x180);
-        var pieceA = WalDeltaName.Key(segA, 0, 0x100, 1, true, PieceMd5('b'));
+        var pieceA = WalDeltaName.Key(segA, Start(segA), Start(segA) + 0x100, 1, true, PieceMd5('b'));
         var legacyB1 = WalPartialName.Key(segB.Name, 0x100);
         var legacyB2 = WalPartialName.Key(segB.Name, 0x200);
 
@@ -871,9 +874,9 @@ public class RetentionPlannerTests
     {
         // Arrange — жизнь 2 (база+дельта) и жизнь 1 (база) при chainLife null
         var segment = Segment(0, 11);
-        var life2Base = WalDeltaName.Key(segment, 0, 0x100, 2, true, PieceMd5('a'));
-        var life2Delta = WalDeltaName.Key(segment, 0x100, 0x200, 2, false, PieceMd5('b'));
-        var life1Base = WalDeltaName.Key(segment, 0, 0x100, 1, true, PieceMd5('c'));
+        var life2Base = WalDeltaName.Key(segment, Start(segment), Start(segment) + 0x100, 2, true, PieceMd5('a'));
+        var life2Delta = WalDeltaName.Key(segment, Start(segment) + 0x100, Start(segment) + 0x200, 2, false, PieceMd5('b'));
+        var life1Base = WalDeltaName.Key(segment, Start(segment), Start(segment) + 0x100, 1, true, PieceMd5('c'));
 
         // Act
         var doomed = RetentionPlanner.SelectPartialForDeletion(
@@ -889,10 +892,10 @@ public class RetentionPlannerTests
     {
         // Arrange — базы 0x100 и 0x200; дельта [0x100..0x150) ниже базы, [0x200..0x300) живая
         var segment = Segment(0, 12);
-        var oldBase = WalDeltaName.Key(segment, 0, 0x100, 1, true, PieceMd5('a'));
-        var newBase = WalDeltaName.Key(segment, 0, 0x200, 1, true, PieceMd5('b'));
-        var belowBase = WalDeltaName.Key(segment, 0x100, 0x150, 1, false, PieceMd5('c'));
-        var liveDelta = WalDeltaName.Key(segment, 0x200, 0x300, 1, false, PieceMd5('d'));
+        var oldBase = WalDeltaName.Key(segment, Start(segment), Start(segment) + 0x100, 1, true, PieceMd5('a'));
+        var newBase = WalDeltaName.Key(segment, Start(segment), Start(segment) + 0x200, 1, true, PieceMd5('b'));
+        var belowBase = WalDeltaName.Key(segment, Start(segment) + 0x100, Start(segment) + 0x150, 1, false, PieceMd5('c'));
+        var liveDelta = WalDeltaName.Key(segment, Start(segment) + 0x200, Start(segment) + 0x300, 1, false, PieceMd5('d'));
 
         // Act
         var doomed = RetentionPlanner.SelectPartialForDeletion(
@@ -910,8 +913,8 @@ public class RetentionPlannerTests
     {
         // Arrange — финал сегмента + куски двух жизней + t14-версия
         var segment = Segment(0, 13);
-        var life1 = WalDeltaName.Key(segment, 0, 0x100, 1, true, PieceMd5('a'));
-        var life2 = WalDeltaName.Key(segment, 0, 0x100, 2, true, PieceMd5('b'));
+        var life1 = WalDeltaName.Key(segment, Start(segment), Start(segment) + 0x100, 1, true, PieceMd5('a'));
+        var life2 = WalDeltaName.Key(segment, Start(segment), Start(segment) + 0x100, 2, true, PieceMd5('b'));
         var legacy = WalPartialName.Key(segment.Name, 0x200);
 
         // Act

@@ -97,10 +97,12 @@ public static class WalChain
             .OrderBy(p => p.Piece.Start)
             .ThenBy(p => p.Name, StringComparer.Ordinal)
             .ToList();
-        ulong coverage = 0;
+        // База жизни — кусок от НАЧАЛА сегмента (координаты кусков абсолютные).
+        var segmentStart = WalDeltaName.SegmentStartOf(ordered[0].Piece.Segment);
+        var coverage = segmentStart;
         string? name = null;
         foreach (var (piece, pieceName) in ordered)
-            if (piece.Start == 0 && piece.End > coverage)
+            if (piece.Start == segmentStart && piece.End > coverage)
             {
                 coverage = piece.End;
                 name = pieceName;

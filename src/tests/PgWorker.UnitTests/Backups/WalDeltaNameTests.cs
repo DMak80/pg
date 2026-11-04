@@ -113,6 +113,9 @@ public class WalDeltaNameTests
 
     // ---: CoverageOf — покрытие по именам кусков текущей жизни (t15) ----
 
+    // Начало сегмента Seg (log=0, seg=1) в абсолютных LSN.
+    private static readonly ulong SegStart = WalFileName.SegmentBytes;
+
     // AAA: пустой список — покрытия нет.
     [Fact]
     public void CoverageOf_Empty_Zero()
@@ -121,16 +124,16 @@ public class WalDeltaNameTests
         WalDeltaName.CoverageOf([], chainLife: 1).Should().Be(0UL);
     }
 
-    // AAA: дельта без базы (start > 0) покрытие не начинает.
+    // AAA: дельта без базы (start > начала сегмента) покрытие не начинает.
     [Fact]
     public void CoverageOf_NoBase_Zero()
     {
-        // Arrange — только дельта [0x100..0x200)
+        // Arrange — только дельта [SegStart+0x100 .. SegStart+0x200)
         var seg = WalFileName.TryParse(Seg)!.Value;
-        var delta = WalDeltaName.Key(seg, 0x100, 0x200, 1, true, new string('a', 32));
+        var delta = WalDeltaName.Key(seg, SegStart + 0x100, SegStart + 0x200, 1, true, new string('a', 32));
 
-        // Act / Assert
-        WalDeltaName.CoverageOf([delta], chainLife: 1).Should().Be(0UL);
+        // Act / Assert — покрытие = начало сегмента (база не начата)
+        WalDeltaName.CoverageOf([delta], chainLife: 1).Should().Be(SegStart);
     }
 
     // AAA: база + примыкающие дельты — покрытие до конца последней.
@@ -141,29 +144,29 @@ public class WalDeltaNameTests
         var seg = WalFileName.TryParse(Seg)!.Value;
         string[] names =
         [
-            WalDeltaName.Key(seg, 0, 0x100, 1, true, new string('a', 32)),
-            WalDeltaName.Key(seg, 0x100, 0x200, 1, false, new string('b', 32)),
-            WalDeltaName.Key(seg, 0x200, 0x300, 1, false, new string('c', 32)),
+            WalDeltaName.Key(seg, SegStart, SegStart + 0x100, 1, true, new string('a', 32)),
+            WalDeltaName.Key(seg, SegStart + 0x100, SegStart + 0x200, 1, false, new string('b', 32)),
+            WalDeltaName.Key(seg, SegStart + 0x200, SegStart + 0x300, 1, false, new string('c', 32)),
         ];
 
         // Act / Assert
-        WalDeltaName.CoverageOf(names, chainLife: 1).Should().Be(0x300UL);
+        WalDeltaName.CoverageOf(names, chainLife: 1).Should().Be(SegStart + 0x300);
     }
 
     // AAA: дыра в покрытии — покрытие останавливается на её границе.
     [Fact]
     public void CoverageOf_Gap_StopsAtGap()
     {
-        // Arrange — [0..0x100) и [0x200..0x300), дыра [0x100..0x200)
+        // Arrange — база [0..0x100) от начала сегмента и кусок за дырой
         var seg = WalFileName.TryParse(Seg)!.Value;
         string[] names =
         [
-            WalDeltaName.Key(seg, 0, 0x100, 1, true, new string('a', 32)),
-            WalDeltaName.Key(seg, 0x200, 0x300, 1, false, new string('b', 32)),
+            WalDeltaName.Key(seg, SegStart, SegStart + 0x100, 1, true, new string('a', 32)),
+            WalDeltaName.Key(seg, SegStart + 0x200, SegStart + 0x300, 1, false, new string('b', 32)),
         ];
 
         // Act / Assert
-        WalDeltaName.CoverageOf(names, chainLife: 1).Should().Be(0x100UL);
+        WalDeltaName.CoverageOf(names, chainLife: 1).Should().Be(SegStart + 0x100);
     }
 
     // AAA: куски чужого номера жизни не участвуют.
@@ -172,11 +175,11 @@ public class WalDeltaNameTests
     {
         // Arrange — база жизни 2 при запросе жизни 1
         var seg = WalFileName.TryParse(Seg)!.Value;
-        var foreign = WalDeltaName.Key(seg, 0, 0x100, 2, true, new string('a', 32));
+        var foreign = WalDeltaName.Key(seg, SegStart, SegStart + 0x100, 2, true, new string('a', 32));
 
         // Act / Assert
         WalDeltaName.CoverageOf([foreign], chainLife: 1).Should().Be(0UL);
-        WalDeltaName.CoverageOf([foreign], chainLife: 2).Should().Be(0x100UL);
+        WalDeltaName.CoverageOf([foreign], chainLife: 2).Should().Be(SegStart + 0x100);
     }
 
     // AAA: финал и t14-версия в списке имён — не куски, игнорируются.

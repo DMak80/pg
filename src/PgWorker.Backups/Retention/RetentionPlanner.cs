@@ -212,7 +212,8 @@ public static partial class RetentionPlanner
             foreach (var group in groups)
             {
                 var list = group.ToList();
-                var bases = list.Where(x => x.Piece.Start == 0).ToList();
+                var segmentStart = WalDeltaName.SegmentStartOf(segment);
+                var bases = list.Where(x => x.Piece.Start == segmentStart).ToList();
                 var baseEnd = bases.Select(x => x.Piece.End).DefaultIfEmpty(0UL).Max();
                 if (baseEnd == 0)
                     continue; // базы нет — покрытие жизни не начато, куски не трогаем

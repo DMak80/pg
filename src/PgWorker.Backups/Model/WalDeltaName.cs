@@ -63,23 +63,34 @@ public static class WalDeltaName
         return new Piece(segment, start, end, life, role == 'm', new string(md5));
     }
 
+    /// <summary>Абсолютный LSN начала сегмента (spec решение №2: координаты
+    /// кусков — абсолютные LSN, поэтому «база start=0» = кусок ОТ НАЧАЛА
+    /// сегмента).</summary>
+    public static ulong SegmentStartOf(WalFileName segment)
+        => ((ulong)segment.Log * WalFileName.SegsPerLog + segment.Seg)
+           * (ulong)WalFileName.SegmentBytes;
+
     /// <summary>Покрытие дельта-кусков ТЕКУЩЕГО номера жизни по именам (без
     /// байтов; arch/pgnode/processes/g-wal-delta-assembly.md, spec §4.2/§4.5):
-    /// база start=0 задаёт начальное покрытие (max end среди баз), затем куски
-    /// start ≤ coverage &lt; end расширяют его жадно (сортировка по start);
-    /// 0 — базы нет (покрытие жизни не начато). Куски чужих номеров не
-    /// участвуют; финалы и t14-версии этим парсером не разбираются вовсе.</summary>
+    /// база (кусок от НАЧАЛА сегмента) задаёт начальное покрытие (max end среди
+    /// баз), затем куски start ≤ coverage &lt; end расширяют его жадно
+    /// (сортировка по start). 0 — кусков нет; начало сегмента — базы нет
+    /// (покрытие жизни не начато). Куски чужих номеров не участвуют; финалы и
+    /// t14-версии этим парсером не разбираются вовсе.</summary>
     public static ulong CoverageOf(IEnumerable<string> names, uint chainLife)
     {
         var pieces = new List<Piece>();
         foreach (var name in names)
             if (TryParse(name) is { } piece && piece.ChainLife == chainLife)
                 pieces.Add(piece);
+        if (pieces.Count == 0)
+            return 0; // кусков нет — покрытия нет (вызывающий сверяет с концом снимка)
         pieces.Sort((a, b) => a.Start.CompareTo(b.Start));
 
-        ulong coverage = 0;
+        var segmentStart = SegmentStartOf(pieces[0].Segment);
+        var coverage = segmentStart;
         foreach (var piece in pieces)
-            if (piece.Start == 0 && piece.End > coverage)
+            if (piece.Start == segmentStart && piece.End > coverage)
                 coverage = piece.End; // база жизни
         bool extended;
         do

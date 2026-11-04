@@ -582,14 +582,17 @@ public class WalChainTests
 
     private static string Md5(char c) => new(c, 32);
 
+    // Абсолютный LSN начала сегмента (координаты кусков — абсолютные LSN).
+    private static ulong Start(WalFileName segment) => WalDeltaName.SegmentStartOf(segment);
+
     // AAA: база [0..X) + примыкающая дельта [X..Y) — хвост по сегменту покрытия.
     [Fact]
     public void TailOf_DeltasOfCurrentLife_ExtendCoverage()
     {
         // Arrange
         var segA = Seg(1, 0, 8);
-        var baseKey = WalDeltaName.Key(segA, 0, 0x100, 1, true, Md5('a'));
-        var deltaKey = WalDeltaName.Key(segA, 0x100, 0x200, 1, false, Md5('b'));
+        var baseKey = WalDeltaName.Key(segA, Start(segA), Start(segA) + 0x100, 1, true, Md5('a'));
+        var deltaKey = WalDeltaName.Key(segA, Start(segA) + 0x100, Start(segA) + 0x200, 1, false, Md5('b'));
 
         // Act
         var tail = WalChain.TailOf(null, [baseKey, deltaKey], chainLife: 1);
@@ -607,8 +610,8 @@ public class WalChainTests
         var segA = Seg(1, 0, 8);
         string[] pieces =
         [
-            WalDeltaName.Key(segA, 0, 0x100, 2, true, Md5('a')),
-            WalDeltaName.Key(segA, 0x100, 0x200, 2, false, Md5('b')),
+            WalDeltaName.Key(segA, Start(segA), Start(segA) + 0x100, 2, true, Md5('a')),
+            WalDeltaName.Key(segA, Start(segA) + 0x100, Start(segA) + 0x200, 2, false, Md5('b')),
         ];
 
         // Act
@@ -629,7 +632,7 @@ public class WalChainTests
         var segB = Seg(1, 0, 9);
         var segC = Seg(1, 0, 10);
         var legacyB = WalPartialName.Key(segB.Name, 0x180);
-        var pieceB = WalDeltaName.Key(segB, 0, 0x100, 1, true, Md5('c'));
+        var pieceB = WalDeltaName.Key(segB, Start(segB), Start(segB) + 0x100, 1, true, Md5('c'));
         var legacyC = WalPartialName.Key(segC.Name, 0x50);
 
         // Act
@@ -647,8 +650,8 @@ public class WalChainTests
     {
         // Arrange — [0..A) и [B..C), A < B
         var segA = Seg(1, 0, 8);
-        var baseKey = WalDeltaName.Key(segA, 0, 0x100, 1, true, Md5('a'));
-        var afterGap = WalDeltaName.Key(segA, 0x200, 0x300, 1, false, Md5('b'));
+        var baseKey = WalDeltaName.Key(segA, Start(segA), Start(segA) + 0x100, 1, true, Md5('a'));
+        var afterGap = WalDeltaName.Key(segA, Start(segA) + 0x200, Start(segA) + 0x300, 1, false, Md5('b'));
 
         // Act
         var tail = WalChain.TailOf(null, [baseKey, afterGap], chainLife: 1);
@@ -667,8 +670,8 @@ public class WalChainTests
         string[] objects =
         [
             final.Name,
-            WalDeltaName.Key(final, 0, 0x1000, 1, true, Md5('a')),
-            WalDeltaName.Key(final, 0x1000, 0x2000, 1, false, Md5('b')),
+            WalDeltaName.Key(final, Start(final), Start(final) + 0x1000, 1, true, Md5('a')),
+            WalDeltaName.Key(final, Start(final) + 0x1000, Start(final) + 0x2000, 1, false, Md5('b')),
         ];
 
         // Act

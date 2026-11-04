@@ -259,6 +259,14 @@ public sealed class BackupS3 : IBackupS3, IWalSegmentGuard, IAsyncDisposable
             return Result<(byte[] Data, string? ETag)>.Success(
                 (buffer.ToArray(), response.ETag?.Trim('"')));
         }
+        catch (AmazonS3Exception e) when (e.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            // 404 — «объекта нет» ОТЛИЧИМ от транспортного сбоя (суффикс ": not
+            // found", симметрия GetObjectAsync/GetObjectToFileAsync): fetch-wal по
+            // нему решает «куска на этой ноде нет», а не ретраит вызов.
+            return Result<(byte[] Data, string? ETag)>.Failed(
+                new ApplicationException($"S3 get {cluster}/{shard}/{key}: not found"));
+        }
         catch (Exception e)
         {
             return Result<(byte[] Data, string? ETag)>.Failed(
