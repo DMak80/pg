@@ -1293,6 +1293,7 @@ public sealed class WalSweeperProcess(
 - `AbsorbedAndStalePartials_DeletedOneBatch`: объекты: финал seg5, `.partial`×2 seg5 (поглощённые), `.partial`×3 seg6 (остаётся длиннейшая), финалы seg1..2 (без cutoff — нет verify-OK полных: backups пуст) → DeletedKeys ровно один batch-вызов с 4 ключами (2+2), финалы НЕ удалены.
 - `BelowCutoffFinalsDeleted`: ShardBackups с COMPLETED+verify OK полным (wal_start seg3) + финалы seg1,seg2,seg3,`.partial` seg2 → удалены seg1, seg2 (финал) и `.partial` seg2; seg3 жив.
 - `ShardError_DoesNotBreakOthers`: targetFactory-фейк с программируемым отказом list по одному шарду (префикс кластера A) → проход Success; шард B удалён, A — journal sharding-error (journal-фазы читаются через WorkJournal → FakeEtcd ключи `/pgworker/journal/...` — сверить по существующим тестам журнала; если чтение фаз из фейка громоздко — ассерт только «B удалён, исключение не покинуло SweepShardsAsync»).
+  (решения Фазы 6: (1) тестовая фабрика пула собирается с `breakerWindow: TimeSpan.Zero` — иначе отказ листинга шарда A открывает breaker ноды пула и шард B получает breaker-отказ вместо прохода (проверялся бы breaker, а не изоляция ошибки шарда); (2) journal агрегирует ОДНУ фазу на кластер (последняя запись побеждает) — факт `shard-error/s1` перекрывается успехом `wal-swept/s2/1`, поэтому ассерт — по плану-фолбэку: проход Success + B вычищен, а также journal-фаза здорового шарда.)
 
 ---
 
