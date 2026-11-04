@@ -207,10 +207,41 @@ public class FullBackupOperationTests
 
     private static FullBackupOperation Create(
         FakeEtcd etcd, FakeRunner runner, FakeS3? s3, string staging,
-        OperationRegistry registry)
+        OperationRegistry registry, FakeIdentifySource? identify = null)
         => new(Id, staging, Identity(), etcd, ["http://etcd-1:2379"], Pools(),
             _ => Task.FromResult(WalReceiverRole.Sync), runner, registry,
-            _ => (IBackupS3)s3!);
+            _ => (IBackupS3)s3!,
+            sourceFactory: _ => identify ?? new FakeIdentifySource());
+
+    /// <summary>Фейк replication-источника для IDENTIFY_SYSTEM дубля (arch/19 §2):
+    /// только Open+Identify; Stream/Start не вызываются операцией дубля.</summary>
+    private sealed class FakeIdentifySource : IXLogReplicationSource
+    {
+        public Result Open = Result.Success();
+
+        // Дефолт: активный сегмент 0xAC=172 — позиции набора 2 и 0xAB=171 закрыты.
+        public Result<ServerIdentity> Identify =
+            Result<ServerIdentity>.Success(new(1, 0xACUL << 24));
+
+        public Task<Result> OpenAsync(CancellationToken ct) => Task.FromResult(Open);
+
+        public Task<Result> StartReplicationAsync(
+            string slot, ulong startLsn, uint? timeline, CancellationToken ct)
+            => throw new NotSupportedException();
+
+        public Task<Result<ServerIdentity>> IdentifySystemAsync(CancellationToken ct)
+            => Task.FromResult(Identify);
+
+        public IAsyncEnumerable<XLogChunk> Stream => throw new NotSupportedException();
+
+        public Task<Result> SetConfirmedAsync(ulong confirmedLsn, CancellationToken ct)
+            => throw new NotSupportedException();
+
+        public Task<Result<byte[]?>> ReadTimelineHistoryAsync(uint tli, CancellationToken ct)
+            => throw new NotSupportedException();
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
 
     [Fact]
     public async Task HappyPath_PhasesAndUploadKeys_ThenStagingCleaned()
@@ -377,6 +408,87 @@ public class FullBackupOperationTests
         registry.Current!.State.Should().Be("failed");
         registry.Current.Error.Should().Be("cancelled");
         Directory.EnumerateFileSystemEntries(staging).Should().BeEmpty();
+        Directory.Delete(staging, recursive: true);
+    }
+
+    // AAA (t14, arch/19 §2): сегмент, живой в источнике на момент заливки, НЕ
+    // дублируется в wal/ — его финал доставит стрим; набор 1:1 не тронут.
+    [Fact]
+    public async Task WalDuplicate_LiveSegmentInSource_Skipped()
+    {
+        // Arrange — активный сегмент источника 0xAB=171: сегмент 0AB набора живой
+        var staging = Path.Combine(Path.GetTempPath(), $"full-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(staging);
+        var s3 = new FakeS3();
+        var registry = new OperationRegistry();
+        var identify = new FakeIdentifySource
+        {
+            Identify = Result<ServerIdentity>.Success(new ServerIdentity(1, 0xABUL << 24)),
+        };
+        var op = Create(Etcd(), new FakeRunner(), s3, staging, registry, identify);
+
+        // Act
+        await op.RunAsync(CancellationToken.None);
+
+        // Assert — закрытый сегмент 2 продублирован, живой 0AB — нет; набор 1:1 цел.
+        var prefix = $"{Cluster}/{Shard}";
+        registry.Current!.State.Should().Be("succeeded");
+        s3.PutKeys.Should().Contain($"{prefix}/wal/000000010000000000000002");
+        s3.PutKeys.Should().NotContain($"{prefix}/wal/0000000100000000000000ab",
+            "the live source segment must not be duplicated into wal/ (arch/19 §2)");
+        s3.PutKeys.Should().Contain($"{prefix}/full/{Id}/pg_wal/0000000100000000000000AB");
+
+        // Cleanup
+        Directory.Delete(staging, recursive: true);
+    }
+
+    // AAA: отказ IDENTIFY_SYSTEM — операция FAILED однострочной причиной (резюмов
+    // нет — переснятие новым id, arch/19 §2).
+    [Fact]
+    public async Task IdentifyFailed_FailedWithOneLineError()
+    {
+        // Arrange
+        var staging = Path.Combine(Path.GetTempPath(), $"full-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(staging);
+        var registry = new OperationRegistry();
+        var identify = new FakeIdentifySource
+        {
+            Identify = Result<ServerIdentity>.Failed(
+                new ApplicationException("identify boom\nsecond line")),
+        };
+        var op = Create(Etcd(), new FakeRunner(), new FakeS3(), staging, registry, identify);
+
+        // Act
+        await op.RunAsync(CancellationToken.None);
+
+        // Assert — failed, причина однострочная и содержит шаг
+        var snap = registry.Current!;
+        snap.State.Should().Be("failed");
+        snap.Error.Should().Contain("IDENTIFY_SYSTEM").And.NotContain("\n");
+        Directory.Delete(staging, recursive: true);
+    }
+
+    // AAA: отказ открытия replication-соединения для IDENTIFY_SYSTEM — FAILED.
+    [Fact]
+    public async Task IdentifyOpenFailed_Failed()
+    {
+        // Arrange
+        var staging = Path.Combine(Path.GetTempPath(), $"full-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(staging);
+        var registry = new OperationRegistry();
+        var identify = new FakeIdentifySource
+        {
+            Open = Result.Failed(new ApplicationException("connect refused")),
+        };
+        var op = Create(Etcd(), new FakeRunner(), new FakeS3(), staging, registry, identify);
+
+        // Act
+        await op.RunAsync(CancellationToken.None);
+
+        // Assert
+        var snap = registry.Current!;
+        snap.State.Should().Be("failed");
+        snap.Error.Should().Contain("IDENTIFY_SYSTEM");
         Directory.Delete(staging, recursive: true);
     }
 }

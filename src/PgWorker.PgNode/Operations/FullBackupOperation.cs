@@ -45,7 +45,8 @@ public sealed class FullBackupOperation : IReceiverOperation
         Func<CancellationToken, Task<WalReceiverRole>> roleProbe,
         IProcessRunner runner,
         OperationRegistry registry,
-        Func<string, IBackupS3>? targetFactory = null)
+        Func<string, IBackupS3>? targetFactory = null,
+        Func<WalReceiverOptions, IXLogReplicationSource>? sourceFactory = null)
     {
         _id = id;
         _stagingRoot = stagingDir;
@@ -57,9 +58,14 @@ public sealed class FullBackupOperation : IReceiverOperation
         _runner = runner;
         _registry = registry;
         _targetFactory = targetFactory; // тестовый шов: фейк IBackupS3 (шаг 9)
+        _sourceFactory = sourceFactory; // тестовый шов IDENTIFY_SYSTEM (образец WalReceiverLoop)
     }
 
     private readonly Func<string, IBackupS3>? _targetFactory;
+
+    // Тестовый шов IDENTIFY_SYSTEM дубля (образец _sourceFactory WalReceiverLoop);
+    // прод — null → NpgsqlXLogSource.
+    private readonly Func<WalReceiverOptions, IXLogReplicationSource>? _sourceFactory;
 
     /// <summary>Текущий снимок операции (чтение реестра).</summary>
     public OperationSnapshot? Snapshot => _registry.Current;
@@ -205,28 +211,70 @@ public sealed class FullBackupOperation : IReceiverOperation
                 if (uploadedFiles % UploadProgressEveryFiles == 0)
                     Prog($"upload progress: {uploadedFiles} files, {DirectorySize(fullDir)} bytes");
             }
-            foreach (var file in Directory.EnumerateFiles(Path.Combine(fullDir, "pg_wal")))
+            // Закрытость сегментов — ПО ИСТОЧНИКУ НА МОМЕНТ ЗАЛИВКИ (arch/19 §2):
+            // дублируются только сегменты набора СТРОГО ниже текущего активного
+            // wal-файла источника (IDENTIFY_SYSTEM); последний живой сегмент набора
+            // остаётся только в full/<id>/pg_wal/ — его финал доставит стрим при
+            // закрытии, срез гонки «дубль против финала» исключён. Отказ identify —
+            // операция FAILED (резюмов нет — переснятие новым id, §2).
+            var identifyOptions = new WalReceiverOptions(
+                "127.0.0.1", 5432, "backup_exec", targets.Password!, "postgres",
+                targets.Slot!, _identity.Cluster, _identity.Shard,
+                writeTargets, pool.ReadAll, bucket, pool.AccessKey, pool.SecretKey);
+            var identifySource = _sourceFactory is { } factory
+                ? factory(identifyOptions)
+                : new NpgsqlXLogSource(identifyOptions);
+            await using (identifySource)
             {
-                var name = Path.GetFileName(file);
-                if (name.EndsWith(".partial", StringComparison.Ordinal)
-                    || name.EndsWith(".history", StringComparison.Ordinal))
-                    continue;
-                // Имя дубля — НОРМАЛИЗОВАННОЕ (строчное): pg_basebackup кладёт
-                // сегменты набора ВЕРХНИМ hex, а канон ключей wal/ — строчные
-                // (симметрия стриму приёмников и fetch-wal) — дубль сливается
-                // со стримом, дублирования объектов нет (arch/19 §2).
-                // Гвард чужой цепочки (arch/19 §3) обязателен и здесь: полный
-                // ПЕРЕСОЗДАННОГО кластера дублировал бы свои pg_wal-сегменты
-                // поверх цепочки погибшей инкарнации — DR-источник разрушался
-                // (факт E2E: pg_control полного и WAL разошлись по system id).
-                var key = $"{_identity.Cluster}/{_identity.Shard}/wal/{FetchWalCommand.NormalizeSegment(name)}";
-                var put = s3 is IWalSegmentGuard guard
-                    ? await guard.PutWalSegmentFileAsync(key, file, token)
-                    : await s3.PutFileAsync(key, file, token);
-                if (!put.IsSuccess)
+                var opened = await identifySource.OpenAsync(token);
+                if (!opened.IsSuccess)
                 {
-                    Fail(put.Error!.Message.Split('\n')[0]);
+                    Fail($"IDENTIFY_SYSTEM open failed: {opened.Error!.Message.Split('\n')[0]}");
                     return;
+                }
+
+                var identified = await identifySource.IdentifySystemAsync(token);
+                if (!identified.IsSuccess)
+                {
+                    Fail($"IDENTIFY_SYSTEM failed: {identified.Error!.Message.Split('\n')[0]}");
+                    return;
+                }
+
+                var activeSegId = identified.Value.XLogPos / (ulong)WalFileName.SegmentBytes;
+                foreach (var file in Directory.EnumerateFiles(Path.Combine(fullDir, "pg_wal")))
+                {
+                    var name = Path.GetFileName(file);
+                    if (name.EndsWith(".partial", StringComparison.Ordinal)
+                        || name.EndsWith(".history", StringComparison.Ordinal))
+                        continue;
+                    // Имя дубля — НОРМАЛИЗОВАННОЕ (строчное): pg_basebackup кладёт
+                    // сегменты набора ВЕРХНИМ hex, а канон ключей wal/ — строчные
+                    // (симметрия стриму приёмников и fetch-wal) — дубль сливается
+                    // со стримом, дублирования объектов нет (arch/19 §2).
+                    // Гвард чужой цепочки (arch/19 §3) обязателен и здесь: полный
+                    // ПЕРЕСОЗДАННОГО кластера дублировал бы свои pg_wal-сегменты
+                    // поверх цепочки погибшей инкарнации — DR-источник разрушался
+                    // (факт E2E: pg_control полного и WAL разошлись по system id).
+                    var normalized = FetchWalCommand.NormalizeSegment(name);
+                    if (WalFileName.TryParse(normalized) is not { } setSegment)
+                        continue;
+                    // Позиция сегмента набора строго ниже активного сегмента источника.
+                    var setPos = (long)setSegment.Log * WalFileName.SegsPerLog + setSegment.Seg;
+                    if (setPos >= (long)activeSegId)
+                    {
+                        Prog($"wal duplicate skipped: {normalized} is not closed in the source yet");
+                        continue;
+                    }
+
+                    var key = $"{_identity.Cluster}/{_identity.Shard}/wal/{normalized}";
+                    var put = s3 is IWalSegmentGuard guard
+                        ? await guard.PutWalSegmentFileAsync(key, file, token)
+                        : await s3.PutFileAsync(key, file, token);
+                    if (!put.IsSuccess)
+                    {
+                        Fail(put.Error!.Message.Split('\n')[0]);
+                        return;
+                    }
                 }
             }
 
