@@ -625,16 +625,15 @@ public sealed class WalStreamProcess(
             return new ControlOutcome(broken);
         }
 
-        // Факты прогресса — только из наблюдений: наблюдаемый последний сегмент
-        // цепочки; если цепочка не наблюдалась вовсе (объекты/LastModified недоступны,
-        // всё ниже chain_start) — прошлый ключ, НИКОГДА не now() (ревью Ф4-2 №2).
-        // Инвариант WalChain: LastSegment всегда из списка объектов; выборка ниже —
-        // защитная (ревью P2): при его поломке смешения фактов не будет —
-        // невычисленный unix падает на прошлый ключ (transient-DEGRADED, не крах тика).
-        var observedLast = chain.LastSegment;
-        var lastUploadedName = observedLast?.Name ?? wal?.LastUploadedSegment;
-        var observedLastUnix = observedLast is { } seen
-            ? objects.Where(o => o.Name == seen.Name).Select(o => o.LastModified)
+        // Факты прогресса — только из наблюдений: хвост потока (arch/19 §3) —
+        // финальный объект цепочки ИЛИ лучший .partial (версии схлопнуты по
+        // сегменту WalChain.TailOf); цепочка не наблюдалась — прошлый ключ,
+        // НИКОГДА не now() (ревью Ф4-2 №2). last_uploaded_segment — имя сегмента
+        // БЕЗ суффикса (формат etcd-ключа не меняется, парсеры панели толерантны).
+        var tail = WalChain.TailOf(chain.LastSegment, objects.Select(o => o.Name));
+        var lastUploadedName = tail?.SegmentName ?? wal?.LastUploadedSegment;
+        var observedLastUnix = tail is { } tailFact
+            ? objects.Where(o => o.Name == tailFact.ObjectName).Select(o => o.LastModified)
                 .Cast<DateTimeOffset?>().FirstOrDefault()?.ToUnixTimeSeconds()
             : null;
         var lastUploadedUnix = observedLastUnix ?? wal?.LastUploadedUnix;
