@@ -585,6 +585,11 @@ public sealed class PlainClusterDriver(
             // staging; null/≤1 → env не ставится — приёмник берёт дефолт 3 с.
             if (backupEnv.PartialIntervalSec is > 0)
                 env["PGW_WAL_PARTIAL_INTERVAL_SEC"] = backupEnv.PartialIntervalSec.Value.ToString();
+            // t15 (arch/backups/09 §1): период компакции дельт приёмника — env по
+            // образцу выше; null/<60 → не ставится (приёмник берёт дефолт 3600).
+            if (backupEnv.PartialCompactIntervalSec is >= 60)
+                env["PGW_WAL_PARTIAL_COMPACT_INTERVAL_SEC"] =
+                    backupEnv.PartialCompactIntervalSec.Value.ToString();
         }
 
         // P15 (решение 2026-09-12): бюджет вычисляемый —

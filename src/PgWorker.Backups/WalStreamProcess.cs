@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using Microsoft.Extensions.Logging;
+using PgWorker.Etcd.Backups;
 using PgWorker.Backups.Sql;
 using PgWorker.Core;
 using PgWorker.Core.Model;
@@ -511,6 +512,29 @@ public sealed class WalStreamProcess(
 
         _lastVerifyUnix[key] = now;
 
+        // t15: номер жизни цепочки — счётчик wal-life (arch/backups/05 §1). Bump по
+        // гварду чужой цепочки выполняется ДО чтения значения: свежий номер сразу
+        // виден TailOf ниже. Неудача bump не роняет тик — факт failed_permanent
+        // персистентен (приёмник заморожен), следующий контроль догонит.
+        var walLife = new WalLifeStore(etcd, endpoints);
+        if (agentFacts?.Any(f => WalLifeStore.IsForeignChainFact(f.State, f.Error)) == true)
+        {
+            var bumped = await walLife.BumpAsync(
+                cluster, shard, WalLifeReason.ForeignChain, startedUnix: null, ct);
+            if (!bumped.IsSuccess)
+                logger?.LogWarning("backup-wal {Cluster}/{Shard}: wal-life bump failed: {Error}",
+                    cluster, shard, bumped.Error!.Message.Split('\n')[0]);
+        }
+
+        // Чтение счётчика: отказ — transient-фейл тика (тот же класс, что отказ
+        // S3-list выше; контроль повторит тиком). НЕ молчаливый 0 — неверный номер
+        // потерял бы живой хвост в TailOf.
+        var chainLifeRead = await walLife.ReadValueAsync(cluster, shard, ct);
+        if (!chainLifeRead.IsSuccess)
+            throw new ApplicationException(
+                $"read wal-life {cluster}/{shard}: {chainLifeRead.Error!.Message}");
+        var chainLife = chainLifeRead.Value;
+
         // Истина прогресса — объекты S3 (arch/19 §3): list префикса wal/ —
         // UNION по всем нодам пула (arch/19 §5 «где данные есть»): первая
         // доступная нода может отставать (лаг mesh) — её соло-листинг даёт
@@ -630,7 +654,7 @@ public sealed class WalStreamProcess(
         // сегменту WalChain.TailOf); цепочка не наблюдалась — прошлый ключ,
         // НИКОГДА не now() (ревью Ф4-2 №2). last_uploaded_segment — имя сегмента
         // БЕЗ суффикса (формат etcd-ключа не меняется, парсеры панели толерантны).
-        var tail = WalChain.TailOf(chain.LastSegment, objects.Select(o => o.Name));
+        var tail = WalChain.TailOf(chain.LastSegment, objects.Select(o => o.Name), chainLife);
         var lastUploadedName = tail?.SegmentName ?? wal?.LastUploadedSegment;
         var observedLastUnix = tail is { } tailFact
             ? objects.Where(o => o.Name == tailFact.ObjectName).Select(o => o.LastModified)

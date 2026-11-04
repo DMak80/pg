@@ -59,6 +59,18 @@ public interface IBackupS3
     /// key — относительно &lt;C&gt;/&lt;X&gt;/, напр. "wal/00000002.history".</summary>
     Task<Result<string>> GetObjectAsync(string cluster, string shard, string key, CancellationToken ct = default);
 
+    /// <summary>put куска с Content-MD5 (spec §4.4, решение №22): MD5Digest
+    /// (base64 БАЙТОВ хэша) уходит с запросом — транспорт отвергает битое;
+    /// md5Hex — тот же расчёт, что в имени куска (один хэш на два потребителя).
+    /// Таймауты/маршрут put — как у PutObjectAsync.</summary>
+    Task<Result> PutObjectMd5Async(string key, byte[] data, string md5Hex, CancellationToken ct = default);
+
+    /// <summary>Байты объекта в память + ETag (сборка fetch-wal, spec §4.4);
+    /// key — относительно &lt;C&gt;/&lt;X&gt;, как GetObjectAsync; кавычки ETag MinIO сняты
+    /// (ETag одиночного put = md5 содержимого — сверка безномерных legacy-версий).</summary>
+    Task<Result<(byte[] Data, string? ETag)>> GetObjectBytesAsync(
+        string cluster, string shard, string key, CancellationToken ct = default);
+
     /// <summary>: id полных шарда по префиксу `<C>/<X>/full/` с Delimiter="/"
     /// (CommonPrefixes — каталоги `full/<id>/`), сортировка Ordinal; пагинация по
     /// IsTruncated/NextContinuationToken. DR-путь: etcd-статусов может не быть.</summary>
@@ -210,6 +222,55 @@ public sealed class BackupS3 : IBackupS3, IWalSegmentGuard, IAsyncDisposable
         catch (Exception e)
         {
             return Result<string>.Failed(new ApplicationException($"S3 get {key}: {e.Message}", e));
+        }
+    }
+
+    public async Task<Result> PutObjectMd5Async(
+        string key, byte[] data, string md5Hex, CancellationToken ct = default)
+    {
+        try
+        {
+            var request = new PutObjectRequest
+            {
+                BucketName = _bucket,
+                Key = key,
+                InputStream = new MemoryStream(data),
+                // Content-MD5: base64 БАЙТОВ хэша (в имени куска — hex).
+                MD5Digest = Convert.ToBase64String(Convert.FromHexString(md5Hex)),
+            };
+            await _client.PutObjectAsync(request, ct);
+            return Result.Success();
+        }
+        catch (Exception e)
+        {
+            return Result.Failed(new ApplicationException($"S3 put {key}: {e.Message}", e));
+        }
+    }
+
+    public async Task<Result<(byte[] Data, string? ETag)>> GetObjectBytesAsync(
+        string cluster, string shard, string key, CancellationToken ct = default)
+    {
+        try
+        {
+            var response = await _client.GetObjectAsync(
+                new GetObjectRequest { BucketName = _bucket, Key = $"{cluster}/{shard}/{key}" }, ct);
+            using var buffer = new MemoryStream();
+            await response.ResponseStream.CopyToAsync(buffer, ct);
+            return Result<(byte[] Data, string? ETag)>.Success(
+                (buffer.ToArray(), response.ETag?.Trim('"')));
+        }
+        catch (AmazonS3Exception e) when (e.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            // 404 — «объекта нет» ОТЛИЧИМ от транспортного сбоя (суффикс ": not
+            // found", симметрия GetObjectAsync/GetObjectToFileAsync): fetch-wal по
+            // нему решает «куска на этой ноде нет», а не ретраит вызов.
+            return Result<(byte[] Data, string? ETag)>.Failed(
+                new ApplicationException($"S3 get {cluster}/{shard}/{key}: not found"));
+        }
+        catch (Exception e)
+        {
+            return Result<(byte[] Data, string? ETag)>.Failed(
+                new ApplicationException($"S3 get {key}: {e.Message}", e));
         }
     }
 

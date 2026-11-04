@@ -4,6 +4,7 @@ using Npgsql;
 using PgWorker.Backups.Restore;
 using PgWorker.Core.Templates;
 using Shared.Etcd.Client;
+using PgWorker.Etcd.Backups;
 using PgWorker.Etcd.Parsing;
 using PgWorker.Provisioning.Sql;
 using Xunit;
@@ -50,7 +51,13 @@ public sealed class E2eRestoreScenarios(E2eRestoreScenariosFx Ctx) : IClassFixtu
             // Arrange 1 — окружение + кластер rst<тег> + воркер с бэкап-комплектом
             var cluster = $"rst{fx.ClusterTag}";
             await SeedClusterAsync(cluster);
-            await using var app = await StartRestoreHostAsync("rslatest", ct);
+            // Свипер wal/ тикает раз в минуту: ассерты жизни цепи (куски прежней
+            // жизни выметаются сразу, без cutoff) ждутся поллингом ≤ 60 с.
+            await using var app = await StartRestoreHostAsync("rslatest", ct,
+                new Dictionary<string, string>
+                {
+                    ["PgWorker__Backups__Retention__IntervalSec"] = "60",
+                });
 
             var provisioned = await WaitPhaseAsync(
                 "provisioning", E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(90), ct);
@@ -199,6 +206,46 @@ public sealed class E2eRestoreScenarios(E2eRestoreScenariosFx Ctx) : IClassFixtu
             if (!reinited)
                 throw new ApplicationException(
                     "the AC4 invariant did not converge: " + await DumpDiagnosticsAsync(cluster, "shard1"));
+
+            // Assert 5 (t15, spec §4.6/§5 Ф5): жизнь цепи сменилась restore'ом —
+            // счётчик инкрементирован (причина restore), новые куски живого хвоста
+            // несут номер новой жизни, куски прежней жизни выметены wal-sweeper'ом
+            // (чужие номера — сразу, без cutoff; окно закрывается поллингом ≤ 60 с).
+            using var ctsLife = CancellationTokenSource.CreateLinkedTokenSource(
+                TestContext.Current.CancellationToken);
+            ctsLife.CancelAfter(TimeSpan.FromMinutes(3)); // гигиена жизни — свой 3-мин CTS (мульти-CTS)
+            ct = ctsLife.Token;
+            var life = await ReadWalLifeAsync(cluster, "shard1", ct);
+            life.Should().NotBeNull("restore инкрементирует счётчик жизни цепи (reason=restore)");
+            life!.ChainLife.Should().BeGreaterThanOrEqualTo(1u, "после restore у цепи новая жизнь");
+            life.Reason.Should().Be(WalLifeReason.Restore, "причина инкремента — restore");
+            var newLife = life.ChainLife;
+
+            // Новые куски несут новый номер: реальные WAL-записи дают приёмнику
+            // прирост открытого сегмента для выкладки кусков новой жизни.
+            await ExecAsync(afterDsn,
+                "CREATE TABLE IF NOT EXISTS wal_life_probe(id int); " +
+                "INSERT INTO wal_life_probe SELECT generate_series(1, 100)", ct);
+            var newLifePiece = await WaitPhaseAsync("wal-life-new-pieces", async () =>
+                (await ListWalNamesAsync(cluster, "shard1"))
+                    .Any(n => PgWorker.Backups.WalDeltaName.TryParse(n) is { } p && p.ChainLife == newLife),
+                TimeSpan.FromSeconds(60), ct);
+            newLifePiece.Should().BeTrue(
+                $"новые куски хвоста несут номер жизни {newLife}: "
+                + await DumpDiagnosticsAsync(cluster, "shard1"));
+
+            // Куски прежней жизни выметает wal-sweeper (чужие номера — сразу, без
+            // cutoff; тик свипера — раз в минуту): окна поллинга по 60 с.
+            async Task<bool> NoOldLifePiecesAsync()
+                => !(await ListWalNamesAsync(cluster, "shard1"))
+                    .Any(n => PgWorker.Backups.WalDeltaName.TryParse(n) is { } p && p.ChainLife != newLife);
+            var oldLifeGone = await E2eFixture.WaitForAsync(
+                    NoOldLifePiecesAsync, TimeSpan.FromSeconds(60), ct)
+                || await E2eFixture.WaitForAsync(
+                    NoOldLifePiecesAsync, TimeSpan.FromSeconds(60), ct);
+            oldLifeGone.Should().BeTrue(
+                $"куски прежней жизни выметены из wal/ (chain_life={newLife}): "
+                + await DumpDiagnosticsAsync(cluster, "shard1"));
         }, ct);
     }
 
@@ -380,8 +427,11 @@ public sealed class E2eRestoreScenarios(E2eRestoreScenariosFx Ctx) : IClassFixtu
     // приёмник ноды — upload изнутри контура, агенты t03 —
     // S3_ENDPOINTS/S3_READ_ENDPOINTS (внутри контейнера localhost
     // недостижим!). Пороги WAL-контроля — короткие.
-    private Task<HostInstance> StartRestoreHostAsync(string name, CancellationToken ct)
-        => Fx.StartHostAsync(name, extraEnv: new Dictionary<string, string>
+    private Task<HostInstance> StartRestoreHostAsync(
+        string name, CancellationToken ct,
+        IReadOnlyDictionary<string, string>? extraEnv = null)
+    {
+        var env = new Dictionary<string, string>
         {
             ["PgWorker__Backups__Enabled"] = "true",
             ["PgWorker__Backups__S3__Bucket"] = Bucket,
@@ -397,7 +447,11 @@ public sealed class E2eRestoreScenarios(E2eRestoreScenariosFx Ctx) : IClassFixtu
             // (вариативно) + старт basebackup реплик; 120 c накрывает вариации
             // нагрузки хоста, не маскируя деградацию
             ["PgWorker__Thresholds__PatroniBootSec"] = "120",
-        }, ct: ct);
+        };
+        foreach (var (key, value) in extraEnv ?? new Dictionary<string, string>())
+            env[key] = value;
+        return Fx.StartHostAsync(name, extraEnv: env, ct: ct);
+    }
 
     // Host-клиент BackupS3 (порт published): ассерты S3 и DR-list.
     private PgWorker.Backups.BackupS3 HostS3Client()
@@ -704,6 +758,14 @@ public sealed class E2eRestoreScenarios(E2eRestoreScenariosFx Ctx) : IClassFixtu
 
     private async Task<Kv?> GetOrNullAsync(string key)
         => (await G.GetAsync(Endpoint, key, TestContext.Current.CancellationToken)).Value;
+
+    // Счётчик жизни цепи из etcd (t15, arch/backups/05 §1): null — ключа нет
+    // (жизнь 0, запись не создавалась).
+    private async Task<WalLifeState?> ReadWalLifeAsync(string cluster, string shard, CancellationToken ct)
+    {
+        var kv = await GetOrNullAsync(WalLifeKeys.Key(cluster, shard));
+        return kv is null ? null : WalLifeStateJson.TryParse(kv.Value);
+    }
 
     // ВРЕМЕННАЯ диагностика t05 E2E удалена (гейт 2026-09-12): причина найдена —
     // pg_switch_wal без WAL-записей не материализует сегменты (см. SwitchWalsAsync).

@@ -22,9 +22,11 @@ public class RetentionPlannerTests
     // walStart — позиция wal_start_segment, verify — статус проверки.
     private static FullBackupState Full(
             string id, DateTimeOffset started,
-            string walStart = "000000010000000000000001", BackupVerify? verify = null)
+            string walStart = "000000010000000000000001", BackupVerify? verify = null,
+            uint? chainLife = null)
         => new(id, FullBackupStatus.Completed, "n1", BackupSourceRole.Replica,
-            Unix(started), Unix(started) + 60, walStart, 1024, null, verify);
+            Unix(started), Unix(started) + 60, walStart, 1024, null, verify,
+            ChainLife: chainLife);
 
     // Проверка Keep/Delete по id в фиксированный момент Now.
     private static (IReadOnlySet<string> Keep, IReadOnlyList<string> Delete) Select(
@@ -730,7 +732,7 @@ public class RetentionPlannerTests
         string[] names = [segment.Name, shortVersion, longVersion];
 
         // Act
-        var doomed = RetentionPlanner.SelectPartialForDeletion(names, null);
+        var doomed = RetentionPlanner.SelectPartialForDeletion(names, null, chainLife: null);
 
         // Assert — обе версии мусор
         doomed.Should().BeEquivalentTo([shortVersion, longVersion]);
@@ -747,7 +749,7 @@ public class RetentionPlannerTests
         var v3 = WalPartialName.Key(segment.Name, 0x300);
 
         // Act
-        var doomed = RetentionPlanner.SelectPartialForDeletion([v1, v2, v3], null);
+        var doomed = RetentionPlanner.SelectPartialForDeletion([v1, v2, v3], null, chainLife: null);
 
         // Assert — две короткие, длиннейшей нет
         doomed.Should().BeEquivalentTo([v1, v2]);
@@ -765,7 +767,7 @@ public class RetentionPlannerTests
         var live = WalPartialName.Key(cutoff.Name, 0x100);
 
         // Act
-        var doomed = RetentionPlanner.SelectPartialForDeletion([below1, below2, live], cutoff);
+        var doomed = RetentionPlanner.SelectPartialForDeletion([below1, below2, live], cutoff, chainLife: null);
 
         // Assert — ниже cutoff обе; живой сегмент cutoff остаётся
         doomed.Should().BeEquivalentTo([below1, below2]);
@@ -781,7 +783,7 @@ public class RetentionPlannerTests
         var v2 = WalPartialName.Key(segment.Name, 0x200);
 
         // Act
-        var doomed = RetentionPlanner.SelectPartialForDeletion([v1, v2], null);
+        var doomed = RetentionPlanner.SelectPartialForDeletion([v1, v2], null, chainLife: null);
 
         // Assert — устаревшая версия мусор, длиннейшая остаётся
         doomed.Should().BeEquivalentTo([v1]);
@@ -800,7 +802,7 @@ public class RetentionPlannerTests
 
         // Act
         var doomed = RetentionPlanner.SelectPartialForDeletion(
-            [canonical, nonCanonical], null);
+            [canonical, nonCanonical], null, chainLife: null);
 
         // Assert — ровно одна из равных
         doomed.Should().HaveCount(1);
@@ -816,10 +818,188 @@ public class RetentionPlannerTests
         string[] names = [segment.Name, "00000002.history"];
 
         // Act
-        var doomed = RetentionPlanner.SelectPartialForDeletion(names, null);
+        var doomed = RetentionPlanner.SelectPartialForDeletion(names, null, chainLife: null);
 
         // Assert
         doomed.Should().BeEmpty();
+    }
+
+    // ---: SelectPartialForDeletion — кусочная гигиена t15 (ветки б/в/д) ----
+
+    private static string PieceMd5(char c) => new(c, 32);
+
+    // Абсолютный LSN начала сегмента (координаты кусков — абсолютные LSN).
+    private static ulong Start(WalFileName segment) => WalDeltaName.SegmentStartOf(segment);
+
+    // AAA (д1): кусок ЧУЖОГО номера жизни — мусор сразу, даже выше cutoff.
+    [Fact]
+    public void Piece_ForeignLife_DoomedWithoutCutoff()
+    {
+        // Arrange — кусок жизни 2 при текущей жизни 1; cutoff ниже сегмента
+        var segment = Segment(0, 8);
+        var foreign = WalDeltaName.Key(segment, Start(segment), Start(segment) + 0x100, 2, true, PieceMd5('a'));
+
+        // Act
+        var doomed = RetentionPlanner.SelectPartialForDeletion(
+            [foreign], Segment(0, 1), chainLife: 1);
+
+        // Assert
+        doomed.Should().BeEquivalentTo([foreign]);
+    }
+
+    // AAA (д2): безномерная t14-версия сегмента с куском текущего номера — мусор;
+    // у сегмента без кусков текущего номера версия живёт (остаётся лучшая).
+    [Fact]
+    public void LegacyVersion_ForeignWhenCurrentPiecePresent()
+    {
+        // Arrange — segA: версия + кусок жизни 1; segB: две версии без кусков
+        var segA = Segment(0, 9);
+        var segB = Segment(0, 10);
+        var legacyA = WalPartialName.Key(segA.Name, 0x180);
+        var pieceA = WalDeltaName.Key(segA, Start(segA), Start(segA) + 0x100, 1, true, PieceMd5('b'));
+        var legacyB1 = WalPartialName.Key(segB.Name, 0x100);
+        var legacyB2 = WalPartialName.Key(segB.Name, 0x200);
+
+        // Act
+        var doomed = RetentionPlanner.SelectPartialForDeletion(
+            [legacyA, pieceA, legacyB1, legacyB2], null, chainLife: 1);
+
+        // Assert — версия segA мусор; segB: короткая версия мусор, длинная живёт
+        doomed.Should().BeEquivalentTo([legacyA, legacyB1]);
+        doomed.Should().NotContain(pieceA);
+        doomed.Should().NotContain(legacyB2);
+    }
+
+    // AAA (д3): chainLife == null (гвард restore) — чужие жизни не трогаются.
+    [Fact]
+    public void GuardRestore_ForeignLivesUntouched()
+    {
+        // Arrange — жизнь 2 (база+дельта) и жизнь 1 (база) при chainLife null
+        var segment = Segment(0, 11);
+        var life2Base = WalDeltaName.Key(segment, Start(segment), Start(segment) + 0x100, 2, true, PieceMd5('a'));
+        var life2Delta = WalDeltaName.Key(segment, Start(segment) + 0x100, Start(segment) + 0x200, 2, false, PieceMd5('b'));
+        var life1Base = WalDeltaName.Key(segment, Start(segment), Start(segment) + 0x100, 1, true, PieceMd5('c'));
+
+        // Act
+        var doomed = RetentionPlanner.SelectPartialForDeletion(
+            [life2Base, life2Delta, life1Base], null, chainLife: null);
+
+        // Assert — обе жизни целы (каждая чистится в своей группе)
+        doomed.Should().BeEmpty();
+    }
+
+    // AAA (б/в): устаревшая база и дельта ниже базы — мусор; дельта выше — живёт.
+    [Fact]
+    public void Compacts_OldBasesAndDeltasBelowBase_Doomed()
+    {
+        // Arrange — базы 0x100 и 0x200; дельта [0x100..0x150) ниже базы, [0x200..0x300) живая
+        var segment = Segment(0, 12);
+        var oldBase = WalDeltaName.Key(segment, Start(segment), Start(segment) + 0x100, 1, true, PieceMd5('a'));
+        var newBase = WalDeltaName.Key(segment, Start(segment), Start(segment) + 0x200, 1, true, PieceMd5('b'));
+        var belowBase = WalDeltaName.Key(segment, Start(segment) + 0x100, Start(segment) + 0x150, 1, false, PieceMd5('c'));
+        var liveDelta = WalDeltaName.Key(segment, Start(segment) + 0x200, Start(segment) + 0x300, 1, false, PieceMd5('d'));
+
+        // Act
+        var doomed = RetentionPlanner.SelectPartialForDeletion(
+            [oldBase, newBase, belowBase, liveDelta], null, chainLife: 1);
+
+        // Assert
+        doomed.Should().BeEquivalentTo([oldBase, belowBase]);
+        doomed.Should().NotContain(newBase);
+        doomed.Should().NotContain(liveDelta);
+    }
+
+    // AAA (а): финал поглощает всё кусочное семейство, вкл. куски чужих жизней.
+    [Fact]
+    public void Final_AbsorbsPiecesOfAnyLife()
+    {
+        // Arrange — финал сегмента + куски двух жизней + t14-версия
+        var segment = Segment(0, 13);
+        var life1 = WalDeltaName.Key(segment, Start(segment), Start(segment) + 0x100, 1, true, PieceMd5('a'));
+        var life2 = WalDeltaName.Key(segment, Start(segment), Start(segment) + 0x100, 2, true, PieceMd5('b'));
+        var legacy = WalPartialName.Key(segment.Name, 0x200);
+
+        // Act
+        var doomed = RetentionPlanner.SelectPartialForDeletion(
+            [segment.Name, life1, life2, legacy], null, chainLife: 1);
+
+        // Assert
+        doomed.Should().BeEquivalentTo([life1, life2, legacy]);
+    }
+
+    // ---: SelectPartialForDeletion — гейт «жизнь последнего полного» (#1) ----
+
+    // AAA (а из ревью #1): restore Completed, счётчик уже N+1, а последний
+    // полный шарда несёт жизнь N — куски N НЕ выметаются (RPO-хвост повторного
+    // restore/drill выбранного полного в окне до пересъёма).
+    [Fact]
+    public void LastFullLife_PiecesOfLastFullLife_NotDoomed()
+    {
+        // Arrange — сегмент: база+дельта жизни 1; счётчик жизни уже 2; последний
+        // полный — с chain_life 1
+        var segment = Segment(0, 14);
+        var base1 = WalDeltaName.Key(segment, Start(segment), Start(segment) + 0x100, 1, true, PieceMd5('a'));
+        var delta1 = WalDeltaName.Key(segment, Start(segment) + 0x100, Start(segment) + 0x200, 1, false, PieceMd5('b'));
+        var fulls = new[]
+        {
+            Full("20260101000000Z-shard1", Now.AddHours(-2), chainLife: 1),
+        };
+
+        // Act
+        var lastFullLife = RetentionPlanner.LastFullLife(fulls);
+        var doomed = RetentionPlanner.SelectPartialForDeletion(
+            [base1, delta1], null, chainLife: 2, lastFullLife);
+
+        // Assert — жизнь последнего полного цела (гейт ветки (д))
+        lastFullLife.Should().Be(1u);
+        doomed.Should().BeEmpty();
+    }
+
+    // AAA (б из ревью #1): появился полный с более новой жизнью (пересъём после
+    // restore) — гейт для прежней жизни снят, её куски выметаются как раньше.
+    [Fact]
+    public void NewerFullAppeared_PiecesOfPreviousLife_Doomed()
+    {
+        // Arrange — последний полный уже жизни 2 (пересъём), счётчик 2;
+        // куски жизни 1 (старая цепь) и жизни 2 (живая)
+        var segment = Segment(0, 15);
+        var base1 = WalDeltaName.Key(segment, Start(segment), Start(segment) + 0x100, 1, true, PieceMd5('a'));
+        var base2 = WalDeltaName.Key(segment, Start(segment), Start(segment) + 0x200, 2, true, PieceMd5('b'));
+        var fulls = new[]
+        {
+            Full("20260101000000Z-shard1", Now.AddHours(-3), chainLife: 1),
+            Full("20260101120000Z-shard1", Now.AddHours(-1), chainLife: 2),
+        };
+
+        // Act
+        var lastFullLife = RetentionPlanner.LastFullLife(fulls);
+        var doomed = RetentionPlanner.SelectPartialForDeletion(
+            [base1, base2], null, chainLife: 2, lastFullLife);
+
+        // Assert — жизнь 1 мусор, жизнь 2 цела
+        lastFullLife.Should().Be(2u);
+        doomed.Should().BeEquivalentTo([base1]);
+        doomed.Should().NotContain(base2);
+    }
+
+    // AAA (в из ревью #1): последний полный старой записи (chain_life нет) —
+    // гейта нет, ветка (д) работает как раньше (чужие — сразу).
+    [Fact]
+    public void LastFullWithoutChainLife_PreviousBehavior()
+    {
+        // Arrange — последний полный без chain_life, счётчик жизни 2, кусок жизни 1
+        var segment = Segment(0, 16);
+        var foreign = WalDeltaName.Key(segment, Start(segment), Start(segment) + 0x100, 1, true, PieceMd5('a'));
+        var fulls = new[] { Full("20260101000000Z-shard1", Now.AddHours(-1)) };
+
+        // Act
+        var lastFullLife = RetentionPlanner.LastFullLife(fulls);
+        var doomed = RetentionPlanner.SelectPartialForDeletion(
+            [foreign], null, chainLife: 2, lastFullLife);
+
+        // Assert — гейта нет: кусок чужой жизни выметен
+        lastFullLife.Should().BeNull();
+        doomed.Should().BeEquivalentTo([foreign]);
     }
 
     // ---: композиция шага (4) RetentionProcess: финалы ниже cutoff + .partial ----
@@ -846,7 +1026,7 @@ public class RetentionPlannerTests
     private static IReadOnlyList<string> RetentionDoomed(List<string> names, WalFileName? cutoff)
         => (cutoff is { } limit
                 ? RetentionPlanner.SelectWalForDeletion(names, limit) : [])
-            .Concat(RetentionPlanner.SelectPartialForDeletion(names, cutoff))
+            .Concat(RetentionPlanner.SelectPartialForDeletion(names, cutoff, chainLife: null))
             .ToList();
 
     // AAA: при живом cutoff одним batch-delete уходят финалы ниже него и вся
@@ -880,7 +1060,7 @@ public class RetentionPlannerTests
         var doomed = RetentionDoomed(names, null);
 
         // Assert — эквивалент SelectPartialForDeletion; финалы целы
-        doomed.Should().BeEquivalentTo(RetentionPlanner.SelectPartialForDeletion(names, null));
+        doomed.Should().BeEquivalentTo(RetentionPlanner.SelectPartialForDeletion(names, null, chainLife: null));
         doomed.Should().NotContain([Seg1.Name, Seg2.Name, Seg3.Name]);
         doomed.Should().Contain([WalPartialName.Key(Seg3.Name, 0x100), WalPartialName.Key(Seg3.Name, 0x200)]);
         doomed.Should().Contain(WalPartialName.Key(Seg4.Name, 0x100));

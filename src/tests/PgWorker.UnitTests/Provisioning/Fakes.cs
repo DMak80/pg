@@ -596,6 +596,13 @@ internal sealed class FakeDriver : IClusterDriver
             string cluster, string shard, string prefix, int? maxKeysPerTest = null, CancellationToken ct = default)
             => Task.FromResult(Off<IReadOnlyList<WalObject>>());
 
+        public Task<Result> PutObjectMd5Async(string key, byte[] data, string md5Hex, CancellationToken ct = default)
+            => throw new NotSupportedException();
+
+        public Task<Result<(byte[] Data, string? ETag)>> GetObjectBytesAsync(
+            string cluster, string shard, string key, CancellationToken ct = default)
+            => throw new NotSupportedException();
+
         public Task<Result<string>> GetObjectAsync(
             string cluster, string shard, string key, CancellationToken ct = default)
             => Task.FromResult(Off<string>());

@@ -30,29 +30,50 @@ public static class WalChain
     /// <summary>Хвост потока (arch/19 §3 «Истина прогресса»).</summary>
     public sealed record WalTailFact(string SegmentName, string ObjectName);
 
-    /// <summary>Хвост потока — максимальный валидный префикс: финальный объект
-    /// цепочки (chainLastFinal — результат Check/CheckWithRestart) ЛИБО лучший
-    /// .partial (версии схлопываются по сегменту, учитывается длиннейшая по
-    /// EndLsn — WalPartialName). Сравнение по (Tli, log·256+seg); при равной
-    /// позиции финал авторитетен. Чистая функция; null — объектов нет.</summary>
-    public static WalTailFact? TailOf(WalFileName? chainLastFinal, IEnumerable<string> objectNames)
+    /// <summary>Хвост потока — максимальный валидный префикс (arch/19 §3, arch/
+    /// backups/processes/b-wal-control.md §1): финальный объект цепочки
+    /// (chainLastFinal — результат Check/CheckWithRestart) ЛИБО покрытие
+    /// дельта-кусков ТЕКУЩЕГО номера жизни по сегментам (покрытие по именам:
+    /// база start=0, затем жадное примыкание start ≤ coverage &lt; end), ЛИБО
+    /// лучшая t14-версия (`WalPartialName`) — версии учитываются ТОЛЬКО у
+    /// сегмента без единого куска номера chainLife (переходное окно t14→t15,
+    /// решение №39). Куски чужих номеров не рассматриваются вовсе. Сравнение
+    /// по (Tli, log·256+seg); при равной позиции финал авторитетен. Чистая
+    /// функция; null — кандидатов нет.</summary>
+    public static WalTailFact? TailOf(
+        WalFileName? chainLastFinal, IEnumerable<string> objectNames, uint chainLife)
     {
-        // Лучшие .partial по сегментам (дедуп версий: длиннейшая EndLsn).
-        var bestPartialBySegment = new Dictionary<WalFileName, string>();
-        var bestEndLsn = new Dictionary<WalFileName, ulong>();
+        // Куски текущего номера по сегментам (имена нужны для LastModified хвоста).
+        var currentBySegment = new Dictionary<WalFileName, List<(WalDeltaName.Piece Piece, string Name)>>();
+        // Лучшие .partial-версии (дедуп версий: длиннейшая EndLsn) — legacy-окно.
+        var legacyBySegment = new Dictionary<WalFileName, (ulong EndLsn, string Name)>();
         foreach (var name in objectNames)
-            if (WalPartialName.TryParse(name) is { } p
-                && (!bestEndLsn.TryGetValue(p.Segment, out var cur) || p.EndLsn > cur))
+        {
+            if (WalDeltaName.TryParse(name) is { } piece)
             {
-                bestEndLsn[p.Segment] = p.EndLsn;
-                bestPartialBySegment[p.Segment] = name;
+                if (piece.ChainLife != chainLife)
+                    continue; // чужой номер жизни — не кандидат вовсе
+                if (!currentBySegment.TryGetValue(piece.Segment, out var list))
+                    currentBySegment[piece.Segment] = list = [];
+                list.Add((piece, name));
+                continue;
             }
+
+            if (WalPartialName.TryParse(name) is { } legacy
+                && (!legacyBySegment.TryGetValue(legacy.Segment, out var best)
+                    || legacy.EndLsn > best.EndLsn))
+                legacyBySegment[legacy.Segment] = (legacy.EndLsn, name);
+        }
 
         var candidates = new List<(WalFileName Segment, string ObjectName, bool IsFinal)>();
         if (chainLastFinal is { } final)
             candidates.Add((final, final.Name, IsFinal: true));
-        foreach (var (segment, objectName) in bestPartialBySegment)
-            candidates.Add((segment, objectName, IsFinal: false));
+        foreach (var (segment, pieces) in currentBySegment)
+            if (PieceCoverage(pieces) is { } coverage)
+                candidates.Add((segment, coverage, IsFinal: false));
+        foreach (var (segment, legacy) in legacyBySegment)
+            if (!currentBySegment.ContainsKey(segment))
+                candidates.Add((segment, legacy.Name, IsFinal: false)); // t14-версия — пока нет кусков жизни
         if (candidates.Count == 0)
             return null;
 
@@ -63,6 +84,48 @@ public static class WalChain
             .ThenByDescending(c => c.IsFinal)
             .Select(c => new WalTailFact(c.Segment.Name, c.ObjectName))
             .First();
+    }
+
+    // Покрытие дельта-кусков сегмента по именам: база start=0 даёт начальное
+    // покрытие (max end), затем куски start ≤ coverage < end расширяют его
+    // итеративно (отсортированы по start). Имя — кусок, достигший покрытия.
+    // null — базы нет (куски без [0..end) покрытия не начинают).
+    private static string? PieceCoverage(
+        List<(WalDeltaName.Piece Piece, string Name)> pieces)
+    {
+        var ordered = pieces
+            .OrderBy(p => p.Piece.Start)
+            .ThenBy(p => p.Name, StringComparer.Ordinal)
+            .ToList();
+        // База жизни — кусок от НАЧАЛА сегмента (координаты кусков абсолютные).
+        var segmentStart = WalDeltaName.SegmentStartOf(ordered[0].Piece.Segment);
+        var coverage = segmentStart;
+        string? name = null;
+        foreach (var (piece, pieceName) in ordered)
+            if (piece.Start == segmentStart && piece.End > coverage)
+            {
+                coverage = piece.End;
+                name = pieceName;
+            }
+
+        if (name is null)
+            return null; // базы (start=0) нет — покрытие жизни не начато
+
+        bool extended;
+        do
+        {
+            extended = false;
+            foreach (var (piece, pieceName) in ordered)
+                if (piece.Start <= coverage && piece.End > coverage)
+                {
+                    coverage = piece.End;
+                    name = pieceName;
+                    extended = true;
+                }
+        }
+        while (extended);
+
+        return name;
     }
 
     /// <summary>Check с перезапуском от нового TLI (AC4): promote восстановленного

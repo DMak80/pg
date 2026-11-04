@@ -1,4 +1,5 @@
 using PgWorker.Backups;
+using PgWorker.Etcd.Backups;
 using PgWorker.Etcd.Parsing;
 using PgWorker.Etcd.S3;
 using Shared.Core;
@@ -13,7 +14,7 @@ namespace PgWorker.PgNode;
 /// WaitingPolicy — policy без s3/Failed-резолв (текст — в Error); оба —
 /// transient-ожидания, ретрай следующим циклом.</summary>
 public sealed record WalReceiverTargetsResult(
-    string? Password, BackupPoolContext? Pool, string? Slot, string? Error)
+    string? Password, BackupPoolContext? Pool, string? Slot, string? Error, uint ChainLife = 0)
 {
     public bool WaitingPassword => Password is null;
     public bool WaitingPolicy => Pool is null;
@@ -22,8 +23,9 @@ public sealed record WalReceiverTargetsResult(
 
     public static WalReceiverTargetsResult PolicyMissing(string? error) => new("", null, null, error);
 
-    public static WalReceiverTargetsResult Ok(string password, BackupPoolContext pool, string slot)
-        => new(password, pool, slot, null);
+    public static WalReceiverTargetsResult Ok(
+        string password, BackupPoolContext pool, string slot, uint chainLife = 0)
+        => new(password, pool, slot, null, chainLife);
 }
 
 /// <summary>Резолв кредов/целей приёмника из etcd (arch/19 §3, решение spec §7
@@ -58,8 +60,16 @@ public sealed class WalReceiverTargets(IEtcdGateway etcd, string[] endpoints, IS
             if (resolved.Value is not { } pool)
                 return WalReceiverTargetsResult.PolicyMissing(null);
 
+            // (3) Номер жизни цепочки (t15, arch/backups/05 §1): отсутствие
+            // ключа/битый JSON → 0 (первая жизнь); транспортный отказ etcd —
+            // transient-ожидание тем же классом, что policy.
+            var life = await ReadChainLifeAsync(cluster, shard, ct);
+            if (!life.IsSuccess)
+                return WalReceiverTargetsResult.PolicyMissing(
+                    $"wal-life read failed: {life.Error!.Message.Split('\n')[0]}");
+
             return WalReceiverTargetsResult.Ok(
-                password.Value!, pool, BackupNames.Slot(cluster, shard));
+                password.Value!, pool, BackupNames.Slot(cluster, shard), life.Value);
         }
         catch (Exception e)
         {
@@ -87,6 +97,29 @@ public sealed class WalReceiverTargets(IEtcdGateway etcd, string[] endpoints, IS
         }
 
         return Result<string?>.Failed(last.Error
+            ?? new EtcdUnreachableException("etcd endpoints are not set"));
+    }
+
+    // GET /pgworker/backups/<C>/<X>/wal-life — failover-перебор endpoints
+    // (образец ReadPasswordAsync); отсутствие ключа/битый JSON → 0.
+    private async Task<Result<uint>> ReadChainLifeAsync(
+        string cluster, string shard, CancellationToken ct)
+    {
+        Result<Kv?> last = default;
+        foreach (var endpoint in endpoints)
+        {
+            var result = await etcd.GetAsync(
+                endpoint, BackupNames.WalLifeKey(cluster, shard), ct);
+            if (!result.IsSuccess)
+            {
+                last = result; // отказ — пробуем следующий endpoint (failover)
+                continue;
+            }
+            return Result<uint>.Success(
+                WalLifeStateJson.TryParse(result.Value?.Value)?.ChainLife ?? 0);
+        }
+
+        return Result<uint>.Failed(last.Error
             ?? new EtcdUnreachableException("etcd endpoints are not set"));
     }
 }

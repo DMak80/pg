@@ -5,6 +5,7 @@ using PgWorker.Backups.Job;
 using PgWorker.Core;
 using PgWorker.Core.Model;
 using Shared.Etcd.Client;
+using PgWorker.Etcd.Backups;
 using PgWorker.Etcd.Parsing;
 using PgWorker.Provisioning.Processes;
 
@@ -157,9 +158,27 @@ public sealed class RetentionProcess(
         if (!listed.IsSuccess)
             throw new ApplicationException($"list wal: {listed.Error!.Message}");
         var names = listed.Value.Select(o => o.Key.Split('/')[^1]).ToList();
+        // t15 (spec §4.1(д)/§4.6, решение №20): вход кусочной гигиены — текущий
+        // номер жизни из счётчика; гвард активного restore отключает ветку чужих
+        // номеров (куски её жизни читает fetch-wal наката).
+        uint? chainLife = null;
+        var activeRestore = shardBackups.Restores.Any(r => r.State
+            is RestoreStatus.Planned or RestoreStatus.Running or RestoreStatus.Rejoining);
+        if (!activeRestore)
+        {
+            var life = await new WalLifeStore(etcd, endpoints).ReadValueAsync(cluster, shard, ct);
+            if (life.IsSuccess)
+                chainLife = life.Value;
+        }
+
+        // Гейт ветки (д): куски жизни последнего полного шарда не выметаются —
+        // RPO-хвост повторного restore/drill в окне до пересъёма
+        // (arch/backups/processes/d-wal-sweeper.md).
+        var lastFullLife = RetentionPlanner.LastFullLife(shardBackups.Full);
+
         var doomed = (cutoff is { } cut
                 ? RetentionPlanner.SelectWalForDeletion(names, cut) : [])
-            .Concat(RetentionPlanner.SelectPartialForDeletion(names, cutoff))
+            .Concat(RetentionPlanner.SelectPartialForDeletion(names, cutoff, chainLife, lastFullLife))
             .ToList();
         if (doomed.Count > 0)
         {

@@ -359,7 +359,10 @@ builder.Services.AddSingleton<IClusterDriver>(sp =>
         CaPem: BackupCaPem.ReadIfConfigured(opts.Backups.S3.CaBundlePath),
         StagingDir: string.IsNullOrWhiteSpace(opts.Backups.Staging.Dir) ? null : opts.Backups.Staging.Dir,
         PartialIntervalSec: opts.Backups.Wal.PartialIntervalSec >= 1
-            ? opts.Backups.Wal.PartialIntervalSec : null);
+            ? opts.Backups.Wal.PartialIntervalSec : null,
+        // t15: период компакции дельт приёмника (fail-fast <60 уже отсёк мусор).
+        PartialCompactIntervalSec: opts.Backups.Wal.PartialCompactIntervalSec >= 60
+            ? opts.Backups.Wal.PartialCompactIntervalSec : null);
 
     if (string.Equals(docker.Mode, "Swarm", StringComparison.OrdinalIgnoreCase))
     {

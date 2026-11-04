@@ -28,11 +28,14 @@ Job { FullTimeoutSec=21600, VerifyTimeoutSec=21600, RestoreTimeoutSec=86400 }
          # бюджеты зависших операций; Agent { Cpu, Mem } и Job:Image УШЛИ —
          # контейнеров/джобов бэкапов нет, операции живут в приёмниках нод
 Retry { BaseSec=300, MaxSec=3600 } # бэкофф переснятия FAILED
-Wal { PartialIntervalSec=3, VerifyIntervalSec=30, LagMaxSegments=1024,
-      StaleSec=300 }
-         # PartialIntervalSec — период .partial-доотправки префикса живого
+Wal { PartialIntervalSec=3, PartialCompactIntervalSec=3600,
+      VerifyIntervalSec=30, LagMaxSegments=1024, StaleSec=300 }
+         # PartialIntervalSec — период выкладки дельта-кусков живого
          # сегмента, доставляется в контейнер ноды env
          # PGW_WAL_PARTIAL_INTERVAL_SEC — как PGW_BACKUP_STAGING_DIR;
+         # PartialCompactIntervalSec — период компакции (перезаливка
+         # кумулятивного префикса базой-компаком, если был инкремент),
+         # env PGW_WAL_PARTIAL_COMPACT_INTERVAL_SEC, дефолт 1 ч;
          # период list/контроля цепочки, порог отставания в сегментах,
          # порог тишины загрузок; конфигурации приёмника отдельной нет —
          # приёмник внутри образа ноды управляется etcd-контрактом

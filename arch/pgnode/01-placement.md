@@ -52,7 +52,9 @@ Env ноды секретов НЕ несёт: `docker inspect` не раскр�
 - etcd: `PGW_ETCD`, `ETCD3_HOSTS` (формат `host:port` БЕЗ scheme);
 - S3: `PGW_BACKUP_S3_BUCKET` (per-install bucket), опц.
   `PGW_BACKUP_S3_CA_PEM`, `PGW_BACKUP_STAGING_DIR`,
-  `PGW_WAL_PARTIAL_INTERVAL_SEC` (доставка `Wal:PartialIntervalSec`);
+  `PGW_WAL_PARTIAL_INTERVAL_SEC` (доставка `Wal:PartialIntervalSec`),
+  `PGW_WAL_PARTIAL_COMPACT_INTERVAL_SEC` (доставка
+  `Wal:PartialCompactIntervalSec`);
 - публичные CA: `SSL_RESTAPI_CA` (REST-слой), CA верификации клиентов
   mTLS-канала агента;
 - шаблон пулера: `DOORMAN_CONFIG_TEMPLATE` (пароль — плейсхолдер

@@ -1,3 +1,4 @@
+using PgWorker.Backups.Job;
 using Microsoft.Extensions.Logging;
 using PgWorker.Backups.Drill;
 using PgWorker.Core;
@@ -209,7 +210,9 @@ public sealed class RestoreDrillProcess(
                     SecretKey: poolCtx.SecretKey,
                     Bucket: options.S3Bucket,
                     Prefix: $"{cluster}/{shard}",
-                    CaPem: BackupCaPem.ReadIfConfigured(options.S3CaBundlePath))), ct);
+                    CaPem: BackupCaPem.ReadIfConfigured(options.S3CaBundlePath)),
+                // t15: номер жизни выбранного полного — фильтр кусков fetch-wal.
+                ChainLife: fresh.ChainLife), ct);
         if (!launch.IsAccepted && !launch.IsConflict)
             return Result<ProcessOutcome>.Success(ProcessOutcome.Done); // transient — тик повторит POST
 
@@ -273,6 +276,23 @@ public sealed class RestoreDrillProcess(
         logger.LogInformation(
             "{Op} {cluster}/{shard}: drill {Id} yielded to an active restore request — operation cancelled, key removed",
             Op, cluster, shard, drill.Id);
+    }
+
+    // t15: номер жизни полного по BackupId (etcd-статус шарда); отказ чтения/
+    // отсутствие статуса — null (DR-orphan: фильтр по номеру не активен).
+    private async Task<uint?> ReadChainLifeAsync(
+        string cluster, string shard, string backupId, CancellationToken ct)
+    {
+        var range = await etcd.RangeAsync(endpoints[0], BackupNames.ClusterPrefix(cluster), ct);
+        if (!range.IsSuccess)
+            return null;
+        var parsed = PgWorker.Etcd.Parsing.BackupsParser.Parse(range.Value, out _);
+        if (!parsed.IsSuccess)
+            return null;
+        var backups = parsed.Value.FirstOrDefault(b => b.Cluster == cluster);
+        return backups?.Shards.TryGetValue(shard, out var sb) == true
+            ? sb.Full.FirstOrDefault(f => f.Id == backupId)?.ChainLife
+            : null;
     }
 
     // ── Супервиз RUNNING-дрилла (arch/19 §3.6 п.2) ──
@@ -340,7 +360,10 @@ public sealed class RestoreDrillProcess(
                         SecretKey: poolCtx.SecretKey,
                         Bucket: options.S3Bucket,
                         Prefix: $"{cluster}/{shard}",
-                        CaPem: BackupCaPem.ReadIfConfigured(options.S3CaBundlePath))), ct);
+                        CaPem: BackupCaPem.ReadIfConfigured(options.S3CaBundlePath)),
+                    // t15: номер жизни выбранного полного — фильтр кусков fetch-wal
+                    // (на повторном POST статус полного читается из etcd; нет — null).
+                    ChainLife: await ReadChainLifeAsync(cluster, shard, drill.BackupId, ct)), ct);
             return; // 202/409 — операция жива; отказ — transient, тик повторит
         }
 

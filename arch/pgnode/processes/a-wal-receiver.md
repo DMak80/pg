@@ -20,7 +20,7 @@ waiting_* → streaming   (условие выполнено; повторный
 streaming → paused      (wal-ключ STOPPED или WAL_CHAIN_ERROR)
 paused → streaming      (стоп-ключ снят; перерезолв)
 любое → failed_permanent (несовместимый wal_segment_size, разрыв LSN
-                          протокола, чужая инкарнация, невалидный env)
+                          протокола, чужая цепочка, невалидный env)
 ```
 
 `waiting_*` и `paused` — ожидание с периодическим перерезолвом, НЕ exit.
@@ -41,14 +41,21 @@ paused → streaming      (стоп-ключ снят; перерезолв)
 
 `START_REPLICATION ... PHYSICAL` по слоту от явной стартовой позиции
 (хвост S3, но не выше собственного `last_delivered_segment`; пустой префикс —
-`restart_lsn` слота). Приём XLogData → буфер сегмента → `.partial`-версии
-каждые `Wal:PartialIntervalSec`/4 МиБ → финальный put при закрытии.
+`restart_lsn` слота). Приём XLogData → буфер сегмента → дельта-куски каждые
+`Wal:PartialIntervalSec`/4 МиБ с номером жизни цепочки из конфигурации
+сессии (счётчик `wal-life` читается вместе с кредами/целями на каждом
+цикле подключения; первый кусок сегмента — база-компак;
+компакция раз в `Wal:PartialCompactIntervalSec` —
+[03-wal-receiver.md](../03-wal-receiver.md) §2) → финальный put при закрытии.
 Подтверждение слота — только после успешного put закрытого сегмента
 (write/flush = конец доставленного). S3-исчерпание — стрим стоит
 (backpressure), флаг `pool_exhausted` в статус-ключе, ретрай-цикл; успешный
 put/инвентарь флаг снимает; граница сессии перепубликует факт.
 Ошибка put, не являющаяся транспортной (ETag/md5 несовпадение) —
-`failed_permanent` «foreign WAL chain». 58P01 — tli-процедура
+`failed_permanent` «foreign WAL chain»; воркер по свежему факту
+инкрементирует `wal-life` (смена жизни, причина foreign-chain —
+[../../backups/05-etcd-contract.md](../../backups/05-etcd-contract.md) §1).
+58P01 — tli-процедура
 ([03-wal-receiver.md](../03-wal-receiver.md) §5), затем продолжение.
 
 ## 4. Инвентарь и `.history`

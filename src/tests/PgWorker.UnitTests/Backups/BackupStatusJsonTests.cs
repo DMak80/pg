@@ -35,6 +35,39 @@ public class BackupStatusJsonTests
         json.Should().NotContain("wal_start_segment").And.NotContain("finished_unix");
     }
 
+    // AAA (t15, arch/backups/01 §6): chain_life пишется при наличии и
+    // восстанавливается парсером; без номера поля нет.
+    [Fact]
+    public void Serialize_ChainLife_RoundTrip()
+    {
+        // Arrange — запись с номером жизни и без него
+        var withLife = new FullBackupState(
+            "20260910030000Z", FullBackupStatus.Completed, "n1", BackupSourceRole.Master,
+            1757463600, 1757464000, "000000010000000000000042", 1024, null, null,
+            ChainLife: 4);
+        var withoutLife = new FullBackupState(
+            "20260910040000Z", FullBackupStatus.Completed, "n1", BackupSourceRole.Master,
+            1757463600, 1757464000, "000000010000000000000042", 1024, null, null);
+
+        // Act
+        var jsonWith = BackupStatusJson.Serialize(withLife);
+        var jsonWithout = BackupStatusJson.Serialize(withoutLife);
+        var parsed = BackupsParser.Parse(
+            (IReadOnlyList<Kv>)
+            [
+                new Kv(BackupNames.FullKey("c", "s1", withLife.Id), jsonWith, 1),
+                new Kv(BackupNames.FullKey("c", "s1", withoutLife.Id), jsonWithout, 1),
+            ], out var errors);
+
+        // Assert
+        errors.Should().BeEmpty();
+        var fulls = parsed.Value[0].Shards["s1"].Full;
+        fulls.Single(f => f.Id == withLife.Id).ChainLife.Should().Be(4u);
+        fulls.Single(f => f.Id == withoutLife.Id).ChainLife.Should().BeNull();
+        jsonWith.Should().Contain("\"chain_life\":4");
+        jsonWithout.Should().NotContain("chain_life");
+    }
+
     // AAA: COMPLETED — все итоговые поля + verify PENDING
     [Fact]
     public void Serialize_CompletedWithVerify_RoundTrip()

@@ -453,6 +453,7 @@ public sealed class BackupsOptions
         WalLagMaxSegments: Wal.LagMaxSegments,
         WalStaleSec: Wal.StaleSec,
         WalPartialIntervalSec: Wal.PartialIntervalSec,
+        WalPartialCompactIntervalSec: Wal.PartialCompactIntervalSec,
         PolicyRetentionDays: Policy.Retention.Days,
         PolicyRetentionWeeks: Policy.Retention.Weeks,
         PolicyRetentionMonths: Policy.Retention.Months,
@@ -484,6 +485,9 @@ public sealed class BackupsOptions
            && Retention.IntervalSec >= 60
            && Retention.KeepFailed >= 5
            && Wal.PartialIntervalSec >= 1          // период .partial-доотправки приёмника (arch/19 §9)
+           // период компакции дельт приёмника (t15, arch/backups/09 §1): чаще
+           // минуты — разрушает инкрементальность
+           && Wal.PartialCompactIntervalSec >= 60
            && Supervisor.IntervalSec >= 60          // как Retention.IntervalSec — тик не молотит
            && Supervisor.OrphanTtlSec >= 0          // 0 — авто-удаление выключено (только алерт)
            && Job.FullTimeoutSec > 0
@@ -632,6 +636,11 @@ public sealed class BackupsWalOptions
     /// приёмником (arch/19 §3/§9); доставляется env ноды
     /// PGW_WAL_PARTIAL_INTERVAL_SEC.</summary>
     public int PartialIntervalSec { get; set; } = 3;
+
+    /// <summary>t15 (arch/backups/09 §1): период компакции дельт приёмника
+    /// (база-компак кумулятивного префикса); доставляется env ноды
+    /// PGW_WAL_PARTIAL_COMPACT_INTERVAL_SEC; &lt; 60 — fail-fast старта.</summary>
+    public int PartialCompactIntervalSec { get; set; } = 3600;
 
     public int VerifyIntervalSec { get; set; } = 30;
 

@@ -22,6 +22,7 @@ public static class WalPrefixScanner
     public const int ShortHeaderBytes = 24;  // XLogPageHeaderData — прочие страницы
     public const int MinRecordBytes = 24;    // SizeOf(XLogRecord)
     private const int TotalLenBytes = sizeof(uint); // xl_tot_len — первое поле XLogRecord
+    private const int CrcOffset = 20;        // offsetof(XLogRecord, xl_crc)
     private const ushort XlpFirstIsContrecord = 0x0001; // XLP_FIRST_IS_CONTRECORD
     private const long RecordAlign = 8;      // MAXALIGN длины записи
 
@@ -90,6 +91,181 @@ public static class WalPrefixScanner
         }
 
         return prefix;
+    }
+
+    /// <summary>Длина префикса, все записи которого целостны по xl_crc (spec §4.1,
+    /// решение №18): тот же проход, что ValidPrefixLength (границы записей), плюс
+    /// сверка CRC каждой ПОЛНОСТЬЮ принятой записи. CRC-32C считается в порядке
+    /// вычисления postgres (arch/pgnode/processes/g-wal-delta-assembly.md §5):
+    /// накопитель 0xFFFFFFFF → ТЕЛО записи [SizeOfXLogRecord..xl_tot_len) →
+    /// фиксированный заголовок [0..xl_crc) → XOR 0xFFFFFFFF; вставленные
+    /// short-заголовки страниц и MAXALIGN-добивка исключены. Порядок «тело →
+    /// заголовок» обязателен (postgres считает тело при сборке записи, заголовок
+    /// домешивает после заполнения prev-link; CRC-32C не коммутативна).
+    /// Несовпадение CRC — стоп на конце последней CRC-валидной записи
+    /// (консервативно). Чистая функция.</summary>
+    public static int ValidatedPrefixLength(byte[] buffer, int count)
+        => ValidatedPrefixLength(buffer, count, validatedUpTo: 0);
+
+    /// <summary>Инкрементальная форма (survival-сборка и финальная проверка
+    /// fetch-wal): {@code validatedUpTo} — ДОВЕРЕННАЯ граница (конец записи по
+    /// построению кусков: конец куска-базы/предыдущего провалидированного
+    /// дифа) — скан НАЧИНАЕТСЯ с неё, префикс ниже не читается и не
+    /// пересчитывается (O(область дифов) вместо O(L·k)). Доверенная база
+    /// считается корректной как полный бэкап (arch/pgnode/processes/
+    /// g-wal-delta-assembly.md §5); граница вне [0..count] трактуется как 0
+    /// (полный скан). Первая запись от границы всегда пересчитывается;
+    /// позиция на границе страницы — пропуск short-заголовка, как везде.
+    /// Прочие правила — как у полной формы.</summary>
+    public static int ValidatedPrefixLength(byte[] buffer, int count, int validatedUpTo)
+    {
+        if (count < LongHeaderBytes)
+            return 0;
+        // Скан идёт ОТ доверенной границы: область ниже — валидна по построению.
+        var trusted = validatedUpTo > 0 && validatedUpTo <= count ? validatedUpTo : 0;
+
+        var prefix = trusted; // доверенный префикс уже принят
+        long pos = trusted;
+
+        if (trusted == 0)
+        {
+            // Полный скан: первая страница — long-заголовок 40 байт.
+            pos = LongHeaderBytes;
+            // Продолжение записи из предыдущего сегмента — как в ValidPrefixLength.
+            if ((LeU16(buffer, 2) & XlpFirstIsContrecord) != 0)
+            {
+                var remaining = LeU32(buffer, 16); // xlp_rem_len
+                if (remaining == 0)
+                    return 0;
+                var contEnd = Skip(count, pos, remaining);
+                if (contEnd < 0)
+                    return 0;
+                prefix = (int)contEnd;
+                pos = (contEnd + RecordAlign - 1) & ~(RecordAlign - 1); // MAXALIGN
+                if (pos > count)
+                    return prefix;
+            }
+        }
+
+        while (pos < count)
+        {
+            if (pos % PageBytes == 0)
+            {
+                pos += ShortHeaderBytes;
+                if (pos > count)
+                    return prefix;
+            }
+
+            var pageEnd = (pos / PageBytes + 1) * PageBytes;
+            if (pageEnd - pos < TotalLenBytes)
+            {
+                pos = pageEnd; // в остатке страницы меньше 4 байт — добивка
+                continue;
+            }
+            if (count - pos < TotalLenBytes)
+                return prefix;
+
+            var totalLen = LeU32(buffer, (int)pos);
+            if (totalLen < MinRecordBytes)
+                return prefix; // нули/мусор — конец валидного WAL
+
+            var (recordEnd, next) = Advance(count, pos, totalLen);
+            if (recordEnd < 0)
+                return prefix; // запись ещё пишется — принимаем только полные
+
+            var check = RecordCrc(buffer, count, pos, totalLen);
+            if (check is null || check.Value.Computed != check.Value.Stored)
+                return prefix; // CRC не сошлась — целостных записей выше нет
+
+            prefix = (int)recordEnd;
+            pos = next;
+        }
+
+        return prefix;
+    }
+
+    // CRC записи в порядке вычисления postgres (см. сводку ValidatedPrefixLength):
+    // сначала ТЕЛО записи [SizeOfXLogRecord..totalLen), затем фиксированный
+    // заголовок [0..xl_crc), из самого образа xl_crc исключён; финал — XOR.
+    // null — байты записи ещё не приняты целиком.
+    private static (uint Computed, uint Stored)? RecordCrc(
+        byte[] buffer, int count, long start, uint totalLen)
+    {
+        var body = UpdateLogicalRange(
+            Crc32C.Init(), buffer, count, start, MinRecordBytes, totalLen);
+        if (body is null)
+            return null; // байты записи не приняты целиком
+        var header = UpdateLogicalRange(
+            body.Value, buffer, count, start, 0, CrcOffset);
+        if (header is null)
+            return null;
+        Span<byte> stored = stackalloc byte[4];
+        if (!TryReadLogical(buffer, count, start, CrcOffset, stored))
+            return null;
+        var storedValue = (uint)(stored[0] | stored[1] << 8 | stored[2] << 16 | stored[3] << 24);
+        return (Crc32C.Finish(header.Value), storedValue);
+    }
+
+    // Прогон CRC по логическому диапазону записи [from..to): физические байты —
+    // в обход short-заголовков страниц. null — байты не приняты целиком.
+    private static uint? UpdateLogicalRange(
+        uint crc, byte[] buffer, int count, long start, long from, long to)
+    {
+        long cur = start;
+        var consumed = 0L;
+        while (consumed < to)
+        {
+            if (cur % PageBytes == 0)
+                cur += ShortHeaderBytes; // продолжение на новой странице
+            var take = Math.Min(PageBytes - cur % PageBytes, to - consumed);
+            var a = Math.Max(consumed, from);
+            var b = consumed + take;
+            if (b > a)
+            {
+                if (cur + (b - consumed) > count)
+                    return null;
+                crc = Crc32C.Update(crc, buffer, (int)(cur + (a - consumed)), (int)(b - a));
+            }
+
+            consumed += take;
+            cur += take;
+        }
+
+        return crc;
+    }
+
+    // Логические байты записи [from..from+dest.Length) в dest (обход
+    // short-заголовков страниц); false — байты не приняты целиком.
+    private static bool TryReadLogical(
+        byte[] buffer, int count, long start, long from, Span<byte> dest)
+    {
+        long cur = start;
+        var consumed = 0L;
+        var written = 0;
+        while (written < dest.Length)
+        {
+            if (cur % PageBytes == 0)
+                cur += ShortHeaderBytes;
+            var room = PageBytes - cur % PageBytes;
+            var chunkEnd = consumed + room;
+            var wantedFrom = from + written;
+            if (wantedFrom < chunkEnd)
+            {
+                var offset = (int)(wantedFrom - consumed);
+                var take = (int)Math.Min(chunkEnd - wantedFrom, dest.Length - written);
+                if (cur + offset + take > count)
+                    return false;
+                buffer.AsSpan((int)(cur + offset), take).CopyTo(dest[written..]);
+                written += take;
+            }
+
+            consumed = chunkEnd;
+            cur += room;
+            if (consumed >= from + dest.Length)
+                break;
+        }
+
+        return true;
     }
 
     // Продвижение по WAL-контенту на length байт (тело записи/её продолжение)

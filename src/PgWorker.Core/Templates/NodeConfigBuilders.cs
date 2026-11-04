@@ -61,7 +61,10 @@ public static class InstallSecretsGuard
 /// PartialIntervalSec — период `.partial`-доотправки приёмника (arch/19 §9;
 /// null/≤1 ⇒ env не ставится — приёмник берёт дефолт 3 с).</summary>
 public sealed record NodeBackupEnv(
-    string? Bucket, string? CaPem, string? StagingDir = null, int? PartialIntervalSec = null);
+    string? Bucket, string? CaPem, string? StagingDir = null, int? PartialIntervalSec = null,
+    // t15 (arch/backups/09 §1): период компакции дельт приёмника; null —
+    // env не ставится (приёмник берёт дефолт 3600).
+    int? PartialCompactIntervalSec = null);
 
 /// <summary>
 /// ENV контейнера pgworker-node для Spilo/Patroni — ТОЛЬКО неконфиденциальное

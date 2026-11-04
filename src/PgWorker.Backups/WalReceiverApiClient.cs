@@ -33,7 +33,10 @@ public sealed record StartRestoreRequest(
     [property: JsonPropertyName("id")] string? Id,
     [property: JsonPropertyName("target_time")] string? TargetTime,
     [property: JsonPropertyName("recovery_timeout_sec")] int RecoveryTimeoutSec,
-    [property: JsonPropertyName("s3")] S3Context S3);
+    [property: JsonPropertyName("s3")] S3Context S3,
+    // t15 (arch/pgnode/06 §1): номер жизни выбранного полного — fetch-wal
+    // фильтрует куски по нему; null — DR-orphan (фильтр не активен).
+    [property: JsonPropertyName("chain_life")] uint? ChainLife = null);
 
 /// <summary>Снимок статуса из GET (поля spec §3.2 / arch/19 §2/§5); id —
 /// активная операция (тело 409 на POST тоже несёт её снимок) — сверка «своя/

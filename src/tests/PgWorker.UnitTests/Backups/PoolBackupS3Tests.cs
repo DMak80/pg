@@ -59,6 +59,15 @@ public class PoolBackupS3Tests
         public Task<Result> PutFileAsync(string key, string filePath, CancellationToken ct = default)
             => Task.FromResult(Result.Failed(new ApplicationException("put-file: not supported by this fake")));
 
+        // t15: методы кусков в этом тесте не используются — заглушки.
+        public Task<Result> PutObjectMd5Async(string key, byte[] data, string md5Hex, CancellationToken ct = default)
+            => Task.FromResult(Result.Failed(new ApplicationException("put-md5: not supported by this fake")));
+
+        public Task<Result<(byte[] Data, string? ETag)>> GetObjectBytesAsync(
+            string cluster, string shard, string key, CancellationToken ct = default)
+            => Task.FromResult(Result<(byte[] Data, string? ETag)>.Failed(
+                new ApplicationException("get-bytes: not supported by this fake")));
+
         public Task<Result> GetObjectToFileAsync(string cluster, string shard, string key, string destFilePath, CancellationToken ct = default)
             => Task.FromResult(Result.Failed(new ApplicationException("get-to-file: not supported by this fake")));
         public Task<Result<string>> DownloadTextAsync(

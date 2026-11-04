@@ -363,6 +363,28 @@ public sealed class PoolBackupS3 : IBackupS3, IWalSegmentGuard, IAsyncDisposable
         => await FirstFoundAsync(
             uri => Target(uri).GetObjectAsync(cluster, shard, key, ct), ct, $"get {key}");
 
+    public async Task<Result<(byte[] Data, string? ETag)>> GetObjectBytesAsync(
+        string cluster, string shard, string key, CancellationToken ct = default)
+        => await FirstFoundAsync(
+            uri => Target(uri).GetObjectBytesAsync(cluster, shard, key, ct), ct);
+
+    // Put куска с Content-MD5 — write-семантика put (перебор write-списка).
+    public async Task<Result> PutObjectMd5Async(
+        string key, byte[] data, string md5Hex, CancellationToken ct = default)
+    {
+        Result last = default;
+        foreach (var uri in _writeTargets)
+        {
+            var result = await AttemptAsync(uri, ct, () => Target(uri).PutObjectMd5Async(key, data, md5Hex, ct));
+            if (result.IsSuccess)
+                return result;
+            last = result;
+        }
+
+        return Result.Failed(new ApplicationException(
+            $"{S3PoolMarkers.Exhausted}: put {key} — all list nodes are unavailable: {last.Error!.Message}"));
+    }
+
     public async Task<Result<IReadOnlyList<string>>> ListFullsAsync(
         string cluster, string shard, int? maxKeysPerTest = null, CancellationToken ct = default)
         => await FirstAliveAsync(
@@ -456,6 +478,23 @@ public sealed class PoolBackupS3 : IBackupS3, IWalSegmentGuard, IAsyncDisposable
         Func<string, Task<Result<string>>> call, CancellationToken ct, string what)
     {
         Result<string> last = default;
+        foreach (var uri in _readTargets)
+        {
+            var result = await AttemptAsync(uri, ct, () => call(uri));
+            if (result.IsSuccess)
+                return result;
+            last = result;
+        }
+
+        return last;
+    }
+
+    // Точечный GET с перебором read-целей до найденного (generic-форма:
+    // байты+ETag сборщика fetch-wal); исчерпание — последняя исходная ошибка.
+    private async Task<Result<T>> FirstFoundAsync<T>(
+        Func<string, Task<Result<T>>> call, CancellationToken ct)
+    {
+        Result<T> last = default;
         foreach (var uri in _readTargets)
         {
             var result = await AttemptAsync(uri, ct, () => call(uri));

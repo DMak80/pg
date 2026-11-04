@@ -52,5 +52,10 @@ public class AlertsOptions
         // Supervisor:OrphanTtlSec (паттерн WalLagMaxSegments); 0 — в панели
         // «удаление вручную» (воркер авто-удаление не выполняет).
         public long OrphanTtlSec { get; set; } = 604800; // 7 сут
+
+        // t15 backup-wal-life-changed : свежесть bumped_unix счётчика wal-life
+        // (событие смены жизни, гаснет возрастом; arch/adminpanel/03 §4).
+        public int WalLifeChangedSec { get; set; } = 3600;
+
     }
 }

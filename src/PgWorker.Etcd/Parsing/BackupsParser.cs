@@ -302,7 +302,8 @@ public static class BackupsParser
             return new FullBackupState(
                 id, state.Value, node, role.Value, startedUnix.Value,
                 ReadLong(root, "finished_unix"), ReadString(root, "wal_start_segment"),
-                ReadLong(root, "size_bytes"), ReadString(root, "error"), verify);
+                ReadLong(root, "size_bytes"), ReadString(root, "error"), verify,
+                ReadChainLife(root));
         }
         catch (JsonException)
         {
@@ -356,7 +357,9 @@ public static class BackupsParser
                 ReadString(root, "phase"), ReadString(root, "restored_to_lsn"),
                 ReadString(root, "error"),
                 // пул DR-источника (arch/14 §1.1); отсутствие — свой пул.
-                ReadString(root, "source_pool"))
+                ReadString(root, "source_pool"),
+                // t15: номер жизни цепочки выбранного полного (DR-orphan — нет).
+                ReadChainLife(root))
             {
                 SystemId = ReadString(root, "system_id"),
                 // Unix перехода в текущую фазу (пишет воркер): стенка наката
@@ -497,6 +500,13 @@ public static class BackupsParser
             && root.TryGetProperty(name, out var element)
             && element.ValueKind is JsonValueKind.String or JsonValueKind.Number
             ? element.ToString()
+            : null;
+
+    // chain_life (t15): u32-номер жизни; отсутствие/вне диапазона — null
+    // (толерантность: старый ключ и ручная порча читаются как «нет номера»).
+    private static uint? ReadChainLife(JsonElement root)
+        => ReadLong(root, "chain_life") is { } life && life is > 0 and <= uint.MaxValue
+            ? (uint)life
             : null;
 
     private static long? ReadLong(JsonElement root, string name)

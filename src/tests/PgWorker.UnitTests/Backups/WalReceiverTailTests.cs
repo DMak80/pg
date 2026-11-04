@@ -1,7 +1,10 @@
 using FluentAssertions;
 using PgWorker.Backups;
+using PgWorker.Etcd.S3;
 using PgWorker.PgNode;
+using PgWorker.UnitTests.Api;
 using Shared.Core;
+using Shared.Etcd.Client;
 using Xunit;
 
 namespace PgWorker.UnitTests.Backups;
@@ -35,6 +38,13 @@ public class WalReceiverTailTests
 
         public Task<Result<IReadOnlyList<WalObject>>> ListAsync(
             string cluster, string shard, string prefix, int? maxKeysPerTest = null, CancellationToken ct = default)
+            => throw new NotSupportedException();
+
+        public Task<Result> PutObjectMd5Async(string key, byte[] data, string md5Hex, CancellationToken ct = default)
+            => throw new NotSupportedException();
+
+        public Task<Result<(byte[] Data, string? ETag)>> GetObjectBytesAsync(
+            string cluster, string shard, string key, CancellationToken ct = default)
             => throw new NotSupportedException();
 
         public Task<Result<string>> GetObjectAsync(
@@ -133,5 +143,86 @@ public class WalReceiverTailTests
         endLsn.Should().Be(3UL << 24);
         WalFileName.FromLsn(1, $"{endLsn >> 32:X}/{endLsn & 0xFFFFFFFF:X}").Name
             .Should().Be("000000010000000000000003");
+    }
+
+    // ---: WalReceiverTargets — номер жизни в конфигурации сессии (t15, spec §4.2) ----
+
+    private const string Cluster = "c1";
+    private const string Shard = "shard1";
+
+    /// <summary>Пул-контекст для резолва targets (одна нода, креды есть).</summary>
+    private sealed class FixedPools : IS3PoolStore
+    {
+        public Task<Result<S3Pool?>> ReadAsync(string name, CancellationToken ct)
+            => Task.FromResult(Result<S3Pool?>.Success(new S3Pool(
+                name, false,
+                [new S3PoolNode("s3a", "RUNNING", "host1", "s3a", 9000)],
+                ["s3a:9000"], new S3PoolSecrets("ak", "sk"))));
+
+        public Task<Result<IReadOnlyList<string>>> ListPoolNamesAsync(CancellationToken ct)
+            => Task.FromResult(Result<IReadOnlyList<string>>.Success(["p1"]));
+    }
+
+    // Фейк etcd: пароль + policy; wal-life — по наличию ключа.
+    private static FakeEtcdGateway TargetsEtcd(string? walLife)
+    {
+        var etcd = new FakeEtcdGateway();
+        etcd.Store[$"/clusters/{Cluster}/backup_password"] = "secret";
+        etcd.Store[$"/pgworker/backups/{Cluster}/policy"] =
+            """{"s3":{"pool":"p1","write_master":["s3a"],"write_replica":["s3a"]}}""";
+        if (walLife is not null)
+            etcd.Store[BackupNames.WalLifeKey(Cluster, Shard)] = walLife;
+        return etcd;
+    }
+
+    private static Task<WalReceiverTargetsResult> ResolveTargetsAsync(FakeEtcdGateway etcd)
+        => new WalReceiverTargets(etcd, ["http://etcd-1:2379"], new FixedPools())
+            .ResolveAsync(Cluster, Shard, CancellationToken.None);
+
+    // AAA: ключ wal-life есть — номер жизни из него попадает в конфигурацию сессии.
+    [Fact]
+    public async Task Targets_WalLifeKeyPresent_ChainLifeResolved()
+    {
+        // Arrange — счётчик жизни 5 (reason restore)
+        var etcd = TargetsEtcd("""{"chain_life":5,"bumped_unix":1757500000,"reason":"restore"}""");
+
+        // Act
+        var targets = await ResolveTargetsAsync(etcd);
+
+        // Assert — резолв успешен, номер жизни = 5
+        targets.WaitingPolicy.Should().BeFalse();
+        targets.ChainLife.Should().Be(5u);
+    }
+
+    // AAA: ключа wal-life нет — жизнь 0 (первая), сессия не блокируется.
+    [Fact]
+    public async Task Targets_WalLifeKeyMissing_ChainLifeZero()
+    {
+        // Arrange — счётчика нет
+        var etcd = TargetsEtcd(walLife: null);
+
+        // Act
+        var targets = await ResolveTargetsAsync(etcd);
+
+        // Assert
+        targets.WaitingPolicy.Should().BeFalse();
+        targets.ChainLife.Should().Be(0u);
+    }
+
+    // AAA: транспортный отказ чтения счётчика — transient-ожидание (тот же
+    // класс, что policy), НЕ молчаливый 0 (неверный номер потерял бы хвост).
+    [Fact]
+    public async Task Targets_WalLifeReadFailed_TransientWaiting()
+    {
+        // Arrange — падает только ключ wal-life
+        var etcd = TargetsEtcd(walLife: """{"chain_life":5}""");
+        etcd.FailGet = key => key.EndsWith("/wal-life", StringComparison.Ordinal);
+
+        // Act
+        var targets = await ResolveTargetsAsync(etcd);
+
+        // Assert
+        targets.WaitingPolicy.Should().BeTrue();
+        targets.Error.Should().Contain("wal-life read failed");
     }
 }

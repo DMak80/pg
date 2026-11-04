@@ -34,6 +34,8 @@ public static class BackupsParser
         // reliability : полная policy (retention/verify/drill) + drill-ключи per-shard.
         var policiesFull = new Dictionary<string, BackupsPolicyInfo>();
         var drills = new Dictionary<string, Dictionary<string, DrillInfo>>();
+        // t15: счётчики жизни цепочки per-shard (ключи .../wal-life).
+        var lives = new Dictionary<string, Dictionary<string, WalLifeInfo>>();
         var shards = new Dictionary<string, Dictionary<string, long?>>();
         var wal = new Dictionary<string, Dictionary<string, WalStreamInfo?>>();
         var deleting = new Dictionary<string, Dictionary<string, List<DeletingFullInfo>>>();
@@ -293,6 +295,36 @@ public static class BackupsParser
                 catch (JsonException e)
                 {
                     errors.Add(new(kv.Key, $"broken drill JSON: {e.Message}"));
+                }
+
+                continue;
+            }
+
+            // t15 : /<X>/wal-life — счётчик жизни цепочки (arch/backups/05 §1):
+            // chain_life обязателен (> 0), bumped_unix/reason опциональны; битый
+            // JSON/нет номера — KeyParseError + пропуск (толерантный читатель).
+            if (segments.Length == 6 && segments[5] == "wal-life" && segments[4].Length > 0)
+            {
+                try
+                {
+                    using var doc = JsonDocument.Parse(kv.Value);
+                    var root = doc.RootElement;
+                    if (root.ValueKind != JsonValueKind.Object
+                        || !root.TryGetProperty("chain_life", out var lifeEl)
+                        || !lifeEl.TryGetInt64(out var life))
+                    {
+                        errors.Add(new(kv.Key, "broken wal-life counter (chain_life)"));
+                        continue;
+                    }
+
+                    if (!lives.TryGetValue(cluster, out var perShardLives))
+                        lives[cluster] = perShardLives = [];
+                    perShardLives[segments[4]] = new WalLifeInfo(
+                        cluster, segments[4], life, Long(root, "bumped_unix"), String(root, "reason"));
+                }
+                catch (JsonException e)
+                {
+                    errors.Add(new(kv.Key, $"broken wal-life JSON: {e.Message}"));
                 }
 
                 continue;
@@ -560,6 +592,7 @@ public static class BackupsParser
                 && !wal.ContainsKey(r)))
             .Concat(drills.Keys.Where(d => !shards.ContainsKey(d) && !policies.ContainsKey(d)
                 && !wal.ContainsKey(d) && !restores.ContainsKey(d)))
+            .Concat(lives.Keys)
             .Distinct()
             .OrderBy(c => c, StringComparer.Ordinal)
             .Select(c => new ClusterBackupsInfo(
@@ -598,7 +631,11 @@ public static class BackupsParser
                 drills.TryGetValue(c, out var perShardDrills) && perShardDrills.Count > 0
                     ? perShardDrills.ToDictionary(p => p.Key, p => p.Value)
                     : null,
-                policiesFull.TryGetValue(c, out var policyFull) ? policyFull : null))
+                policiesFull.TryGetValue(c, out var policyFull) ? policyFull : null,
+                // t15: счётчики жизни per-shard (пусто → null — ключей не было)
+                lives.TryGetValue(c, out var perShardLives) && perShardLives.Count > 0
+                    ? perShardLives.ToDictionary(p => p.Key, p => p.Value)
+                    : null))
             .ToList();
         // реестр сирот собирается после цикла — с джойном hold/заявок
         // (ключи произвольного порядка); orphans-ключа нет/битый → null

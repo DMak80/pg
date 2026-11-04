@@ -110,6 +110,58 @@ public class BackupS3Tests
     }
 
     [Fact]
+    public async Task ListWalDeltaPiecesPaginationCollectsAll()
+    {
+        // Arrange — своё окружение + 5 дельта-кусков (страница по 2; листингу важны имена)
+        var ct = TestContext.Current.CancellationToken;
+        await using var s3Node = await OwnS3.StartAsync("s3", ct);
+        using var client = SeedClient(s3Node);
+        var segment = new WalFileName(1, 0, 1);
+        for (var i = 1; i <= 5; i++)
+        {
+            var key = WalDeltaName.Key(
+                segment, (ulong)(i - 1) * 0x100, (ulong)i * 0x100, 1, i % 2 == 1,
+                new string((char)('a' + i), 32));
+            await client.PutObjectAsync(new PutObjectRequest
+            {
+                BucketName = OwnS3.Bucket,
+                Key = $"c2/shard1/wal/{key}",
+                ContentBody = "x",
+            }, ct);
+        }
+        await using var s3 = new BackupS3(s3Node.S3());
+
+        // Act — пагинация list-v2 поверх кусочного семейства
+        var listed = await s3.ListWalAsync("c2", "shard1", maxKeysPerTest: 2, ct: ct);
+
+        // Assert — все 5 кусков возвращены
+        listed.IsSuccess.Should().BeTrue();
+        listed.Value.Should().HaveCount(5);
+        listed.Value.Should().OnlyContain(o => WalDeltaName.TryParse(o.Name) != null);
+    }
+
+    [Fact]
+    public async Task PutObjectMd5AndGetObjectBytesRoundtrip()
+    {
+        // Arrange — своё окружение; put с Content-MD5, затем GET байтов и ETag
+        var ct = TestContext.Current.CancellationToken;
+        await using var s3Node = await OwnS3.StartAsync("s3", ct);
+        await using var s3 = new BackupS3(s3Node.S3());
+        var data = "wal-delta-piece"u8.ToArray();
+        var md5Hex = Convert.ToHexStringLower(System.Security.Cryptography.MD5.HashData(data));
+
+        // Act
+        var put = await s3.PutObjectMd5Async("c5/shard1/wal/piece", data, md5Hex, ct);
+        var got = await s3.GetObjectBytesAsync("c5", "shard1", "wal/piece", ct);
+
+        // Assert — байты целы, ETag одиночного put = md5 содержимого
+        put.IsSuccess.Should().BeTrue();
+        got.IsSuccess.Should().BeTrue();
+        got.Value.Data.Should().Equal(data);
+        got.Value.ETag.Should().Be(md5Hex);
+    }
+
+    [Fact]
     public async Task ListWalReturnsObjectLastModified()
     {
         // Arrange — своё окружение + один объект
