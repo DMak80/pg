@@ -29,6 +29,10 @@ public sealed record BackupsRuntimeOptions(
     //  (arch/19 §3/§9): период `.partial`-доотправки префикса живого сегмента
     // приёмником; доставляется env ноды PGW_WAL_PARTIAL_INTERVAL_SEC.
     int WalPartialIntervalSec = 3,
+    // t15 (arch/backups/09 §1): период компакции дельт незакрытого сегмента
+    // (база-компак вместо накопления дельт); доставляется env ноды
+    // PGW_WAL_PARTIAL_COMPACT_INTERVAL_SEC; < 60 — fail-fast старта воркера.
+    int WalPartialCompactIntervalSec = 3600,
     //  (arch/19 §9): ретенция и квота; — дефолт-политика GFS для кластеров
     // без policy-ключа: 1/1/1 — целевая схема (последний + недельная + месячная).
     int PolicyRetentionDays = 1,

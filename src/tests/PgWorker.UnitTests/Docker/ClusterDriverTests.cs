@@ -248,6 +248,29 @@ public class ClusterDriverTests
         spec.Env!["PGW_BACKUP_S3_CA_PEM"].Should().Contain("BEGIN CERTIFICATE");
     }
 
+    // AAA (t15, arch/backups/09 §1): период компакции дельт — env ставится
+    // при значении ≥60 и не ставится при null/<60 (приёмник берёт дефолт).
+    [Fact]
+    public void BuildSpec_PartialCompactIntervalSec_EnvByThreshold()
+    {
+        // Arrange / Act — три варианта NodeBackupEnv
+        var engine = new FakeEngine();
+        var withValue = NewPlainDriver(engine, nodeBackupEnv: new NodeBackupEnv(
+            "backups", null, PartialCompactIntervalSec: 120))
+            .BuildSpec(Topology(Addr), "shard1a", Addr, Etcd, null, null, false);
+        var tooSmall = NewPlainDriver(engine, nodeBackupEnv: new NodeBackupEnv(
+            "backups", null, PartialCompactIntervalSec: 59))
+            .BuildSpec(Topology(Addr), "shard1a", Addr, Etcd, null, null, false);
+        var absent = NewPlainDriver(engine, nodeBackupEnv: new NodeBackupEnv("backups", null))
+            .BuildSpec(Topology(Addr), "shard1a", Addr, Etcd, null, null, false);
+
+        // Assert
+        withValue.Env!.Should().ContainKey("PGW_WAL_PARTIAL_COMPACT_INTERVAL_SEC");
+        withValue.Env!["PGW_WAL_PARTIAL_COMPACT_INTERVAL_SEC"].Should().Be("120");
+        tooSmall.Env!.Should().NotContainKey("PGW_WAL_PARTIAL_COMPACT_INTERVAL_SEC");
+        absent.Env!.Should().NotContainKey("PGW_WAL_PARTIAL_COMPACT_INTERVAL_SEC");
+    }
+
     // NodeBackupEnv не задан (DI без Backups) — bucket/CA env НЕ ставится:
     // приёмник старт-фейлится (подсистема выключена валидацией старта).
     [Fact]
