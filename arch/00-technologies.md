@@ -80,3 +80,17 @@ sequence).
 → [pg-clusters/05-postgres-patroni.md](pg-clusters/05-postgres-patroni.md),
 [pg-clusters/11-buckets.md](pg-clusters/11-buckets.md) §4/§7,
 [backups/02-wal-archive.md](backups/02-wal-archive.md)
+
+### 2.7. E2E-тестирование
+
+Сквозные правила docker-E2E для всех E2E-проектов монорепо: единица
+окружения — тестовый класс с полностью своим контуром (сеть, etcd, S3,
+SUT-воркер), динамические хост-порты, чистка строго по своим объектам,
+обязательный teardown и ассерт чистоты; телеметрия прогона снимается до
+удаления, падение разбирается по логам без перезапуска, статика собирается
+отдельной фазой.
+
+→ [testing/README.md](testing/README.md) — канон;
+[testing/01-e2e-launch.md](testing/01-e2e-launch.md) — запуск и телеметрия;
+[testing/02-e2e-isolation.md](testing/02-e2e-isolation.md) — изоляция и
+чек-лист; команды — [operations/04-e2e-runs.md](operations/04-e2e-runs.md)

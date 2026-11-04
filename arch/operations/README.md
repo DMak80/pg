@@ -25,12 +25,12 @@
 | Восстановление etcd из S3-выгрузки | [etcdworker/06-operability.md](../etcdworker/06-operability.md) §8 |
 | TLS-подключения к Valkey, осиротевшие TLS-тома, ротация CA | [valkeyworker/06-operability.md](../valkeyworker/06-operability.md) §7 |
 | REST-TLS Patroni: диагностика отказов, бэкап пакета `deploy/tls` | [pgworker/08-operability.md](../pgworker/08-operability.md) §7, [pgworker/04-security.md](../pgworker/04-security.md) §5 |
+| E2E: правила запуска, телеметрия, изоляция окружений | [testing/README.md](../testing/README.md), [testing/01-e2e-launch.md](../testing/01-e2e-launch.md), [testing/02-e2e-isolation.md](../testing/02-e2e-isolation.md) |
 
 ## Границы
 
 - `arch/` — канон (как система устроена и как должна эксплуатироваться);
-  `docs/` — практики разработки, история задач и детальные правила тестовых
-  прогонов ([docs/e2e-launch.md](../../docs/e2e-launch.md),
-  [docs/e2e-isolation.md](../../docs/e2e-isolation.md)).
+  `docs/` — практики разработки и история задач. Правила E2E — в каноне:
+  [testing/README.md](../testing/README.md).
 - Операторские команды с консоли — вне правила коммуникаций
   ([communications/01-rules.md](../communications/01-rules.md) §2).

@@ -14,5 +14,6 @@
 - REST-TLS Patroni и бэкап `deploy/tls` —
   [arch/pgworker/08-operability.md](../arch/pgworker/08-operability.md) §7.
 
-Правила тестовых прогонов и изоляции окружений остаются в `docs/`:
-[e2e-launch.md](e2e-launch.md), [e2e-isolation.md](e2e-isolation.md).
+Правила тестовых прогонов и изоляции окружений перенесены в канон:
+[arch/testing/README.md](../arch/testing/README.md) ([01-e2e-launch.md](../arch/testing/01-e2e-launch.md),
+[02-e2e-isolation.md](../arch/testing/02-e2e-isolation.md)).

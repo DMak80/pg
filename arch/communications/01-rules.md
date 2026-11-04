@@ -39,7 +39,7 @@ Kafka-протокол, RESP, S3 API, etcd-протокол. Контракт д
 явным апрувом; до апрува операция не реализуется.
 
 **Вне правила**: E2E/интеграционные тесты (телеметрия прогона снимает
-docker-логи и inspect — [docs/e2e-launch.md](../../docs/e2e-launch.md)) и
+docker-логи и inspect — [testing/01-e2e-launch.md](../testing/01-e2e-launch.md)) и
 операторские runbook-команды (человек с консоли —
 [operations/README.md](../operations/README.md)).
 
