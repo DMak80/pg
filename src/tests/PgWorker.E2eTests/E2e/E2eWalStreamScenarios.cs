@@ -47,6 +47,7 @@ public sealed class E2eWalStreamScenarios(E2eWalStreamScenariosFx Ctx) : IClassF
         cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
         var ct = cts.Token;
         var cluster = $"shopb{Fx.ClusterTag}";
+        await CleanupPreviousWalClustersAsync(cluster, ct);
         await SeedClusterAsync(cluster);
         await using var app = await StartWalHostAsync("walstream", ct);
 
@@ -203,6 +204,7 @@ public sealed class E2eWalStreamScenarios(E2eWalStreamScenariosFx Ctx) : IClassF
             TestContext.Current.CancellationToken);
         cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
         var ct = cts.Token;
+        await CleanupPreviousWalClustersAsync($"shopac2{Fx.ClusterTag}", ct);
         var (fx, app, cluster, adminDsn, masterNode) = await StartWalScenarioAsync("wal-ac2", "shopac2", ct);
         await using var appOwner = app;
         using var load = new CancellationTokenSource();
@@ -378,6 +380,7 @@ public sealed class E2eWalStreamScenarios(E2eWalStreamScenariosFx Ctx) : IClassF
             TestContext.Current.CancellationToken);
         cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
         var ct = cts.Token;
+        await CleanupPreviousWalClustersAsync($"shopac3{Fx.ClusterTag}", ct);
         var (fx, app, cluster, adminDsn, masterNode) = await StartWalScenarioAsync("wal-ac3", "shopac3", ct);
         await using var appOwner = app;
         var hostEndpoint = Fx.S3Endpoint;
@@ -520,6 +523,7 @@ public sealed class E2eWalStreamScenarios(E2eWalStreamScenariosFx Ctx) : IClassF
         cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
         var ct = cts.Token;
         var cluster = $"shop3r{Fx.ClusterTag}";
+        await CleanupPreviousWalClustersAsync(cluster, ct);
         await SeedThreeReplicaShardAsync(cluster);
         await using var appOwner = await StartWalHostAsync("wal-3r", ct);
         var provisioned = await E2eFixture.WaitForAsync(
@@ -609,6 +613,7 @@ public sealed class E2eWalStreamScenarios(E2eWalStreamScenariosFx Ctx) : IClassF
             TestContext.Current.CancellationToken);
         cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
         var ct = cts.Token;
+        await CleanupPreviousWalClustersAsync($"shopdis{Fx.ClusterTag}", ct);
         var (fx, app, cluster, adminDsn, _) = await StartWalScenarioAsync("wal-dis", "shopdis", ct);
         await using var appOwner = app;
         var writer = new PgWorker.Backups.WalStatusWriter(G, [Endpoint]);
@@ -679,6 +684,7 @@ public sealed class E2eWalStreamScenarios(E2eWalStreamScenariosFx Ctx) : IClassF
         // может длиться дольше.
         cts.CancelAfter(TimeSpan.FromSeconds(240));
         var ct = cts.Token;
+        await CleanupPreviousWalClustersAsync($"shopt19{Fx.ClusterTag}", ct);
         var (fx, app, cluster, adminDsn, masterNode) = await StartWalScenarioAsync("wal-t19", "shopt19", ct);
         await using var appOwner = app; // kill воркера ниже — dispose идемпотентен
         var slot = $"pgw_bkp_{cluster}_shard1";
@@ -1036,6 +1042,52 @@ public sealed class E2eWalStreamScenarios(E2eWalStreamScenariosFx Ctx) : IClassF
         var adminDsn = DatabaseProvisioner.BuildAdminDsn(pgHost, pgPort, cluster,
             new InstallSecrets(E2eFixture.SuPassword, "", "", ""));
         return (Fx, app, cluster, adminDsn, masterNode);
+    }
+
+    // Гигиена между фактами класса (один контур на класс — docs/e2e-isolation.md):
+    // кластеры прежних фактов снимаются ДО старта нового. Иначе 6 Active-кластеров
+    // × 4 PG-ноды живут одновременно, и provisioning следующего факта выходит за
+    // бюджет 90 с (факт полной серии: bootstrap 90,3 с = FAIL).
+    private async Task CleanupPreviousWalClustersAsync(string keep, CancellationToken ct)
+    {
+        foreach (var prefix in new[] { "shopb", "shopac2", "shopac3", "shop3r", "shopdis", "shopt19" })
+        {
+            var cluster = $"{prefix}{Fx.ClusterTag}";
+            if (cluster == keep)
+                continue;
+            var config = await GetOrNullAsync($"/clusters/{cluster}/config");
+            if (config is null)
+                continue;
+            await G.DeleteAsync(Endpoint, $"/clusters/{cluster}/", prefix: true, ct);
+            await G.DeleteAsync(Endpoint, $"/pgworker/backups/{cluster}/", prefix: true, ct);
+            await G.DeleteAsync(Endpoint, $"/pgworker/portalloc/{cluster}", prefix: false, ct);
+            await G.DeleteAsync(Endpoint, $"/service/{cluster}-", prefix: true, ct);
+            var containers = await Fx.RunDockerAsync(
+                ["ps", "-a", "--format", "{{.Names}}", "--filter", $"name=pgw-{cluster}-"], ct);
+            foreach (var name in containers.Split('\n',
+                         StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                await Fx.RunDockerAsync(["rm", "-f", name], ct);
+            for (var attempt = 0; attempt < 5; attempt++)
+            {
+                var volumes = await Fx.RunDockerAsync(
+                    ["volume", "ls", "--format", "{{.Name}}", "--filter", $"name=pgw-{cluster}-"], ct);
+                var names = volumes.Split('\n',
+                    StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                if (names.Length == 0)
+                    break;
+                foreach (var volume in names)
+                    await Fx.RunDockerAsync(["volume", "rm", "-f", volume], ct);
+                await Task.Delay(1000, ct); // держатель тома доремувливается демоном
+            }
+            await using (var s3 = new PgWorker.Backups.BackupS3(new PgWorker.Backups.S3ClientOptions(
+                Fx.S3Endpoint, Bucket, E2eEnvironment.S3RootUser, E2eEnvironment.S3RootPassword)))
+            {
+                var listed = await s3.ListPrefixAsync($"{cluster}/", ct: ct);
+                if (listed.IsSuccess && listed.Value.Count > 0)
+                    await s3.DeleteKeysAsync(listed.Value.Select(o => o.Key).ToList(), ct);
+            }
+            Console.WriteLine($"[WAL-STREAM] cleanup of the previous scenario cluster {cluster} done");
+        }
     }
 
     // AAA (AC2 — ядро задачи): под WAL-нагрузкой docker rm -f агента мастера —

@@ -467,6 +467,96 @@ public class RetentionPlannerTests
         doomed.Should().BeEquivalentTo(["00000001.history"]);
     }
 
+    // Нижняя граница чистки (wal_start самого старого оставляемого полного):
+    // сегменты/`.history` TLI между oldest и cutoff — цепочка хранимого
+    // полного (restore/failover-переходы), живут; удаляются только строго
+    // ниже oldest и хвост cutoff-TLI.
+    [Fact]
+    public void OldestKeptStart_KeepsIntermediateTliAndHistory()
+    {
+        // Arrange — cutoff tli4/seg5, oldest tli2/seg2
+        var cutoff = new WalFileName(4, 0, 5);
+        var oldest = new WalFileName(2, 0, 2);
+        var names = new[]
+        {
+            "0000000100000000000000AA", // tli1 — ниже oldest
+            "000000020000000000000001", // tli2 до oldest — ниже
+            "000000020000000000000002", // tli2 = oldest — цепочка полного
+            "000000020000000000000003", // tli2 после oldest — цепочка
+            "0000000300000000000000AA", // tli3 — промежуточный TLI, цепочка
+            "000000040000000000000004", // tli4 до cutoff — хвост
+            "000000040000000000000005", // сам cutoff — живёт
+            "00000001.history",         // история TLI <= oldest — удаляется
+            "00000002.history",
+            "00000003.history",         // выше oldest — нужна цепочке
+            "00000004.history",
+        };
+
+        // Act
+        var doomed = RetentionPlanner.SelectWalForDeletion(names, cutoff, oldest);
+
+        // Assert — удалены только вне цепочек оставляемого полного
+        doomed.Should().BeEquivalentTo([
+            "0000000100000000000000AA",
+            "000000020000000000000001",
+            "000000040000000000000004",
+            "00000001.history",
+            "00000002.history",
+        ]);
+    }
+
+    // Кусочное семейство: граница oldest действует и на `.partial`-куски —
+    // куски промежуточного TLI (цепочка оставляемого полного) не мусор.
+    [Fact]
+    public void Partial_OldestKeptStart_KeepsIntermediateTliPieces()
+    {
+        // Arrange — базы в tli1 (ниже oldest) и tli3 (промежуточный)
+        var cutoff = new WalFileName(4, 0, 5);
+        var oldest = new WalFileName(2, 0, 2);
+        var segBelow = new WalFileName(1, 0, 0xAA);
+        var segBetween = new WalFileName(3, 0, 1);
+        var below = WalDeltaName.Key(segBelow, WalDeltaName.SegmentStartOf(segBelow),
+            WalDeltaName.SegmentStartOf(segBelow) + 0x1000, 1, true, new string('a', 32));
+        var between = WalDeltaName.Key(segBetween, WalDeltaName.SegmentStartOf(segBetween),
+            WalDeltaName.SegmentStartOf(segBetween) + 0x1000, 1, true, new string('b', 32));
+
+        // Act
+        var doomed = RetentionPlanner.SelectPartialForDeletion(
+            [below, between], cutoff, chainLife: 1, lastFullLife: 1,
+            oldestKeptStart: oldest);
+
+        // Assert — удалён только кусок ниже oldest
+        doomed.Should().BeEquivalentTo([below]);
+    }
+
+    // EarliestKeptWalStart — минимум по (TLI, позиции) среди COMPLETED;
+    // не-COMPLETED и полные без wal_start не участвуют; пусто → null.
+    [Fact]
+    public void EarliestKeptWalStart_MinByTliAndPosition()
+    {
+        // Arrange — tli4, tli1 seg5, tli2 seg0, tli1 seg2 (минимум tli1/seg2);
+        // RUNNING-полный с ещё меньшей позицией игнорируется
+        var fulls = new[]
+        {
+            Full("a", Now, "00000004000000000000000A"),
+            Full("b", Now, "000000010000000000000005"),
+            Full("c", Now, "000000020000000000000000"),
+            Full("d", Now, "000000010000000000000002"),
+            new FullBackupState("e", FullBackupStatus.Running, "n1",
+                BackupSourceRole.Replica, Unix(Now), null,
+                "000000010000000000000001", null, null, null),
+            new FullBackupState("f", FullBackupStatus.Completed, "n1",
+                BackupSourceRole.Replica, Unix(Now), Unix(Now) + 60, null, 1024, null, null),
+        };
+
+        // Act
+        var oldest = RetentionPlanner.EarliestKeptWalStart(fulls);
+
+        // Assert — минимальный wal_start COMPLETED
+        oldest!.Value.Name.Should().Be("000000010000000000000002");
+        RetentionPlanner.EarliestKeptWalStart([]).Should().BeNull();
+    }
+
     // ---- EvaluateStorage (AC6, юнит-часть) ----
 
     // Квота 0/не задана → OK без процентов.

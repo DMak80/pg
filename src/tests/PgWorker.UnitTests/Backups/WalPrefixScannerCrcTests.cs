@@ -206,6 +206,23 @@ public class WalPrefixScannerCrcTests
     }
 
     [Fact]
+    public void ValidatedPrefixLength_FromTrustedBoundary_UnallignedRecordEnd()
+    {
+        // Arrange — первая запись 65 байт: её физический конец 105 НЕ кратен
+        // MAXALIGN (добивка 7 байт до 112), вторая запись [112..212). Конец
+        // куска-базы — конец ЗАПИСИ (105), а не выровненная позиция; скан от
+        // доверенной границы обязан начать со 112, не читая добивку как
+        // xl_tot_len (иначе валидный диф усекается — факт t15).
+        var data = SegmentWithRecords(65, 100);
+
+        // Act — диф-область после невыровненной доверенной границы
+        var fromTrusted = WalPrefixScanner.ValidatedPrefixLength(data, 212, validatedUpTo: 105);
+
+        // Assert — весь диф-префикс валиден
+        fromTrusted.Should().Be(212);
+    }
+
+    [Fact]
     public void ValidatedPrefixLength_FromTrustedBoundary_MidPage()
     {
         // Arrange — две записи [40..104) и [104..204); доверенная граница 104 —

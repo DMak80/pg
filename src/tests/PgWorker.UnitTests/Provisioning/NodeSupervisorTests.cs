@@ -308,7 +308,10 @@ public class NodeSupervisorTests
         var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         var rig = await NewRig(
             port => port == 18000 ? Down() : Ok(), // shard1a (18000) мертва, b/c живы
-            staleUnreachableForShard1A: now - 200);
+            staleUnreachableForShard1A: now - 200,
+            // Смерть = ОТСУТСТВИЕ объекта (снесён); существующий остановленный
+            // контейнер — stop/restart, rebuild его не сносит.
+            nodeObjects: ["pgw-shop-shard1-shard1b", "pgw-shop-shard1-shard1c"]);
         rig.Etcd.Seed("/service/shop-shard1/leader", """{"name":"shard1b"}""");
         rig.Etcd.Seed("/clusters/shop/shards/shard1/master", "h1:16500"); // устаревший (shard1a была)
 
@@ -399,10 +402,9 @@ public class NodeSupervisorTests
         // висит (lease протух бы через ttl), реплики живы: надзор должен УСКОРИТЬ
         // failover (ключ + удаление мёртвого лидер-ключа), а не ждать возврата
         // того же лидера рестартом; контейнер поднимается параллельно
-        var rig = await NewRig(_ => Ok(), nodeObjects:
-        [
-            "pgw-shop-shard1-shard1b", "pgw-shop-shard1-shard1c",
-        ]);
+        var rig = await NewRig(
+            port => port == 18000 ? Down() : Ok(), // лидер shard1a недоступен (контейнер снесён)
+            nodeObjects: ["pgw-shop-shard1-shard1b", "pgw-shop-shard1-shard1c"]);
         rig.Etcd.Seed("/service/shop-shard1/leader", "shard1a");
 
         // Act
@@ -491,6 +493,28 @@ public class NodeSupervisorTests
         rig.Etcd.Store.Should().NotContainKey("/service/shop-shard1/failover");
         rig.Etcd.Store.Should().ContainKey("/service/shop-shard1/leader");
         rig.Driver.EnsuredNodes.Should().Contain("shard1/shard1a");
+    }
+
+    // AAA (arch/14 §5 C): устаревший failover-маркер ожившего лидера снимается.
+    // docker restart/кратковременный флап дают маркер {"leader":<нода>} + снятый
+    // leader-ключ; вернувшийся лидер отвечает пробой — маркер устарел, и Patroni
+    // зацикливается на неисполнимом switchover (факт rtls). Надзор снимает
+    // маркер, выборы идут штатно.
+    [Fact]
+    public async Task Tick_StaleFailoverMarker_WokeLeader_Cleaned()
+    {
+        // Arrange — все ноды живы пробой, leader-ключ снят ускорением, маркер
+        // указывает на уже ожившую shard1a
+        var rig = await NewRig(_ => Ok());
+        rig.Etcd.Seed("/service/shop-shard1/failover",
+            """{"leader":"shard1a","member":"shard1b","scheduled_at":"2026-11-04T18:29:32Z"}""");
+
+        // Act
+        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
+
+        // Assert — устаревший маркер снят; заявок про мёртвого лидера не трогали
+        outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
+        rig.Etcd.Store.Should().NotContainKey("/service/shop-shard1/failover");
     }
 
     [Fact]
@@ -681,7 +705,8 @@ public class NodeSupervisorTests
         var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         var rig = await NewRig(
             port => port == 18000 ? Down() : Ok(),
-            staleUnreachableForShard1A: now - 200);
+            staleUnreachableForShard1A: now - 200,
+            nodeObjects: ["pgw-shop-shard1-shard1b", "pgw-shop-shard1-shard1c"]); // лидер снесён
         rig.Etcd.Seed("/service/shop-shard1/leader", """{"name":"shard1a"}""");
         rig.Driver.InspectResult = new Dictionary<string, DiscoveredNode>(); // не running
 
@@ -695,8 +720,12 @@ public class NodeSupervisorTests
         rig.Etcd.Store.Should().NotContainKey("/service/shop-shard1/leader",
             "dead leader lock removed — the candidate is promoted within loop_wait, not ttl (budget ≤5s)");
         rig.Driver.RemovedNodes.Should().BeEmpty("leader rebuild is not our way — only accelerating the election");
-        rig.Driver.EnsuredNodes.Should().BeEmpty();
-        rig.Etcd.Store["/clusters/shop/shards/shard1/nodes/shard1a/state"].Value.Should().Be("UNREACHABLE");
+        // Контейнер снесён: декларация пересоздаёт объект (EnsureNode), но
+        // volume/лидер-нода в этом же тике не сносится (rebuild запрещён).
+        rig.Driver.EnsuredNodes.Should().Contain("shard1/shard1a");
+        // Пересоздание идёт в этом же тике (EnsureDeclared → PROVISIONING);
+        // UNREACHABLE не перезаписывает идущий провижининг.
+        rig.Etcd.Store["/clusters/shop/shards/shard1/nodes/shard1a/state"].Value.Should().Be("PROVISIONING");
     }
 
     // AAA (→): DCS-конфиг на дефолтах Patroni — патч несёт ВСЕ канонические
@@ -1775,7 +1804,8 @@ public class NodeSupervisorTests
         var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         var rig = await NewRig(
             port => port == 18000 ? Down() : Ok(),
-            staleUnreachableForShard1A: now - 200);
+            staleUnreachableForShard1A: now - 200,
+            nodeObjects: ["pgw-shop-shard1-shard1b", "pgw-shop-shard1-shard1c"]);
         rig.Etcd.Seed("/service/shop-shard1/leader", """{"name":"shard1b"}""");
 
         // Act
@@ -1896,11 +1926,12 @@ public class NodeSupervisorTests
     [Fact]
     public async Task Tick_ToRemoveShard_DeadLeader_AcceleratedButNoFacts()
     {
-        // Arrange: шард помечен TO_REMOVE (демонтаж); контейнеры всех нод на месте
-        // (EnsureDeclared TO_REMOVE-шард скипает), лидер shard1a мёртв ПО ПРОБЕ
-        // (18000 Down), реплики живы; фейк-инспект по умолчанию пуст → «нода не в
-        // running» → dead-ветвь ускоряет КАК РАНЬШЕ
-        var rig = await NewRig(port => port == 18000 ? Down() : Ok());
+        // Arrange: шард помечен TO_REMOVE (демонтаж); контейнер лидера shard1a
+        // СНЕСЁН (положительное свидетельство смерти), реплики живы; dead-ветвь
+        // ускоряет КАК РАНЬШЕ
+        var rig = await NewRig(
+            port => port == 18000 ? Down() : Ok(),
+            nodeObjects: ["pgw-shop-shard1-shard1b", "pgw-shop-shard1-shard1c"]);
         rig.Etcd.Seed("/clusters/shop/shards/shard1/state", "TO_REMOVE");
         rig.Etcd.Seed("/service/shop-shard1/leader", """{"name":"shard1a"}""");
 

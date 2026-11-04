@@ -136,6 +136,7 @@ public sealed class WalSweeperProcess(
         // (SelectKeep — тот же отбор, что у ретенции; кандидат Delete[0] не
         // якорит — arch/19 §4 п.5). Нет OK-полного ⇒ cutoff null.
         WalFileName? cutoff = null;
+        WalFileName? oldestKeptStart = null;
         if (shardBackups?.Full is { Count: > 0 } fulls)
         {
             var selection = RetentionPlanner.SelectKeep(fulls, policy, nowUnix);
@@ -143,6 +144,10 @@ public sealed class WalSweeperProcess(
                 f.State == FullBackupStatus.Completed
                 && !(selection.Delete.Count > 0 && f.Id == selection.Delete[0])).ToList();
             cutoff = RetentionPlanner.LatestVerifiedWalStart(remaining);
+            // Нижняя граница — wal_start самого старого ОСТАВЛЯЕМОГО полного:
+            // объекты TLI между ним и cutoff — цепочки хранимых полных
+            // (restore/failover-переходы), не мусор (c-retention §2).
+            oldestKeptStart = RetentionPlanner.EarliestKeptWalStart(remaining);
         }
 
         // t15 (spec §4.1(д)/§4.6, решение №20): вход кусочной гигиены — текущий
@@ -166,8 +171,9 @@ public sealed class WalSweeperProcess(
         var lastFullLife = RetentionPlanner.LastFullLife(shardBackups?.Full ?? []);
 
         var doomed = (cutoff is { } limit
-                ? RetentionPlanner.SelectWalForDeletion(names, limit) : [])
-            .Concat(RetentionPlanner.SelectPartialForDeletion(names, cutoff, chainLife, lastFullLife))
+                ? RetentionPlanner.SelectWalForDeletion(names, limit, oldestKeptStart) : [])
+            .Concat(RetentionPlanner.SelectPartialForDeletion(
+                names, cutoff, chainLife, lastFullLife, oldestKeptStart))
             .ToList();
         if (doomed.Count == 0)
             return;

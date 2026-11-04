@@ -71,7 +71,10 @@ public sealed class BackupOrphanSweeper(
                 metrics?.BackupOrphanSkippedPool(poolName);
                 continue;
             }
-            await using var poolS3 = created.Value.Client;
+            // Владелец клиента — фабрика (кэш до конца процесса): dispose здесь
+            // освободил бы AmazonS3Client, и все последующие S3-вызовы этого
+            // пула падали бы «Cannot access a disposed object» (факт E2E).
+            var poolS3 = created.Value.Client;
             var listed = await poolS3.ListPrefixAsync("", ct: ct);
             if (!listed.IsSuccess)
             {
@@ -248,7 +251,10 @@ public sealed class BackupOrphanSweeper(
             var created = await s3Factory.CreateForPoolAsync(poolName, ct);
             if (!created.IsSuccess)
                 continue; // пул недоступен — доводку делает оставшийся проход
-            await using var poolS3 = created.Value.Client;
+            // Владелец клиента — фабрика (кэш до конца процесса): dispose здесь
+            // освободил бы AmazonS3Client, и все последующие S3-вызовы этого
+            // пула падали бы «Cannot access a disposed object» (факт E2E).
+            var poolS3 = created.Value.Client;
             var objects = await poolS3.ListPrefixAsync(delPrefix, ct: ct);
             if (!objects.IsSuccess)
                 return Result.Failed(objects.Error!); // запись остаётся DELETING — доведёт

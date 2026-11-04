@@ -124,8 +124,13 @@ public static class WalPrefixScanner
         // Скан идёт ОТ доверенной границы: область ниже — валидна по построению.
         var trusted = validatedUpTo > 0 && validatedUpTo <= count ? validatedUpTo : 0;
 
-        var prefix = trusted; // доверенный префикс уже принят
-        long pos = trusted;
+        var prefix = trusted; // доверенный префикс уже принят (конец записи)
+        // Конец куска/предыдущего провалидированного дифа — конец ЗАПИСИ, а не
+        // MAXALIGN-позиция: следующая запись начинается с выровненной границы.
+        // Скан обязан стартовать с выравнивания, иначе байты добивки
+        // (0..7 нулей) читаются как xl_tot_len=0 и валидная диф-область
+        // усекается до доверенной границы (факт: «diff region truncated»).
+        long pos = (trusted + RecordAlign - 1) & ~(RecordAlign - 1);
 
         if (trusted == 0)
         {

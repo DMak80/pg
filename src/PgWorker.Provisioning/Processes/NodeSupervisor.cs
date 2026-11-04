@@ -116,7 +116,12 @@ public sealed class NodeSupervisor(
         var declaredSnap = restoring.Count == 0
             ? snap
             : snap with { Shards = snap.Shards.Where(s => !restoring.Contains(s.Name)).ToList() };
-        var declared = await EnsureDeclaredNodesAsync(cluster, declaredSnap, addresses.Value, track, haFacts, restPassword, ct);
+        // Ноды, для которых ускорение failover выполнено в ЭТОМ тике: их
+        // rebuild в том же тике запрещён (leader-ключ уже снят → нода «уже не
+        // лидер» по свежему чтению, но volume лидера сносить нельзя).
+        var acceleratedThisTick = new HashSet<string>(StringComparer.Ordinal);
+        var declared = await EnsureDeclaredNodesAsync(
+            cluster, declaredSnap, addresses.Value, track, haFacts, restPassword, acceleratedThisTick, ct);
         if (!declared.IsSuccess)
             return Fail(declared.Error!);
 
@@ -176,7 +181,9 @@ public sealed class NodeSupervisor(
             if (!recreated.IsSuccess)
                 return Fail(recreated.Error!);
 
-            var shardTrack = await SuperviseShardAsync(cluster, snap, shard, addresses.Value, track, haFacts, restPassword, ct);
+            var shardTrack = await SuperviseShardAsync(
+                cluster, snap, shard, addresses.Value, track, haFacts, restPassword,
+                acceleratedThisTick, ct);
             if (!shardTrack.IsSuccess)
                 return Fail(shardTrack.Error!);
 
@@ -303,7 +310,8 @@ public sealed class NodeSupervisor(
     private async Task<Result> EnsureDeclaredNodesAsync(
         string cluster, ClusterSnapshot snap,
         IReadOnlyDictionary<string, NodeAddress> addresses,
-        Dictionary<string, long> track, HaFactState haFacts, string restPassword, CancellationToken ct)
+        Dictionary<string, long> track, HaFactState haFacts, string restPassword,
+        HashSet<string> acceleratedThisTick, CancellationToken ct)
     {
         // Живая сверка клэйма перед фазой пересозданий (arch/17 S5).
         if (!await ClaimAliveAsync(cluster, "declared-nodes", ct))
@@ -388,6 +396,8 @@ public sealed class NodeSupervisor(
                     haFacts.FailoverDetected(shard.Name, node.Name,
                         accelerated.Value == FailoverAcceleration.Applied ? "accelerated" : "elections",
                         track.GetValueOrDefault($"{shard.Name}/{node.Name}", Now()));
+                if (accelerated.Value == FailoverAcceleration.Applied)
+                    acceleratedThisTick.Add($"{shard.Name}/{node.Name}");
 
                 if (node.State != NodeState.Provisioning)
                 {
@@ -975,7 +985,8 @@ public sealed class NodeSupervisor(
     private async Task<Result> SuperviseShardAsync(
         string cluster, ClusterSnapshot snap, ShardSpec shard,
         IReadOnlyDictionary<string, NodeAddress> addresses,
-        Dictionary<string, long> track, HaFactState haFacts, string restPassword, CancellationToken ct)
+        Dictionary<string, long> track, HaFactState haFacts, string restPassword,
+        IReadOnlySet<string> acceleratedThisTick, CancellationToken ct)
     {
         var scope = $"{cluster}-{shard.Name}";
         var scopeKvs = await RangeAsync($"/service/{scope}/", ct);
@@ -1043,6 +1054,24 @@ public sealed class NodeSupervisor(
                 alive.Add(node.Name);
             else
                 dead.Add(node.Name);
+        }
+
+        // Устаревший failover-маркер ожившего лидера: ускорение по
+        // недоступности (docker restart/кратковременный флап) ставит
+        // {"leader":<мёртвая нода>,"member":<кандидат>} и снимает leader-ключ;
+        // если «мёртвая» нода уже отвечает (alive), маркер устарел — Patroni
+        // лидера зацикливается на неисполнимом switchover на нездорового
+        // кандидата (факт rtls: обе ноды «following a different leader» 60+ с,
+        // /primary не резолвится). Снимаем маркер — Patroni доделывает выборы
+        // штатно. Маркер про живого лидера — единственный безопасный снос:
+        // заявки на мёртвого (alive не содержит leader) не трогаем.
+        if (leader is null
+            && scopeKvs.Value.FirstOrDefault(kv => kv.Key == $"/service/{scope}/failover") is { } stale
+            && alive.Any(n => stale.Value.Contains($"\"leader\":\"{n}\"", StringComparison.Ordinal)))
+        {
+            var cleanedStale = await DeleteAsync($"/service/{scope}/failover", ct);
+            if (!cleanedStale.IsSuccess)
+                return cleanedStale;
         }
 
         foreach (var name in dead)
@@ -1127,7 +1156,8 @@ public sealed class NodeSupervisor(
                 processDead = !inspect.Value.ContainsKey(name);
             }
 
-            if (!isLeader && quorum && expired && !adopted && processDead)
+            if (!isLeader && quorum && expired && !adopted && processDead
+                && !acceleratedThisTick.Contains(trackKey))
             {
                 // Rebuild (эталон rebuild-node.sh): удалить контейнер+volume,
                 // пересоздать с тем же адресом; Patroni сделает pg_basebackup.
@@ -1182,7 +1212,11 @@ public sealed class NodeSupervisor(
             // TO_RECREATE не перезначим: в этом же тике RecreateMarkedNodes уже
             // писал REBUILDING, а снапшот ещё несёт старый маркер (гонка) —
             // живой/мёртвый путь надзора не перезаписывает заявки оператора.
-            if (node.State is not (NodeState.Unreachable or NodeState.Rebuilding
+            // Ускоренная в этом тике нода (EnsureDeclared уже написал
+            // PROVISIONING) тоже не перезаписывается: снапшот стар (RUNNING),
+            // а UNREACHABLE скрыл бы идущее пересоздание.
+            if (!acceleratedThisTick.Contains(trackKey)
+                && node.State is not (NodeState.Unreachable or NodeState.Rebuilding
                                    or NodeState.Provisioning or NodeState.ToRecreate))
             {
                 var marked = await PutAsync(
