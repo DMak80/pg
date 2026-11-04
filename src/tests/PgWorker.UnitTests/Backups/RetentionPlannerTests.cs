@@ -22,9 +22,11 @@ public class RetentionPlannerTests
     // walStart — позиция wal_start_segment, verify — статус проверки.
     private static FullBackupState Full(
             string id, DateTimeOffset started,
-            string walStart = "000000010000000000000001", BackupVerify? verify = null)
+            string walStart = "000000010000000000000001", BackupVerify? verify = null,
+            uint? chainLife = null)
         => new(id, FullBackupStatus.Completed, "n1", BackupSourceRole.Replica,
-            Unix(started), Unix(started) + 60, walStart, 1024, null, verify);
+            Unix(started), Unix(started) + 60, walStart, 1024, null, verify,
+            ChainLife: chainLife);
 
     // Проверка Keep/Delete по id в фиксированный момент Now.
     private static (IReadOnlySet<string> Keep, IReadOnlyList<string> Delete) Select(
@@ -923,6 +925,81 @@ public class RetentionPlannerTests
 
         // Assert
         doomed.Should().BeEquivalentTo([life1, life2, legacy]);
+    }
+
+    // ---: SelectPartialForDeletion — гейт «жизнь последнего полного» (#1) ----
+
+    // AAA (а из ревью #1): restore Completed, счётчик уже N+1, а последний
+    // полный шарда несёт жизнь N — куски N НЕ выметаются (RPO-хвост повторного
+    // restore/drill выбранного полного в окне до пересъёма).
+    [Fact]
+    public void LastFullLife_PiecesOfLastFullLife_NotDoomed()
+    {
+        // Arrange — сегмент: база+дельта жизни 1; счётчик жизни уже 2; последний
+        // полный — с chain_life 1
+        var segment = Segment(0, 14);
+        var base1 = WalDeltaName.Key(segment, Start(segment), Start(segment) + 0x100, 1, true, PieceMd5('a'));
+        var delta1 = WalDeltaName.Key(segment, Start(segment) + 0x100, Start(segment) + 0x200, 1, false, PieceMd5('b'));
+        var fulls = new[]
+        {
+            Full("20260101000000Z-shard1", Now.AddHours(-2), chainLife: 1),
+        };
+
+        // Act
+        var lastFullLife = RetentionPlanner.LastFullLife(fulls);
+        var doomed = RetentionPlanner.SelectPartialForDeletion(
+            [base1, delta1], null, chainLife: 2, lastFullLife);
+
+        // Assert — жизнь последнего полного цела (гейт ветки (д))
+        lastFullLife.Should().Be(1u);
+        doomed.Should().BeEmpty();
+    }
+
+    // AAA (б из ревью #1): появился полный с более новой жизнью (пересъём после
+    // restore) — гейт для прежней жизни снят, её куски выметаются как раньше.
+    [Fact]
+    public void NewerFullAppeared_PiecesOfPreviousLife_Doomed()
+    {
+        // Arrange — последний полный уже жизни 2 (пересъём), счётчик 2;
+        // куски жизни 1 (старая цепь) и жизни 2 (живая)
+        var segment = Segment(0, 15);
+        var base1 = WalDeltaName.Key(segment, Start(segment), Start(segment) + 0x100, 1, true, PieceMd5('a'));
+        var base2 = WalDeltaName.Key(segment, Start(segment), Start(segment) + 0x200, 2, true, PieceMd5('b'));
+        var fulls = new[]
+        {
+            Full("20260101000000Z-shard1", Now.AddHours(-3), chainLife: 1),
+            Full("20260101120000Z-shard1", Now.AddHours(-1), chainLife: 2),
+        };
+
+        // Act
+        var lastFullLife = RetentionPlanner.LastFullLife(fulls);
+        var doomed = RetentionPlanner.SelectPartialForDeletion(
+            [base1, base2], null, chainLife: 2, lastFullLife);
+
+        // Assert — жизнь 1 мусор, жизнь 2 цела
+        lastFullLife.Should().Be(2u);
+        doomed.Should().BeEquivalentTo([base1]);
+        doomed.Should().NotContain(base2);
+    }
+
+    // AAA (в из ревью #1): последний полный старой записи (chain_life нет) —
+    // гейта нет, ветка (д) работает как раньше (чужие — сразу).
+    [Fact]
+    public void LastFullWithoutChainLife_PreviousBehavior()
+    {
+        // Arrange — последний полный без chain_life, счётчик жизни 2, кусок жизни 1
+        var segment = Segment(0, 16);
+        var foreign = WalDeltaName.Key(segment, Start(segment), Start(segment) + 0x100, 1, true, PieceMd5('a'));
+        var fulls = new[] { Full("20260101000000Z-shard1", Now.AddHours(-1)) };
+
+        // Act
+        var lastFullLife = RetentionPlanner.LastFullLife(fulls);
+        var doomed = RetentionPlanner.SelectPartialForDeletion(
+            [foreign], null, chainLife: 2, lastFullLife);
+
+        // Assert — гейта нет: кусок чужой жизни выметен
+        lastFullLife.Should().BeNull();
+        doomed.Should().BeEquivalentTo([foreign]);
     }
 
     // ---: композиция шага (4) RetentionProcess: финалы ниже cutoff + .partial ----

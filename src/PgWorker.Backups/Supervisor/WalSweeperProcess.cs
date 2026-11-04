@@ -159,9 +159,15 @@ public sealed class WalSweeperProcess(
                 chainLife = life.Value;
         }
 
+        // Гейт ветки (д): куски жизни последнего полного шарда не выметаются —
+        // это RPO-хвост повторного restore/drill выбранного полного в окне до
+        // пересъёма (arch/backups/processes/d-wal-sweeper.md). Полных нет/старые
+        // ключи без chain_life — гейта нет.
+        var lastFullLife = RetentionPlanner.LastFullLife(shardBackups?.Full ?? []);
+
         var doomed = (cutoff is { } limit
                 ? RetentionPlanner.SelectWalForDeletion(names, limit) : [])
-            .Concat(RetentionPlanner.SelectPartialForDeletion(names, cutoff, chainLife))
+            .Concat(RetentionPlanner.SelectPartialForDeletion(names, cutoff, chainLife, lastFullLife))
             .ToList();
         if (doomed.Count == 0)
             return;

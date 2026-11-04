@@ -171,9 +171,14 @@ public sealed class RetentionProcess(
                 chainLife = life.Value;
         }
 
+        // Гейт ветки (д): куски жизни последнего полного шарда не выметаются —
+        // RPO-хвост повторного restore/drill в окне до пересъёма
+        // (arch/backups/processes/d-wal-sweeper.md).
+        var lastFullLife = RetentionPlanner.LastFullLife(shardBackups.Full);
+
         var doomed = (cutoff is { } cut
                 ? RetentionPlanner.SelectWalForDeletion(names, cut) : [])
-            .Concat(RetentionPlanner.SelectPartialForDeletion(names, cutoff, chainLife))
+            .Concat(RetentionPlanner.SelectPartialForDeletion(names, cutoff, chainLife, lastFullLife))
             .ToList();
         if (doomed.Count > 0)
         {

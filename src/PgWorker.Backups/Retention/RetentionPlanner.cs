@@ -132,6 +132,18 @@ public static partial class RetentionPlanner
         return result;
     }
 
+    /// <summary>Номер жизни ПОСЛЕДНЕГО полного шарда — вход гейта ветки (д)
+    /// кусочной гигиены (arch/backups/processes/d-wal-sweeper.md): пока L —
+    /// жизнь последнего `full/&lt;id&gt;`, куски жизни L остаются (RPO-хвост
+    /// повторного restore/drill в окне до пересъёма). Полный — максимум по id
+    /// (id — сортируемая метка времени; список etcd-статусов уже отсортирован,
+    /// максимум не зависит от порядка). null — полных нет или у записи нет
+    /// chain_life (старые ключи) — гейта нет. Чистая функция.</summary>
+    public static uint? LastFullLife(IReadOnlyList<FullBackupState> fulls)
+        => fulls.Count == 0
+            ? null
+            : fulls.MaxBy(f => f.Id, StringComparer.Ordinal)?.ChainLife;
+
     /// <summary>Мусорные объекты кусочного семейства незакрытого сегмента
     /// (arch/19 §4 п.5, arch/backups/processes/d-wal-sweeper.md, spec §4.1;
     /// чистая функция): (а) поглощённые финалом — лежит wal/&lt;seg&gt; ⇒ все
@@ -140,11 +152,18 @@ public static partial class RetentionPlanner
     /// (в) устаревшие компаки — остаётся длиннейшая база; (г) семейство
     /// сегмента ниже cutoff (cutoff null — ветка не выполняется); (д) куски
     /// ЧУЖИХ номеров жизни и безномерные t14-версии сегмента с куском текущего
-    /// номера — мусор СРАЗУ, без cutoff. chainLife == null (гвард restore) —
-    /// ветка (д) не выполняется: чужие жизни не трогаются, чистка (б)/(в) идёт
-    /// в рамках группы своей жизни. Финалы/.history не трогает.</summary>
+    /// номера — мусор СРАЗУ, без cutoff, КРОМЕ кусков жизни последнего полного
+    /// шарда (lastFullLife): пока L — номер жизни последнего `full/&lt;id&gt;`,
+    /// куски L — RPO-хвост повторного restore/drill выбранного полного в окне
+    /// до пересъёма; появился полный с более новой жизнью — ветка (д) для L
+    /// открывается (гейт arch/backups/processes/d-wal-sweeper.md). chainLife
+    /// == null (гвард restore) — ветка (д) не выполняется: чужие жизни не
+    /// трогаются, чистка (б)/(в) идёт в рамках группы своей жизни;
+    /// lastFullLife == null (полных нет/старые ключи без chain_life) — гейта
+    /// нет. Финалы/.history не трогает.</summary>
     public static IReadOnlyList<string> SelectPartialForDeletion(
-        IReadOnlyList<string> objectNames, WalFileName? cutoff, uint? chainLife)
+        IReadOnlyList<string> objectNames, WalFileName? cutoff, uint? chainLife,
+        uint? lastFullLife = null)
     {
         var finals = new HashSet<WalFileName>();
         var versions = new Dictionary<WalFileName, List<(string Name, ulong EndLsn)>>();
@@ -193,11 +212,13 @@ public static partial class RetentionPlanner
             }
 
             // (д) смена жизни: чужие номера и безномерные-при-наличии-текущего —
-            // мусор сразу; при chainLife == null (restore) ветка молчит.
+            // мусор сразу; при chainLife == null (restore) ветка молчит. Куски
+            // жизни последнего полного шарда НЕ мусор (гейт окна до пересъёма:
+            // их читает повторный restore/drill выбранного полного).
             if (chainLife is { } life)
             {
                 foreach (var (name, piece) in segmentPieces)
-                    if (piece.ChainLife != life)
+                    if (piece.ChainLife != life && piece.ChainLife != lastFullLife)
                         doomed.Add(name);
                 if (segmentPieces.Any(x => x.Piece.ChainLife == life))
                     doomed.UnionWith(segmentVersions.Select(x => x.Name));
