@@ -149,6 +149,54 @@ internal static class FetchWalCommand
         return (best, anyResponded, firstError);
     }
 
+    /// <summary>true — предпочесть локальную копию набора: архивный `.partial`
+    /// не длиннее РЕАЛЬНОГО содержимого копии (её последний ненулевой байт —
+    /// верхняя граница конца: копия набора у бэкапа со standby разрежена и
+    /// добита), false — отдать `.partial` (он длиннее), null — копии нет/пуста.
+    /// postgres при restore_command сначала идёт в архив; exit 1 заставляет его
+    /// прочитать layout самому — и остановиться там, где кончается копия набора
+    /// (сканировать разреженный файл эвристиками нельзя).</summary>
+    internal static bool? LocalSetCoversPartial(
+        string normalizedSegment, string? bestPartialKey, string? pgDataRoot = null)
+    {
+        var root = pgDataRoot ?? PgDataRoot;
+        var local = Path.Combine(root, "pg_wal", normalizedSegment);
+        if (!File.Exists(local) || new FileInfo(local).Length != WalFileName.SegmentBytes)
+            return null;
+        if (WalFileName.TryParse(normalizedSegment) is not { } seg)
+            return null;
+
+        // Последний ненулевой байт копии (верхняя граница её содержимого).
+        long lastNonZero = -1;
+        using (var stream = new FileStream(local, FileMode.Open, FileAccess.Read, FileShare.Read))
+        {
+            var buffer = new byte[64 * 1024];
+            long offset = 0;
+            int read;
+            while ((read = stream.Read(buffer, 0, buffer.Length)) > 0)
+            {
+                for (var i = read - 1; i >= 0; i--)
+                    if (buffer[i] != 0)
+                    {
+                        lastNonZero = offset + i;
+                        break;
+                    }
+                offset += read;
+            }
+        }
+        if (lastNonZero < 0)
+            return null; // пустая копия — не опора
+
+        var segmentStart = ((ulong)seg.Log * WalFileName.SegsPerLog + seg.Seg)
+            * (ulong)WalFileName.SegmentBytes;
+        var setEnd = (ulong)lastNonZero + 1;
+        var partialAbsEnd = bestPartialKey is { } key
+            ? WalPartialName.TryParse(key)?.EndLsn ?? 0
+            : 0;
+        var partialEnd = partialAbsEnd > segmentStart ? partialAbsEnd - segmentStart : 0;
+        return setEnd >= partialEnd;
+    }
+
     /// <summary>Дописать валидный префикс `.partial` нулями до полного
     /// `wal_segment_size` и положить в запрошенный путь (arch/19 §2/§3.5):
     /// postgres отвергает архивный файл размера ≠ `wal_segment_size`
@@ -211,6 +259,18 @@ internal static class FetchWalCommand
             clients, cluster, shard, normalized, ct);
         if (!anyResponded)
             return (1, listError ?? "wal partial listing failed on all nodes");
+
+        // Локальная копия набора полного (`full/<id>/pg_wal/` скачана в PGDATA):
+        // restore_command у postgres ПРИОРИТЕТНЕЕ pg_wal — архивный файл должен
+        // отдаваться, только если он НЕ КОРОЧЕ реального конца набора. Реальный
+        // конец набора — `WAL-Ranges.End-LSN` из локального backup_manifest
+        // (у бэкапа со standby копия набора разрежена/добита — сканером её не
+        // резать). Копия не короче — exit 1: postgres прочитает layout сам
+        // (остановится на её конце), битого хвоста из архива не возьмёт.
+        if (LocalSetCoversPartial(normalized, bestKey) is { } preferLayout
+            && preferLayout)
+            return (1, null);
+
         if (bestKey is { } partial)
         {
             var temp = target + ".partial";

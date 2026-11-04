@@ -534,6 +534,36 @@ public class RestoreOperationTests
         best.Should().Be(WalPartialName.Key(segment, 0xFF));
     }
 
+    // AAA: локальная копия набора (layout) не короче лучшего .partial —
+    // архив не отдаётся (postgres читает layout сам); .partial длиннее — отдаётся.
+    [Fact]
+    public void FetchWal_LocalSetCoversPartial_LayoutPreferred()
+    {
+        // Arrange — PGDATA с копией сегмента 0003: реальное содержимое до 0x3004000
+        var root = Path.Combine(Path.GetTempPath(), $"pgdata-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(Path.Combine(root, "pg_wal"));
+        const string seg = "000000010000000000000003";
+        var bytes = new byte[WalFileName.SegmentBytes];
+        bytes[0x3FFF] = 0xAB; // последний ненулевой байт — 0x3FFF
+        File.WriteAllBytes(Path.Combine(root, "pg_wal", seg), bytes);
+
+        // Act
+        var shorter = FetchWalCommand.LocalSetCoversPartial(
+            seg, WalPartialName.Key(seg, 0x3002000UL), root);
+        var longer = FetchWalCommand.LocalSetCoversPartial(
+            seg, WalPartialName.Key(seg, 0x3005000UL), root);
+        var noPartial = FetchWalCommand.LocalSetCoversPartial(seg, null, root);
+        var noCopy = FetchWalCommand.LocalSetCoversPartial(
+            "000000010000000000000005", null, root);
+
+        // Assert — layout предпочтителен, если не короче; иначе отдаётся .partial
+        shorter.Should().BeTrue("the set copy reaches further than the .partial");
+        longer.Should().BeFalse("the live .partial extends past the set content");
+        noPartial.Should().BeTrue("without a .partial the set copy is preferred");
+        noCopy.Should().BeNull("no local copy — the generic archive path decides");
+        Directory.Delete(root, recursive: true);
+    }
+
     // AAA: версий нет (пустой список/только финал) — null.
     [Fact]
     public void FetchWal_BestPartialKey_EmptyNull()
