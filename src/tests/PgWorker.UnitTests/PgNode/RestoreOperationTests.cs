@@ -412,7 +412,43 @@ public class RestoreOperationTests
         public Task<Result<bool>> BucketExistsAsync(CancellationToken ct) => throw new NotSupportedException();
         public Task<Result<IReadOnlyList<WalObject>>> ListWalAsync(string cluster, string shard, int? maxKeysPerTest = null, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<Result> DeleteKeysAsync(IReadOnlyList<string> keys, CancellationToken ct = default) => throw new NotSupportedException();
-        public Task<Result<IReadOnlyList<WalObject>>> ListAsync(string cluster, string shard, string prefix, int? maxKeysPerTest = null, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<IReadOnlyList<WalObject>>> ListAsync(
+            string cluster, string shard, string prefix, int? maxKeysPerTest = null, CancellationToken ct = default)
+            // Версий .partial нет — конец WAL (fetch-wal t14: ListAsync вызывается
+            // после NotFound-финалов; пустой список = «лучшей версии нет»).
+            => Task.FromResult(Result<IReadOnlyList<WalObject>>.Success([]));
+        public Task<Result<IReadOnlyList<S3ObjectInfo>>> ListPrefixAsync(string prefix, int? maxKeysPerTest = null, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<string>> GetObjectAsync(string cluster, string shard, string key, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<IReadOnlyList<string>>> ListFullsAsync(string cluster, string shard, int? maxKeysPerTest = null, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<string>> DownloadTextAsync(string cluster, string shard, string objectKey, CancellationToken ct = default) => throw new NotSupportedException();
+    }
+
+    /// <summary>Мини-фейк fallback-пути fetch-wal: финал — not found; .partial —
+    /// успех (пишет байты в target); ListAsync отдаёт заданную версию.</summary>
+    private sealed class PartialFetchS3(string? partialName) : IBackupS3
+    {
+        public Task<Result> GetObjectToFileAsync(
+            string cluster, string shard, string key, string destFilePath, CancellationToken ct = default)
+        {
+            if (key.EndsWith(".partial", StringComparison.Ordinal))
+            {
+                File.WriteAllText(destFilePath, "prefix-bytes");
+                return Task.FromResult(Result.Success());
+            }
+            return Task.FromResult(NotFound()); // финала нет
+        }
+
+        public Task<Result<IReadOnlyList<WalObject>>> ListAsync(
+            string cluster, string shard, string prefix, int? maxKeysPerTest = null, CancellationToken ct = default)
+            => Task.FromResult(Result<IReadOnlyList<WalObject>>.Success(partialName is null
+                ? []
+                : [new WalObject(partialName, DateTimeOffset.UnixEpoch)]));
+
+        public Task<Result> PutFileAsync(string key, string filePath, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result> PutObjectAsync(string key, byte[] data, string? sha256, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<bool>> BucketExistsAsync(CancellationToken ct) => throw new NotSupportedException();
+        public Task<Result<IReadOnlyList<WalObject>>> ListWalAsync(string cluster, string shard, int? maxKeysPerTest = null, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result> DeleteKeysAsync(IReadOnlyList<string> keys, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<Result<IReadOnlyList<S3ObjectInfo>>> ListPrefixAsync(string prefix, int? maxKeysPerTest = null, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<Result<string>> GetObjectAsync(string cluster, string shard, string key, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<Result<IReadOnlyList<string>>> ListFullsAsync(string cluster, string shard, int? maxKeysPerTest = null, CancellationToken ct = default) => throw new NotSupportedException();
@@ -475,6 +511,62 @@ public class RestoreOperationTests
         exitCode.Should().Be(1);
         transport.Should().NotBeNull().And.Contain("connection reset",
             "a transport failure must be retried, not read as end-of-WAL");
+    }
+
+    // AAA (arch/19 §3.5, t14): из версий .partial выбирается длиннейшая по EndLsn.
+    [Fact]
+    public void FetchWal_BestPartialKey_LongestWins()
+    {
+        // Arrange — три версии одного сегмента
+        const string segment = "000000010000000000000002";
+        string[] names =
+        [
+            WalPartialName.Key(segment, 0x10),
+            WalPartialName.Key(segment, 0xFF),
+            WalPartialName.Key(segment, 0x9),
+        ];
+
+        // Act
+        var best = FetchWalCommand.BestPartialKey(names);
+
+        // Assert
+        best.Should().Be(WalPartialName.Key(segment, 0xFF));
+    }
+
+    // AAA: версий нет (пустой список/только финал) — null.
+    [Fact]
+    public void FetchWal_BestPartialKey_EmptyNull()
+    {
+        // Arrange
+        string[] onlyFinal = ["000000010000000000000002"];
+
+        // Act / Assert
+        FetchWalCommand.BestPartialKey([]).Should().BeNull();
+        FetchWalCommand.BestPartialKey(onlyFinal).Should().BeNull();
+    }
+
+    // AAA: финала нет нигде — скачивается лучший .partial в запрошенный путь; exit 0.
+    [Fact]
+    public async Task FetchWal_FetchOnce_FallsBackToPartial()
+    {
+        // Arrange — оба клиента: финал not found, версия .partial есть; target — файл
+        var target = Path.Combine(Path.GetTempPath(), $"fetch-wal-{Guid.NewGuid():N}");
+        const string partialName = "000000010000000000000002.0000000000000064.partial";
+        var clients = new List<IBackupS3>
+        {
+            new PartialFetchS3(partialName), new PartialFetchS3(partialName),
+        };
+
+        // Act
+        var (exitCode, transport) = await FetchWalCommand.FetchOnceAsync(
+            clients, "c1", "s1", "000000010000000000000002", target, CancellationToken.None);
+
+        // Assert — префикс скачан, файл записан; конец WAL не объявлен
+        exitCode.Should().Be(0);
+        transport.Should().BeNull();
+        File.Exists(target).Should().BeTrue("the best .partial is written to %p");
+        File.ReadAllText(target).Should().Be("prefix-bytes");
+        File.Delete(target);
     }
 
     // AAA: транспортный ретрай ограничен ЛИБО лимитом попыток, ЛИБО жёстким

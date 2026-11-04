@@ -962,6 +962,7 @@ public Task<Result<IReadOnlyList<WalObject>>> ListAsync(
 ```
 
 (существующие кейсы `FetchOnce_NotFoundEverywhere_IsEndOfWal` / `FetchOnce_TransportFailure_IsDistinguishable` остаются зелёными: первый получает `(1, null)` через пустой ListAsync — конец WAL; транспортная семантика второго не затронута — ListAsync транспортом не падает).
+(решения Фазы 6: (1) в `ListBestPartialAsync` вместо `TryParse(...)!.EndLsn` — `TryParse(...)!.Value.EndLsn`: у `Nullable<ValueTuple>` оператор `!` тип не разворачивает, план-код не компилировался; (2) отдельный тест `FetchWal_FetchOnce_NothingAnywhere_EndOfWal` не заводился — его контракт (оба клиента NotFound на финал, пустой ListAsync → `(1, null)`) уже покрыт существующим `FetchOnce_NotFoundEverywhere_IsEndOfWal` на том же пути; дубль не добавлялся.)
 
 ---
 

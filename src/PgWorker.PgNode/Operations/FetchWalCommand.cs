@@ -102,22 +102,91 @@ internal static class FetchWalCommand
         => attempt < TransportAttempts
            && TimeSpan.FromTicks(nowTick - startTick) < CallDeadline;
 
+    /// <summary>Чистая функция для тестов: лучший (длиннейший по EndLsn)
+    /// .partial-ключ из списка имён; null — версий нет.</summary>
+    internal static string? BestPartialKey(IEnumerable<string> names)
+    {
+        string? best = null;
+        ulong bestLsn = 0;
+        foreach (var name in names)
+            if (PgWorker.Backups.WalPartialName.TryParse(name) is { } v
+                && v.EndLsn >= bestLsn)
+            {
+                bestLsn = v.EndLsn;
+                best = name;
+            }
+        return best;
+    }
+
+    /// <summary>Лучший .partial по ВСЕМ нодам пула (лаг mesh допускается —
+    /// arch/19 §5): перебор листингов узкого префикса; транспортный отказ ноды
+    /// пропускает ноду. Возврат: (ключ, есть ли хоть один ответивший, первая
+    /// транспортная ошибка) — никто не ответил ⇒ транспорт, не «конец WAL».</summary>
+    private static async Task<(string? Key, bool AnyResponded, string? FirstError)> ListBestPartialAsync(
+        IReadOnlyList<IBackupS3> clients, string cluster, string shard,
+        string normalizedSegment, CancellationToken ct)
+    {
+        string? best = null;
+        var anyResponded = false;
+        string? firstError = null;
+        foreach (var client in clients)
+        {
+            var listed = await client.ListAsync(
+                cluster, shard, $"wal/{normalizedSegment}.", ct: ct);
+            if (!listed.IsSuccess)
+            {
+                firstError ??= listed.Error!.Message.Split('\n')[0];
+                continue;
+            }
+            anyResponded = true;
+            if (BestPartialKey(listed.Value.Select(o => o.Name)) is not { } candidate)
+                continue;
+            if (best is null
+                || PgWorker.Backups.WalPartialName.TryParse(candidate)!.Value.EndLsn
+                   > PgWorker.Backups.WalPartialName.TryParse(best)!.Value.EndLsn)
+                best = candidate;
+        }
+        return (best, anyResponded, firstError);
+    }
+
     /// <summary>Чистая функция для тестов: ОДИН проход по клиентам пула (перебор
     /// read-списка до найденного); transportError — первая транспортная ошибка
-    /// прохода (null — «сегмента нет нигде», все ответили not found).</summary>
+    /// прохода (null — «сегмента нет нигде», все ответили not found). Финала нет
+    /// нигде — лучший .partial версии (валидный префикс живого сегмента).</summary>
     internal static async Task<(int ExitCode, string? TransportError)> FetchOnceAsync(
         IReadOnlyList<IBackupS3> clients, string cluster, string shard,
         string segment, string target, CancellationToken ct)
     {
         string? transportError = null;
+        var normalized = NormalizeSegment(segment);
         foreach (var client in clients)
         {
             var got = await client.GetObjectToFileAsync(
-                cluster, shard, $"wal/{NormalizeSegment(segment)}", target, ct);
+                cluster, shard, $"wal/{normalized}", target, ct);
             if (got.IsSuccess)
                 return (0, null);
             if (!IsNotFound(got))
                 transportError ??= got.Error!.Message.Split('\n')[0];
+        }
+
+        // Финала нет нигде — лучший .partial (хвост потока, arch/19 §3.5):
+        // скачанный префикс валиден по построению — postgres остановится в
+        // конце записей; ничего нет нигде ⇒ конец WAL (exit 1).
+        var (bestKey, anyResponded, listError) = await ListBestPartialAsync(
+            clients, cluster, shard, normalized, ct);
+        if (!anyResponded)
+            return (1, listError ?? "wal partial listing failed on all nodes");
+        if (bestKey is { } partial)
+        {
+            foreach (var client in clients)
+            {
+                var got = await client.GetObjectToFileAsync(
+                    cluster, shard, $"wal/{partial}", target, ct);
+                if (got.IsSuccess)
+                    return (0, null);
+                if (!IsNotFound(got))
+                    transportError ??= got.Error!.Message.Split('\n')[0];
+            }
         }
         return (1, transportError);
     }
