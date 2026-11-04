@@ -161,7 +161,9 @@ public sealed class PgWireReplicationClient : IBaseBackupSource
                             var nonce = Convert.ToHexString(
                                 RandomNumberGenerator.GetBytes(18)).ToLowerInvariant();
                             clientFirstBare = ScramSha256.ClientFirstBare(nonce);
-                            await WriteSaslInitialAsync(mechanism, clientFirstBare, ct);
+                            // Полное client-first = GS2-заголовок "n,," + bare
+                            // (authMessage строится по bare — RFC 5802).
+                            await WriteSaslInitialAsync(mechanism, "n,," + clientFirstBare, ct);
                             break;
                         }
                         case AuthSaslContinue:

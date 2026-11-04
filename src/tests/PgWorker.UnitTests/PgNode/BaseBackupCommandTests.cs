@@ -1,48 +1,61 @@
+using System.Buffers.Binary;
 using System.Text;
 using PgWorker.PgNode.BaseBackup;
 
 namespace PgWorker.UnitTests.PgNode;
 
-// Автомат разбора BASE_BACKUP (spec t01 §3.1): заголовок tablespace list,
-// COPY OUT потоки (основной + pg_wal), итог; отказные ветки — server error,
-// copy fail, чужие сообщения, несколько tablespace.
+// Автомат разбора BASE_BACKUP (spec t01 §3.1): стартовый/финальный result
+// set, tablespace list, COPY OUT-поток с внутренним фреймингом архивов
+// ('n'/'m'/'d'/'p'); отказные ветки — server error, copy fail, чужие
+// сообщения, дополнительные tablespace.
 public class BaseBackupCommandTests
 {
-    // AAA: основной поток + pg_wal читаются раздельно, CommandComplete завершает.
+    // AAA: base.tar, pg_wal.tar и манифест разбираются в три sink'а,
+    // CommandComplete завершает операцию.
     [Fact]
-    public async Task ReadsTwoCopyStreams_ThenCompletes()
+    public async Task ReadsArchivesAndManifest_ThenCompletes()
     {
         // Arrange
         var fake = new FakeSource(
-            Message('T'), Message('D'), Message('H'),
-            Message('d', "abc"), Message('d', "def"), Message('c'),
-            Message('H'), Message('d', "wal"), Message('c'),
-            Message('D'), Message('C'));
+            RowDescription(2), Message('D'), Message('C'),   // стартовая позиция WAL
+            RowDescription(3), Message('D'), Message('C'),   // tablespace list (1 строка)
+            Message('H'),                                    // COPY OUT
+            CopyData(ArchiveStart("base.tar")),
+            CopyData(Data("abc")), CopyData(Data("def")),
+            CopyData(ArchiveStart("pg_wal.tar")),
+            CopyData(Data("wal")),
+            CopyData(Manifest()),
+            CopyData(Data("{\"Files\":[]}")),
+            Message('c'),                                    // CopyDone
+            RowDescription(2), Message('D'), Message('C'));  // финальная позиция WAL
         var command = new BaseBackupCommand(fake);
-        var streams = new List<string>();
+        var sinks = new List<string>();
 
         // Act
         await command.RunAsync("id1", async (index, stream, ct) =>
         {
             using var buffer = new MemoryStream();
             await stream.CopyToAsync(buffer, ct);
-            streams.Add($"{index}:{Encoding.ASCII.GetString(buffer.ToArray())}");
+            sinks.Add($"{index}:{Encoding.ASCII.GetString(buffer.ToArray())}");
         }, CancellationToken.None);
 
         // Assert
-        streams.Should().Equal("0:abcdef", "1:wal");
+        sinks.Should().Equal("0:abcdef", "1:wal", "2:{\"Files\":[]}");
         fake.Sent.Should().ContainSingle()
             .Which.Should().Contain("LABEL 'pgw-full-id1'")
-            .And.Contain("TARGET 'CLIENT'")
-            .And.Contain("WAL 'STREAM'");
+            .And.Contain("TARGET 'client'")
+            .And.Contain("MANIFEST 'yes'")
+            .And.Contain("WAL true");
     }
 
-    // AAA: более одного DataRow заголовка (второй tablespace) — fail-fast.
+    // AAA: более одной строки tablespace list — fail-fast multiple tablespaces.
     [Fact]
-    public async Task MultipleHeaderRows_Throws()
+    public async Task MultipleTablespaceRows_Throws()
     {
         // Arrange
-        var fake = new FakeSource(Message('T'), Message('D'), Message('D'), Message('H'));
+        var fake = new FakeSource(
+            RowDescription(2), Message('D'), Message('C'),
+            RowDescription(3), Message('D'), Message('D'), Message('C'));
         var command = new BaseBackupCommand(fake);
 
         // Act
@@ -54,13 +67,35 @@ public class BaseBackupCommandTests
         thrown.Which.Message.Should().Be("multiple tablespaces not supported");
     }
 
-    // AAA: третий COPY OUT поток — fail-fast multiple tablespaces.
+    // AAA: архив дополнительного tablespace (не base.tar/pg_wal.tar) — fail-fast.
     [Fact]
-    public async Task ThirdCopyStream_Throws()
+    public async Task ExtraTablespaceArchive_Throws()
     {
         // Arrange
         var fake = new FakeSource(
-            Message('D'), Message('H'), Message('c'),
+            RowDescription(2), Message('D'), Message('C'),
+            RowDescription(3), Message('D'), Message('C'),
+            Message('H'),
+            CopyData(ArchiveStart("16384.tar")));
+        var command = new BaseBackupCommand(fake);
+
+        // Act
+        var act = () => command.RunAsync("id1", (_, _, _) => Task.CompletedTask,
+            CancellationToken.None);
+
+        // Assert
+        var thrown = await act.Should().ThrowAsync<ApplicationException>();
+        thrown.Which.Message.Should().Be("multiple tablespaces not supported");
+    }
+
+    // AAA: второй COPY OUT-поток — не наш формат (fail-fast).
+    [Fact]
+    public async Task SecondCopyOut_Throws()
+    {
+        // Arrange
+        var fake = new FakeSource(
+            RowDescription(2), Message('D'), Message('C'),
+            RowDescription(3), Message('D'), Message('C'),
             Message('H'), Message('c'),
             Message('H'), Message('c'));
         var command = new BaseBackupCommand(fake);
@@ -97,7 +132,13 @@ public class BaseBackupCommandTests
     public async Task CopyFail_Throws()
     {
         // Arrange
-        var fake = new FakeSource(Message('D'), Message('H'), Message('d', "abc"), Message('f', "disk full"));
+        var fake = new FakeSource(
+            RowDescription(2), Message('D'), Message('C'),
+            RowDescription(3), Message('D'), Message('C'),
+            Message('H'),
+            CopyData(ArchiveStart("base.tar")),
+            CopyData(Data("abc")),
+            Message('f', "disk full"));
         var command = new BaseBackupCommand(fake);
 
         // Act
@@ -129,11 +170,40 @@ public class BaseBackupCommandTests
         thrown.Which.Message.Should().Contain("unexpected message 'I'");
     }
 
+    private static PgMessage RowDescription(int fields)
+    {
+        var payload = new byte[2];
+        BinaryPrimitives.WriteInt16BigEndian(payload, (short)fields);
+        return new PgMessage((byte)'T', payload);
+    }
+
     private static PgMessage Message(char type, string payload = "")
         => new((byte)type, Encoding.ASCII.GetBytes(payload));
 
     private static PgMessage Message(char type, byte[] payload)
         => new((byte)type, payload);
+
+    private static PgMessage CopyData(byte[] payload) => new((byte)'d', payload);
+
+    // 'n' + имя архива + каталог (пустая строка — основной data dir).
+    private static byte[] ArchiveStart(string name)
+    {
+        var payload = new byte[1 + name.Length + 1 + 1];
+        payload[0] = (byte)'n';
+        Encoding.ASCII.GetBytes(name).CopyTo(payload, 1);
+        return payload;
+    }
+
+    private static byte[] Manifest() => [(byte)'m'];
+
+    private static byte[] Data(string text)
+    {
+        var bytes = Encoding.ASCII.GetBytes(text);
+        var payload = new byte[1 + bytes.Length];
+        payload[0] = (byte)'d';
+        bytes.CopyTo(payload, 1);
+        return payload;
+    }
 
     private static byte[] ErrorPayload(string sqlState, string message)
     {

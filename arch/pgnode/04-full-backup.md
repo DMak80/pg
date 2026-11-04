@@ -34,14 +34,23 @@ Staging-каталога полного НЕТ: полный бэкап не п�
   (MD5, SCRAM-SHA-256-PLUS, GSS) — fail-fast «unsupported auth» с
   диагностикой (несовместимость протокола не маскируется);
 - команда simple-query `BASE_BACKUP (LABEL 'pgw-full-<id>', CHECKPOINT
-  'fast', WAIT false, MANIFEST_CHECKSUMS 'SHA256', TARGET 'CLIENT', WAL
-  'STREAM')`;
-- разбор ответа — автомат по сообщениям протокола: result set заголовка
-  (tablespace list) → НА КАЖДЫЙ tablespace свой COPY OUT tar-поток →
-  (WAL STREAM) финальный COPY OUT tar-поток `pg_wal` → result set итога.
-  Более одного основного tablespace — fail-fast «multiple tablespaces not
-  supported» (контур Spilo — один tablespace). Несовместимость версии
-  протокола/сервера (SQLSTATE отказа, неизвестный формат сообщений) —
+  'fast', MANIFEST 'yes', MANIFEST_CHECKSUMS 'SHA256', TARGET 'client', WAL
+  true)` — `TARGET` — строчное `client` (регистр значим у сервера), `WAL` в
+  PG15+ булев (стриминг WAL клиенту при `TARGET 'client'`), не строковый
+  метод доставки; манифест задаётся явно (по умолчанию `'no'`, а
+  `MANIFEST_CHECKSUMS` без манифеста — отказ сервера);
+- ответ — два обычных result set'а (стартовая позиция WAL; tablespace list —
+  более одной строки = дополнительный tablespace, fail-fast «multiple
+  tablespaces not supported», контур Spilo — один tablespace), затем ОДИН
+  COPY OUT-поток с внутренним фреймингом CopyData: `n` — начало архива
+  (имя `base.tar`/`pg_wal.tar`/`<oid>.tar` + каталог), `m` — манифест,
+  `d` — данные, `p` — прогресс; после потока — финальный result set
+  (конечная позиция WAL). При `WAL true` сервер дописывает сегменты WAL
+  ВНУТРЬ `base.tar` (записи `pg_wal/…`), отдельного WAL-архива нет; манифест
+  приходит отдельной секцией `m`/`d` и в единый tar кладётся ПОСЛЕДНЕЙ
+  записью `backup_manifest` (verify читает его хвостом объекта). Архивы
+  дополнительных tablespace (`<oid>.tar`) — fail-fast. Несовместимость
+  версии протокола/сервера (SQLSTATE отказа, неизвестный формат сообщений) —
   fail-fast с однострочной диагностикой, набор НЕ создаётся.
 
 Удержание WAL источником на время бэкапа — инвариант ядра PG

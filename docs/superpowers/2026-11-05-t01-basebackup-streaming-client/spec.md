@@ -77,8 +77,8 @@ PGDATA на диске; потоковые restore и verify.
   `unsupported auth: <метод>`). Сообщения: простая запись/чтение фреймов
   (тип+длина+payload), simple-query.
 - **`BaseBackupCommand`** — отправка `BASE_BACKUP (LABEL 'pgw-full-<id>',
-  CHECKPOINT 'fast', WAIT false, MANIFEST_CHECKSUMS 'SHA256', TARGET
-  'CLIENT', WAL 'STREAM')` и **автомат разбора ответа**: DataRow'ы заголовка
+  CHECKPOINT 'fast', MANIFEST 'yes', MANIFEST_CHECKSUMS 'SHA256', TARGET
+  'client', WAL true, WAIT false)` и **автомат разбора ответа**: DataRow'ы заголовка
   (tablespace list; >1 tablespace → fail-fast `multiple tablespaces not
   supported`) → COPY OUT tar-потоки (основной → при `WAL STREAM` финальный
   поток `pg_wal`) → DataRow'ы итога → CommandComplete. Автомат устойчив к

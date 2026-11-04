@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Text;
 
 namespace PgWorker.PgNode.BaseBackup;
@@ -12,11 +13,12 @@ public sealed class BaseBackupErrorException(string sqlState, string message)
     public string ServerMessage { get; } = message;
 }
 
-/// <summary>Команда BASE_BACKUP и автомат разбора ответа (spec t01 §3.1):
-/// DataRow'ы заголовка (tablespace list; более одного — fail-fast
-/// «multiple tablespaces not supported») → COPY OUT tar-потоки (первый —
-/// основной tablespace, второй — pg_wal при WAL STREAM) → итог
-/// CommandComplete. Границы потоков — CopyOutResponse/CopyDone, не
+/// <summary>Команда BASE_BACKUP и автомат разбора ответа (spec t01 §3.1,
+/// протокол PG18): стартовый result set (позиция WAL) → tablespace list
+/// (более одной строки — fail-fast «multiple tablespaces not supported») →
+/// ОДИН COPY OUT-поток с внутренним фреймингом архивов (`n` — начало архива
+/// с именем base.tar/pg_wal.tar, `m` — манифест, `d` — данные, `p` —
+/// прогресс) → финальный result set. Границы — сообщения протокола, а не
 /// разделители result-set'ов.</summary>
 public sealed class BaseBackupCommand(IBaseBackupSource source)
 {
@@ -32,66 +34,178 @@ public sealed class BaseBackupCommand(IBaseBackupSource source)
     private const byte ParameterStatus = (byte)'S';
     private const byte RowDescription = (byte)'T';
 
-    // Основной tablespace + pg_wal (WAL STREAM) — два потока максимум.
-    private const int MaxStreams = 2;
+    // Теги внутреннего фрейминга CopyData-потока (протокол BASE_BACKUP).
+    private const byte ArchiveStart = (byte)'n';
+    private const byte ManifestStart = (byte)'m';
+    private const byte ArchiveData = (byte)'d';
+    private const byte ProgressReport = (byte)'p';
+
+    private const string MainArchiveName = "base.tar";
+    private const string WalArchiveName = "pg_wal.tar";
+
+    // Полей в стартовом/финальном result set (recptr, tli); tablespace list — 3.
+    private const int PositionFields = 2;
+
+    /// <summary>Индекс sink'а манифеста: сырые байты JSON (backup_manifest
+    /// приходит отдельной секцией COPY-потока, не tar-архивом).</summary>
+    public const int ManifestIndex = 2;
 
     private readonly IBaseBackupSource _source = source;
 
+    // Сообщение, прочитанное архивным потоком «вперёд» (граница секции) и
+    // подлежащее разбору внешним автоматом.
+    private PgMessage? _pending;
+
     /// <summary>Выполнить BASE_BACKUP: tarSink(index, stream) вызывается на
-    /// каждый COPY OUT поток (0 — основной tablespace, 1 — pg_wal); данные
-    /// потока читаются из source на лету, sink обязан вычитать поток целиком.</summary>
+    /// каждый архив COPY-потока (0 — основной tablespace base.tar, 1 — pg_wal,
+    /// <see cref="ManifestIndex"/> — манифест); поток обязан быть вычитан
+    /// целиком (команда дочитывает остаток за sink'ом).</summary>
     public async Task RunAsync(
         string backupId, Func<int, Stream, CancellationToken, Task> tarSink, CancellationToken ct)
     {
-        // LABEL — маркер нашего полного в backup_label/манифесте сервера.
+        // LABEL — маркер нашего полного в backup_label сервера; MANIFEST 'yes'
+        // обязателен для MANIFEST_CHECKSUMS; TARGET — строчное 'client'
+        // (регистр значим у сервера), WAL — булев (PG15+).
         await _source.SendAsync(
-            $"BASE_BACKUP ( LABEL 'pgw-full-{backupId}', CHECKPOINT 'fast', WAIT false, " +
-            "MANIFEST_CHECKSUMS 'SHA256', TARGET 'CLIENT', WAL 'STREAM' )", ct);
+            $"BASE_BACKUP ( LABEL 'pgw-full-{backupId}', CHECKPOINT 'fast', MANIFEST 'yes', " +
+            "MANIFEST_CHECKSUMS 'SHA256', TARGET 'client', WAL true, WAIT false )", ct);
 
+        var phase = ResultPhase.Position;
         var headerRows = 0;
-        var streams = 0;
+        var copyOuts = 0;
         while (true)
         {
-            var message = await _source.ReadAsync(ct)
+            var message = await ReadNextAsync(ct)
                           ?? throw new ApplicationException(
                               "BASE_BACKUP connection closed before CommandComplete");
             switch (message.Type)
             {
+                case RowDescription:
+                    // Два поля — result set позиции WAL, три — tablespace list.
+                    phase = FieldCount(message.Payload) == PositionFields
+                        ? ResultPhase.Position
+                        : ResultPhase.TablespaceList;
+                    break;
                 case DataRow:
-                    // Строки заголовка (tablespace list) — до первого COPY OUT;
-                    // строки итога после потоков пропускаются.
-                    if (streams == 0 && ++headerRows > 1)
+                    // Строки tablespace list; более одной — дополнительный
+                    // tablespace (fail-fast). Прочие result set'ы — пропуск.
+                    if (phase == ResultPhase.TablespaceList && ++headerRows > 1)
                         throw MultipleTablespaces();
                     break;
                 case CopyOutResponse:
-                {
-                    streams++;
-                    if (streams > MaxStreams)
+                    // PG шлёт ОДИН COPY OUT-поток на все архивы; второй —
+                    // не наш формат (tablespace-архивы = лишние tablespace).
+                    if (++copyOuts > 1)
                         throw MultipleTablespaces();
-                    var data = new CopyOutDataStream(this, ct);
-                    await tarSink(streams - 1, data, ct);
-                    // Sink мог не вычитать поток: команда владеет сообщениями —
-                    // дочитываем, иначе следующий Read разберёт CopyData как
-                    // ответ BASE_BACKUP.
-                    await data.DrainAsync(ct);
+                    await ReadCopyOutAsync(tarSink, ct);
                     break;
-                }
                 case CommandComplete:
-                    return;
+                    // Result set'ы позиции/таблиц завершаются ДО COPY OUT;
+                    // конец команды — CommandComplete после потока архивов.
+                    if (copyOuts > 0)
+                        return;
+                    break;
                 case ReadyForQuery:
-                    return; // если сервер уже прислал — выходим
+                    return;
                 case ErrorResponse:
                     ThrowServerError(message.Payload);
                     break;
                 case NoticeResponse:
                 case ParameterStatus:
-                case RowDescription:
                     break; // служебные — пропуск
                 default:
                     throw new ApplicationException(
                         $"unexpected message '{(char)message.Type}' in BASE_BACKUP response");
             }
         }
+    }
+
+    // Разбор COPY OUT-потока: последовательность секций с внутренним
+    // фреймингом CopyData ('n'/'m'/'d'/'p'); конец — CopyDone.
+    private async Task ReadCopyOutAsync(
+        Func<int, Stream, CancellationToken, Task> tarSink, CancellationToken ct)
+    {
+        while (true)
+        {
+            var message = await ReadNextAsync(ct)
+                          ?? throw new ApplicationException(
+                              "BASE_BACKUP copy stream closed before CopyDone");
+            switch (message.Type)
+            {
+                case CopyDone:
+                    return;
+                case CopyData:
+                {
+                    if (message.Payload.Length == 0)
+                        throw new ApplicationException("empty CopyData in BASE_BACKUP copy stream");
+                    switch (message.Payload[0])
+                    {
+                        case ArchiveStart:
+                        {
+                            var name = ParseArchiveName(message.Payload);
+                            var index = name == MainArchiveName ? 0
+                                : name == WalArchiveName ? 1
+                                : throw MultipleTablespaces();
+                            await ConsumeSectionAsync(index, tarSink, ct);
+                            break;
+                        }
+                        case ManifestStart:
+                            await ConsumeSectionAsync(ManifestIndex, tarSink, ct);
+                            break;
+                        case ArchiveData:
+                            throw new ApplicationException(
+                                "BASE_BACKUP archive data before archive start");
+                        case ProgressReport:
+                            break; // прогресс сервера — не нужен (свой счётчик)
+                        default:
+                            throw new ApplicationException(
+                                $"unexpected CopyData tag '{(char)message.Payload[0]}' in BASE_BACKUP copy stream");
+                    }
+
+                    break;
+                }
+                case CopyFail:
+                    throw new ApplicationException(
+                        $"BASE_BACKUP COPY failed: {Encoding.UTF8.GetString(message.Payload).TrimEnd('\0')}");
+                case ErrorResponse:
+                    ThrowServerError(message.Payload);
+                    break;
+                default:
+                    throw new ApplicationException(
+                        $"unexpected message '{(char)message.Type}' in BASE_BACKUP copy stream");
+            }
+        }
+    }
+
+    // Секция архива/манифеста: sink вычитывает данные 'd' до следующего
+    // 'n'/'m'/CopyDone (границу команда забирает себе через pushback).
+    private async Task ConsumeSectionAsync(
+        int index, Func<int, Stream, CancellationToken, Task> tarSink, CancellationToken ct)
+    {
+        var data = new CopyOutDataStream(this, ct);
+        await tarSink(index, data, ct);
+        await data.DrainAsync(ct);
+    }
+
+    // 'n' + имя архива (null-terminated) + каталог (null-terminated).
+    private static string ParseArchiveName(byte[] payload)
+    {
+        const int pos = 1;
+        var end = Array.IndexOf(payload, (byte)0, pos);
+        if (end < 0)
+            throw new ApplicationException("malformed BASE_BACKUP archive start message");
+        return Encoding.ASCII.GetString(payload, pos, end - pos);
+    }
+
+    // Число полей RowDescription (int16, network order).
+    private static int FieldCount(byte[] payload)
+        => payload.Length >= 2 ? BinaryPrimitives.ReadInt16BigEndian(payload) : 0;
+
+    private async Task<PgMessage?> ReadNextAsync(CancellationToken ct)
+    {
+        var pending = _pending;
+        _pending = null;
+        return pending ?? await _source.ReadAsync(ct);
     }
 
     private static ApplicationException MultipleTablespaces()
@@ -103,9 +217,16 @@ public sealed class BaseBackupCommand(IBaseBackupSource source)
         throw new BaseBackupErrorException(sqlState, message);
     }
 
-    /// <summary>Поток одного COPY OUT tar-потока BASE_BACKUP: подряд идущие
-    /// CopyData-сообщения до CopyDone; CopyFail/ErrorResponse — исключение.
-    /// Владение потоком сообщений — у команды (Dispose ничего не делает).</summary>
+    private enum ResultPhase
+    {
+        Position,
+        TablespaceList,
+    }
+
+    /// <summary>Поток данных одной секции COPY OUT-потока (архив или
+    /// манифест): CopyData-фреймы 'd' до границы секции ('n'/'m'/CopyDone,
+    /// сообщение возвращается автомату); 'p' (прогресс) пропускается.
+    /// Dispose ничего не делает — владение потоком сообщений у команды.</summary>
     private sealed class CopyOutDataStream(BaseBackupCommand command, CancellationToken ct) : Stream
     {
         private byte[] _current = [];
@@ -143,17 +264,36 @@ public sealed class BaseBackupCommand(IBaseBackupSource source)
                 if (_done)
                     return 0;
 
-                var message = await command._source.ReadAsync(token)
+                var message = await command.ReadNextAsync(token)
                               ?? throw new ApplicationException(
                                   "BASE_BACKUP copy stream closed before CopyDone");
                 switch (message.Type)
                 {
                     case CopyData:
-                        _current = message.Payload;
-                        _offset = 0;
-                        continue;
+                        if (message.Payload.Length == 0)
+                            throw new ApplicationException(
+                                "empty CopyData in BASE_BACKUP copy stream");
+                        switch (message.Payload[0])
+                        {
+                            case ArchiveData:
+                                _current = message.Payload;
+                                _offset = 1;
+                                continue;
+                            case ProgressReport:
+                                continue; // прогресс сервера — пропуск
+                            case ArchiveStart:
+                            case ManifestStart:
+                                // Граница секции: сообщение — внешнему автомату.
+                                _done = true;
+                                command._pending = message;
+                                return 0;
+                            default:
+                                throw new ApplicationException(
+                                    $"unexpected CopyData tag '{(char)message.Payload[0]}' in BASE_BACKUP copy stream");
+                        }
                     case CopyDone:
                         _done = true;
+                        command._pending = message;
                         return 0;
                     case CopyFail:
                         throw new ApplicationException(
@@ -168,7 +308,7 @@ public sealed class BaseBackupCommand(IBaseBackupSource source)
             }
         }
 
-        /// <summary>Дочитать поток до CopyDone (sink мог не вычитать целиком).</summary>
+        /// <summary>Дочитать секцию (sink мог не вычитать целиком).</summary>
         public async Task DrainAsync(CancellationToken cancellationToken)
         {
             var buffer = new byte[64 * 1024];
