@@ -821,4 +821,69 @@ public class RetentionPlannerTests
         // Assert
         doomed.Should().BeEmpty();
     }
+
+    // ---: композиция шага (4) RetentionProcess: финалы ниже cutoff + .partial ----
+
+    // Листинг wal/ одного прохода ретенции: финалы seg1/seg2 (ниже cutoff seg3),
+    // финал cutoff-сегмента seg3, поглощённые .partial seg3 (финал лежит) и
+    // версии живого seg4 (длиннейшая остаётся).
+    private static readonly WalFileName Seg1 = new(1, 0, 1);
+    private static readonly WalFileName Seg2 = new(1, 0, 2);
+    private static readonly WalFileName Seg3 = new(1, 0, 3);
+    private static readonly WalFileName Seg4 = new(1, 0, 4);
+
+    private static List<string> RetentionNames() =>
+    [
+        Seg1.Name, Seg2.Name, Seg3.Name,
+        WalPartialName.Key(Seg3.Name, 0x100),
+        WalPartialName.Key(Seg3.Name, 0x200), // поглощённые финалом seg3
+        WalPartialName.Key(Seg4.Name, 0x100),
+        WalPartialName.Key(Seg4.Name, 0x300), // живой сегмент: остаётся 0x300
+    ];
+
+    // Композиция шага (4) RetentionProcess (план 11.1): финалы ниже cutoff
+    // (только при cutoff) + .partial-гигиена (всегда) — один список doomed.
+    private static IReadOnlyList<string> RetentionDoomed(List<string> names, WalFileName? cutoff)
+        => (cutoff is { } limit
+                ? RetentionPlanner.SelectWalForDeletion(names, limit) : [])
+            .Concat(RetentionPlanner.SelectPartialForDeletion(names, cutoff))
+            .ToList();
+
+    // AAA: при живом cutoff одним batch-delete уходят финалы ниже него и вся
+    // .partial-гигиена; сам cutoff и длиннейшая версия живого сегмента — нет.
+    [Fact]
+    public void RetentionPass_PartialsAndFinalsDoomedTogether()
+    {
+        // Arrange
+        var names = RetentionNames();
+
+        // Act
+        var doomed = RetentionDoomed(names, Seg3);
+
+        // Assert — финалы ниже cutoff + обе поглощённые версии + короткая версия seg4
+        doomed.Should().Contain([Seg1.Name, Seg2.Name]);
+        doomed.Should().Contain([WalPartialName.Key(Seg3.Name, 0x100), WalPartialName.Key(Seg3.Name, 0x200)]);
+        doomed.Should().Contain(WalPartialName.Key(Seg4.Name, 0x100));
+        doomed.Should().NotContain(WalPartialName.Key(Seg4.Name, 0x300));
+        doomed.Should().NotContain(Seg3.Name, "the cutoff segment itself stays");
+        doomed.Should().HaveCount(5);
+    }
+
+    // AAA: cutoff=null — только .partial-гигиена; финалы не режутся (гвард verify).
+    [Fact]
+    public void RetentionPass_CutoffNull_OnlyPartialHygiene()
+    {
+        // Arrange
+        var names = RetentionNames();
+
+        // Act
+        var doomed = RetentionDoomed(names, null);
+
+        // Assert — эквивалент SelectPartialForDeletion; финалы целы
+        doomed.Should().BeEquivalentTo(RetentionPlanner.SelectPartialForDeletion(names, null));
+        doomed.Should().NotContain([Seg1.Name, Seg2.Name, Seg3.Name]);
+        doomed.Should().Contain([WalPartialName.Key(Seg3.Name, 0x100), WalPartialName.Key(Seg3.Name, 0x200)]);
+        doomed.Should().Contain(WalPartialName.Key(Seg4.Name, 0x100));
+        doomed.Should().NotContain(WalPartialName.Key(Seg4.Name, 0x300));
+    }
 }

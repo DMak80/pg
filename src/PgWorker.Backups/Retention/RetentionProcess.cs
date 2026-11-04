@@ -144,29 +144,31 @@ public sealed class RetentionProcess(
 
         // (4) Чистка WAL (arch/19 §4 п.5): cutoff = wal_start новейшего
         // (по started_unix) verify-OK COMPLETED-полного из оставляемых — ОДНА
-        // точка с chain_start контроля (§3). ГВАРД verify: OK-полного нет
-        // (PENDING/FAILED/отсутствует) → шаг no-op — прунинг без успешного
-        // verify нового полного запрещён; недельная/месячная точки на cutoff
-        // не влияют.
+        // точка с chain_start контроля (§3). ГВАРД verify: прунинг ФИНАЛОВ без
+        // успешного verify нового полного запрещён (OK-полного нет ⇒ финалы не
+        // режем); .partial-гигиена (поглощённые финалом, устаревшие версии) —
+        // ВСЕГДА, тем же list'ом и тем же batch-delete («этого же прохода», §4 п.5:
+        // при cutoff=null list выполняется, чистятся только .partial).
         var remaining = fulls.Where(f =>
             f.State == FullBackupStatus.Completed
             && !(selection.Delete.Count > 0 && f.Id == selection.Delete[0])).ToList();
-        if (RetentionPlanner.LatestVerifiedWalStart(remaining) is { } cutoff)
+        var cutoff = RetentionPlanner.LatestVerifiedWalStart(remaining);
+        var listed = await S3Pulse.CallAsync(progress, token => s3.ListPrefixAsync($"{cluster}/{shard}/wal/", ct: token), ct);
+        if (!listed.IsSuccess)
+            throw new ApplicationException($"list wal: {listed.Error!.Message}");
+        var names = listed.Value.Select(o => o.Key.Split('/')[^1]).ToList();
+        var doomed = (cutoff is { } cut
+                ? RetentionPlanner.SelectWalForDeletion(names, cut) : [])
+            .Concat(RetentionPlanner.SelectPartialForDeletion(names, cutoff))
+            .ToList();
+        if (doomed.Count > 0)
         {
-            var listed = await S3Pulse.CallAsync(progress, token => s3.ListPrefixAsync($"{cluster}/{shard}/wal/", ct: token), ct);
-            if (!listed.IsSuccess)
-                throw new ApplicationException($"list wal: {listed.Error!.Message}");
-            var doomed = RetentionPlanner.SelectWalForDeletion(
-                listed.Value.Select(o => o.Key.Split('/')[^1]).ToList(), cutoff);
-            if (doomed.Count > 0)
-            {
-                var keys = doomed.Select(n => $"{cluster}/{shard}/wal/{n}").ToList();
-                var deleted = await S3Pulse.CallAsync(progress, token => s3.DeleteKeysAsync(keys, token), ct);
-                if (!deleted.IsSuccess)
-                    throw new ApplicationException($"delete wal: {deleted.Error!.Message}");
-                await journal.WritePhaseAsync(cluster, Op, $"wal-trimmed/{shard}/{doomed.Count}",
-                    claims.InstanceId, null, ct);
-            }
+            var keys = doomed.Select(n => $"{cluster}/{shard}/wal/{n}").ToList();
+            var deleted = await S3Pulse.CallAsync(progress, token => s3.DeleteKeysAsync(keys, token), ct);
+            if (!deleted.IsSuccess)
+                throw new ApplicationException($"delete wal: {deleted.Error!.Message}");
+            await journal.WritePhaseAsync(cluster, Op, $"wal-trimmed/{shard}/{doomed.Count}",
+                claims.InstanceId, null, ct);
         }
 
         // (5) Гигиена FAILED: держать последние Retention:KeepFailed.
