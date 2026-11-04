@@ -1128,12 +1128,12 @@ public sealed class WalLifeStore(IEtcdGateway etcd, string[] endpoints)
 3. `Restore_Latest_WalDeltaSourceFailover`: живой поток с записью; patroni switchover МЕЖДУ выкладками дельт (образец switchover-механики `E2eWalStreamPromoteScenarios`); дождаться кусков обеих ролей (`_m_`/`_r_`) одного номера жизни; restore latest доезжает до конца хвоста; ассерт: ключ wal-life НЕ инкрементирован (failover жизнь не меняет; читать etcd до/после).
 4. Расширение `Restore_Latest_RebuildsDestroyedShard`: после COMPLETED — читать ключ wal-life: `chain_life ≥ 1`, `reason == "restore"`; листинг `wal/`: новые куски (если хвост снова живой) несут номер `chain_life`; непосредственно после restore куски прежней жизни отсутствуют (sweeper/поглощение; допускается окно — ассерт с retry-поллингом ≤ 60 с, образец `E2eFixture.WaitForAsync`). Алерт `backup-wal-life-changed` E2E НЕ проверяет — юнит-покрытие Task 17 (осознанное решение, spec §5 Ф5/§8.10: панель в E2E-контуре PgWorker не поднимается).
 
-- [ ] **Шаг 1 (кодер) — сценарии + ассерты; таймауты сценариев ≤ 3 мин (CancelAfter по образцу); никаких скипов; teardown фикстуры полный (класс уже обеспечивает).**
-- [ ] **Шаг 2 — статическая подготовка и прогон НОВЫХ сценариев** (две отдельные команды, затем тесты `--no-build`):
+- [x] **Шаг 1 (кодер) — сценарии + ассерты; таймауты сценариев ≤ 3 мин (CancelAfter по образцу); никаких скипов; teardown фикстуры полный (класс уже обеспечивает).**
+- [x] **Шаг 2 — статическая подготовка и прогон НОВЫХ сценариев** (две отдельные команды, затем тесты `--no-build`):
   - `DOTNET_CLI_UI_LANGUAGE=en dotnet run --project src/tests/PgWorker.E2ePrepare -c Release`
   - `DOTNET_CLI_UI_LANGUAGE=en dotnet build src/PgWorker.slnx -c Release --nologo`
   - `DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/PgWorker.E2eTests -c Release --no-build --filter "FullyQualifiedName~E2eWalDeltaScenarios|FullyQualifiedName~Restore_Latest_RebuildsDestroyedShard"`
-- [ ] **Шаг 3 — разбор упавших ПО ЛОГАМ (docker-логи/артефакты `/tmp/pgw-e2e-artifacts-*`, host-логи воркера; перезапуск упавших — только после анализа, канон AGENTS.md). Зачистка контейнеров/сетей после серии (`docker network prune -f` при осиротевших `pgw-*-net`). Коммит** `test(t15): E2E — дыра/конфликт/failover дельт; смена жизни в rebuild-scenario`.
+- [x] **Шаг 3 — разбор упавших ПО ЛОГАМ (docker-логи/артефакты `/tmp/pgw-e2e-artifacts-*`, host-логи воркера; перезапуск упавших — только после анализа, канон AGENTS.md). Зачистка контейнеров/сетей после серии (`docker network prune -f` при осиротевших `pgw-*-net`). Коммит** `test(t15): E2E — дыра/конфликт/failover дельт; смена жизни в rebuild-scenario`.
 
 **Проверка:** все новые сценарии Passed; повторный прогон стабилен.
 **Связь со spec:** §5 Ф5, §8.5–8.7, решение №30 (алерт — юнит Task 17, осознанно).
