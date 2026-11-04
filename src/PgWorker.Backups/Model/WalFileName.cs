@@ -28,9 +28,11 @@ public readonly record struct WalFileName(uint Tli, uint Log, uint Seg)
             ? new WalFileName(tli, log, seg)
             : null;
 
-    /// <summary>Незакрытый сегмент (pg_receivewal дописывает) — не грузится агентом.</summary>
+    /// <summary>Частичное семейство имён — незакрытый сегмент: t14-версии
+    /// wal/&lt;seg&gt;.&lt;endLsn&gt;.partial И дельта-куски wal/&lt;seg&gt;.partial_… —
+    /// в цепь финалов не входят ни при каком парсинге (spec §4.1).</summary>
     public static bool IsPartial(string name)
-        => name.EndsWith(".partial", StringComparison.Ordinal);
+        => name.Contains(".partial", StringComparison.Ordinal);
 
     /// <summary>Timeline-история `NNNNNNNN.history` → TLI; иначе null.</summary>
     public static uint? TryParseHistory(string name)
