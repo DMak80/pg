@@ -57,6 +57,7 @@ public sealed class E2eWalDeltaScenarios(E2eRestoreScenariosFx Ctx) : IClassFixt
         {
             // Arrange — кластер + воркер с бэкап-комплектом + живой префикс цели
             var cluster = $"wdlh{fx.ClusterTag}";
+            await CleanupPreviousDeltaClustersAsync(cluster, ct);
             await SeedClusterAsync(cluster);
             await using var app = await StartRestoreHostAsync("wdlhole", ct);
             var target = await ArrangeDeltaTargetAsync(cluster, ct);
@@ -136,6 +137,7 @@ public sealed class E2eWalDeltaScenarios(E2eRestoreScenariosFx Ctx) : IClassFixt
         {
             // Arrange — кластер + воркер + живой префикс цели
             var cluster = $"wdlc{fx.ClusterTag}";
+            await CleanupPreviousDeltaClustersAsync(cluster, ct);
             await SeedClusterAsync(cluster);
             await using var app = await StartRestoreHostAsync("wdlconf", ct);
             var target = await ArrangeDeltaTargetAsync(cluster, ct);
@@ -219,6 +221,7 @@ public sealed class E2eWalDeltaScenarios(E2eRestoreScenariosFx Ctx) : IClassFixt
         {
             // Arrange — кластер + воркер: провижининг, полный, координаты цепи
             var cluster = $"wdlsf{fx.ClusterTag}";
+            await CleanupPreviousDeltaClustersAsync(cluster, ct);
             await SeedClusterAsync(cluster);
             await using var app = await StartRestoreHostAsync("wdlsfail", ct);
             var provisioned = await WaitPhaseAsync("provisioning",
@@ -963,6 +966,55 @@ public sealed class E2eWalDeltaScenarios(E2eRestoreScenariosFx Ctx) : IClassFixt
         var dsn = await GetOrNullAsync($"/clusters/{cluster}/shards/shard1/dsn");
         var node = await GetOrNullAsync($"/clusters/{cluster}/shards/shard1/nodes/shard1a/state");
         return dsn is not null && node is { Value: "RUNNING" };
+    }
+
+    // Гигиена между фактами класса (фикстура общая — один контур на класс;
+    // канон изоляции: мутируемого общего контура между сценариями нет).
+    // Кластеры прежних фактов снимаются: config исчезает из discovery (воркер
+    // нового факта их не надзирает), ноды/тома уходят с docker-хоста.
+    // Без этого три кластера по четыре PG-ноды живут одновременно, и bootstrap
+    // нового кластера в полной серии выходит за бюджет (факт: bootstrap 85+ с).
+    private async Task CleanupPreviousDeltaClustersAsync(string keep, CancellationToken ct)
+    {
+        foreach (var prefix in new[] { "wdlh", "wdlc", "wdlsf" })
+        {
+            var cluster = $"{prefix}{Fx.ClusterTag}";
+            if (cluster == keep)
+                continue;
+            var config = await GetOrNullAsync($"/clusters/{cluster}/config");
+            if (config is null)
+                continue;
+            await G.DeleteAsync(Endpoint, $"/clusters/{cluster}/", prefix: true, ct);
+            await G.DeleteAsync(Endpoint, $"/pgworker/backups/{cluster}/", prefix: true, ct);
+            await G.DeleteAsync(Endpoint, $"/pgworker/portalloc/{cluster}", prefix: false, ct);
+            await G.DeleteAsync(Endpoint, $"/service/{cluster}-", prefix: true, ct);
+            var containers = await Fx.RunDockerAsync(
+                ["ps", "-a", "--format", "{{.Names}}", "--filter", $"name=pgw-{cluster}-"], ct);
+            foreach (var name in containers.Split('\n',
+                         StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                await Fx.RunDockerAsync(["rm", "-f", name], ct);
+            for (var attempt = 0; attempt < 5; attempt++)
+            {
+                var volumes = await Fx.RunDockerAsync(
+                    ["volume", "ls", "--format", "{{.Name}}", "--filter", $"name=pgw-{cluster}-"], ct);
+                var names = volumes.Split('\n',
+                    StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                if (names.Length == 0)
+                    break;
+                foreach (var volume in names)
+                    await Fx.RunDockerAsync(["volume", "rm", "-f", volume], ct);
+                await Task.Delay(1000, ct); // держатель тома доремувливается демоном
+            }
+            // S3-префикс кластера — чужие ключи не должны попадать в листинги.
+            await using (var s3 = HostS3Client())
+            {
+                var listed = await s3.ListPrefixAsync($"{cluster}/", ct: ct);
+                if (listed.IsSuccess && listed.Value.Count > 0)
+                    await s3.DeleteKeysAsync(listed.Value.Select(o => o.Key).ToList(), ct);
+            }
+
+            Console.WriteLine($"[DELTA] cleanup of the previous scenario cluster {cluster} done");
+        }
     }
 
     // Сид кластера (копия E2eRestoreScenarios.SeedClusterAsync).

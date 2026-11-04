@@ -1144,12 +1144,12 @@ public sealed class WalLifeStore(IEtcdGateway etcd, string[] endpoints)
 
 **Вход:** Tasks 0–18 закоммичены.
 **Действие (кодер):**
-- [ ] Полная сборка: `DOTNET_CLI_UI_LANGUAGE=en dotnet build src/PgWorker.slnx -c Release --nologo` — 0 ворнингов/ошибок.
-- [ ] Все юниты: `DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/PgWorker.UnitTests -c Release --no-build` и `dotnet test src/tests/AdminPanel.UnitTests -c Release --no-build` — зелёные (внеобластный фейл — НЕ чинить: задача в `arch/roadmap/bugs.md` по канону AGENTS.md, работа продолжается).
-- [ ] Docker-E2EPgWorker гейт (трогает воркеров — обязателен, канон AGENTS.md): Е2ePrepare уже готов; фильтр-маркер `DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/PgWorker.E2eTests -c Release --no-build --filter "FullyQualifiedName~Scale_AddEmptyShard"`; затем ПОЛНАЯ серия E2eFixture (изменены provisioning (g-add-shard), wal-процессы). Между сериями — зачистка контейнеров/сетей/томов по канону.
-- [ ] Самопроверка канона: grep по `src/`: `SystemId`/`IdentifySystem` НЕ появились в новых t15-местах (приёмник/кусочные имена); `PGW_WAL_CHAIN_LIFE`/`wal-life`/`chain_life` — на местах по спеке; `DeltaDownloadParallelism` = 8; таймауты не менялись (`CallDeadline`, `PutAttemptTimeout`, `TransportAttempts` — git diff чисел нет).
+- [x] Полная сборка: `DOTNET_CLI_UI_LANGUAGE=en dotnet build src/PgWorker.slnx -c Release --nologo` — 0 ворнингов/ошибок.
+- [x] Все юниты: `DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/PgWorker.UnitTests -c Release --no-build` и `dotnet test src/tests/AdminPanel.UnitTests -c Release --no-build` — зелёные (внеобластный фейл — НЕ чинить: задача в `arch/roadmap/bugs.md` по канону AGENTS.md, работа продолжается).
+- [x] Docker-E2EPgWorker гейт (трогает воркеров — обязателен, канон AGENTS.md): Е2ePrepare уже готов; фильтр-маркер `DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/PgWorker.E2eTests -c Release --no-build --filter "FullyQualifiedName~Scale_AddEmptyShard"`; затем ПОЛНАЯ серия E2eFixture (изменены provisioning (g-add-shard), wal-процессы). Между сериями — зачистка контейнеров/сетей/томов по канону.
+- [x] Самопроверка канона: grep по `src/`: `SystemId`/`IdentifySystem` НЕ появились в новых t15-местах (приёмник/кусочные имена); `PGW_WAL_CHAIN_LIFE`/`wal-life`/`chain_life` — на местах по спеке; `DeltaDownloadParallelism` = 8; таймауты не менялись (`CallDeadline`, `PutAttemptTimeout`, `TransportAttempts` — git diff чисел нет).
 - [ ] Финальный коммит (правки по итогам гейта) `chore(t15): финальный гейт — серия зелёная`.
-- [ ] Пометка на мерж: МЕРЖ-КОММИТ в main обязан удалить пункт t15-wal-partial-delta из `arch/roadmap/backup.md` тем же коммитом и проверить `grep -rn "t15" arch/roadmap/` (зависимостей `← t15` нет) — исполняется при мерже, НЕ сейчас.
+- [x] Пометка на мерж: МЕРЖ-КОММИТ в main обязан удалить пункт t15-wal-partial-delta из `arch/roadmap/backup.md` тем же коммитом и проверить `grep -rn "t15" arch/roadmap/` (зависимостей `← t15` нет) — исполняется при мерже, НЕ сейчас.
 
 **Проверка:** сборка/тесты/E2E зелёные; `git log --oneline` — цепочка задач.
 **Выход:** ветка готова к ревью и мержу.
