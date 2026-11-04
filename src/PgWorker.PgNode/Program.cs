@@ -123,13 +123,13 @@ internal partial class Program
             builder.Services.AddHostedService(sp => sp.GetRequiredService<WalReceiverLoop>());
         }
 
-        // Staging полного (Р5): env ноды → дефолт arch/19 §9.
+        // Staging остаётся только у ops-операций (drill scratch); полный на
+        // диск не пишет (spec t01 §6.17) — env удаляется шагом 10.
         var stagingDir = Environment.GetEnvironmentVariable("PGW_BACKUP_STAGING_DIR")
             is { Length: > 0 } dir ? dir : DefaultStagingDir;
         builder.Services.AddSingleton<IFullBackupOperationFactory>(sp =>
             new FullBackupOperationFactory(
                 identity, etcd, endpoints, pools, roleProbe,
-                new ProcessRunner(), stagingDir,
                 sp.GetRequiredService<OperationRegistry>()));
         // Ops-операции (verify/restore/drill) — тот же процесс: общий
         // ops-реестр (одна активная; полный — свой реестр, arch/19 §5).

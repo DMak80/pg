@@ -4,20 +4,19 @@ using Shared.Etcd.Client;
 namespace PgWorker.PgNode.Operations;
 
 /// <summary>Прод-фабрика операции полного (DI Program нодового режима): все
-/// внешние зависимости — процесса приёмника (etcd/пулы/проба роли/runner/
-/// staging из env). Тесты подменяют сам интерфейс IFullBackupOperationFactory
-/// фейком (шаг 9) — этот класс при подмене не инстанцируется.</summary>
+/// внешние зависимости — процесса приёмника (etcd/пулы/проба роли). Staging
+/// и child-процессов у операции больше нет. Тесты подменяют сам интерфейс
+/// IFullBackupOperationFactory фейком — этот класс при подмене не
+/// инстанцируется.</summary>
 public sealed class FullBackupOperationFactory(
     PgNodeIdentity identity,
     IEtcdGateway etcd,
     string[] etcdEndpoints,
     IS3PoolStore pools,
     Func<CancellationToken, Task<WalReceiverRole>> roleProbe,
-    IProcessRunner runner,
-    string stagingDir,
     OperationRegistry registry) : IFullBackupOperationFactory
 {
     public IReceiverOperation Create(string id)
         => new FullBackupOperation(
-            id, stagingDir, identity, etcd, etcdEndpoints, pools, roleProbe, runner, registry);
+            id, identity, etcd, etcdEndpoints, pools, roleProbe, registry);
 }
