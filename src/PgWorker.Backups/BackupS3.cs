@@ -133,7 +133,8 @@ public static class WalArchiveConflict
            && result.Error!.Message.Contains(Marker, StringComparison.Ordinal);
 }
 
-public sealed class BackupS3 : IBackupS3, IWalSegmentGuard, IAsyncDisposable
+public sealed class BackupS3
+    : IBackupS3, IWalSegmentGuard, IMultipartS3, IStreamObjectS3, IDeleteObjectS3, IAsyncDisposable
 {
     private readonly AmazonS3Client _client;
     private readonly string _bucket;
@@ -595,6 +596,262 @@ public sealed class BackupS3 : IBackupS3, IWalSegmentGuard, IAsyncDisposable
             try { File.Delete(partPath); } catch { /* уже нет */ }
             throw;
         }
+    }
+
+    // ── Multipart-заливка ОДНОГО объекта (spec t01 §3.3): части 16 МиБ с
+    // Content-MD5 (транспорт отвергает битое), Complete по partNumber→ETag.
+    // Сессия живёт на ОДНОМ endpoint (перебор нод — забота операции: отказ →
+    // Abort → рестарт попытки на следующей ноде).
+
+    public async Task<Result<IMultipartUploadSession>> CreateMultipartUploadAsync(
+        string key, CancellationToken ct)
+    {
+        try
+        {
+            var response = await _client.InitiateMultipartUploadAsync(
+                new InitiateMultipartUploadRequest { BucketName = _bucket, Key = key }, ct);
+            if (response.UploadId is not { Length: > 0 } uploadId)
+                return Result<IMultipartUploadSession>.Failed(
+                    new ApplicationException($"S3 multipart {key}: empty upload id"));
+            return Result<IMultipartUploadSession>.Success(new MultipartSession(this, key, uploadId));
+        }
+        catch (Exception e)
+        {
+            return Result<IMultipartUploadSession>.Failed(
+                new ApplicationException($"S3 multipart {key}: {e.Message}", e));
+        }
+    }
+
+    public async Task<Result<IReadOnlyList<MultipartUploadInfo>>> ListMultipartUploadsAsync(
+        string prefix, CancellationToken ct)
+    {
+        try
+        {
+            var uploads = new List<MultipartUploadInfo>();
+            string? keyMarker = null;
+            string? uploadIdMarker = null;
+            do
+            {
+                var page = await _client.ListMultipartUploadsAsync(new ListMultipartUploadsRequest
+                {
+                    BucketName = _bucket,
+                    Prefix = prefix,
+                    KeyMarker = keyMarker,
+                    UploadIdMarker = uploadIdMarker,
+                }, ct);
+                foreach (var upload in page.MultipartUploads)
+                {
+                    uploads.Add(new MultipartUploadInfo(
+                        upload.Key, upload.UploadId,
+                        new DateTimeOffset(DateTime.SpecifyKind(upload.Initiated, DateTimeKind.Utc))));
+                }
+
+                if (page.IsTruncated is true)
+                {
+                    keyMarker = page.NextKeyMarker;
+                    uploadIdMarker = page.NextUploadIdMarker;
+                }
+                else
+                {
+                    keyMarker = null;
+                }
+            }
+            while (keyMarker is not null);
+
+            return Result<IReadOnlyList<MultipartUploadInfo>>.Success(uploads);
+        }
+        catch (Exception e)
+        {
+            return Result<IReadOnlyList<MultipartUploadInfo>>.Failed(
+                new ApplicationException($"S3 list-multipart {prefix}: {e.Message}", e));
+        }
+    }
+
+    public async Task<Result> AbortMultipartUploadAsync(
+        string key, string uploadId, CancellationToken ct)
+    {
+        try
+        {
+            await _client.AbortMultipartUploadAsync(new AbortMultipartUploadRequest
+            {
+                BucketName = _bucket,
+                Key = key,
+                UploadId = uploadId,
+            }, ct);
+            return Result.Success();
+        }
+        catch (Exception e)
+        {
+            return Result.Failed(
+                new ApplicationException($"S3 abort-multipart {key} ({uploadId}): {e.Message}", e));
+        }
+    }
+
+    // ── Потоковое чтение (restore/verify/дубль WAL) и одиночное удаление ──
+
+    public async Task<Result<(Stream Body, long Size)>> GetObjectStreamAsync(
+        string cluster, string shard, string key, CancellationToken ct)
+    {
+        try
+        {
+            var response = await _client.GetObjectAsync(
+                new GetObjectRequest { BucketName = _bucket, Key = $"{cluster}/{shard}/{key}" }, ct);
+            // Стрим диспозит вызывающий (он владеет жизненным циклом чтения).
+            return Result<(Stream Body, long Size)>.Success(
+                (response.ResponseStream, response.ContentLength));
+        }
+        catch (AmazonS3Exception e) when (e.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            return Result<(Stream Body, long Size)>.Failed(new ApplicationException(
+                $"S3 get-stream {cluster}/{shard}/{key}: not found"));
+        }
+        catch (Exception e)
+        {
+            return Result<(Stream Body, long Size)>.Failed(
+                new ApplicationException($"S3 get-stream {cluster}/{shard}/{key}: {e.Message}", e));
+        }
+    }
+
+    public async Task<Result<byte[]>> GetObjectRangeAsync(
+        string cluster, string shard, string key, long start, long end, CancellationToken ct)
+    {
+        try
+        {
+            var response = await _client.GetObjectAsync(new GetObjectRequest
+            {
+                BucketName = _bucket,
+                Key = $"{cluster}/{shard}/{key}",
+                ByteRange = new ByteRange(start, end),
+            }, ct);
+            using var buffer = new MemoryStream();
+            await response.ResponseStream.CopyToAsync(buffer, ct);
+            return Result<byte[]>.Success(buffer.ToArray());
+        }
+        catch (AmazonS3Exception e) when (e.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            return Result<byte[]>.Failed(new ApplicationException(
+                $"S3 get-range {cluster}/{shard}/{key}: not found"));
+        }
+        catch (Exception e)
+        {
+            return Result<byte[]>.Failed(
+                new ApplicationException($"S3 get-range {cluster}/{shard}/{key}: {e.Message}", e));
+        }
+    }
+
+    public async Task<Result<(bool Exists, long SizeBytes)>> HeadObjectAsync(
+        string cluster, string shard, string key, CancellationToken ct)
+    {
+        try
+        {
+            var response = await _client.GetObjectMetadataAsync(new GetObjectMetadataRequest
+            {
+                BucketName = _bucket,
+                Key = $"{cluster}/{shard}/{key}",
+            }, ct);
+            // Размер — тем же HEAD'ом (без суффиксного Range/Content-Range,
+            // spec §6.23): verify нужен полный размер до чтения хвоста.
+            return Result<(bool Exists, long SizeBytes)>.Success((true, response.ContentLength));
+        }
+        catch (AmazonS3Exception e) when (e.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            return Result<(bool Exists, long SizeBytes)>.Success((false, 0L));
+        }
+        catch (Exception e)
+        {
+            return Result<(bool Exists, long SizeBytes)>.Failed(
+                new ApplicationException($"S3 head {cluster}/{shard}/{key}: {e.Message}", e));
+        }
+    }
+
+    public async Task<Result> DeleteObjectAsync(
+        string cluster, string shard, string key, CancellationToken ct)
+    {
+        try
+        {
+            await _client.DeleteObjectAsync(new DeleteObjectRequest
+            {
+                BucketName = _bucket,
+                Key = $"{cluster}/{shard}/{key}",
+            }, ct);
+            return Result.Success();
+        }
+        catch (Exception e)
+        {
+            return Result.Failed(
+                new ApplicationException($"S3 delete {cluster}/{shard}/{key}: {e.Message}", e));
+        }
+    }
+
+    /// <summary>Сессия multipart-заливки на ОДНОМ endpoint (ключ и BucketName —
+    /// этого клиента). Complete сверяет контигуальность partNumber 1..N
+    /// (сервер дополнительно валидирует ETag частей сам).</summary>
+    private sealed class MultipartSession(BackupS3 owner, string key, string uploadId)
+        : IMultipartUploadSession
+    {
+        public string UploadId => uploadId;
+
+        public async Task<Result<string>> UploadPartAsync(
+            int partNumber, byte[] data, CancellationToken ct)
+        {
+            try
+            {
+                var response = await owner._client.UploadPartAsync(new UploadPartRequest
+                {
+                    BucketName = owner._bucket,
+                    Key = key,
+                    UploadId = uploadId,
+                    PartNumber = partNumber,
+                    InputStream = new MemoryStream(data),
+                    // Content-MD5: base64 БАЙТОВ хэша (транспорт отвергает битое).
+                    MD5Digest = Convert.ToBase64String(MD5.HashData(data)),
+                }, ct);
+                return Result<string>.Success(response.ETag?.Trim('"') ?? "");
+            }
+            catch (Exception e)
+            {
+                return Result<string>.Failed(new ApplicationException(
+                    $"S3 upload-part {key} #{partNumber}: {e.Message}", e));
+            }
+        }
+
+        public async Task<Result<string>> CompleteAsync(
+            IReadOnlyDictionary<int, string> partETags, CancellationToken ct)
+        {
+            if (partETags.Count == 0)
+                return Result<string>.Failed(new ApplicationException(
+                    $"S3 complete-multipart {key}: no parts uploaded"));
+            var ordered = partETags.Keys.OrderBy(number => number).ToList();
+            for (var i = 0; i < ordered.Count; i++)
+            {
+                if (ordered[i] != i + 1)
+                    return Result<string>.Failed(new ApplicationException(
+                        $"S3 complete-multipart {key}: part numbers are not contiguous from 1"));
+            }
+
+            try
+            {
+                var response = await owner._client.CompleteMultipartUploadAsync(
+                    new CompleteMultipartUploadRequest
+                    {
+                        BucketName = owner._bucket,
+                        Key = key,
+                        UploadId = uploadId,
+                        PartETags = partETags
+                            .Select(pair => new PartETag(pair.Key, pair.Value))
+                            .ToList(),
+                    }, ct);
+                return Result<string>.Success(response.ETag?.Trim('"') ?? "");
+            }
+            catch (Exception e)
+            {
+                return Result<string>.Failed(new ApplicationException(
+                    $"S3 complete-multipart {key}: {e.Message}", e));
+            }
+        }
+
+        public async Task<Result> AbortAsync(CancellationToken ct)
+            => await owner.AbortMultipartUploadAsync(key, uploadId, ct);
     }
 
     public ValueTask DisposeAsync()
