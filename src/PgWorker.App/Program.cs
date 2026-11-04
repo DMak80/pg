@@ -839,6 +839,29 @@ builder.Services.AddSingleton(sp => new PgWorker.App.Loops.BackupOrphanSweeperLo
     etcdEndpoints));
 builder.Services.AddHostedService(sp => sp.GetRequiredService<PgWorker.App.Loops.BackupOrphanSweeperLoop>());
 
+// Чистка мусора wal/ (arch/19 §4 «wal-sweeper»): per-shard .partial-гигиена и
+// срез финалов ниже cutoff — только глобальный лидер, отдельным циклом 60 с
+// (Supervisor:IntervalSec=600 нарушал бы «не реже раза в минуту»).
+builder.Services.AddSingleton(sp => new PgWorker.Backups.Supervisor.WalSweeperProcess(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
+    sp.GetRequiredService<BackupS3Factory>(),
+    sp.GetRequiredService<ClaimStore>(),
+    sp.GetRequiredService<WorkJournal>(),
+    () => sp.GetRequiredService<IOptionsMonitor<PgWorkerOptions>>().CurrentValue.Backups.Enabled
+        ? sp.GetRequiredService<IOptionsMonitor<PgWorkerOptions>>().CurrentValue.BackupsRuntime()
+        : null,
+    sp.GetRequiredService<TimeProvider>(),
+    sp.GetRequiredService<ILoggerFactory>().CreateLogger<PgWorker.Backups.Supervisor.WalSweeperProcess>(),
+    sp.GetRequiredService<Shared.Metrics.Worker.WorkerMetricsInstrumentation>()));
+builder.Services.AddSingleton(sp => new PgWorker.App.Loops.WalSweeperLoop(
+    sp.GetRequiredService<IOptionsMonitor<PgWorkerOptions>>(),
+    sp.GetRequiredService<ClaimStore>(),
+    sp.GetRequiredService<PgWorker.Backups.Supervisor.WalSweeperProcess>(),
+    sp.GetRequiredService<Shared.Metrics.Worker.WorkerMetricsInstrumentation>(),
+    sp.GetRequiredService<ILogger<PgWorker.App.Loops.WalSweeperLoop>>()));
+builder.Services.AddHostedService(sp => sp.GetRequiredService<PgWorker.App.Loops.WalSweeperLoop>());
+
 // Циклы (§6.2): keepalive первым (lease живут до Reconcile), затем снапшоты и reconcile.
 // Регистрируются синглтонами — health-обёртки читают их состояние напрямую.
 builder.Services.AddSingleton<IClusterProcesses, ClusterProcesses>();

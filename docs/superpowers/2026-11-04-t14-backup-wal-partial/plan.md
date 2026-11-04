@@ -1406,6 +1406,7 @@ internal sealed class WalSweeperLoop(
 (`using System.Diagnostics;` для Stopwatch.)
 
 **14.2. Тест** — создать `src/tests/PgWorker.UnitTests/App/WalSweeperLoopTests.cs` (по образцу BackupOrphanSweeperLoopTests.Create: FakeEtcd, FixedOptionsMonitor с `Backups = new BackupsOptions { Enabled = true }`, ClaimStore, WalSweeperProcess с `UnitPoolFactory.Disabled()`-фабрикой и `() => new BackupsRuntimeOptions(Enabled: true)`, metrics на своём Meter; НО лидерство ClaimStore в юните не захватится без etcd-lease — потому тест цикла строит так: `Enabled=false` → цикл тихо тикает (LoopTick НЕ пишется), выполняется без исключений N секунд и отменяется — ассерт «не упал/не написал серию»; полный лидерный путь покрыт E2E). Один кейс `[Fact] WalSweeperLoop_DisabledQuiet_RunsWithoutLoopSeries` (AAA): StartAsync → 2 с → отмена → DebugSnapshot().LastSuccess не содержит "wal-sweeper", процесс жив (никакого исключения наружу).
+(решение Фазы 6: `DebugSnapshot()` — internal и виден только `Shared.Metrics.UnitTests` (InternalsVisibleTo), из `PgWorker.UnitTests` недоступен; ассерт сделан строже — через `MeterListener` на экспортируемом инструменте `worker.loop.last_success_timestamp_seconds`: серия `loop="wal-sweeper"` в экспорте ОТСУТСТВУЕТ, цикл жив после двух сканов.)
 
 ---
 
