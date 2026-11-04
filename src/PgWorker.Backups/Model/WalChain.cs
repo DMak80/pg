@@ -27,6 +27,44 @@ public static class WalChain
             ? start
             : recorded;
 
+    /// <summary>Хвост потока (arch/19 §3 «Истина прогресса»).</summary>
+    public sealed record WalTailFact(string SegmentName, string ObjectName);
+
+    /// <summary>Хвост потока — максимальный валидный префикс: финальный объект
+    /// цепочки (chainLastFinal — результат Check/CheckWithRestart) ЛИБО лучший
+    /// .partial (версии схлопываются по сегменту, учитывается длиннейшая по
+    /// EndLsn — WalPartialName). Сравнение по (Tli, log·256+seg); при равной
+    /// позиции финал авторитетен. Чистая функция; null — объектов нет.</summary>
+    public static WalTailFact? TailOf(WalFileName? chainLastFinal, IEnumerable<string> objectNames)
+    {
+        // Лучшие .partial по сегментам (дедуп версий: длиннейшая EndLsn).
+        var bestPartialBySegment = new Dictionary<WalFileName, string>();
+        var bestEndLsn = new Dictionary<WalFileName, ulong>();
+        foreach (var name in objectNames)
+            if (WalPartialName.TryParse(name) is { } p
+                && (!bestEndLsn.TryGetValue(p.Segment, out var cur) || p.EndLsn > cur))
+            {
+                bestEndLsn[p.Segment] = p.EndLsn;
+                bestPartialBySegment[p.Segment] = name;
+            }
+
+        var candidates = new List<(WalFileName Segment, string ObjectName, bool IsFinal)>();
+        if (chainLastFinal is { } final)
+            candidates.Add((final, final.Name, IsFinal: true));
+        foreach (var (segment, objectName) in bestPartialBySegment)
+            candidates.Add((segment, objectName, IsFinal: false));
+        if (candidates.Count == 0)
+            return null;
+
+        // Максимум по (Tli, позиция); равная позиция — финал авторитетен.
+        return candidates
+            .OrderByDescending(c => ((long)c.Segment.Tli,
+                (long)c.Segment.Log * WalFileName.SegsPerLog + c.Segment.Seg))
+            .ThenByDescending(c => c.IsFinal)
+            .Select(c => new WalTailFact(c.Segment.Name, c.ObjectName))
+            .First();
+    }
+
     /// <summary>Check с перезапуском от нового TLI (AC4): promote восстановленного
     /// шарда открывает новый timeline, а сегменты старого TLI легитимно обрезаны
     /// (restore откатил LSN назад — старый хвост не дописывается). Дыра на
@@ -148,7 +186,7 @@ public static class WalChain
         // список кончился, end не достигнут: цепочка шла сплошно, но сегмент набора
         // не продублирован в wal/ (дублирование, spec §3.4)
         return new ChainResult(false,
-            $"segment {reached.Name} from the backup set is missing in wal/ (expected after " +
+            $"segment {reached.Name} from the backup set is missing in wal/ or the backup set (expected after " +
             $"{(last is { } l2 ? l2.Name : chainStart.Name)})", last);
     }
 

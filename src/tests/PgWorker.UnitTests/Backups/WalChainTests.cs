@@ -485,4 +485,114 @@ public class WalChainTests
         onlyRecorded.Should().Be(recorded);
         neither.Should().BeNull();
     }
+
+    // ---: TailOf — хвост потока финал/лучший .partial (arch/19 §3) ----
+
+    // AAA (хвост потока): объектов нет — хвоста нет.
+    [Fact]
+    public void TailOf_NoObjects_ReturnsNull()
+    {
+        // Act
+        var tail = WalChain.TailOf(null, []);
+
+        // Assert
+        tail.Should().BeNull();
+    }
+
+    // AAA: только финал цепочки — хвост = он сам.
+    [Fact]
+    public void TailOf_FinalOnly()
+    {
+        // Arrange
+        var final = Seg(1, 0, 5);
+
+        // Act
+        var tail = WalChain.TailOf(final, [final.Name]);
+
+        // Assert
+        tail.Should().NotBeNull();
+        tail!.SegmentName.Should().Be(final.Name);
+        tail.ObjectName.Should().Be(final.Name);
+    }
+
+    // AAA: .partial сегмента ВЫШЕ финала — хвост новее; из версий — длиннейшая.
+    [Fact]
+    public void TailOf_PartialAboveFinal_Wins()
+    {
+        // Arrange — финал ..05; две версии ..06
+        var final = Seg(1, 0, 5);
+        var next = Seg(1, 0, 6);
+        var shortVersion = WalPartialName.Key(next.Name, 0x100);
+        var longVersion = WalPartialName.Key(next.Name, 0x200);
+
+        // Act
+        var tail = WalChain.TailOf(final, [final.Name, shortVersion, longVersion]);
+
+        // Assert
+        tail!.SegmentName.Should().Be(next.Name);
+        tail.ObjectName.Should().Be(longVersion);
+    }
+
+    // AAA: равная позиция — финал авторитетен (Review Focus 2, часть 1).
+    [Fact]
+    public void TailOf_EqualPosition_FinalWins()
+    {
+        // Arrange
+        var final = Seg(1, 0, 6);
+        var partial = WalPartialName.Key(final.Name, 0x400);
+
+        // Act
+        var tail = WalChain.TailOf(final, [final.Name, partial]);
+
+        // Assert
+        tail!.ObjectName.Should().Be(final.Name);
+    }
+
+    // AAA: .partial ниже финальной позиции не «удлиняет» хвост назад (Review Focus 2).
+    [Fact]
+    public void TailOf_PartialBelowFinalPosition_Ignored()
+    {
+        // Arrange
+        var final = Seg(1, 0, 7);
+        var below = Seg(1, 0, 3);
+
+        // Act
+        var tail = WalChain.TailOf(final, [final.Name, WalPartialName.Key(below.Name, 0x100)]);
+
+        // Assert
+        tail!.SegmentName.Should().Be(final.Name);
+    }
+
+    // AAA: .partial нового таймлайна — хвост выше (TLI первичен в сравнении).
+    [Fact]
+    public void TailOf_HigherTliPartial_Wins()
+    {
+        // Arrange
+        var final = Seg(1, 0, 7);
+        var newTli = Seg(2, 0, 1);
+
+        // Act
+        var tail = WalChain.TailOf(final, [final.Name, WalPartialName.Key(newTli.Name, 0x100)]);
+
+        // Assert
+        tail!.SegmentName.Should().Be(newTli.Name);
+    }
+
+    // AAA (Review Focus 4): end-сегмент есть только в объединённом списке
+    // (wal/ + набор) — диапазон закрывается.
+    [Fact]
+    public void CheckRange_EndOnlyInSet_Closes()
+    {
+        // Arrange — финалы ..02/..03 в wal/ + ..04 из набора full/<id>/pg_wal/
+        var start = Seg(1, 0, 2);
+        var end = Seg(1, 0, 4);
+        string[] union = [Seg(1, 0, 2).Name, Seg(1, 0, 3).Name, end.Name];
+
+        // Act
+        var result = WalChain.CheckRange(start, end, union);
+
+        // Assert
+        result.IsContinuous.Should().BeTrue();
+        result.LastSegment!.Value.Name.Should().Be(end.Name);
+    }
 }
