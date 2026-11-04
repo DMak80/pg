@@ -116,7 +116,12 @@ public sealed class NodeSupervisor(
         var declaredSnap = restoring.Count == 0
             ? snap
             : snap with { Shards = snap.Shards.Where(s => !restoring.Contains(s.Name)).ToList() };
-        var declared = await EnsureDeclaredNodesAsync(cluster, declaredSnap, addresses.Value, track, haFacts, restPassword, ct);
+        // Ноды, для которых ускорение failover выполнено в ЭТОМ тике: их
+        // rebuild в том же тике запрещён (leader-ключ уже снят → нода «уже не
+        // лидер» по свежему чтению, но volume лидера сносить нельзя).
+        var acceleratedThisTick = new HashSet<string>(StringComparer.Ordinal);
+        var declared = await EnsureDeclaredNodesAsync(
+            cluster, declaredSnap, addresses.Value, track, haFacts, restPassword, acceleratedThisTick, ct);
         if (!declared.IsSuccess)
             return Fail(declared.Error!);
 
@@ -176,7 +181,9 @@ public sealed class NodeSupervisor(
             if (!recreated.IsSuccess)
                 return Fail(recreated.Error!);
 
-            var shardTrack = await SuperviseShardAsync(cluster, snap, shard, addresses.Value, track, haFacts, restPassword, ct);
+            var shardTrack = await SuperviseShardAsync(
+                cluster, snap, shard, addresses.Value, track, haFacts, restPassword,
+                acceleratedThisTick, ct);
             if (!shardTrack.IsSuccess)
                 return Fail(shardTrack.Error!);
 
@@ -303,7 +310,8 @@ public sealed class NodeSupervisor(
     private async Task<Result> EnsureDeclaredNodesAsync(
         string cluster, ClusterSnapshot snap,
         IReadOnlyDictionary<string, NodeAddress> addresses,
-        Dictionary<string, long> track, HaFactState haFacts, string restPassword, CancellationToken ct)
+        Dictionary<string, long> track, HaFactState haFacts, string restPassword,
+        HashSet<string> acceleratedThisTick, CancellationToken ct)
     {
         // Живая сверка клэйма перед фазой пересозданий (arch/17 S5).
         if (!await ClaimAliveAsync(cluster, "declared-nodes", ct))
@@ -388,6 +396,8 @@ public sealed class NodeSupervisor(
                     haFacts.FailoverDetected(shard.Name, node.Name,
                         accelerated.Value == FailoverAcceleration.Applied ? "accelerated" : "elections",
                         track.GetValueOrDefault($"{shard.Name}/{node.Name}", Now()));
+                if (accelerated.Value == FailoverAcceleration.Applied)
+                    acceleratedThisTick.Add($"{shard.Name}/{node.Name}");
 
                 if (node.State != NodeState.Provisioning)
                 {
@@ -581,6 +591,21 @@ public sealed class NodeSupervisor(
         return deleted.IsSuccess
             ? Result<FailoverAcceleration>.Success(FailoverAcceleration.Applied)
             : Result<FailoverAcceleration>.Failed(deleted.Error!);
+    }
+
+    // Контейнер ноды существует на docker-хосте (all-инспект): stop/restart —
+    // не смерть процесса. Мутации «ускорение failover»/«rebuild» требуют
+    // положительного свидетельства смерти — ОТСУТСТВИЯ объекта; существующий
+    // остановленный контейнер переживёт рестарт и вернётся сам (факт rtls:
+    // docker restart лидера в окне остановки давал failover-маркер, и Patroni
+    // зацикливался на неисполнимом switchover).
+    private async Task<Result<bool>> NodeContainerExistsAsync(
+        string cluster, string shard, string node, CancellationToken ct)
+    {
+        var objects = await driver.ListNodeObjectsAsync(cluster, ct);
+        return objects.IsSuccess
+            ? Result<bool>.Success(objects.Value.Contains($"pgw-{cluster}-{shard}-{node}"))
+            : Result<bool>.Failed(objects.Error!);
     }
 
     // Шаг хендшейка/конвергенции (arch/14 §5 C): один range статусных ключей
@@ -975,7 +1000,8 @@ public sealed class NodeSupervisor(
     private async Task<Result> SuperviseShardAsync(
         string cluster, ClusterSnapshot snap, ShardSpec shard,
         IReadOnlyDictionary<string, NodeAddress> addresses,
-        Dictionary<string, long> track, HaFactState haFacts, string restPassword, CancellationToken ct)
+        Dictionary<string, long> track, HaFactState haFacts, string restPassword,
+        IReadOnlySet<string> acceleratedThisTick, CancellationToken ct)
     {
         var scope = $"{cluster}-{shard.Name}";
         var scopeKvs = await RangeAsync($"/service/{scope}/", ct);
@@ -1088,17 +1114,30 @@ public sealed class NodeSupervisor(
                     return running.Error!;
                 if (!running.Value.ContainsKey(name))
                 {
-                    var accelerated = await AccelerateDeadLeaderFailoverAsync(
-                        cluster, shard, name, addresses, ct);
-                    if (!accelerated.IsSuccess)
-                        return accelerated;
-                    // Applied → accelerated, NoCandidate → elections (spec §3.1);
-                    // NotLeader — шард в restore (свежая сверка гварда внутри
-                    // ускорения, arch/19 §3.5) — факта нет, маркер не ставился.
-                    if (!shard.ToRemove && accelerated.Value is not FailoverAcceleration.NotLeader)
-                        haFacts.FailoverDetected(shard.Name, name,
-                            accelerated.Value == FailoverAcceleration.Applied ? "accelerated" : "elections",
-                            track[trackKey]);
+                    // Остановленный, но СУЩЕСТВУЮЩИЙ контейнер — это stop/restart
+                    // (оператор/движок/`docker restart` сценария), не смерть
+                    // процесса. Ускорение здесь ставит failover-маркер на живого
+                    // кандидата и снимает leader-ключ; вернувшийся лидер затем
+                    // зацикливается на неисполнимом switchover (факт rtls: обе
+                    // ноды в «following a different leader» 60+ с). Смерть —
+                    // только ОТСУТСТВИЕ объекта (ListNodeObjects all).
+                    var exists = await NodeContainerExistsAsync(cluster, shard.Name, name, ct);
+                    if (!exists.IsSuccess)
+                        return exists.Error!;
+                    if (!exists.Value)
+                    {
+                        var accelerated = await AccelerateDeadLeaderFailoverAsync(
+                            cluster, shard, name, addresses, ct);
+                        if (!accelerated.IsSuccess)
+                            return accelerated;
+                        // Applied → accelerated, NoCandidate → elections (spec §3.1);
+                        // NotLeader — шард в restore (свежая сверка гварда внутри
+                        // ускорения, arch/19 §3.5) — факта нет, маркер не ставился.
+                        if (!shard.ToRemove && accelerated.Value is not FailoverAcceleration.NotLeader)
+                            haFacts.FailoverDetected(shard.Name, name,
+                                accelerated.Value == FailoverAcceleration.Applied ? "accelerated" : "elections",
+                                track[trackKey]);
+                    }
                 }
             }
             else if (isLeader && !adopted && node.State != NodeState.ToRecreate && !shard.ToRemove)
@@ -1125,9 +1164,20 @@ public sealed class NodeSupervisor(
                 if (!inspect.IsSuccess)
                     return inspect.Error!;
                 processDead = !inspect.Value.ContainsKey(name);
+                if (processDead)
+                {
+                    // Как и для ускорения failover: существующий остановленный
+                    // контейнер (restart/stop) — не смерть; rebuild сносит volume,
+                    // поэтому требует ОТСУТСТВИЯ объекта.
+                    var exists = await NodeContainerExistsAsync(cluster, shard.Name, name, ct);
+                    if (!exists.IsSuccess)
+                        return exists.Error!;
+                    processDead = !exists.Value;
+                }
             }
 
-            if (!isLeader && quorum && expired && !adopted && processDead)
+            if (!isLeader && quorum && expired && !adopted && processDead
+                && !acceleratedThisTick.Contains(trackKey))
             {
                 // Rebuild (эталон rebuild-node.sh): удалить контейнер+volume,
                 // пересоздать с тем же адресом; Patroni сделает pg_basebackup.
