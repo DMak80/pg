@@ -212,8 +212,15 @@ public sealed class BackupVerifyProcess(
             historyContents[tli] = content.Value;
         }
 
+        // UNION имён wal/ и pg_wal набора (arch/19 §5 п.2: «list wal/ + list
+        // full/<id>/pg_wal/»): последний сегмент набора может быть живым в источнике
+        // на момент заливки и НЕ дублироваться в wal/ (§2 t14) — диапазон до точки
+        // бэкапа закрывается объектами набора; сегменты выше end игнорирует Walk.
         var check = WalChain.CheckRange(
-            start.Value, endSegment, walList.Value.Select(o => o.Name), historyContents);
+            start.Value, endSegment,
+            walList.Value.Select(o => o.Name)
+                .Concat(setList.Value.Select(o => o.Name)),
+            historyContents);
         if (!check.IsContinuous)
         {
             await WritePermanentAsync(cluster, shard, candidate,
