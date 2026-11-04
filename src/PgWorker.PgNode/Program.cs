@@ -128,8 +128,7 @@ internal partial class Program
         // Ops-операции (verify/restore/drill) — тот же процесс: общий
         // ops-реестр (одна активная; полный — свой реестр, arch/19 §5).
         builder.Services.AddSingleton<IOpsOperationFactory>(sp =>
-            new NodeOperationFactory(
-                NodePaths.Staging, sp.GetRequiredService<OpsOperationRegistry>()));
+            new NodeOperationFactory(sp.GetRequiredService<OpsOperationRegistry>()));
 
         var app = builder.Build();
 

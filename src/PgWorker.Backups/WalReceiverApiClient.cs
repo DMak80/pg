@@ -24,7 +24,10 @@ public sealed record S3Context(
 
 public sealed record StartVerifyRequest(
     [property: JsonPropertyName("backup_id")] string BackupId,
-    [property: JsonPropertyName("s3")] S3Context S3);
+    [property: JsonPropertyName("s3")] S3Context S3,
+    // Сквозной sha256 tar-объекта полного (etcd-поле статуса; опционален —
+    // орфан/старая запись без поля: сверка пропускается, spec t01 §3.5).
+    [property: JsonPropertyName("sha256")] string? Sha256 = null);
 
 public sealed record StartRestoreRequest(
     [property: JsonPropertyName("backup_id")] string BackupId,

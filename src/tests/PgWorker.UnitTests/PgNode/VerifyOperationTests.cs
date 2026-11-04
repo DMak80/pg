@@ -1,266 +1,297 @@
-using System.Diagnostics;
-using FluentAssertions;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
 using PgWorker.Backups;
-using PgWorker.PgNode;
+using PgWorker.Backups.Tar;
 using PgWorker.PgNode.Operations;
 using Shared.Core;
-using Xunit;
+// Одноимённые контракты двух проектов (приёмник/воркер): берём контракт ноды.
+using StartVerifyRequest = PgWorker.PgNode.Operations.StartVerifyRequest;
+using S3Context = PgWorker.PgNode.Operations.S3Context;
 
 namespace PgWorker.UnitTests.PgNode;
 
-// Операция verify приёмника ноды (arch/19 §5) на фейках:
-// счастливый путь — скачивание всех объектов листинга в staging →
-// pg_verifybackup → succeeded; отказ скачивания → failed + phase=downloading
-// (МАРКЕР ТРАНЗИЕНТА — ретраи воркера); pg_verifybackup ≠ 0 → failed +
-// phase=verifying (PERMANENT). Staging чистится при любом исходе.
-// AAA-комментарии.
+// Потоковый verify (spec t01 §3.5, §6.7): манифест из хвоста tar-объекта
+// (Range, размер из HEAD) → один проход потока со сверкой sha256 записей;
+// OK/битый файл/лишний/отсутствующий/транспортный сбой/сквозной sha256.
 public class VerifyOperationTests
 {
     private const string Id = "20260101000000Z";
 
-    private static PgWorker.PgNode.Operations.StartVerifyRequest Request() => new(
+    private static readonly (string Name, byte[] Data) Version = ("PG_VERSION", "18\n"u8.ToArray());
+    private static readonly (string Name, byte[] Data) Control = ("global/pg_control", new byte[8192]);
+    private static readonly (string Name, byte[] Data) Label = (
+        "backup_label",
+        "START WAL LOCATION: 0/2000028 (file 000000010000000000000002)\n"u8.ToArray());
+    private static readonly (string Name, byte[] Data) Segment = (
+        "pg_wal/000000010000000000000001", new byte[16]);
+
+    private static StartVerifyRequest Request(string? sha256 = null) => new(
         Id,
-        new PgWorker.PgNode.Operations.S3Context(
+        new S3Context(
             Endpoints: ["http://s3a:9000"],
             AccessKey: "ak",
             SecretKey: "sk",
             Bucket: "backups",
-            Prefix: "c1/s1"));
+            Prefix: "c1/s1"),
+        Sha256: sha256);
 
-    /// <summary>Фейк runner: pg_verifybackup — программируемый exit/stderr;
-    /// HangVerify — pg_verifybackup висит до отмены токена (cancel API).</summary>
-    private sealed class FakeRunner : IProcessRunner
+    // AAA: валидный набор → succeeded/verifying; Range — от 0 (объект < 8 МиБ).
+    [Fact]
+    public async Task ValidSet_Succeeded_RangeFromZero()
     {
-        public readonly List<ProcessStartInfo> Invocations = [];
-        public int VerifyExitCode;
-        public string VerifyStderr = "";
-        public bool HangVerify;
+        // Arrange — файлы + WAL-сегмент (не в манифесте) + манифест последним.
+        var tar = BuildTar([Version, Control, Label, Segment], [Version, Control, Label]);
+        var s3 = new FakeTarS3(tar);
+        var op = Create(s3);
 
-        public async Task<(int ExitCode, string StdOut, string StdErr)> RunAsync(
-            ProcessStartInfo psi, CancellationToken ct)
-        {
-            Invocations.Add(psi);
-            if (psi.FileName == "pg_verifybackup")
-            {
-                if (HangVerify)
-                    await Task.Delay(Timeout.InfiniteTimeSpan, ct); // OperationCanceledException
-                return (VerifyExitCode, "", VerifyStderr);
-            }
-            return (0, "", "");
-        }
+        // Act
+        await op.RunAsync(TestContext.Current.CancellationToken);
+
+        // Assert
+        var snap = op.Snapshot!;
+        snap.State.Should().Be("succeeded");
+        snap.Phase.Should().Be("verifying");
+        s3.Ranges.Should().ContainSingle();
+        s3.Ranges[0].Start.Should().Be(0, "an object smaller than the tail is read from byte 0");
+        s3.Ranges[0].End.Should().Be(tar.Length - 1);
     }
 
-    /// <summary>Фейк IBackupS3: листинг/файловый GET (пишет dest); программный
-    /// отказ листинга. Keys — относительные ключи набора (по умолчанию полный
-    /// из двух объектов); расщепление набора по endpoints — разные экземпляры
-    /// с разными Keys за targetFactory.</summary>
-    private sealed class FakeS3 : IBackupS3
+    // AAA: байт файла не сходится с манифестом → failed/verifying PERMANENT.
+    [Fact]
+    public async Task CorruptFile_ChecksumMismatch()
     {
-        public bool FailList;
-        public string[] Keys = ["backup_label", "pg_wal/000000010000000000000002"];
-        public readonly List<string> Downloaded = [];
-        // Композированные ключи запросов (cluster/shard/key) — ассерт состава
-        // ключей ловит задвоение префикса (полный obj.Key вместо относительного).
-        public readonly List<string> DownloadedKeys = [];
+        // Arrange — в tar «19\n», манифест посчитан по «18\n».
+        var tar = BuildTar(
+            [("PG_VERSION", "19\n"u8.ToArray()), Control, Label],
+            [Version, Control, Label]);
+        var op = Create(new FakeTarS3(tar));
 
-        public Task<Result<IReadOnlyList<S3ObjectInfo>>> ListPrefixAsync(
-            string prefix, int? maxKeysPerTest = null, CancellationToken ct = default)
-            => Task.FromResult(FailList
-                ? Result<IReadOnlyList<S3ObjectInfo>>.Failed(
-                    new ApplicationException("S3 list: pool down"))
-                : Result<IReadOnlyList<S3ObjectInfo>>.Success(
-                    Keys.Select(k => new S3ObjectInfo(
-                        $"{prefix}{k}", 60, DateTimeOffset.UnixEpoch)).ToList()));
+        // Act
+        await op.RunAsync(TestContext.Current.CancellationToken);
 
-        public Task<Result> GetObjectToFileAsync(
-            string cluster, string shard, string key, string destFilePath, CancellationToken ct = default)
+        // Assert
+        var snap = op.Snapshot!;
+        snap.State.Should().Be("failed");
+        snap.Phase.Should().Be("verifying");
+        snap.Error.Should().Contain("checksum mismatch PG_VERSION");
+    }
+
+    // AAA: файл вне манифеста → failed "unexpected file".
+    [Fact]
+    public async Task ExtraFile_Unexpected()
+    {
+        // Arrange — лишняя запись, манифест её не содержит.
+        var extra = ("extra.txt", "boom"u8.ToArray());
+        var tar = BuildTar([extra, Version, Control, Label], [Version, Control, Label]);
+        var op = Create(new FakeTarS3(tar));
+
+        // Act
+        await op.RunAsync(TestContext.Current.CancellationToken);
+
+        // Assert
+        var snap = op.Snapshot!;
+        snap.State.Should().Be("failed");
+        snap.Error.Should().Contain("unexpected file extra.txt");
+    }
+
+    // AAA: файл манифеста отсутствует в tar → failed "missing file".
+    [Fact]
+    public async Task MissingFile_Missing()
+    {
+        // Arrange — манифест перечисляет файл, которого в tar нет.
+        var missing = ("global/missing.dat", new byte[4]);
+        var tar = BuildTar([Version, Control, Label], [Version, Control, Label, missing]);
+        var op = Create(new FakeTarS3(tar));
+
+        // Act
+        await op.RunAsync(TestContext.Current.CancellationToken);
+
+        // Assert
+        var snap = op.Snapshot!;
+        snap.State.Should().Be("failed");
+        snap.Error.Should().Contain("missing file global/missing.dat");
+    }
+
+    // AAA: транспортный отказ Range → failed/downloading (transient).
+    [Fact]
+    public async Task RangeTransportFailure_FailedDownloading()
+    {
+        // Arrange
+        var tar = BuildTar([Version, Control, Label], [Version, Control, Label]);
+        var op = Create(new FakeTarS3(tar) { FailRange = true });
+
+        // Act
+        await op.RunAsync(TestContext.Current.CancellationToken);
+
+        // Assert
+        var snap = op.Snapshot!;
+        snap.State.Should().Be("failed");
+        snap.Phase.Should().Be("downloading");
+        snap.Error.Should().NotBeNull();
+    }
+
+    // AAA: объекта нет ни на одной цели → failed/downloading.
+    [Fact]
+    public async Task ObjectNotFound_FailedDownloading()
+    {
+        // Arrange
+        var tar = BuildTar([Version, Control, Label], [Version, Control, Label]);
+        var op = Create(new FakeTarS3(tar) { ObjectExists = false });
+
+        // Act
+        await op.RunAsync(TestContext.Current.CancellationToken);
+
+        // Assert
+        var snap = op.Snapshot!;
+        snap.State.Should().Be("failed");
+        snap.Phase.Should().Be("downloading");
+        snap.Error.Should().Contain("not found");
+    }
+
+    // AAA: манифеста нет в объекте → failed/downloading (хвост не нашёл запись).
+    [Fact]
+    public async Task NoManifestInObject_FailedDownloading()
+    {
+        // Arrange — tar без записи backup_manifest.
+        var tar = BuildTar([Version, Control, Label], [Version, Control, Label], includeManifest: false);
+        var op = Create(new FakeTarS3(tar));
+
+        // Act
+        await op.RunAsync(TestContext.Current.CancellationToken);
+
+        // Assert
+        var snap = op.Snapshot!;
+        snap.State.Should().Be("failed");
+        snap.Phase.Should().Be("downloading");
+        snap.Error.Should().Contain("backup_manifest not found in tail");
+    }
+
+    // AAA: сквозной sha256 объекта не сошёлся с etcd-полем → failed.
+    [Fact]
+    public async Task ObjectShaMismatch_Failed()
+    {
+        // Arrange — ожидаемый хэш заведомо другой.
+        var tar = BuildTar([Version, Control, Label], [Version, Control, Label]);
+        var op = Create(new FakeTarS3(tar), Request(sha256: new string('0', 64)));
+
+        // Act
+        await op.RunAsync(TestContext.Current.CancellationToken);
+
+        // Assert
+        var snap = op.Snapshot!;
+        snap.State.Should().Be("failed");
+        snap.Error.Should().Contain("object sha256 mismatch");
+    }
+
+    // AAA: совпадающий сквозной sha256 (эталон — sha256 объекта) — succeeded.
+    [Fact]
+    public async Task ObjectShaMatches_Succeeded()
+    {
+        // Arrange
+        var tar = BuildTar([Version, Control, Label], [Version, Control, Label]);
+        var op = Create(new FakeTarS3(tar),
+            Request(sha256: Convert.ToHexString(SHA256.HashData(tar)).ToLowerInvariant()));
+
+        // Act
+        await op.RunAsync(TestContext.Current.CancellationToken);
+
+        // Assert
+        op.Snapshot!.State.Should().Be("succeeded");
+    }
+
+    private static VerifyOperation Create(FakeTarS3 s3, StartVerifyRequest? request = null)
+    {
+        var registry = new OperationRegistry();
+        registry.TryBegin(new OperationSnapshot(Id, "running", "downloading"));
+        return new VerifyOperation(request ?? Request(), registry, _ => s3);
+    }
+
+    // Tar-объект: записи + backup_manifest ПОСЛЕДНЕЙ (verify читает хвост);
+    // манифест перечисляет manifestFiles (по умолчанию — все, кроме WAL).
+    private static byte[] BuildTar(
+        IReadOnlyList<(string Name, byte[] Data)> entries,
+        IReadOnlyList<(string Name, byte[] Data)>? manifestFiles = null,
+        bool includeManifest = true)
+    {
+        var buffer = new MemoryStream();
+        using var writer = new TarStreamWriter(buffer);
+        foreach (var (name, data) in entries)
         {
-            // NotFound-семантика реального S3: ключа нет в наборе этой ноды —
-            // отказ, пул переходит к следующей read-цели.
-            if (!Keys.Any(k => key.EndsWith(k, StringComparison.Ordinal)))
-                return Task.FromResult(Result.Failed(
-                    new ApplicationException($"not found: {key}")));
-            Downloaded.Add(destFilePath);
-            DownloadedKeys.Add($"{cluster}/{shard}/{key}");
-            Directory.CreateDirectory(Path.GetDirectoryName(destFilePath)!);
-            File.WriteAllText(destFilePath, "data");
-            return Task.FromResult(Result.Success());
+            writer.WriteEntryAsync(
+                new TarEntry(name, TarTypeFlags.File, data.Length, 0x1A4, ""), data, default)
+                .GetAwaiter().GetResult();
         }
 
-        public Task<Result> PutFileAsync(string key, string filePath, CancellationToken ct = default) => throw new NotSupportedException();
-        public Task<Result> PutObjectAsync(string key, byte[] data, string? sha256, CancellationToken ct = default) => throw new NotSupportedException();
+        if (includeManifest)
+        {
+            var files = (manifestFiles ?? entries)
+                .Select(f => new Dictionary<string, object?>
+                {
+                    ["Path"] = f.Name,
+                    ["Size"] = f.Data.Length,
+                    ["Checksum-Algorithm"] = "SHA256",
+                    ["Checksum"] = Convert.ToHexString(SHA256.HashData(f.Data)),
+                })
+                .ToList();
+            var json = JsonSerializer.Serialize(new Dictionary<string, object?>
+            {
+                ["PostgreSQL-Backup-Manifest-Version"] = 2,
+                ["Files"] = files,
+            });
+            var manifest = Encoding.ASCII.GetBytes(json);
+            writer.WriteEntryAsync(
+                new TarEntry("backup_manifest", TarTypeFlags.File, manifest.Length, 0x1A0, ""),
+                manifest, default).GetAwaiter().GetResult();
+        }
+
+        writer.FinishAsync(default).GetAwaiter().GetResult();
+        return buffer.ToArray();
+    }
+
+    /// <summary>Фейк S3-цели verify: tar-объект, HEAD (существование/размер),
+    /// Range-срезы и стрим; программируемые отказы.</summary>
+    private sealed class FakeTarS3(byte[] tar) : IBackupS3, IStreamObjectS3
+    {
+        public bool ObjectExists { get; init; } = true;
+
+        public bool FailRange { get; init; }
+
+        public List<(long Start, long End)> Ranges { get; } = [];
+
+        public Task<Result<(bool Exists, long SizeBytes)>> HeadObjectAsync(
+            string cluster, string shard, string key, CancellationToken ct)
+            => Task.FromResult(Result<(bool Exists, long SizeBytes)>.Success(
+                ObjectExists ? (true, (long)tar.Length) : (false, 0L)));
+
+        public Task<Result<byte[]>> GetObjectRangeAsync(
+            string cluster, string shard, string key, long start, long end, CancellationToken ct)
+        {
+            if (FailRange)
+                return Task.FromResult(Result<byte[]>.Failed(
+                    new ApplicationException("S3 get-range: connection reset")));
+            Ranges.Add((start, end));
+            return Task.FromResult(Result<byte[]>.Success(tar[(int)start..(int)(end + 1)]));
+        }
+
+        public Task<Result<(Stream Body, long Size)>> GetObjectStreamAsync(
+            string cluster, string shard, string key, CancellationToken ct)
+            => Task.FromResult(Result<(Stream Body, long Size)>.Success(
+                ((Stream)new MemoryStream(tar), (long)tar.Length)));
+
+        // IBackupS3 — verify не использует.
         public Task<Result<bool>> BucketExistsAsync(CancellationToken ct) => throw new NotSupportedException();
         public Task<Result<IReadOnlyList<WalObject>>> ListWalAsync(string cluster, string shard, int? maxKeysPerTest = null, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<IReadOnlyList<S3ObjectInfo>>> ListPrefixAsync(string prefix, int? maxKeysPerTest = null, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<Result> DeleteKeysAsync(IReadOnlyList<string> keys, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result> PutObjectAsync(string key, byte[] data, string? sha256, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<Result<IReadOnlyList<WalObject>>> ListAsync(string cluster, string shard, string prefix, int? maxKeysPerTest = null, CancellationToken ct = default) => throw new NotSupportedException();
-        public Task<Result> PutObjectMd5Async(string key, byte[] data, string md5Hex, CancellationToken ct = default)
-            => throw new NotSupportedException();
-
-        public Task<Result<(byte[] Data, string? ETag)>> GetObjectBytesAsync(
-            string cluster, string shard, string key, CancellationToken ct = default)
-            => throw new NotSupportedException();
-
         public Task<Result<string>> GetObjectAsync(string cluster, string shard, string key, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result> PutObjectMd5Async(string key, byte[] data, string md5Hex, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<(byte[] Data, string? ETag)>> GetObjectBytesAsync(string cluster, string shard, string key, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<Result<IReadOnlyList<string>>> ListFullsAsync(string cluster, string shard, int? maxKeysPerTest = null, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<Result<string>> DownloadTextAsync(string cluster, string shard, string objectKey, CancellationToken ct = default) => throw new NotSupportedException();
-    }
-
-    [Fact]
-    public async Task HappyPath_DownloadsAll_VerifySucceeds_StagingCleaned()
-    {
-        // Arrange: staging во временном каталоге; pg_verifybackup exit 0.
-        var staging = Path.Combine(Path.GetTempPath(), $"verify-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(staging);
-        var runner = new FakeRunner { VerifyExitCode = 0 };
-        var s3 = new FakeS3();
-        var registry = new OperationRegistry();
-        registry.TryBegin(new OperationSnapshot(Id, "running", "downloading"));
-        var op = new VerifyOperation(Request(), runner, registry, staging, _ => s3);
-
-        // Act.
-        await op.RunAsync(CancellationToken.None);
-
-        // Assert: succeeded (фаза verifying); оба объекта скачаны в staging.
-        registry.Current!.State.Should().Be("succeeded");
-        registry.Current.Phase.Should().Be("verifying");
-        s3.Downloaded.Should().HaveCount(2);
-        s3.Downloaded.Should().Contain(Path.Combine(staging, "full", Id, "backup_label"));
-        s3.Downloaded.Should().Contain(Path.Combine(
-            staging, "full", Id, "pg_wal", "000000010000000000000002"));
-        // Assert: ключи скачивания — композиция cluster/shard + ОТНОСИТЕЛЬНОГО
-        // ключа листинга (передача полного obj.Key давала бы задвоение префикса
-        // c1/s1/c1/s1/... — ключа не существует, downloading-transient навсегда).
-        s3.DownloadedKeys.Should().BeEquivalentTo([
-            $"c1/s1/full/{Id}/backup_label",
-            $"c1/s1/full/{Id}/pg_wal/000000010000000000000002"]);
-        // Assert: pg_verifybackup запущен на staging-каталоге набора.
-        var psi = runner.Invocations.Single(i => i.FileName == "pg_verifybackup");
-        psi.ArgumentList.Should().Contain(Path.Combine(staging, "full", Id));
-        // Assert: staging очищен после исхода.
-        Directory.Exists(Path.Combine(staging, "full", Id)).Should().BeFalse();
-        Directory.Delete(staging, recursive: true);
-    }
-
-    [Fact]
-    public async Task SplitSetAcrossEndpoints_OperationDownloadsUnion()
-    {
-        // Arrange: два endpoints; набор расщеплён — нода A листит только
-        // backup_label, нода B только pg_wal-сегмент (соло-лист любой из них
-        // неполон — отказ ноды посреди заливки/лаг mesh); pg_verifybackup ок.
-        var staging = Path.Combine(Path.GetTempPath(), $"verify-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(staging);
-        var runner = new FakeRunner { VerifyExitCode = 0 };
-        var a = new FakeS3 { Keys = ["backup_label"] };
-        var b = new FakeS3 { Keys = ["pg_wal/000000010000000000000002"] };
-        var request = Request() with
-        {
-            S3 = Request().S3 with { Endpoints = ["http://s3a:9000", "http://s3b:9000"] },
-        };
-        var registry = new OperationRegistry();
-        registry.TryBegin(new OperationSnapshot(Id, "running", "downloading"));
-        var op = new VerifyOperation(request, runner, registry, staging,
-            uri => uri.Contains("s3a") ? a : b);
-
-        // Act.
-        await op.RunAsync(CancellationToken.None);
-
-        // Assert: операция получила ОБЪЕДИНЁННЫЙ список — оба объекта скачаны
-        // (а не только набор первой живой ноды); verify succeeded.
-        a.Downloaded.Should().HaveCount(1);
-        a.Downloaded.Should().Contain(Path.Combine(staging, "full", Id, "backup_label"));
-        b.Downloaded.Should().HaveCount(1);
-        b.Downloaded.Should().Contain(Path.Combine(
-            staging, "full", Id, "pg_wal", "000000010000000000000002"));
-        registry.Current!.State.Should().Be("succeeded");
-        registry.Current.Phase.Should().Be("verifying");
-        Directory.Delete(staging, recursive: true);
-    }
-
-    [Fact]
-    public async Task DownloadFails_FailedWithDownloadingPhase_TransientMarker()
-    {
-        // Arrange: list от всех нод недоступен.
-        var staging = Path.Combine(Path.GetTempPath(), $"verify-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(staging);
-        var registry = new OperationRegistry();
-        registry.TryBegin(new OperationSnapshot(Id, "running", "downloading"));
-        var op = new VerifyOperation(Request(), new FakeRunner(), registry, staging,
-            _ => new FakeS3 { FailList = true });
-
-        // Act.
-        await op.RunAsync(CancellationToken.None);
-
-        // Assert: failed + phase=downloading — маркер транзиента для воркера.
-        registry.Current!.State.Should().Be("failed");
-        registry.Current.Phase.Should().Be("downloading");
-        registry.Current.Error.Should().Contain("pool down");
-        Directory.Delete(staging, recursive: true);
-    }
-
-    [Fact]
-    public async Task VerifybackupFails_FailedWithVerifyingPhase_Permanent()
-    {
-        // Arrange: скачивание ок, pg_verifybackup exit 1.
-        var staging = Path.Combine(Path.GetTempPath(), $"verify-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(staging);
-        var runner = new FakeRunner
-        {
-            VerifyExitCode = 1,
-            VerifyStderr = "backup_manifest checksum mismatch for file \"pg_wal/000000010000000000000002\"\nmore\n",
-        };
-        var registry = new OperationRegistry();
-        registry.TryBegin(new OperationSnapshot(Id, "running", "downloading"));
-        var op = new VerifyOperation(Request(), runner, registry, staging, _ => new FakeS3());
-
-        // Act.
-        await op.RunAsync(CancellationToken.None);
-
-        // Assert: failed + phase=verifying — permanent (данные плохие);
-        // причина — однострочная.
-        registry.Current!.State.Should().Be("failed");
-        registry.Current.Phase.Should().Be("verifying");
-        // OpText.FirstLine Trim('"') снимает хвостовую кавычку одной строки.
-        registry.Current.Error.Should().Be(
-            "backup_manifest checksum mismatch for file \"pg_wal/000000010000000000000002");
-        Directory.Delete(staging, recursive: true);
-    }
-
-    // AAA: операторская отмена (cancel API — внешний канал мимо воркера) —
-    // снимок state=cancelled, НЕ failed (отмена не суждение о данных, arch/19
-    // §5; воркер-супервиз отличает её от vanished и вернёт кандидата в PENDING);
-    // staging очищен при любом исходе; терминальный снимок персистентен и не
-    // активен — гвард пропускает, новая операция на контейнере возможна.
-    [Fact]
-    public async Task CancelMidVerify_StateCancelled_NotFailed_StagingCleaned()
-    {
-        // Arrange: pg_verifybackup висит до отмены; операция доходит до
-        // verifying-фазы.
-        var staging = Path.Combine(Path.GetTempPath(), $"verify-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(staging);
-        var runner = new FakeRunner { HangVerify = true };
-        var registry = new OperationRegistry();
-        registry.TryBegin(new OperationSnapshot(Id, "running", "downloading"));
-        var op = new VerifyOperation(Request(), runner, registry, staging, _ => new FakeS3());
-        var run = op.RunAsync(CancellationToken.None);
-        SpinWait.SpinUntil(() => registry.Current?.Phase == "verifying",
-                TimeSpan.FromSeconds(10))
-            .Should().BeTrue("the operation reaches pg_verifybackup before the cancel");
-
-        // Act: cancel API гасит операцию.
-        await op.CancelAsync();
-        await run;
-
-        // Assert: снимок cancelled (НЕ failed) с однострочной причиной.
-        registry.Current!.State.Should().Be("cancelled");
-        registry.Current.Phase.Should().Be("verifying");
-        registry.Current.Error.Should().Be("cancelled by operator");
-        // Assert: staging очищен при любом исходе.
-        Directory.Exists(Path.Combine(staging, "full", Id)).Should().BeFalse();
-        // Assert: терминальный снимок не активен — гвард принимает новую
-        // операцию (повторный GET отдаёт снимок cancelled — не resurrect).
-        registry.TryBegin(new OperationSnapshot(
-                "20260102000000Z", "running", "downloading"))
-            .Should().BeTrue("a terminal snapshot is not an active operation");
-        Directory.Delete(staging, recursive: true);
+        public Task<Result> PutFileAsync(string key, string filePath, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result> GetObjectToFileAsync(string cluster, string shard, string key, string destFilePath, CancellationToken ct = default) => throw new NotSupportedException();
     }
 }

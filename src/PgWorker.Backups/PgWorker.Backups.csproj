@@ -29,6 +29,10 @@
         <!-- Юниты ворк-фактов agents (t27) и детектора исчерпания (t02):
              internal-функции. -->
         <InternalsVisibleTo Include="PgWorker.UnitTests"/>
+        <!-- VerifyOperation (проект PgWorker.PgNode, имя сборки pgnode)
+             сканирует хвост tar-объекта через TarStreamReader.TryParseHeaderAt
+             — internal-разбор шага 1. -->
+        <InternalsVisibleTo Include="pgnode"/>
         <InternalsVisibleTo Include="PgWorker.IntegrationTests"/>
     </ItemGroup>
 </Project>
