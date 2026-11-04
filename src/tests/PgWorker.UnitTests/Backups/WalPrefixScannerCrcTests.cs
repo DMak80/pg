@@ -147,6 +147,64 @@ public class WalPrefixScannerCrcTests
             data[Physical(pos, 20 + i)] = (byte)(value >> (8 * i));
     }
 
+    [Fact]
+    public void RecordHeaderSpanningPageBoundary_CrcReadsSplitHeader()
+    {
+        // Arrange — запись начинается в ХВОСТЕ первой страницы, где осталось
+        // 8 байт: в них влезает только начало фиксированного заголовка
+        // (xl_tot_len + xl_xid), а остальной ЗАГОЛОВОК (включая xl_crc @20)
+        // продолжается после short-заголовка второй страницы — штатный для
+        // postgres профиль «запись начинается в хвосте страницы» (позиции WAL
+        // 8-выровнены, поэтому остаток хвоста всегда кратен 8 и меньше
+        // SizeOf(XLogRecord); заголовок разрезан границей).
+        const int len = 100;
+        var data = new byte[Page * 2];
+        data[4] = 1; // tli=1 LE
+        // Заполняем первую страницу записями ровно до pos = Page - 8:
+        // 126×64 + 80 = 8144 логических байтов от long-заголовка (40).
+        var pos = WalPrefixScanner.LongHeaderBytes;
+        for (var i = 0; i < 126; i++)
+        {
+            WriteLen(data, pos, 64);
+            WriteCrc(data, (pos, 64));
+            pos += 64; // MAXALIGN(64) = 64
+        }
+        WriteLen(data, pos, 80);
+        WriteCrc(data, (pos, 80));
+        pos += 80; // MAXALIGN(80) = 80
+        pos.Should().Be(Page - 8, "хвост страницы — ровно 8 байт");
+        WriteHeaderSpanningRecord(data, pos, len);
+
+        // Act
+        var validated = WalPrefixScanner.ValidatedPrefixLength(data, data.Length);
+
+        // Assert — физический конец записи: 8 байт хвоста страницы + short
+        // заголовок второй страницы + остаток логических байтов записи; CRC
+        // сошлась (заголовок и xl_crc прочитаны через границу страницы)
+        var expected = Page + WalPrefixScanner.ShortHeaderBytes + (len - 8);
+        validated.Should().Be(expected);
+        WalPrefixScanner.ValidPrefixLength(data, data.Length).Should().Be(expected);
+    }
+
+    // Запись с РАЗРЕЗАННЫМ границей страницы заголовком: логические байты
+    // пишутся в обход short-заголовка следующей страницы; xl_crc — по
+    // логическому образу в порядке postgres (тело, затем заголовок).
+    private static void WriteHeaderSpanningRecord(byte[] data, int pos, int len)
+    {
+        for (var i = 0; i < 4; i++)
+            data[Physical(pos, i)] = (byte)(len >> (8 * i));
+        var rng = 11;
+        for (var i = 24; i < len; i++)
+            data[Physical(pos, i)] = (byte)(0x40 | (rng = rng * 5 + 1) % 0x3F);
+
+        var crc = Crc32C.Init();
+        crc = UpdateLogical(crc, data, pos, 24, len, len); // тело записи
+        crc = UpdateLogical(crc, data, pos, 0, 20, len);   // заголовок до xl_crc
+        var value = Crc32C.Finish(crc);
+        for (var i = 0; i < 4; i++)
+            data[Physical(pos, 20 + i)] = (byte)(value >> (8 * i));
+    }
+
     // CRC по логическому диапазону записи [from..to): физические байты идут
     // в обход short-заголовков страниц.
     private static uint UpdateLogical(uint crc, byte[] data, int pos, int from, int to, int totalLen)

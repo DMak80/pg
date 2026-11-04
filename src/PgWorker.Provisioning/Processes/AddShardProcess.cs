@@ -71,7 +71,15 @@ public sealed partial class AddShardProcess(
 
         var shard = snap.Shards.FirstOrDefault(s => s.Name == shardName);
         if (shard is null)
-            return Result<ProcessOutcome>.Success(ProcessOutcome.Done); // шарда уже нет
+        {
+            // Шарда уже нет — прогон терминален (A0). Память маркера времени
+            // снимается симметрично FinishRunAsync: иначе устаревший маркер
+            // (два подряд прерванных после bump'а прогона) даст ложное
+            // срабатывание гейта BumpAsync (bumped_unix >= startedUnix) и
+            // пропуск легитимного инкремента пересоздания.
+            _runStartedUnix.TryRemove($"{cluster}/{shardName}", out _);
+            return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
+        }
 
         // A0: journal-before-manipulations (P7).
         var started = await journal.WritePhaseAsync(cluster, Op, "started", claims.InstanceId, null, ct);
