@@ -452,6 +452,7 @@ public sealed class BackupsOptions
         WalVerifyIntervalSec: Wal.VerifyIntervalSec,
         WalLagMaxSegments: Wal.LagMaxSegments,
         WalStaleSec: Wal.StaleSec,
+        WalPartialIntervalSec: Wal.PartialIntervalSec,
         PolicyRetentionDays: Policy.Retention.Days,
         PolicyRetentionWeeks: Policy.Retention.Weeks,
         PolicyRetentionMonths: Policy.Retention.Months,
@@ -482,6 +483,7 @@ public sealed class BackupsOptions
            && Quota.CritPercent <= 100
            && Retention.IntervalSec >= 60
            && Retention.KeepFailed >= 5
+           && Wal.PartialIntervalSec >= 1          // период .partial-доотправки приёмника (arch/19 §9)
            && Supervisor.IntervalSec >= 60          // как Retention.IntervalSec — тик не молотит
            && Supervisor.OrphanTtlSec >= 0          // 0 — авто-удаление выключено (только алерт)
            && Job.FullTimeoutSec > 0
@@ -626,6 +628,11 @@ public sealed class BackupsStagingOptions
 /// конфигурация приёмника — etcd/env ноды).</summary>
 public sealed class BackupsWalOptions
 {
+    /// <summary>Период `.partial`-доотправки префикса живого сегмента
+    /// приёмником (arch/19 §3/§9); доставляется env ноды
+    /// PGW_WAL_PARTIAL_INTERVAL_SEC.</summary>
+    public int PartialIntervalSec { get; set; } = 3;
+
     public int VerifyIntervalSec { get; set; } = 30;
 
     public int LagMaxSegments { get; set; } = 1024;

@@ -581,6 +581,10 @@ public sealed class PlainClusterDriver(
             // ноды; null/пусто → env не ставится — приёмник возьмёт дефолт.
             if (!string.IsNullOrWhiteSpace(backupEnv.StagingDir))
                 env["PGW_BACKUP_STAGING_DIR"] = backupEnv.StagingDir;
+            // Период .partial-доотправки приёмника (arch/19 §3/§9): env по образцу
+            // staging; null/≤1 → env не ставится — приёмник берёт дефолт 3 с.
+            if (backupEnv.PartialIntervalSec is > 0)
+                env["PGW_WAL_PARTIAL_INTERVAL_SEC"] = backupEnv.PartialIntervalSec.Value.ToString();
         }
 
         // P15 (решение 2026-09-12): бюджет вычисляемый —

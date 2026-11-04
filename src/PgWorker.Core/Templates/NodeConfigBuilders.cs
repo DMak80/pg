@@ -57,8 +57,11 @@ public static class InstallSecretsGuard
 /// env не ставится — приёмник старт-фейлится (подсистема выключена
 /// валидацией старта: Enabled=true ⇒ Bucket непустой). StagingDir — путь
 /// staging полного в data-volume ноды (arch/19 §9; null/пуст ⇒ env не
-/// ставится — приёмник возьмёт дефолт /home/postgres/pgdata/backup-staging).</summary>
-public sealed record NodeBackupEnv(string? Bucket, string? CaPem, string? StagingDir = null);
+/// ставится — приёмник возьмёт дефолт /home/postgres/pgdata/backup-staging).
+/// PartialIntervalSec — период `.partial`-доотправки приёмника (arch/19 §9;
+/// null/≤1 ⇒ env не ставится — приёмник берёт дефолт 3 с).</summary>
+public sealed record NodeBackupEnv(
+    string? Bucket, string? CaPem, string? StagingDir = null, int? PartialIntervalSec = null);
 
 /// <summary>
 /// ENV контейнера pgworker-node для Spilo/Patroni — ТОЛЬКО неконфиденциальное
