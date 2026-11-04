@@ -20,10 +20,11 @@ public class WalReceiverCoreTests
     private const int Mib = 1024 * 1024;
     private static readonly TimeSpan FastRetry = TimeSpan.FromMilliseconds(20);
 
-    private static WalReceiverOptions Options() => new(
+    private static WalReceiverOptions Options(int partialIntervalSec = 3) => new(
         "s1a", 5432, "backup_exec", "pw", "postgres",
         "pgw_bkp_c1_shard1", "c1", "shard1",
-        ["http://s3a:9000"], ["http://s3a:9000"], "backups", "ak", "sk");
+        ["http://s3a:9000"], ["http://s3a:9000"], "backups", "ak", "sk",
+        PartialIntervalSec: partialIntervalSec);
 
     /// <summary>Сегментные байты с long page header (tli, pageaddr=boundary).</summary>
     private static byte[] SegmentData(uint tli, ulong boundary)
@@ -41,6 +42,41 @@ public class WalReceiverCoreTests
     private static XLogChunk Chunk(ulong boundary, uint tli = 1)
         => new(boundary, boundary + SegmentBytes, SegmentData(tli, boundary));
 
+    // Частичный чанк начала живого сегмента: long page header (tli, pageaddr =
+    // boundary) + одна полная запись recordLen байт (totalLen LE u32 @4 от
+    // начала записи; запись начинается на 40).
+    private static XLogChunk PartialChunk(ulong boundary, int recordLen, uint tli = 1)
+    {
+        var data = new byte[WalPrefixScanner.LongHeaderBytes + recordLen];
+        data[4] = (byte)tli;
+        data[5] = (byte)(tli >> 8);
+        data[6] = (byte)(tli >> 16);
+        data[7] = (byte)(tli >> 24);
+        for (var i = 0; i < 8; i++)
+            data[8 + i] = (byte)(boundary >> (8 * i));
+        WriteRecordHeader(data, WalPrefixScanner.LongHeaderBytes, recordLen);
+        return new XLogChunk(boundary, boundary + (ulong)data.Length, data);
+    }
+
+    // Чанк-продолжение: одна полная запись С НАЧАЛА чанка (поток продолжает
+    // уже принятые байты).
+    private static XLogChunk RecordChunk(ulong boundary, int recordLen)
+    {
+        var data = new byte[recordLen];
+        WriteRecordHeader(data, 0, recordLen);
+        return new XLogChunk(boundary, boundary + (ulong)recordLen, data);
+    }
+
+    private static void WriteRecordHeader(byte[] buffer, int pos, int recordLen)
+    {
+        var len = (uint)recordLen;
+        buffer[pos + 4] = (byte)len;
+        buffer[pos + 5] = (byte)(len >> 8);
+        buffer[pos + 6] = (byte)(len >> 16);
+        buffer[pos + 7] = (byte)(len >> 24);
+        buffer[pos + 8] = 0xAB; // полезный байт записи (отличен от нуля)
+    }
+
     private static ulong EndLsn(uint segId) => (segId + 1UL) << 24;
 
     /// <summary>Мини-фейк IBackupS3: put в словарь, ListWalAsync от словаря;
@@ -49,6 +85,12 @@ public class WalReceiverCoreTests
     {
         public readonly Dictionary<string, byte[]> Objects = [];
         public readonly HashSet<string> FailKeys = [];
+
+        // Устойчивый отказ list по префиксу (полный ключ-префикс) и журнал
+        // batch-delete поглощения .partial (arch/19 §3).
+        public readonly HashSet<string> FailListPrefixes = [];
+        public readonly List<string> DeletedKeys = [];
+        public int ListCalls;
 
         // Гвард чужой цепочки (arch/19 §3): ключи-конфликты — put НЕ пишется,
         // наружу маркер WalArchiveConflict (permanent, не transient).
@@ -94,9 +136,29 @@ public class WalReceiverCoreTests
         public Task<Result<bool>> BucketExistsAsync(CancellationToken ct) => throw new NotSupportedException();
         public Task<Result<IReadOnlyList<S3ObjectInfo>>> ListPrefixAsync(
             string prefix, int? maxKeysPerTest = null, CancellationToken ct = default) => throw new NotSupportedException();
-        public Task<Result> DeleteKeysAsync(IReadOnlyList<string> keys, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result> DeleteKeysAsync(IReadOnlyList<string> keys, CancellationToken ct = default)
+        {
+            foreach (var key in keys)
+                Objects.Remove(key);
+            DeletedKeys.AddRange(keys);
+            return Task.FromResult(Result.Success());
+        }
+
         public Task<Result<IReadOnlyList<WalObject>>> ListAsync(
-            string cluster, string shard, string prefix, int? maxKeysPerTest = null, CancellationToken ct = default) => throw new NotSupportedException();
+            string cluster, string shard, string prefix, int? maxKeysPerTest = null, CancellationToken ct = default)
+        {
+            ListCalls++;
+            var fullPrefix = $"{cluster}/{shard}/{prefix}";
+            if (FailListPrefixes.Any(p => fullPrefix.StartsWith(p, StringComparison.Ordinal)))
+                return Task.FromResult(Result<IReadOnlyList<WalObject>>.Failed(
+                    new ApplicationException($"S3 list {fullPrefix}: test transport failure")));
+
+            var objects = Objects.Keys
+                .Where(k => k.StartsWith(fullPrefix, StringComparison.Ordinal))
+                .Select(k => new WalObject(k[(k.LastIndexOf('/') + 1)..], DateTimeOffset.UnixEpoch))
+                .ToList();
+            return Task.FromResult(Result<IReadOnlyList<WalObject>>.Success(objects));
+        }
         public Task<Result<string>> GetObjectAsync(
             string cluster, string shard, string key, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<Result<IReadOnlyList<string>>> ListFullsAsync(
@@ -181,14 +243,33 @@ public class WalReceiverCoreTests
 
         public IAsyncEnumerable<XLogChunk> Stream => StreamImpl();
 
-        private async IAsyncEnumerable<XLogChunk> StreamImpl()
+        // Пауза живого сегмента (тесты .partial-пампа): при пустой очереди поток
+        // ЖДЁТ новый чанк (Push), а не закрывается. Очередь — под локом: producer
+        // (тест) и consumer (сессия) работают с ней параллельно.
+        public bool WaitForChunks;
+        private readonly object _chunkLock = new();
+        private readonly SemaphoreSlim _chunkSignal = new(0);
+
+        public void Push(XLogChunk chunk)
+        {
+            lock (_chunkLock)
+                Chunks.Enqueue(chunk);
+            _chunkSignal.Release();
+        }
+
+        private async IAsyncEnumerable<XLogChunk> StreamImpl(
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
         {
             while (true)
             {
                 MoveNextCalls++;
-                if (Chunks.Count > 0)
+                XLogChunk? next = null;
+                lock (_chunkLock)
+                    if (Chunks.Count > 0)
+                        next = Chunks.Dequeue();
+                if (next is { } chunk)
                 {
-                    yield return Chunks.Dequeue();
+                    yield return chunk;
                     continue;
                 }
 
@@ -198,7 +279,10 @@ public class WalReceiverCoreTests
                     throw new IOException("test transport drop");
                 }
 
-                yield break; // сервер закрыл поток — transient-переподключение
+                if (!WaitForChunks)
+                    yield break; // сервер закрыл поток — transient-переподключение
+
+                await _chunkSignal.WaitAsync(ct); // ждём новый чанк живой сессии
             }
         }
 
@@ -869,5 +953,164 @@ public class WalReceiverCoreTests
         foreach (var segId in segments)
             s3.Objects[$"c1/shard1/wal/00000001{segId / WalFileName.SegsPerLog:x8}{segId % WalFileName.SegsPerLog:x8}"]
                 = SegmentData(tli, segId * SegmentBytes);
+    }
+
+    // ---- .partial-доотправка приёмника (arch/19 §3) ----
+
+    private const string LiveSegment = "000000010000000000000000";
+
+    private static string PartialKey(string segmentName, ulong endLsn)
+        => $"c1/shard1/wal/{WalPartialName.Key(segmentName, endLsn)}";
+
+    // AAA: валидный префикс живого сегмента выкладывается пампом; следующая
+    // версия длиннее (каждая длиннее предыдущей).
+    [Fact]
+    public async Task PartialPrefix_Uploaded_LongerThanLying()
+    {
+        // Arrange — живой сегмент: запись 60 байт (префикс 100 = 0x64), затем
+        // ещё запись 120 байт (префикс 220 = 0xdc).
+        var source = new FakeXLogSource { WaitForChunks = true };
+        source.Push(PartialChunk(0, 60));
+        var s3 = new FakeS3();
+        using var cts = new CancellationTokenSource();
+
+        // Act — сессия с периодом пампа 1 с; первая версия префикса
+        var run = RunSession(source, s3, new FakeSlots(0), Options(partialIntervalSec: 1), cts.Token);
+        await WaitUntilAsync(() => s3.Objects.ContainsKey(PartialKey(LiveSegment, 100)),
+            TimeSpan.FromSeconds(5),
+            () => $"keys=[{string.Join(",", s3.Objects.Keys)}]");
+        source.Push(RecordChunk(100, 120));
+        await WaitUntilAsync(() => s3.Objects.ContainsKey(PartialKey(LiveSegment, 220)),
+            TimeSpan.FromSeconds(5),
+            () => $"keys=[{string.Join(",", s3.Objects.Keys)}]");
+
+        // Assert — обе версии в S3, вторая длиннее (EndLsn больше)
+        cts.Cancel();
+        var (outcome, _, _) = await run;
+        outcome.Should().BeNull();
+        s3.Objects.Should().ContainKey(PartialKey(LiveSegment, 100));
+        s3.Objects.Should().ContainKey(PartialKey(LiveSegment, 220));
+        s3.DeletedKeys.Should().BeEmpty("the segment is still live — versions are not absorbed");
+    }
+
+    // AAA: лежащая версия длиннее снимка (сосед двойной архивации) — put не
+    // выполняется, «только длиннее лежащей» соблюдено.
+    [Fact]
+    public async Task PartialPrefix_ShorterThanLying_Skipped()
+    {
+        // Arrange — в S3 уже лежит версия с EndLsn 0x5000; снимок сессии — 0x64
+        var source = new FakeXLogSource { WaitForChunks = true };
+        source.Push(PartialChunk(0, 60));
+        var s3 = new FakeS3();
+        var lyingKey = PartialKey(LiveSegment, 0x5000);
+        s3.Objects[lyingKey] = [1, 2, 3];
+        using var cts = new CancellationTokenSource();
+
+        // Act — сессия переживает тик пампа со сверкой листинга
+        var run = RunSession(source, s3, new FakeSlots(0), Options(partialIntervalSec: 1), cts.Token);
+        await WaitUntilAsync(() => s3.ListCalls > 0, TimeSpan.FromSeconds(5),
+            () => $"listCalls={s3.ListCalls} keys=[{string.Join(",", s3.Objects.Keys)}]");
+
+        // Assert — короткая версия не выложена: осталась только лежащая
+        cts.Cancel();
+        var (outcome, _, _) = await run;
+        outcome.Should().BeNull();
+        s3.Objects.Keys.Where(k => k.Contains(".partial", StringComparison.Ordinal))
+            .Should().BeEquivalentTo([lyingKey]);
+    }
+
+    // AAA: отказ list-сверки (transient) не рвёт стрим — финал доставляется и
+    // подтверждается; памп тик пропускает.
+    [Fact]
+    public async Task PartialPrefix_ListFailure_DoesNotBreakStream()
+    {
+        // Arrange — list узкого префикса сегмента отвечает отказом
+        var source = new FakeXLogSource { WaitForChunks = true };
+        source.Push(PartialChunk(0, 60));
+        var s3 = new FakeS3();
+        s3.FailListPrefixes.Add($"c1/shard1/wal/{LiveSegment}.");
+        using var cts = new CancellationTokenSource();
+
+        // Act — тик пампа упирается в отказ листинга
+        var run = RunSession(source, s3, new FakeSlots(0), Options(partialIntervalSec: 1), cts.Token);
+        await WaitUntilAsync(() => s3.ListCalls > 0, TimeSpan.FromSeconds(5),
+            () => $"listCalls={s3.ListCalls}");
+
+        // Act — сегмент закрывается: финальный put и подтверждение проходят
+        source.Push(RecordChunk(100, SegmentBytes - 100));
+        await WaitUntilAsync(() => s3.Objects.ContainsKey($"c1/shard1/wal/{LiveSegment}"),
+            TimeSpan.FromSeconds(5),
+            () => $"keys=[{string.Join(",", s3.Objects.Keys)}]");
+
+        // Assert — стрим не сломан, финал подтверждён
+        cts.Cancel();
+        var (outcome, output, _) = await run;
+        outcome.Should().BeNull();
+        source.ConfirmJournal.Should().Equal($"{EndLsn(0)}");
+        output.Should().Contain("partial list failed");
+    }
+
+    // AAA: .partial НЕ двигает подтверждение слота — журнал подтверждений
+    // пуст до закрытия сегмента и содержит только конец финала после.
+    [Fact]
+    public async Task SlotConfirmation_NotMovedByPartial()
+    {
+        // Arrange — живой сегмент с выложенным .partial
+        var source = new FakeXLogSource { WaitForChunks = true };
+        source.Push(PartialChunk(0, 60));
+        var s3 = new FakeS3();
+        using var cts = new CancellationTokenSource();
+
+        var run = RunSession(source, s3, new FakeSlots(0), Options(partialIntervalSec: 1), cts.Token);
+        await WaitUntilAsync(() => s3.Objects.ContainsKey(PartialKey(LiveSegment, 100)),
+            TimeSpan.FromSeconds(5),
+            () => $"keys=[{string.Join(",", s3.Objects.Keys)}]");
+
+        // Assert — частичная выкладка подтверждений не дала
+        source.ConfirmJournal.Should().BeEmpty("partial never moves the slot");
+
+        // Act — закрытие сегмента
+        source.Push(RecordChunk(100, SegmentBytes - 100));
+        await WaitUntilAsync(() => source.ConfirmJournal.Count > 0, TimeSpan.FromSeconds(5),
+            () => $"confirmed=[{string.Join(",", source.ConfirmJournal)}]");
+
+        // Assert — единственное подтверждение — конец финального сегмента
+        cts.Cancel();
+        var (outcome, _, _) = await run;
+        outcome.Should().BeNull();
+        source.ConfirmJournal.Should().Equal($"{EndLsn(0)}");
+    }
+
+    // AAA: финал поглощает все версии .partial сегмента (batch-delete).
+    [Fact]
+    public async Task FinalAbsorbsPartialVersions()
+    {
+        // Arrange — в S3 лежат две версии .partial будущего финала
+        var source = new FakeXLogSource { WaitForChunks = true };
+        source.Push(Chunk(0));
+        var s3 = new FakeS3();
+        var shortVersion = PartialKey(LiveSegment, 0x10);
+        var longVersion = PartialKey(LiveSegment, 0x20);
+        s3.Objects[shortVersion] = [1];
+        s3.Objects[longVersion] = [2];
+        using var cts = new CancellationTokenSource();
+
+        // Act — сегмент закрывается целиком
+        var run = RunSession(source, s3, new FakeSlots(0), Options(partialIntervalSec: 1), cts.Token);
+        await WaitUntilAsync(
+            () => s3.Objects.ContainsKey($"c1/shard1/wal/{LiveSegment}"),
+            TimeSpan.FromSeconds(5),
+            () => $"keys=[{string.Join(",", s3.Objects.Keys)}]");
+        await WaitUntilAsync(
+            () => s3.DeletedKeys.Contains(shortVersion) && s3.DeletedKeys.Contains(longVersion),
+            TimeSpan.FromSeconds(5),
+            () => $"deleted=[{string.Join(",", s3.DeletedKeys)}]");
+        cts.Cancel();
+        var (outcome, _, _) = await run;
+
+        // Assert — версии удалены одним batch; финал на месте
+        outcome.Should().BeNull();
+        s3.Objects.Should().NotContainKey(shortVersion);
+        s3.Objects.Should().NotContainKey(longVersion);
     }
 }

@@ -123,6 +123,27 @@ public sealed class WalReceiverCore
     // висел до отмены попытки — вторая цель не получала ни одной попытки).
     internal static readonly TimeSpan PutAttemptTimeout = TimeSpan.FromSeconds(15);
 
+    // Порог мгновенного сигнала пампу (arch/19 §3: «и/или по порогу байт» —
+    // 4 МиБ, 1/4 сегмента; константа приёмника, не конфиг): при бурной записи
+    // выкладка не ждёт тика PartialIntervalSec.
+    internal static readonly ulong PartialThresholdBytes = 4L * 1024 * 1024;
+
+    /// <summary>Сбрасываемый одноразовый сигнал (пампу): Pulse будит ожидающего,
+    /// следующий WaitAsync ждёт нового сигнала; ожидание отменяемо.</summary>
+    private sealed class SignalGate
+    {
+        private TaskCompletionSource _tcs = New();
+
+        private static TaskCompletionSource New()
+            => new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public void Pulse()
+            => Interlocked.Exchange(ref _tcs, New()).TrySetResult();
+
+        public Task WaitAsync(CancellationToken ct)
+            => _tcs.Task.WaitAsync(ct);
+    }
+
     // Файловые операции НАБОРА полного (PutFileAsync/GetObjectToFileAsync —
     // файлы произвольного размера, до единиц ГиБ): per-попытка бюджет от класса
     // размера, не от сегмента. PutAttemptTimeout выбран под WAL-сегменты
@@ -370,111 +391,219 @@ public sealed class WalReceiverCore
                 //    двигается) → подтверждение ТОЛЬКО после успешного put.
                 var assembler = new SegmentAssembler(startAt);
                 uint prevTli = 0;
-                try
+
+                // .partial-памп (arch/19 §3): фоновая задача итерации — выкладка
+                // валидного префикса незакрытого сегмента (только длиннее лежащей);
+                // подтверждение слота НЕ двигает (инвариант RPO — только финалы).
+                // Триггеры: таймер PartialIntervalSec ИЛИ сигнал порога из цикла
+                // приёма (4 МиБ).
+                var lastPartialEndLsn = 0UL; // Volatile-гейт прироста (вкл. версии соседа)
+                var partialGate = new SignalGate();
+                using var partialCts = CancellationTokenSource.CreateLinkedTokenSource(sct);
+                var partialPumpToken = partialCts.Token;
+                var partialPump = Task.Run(async () =>
                 {
-                    await foreach (var chunk in source.Stream.WithCancellation(sct))
+                    var interval = TimeSpan.FromSeconds(Math.Max(1, o.PartialIntervalSec));
+                    while (!partialPumpToken.IsCancellationRequested)
                     {
-                        IReadOnlyList<ClosedSegment> closedSegments;
                         try
                         {
-                            closedSegments = assembler.Append(chunk);
+                            var delay = Task.Delay(interval, partialPumpToken);
+                            var signal = partialGate.WaitAsync(partialPumpToken);
+                            await Task.WhenAny(delay, signal);
                         }
-                        catch (ApplicationException e)
+                        catch (OperationCanceledException)
                         {
-                            // Разрыв LSN — протокол физической репликации дыр не даёт:
-                            // это баг транспорта, не transient — невосстановимо.
-                            return Outcome(WalSessionKind.FailedPermanent, e.Message);
+                            break; // итерация/сессия закрываются
                         }
 
-                        // Позиция потока для наблюдаемости — serverWalEnd
-                        // (arch/18 §2.8), не позиция принятых байт: backlog =
-                        // позиция записи сервера − подтверждённый хвост.
-                        lastStreamLsn = Math.Max(lastStreamLsn, assembler.ServerWalEnd);
-                        events.StreamProgress?.Invoke(assembler.ServerWalEnd);
+                        var snap = assembler.PartialSnapshot();
+                        if (snap is not { } shot)
+                            continue; // незакрытого сегмента/полной записи нет (§3, развилка 22)
+                        if (shot.EndLsn <= Volatile.Read(ref lastPartialEndLsn))
+                            continue; // нулевой прирост — версии не пере-clay'ются (§3)
 
-                        foreach (var segment in closedSegments)
+                        // Сверка «длиннее лежащей»: list узкого префикса (первая
+                        // доступная read-нода); отказ — skip тика (стрим не рвём,
+                        // хвост доедет следующим тиком/финалом).
+                        var listed = await s3.ListAsync(
+                            o.Cluster, o.Shard, $"wal/{WalPartialName.SegmentPrefixOf(shot.Name)}",
+                            ct: partialPumpToken);
+                        if (!listed.IsSuccess)
                         {
+                            Diagnostic(events,
+                                $"partial list failed: {listed.Error!.Message.Split('\n')[0]}");
+                            continue;
+                        }
+
+                        ulong lying = 0;
+                        foreach (var obj in listed.Value)
+                            if (WalPartialName.TryParse(obj.Name) is { } v && v.EndLsn > lying)
+                                lying = v.EndLsn;
+                        if (lying >= shot.EndLsn)
+                        {
+                            // Сосед двойной архивации длиннее — ждём прироста за его версию.
+                            Volatile.Write(ref lastPartialEndLsn, lying);
+                            continue;
+                        }
+
+                        var partialKey =
+                            $"{o.Cluster}/{o.Shard}/wal/{WalPartialName.Key(shot.Name, shot.EndLsn)}";
+                        var partialSha = Convert.ToHexString(SHA256.HashData(shot.Prefix));
+                        var putPartial = await PutWithRetryAsync(
+                            s3, events, o, partialKey, shot.Prefix, partialSha, retry, partialPumpToken,
+                            exhaustion, useGuard: false);
+                        if (!putPartial.IsSuccess)
+                            return; // permanent (конфликт невозможен; прочее — вечный ретрай не завершается)
+                        Volatile.Write(ref lastPartialEndLsn, shot.EndLsn);
+                        events.PutSuccess?.Invoke();
+                    }
+                }, CancellationToken.None);
+
+                try
+                {
+                    try
+                    {
+                        await foreach (var chunk in source.Stream.WithCancellation(sct))
+                        {
+                            IReadOnlyList<ClosedSegment> closedSegments;
                             try
                             {
-                                // 5. TLI-переход (смена TLI относительно доставленного; первый
-                                //    сегмент цепочки — инициализация, истории для tli=1 не
-                                //    существует): .history загружается обязательно (PITR через
-                                //    смену timeline); рантайм без TIMELINE_HISTORY — чтение
-                                //    файла ФС ноды (fallback); нет и файла — факт
-                                //    history_missing в исходе сессии.
-                                if (prevTli != 0 && segment.Tli != prevTli)
+                                closedSegments = assembler.Append(chunk);
+                            }
+                            catch (ApplicationException e)
+                            {
+                                // Разрыв LSN — протокол физической репликации дыр не даёт:
+                                // это баг транспорта, не transient — невосстановимо.
+                                return Outcome(WalSessionKind.FailedPermanent, e.Message);
+                            }
+
+                            // Позиция потока для наблюдаемости — serverWalEnd
+                            // (arch/18 §2.8), не позиция принятых байт: backlog =
+                            // позиция записи сервера − подтверждённый хвост.
+                            lastStreamLsn = Math.Max(lastStreamLsn, assembler.ServerWalEnd);
+                            events.StreamProgress?.Invoke(assembler.ServerWalEnd);
+
+                            // Порог-сигнал пампу (4 МиБ от последней выкладки; LSN-прирост ≈
+                            // байты — скан записей в hot-path не нужен, выкладка идёт по
+                            // валидному префиксу).
+                            if (assembler.LastAppendedLsn - Volatile.Read(ref lastPartialEndLsn)
+                                >= PartialThresholdBytes)
+                                partialGate.Pulse();
+
+                            foreach (var segment in closedSegments)
+                            {
+                                try
                                 {
-                                    var history = await ReadHistoryWithFallbackAsync(
-                                        source, events, segment.Tli, sct);
-                                    if (history.Value is { } content)
+                                    // 5. TLI-переход (смена TLI относительно доставленного; первый
+                                    //    сегмент цепочки — инициализация, истории для tli=1 не
+                                    //    существует): .history загружается обязательно (PITR через
+                                    //    смену timeline); рантайм без TIMELINE_HISTORY — чтение
+                                    //    файла ФС ноды (fallback); нет и файла — факт
+                                    //    history_missing в исходе сессии.
+                                    if (prevTli != 0 && segment.Tli != prevTli)
                                     {
-                                        var historyPut = await PutWithRetryAsync(
-                                            s3, events, o, $"{o.Cluster}/{o.Shard}/wal/{segment.Tli:x8}.history",
-                                            content,
-                                            Convert.ToHexString(SHA256.HashData(content)), retry, sct,
-                                            exhaustion);
-                                        if (!historyPut.IsSuccess)
-                                            return Outcome(WalSessionKind.FailedPermanent,
-                                                historyPut.Error!.Message);
-                                        events.HistoryDelivered?.Invoke(content.Length);
+                                        var history = await ReadHistoryWithFallbackAsync(
+                                            source, events, segment.Tli, sct);
+                                        if (history.Value is { } content)
+                                        {
+                                            var historyPut = await PutWithRetryAsync(
+                                                s3, events, o, $"{o.Cluster}/{o.Shard}/wal/{segment.Tli:x8}.history",
+                                                content,
+                                                Convert.ToHexString(SHA256.HashData(content)), retry, sct,
+                                                exhaustion);
+                                            if (!historyPut.IsSuccess)
+                                                return Outcome(WalSessionKind.FailedPermanent,
+                                                    historyPut.Error!.Message);
+                                            events.HistoryDelivered?.Invoke(content.Length);
+                                        }
+                                        else
+                                        {
+                                            historyMissingTli = segment.Tli;
+                                            events.HistoryMissing?.Invoke(segment.Tli);
+                                            Diagnostic(events,
+                                                $"history_missing tli={segment.Tli} (runtime + filesystem)");
+                                        }
+                                    }
+
+                                    prevTli = segment.Tli;
+
+                                    // 6. Доставка сегмента: sha256-hex — серверная сверка целостности
+                                    //    (один расчёт: маркер и put используют один хэш).
+                                    var sha256 = Convert.ToHexString(SHA256.HashData(segment.Data));
+                                    var put = await PutWithRetryAsync(
+                                        s3, events, o, $"{o.Cluster}/{o.Shard}/wal/{segment.Name}",
+                                        segment.Data, sha256, retry, sct, exhaustion);
+                                    if (!put.IsSuccess)
+                                        return Outcome(WalSessionKind.FailedPermanent,
+                                            put.Error!.Message);
+                                    events.SegmentDelivered?.Invoke(segment.Data.Length);
+
+                                    // 7. ЕДИНСТВЕННОЕ место подтверждения слота — после успешного put.
+                                    var confirmed = await source.SetConfirmedAsync(segment.EndLsn, sct);
+                                    if (confirmed.IsSuccess)
+                                    {
+                                        lastDelivered = segment.Name;
+                                        confirmedLsn = segment.EndLsn;
+                                        events.Confirmed?.Invoke(segment.EndLsn);
                                     }
                                     else
                                     {
-                                        historyMissingTli = segment.Tli;
-                                        events.HistoryMissing?.Invoke(segment.Tli);
+                                        // Подтверждение не прошло (транспорт): слот не двинулся,
+                                        // следующий сегмент повторит статус с той же LSN;
+                                        // диагностика — застой не молчит. Это НЕ put-ошибка
+                                        // (словарь arch/18 §2.8) — walreceiver_put_errors_total
+                                        // не растёт.
                                         Diagnostic(events,
-                                            $"history_missing tli={segment.Tli} (runtime + filesystem)");
+                                            $"confirm failed: {confirmed.Error!.Message.Split('\n')[0]}");
+                                    }
+
+                                    // Поглощение версий финалом (arch/19 §3): best-effort list узкого
+                                    // префикса + batch-delete; отказ — diagnostic (докладывает sweeper).
+                                    var absorbed = await s3.ListAsync(
+                                        o.Cluster, o.Shard, $"wal/{WalPartialName.SegmentPrefixOf(segment.Name)}",
+                                        ct: sct);
+                                    if (absorbed.IsSuccess && absorbed.Value.Count > 0)
+                                    {
+                                        var absorbedKeys = absorbed.Value
+                                            .Select(w => $"{o.Cluster}/{o.Shard}/wal/{w.Name}").ToList();
+                                        var absorbDelete = await s3.DeleteKeysAsync(absorbedKeys, sct);
+                                        if (!absorbDelete.IsSuccess)
+                                            Diagnostic(events,
+                                                $"partial absorb delete failed: {absorbDelete.Error!.Message.Split('\n')[0]}");
                                     }
                                 }
-
-                                prevTli = segment.Tli;
-
-                                // 6. Доставка сегмента: sha256-hex — серверная сверка целостности
-                                //    (один расчёт: маркер и put используют один хэш).
-                                var sha256 = Convert.ToHexString(SHA256.HashData(segment.Data));
-                                var put = await PutWithRetryAsync(
-                                    s3, events, o, $"{o.Cluster}/{o.Shard}/wal/{segment.Name}",
-                                    segment.Data, sha256, retry, sct, exhaustion);
-                                if (!put.IsSuccess)
-                                    return Outcome(WalSessionKind.FailedPermanent,
-                                        put.Error!.Message);
-                                events.SegmentDelivered?.Invoke(segment.Data.Length);
-
-                                // 7. ЕДИНСТВЕННОЕ место подтверждения слота — после успешного put.
-                                var confirmed = await source.SetConfirmedAsync(segment.EndLsn, sct);
-                                if (confirmed.IsSuccess)
+                                finally
                                 {
-                                    lastDelivered = segment.Name;
-                                    confirmedLsn = segment.EndLsn;
-                                    events.Confirmed?.Invoke(segment.EndLsn);
+                                    // Сегментный буфер (пул LOH, hot-path) возвращается
+                                    // после обработки сегмента: put/подтверждение завершены
+                                    // (или сессия прервана отменой) — байты никому не нужны.
+                                    SegmentBufferPool.Return(segment.Data);
                                 }
-                                else
-                                {
-                                    // Подтверждение не прошло (транспорт): слот не двинулся,
-                                    // следующий сегмент повторит статус с той же LSN;
-                                    // диагностика — застой не молчит. Это НЕ put-ошибка
-                                    // (словарь arch/18 §2.8) — walreceiver_put_errors_total
-                                    // не растёт.
-                                    Diagnostic(events,
-                                        $"confirm failed: {confirmed.Error!.Message.Split('\n')[0]}");
-                                }
-                            }
-                            finally
-                            {
-                                // Сегментный буфер (пул LOH, hot-path) возвращается
-                                // после обработки сегмента: put/подтверждение завершены
-                                // (или сессия прервана отменой) — байты никому не нужны.
-                                SegmentBufferPool.Return(segment.Data);
                             }
                         }
                     }
+                    catch (Exception e) when (e is not OperationCanceledException)
+                    {
+                        // Обрыв источника (исключение из Stream) — transient:
+                        // переподключение заново (резолв хвоста, START_REPLICATION от хвоста S3).
+                        events.Reconnect?.Invoke();
+                        Diagnostic(events, $"stream_broken: {e.GetType().Name}: {e.Message.Split('\n')[0]}");
+                    }
                 }
-                catch (Exception e) when (e is not OperationCanceledException)
+                finally
                 {
-                    // Обрыв источника (исключение из Stream) — transient:
-                    // переподключение заново (резолв хвоста, START_REPLICATION от хвоста S3).
-                    events.Reconnect?.Invoke();
-                    Diagnostic(events, $"stream_broken: {e.GetType().Name}: {e.Message.Split('\n')[0]}");
+                    // Памп живёт ровно одну итерацию сборщика: гасим и дожидаемся,
+                    // иначе задача переживёт assembler/буфер сегмента.
+                    await partialCts.CancelAsync();
+                    try
+                    {
+                        await partialPump;
+                    }
+                    catch
+                    {
+                        // Отменён — штатный финал итерации.
+                    }
                 }
 
                 if (gateTriggered)
@@ -687,7 +816,7 @@ public sealed class WalReceiverCore
     private static async Task<Result> PutWithRetryAsync(
         IBackupS3 s3, WalSessionEvents events, WalReceiverOptions o,
         string key, byte[] data, string sha256, TimeSpan retry, CancellationToken ct,
-        PoolExhaustionFlag exhaustion)
+        PoolExhaustionFlag exhaustion, bool useGuard = true)
     {
         var callBudget = TimeSpan.FromTicks(PutAttemptTimeout.Ticks * (o.S3Endpoints.Count + 1));
         var attempt = 0;
@@ -698,9 +827,11 @@ public sealed class WalReceiverCore
             using (var attemptCts = CancellationTokenSource.CreateLinkedTokenSource(ct))
             {
                 attemptCts.CancelAfter(callBudget);
-                // Гвард чужой цепочки (arch/19 §3): существующий объект с иным
-                // содержимым — не transient; PUT поверх уничтожил бы DR-источник.
-                put = s3 is IWalSegmentGuard guard
+                // Гвард чужой цепочки (arch/19 §3) — ТОЛЬКО на финальных объектах
+                // wal/<segment>: .partial кладётся обычным put-ом (правило
+                // «длиннее выигрывает» исключает конкурирующие байты — конфликт
+                // невозможен по построению).
+                put = useGuard && s3 is IWalSegmentGuard guard
                     ? await guard.PutWalSegmentAsync(key, data, sha256, attemptCts.Token)
                     : await s3.PutObjectAsync(key, data, sha256, attemptCts.Token);
             }

@@ -665,6 +665,7 @@ public Task<Result<IReadOnlyList<WalObject>>> ListAsync(
 - `SlotConfirmation_NotMovedByPartial`: журнал фейка `ConfirmedLsn` — только EndLsn закрытых сегментов (после частичной выкладки подтверждения с той же LSN не происходит).
 - `FinalAbsorbsPartialVersions`: после закрытия сегмента (полные 16 МиБ) в FakeS3 его `.partial`-ключи удалены (`DeletedKeys` содержит их, `Objects` — нет).
 (Если тайминги нестабильны — уменьшать только ТЕСТОВЫЕ ожидания, не прод-константы.)
+(решение Фазы 6: тест-фейк `FakeS3` в `WalReceiverLoopTests.cs` тоже получил рабочие `ListAsync`/`DeleteKeysAsync` — поглощение финалом (6.4) вызывает их в живом контуре цикла; заглушки с `NotSupportedException` роняли сессию после каждого закрытого сегмента. Прод-код не менялся: контракт `IBackupS3` возвращает `Result`, `PoolBackupS3` исключений не бросает.)
 
 ---
 
