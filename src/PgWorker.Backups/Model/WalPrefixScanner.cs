@@ -22,6 +22,7 @@ public static class WalPrefixScanner
     public const int ShortHeaderBytes = 24;  // XLogPageHeaderData — прочие страницы
     public const int MinRecordBytes = 24;    // SizeOf(XLogRecord)
     private const int TotalLenBytes = sizeof(uint); // xl_tot_len — первое поле XLogRecord
+    private const int CrcOffset = 20;        // offsetof(XLogRecord, xl_crc)
     private const ushort XlpFirstIsContrecord = 0x0001; // XLP_FIRST_IS_CONTRECORD
     private const long RecordAlign = 8;      // MAXALIGN длины записи
 
@@ -94,11 +95,15 @@ public static class WalPrefixScanner
 
     /// <summary>Длина префикса, все записи которого целостны по xl_crc (spec §4.1,
     /// решение №18): тот же проход, что ValidPrefixLength (границы записей), плюс
-    /// сверка CRC каждой ПОЛНОСТЬЮ принятой записи. CRC-32C считается по
-    /// ЛОГИЧЕСКОМУ образу записи — байты [pos..pos+20) заголовка (до xl_crc) и
-    /// [pos+24..recordEnd) тела; вставленные short-заголовки страниц и
-    /// MAXALIGN-добивка исключены. Несовпадение CRC — стоп на конце последней
-    /// CRC-валидной записи (консервативно). Чистая функция.</summary>
+    /// сверка CRC каждой ПОЛНОСТЬЮ принятой записи. CRC-32C считается в порядке
+    /// вычисления postgres (arch/pgnode/processes/g-wal-delta-assembly.md §5):
+    /// накопитель 0xFFFFFFFF → ТЕЛО записи [SizeOfXLogRecord..xl_tot_len) →
+    /// фиксированный заголовок [0..xl_crc) → XOR 0xFFFFFFFF; вставленные
+    /// short-заголовки страниц и MAXALIGN-добивка исключены. Порядок «тело →
+    /// заголовок» обязателен (postgres считает тело при сборке записи, заголовок
+    /// домешивает после заполнения prev-link; CRC-32C не коммутативна).
+    /// Несовпадение CRC — стоп на конце последней CRC-валидной записи
+    /// (консервативно). Чистая функция.</summary>
     public static int ValidatedPrefixLength(byte[] buffer, int count)
     {
         if (count < LongHeaderBytes)
@@ -159,49 +164,88 @@ public static class WalPrefixScanner
         return prefix;
     }
 
-    // CRC записи: значение из xl_crc (LE u32 @20) и CRC-32C логического образа
-    // ([0..20) + [24..totalLen), без short-заголовков страниц и добивки).
+    // CRC записи в порядке вычисления postgres (см. сводку ValidatedPrefixLength):
+    // сначала ТЕЛО записи [SizeOfXLogRecord..totalLen), затем фиксированный
+    // заголовок [0..xl_crc), из самого образа xl_crc исключён; финал — XOR.
     // null — байты записи ещё не приняты целиком.
     private static (uint Computed, uint Stored)? RecordCrc(
         byte[] buffer, int count, long start, uint totalLen)
     {
-        var crc = Crc32C.Init();
+        var body = UpdateLogicalRange(
+            Crc32C.Init(), buffer, count, start, MinRecordBytes, totalLen);
+        if (body is null)
+            return null; // байты записи не приняты целиком
+        var header = UpdateLogicalRange(
+            body.Value, buffer, count, start, 0, CrcOffset);
+        if (header is null)
+            return null;
         Span<byte> stored = stackalloc byte[4];
+        if (!TryReadLogical(buffer, count, start, CrcOffset, stored))
+            return null;
+        var storedValue = (uint)(stored[0] | stored[1] << 8 | stored[2] << 16 | stored[3] << 24);
+        return (Crc32C.Finish(header.Value), storedValue);
+    }
+
+    // Прогон CRC по логическому диапазону записи [from..to): физические байты —
+    // в обход short-заголовков страниц. null — байты не приняты целиком.
+    private static uint? UpdateLogicalRange(
+        uint crc, byte[] buffer, int count, long start, long from, long to)
+    {
         long cur = start;
         var consumed = 0L;
-        while (consumed < totalLen)
+        while (consumed < to)
         {
             if (cur % PageBytes == 0)
                 cur += ShortHeaderBytes; // продолжение на новой странице
-            var room = PageBytes - cur % PageBytes;
-            var take = (int)Math.Min(room, (long)totalLen - consumed);
-            var chunkEnd = consumed + take;
+            var take = Math.Min(PageBytes - cur % PageBytes, to - consumed);
+            var a = Math.Max(consumed, from);
+            var b = consumed + take;
+            if (b > a)
+            {
+                if (cur + (b - consumed) > count)
+                    return null;
+                crc = Crc32C.Update(crc, buffer, (int)(cur + (a - consumed)), (int)(b - a));
+            }
 
-            // заголовок до xl_crc: логические [0..20)
-            var headTo = Math.Min(chunkEnd, 20);
-            if (headTo > consumed)
-                crc = Crc32C.Update(crc, buffer, (int)cur, (int)(headTo - consumed));
-
-            // сам xl_crc: логические [20..24)
-            var crcFrom = Math.Max(consumed, 20);
-            var crcTo = Math.Min(chunkEnd, 24);
-            for (var i = crcFrom; i < crcTo; i++)
-                stored[(int)(i - 20)] = buffer[(int)(cur + (i - consumed))];
-
-            // тело после xl_crc: логические [24..totalLen)
-            var bodyFrom = Math.Max(consumed, 24);
-            if (chunkEnd > bodyFrom)
-                crc = Crc32C.Update(crc, buffer, (int)(cur + (bodyFrom - consumed)),
-                    (int)(chunkEnd - bodyFrom));
-
-            consumed = chunkEnd;
+            consumed += take;
             cur += take;
-            if (cur > count)
-                return null; // байты записи не приняты целиком
         }
 
-        var storedValue = (uint)(stored[0] | stored[1] << 8 | stored[2] << 16 | stored[3] << 24);
-        return (Crc32C.Finish(crc), storedValue);
+        return crc;
+    }
+
+    // Логические байты записи [from..from+dest.Length) в dest (обход
+    // short-заголовков страниц); false — байты не приняты целиком.
+    private static bool TryReadLogical(
+        byte[] buffer, int count, long start, long from, Span<byte> dest)
+    {
+        long cur = start;
+        var consumed = 0L;
+        var written = 0;
+        while (written < dest.Length)
+        {
+            if (cur % PageBytes == 0)
+                cur += ShortHeaderBytes;
+            var room = PageBytes - cur % PageBytes;
+            var chunkEnd = consumed + room;
+            var wantedFrom = from + written;
+            if (wantedFrom < chunkEnd)
+            {
+                var offset = (int)(wantedFrom - consumed);
+                var take = (int)Math.Min(chunkEnd - wantedFrom, dest.Length - written);
+                if (cur + offset + take > count)
+                    return false;
+                buffer.AsSpan((int)(cur + offset), take).CopyTo(dest[written..]);
+                written += take;
+            }
+
+            consumed = chunkEnd;
+            cur += room;
+            if (consumed >= from + dest.Length)
+                break;
+        }
+
+        return true;
     }
 
     // Продвижение по WAL-контенту на length байт (тело записи/её продолжение)

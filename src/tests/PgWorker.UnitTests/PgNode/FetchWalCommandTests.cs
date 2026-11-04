@@ -45,9 +45,10 @@ public class FetchWalCommandTests
         WriteLe32(data, pos, (uint)len);
         for (var i = 24; i < len; i++)
             data[pos + i] = (byte)(0x40 + (seed + i) % 0x3F);
+        // CRC в порядке postgres: сначала ТЕЛО записи, затем заголовок до xl_crc
         var crc = Crc32C.Init();
-        crc = Crc32C.Update(crc, data, pos, 20);
         crc = Crc32C.Update(crc, data, pos + 24, len - 24);
+        crc = Crc32C.Update(crc, data, pos, 20);
         WriteLe32(data, pos + 20, Crc32C.Finish(crc));
     }
 

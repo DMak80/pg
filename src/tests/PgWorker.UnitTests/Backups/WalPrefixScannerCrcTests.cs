@@ -47,12 +47,13 @@ public class WalPrefixScannerCrcTests
         data[pos + 3] = (byte)(len >> 24);
     }
 
-    // xl_crc = CRC-32C образа записи: [pos..pos+20) + [pos+24..pos+len).
+    // xl_crc = CRC-32C в порядке postgres: сначала ТЕЛО записи [24..len), затем
+    // фиксированный заголовок [0..20) (xl_crc в образ не входит)
     private static void WriteCrc(byte[] data, (int Pos, int Len) r)
     {
         var crc = Crc32C.Init();
-        crc = Crc32C.Update(crc, data, r.Pos, 20);
         crc = Crc32C.Update(crc, data, r.Pos + 24, r.Len - 24);
+        crc = Crc32C.Update(crc, data, r.Pos, 20);
         var value = Crc32C.Finish(crc);
         data[r.Pos + 20] = (byte)value;
         data[r.Pos + 21] = (byte)(value >> 8);
@@ -139,8 +140,8 @@ public class WalPrefixScannerCrcTests
             data[Physical(pos, i)] = (byte)(0x40 | (rng = rng * 5 + 1) % 0x3F);
 
         var crc = Crc32C.Init();
-        crc = UpdateLogical(crc, data, pos, 0, 20, len);
-        crc = UpdateLogical(crc, data, pos, 24, len, len);
+        crc = UpdateLogical(crc, data, pos, 24, len, len); // тело записи
+        crc = UpdateLogical(crc, data, pos, 0, 20, len);   // заголовок до xl_crc
         var value = Crc32C.Finish(crc);
         for (var i = 0; i < 4; i++)
             data[Physical(pos, 20 + i)] = (byte)(value >> (8 * i));
@@ -190,5 +191,47 @@ public class WalPrefixScannerCrcTests
     {
         // Arrange / Act / Assert — эталон RFC 3720: "123456789" → 0xE3069283
         Crc32C.HashData("123456789"u8.ToArray()).Should().Be(0xE3069283);
+    }
+
+    // Эталон РЕАЛЬНОГО WAL работающего кластера: первая страница сегмента
+    // 000000010000000000000004 (long-заголовок + три записи xl_tot_len=63 с
+    // настоящими xl_crc postgres). Гвард ПОРЯДКА вычисления: postgres считает
+    // CRC тела при сборке записи и домешивает заголовок после заполнения
+    // prev-link; синтетические фикстуры этого класса строятся тем же кодом,
+    // что и проверяется, поэтому порядок «заголовок → тело» на них сходится, а
+    // на реальном WAL — нет. Порча тела второй записи усекает до её начала.
+    private const string RealWalPrefixHex =
+        "18d10600010000000000000400000000000000000000000069f077af3339eb6a00000001002000003f000000cd030000" +
+        "f0c81e0300000000800a0000f6f5fb7f00600e007f060000874100008d41000000000000ff0302000208180001000000" +
+        "09707265010008003f000000cd0300002800000400000000000a00003abc4c5900200e007f060000874100008d410000" +
+        "00000000ff030200020818000200000009707265020008003f000000cd0300006800000400000000000a0000c34c9f30" +
+        "00200e007f060000874100008d41000000000000ff030200020818000300000009707265030008";
+
+    private static byte[] RealWalPrefix()
+        => Convert.FromHexString(RealWalPrefixHex);
+
+    [Fact]
+    public void RealWalRecords_FullPrefix_ByPostgresCrcOrder()
+    {
+        // Arrange — реальные байты: long-заголовок (40) + 3 записи по 63 байта
+        var data = RealWalPrefix();
+
+        // Act
+        var validated = WalPrefixScanner.ValidatedPrefixLength(data, data.Length);
+
+        // Assert — конец байтов третьей записи (168 + 63 = 231), все xl_crc сошлись
+        validated.Should().Be(231);
+        WalPrefixScanner.ValidPrefixLength(data, data.Length).Should().Be(231);
+    }
+
+    [Fact]
+    public void RealWalRecords_CorruptedBody_TruncatesToPreviousRecord()
+    {
+        // Arrange — порча тела ВТОРОЙ реальной записи (104 + 30)
+        var data = RealWalPrefix();
+        data[104 + 30] ^= 0xFF;
+
+        // Act / Assert — валидна только первая запись: её конец 40 + 63 = 103
+        WalPrefixScanner.ValidatedPrefixLength(data, data.Length).Should().Be(103);
     }
 }
