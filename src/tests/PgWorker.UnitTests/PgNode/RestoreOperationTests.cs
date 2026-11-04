@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text;
 using FluentAssertions;
 using PgWorker.Backups;
 using PgWorker.PgNode;
@@ -561,11 +562,19 @@ public class RestoreOperationTests
         var (exitCode, transport) = await FetchWalCommand.FetchOnceAsync(
             clients, "c1", "s1", "000000010000000000000002", target, CancellationToken.None);
 
-        // Assert — префикс скачан, файл записан; конец WAL не объявлен
+        // Assert — префикс скачан и добит нулями до полного размера сегмента
+        // (postgres отвергает архивный файл иного размера); конец WAL не объявлен
         exitCode.Should().Be(0);
         transport.Should().BeNull();
         File.Exists(target).Should().BeTrue("the best .partial is written to %p");
-        File.ReadAllText(target).Should().Be("prefix-bytes");
+        var written = File.ReadAllBytes(target);
+        written.Length.Should().Be((int)WalFileName.SegmentBytes,
+            "restore_command must produce a full-size segment (arch/19 §3.5)");
+        Encoding.ASCII.GetString(written.AsSpan(0, "prefix-bytes".Length))
+            .Should().Be("prefix-bytes");
+        written.AsSpan("prefix-bytes".Length).IndexOfAnyExcept((byte)0).Should().Be(-1,
+            "the tail after the valid prefix is zero padding (end of WAL)");
+        File.Exists(target + ".partial").Should().BeFalse("the temp download is removed");
         File.Delete(target);
     }
 

@@ -158,12 +158,16 @@ public class FullBackupOperationTests
                     Path.Combine(dest, "backup_label"),
                     "START WAL LOCATION: 0/2000028 (file 000000010000000000000002)\n");
                 await File.WriteAllTextAsync(Path.Combine(dest, "postgresql.conf"), "x");
+                // Закрытый сегмент набора — ровно wal_segment_size (дублируется);
+                // последний файл pg_basebackup усечён концом бэкапа (0004) — НЕ
+                // дублируется (arch/19 §2: срез усечённого файла отсекал бы
+                // записи после снапшота).
+                WriteSegment(Path.Combine(dest, "pg_wal", "000000010000000000000002"));
                 await File.WriteAllTextAsync(
-                    Path.Combine(dest, "pg_wal", "000000010000000000000002"), "wal");
+                    Path.Combine(dest, "pg_wal", "000000010000000000000004"), "truncated");
                 // Реальный pg_basebackup кладёт сегменты набора ВЕРХНИМ hex —
                 // буквенный сегмент проверяет нормализацию дубля wal/.
-                await File.WriteAllTextAsync(
-                    Path.Combine(dest, "pg_wal", "0000000100000000000000AB"), "wal");
+                WriteSegment(Path.Combine(dest, "pg_wal", "0000000100000000000000AB"));
                 await File.WriteAllTextAsync(
                     Path.Combine(dest, "pg_wal", "000000010000000000000003.partial"), "p");
                 await File.WriteAllTextAsync(
@@ -172,6 +176,14 @@ public class FullBackupOperationTests
             }
 
             return (0, "", "");
+        }
+
+        // Файл закрытого сегмента набора: ровно wal_segment_size (sparse — тесту
+        // байты не нужны, важна длина).
+        private static void WriteSegment(string path)
+        {
+            using var file = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None);
+            file.SetLength(WalFileName.SegmentBytes);
         }
     }
 
@@ -270,6 +282,10 @@ public class FullBackupOperationTests
         s3.PutKeys.Should().Contain($"{prefix}/full/{Id}/postgresql.conf");
         s3.PutKeys.Should().Contain($"{prefix}/full/{Id}/pg_wal/000000010000000000000002");
         s3.PutKeys.Should().Contain($"{prefix}/wal/000000010000000000000002");
+        // Assert: усечённый последний файл набора НЕ дублируется (arch/19 §2).
+        s3.PutKeys.Should().Contain($"{prefix}/full/{Id}/pg_wal/000000010000000000000004");
+        s3.PutKeys.Should().NotContain($"{prefix}/wal/000000010000000000000004",
+            "the truncated tail of the backup set is not a closed segment");
         // Assert: .partial/.history в wal/ НЕ дублируются.
         s3.PutKeys.Should().NotContain(k => k.StartsWith($"{prefix}/wal/") && k.EndsWith(".partial"));
         s3.PutKeys.Should().NotContain(k => k.StartsWith($"{prefix}/wal/") && k.EndsWith(".history"));

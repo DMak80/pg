@@ -258,6 +258,15 @@ public sealed class FullBackupOperation : IReceiverOperation
                     var normalized = FetchWalCommand.NormalizeSegment(name);
                     if (WalFileName.TryParse(normalized) is not { } setSegment)
                         continue;
+                    // Последний wal-файл набора усечён концом бэкапа (pg_basebackup
+                    // не добивает его): это НЕ закрытый сегмент, даже если источник
+                    // уже ушёл дальше по имени — срез усечённого файла занял бы ключ
+                    // и отсекал записи после снапшота (arch/19 §2).
+                    if (new FileInfo(file).Length != WalFileName.SegmentBytes)
+                    {
+                        Prog($"wal duplicate skipped: {normalized} is truncated in the backup set");
+                        continue;
+                    }
                     // Позиция сегмента набора строго ниже активного сегмента источника.
                     var setPos = (long)setSegment.Log * WalFileName.SegsPerLog + setSegment.Seg;
                     if (setPos >= (long)activeSegId)

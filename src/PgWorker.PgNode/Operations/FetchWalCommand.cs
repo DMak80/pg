@@ -149,6 +149,40 @@ internal static class FetchWalCommand
         return (best, anyResponded, firstError);
     }
 
+    /// <summary>Дописать валидный префикс `.partial` нулями до полного
+    /// `wal_segment_size` и положить в запрошенный путь (arch/19 §2/§3.5):
+    /// postgres отвергает архивный файл размера ≠ `wal_segment_size`
+    /// («archive file … has wrong size»); нули за концом последней валидной
+    /// записи — штатный конец WAL. false — префикс пуст/больше сегмента/ошибка
+    /// ФС.</summary>
+    internal static bool TryWritePaddedSegment(string sourcePath, string targetPath)
+    {
+        try
+        {
+            var prefix = File.ReadAllBytes(sourcePath);
+            var segmentBytes = (int)WalFileName.SegmentBytes;
+            if (prefix.Length == 0 || prefix.Length > segmentBytes)
+                return false;
+            using var stream = new FileStream(
+                targetPath, FileMode.Create, FileAccess.Write, FileShare.None);
+            stream.Write(prefix);
+            var zeros = new byte[64 * 1024];
+            var remaining = segmentBytes - prefix.Length;
+            while (remaining > 0)
+            {
+                var chunk = Math.Min(remaining, zeros.Length);
+                stream.Write(zeros, 0, chunk);
+                remaining -= chunk;
+            }
+            stream.Flush(true);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     /// <summary>Чистая функция для тестов: ОДИН проход по клиентам пула (перебор
     /// read-списка до найденного); transportError — первая транспортная ошибка
     /// прохода (null — «сегмента нет нигде», все ответили not found). Финала нет
@@ -170,22 +204,56 @@ internal static class FetchWalCommand
         }
 
         // Финала нет нигде — лучший .partial (хвост потока, arch/19 §3.5):
-        // скачанный префикс валиден по построению — postgres остановится в
-        // конце записей; ничего нет нигде ⇒ конец WAL (exit 1).
+        // префикс валиден по построению, но postgres принимает архивный файл
+        // только полного размера — добивается нулями; ничего нет нигде ⇒
+        // конец WAL (exit 1).
         var (bestKey, anyResponded, listError) = await ListBestPartialAsync(
             clients, cluster, shard, normalized, ct);
         if (!anyResponded)
             return (1, listError ?? "wal partial listing failed on all nodes");
         if (bestKey is { } partial)
         {
-            foreach (var client in clients)
+            var temp = target + ".partial";
+            try
             {
-                var got = await client.GetObjectToFileAsync(
-                    cluster, shard, $"wal/{partial}", target, ct);
-                if (got.IsSuccess)
-                    return (0, null);
-                if (!IsNotFound(got))
-                    transportError ??= got.Error!.Message.Split('\n')[0];
+                foreach (var client in clients)
+                {
+                    var got = await client.GetObjectToFileAsync(
+                        cluster, shard, $"wal/{partial}", temp, ct);
+                    if (got.IsSuccess)
+                    {
+                        if (!TryWritePaddedSegment(temp, target))
+                        {
+                            transportError ??= $"wal partial {partial}: pad to segment size failed";
+                            break;
+                        }
+                        return (0, null);
+                    }
+                    if (!IsNotFound(got))
+                        transportError ??= got.Error!.Message.Split('\n')[0];
+                    // Недокачанный/отсутствующий объект на этой ноде — следующая.
+                    try
+                    {
+                        if (File.Exists(temp))
+                            File.Delete(temp);
+                    }
+                    catch
+                    {
+                        // Не удалось — следующая попытка перезапишет.
+                    }
+                }
+            }
+            finally
+            {
+                try
+                {
+                    if (File.Exists(temp))
+                        File.Delete(temp);
+                }
+                catch
+                {
+                    // Временный файл вне контракта вызова.
+                }
             }
         }
         return (1, transportError);
