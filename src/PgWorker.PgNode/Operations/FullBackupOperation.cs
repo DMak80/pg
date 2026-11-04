@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Security.Cryptography;
 using PgWorker.Backups;
 using PgWorker.Backups.Restore;
 using PgWorker.Etcd.S3;
@@ -241,40 +242,83 @@ public sealed class FullBackupOperation : IReceiverOperation
                 }
 
                 var activeSegId = identified.Value.XLogPos / (ulong)WalFileName.SegmentBytes;
+
+                // Кандидаты набора: сегменты pg_wal (без .partial/.history),
+                // нормализованные (строчные — канон ключей wal/), с позицией.
+                var candidates = new List<(string File, string Name, WalFileName Segment, long Pos)>();
                 foreach (var file in Directory.EnumerateFiles(Path.Combine(fullDir, "pg_wal")))
                 {
                     var name = Path.GetFileName(file);
                     if (name.EndsWith(".partial", StringComparison.Ordinal)
                         || name.EndsWith(".history", StringComparison.Ordinal))
                         continue;
-                    // Имя дубля — НОРМАЛИЗОВАННОЕ (строчное): pg_basebackup кладёт
-                    // сегменты набора ВЕРХНИМ hex, а канон ключей wal/ — строчные
-                    // (симметрия стриму приёмников и fetch-wal) — дубль сливается
-                    // со стримом, дублирования объектов нет (arch/19 §2).
-                    // Гвард чужой цепочки (arch/19 §3) обязателен и здесь: полный
-                    // ПЕРЕСОЗДАННОГО кластера дублировал бы свои pg_wal-сегменты
-                    // поверх цепочки погибшей инкарнации — DR-источник разрушался
-                    // (факт E2E: pg_control полного и WAL разошлись по system id).
-                    var normalized = FetchWalCommand.NormalizeSegment(name);
-                    if (WalFileName.TryParse(normalized) is not { } setSegment)
+                    var normalizedName = FetchWalCommand.NormalizeSegment(name);
+                    if (WalFileName.TryParse(normalizedName) is not { } parsedSet)
                         continue;
-                    // Последний wal-файл набора усечён концом бэкапа (pg_basebackup
-                    // не добивает его): это НЕ закрытый сегмент, даже если источник
-                    // уже ушёл дальше по имени — срез усечённого файла занял бы ключ
-                    // и отсекал записи после снапшота (arch/19 §2).
+                    candidates.Add((file, normalizedName, parsedSet,
+                        (long)parsedSet.Log * WalFileName.SegsPerLog + parsedSet.Seg));
+                }
+
+                // WAL-хвост набора — файл с МАКСИМАЛЬНОЙ позицией: его конец усечён
+                // концом бэкапа (остаток — нули), финалом он не дублируется никогда;
+                // валидный префикс публикуется `.partial`-версией — restore_command
+                // дочитывает им до точки консистентности бэкапа (arch/19 §2).
+                var tailPos = candidates.Count > 0
+                    ? candidates.Max(c => c.Pos)
+                    : long.MinValue;
+
+                foreach (var (file, normalized, setSegment, setPos) in candidates)
+                {
+                    // Гвард чужой цепочки (arch/19 §3) обязателен на финальных
+                    // объектах: полный ПЕРЕСОЗДАННОГО кластера дублировал бы свои
+                    // pg_wal-сегменты поверх цепочки погибшей инкарнации — DR-источник
+                    // разрушался (факт E2E: pg_control полного и WAL разошлись по
+                    // system id).
+                    if (setPos == tailPos)
+                    {
+                        // Срез хвоста финалом отсекал бы записи после снапшота и
+                        // конфликтовал бы с будущим финалом стрима — публикуется
+                        // только валидный префикс (без гварда: «длиннее выигрывает»).
+                        var bytes = await File.ReadAllBytesAsync(file, token);
+                        var prefixLen = WalPrefixScanner.ValidPrefixLength(bytes, bytes.Length);
+                        if (prefixLen <= 0)
+                        {
+                            Prog($"wal tail prefix is empty: {normalized} — nothing to publish");
+                            continue;
+                        }
+                        var prefix = bytes.AsSpan(0, prefixLen).ToArray();
+                        var endLsn = (ulong)setPos * (ulong)WalFileName.SegmentBytes + (ulong)prefixLen;
+                        var tailKey = $"{_identity.Cluster}/{_identity.Shard}/wal/" +
+                            WalPartialName.Key(normalized, endLsn);
+                        var tailPut = await s3.PutObjectAsync(
+                            tailKey, prefix, Convert.ToHexString(SHA256.HashData(prefix)), token);
+                        if (!tailPut.IsSuccess)
+                        {
+                            Fail(tailPut.Error!.Message.Split('\n')[0]);
+                            return;
+                        }
+                        Prog($"wal tail published: {normalized} prefix={prefixLen} bytes -> .partial");
+                        continue;
+                    }
+
+                    // Файл не хвоста набора, но короче сегмента — битый набор (не
+                    // закрытый сегмент): финалом не дублируется.
                     if (new FileInfo(file).Length != WalFileName.SegmentBytes)
                     {
                         Prog($"wal duplicate skipped: {normalized} is truncated in the backup set");
                         continue;
                     }
                     // Позиция сегмента набора строго ниже активного сегмента источника.
-                    var setPos = (long)setSegment.Log * WalFileName.SegsPerLog + setSegment.Seg;
                     if (setPos >= (long)activeSegId)
                     {
                         Prog($"wal duplicate skipped: {normalized} is not closed in the source yet");
                         continue;
                     }
 
+                    // Имя дубля — НОРМАЛИЗОВАННОЕ (строчное): pg_basebackup кладёт
+                    // сегменты набора ВЕРХНИМ hex, а канон ключей wal/ — строчные
+                    // (симметрия стриму приёмников и fetch-wal) — дубль сливается
+                    // со стримом, дублирования объектов нет (arch/19 §2).
                     var key = $"{_identity.Cluster}/{_identity.Shard}/wal/{normalized}";
                     var put = s3 is IWalSegmentGuard guard
                         ? await guard.PutWalSegmentFileAsync(key, file, token)

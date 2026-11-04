@@ -158,16 +158,15 @@ public class FullBackupOperationTests
                     Path.Combine(dest, "backup_label"),
                     "START WAL LOCATION: 0/2000028 (file 000000010000000000000002)\n");
                 await File.WriteAllTextAsync(Path.Combine(dest, "postgresql.conf"), "x");
-                // Закрытый сегмент набора — ровно wal_segment_size (дублируется);
-                // последний файл pg_basebackup усечён концом бэкапа (0004) — НЕ
-                // дублируется (arch/19 §2: срез усечённого файла отсекал бы
-                // записи после снапшота).
-                WriteSegment(Path.Combine(dest, "pg_wal", "000000010000000000000002"));
-                await File.WriteAllTextAsync(
-                    Path.Combine(dest, "pg_wal", "000000010000000000000004"), "truncated");
+                // Сегменты набора: закрытые 0002/0004 (финалы) + буквенный 0AB
+                // (нормализация дубля) + ХВОСТ 0AC (публикуется `.partial`-версией,
+                // финалом не дублируется — arch/19 §2).
+                WriteSegment(Path.Combine(dest, "pg_wal", "000000010000000000000002"), segNo: 2);
+                WriteSegment(Path.Combine(dest, "pg_wal", "000000010000000000000004"), segNo: 4);
                 // Реальный pg_basebackup кладёт сегменты набора ВЕРХНИМ hex —
                 // буквенный сегмент проверяет нормализацию дубля wal/.
-                WriteSegment(Path.Combine(dest, "pg_wal", "0000000100000000000000AB"));
+                WriteSegment(Path.Combine(dest, "pg_wal", "0000000100000000000000AB"), segNo: 0xAB);
+                WriteSegment(Path.Combine(dest, "pg_wal", "0000000100000000000000AC"), segNo: 0xAC);
                 await File.WriteAllTextAsync(
                     Path.Combine(dest, "pg_wal", "000000010000000000000003.partial"), "p");
                 await File.WriteAllTextAsync(
@@ -178,12 +177,38 @@ public class FullBackupOperationTests
             return (0, "", "");
         }
 
-        // Файл закрытого сегмента набора: ровно wal_segment_size (sparse — тесту
-        // байты не нужны, важна длина).
-        private static void WriteSegment(string path)
+        // Файл сегмента набора: ровно wal_segment_size; long page header (tli=1,
+        // pageaddr = граница сегмента) + одна полная запись 64 байта (валидный
+        // префикс 104 = 40 + 64), остаток — нули (конец бэкапа).
+        private static void WriteSegment(string path, int segNo)
         {
             using var file = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None);
             file.SetLength(WalFileName.SegmentBytes);
+            var boundary = (ulong)segNo * (ulong)WalFileName.SegmentBytes;
+            WriteRecordHeader(file, 0, boundary);
+            WriteRecordHeader(file, WalPrefixScanner.LongHeaderBytes, boundary, 64);
+        }
+
+        private static void WriteRecordHeader(FileStream file, int offset, ulong boundary, int recordLen = 0)
+        {
+            var header = new byte[WalPrefixScanner.LongHeaderBytes];
+            if (recordLen == 0)
+            {
+                // long page header: tli LE u32 @4, pageaddr LE u64 @8
+                header[4] = 1;
+                for (var i = 0; i < 8; i++)
+                    header[8 + i] = (byte)(boundary >> (8 * i));
+            }
+            else
+            {
+                // xl_tot_len LE u32 @0, xl_xid @4 (≠ длины), полезный байт @8
+                header[0] = (byte)recordLen;
+                header[4] = 0xB3;
+                header[8] = 0xAB;
+            }
+
+            file.Position = offset;
+            file.Write(header);
         }
     }
 
@@ -203,8 +228,14 @@ public class FullBackupOperationTests
                 : Result.Success());
         }
 
+        public readonly Dictionary<string, byte[]> Objects = [];
+
         public Task<Result> PutObjectAsync(string key, byte[] data, string? sha256, CancellationToken ct = default)
-            => Task.FromResult(Result.Success());
+        {
+            PutKeys.Add(key);
+            Objects[key] = data.ToArray();
+            return Task.FromResult(Result.Success());
+        }
         public Task<Result> GetObjectToFileAsync(string cluster, string shard, string key, string destFilePath, CancellationToken ct = default)
             => Task.FromResult(Result.Success());
         public Task<Result<bool>> BucketExistsAsync(CancellationToken ct) => throw new NotSupportedException();
@@ -231,9 +262,10 @@ public class FullBackupOperationTests
     {
         public Result Open = Result.Success();
 
-        // Дефолт: активный сегмент 0xAC=172 — позиции набора 2 и 0xAB=171 закрыты.
+        // Дефолт: активный сегмент 0xAD=173 — позиции набора 2/4/0xAB закрыты,
+        // 0xAC — хвост набора (публикуется `.partial`, не финалом).
         public Result<ServerIdentity> Identify =
-            Result<ServerIdentity>.Success(new(1, 0xACUL << 24));
+            Result<ServerIdentity>.Success(new(1, 0xADUL << 24));
 
         public Task<Result> OpenAsync(CancellationToken ct) => Task.FromResult(Open);
 
@@ -282,12 +314,20 @@ public class FullBackupOperationTests
         s3.PutKeys.Should().Contain($"{prefix}/full/{Id}/postgresql.conf");
         s3.PutKeys.Should().Contain($"{prefix}/full/{Id}/pg_wal/000000010000000000000002");
         s3.PutKeys.Should().Contain($"{prefix}/wal/000000010000000000000002");
-        // Assert: усечённый последний файл набора НЕ дублируется (arch/19 §2).
-        s3.PutKeys.Should().Contain($"{prefix}/full/{Id}/pg_wal/000000010000000000000004");
-        s3.PutKeys.Should().NotContain($"{prefix}/wal/000000010000000000000004",
-            "the truncated tail of the backup set is not a closed segment");
-        // Assert: .partial/.history в wal/ НЕ дублируются.
-        s3.PutKeys.Should().NotContain(k => k.StartsWith($"{prefix}/wal/") && k.EndsWith(".partial"));
+        s3.PutKeys.Should().Contain($"{prefix}/wal/000000010000000000000004");
+        // Assert: ХВОСТ набора (0AC) финалом не дублируется — только `.partial`-версией
+        // его валидного префикса (arch/19 §2: restore_command дочитывает им).
+        s3.PutKeys.Should().Contain($"{prefix}/full/{Id}/pg_wal/0000000100000000000000AC");
+        s3.PutKeys.Should().NotContain($"{prefix}/wal/0000000100000000000000ac",
+            "the backup set tail is never duplicated as a final");
+        var tailKey = $"{prefix}/wal/{WalPartialName.Key("0000000100000000000000ac", 0xAC000068UL)}";
+        s3.PutKeys.Should().Contain(tailKey,
+            "the tail's valid prefix is published as a .partial version");
+        s3.Objects[tailKey].Length.Should().Be(40 + 64,
+            "only the valid prefix (page header + one full record) is published");
+        // Assert: локальные .partial-файлы набора и .history НЕ дублируются
+        // (`.partial`-версия хвоста публикуется выше — это канонический ключ).
+        s3.PutKeys.Should().NotContain($"{prefix}/wal/000000010000000000000003.partial");
         s3.PutKeys.Should().NotContain(k => k.StartsWith($"{prefix}/wal/") && k.EndsWith(".history"));
         // Assert: пароль — ТОЛЬКО в env PGPASSWORD (не argv/DSN).
         var psi = runner.Invocations.Single(i => i.FileName == "pg_basebackup");
