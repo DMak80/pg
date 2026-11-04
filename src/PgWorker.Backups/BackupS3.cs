@@ -463,6 +463,9 @@ public sealed class BackupS3
     {
         try
         {
+            // Полный бэкап — ОДИН объект `full/<id>.tar` (spec t01 §6.1):
+            // обычный листинг по префиксу без delimiter; id — имя без `.tar`,
+            // прочие ключи префикса (гипотетические внутренние) игнорируются.
             var ids = new SortedSet<string>(StringComparer.Ordinal);
             string? token = null;
             do
@@ -471,19 +474,16 @@ public sealed class BackupS3
                 {
                     BucketName = _bucket,
                     Prefix = $"{cluster}/{shard}/full/",
-                    Delimiter = "/",
                     ContinuationToken = token,
                 };
                 if (maxKeysPerTest is { } maxKeys)
                     request.MaxKeys = maxKeys;
                 var page = await _client.ListObjectsV2Async(request, ct);
-                foreach (var common in page.CommonPrefixes)
+                foreach (var obj in page.S3Objects)
                 {
-                    // common — каталог "…/full/<id>/": id = последний компонент без хвостового '/'
-                    var id = common.TrimEnd('/');
-                    id = id[(id.LastIndexOf('/') + 1)..];
-                    if (id.Length > 0)
-                        ids.Add(id);
+                    var name = obj.Key[(obj.Key.LastIndexOf('/') + 1)..];
+                    if (name.EndsWith(".tar", StringComparison.Ordinal) && name.Length > ".tar".Length)
+                        ids.Add(name[..^".tar".Length]);
                 }
 
                 token = page.IsTruncated is true ? page.NextContinuationToken : null;

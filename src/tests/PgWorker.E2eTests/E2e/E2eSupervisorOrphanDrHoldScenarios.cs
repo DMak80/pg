@@ -56,8 +56,7 @@ public sealed class E2eSupervisorOrphanDrHoldScenarios(E2eSupervisorOrphanDrHold
         var provisioned = await WaitPhaseAsync("provisioning",
             E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(90), ct);
         provisioned.Should().BeTrue("provisioning must reach DONE");
-        await McCpAsync($"{ghost}/shard1/full/20260911110000Z/base.tar", "dr-data");
-        await McCpAsync($"{ghost}/shard1/full/20260911110000Z/backup_manifest", "manifest");
+        await McCpAsync($"{ghost}/shard1/full/20260911110000Z.tar", "dr-data");
 
         // Act 1 — реестр: запись с has_valid_full=true (WaitFor)
         var observed = await WaitPhaseAsync("orphan-has-full", async () =>

@@ -51,12 +51,12 @@ public sealed class E2eSupervisorOrphanRegistryScenarios(E2eSupervisorOrphanRegi
         await using var app = await StartOrphanHostAsync(cluster, ct);
 
         // Arrange 2 — provisioning DONE (воркер — единственный инстанс = лидер);
-        //   mc-посев сиротского префикса ghost<тег>/shard1/full/20260901.../x
+        //   mc-посев сиротского объекта ghost<тег>/shard1/full/20260901....tar
         //   (кластера ghost<тег> нет в /clusters/)
         var provisioned = await WaitPhaseAsync("provisioning",
             E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(90), ct);
         provisioned.Should().BeTrue("provisioning must reach DONE (the worker leader)");
-        await McCpAsync($"{ghost}/shard1/full/20260911110000Z/base.tar", "orphan-seed");
+        await McCpAsync($"{ghost}/shard1/full/20260911110000Z.tar", "orphan-seed");
 
         // Act 1 — реестр: WaitFor ключа orphans с ghost<тег>/shard1 + OBSERVED
         var orphansRaw = default(Kv?);
@@ -93,7 +93,7 @@ public sealed class E2eSupervisorOrphanRegistryScenarios(E2eSupervisorOrphanRegi
     }
 
     // AAA (AC1/AC4/AC10): DR-источник выжил после истёкшего TTL; заявка чистит.
-    // Сирота с объектом full/<id>/backup_manifest → реестр has_valid_full=true →
+    // Сирота с объектом full/<id>.tar → реестр has_valid_full=true →
     // TTL 120 c истёк → объекты ЖИВЫ (автоправило) → заявка delete (etcd-put
     // канона) → sweeper исполнил: объекты удалены, запись и заявка погашены.
 

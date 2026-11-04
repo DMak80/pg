@@ -83,7 +83,7 @@ public sealed class E2eRetentionScenarios(E2eRetentionScenariosFx Ctx) : IClassF
         var real = await WaitForHighWalStartFullAsync(cluster, adminDsn, ct);
 
         // Arrange 5 — синтетика: старый COMPLETED (40 дней назад, wal_start
-        // = realWalStart−2) + его объекты full/<old-id>/ + WAL-объекты
+        // = realWalStart−2) + его объект full/<old-id>.tar + WAL-объекты
         // realWalStart−4 и realWalStart−3 (mc-посев)
         var realStart = PgWorker.Backups.WalFileName.TryParse(real.WalStart)!.Value;
         var realPos = (long)realStart.Log * 256 + realStart.Seg;
@@ -97,7 +97,7 @@ public sealed class E2eRetentionScenarios(E2eRetentionScenariosFx Ctx) : IClassF
             PgWorker.Backups.Job.BackupStatusJson.Serialize(new PgWorker.Etcd.Parsing.FullBackupState(
                 oldId, FullBackupStatus.Completed, "shard1a", BackupSourceRole.Replica,
                 oldStarted, oldStarted + 300, oldWalStart, 1024, null, null)), null, ct);
-        await McCpAsync($"{cluster}/shard1/full/{oldId}/base.tar", "synthetic-old-full");
+        await McCpAsync($"{cluster}/shard1/full/{oldId}.tar", "synthetic-old-full");
         foreach (var seg in seededWal)
             await McCpAsync($"{cluster}/shard1/wal/{seg}", "synthetic-wal");
 
@@ -125,10 +125,10 @@ public sealed class E2eRetentionScenarios(E2eRetentionScenariosFx Ctx) : IClassF
         // ниже cutoff удалены, всё живое в wal/ ≥ cutoff
         var hostEndpoint = Fx.S3Endpoint;
         await using var backupS3 = new PgWorker.Backups.BackupS3(new PgWorker.Backups.S3ClientOptions(hostEndpoint, Bucket, E2eEnvironment.S3RootUser, E2eEnvironment.S3RootPassword));
-        var oldPrefix = await backupS3.ListPrefixAsync($"{cluster}/shard1/full/{oldId}/", ct: ct);
-        oldPrefix.Value.Should().BeEmpty("the old full objects are removed (the DELETING finalization)");
-        var realPrefix = await backupS3.ListPrefixAsync($"{cluster}/shard1/full/{real.Id}/", ct: ct);
-        realPrefix.Value.Should().NotBeEmpty("the real full objects are untouched");
+        var oldPrefix = await backupS3.ListPrefixAsync($"{cluster}/shard1/full/{oldId}.tar", ct: ct);
+        oldPrefix.Value.Should().BeEmpty("the old full object is removed (the DELETING finalization)");
+        var realPrefix = await backupS3.ListPrefixAsync($"{cluster}/shard1/full/{real.Id}.tar", ct: ct);
+        realPrefix.Value.Should().NotBeEmpty("the real full object is untouched");
         // Посевные ниже cutoff удаляет WAL-trim — ПОСЛЕ verify-OK реального
         // полного (cutoff = wal_start verify-OK; периодика verify 7 дней, но
         // verify null due сразу). Удаление старого полного и trim — РАЗНЫЕ

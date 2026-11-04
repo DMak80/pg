@@ -18,7 +18,7 @@ namespace PgWorker.Backups;
 /// read-целей с дедупом, успех — если ответил хотя бы один узел;
 /// BucketExists — любая доступная.
 /// </summary>
-public sealed class PoolBackupS3 : IBackupS3, IWalSegmentGuard, IAsyncDisposable
+public sealed class PoolBackupS3 : IBackupS3, IWalSegmentGuard, IDeleteObjectS3, IAsyncDisposable
 {
     // Окно исключения отказавшей цели (arch/19 §5): закрывает тыл
     // ретрай-циклам источников (приёмник WAL — 30-35 с) — мёртвая цель не
@@ -335,6 +335,34 @@ public sealed class PoolBackupS3 : IBackupS3, IWalSegmentGuard, IAsyncDisposable
 
     // Удаление — write-семантика put (первая доступная нода, mesh разносит
     // tombstone — arch/19 §5); исчерпание → маркер.
+
+    // Одиночное удаление объекта (полный — ОДИН ключ full/<id>.tar, spec t01
+    // §6.10): write-перебор целей; цель без IDeleteObjectS3 — пропуск с
+    // диагностикой; исчерпание — маркер.
+    public async Task<Result> DeleteObjectAsync(
+        string cluster, string shard, string key, CancellationToken ct)
+    {
+        Result last = default;
+        foreach (var uri in _writeTargets)
+        {
+            var target = Target(uri);
+            if (target is not IDeleteObjectS3 deleter)
+            {
+                last = Result.Failed(new ApplicationException(
+                    $"target {uri} does not support single-object delete"));
+                continue;
+            }
+
+            var result = await AttemptAsync(
+                uri, ct, () => deleter.DeleteObjectAsync(cluster, shard, key, ct));
+            if (result.IsSuccess)
+                return result;
+            last = result;
+        }
+
+        return Result.Failed(new ApplicationException(
+            $"{S3PoolMarkers.Exhausted}: delete {key} — all list nodes are unavailable: {last.Error!.Message}"));
+    }
     public async Task<Result> DeleteKeysAsync(IReadOnlyList<string> keys, CancellationToken ct = default)
     {
         Result last = default;

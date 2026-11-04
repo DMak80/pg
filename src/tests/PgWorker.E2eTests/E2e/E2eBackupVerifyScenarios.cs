@@ -82,9 +82,9 @@ public sealed class E2eBackupVerifyScenarios(E2eBackupVerifyScenariosFx Ctx) : I
         panel.Clusters.Single(c => c.Cluster == cluster).ShardVerifyFailures.Should().BeEmpty();
     }
 
-    // AAA: порча набора (AC2): удалить объект из full/<id>/ в ownS3-ноде → policy
-    // interval_sec мал → перепроверка → verify.state=FAILED + error; переснятия
-    // в окне теста нет (full_max_age_sec велик)
+    // AAA: порча набора (AC2): перезаписать объект full/<id>.tar мусором в
+    // ownS3-ноде → policy interval_sec мал → перепроверка → verify.state=FAILED
+    // + error; переснятия в окне теста нет (full_max_age_sec велик)
 
     // в окне теста нет (full_max_age_sec велик)
     [Fact]
@@ -124,14 +124,13 @@ public sealed class E2eBackupVerifyScenarios(E2eBackupVerifyScenariosFx Ctx) : I
         var done = (await FullKeysAsync(cluster, "shard1")).Single(f => f.Value.Contains("COMPLETED"));
         var id = done.Key.Split('/').Last();
 
-        // Act — портим МАНИФЕСТ: перезаписываем backup_manifest мусором
-        // (pg_verifybackup обязан валидировать манифест набора — битый манифест
-        // = гарантированный FAILED; base.tar pg_verifybackup не сверяет, verify
-        // оставался OK — перепроверки шли, порча не ловилась)
+        // Act — портим ОБЪЕКТ набора: перезаписываем full/<id>.tar мусором
+        // (потоковый verify не найдёт манифест в хвосте объекта и/или не сойдётся
+        // по checksum'ам — гарантированный FAILED)
         await Fx.RunDockerAsync(
             ["run", "--rm", "--network", Fx.NetName, "--entrypoint", "/bin/sh", E2eEnvironment.McImage,
                 "-c", $"mc alias set t {Fx.S3EndpointForContainers} {E2eEnvironment.S3RootUser} {E2eEnvironment.S3RootPassword} >/dev/null"
-                      + $" && echo corrupted | mc pipe t/{Bucket}/{cluster}/shard1/full/{id}/backup_manifest"], ct1);
+                      + $" && echo corrupted | mc pipe t/{Bucket}/{cluster}/shard1/full/{id}.tar"], ct1);
 
         // Часть 2 — ct2: перепроверка по interval → FAILED + error (бюджет 120 c —
         // джоб скачивает набор при verify).
@@ -145,7 +144,7 @@ public sealed class E2eBackupVerifyScenarios(E2eBackupVerifyScenariosFx Ctx) : I
         failed.Should().BeTrue("corrupting the set must yield verify FAILED (AC2)");
         var corrupted = (await FullKeysAsync(cluster, "shard1")).Single(f => f.Value.Contains("FAILED"));
         var corruptedStatus = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(corrupted.Value)!;
-        corruptedStatus["verify"].GetProperty("error").GetString().Should().NotBeNullOrEmpty("the pg_verifybackup reason is in verify.error");
+        corruptedStatus["verify"].GetProperty("error").GetString().Should().NotBeNullOrEmpty("the streaming verify reason is in verify.error");
 
         // Assert 3 — в момент провала verify переснятие не УСПЕЛО завершиться.
         // Точная механика (задача 11): после verify FAILED валидных полных нет →

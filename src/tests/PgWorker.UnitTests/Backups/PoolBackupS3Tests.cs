@@ -562,4 +562,82 @@ public class PoolBackupS3Tests
         result.IsSuccess.Should().BeFalse();
         result.Error!.Message.Should().Contain(S3PoolMarkers.Exhausted);
     }
+
+    // AAA (spec t01 §6.10): удаление полного — ОДИН объект full/<id>.tar;
+    // write-перебор: первая цель отказала — вторая удалила → успех.
+    [Fact]
+    public async Task DeleteObject_FailsOverToSecondTarget()
+    {
+        // Arrange — n1 отказывает, n2 удаляет.
+        var t1 = new FakeDeleteTargetS3(fail: true);
+        var t2 = new FakeDeleteTargetS3();
+        var pool = PoolOf([("http://n1:9000", t1), ("http://n2:9000", t2)]);
+
+        // Act
+        var result = await pool.DeleteObjectAsync("c", "s", "full/id.tar", CancellationToken.None);
+
+        // Assert
+        result.IsSuccess.Should().BeTrue();
+        t1.Deleted.Should().BeEmpty();
+        t2.Deleted.Should().Equal("c/s/full/id.tar");
+    }
+
+    // AAA: все цели отказали — маркер исчерпания пула в ошибке.
+    [Fact]
+    public async Task DeleteObject_AllTargetsFail_ExhaustedMarker()
+    {
+        // Arrange
+        var pool = PoolOf(
+        [
+            ("http://n1:9000", new FakeDeleteTargetS3(fail: true)),
+            ("http://n2:9000", new FakeDeleteTargetS3(fail: true)),
+        ]);
+
+        // Act
+        var result = await pool.DeleteObjectAsync("c", "s", "full/id.tar", CancellationToken.None);
+
+        // Assert
+        result.IsSuccess.Should().BeFalse();
+        result.Error!.Message.Should().Contain(S3PoolMarkers.Exhausted);
+    }
+
+    // Пул на произвольных целях (write=read=список endpoint'ов).
+    private static PoolBackupS3 PoolOf(
+        IReadOnlyList<(string Uri, IBackupS3 Target)> targets)
+    {
+        var map = targets.ToDictionary(t => t.Uri, t => t.Target, StringComparer.Ordinal);
+        var uris = targets.Select(t => t.Uri).ToList();
+        return new PoolBackupS3(uris, uris, "ak", "sk", "b", null,
+            targetFactory: uri => map[uri]);
+    }
+
+    /// <summary>Фейк-цель одиночного удаления: копит композированные ключи,
+    /// управляемо отказывает; IBackupS3-методы не используются.</summary>
+    private sealed class FakeDeleteTargetS3(bool fail = false) : IBackupS3, IDeleteObjectS3
+    {
+        public List<string> Deleted { get; } = [];
+
+        public Task<Result> DeleteObjectAsync(
+            string cluster, string shard, string key, CancellationToken ct)
+        {
+            if (fail)
+                return Task.FromResult(Result.Failed(new ApplicationException("S3 delete: conn refused")));
+            Deleted.Add($"{cluster}/{shard}/{key}");
+            return Task.FromResult(Result.Success());
+        }
+
+        public Task<Result<bool>> BucketExistsAsync(CancellationToken ct) => throw new NotSupportedException();
+        public Task<Result<IReadOnlyList<WalObject>>> ListWalAsync(string cluster, string shard, int? maxKeysPerTest = null, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<IReadOnlyList<S3ObjectInfo>>> ListPrefixAsync(string prefix, int? maxKeysPerTest = null, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result> DeleteKeysAsync(IReadOnlyList<string> keys, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result> PutObjectAsync(string key, byte[] data, string? sha256, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<IReadOnlyList<WalObject>>> ListAsync(string cluster, string shard, string prefix, int? maxKeysPerTest = null, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<string>> GetObjectAsync(string cluster, string shard, string key, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result> PutObjectMd5Async(string key, byte[] data, string md5Hex, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<(byte[] Data, string? ETag)>> GetObjectBytesAsync(string cluster, string shard, string key, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<IReadOnlyList<string>>> ListFullsAsync(string cluster, string shard, int? maxKeysPerTest = null, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<string>> DownloadTextAsync(string cluster, string shard, string objectKey, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result> PutFileAsync(string key, string filePath, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result> GetObjectToFileAsync(string cluster, string shard, string key, string destFilePath, CancellationToken ct = default) => throw new NotSupportedException();
+    }
 }
