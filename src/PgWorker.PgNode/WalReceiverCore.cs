@@ -423,18 +423,25 @@ public sealed class WalReceiverCore
                         if (shot.EndLsn <= Volatile.Read(ref lastPartialEndLsn))
                             continue; // нулевой прирост — версии не пере-clay'ются (§3)
 
-                        // Сверка «длиннее лежащей»: list узкого префикса (первая
-                        // доступная read-нода); отказ — skip тика (стрим не рвём,
-                        // хвост доедет следующим тиком/финалом).
+                        // Сверка «длиннее лежащей»: list узкого префикса сегмента
+                        // (первая доступная read-нода) — в нём и финал `wal/<seg>`,
+                        // и версии `wal/<seg>.*.partial`; отказ — skip тика (стрим не
+                        // рвём, хвост доедет следующим тиком/финалом).
                         var listed = await s3.ListAsync(
-                            o.Cluster, o.Shard, $"wal/{WalPartialName.SegmentPrefixOf(shot.Name)}",
-                            ct: partialPumpToken);
+                            o.Cluster, o.Shard, $"wal/{shot.Name}", ct: partialPumpToken);
                         if (!listed.IsSuccess)
                         {
                             Diagnostic(events,
                                 $"partial list failed: {listed.Error!.Message.Split('\n')[0]}");
                             continue;
                         }
+
+                        // Сегмент уже закрыт (лежит финал) — версии не выкладываются:
+                        // мусор, поглощение/чистка удаляют их; заодно приёмник чужой
+                        // инкарнации не публикует версии по сегментам с финалом.
+                        if (listed.Value.Any(obj =>
+                                string.Equals(obj.Name, shot.Name, StringComparison.Ordinal)))
+                            continue;
 
                         ulong lying = 0;
                         foreach (var obj in listed.Value)

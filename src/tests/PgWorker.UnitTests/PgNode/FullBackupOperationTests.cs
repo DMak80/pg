@@ -177,39 +177,34 @@ public class FullBackupOperationTests
             return (0, "", "");
         }
 
-        // Файл сегмента набора: ровно wal_segment_size; long page header (tli=1,
-        // pageaddr = граница сегмента) + одна полная запись 64 байта (валидный
-        // префикс 104 = 40 + 64), остаток — нули (конец бэкапа).
+        // Файл сегмента набора: ровно wal_segment_size; валидный префикс
+        // (long page header + одна полная запись 64 байта = 104), остаток — нули.
         private static void WriteSegment(string path, int segNo)
         {
             using var file = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None);
             file.SetLength(WalFileName.SegmentBytes);
-            var boundary = (ulong)segNo * (ulong)WalFileName.SegmentBytes;
-            WriteRecordHeader(file, 0, boundary);
-            WriteRecordHeader(file, WalPrefixScanner.LongHeaderBytes, boundary, 64);
+            file.Write(SegmentPrefix(segNo));
         }
+    }
 
-        private static void WriteRecordHeader(FileStream file, int offset, ulong boundary, int recordLen = 0)
-        {
-            var header = new byte[WalPrefixScanner.LongHeaderBytes];
-            if (recordLen == 0)
-            {
-                // long page header: tli LE u32 @4, pageaddr LE u64 @8
-                header[4] = 1;
-                for (var i = 0; i < 8; i++)
-                    header[8 + i] = (byte)(boundary >> (8 * i));
-            }
-            else
-            {
-                // xl_tot_len LE u32 @0, xl_xid @4 (≠ длины), полезный байт @8
-                header[0] = (byte)recordLen;
-                header[4] = 0xB3;
-                header[8] = 0xAB;
-            }
+    // Валидный префикс сегмента набора (104 байта): long page header (tli=1,
+    // pageaddr = граница) + запись 64 байта.
+    private static byte[] SegmentPrefix(int segNo)
+        => SegmentPrefix(segNo, recordLen: 64);
 
-            file.Position = offset;
-            file.Write(header);
-        }
+    private static byte[] SegmentPrefix(int segNo, int recordLen)
+    {
+        var prefix = new byte[WalPrefixScanner.LongHeaderBytes + recordLen];
+        var boundary = (ulong)segNo * (ulong)WalFileName.SegmentBytes;
+        // long page header: tli LE u32 @4, pageaddr LE u64 @8
+        prefix[4] = 1;
+        for (var i = 0; i < 8; i++)
+            prefix[8 + i] = (byte)(boundary >> (8 * i));
+        // запись: xl_tot_len LE u32 @0, xl_xid @4 (≠ длины), полезный байт @8
+        prefix[WalPrefixScanner.LongHeaderBytes] = (byte)recordLen;
+        prefix[WalPrefixScanner.LongHeaderBytes + 4] = 0xB3;
+        prefix[WalPrefixScanner.LongHeaderBytes + 8] = 0xAB;
+        return prefix;
     }
 
     /// <summary>Фейк IBackupS3: put-файлы в словарь ключей; программирование
@@ -236,8 +231,16 @@ public class FullBackupOperationTests
             Objects[key] = data.ToArray();
             return Task.FromResult(Result.Success());
         }
-        public Task<Result> GetObjectToFileAsync(string cluster, string shard, string key, string destFilePath, CancellationToken ct = default)
-            => Task.FromResult(Result.Success());
+        public Task<Result> GetObjectToFileAsync(
+            string cluster, string shard, string key, string destFilePath, CancellationToken ct = default)
+        {
+            var fullKey = $"{cluster}/{shard}/{key}";
+            if (!Objects.TryGetValue(fullKey, out var data))
+                return Task.FromResult(Result.Failed(
+                    new ApplicationException($"S3 get-to-file {fullKey}: not found")));
+            File.WriteAllBytes(destFilePath, data);
+            return Task.FromResult(Result.Success());
+        }
         public Task<Result<bool>> BucketExistsAsync(CancellationToken ct) => throw new NotSupportedException();
         public Task<Result<IReadOnlyList<WalObject>>> ListWalAsync(string cluster, string shard, int? maxKeysPerTest = null, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<Result<IReadOnlyList<S3ObjectInfo>>> ListPrefixAsync(string prefix, int? maxKeysPerTest = null, CancellationToken ct = default) => throw new NotSupportedException();
@@ -495,6 +498,55 @@ public class FullBackupOperationTests
         s3.PutKeys.Should().Contain($"{prefix}/full/{Id}/pg_wal/0000000100000000000000AB");
 
         // Cleanup
+        Directory.Delete(staging, recursive: true);
+    }
+
+    // AAA (t14, arch/19 §2/§3): финал того же сегмента из ЧУЖОЙ цепочки
+    // (пересозданный кластер) — хвост-гвард FAILED операции.
+    [Fact]
+    public async Task TailGuard_ForeignChain_Failed()
+    {
+        // Arrange — в wal/ уже лежит финал хвостового сегмента иной инкарнации
+        var staging = Path.Combine(Path.GetTempPath(), $"full-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(staging);
+        var s3 = new FakeS3();
+        s3.Objects[$"{Cluster}/{Shard}/wal/0000000100000000000000ac"] = new byte[WalFileName.SegmentBytes];
+        var registry = new OperationRegistry();
+        var op = Create(Etcd(), new FakeRunner(), s3, staging, registry);
+
+        // Act
+        await op.RunAsync(CancellationToken.None);
+
+        // Assert — FAILED, причина называет чужую цепочку; хвост не опубликован
+        var snap = registry.Current!;
+        snap.State.Should().Be("failed");
+        snap.Error.Should().Contain("foreign WAL chain");
+        s3.PutKeys.Should().NotContain(k =>
+            k.StartsWith($"{Cluster}/{Shard}/wal/") && k.EndsWith(".partial"));
+        Directory.Delete(staging, recursive: true);
+    }
+
+    // AAA (t14): финал той же цепочки (префикс совпадает) — хвост публикуется.
+    [Fact]
+    public async Task TailGuard_SameChain_Ok()
+    {
+        // Arrange — финал хвоста содержит те же первые байты (одна инкарнация)
+        var staging = Path.Combine(Path.GetTempPath(), $"full-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(staging);
+        var s3 = new FakeS3();
+        var existing = new byte[WalFileName.SegmentBytes];
+        SegmentPrefix(0xAC).CopyTo(existing, 0);
+        s3.Objects[$"{Cluster}/{Shard}/wal/0000000100000000000000ac"] = existing;
+        var registry = new OperationRegistry();
+        var op = Create(Etcd(), new FakeRunner(), s3, staging, registry);
+
+        // Act
+        await op.RunAsync(CancellationToken.None);
+
+        // Assert — succeeded; версия хвоста опубликована
+        registry.Current!.State.Should().Be("succeeded");
+        s3.Objects.Should().ContainKey(
+            $"{Cluster}/{Shard}/wal/{WalPartialName.Key("0000000100000000000000ac", 0xAC000068UL)}");
         Directory.Delete(staging, recursive: true);
     }
 

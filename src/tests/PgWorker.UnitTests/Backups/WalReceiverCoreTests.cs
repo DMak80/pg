@@ -1035,7 +1035,7 @@ public class WalReceiverCoreTests
         var source = new FakeXLogSource { WaitForChunks = true };
         source.Push(PartialChunk(0, 64));
         var s3 = new FakeS3();
-        s3.FailListPrefixes.Add($"c1/shard1/wal/{LiveSegment}.");
+        s3.FailListPrefixes.Add($"c1/shard1/wal/{LiveSegment}");
         using var cts = new CancellationTokenSource();
 
         // Act — тик пампа упирается в отказ листинга
@@ -1112,12 +1112,15 @@ public class WalReceiverCoreTests
             () => s3.DeletedKeys.Contains(shortVersion) && s3.DeletedKeys.Contains(longVersion),
             TimeSpan.FromSeconds(5),
             () => $"deleted=[{string.Join(",", s3.DeletedKeys)}]");
+        // Assert — версии удалены одним batch; финал на месте и после тика пампа
+        // версии НЕ пересоздаются (лежащий финал = закрытый сегмент, arch/19 §3)
+        await Task.Delay(1200, TestContext.Current.CancellationToken);
         cts.Cancel();
         var (outcome, _, _) = await run;
-
-        // Assert — версии удалены одним batch; финал на месте
         outcome.Should().BeNull();
         s3.Objects.Should().NotContainKey(shortVersion);
         s3.Objects.Should().NotContainKey(longVersion);
+        s3.Objects.Keys.Where(k => k.Contains(".partial", StringComparison.Ordinal))
+            .Should().BeEmpty("a closed segment never gets .partial versions");
     }
 }

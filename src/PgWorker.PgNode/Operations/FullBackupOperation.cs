@@ -288,6 +288,19 @@ public sealed class FullBackupOperation : IReceiverOperation
                         }
                         var prefix = bytes.AsSpan(0, prefixLen).ToArray();
                         var endLsn = (ulong)setPos * (ulong)WalFileName.SegmentBytes + (ulong)prefixLen;
+
+                        // Гвард инкарнации для хвоста (arch/19 §2/§3): лежащий финал
+                        // того же сегмента обязан совпадать с публикуемым префиксом в
+                        // первых prefixLen байтах — иначе это цепочка ЧУЖОЙ инкарнации
+                        // (пересозданный кластер пишет в тот же префикс): полный FAILED,
+                        // как и гвард финальных дублей.
+                        if (await TailConflictsWithExistingFinalAsync(s3, normalized, prefix, token)
+                            is { } conflict)
+                        {
+                            Fail(conflict);
+                            return;
+                        }
+
                         var tailKey = $"{_identity.Cluster}/{_identity.Shard}/wal/" +
                             WalPartialName.Key(normalized, endLsn);
                         var tailPut = await s3.PutObjectAsync(
@@ -397,6 +410,37 @@ public sealed class FullBackupOperation : IReceiverOperation
     private static long DirectorySize(string dir)
         => Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories)
             .Sum(f => new FileInfo(f).Length);
+
+    // Гвард инкарнации для хвоста набора (arch/19 §2/§3): null — финала сегмента
+    // нет либо он совпадает с публикуемым префиксом (та же цепочка); строка —
+    // причина конфликта (чужая цепочка/транспортный отказ) для Fail операции.
+    private async Task<string?> TailConflictsWithExistingFinalAsync(
+        IBackupS3 s3, string segmentName, byte[] prefix, CancellationToken ct)
+    {
+        var temp = Path.Combine(Path.GetTempPath(), $".tail-guard-{Guid.NewGuid():N}");
+        try
+        {
+            var got = await s3.GetObjectToFileAsync(
+                _identity.Cluster, _identity.Shard, $"wal/{segmentName}", temp, ct);
+            if (!got.IsSuccess)
+                return got.Error!.Message.Contains("not found", StringComparison.OrdinalIgnoreCase)
+                    ? null
+                    : $"wal tail guard: get {segmentName} failed: {got.Error!.Message.Split('\n')[0]}";
+            var existing = await File.ReadAllBytesAsync(temp, ct);
+            if (existing.Length < prefix.Length
+                || !existing.AsSpan(0, prefix.Length).SequenceEqual(prefix))
+                return $"wal tail {segmentName}: existing final belongs to a foreign WAL chain";
+            return null;
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            return $"wal tail guard: {e.GetType().Name}: {e.Message.Split('\n')[0]}";
+        }
+        finally
+        {
+            TryDelete(temp);
+        }
+    }
 
     private static void TryDelete(string path)
     {
