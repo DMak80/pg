@@ -92,6 +92,118 @@ public static class WalPrefixScanner
         return prefix;
     }
 
+    /// <summary>Длина префикса, все записи которого целостны по xl_crc (spec §4.1,
+    /// решение №18): тот же проход, что ValidPrefixLength (границы записей), плюс
+    /// сверка CRC каждой ПОЛНОСТЬЮ принятой записи. CRC-32C считается по
+    /// ЛОГИЧЕСКОМУ образу записи — байты [pos..pos+20) заголовка (до xl_crc) и
+    /// [pos+24..recordEnd) тела; вставленные short-заголовки страниц и
+    /// MAXALIGN-добивка исключены. Несовпадение CRC — стоп на конце последней
+    /// CRC-валидной записи (консервативно). Чистая функция.</summary>
+    public static int ValidatedPrefixLength(byte[] buffer, int count)
+    {
+        if (count < LongHeaderBytes)
+            return 0;
+
+        var prefix = 0; // конец последней CRC-валидной записи
+        long pos = LongHeaderBytes; // первая страница: long-заголовок 40 байт
+
+        // Продолжение записи из предыдущего сегмента — как в ValidPrefixLength.
+        if ((LeU16(buffer, 2) & XlpFirstIsContrecord) != 0)
+        {
+            var remaining = LeU32(buffer, 16); // xlp_rem_len
+            if (remaining == 0)
+                return 0;
+            var contEnd = Skip(count, pos, remaining);
+            if (contEnd < 0)
+                return 0;
+            prefix = (int)contEnd;
+            pos = (contEnd + RecordAlign - 1) & ~(RecordAlign - 1); // MAXALIGN
+            if (pos > count)
+                return prefix;
+        }
+
+        while (pos < count)
+        {
+            if (pos % PageBytes == 0)
+            {
+                pos += ShortHeaderBytes;
+                if (pos > count)
+                    return prefix;
+            }
+
+            var pageEnd = (pos / PageBytes + 1) * PageBytes;
+            if (pageEnd - pos < TotalLenBytes)
+            {
+                pos = pageEnd; // в остатке страницы меньше 4 байт — добивка
+                continue;
+            }
+            if (count - pos < TotalLenBytes)
+                return prefix;
+
+            var totalLen = LeU32(buffer, (int)pos);
+            if (totalLen < MinRecordBytes)
+                return prefix; // нули/мусор — конец валидного WAL
+
+            var (recordEnd, next) = Advance(count, pos, totalLen);
+            if (recordEnd < 0)
+                return prefix; // запись ещё пишется — принимаем только полные
+
+            var check = RecordCrc(buffer, count, pos, totalLen);
+            if (check is null || check.Value.Computed != check.Value.Stored)
+                return prefix; // CRC не сошлась — целостных записей выше нет
+
+            prefix = (int)recordEnd;
+            pos = next;
+        }
+
+        return prefix;
+    }
+
+    // CRC записи: значение из xl_crc (LE u32 @20) и CRC-32C логического образа
+    // ([0..20) + [24..totalLen), без short-заголовков страниц и добивки).
+    // null — байты записи ещё не приняты целиком.
+    private static (uint Computed, uint Stored)? RecordCrc(
+        byte[] buffer, int count, long start, uint totalLen)
+    {
+        var crc = Crc32C.Init();
+        Span<byte> stored = stackalloc byte[4];
+        long cur = start;
+        var consumed = 0L;
+        while (consumed < totalLen)
+        {
+            if (cur % PageBytes == 0)
+                cur += ShortHeaderBytes; // продолжение на новой странице
+            var room = PageBytes - cur % PageBytes;
+            var take = (int)Math.Min(room, (long)totalLen - consumed);
+            var chunkEnd = consumed + take;
+
+            // заголовок до xl_crc: логические [0..20)
+            var headTo = Math.Min(chunkEnd, 20);
+            if (headTo > consumed)
+                crc = Crc32C.Update(crc, buffer, (int)cur, (int)(headTo - consumed));
+
+            // сам xl_crc: логические [20..24)
+            var crcFrom = Math.Max(consumed, 20);
+            var crcTo = Math.Min(chunkEnd, 24);
+            for (var i = crcFrom; i < crcTo; i++)
+                stored[(int)(i - 20)] = buffer[(int)(cur + (i - consumed))];
+
+            // тело после xl_crc: логические [24..totalLen)
+            var bodyFrom = Math.Max(consumed, 24);
+            if (chunkEnd > bodyFrom)
+                crc = Crc32C.Update(crc, buffer, (int)(cur + (bodyFrom - consumed)),
+                    (int)(chunkEnd - bodyFrom));
+
+            consumed = chunkEnd;
+            cur += take;
+            if (cur > count)
+                return null; // байты записи не приняты целиком
+        }
+
+        var storedValue = (uint)(stored[0] | stored[1] << 8 | stored[2] << 16 | stored[3] << 24);
+        return (Crc32C.Finish(crc), storedValue);
+    }
+
     // Продвижение по WAL-контенту на length байт (тело записи/её продолжение)
     // с пропуском short-заголовков страниц. -1 — байты ещё не приняты целиком.
     private static long Skip(int count, long pos, uint length)
