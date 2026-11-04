@@ -409,8 +409,6 @@ public sealed class BackupsOptions
 
     public BackupsPolicyOptions Policy { get; set; } = new();
 
-    public BackupsStagingOptions Staging { get; set; } = new();
-
     public BackupsJobOptions Job { get; set; } = new();
 
     public BackupsRetryOptions Retry { get; set; } = new();
@@ -448,7 +446,6 @@ public sealed class BackupsOptions
         S3CaBundlePath: S3.CaBundlePath,
         RetryBaseSec: Retry.BaseSec,
         RetryMaxSec: Retry.MaxSec,
-        StagingDir: Staging.Dir,
         WalVerifyIntervalSec: Wal.VerifyIntervalSec,
         WalLagMaxSegments: Wal.LagMaxSegments,
         WalStaleSec: Wal.StaleSec,
@@ -618,13 +615,6 @@ public sealed class BackupsRetentionOptions
     public int Weeks { get; set; } = 1;
 
     public int Months { get; set; } = 1;
-}
-
-/// <summary>Staging полного (arch/19 §9): каталог в data-volume ноды
-/// (дефолт — канон); ENOSPC — реактивный FAILED приёмника; квоты нет.</summary>
-public sealed class BackupsStagingOptions
-{
-    public string Dir { get; set; } = "/home/postgres/pgdata/backup-staging";
 }
 
 /// <summary>WAL-поток шарда (arch/19 §3/§9): период list/контроля цепочки,

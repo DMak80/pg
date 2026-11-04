@@ -118,7 +118,6 @@ public class BackupSelfHealTests(EtcdFixture fixture)
     private static BackupsRuntimeOptions Options() => new(
         Enabled: true,
         S3Bucket: "bkt",
-        StagingDir: "/home/postgres/pgdata/backup-staging",
         WalVerifyIntervalSec: 0,
         WalLagMaxSegments: 1024,
         WalStaleSec: 300);

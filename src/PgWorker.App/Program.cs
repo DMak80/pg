@@ -357,7 +357,6 @@ builder.Services.AddSingleton<IClusterDriver>(sp =>
     var nodeBackupEnv = new NodeBackupEnv(
         Bucket: string.IsNullOrWhiteSpace(opts.Backups.S3.Bucket) ? null : opts.Backups.S3.Bucket,
         CaPem: BackupCaPem.ReadIfConfigured(opts.Backups.S3.CaBundlePath),
-        StagingDir: string.IsNullOrWhiteSpace(opts.Backups.Staging.Dir) ? null : opts.Backups.Staging.Dir,
         PartialIntervalSec: opts.Backups.Wal.PartialIntervalSec >= 1
             ? opts.Backups.Wal.PartialIntervalSec : null,
         // t15: период компакции дельт приёмника (fail-fast <60 уже отсёк мусор).

@@ -34,8 +34,6 @@ namespace PgWorker.PgNode;
 internal partial class Program
 {
     // Дефолт каталога staging полного в data-volume ноды (arch/19 §9);
-    // перекрывается env PGW_BACKUP_STAGING_DIR (ставит EnsureNode — шаг 11).
-    private const string DefaultStagingDir = NodePaths.Staging;
 
     private static readonly JsonSerializerOptions JsonOpts = new()
     {
@@ -123,10 +121,6 @@ internal partial class Program
             builder.Services.AddHostedService(sp => sp.GetRequiredService<WalReceiverLoop>());
         }
 
-        // Staging остаётся только у ops-операций (drill scratch); полный на
-        // диск не пишет (spec t01 §6.17) — env удаляется шагом 10.
-        var stagingDir = Environment.GetEnvironmentVariable("PGW_BACKUP_STAGING_DIR")
-            is { Length: > 0 } dir ? dir : DefaultStagingDir;
         builder.Services.AddSingleton<IFullBackupOperationFactory>(sp =>
             new FullBackupOperationFactory(
                 identity, etcd, endpoints, pools, roleProbe,
@@ -135,7 +129,7 @@ internal partial class Program
         // ops-реестр (одна активная; полный — свой реестр, arch/19 §5).
         builder.Services.AddSingleton<IOpsOperationFactory>(sp =>
             new NodeOperationFactory(
-                stagingDir, sp.GetRequiredService<OpsOperationRegistry>()));
+                NodePaths.Staging, sp.GetRequiredService<OpsOperationRegistry>()));
 
         var app = builder.Build();
 

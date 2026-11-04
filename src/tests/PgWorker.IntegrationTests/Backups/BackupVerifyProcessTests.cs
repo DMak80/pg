@@ -130,9 +130,7 @@ public class BackupVerifyProcessTests
             new ShardEndpoints(Fx.Gateway, [Fx.Endpoint], new ShardProbe(new HttpClient())),
             FakePoolFactory.Single(s3), Receiver, Claims,
             new WorkJournal("/pgworker", Fx.Gateway, [Fx.Endpoint]),
-            options ?? new BackupsRuntimeOptions(
-                Enabled: true, S3Bucket: "bkt",
-                StagingDir: "/home/postgres/pgdata/backup-staging"),
+            options ?? new BackupsRuntimeOptions(Enabled: true, S3Bucket: "bkt"),
             TimeProvider.System,
             logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<BackupVerifyProcess>.Instance,
             verifyObserver);

@@ -577,10 +577,6 @@ public sealed class PlainClusterDriver(
                 env["PGW_BACKUP_S3_BUCKET"] = backupEnv.Bucket;
             if (!string.IsNullOrWhiteSpace(backupEnv.CaPem))
                 env["PGW_BACKUP_S3_CA_PEM"] = backupEnv.CaPem;
-            // Staging полного (arch/19 §2/§9): каталог в data-volume
-            // ноды; null/пусто → env не ставится — приёмник возьмёт дефолт.
-            if (!string.IsNullOrWhiteSpace(backupEnv.StagingDir))
-                env["PGW_BACKUP_STAGING_DIR"] = backupEnv.StagingDir;
             // Период .partial-доотправки приёмника (arch/19 §3/§9): env по образцу
             // staging; null/≤1 → env не ставится — приёмник берёт дефолт 3 с.
             if (backupEnv.PartialIntervalSec is > 0)
