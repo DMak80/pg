@@ -20,6 +20,10 @@ s3://<bucket>/<C>/<X>/
                      # (вкл. backup_manifest, pg_wal/)
  wal/<segment>       # 000000010000000000000001, …
  wal/00000002.history # timeline-истории (обязательны)
+ wal/<segment>.partial_<start>_<end>_<life>_<role>_<md5>
+                     # куски RPO-хвоста незакрытого сегмента: базы-компаки
+                     # (start=0) и дельты прироста; формат —
+                     # [pgnode/03-wal-receiver.md](../pgnode/03-wal-receiver.md) §2
 ```
 
 Ключ объекта = путь файла; `backup_manifest` в корне `full/<id>/` — база

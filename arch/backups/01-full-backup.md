@@ -114,7 +114,11 @@ layout), финальную версию сегмента в `wal/` достав
 проверяет due (валидного COMPLETED нет; возраст > `full_max_age_sec`;
 `WAL_CHAIN_ERROR` без покрывающего полного; живой `gap`) и создаёт
 `full/<id>` (PLANNED → API-запуск → RUNNING), поддерживая максимум один
-активный полный на шард. Бэкофф серии FAILED, `CHECKPOINT` на мастере перед
+активный полный на шард. При создании записи воркер фиксирует в ней номер
+жизни цепочки шарда (`chain_life` из счётчика `wal-life` — манифест
+полного хранит номер своей жизни, источник для restore-заявок;
+[05-etcd-contract.md](05-etcd-contract.md) §1). Бэкофф серии FAILED,
+`CHECKPOINT` на мастере перед
 пересъёмом при живой границе разрыва, takeover и `operation-vanished` —
 [A. FullBackupScheduler](processes/a-full-scheduler.md).
 

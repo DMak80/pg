@@ -45,7 +45,7 @@ pg_hba и доставку секретов в компоненты ноды. О
 |---|---|---|
 | Размещение и жизненный цикл процесса | `pgnode` в supervisord, порты `:8080`/`:8081`, сеть, tmpfs, env без секретов, ресурсы, staging/scratch | [01-placement.md](01-placement.md) |
 | HTTP API ноды | команды/статусы операций (`/api/backup/full*`, `/api/ops/*`, `/api/node/*`), mTLS-канал доставки, 409/503, cancel | [02-api.md](02-api.md) |
-| Приёмник WAL | физическая репликация, сегменты/`.partial`, гвард инкарнации, подтверждение-по-доставке, возобновление, tli/`.history`, ре-доклад инвентаря | [03-wal-receiver.md](03-wal-receiver.md) |
+| Приёмник WAL | физическая репликация, сегменты/кусочная доотправка (базы+дельты, номер жизни цепочки, компакция), гвард чужой цепочки, подтверждение-по-доставке, возобновление, tli/`.history`, ре-доклад инвентаря | [03-wal-receiver.md](03-wal-receiver.md) |
 | Полный бэкап | `pg_basebackup`, staging, upload в S3, WAL набора, cancel/ENOSPC | [04-full-backup.md](04-full-backup.md) |
 | Verify | скачивание набора, `pg_verifybackup`, отмена | [05-verify.md](05-verify.md) |
 | Restore и drill | восстановление PGDATA, fetch-wal, `auto.conf`, `standby.signal`, `pg_ctl`, promote, scratch-дрилл, стоп/возврат Patroni | [06-restore-drill.md](06-restore-drill.md) |
