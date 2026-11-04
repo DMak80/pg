@@ -55,6 +55,7 @@ public sealed class SegmentAssembler(ulong startLsn)
     private int _bufferCount;  // байт накоплено в текущем (незакрытом) сегменте
     private ulong _segmentStart;
     private uint? _currentTli;
+    private readonly object _sync = new(); // Append/Close/PartialSnapshot — общий сериализатор
 
     /// <summary>LSN последнего принятого байта (первый — startLsn).</summary>
     public ulong LastAppendedLsn => _lastAppended;
@@ -67,47 +68,50 @@ public sealed class SegmentAssembler(ulong startLsn)
 
     public IReadOnlyList<ClosedSegment> Append(XLogChunk chunk)
     {
-        _serverWalEnd = chunk.WalEnd;
-        if (chunk.WalStart != _lastAppended)
-            throw new ApplicationException(
-                $"WAL stream gap: WalStart {WalLsn.Text(chunk.WalStart)} " +
-                $"≠ expected {WalLsn.Text(_lastAppended)}");
-
-        var closed = new List<ClosedSegment>();
-        var data = chunk.Data.Span;
-        var offset = 0;
-
-        // Головной сегмент не полон: байты до ближайшей границы отбрасываются
-        // (неполный головной сегмент не выгружается).
-        if (_bufferCount == 0 && _lastAppended % (ulong)WalFileName.SegmentBytes != 0)
+        lock (_sync)
         {
-            var boundary = _lastAppended
-                + (ulong)WalFileName.SegmentBytes
-                - _lastAppended % (ulong)WalFileName.SegmentBytes;
-            offset = (int)Math.Min(boundary - _lastAppended, (ulong)data.Length);
+            _serverWalEnd = chunk.WalEnd;
+            if (chunk.WalStart != _lastAppended)
+                throw new ApplicationException(
+                    $"WAL stream gap: WalStart {WalLsn.Text(chunk.WalStart)} " +
+                    $"≠ expected {WalLsn.Text(_lastAppended)}");
+
+            var closed = new List<ClosedSegment>();
+            var data = chunk.Data.Span;
+            var offset = 0;
+
+            // Головной сегмент не полон: байты до ближайшей границы отбрасываются
+            // (неполный головной сегмент не выгружается).
+            if (_bufferCount == 0 && _lastAppended % (ulong)WalFileName.SegmentBytes != 0)
+            {
+                var boundary = _lastAppended
+                    + (ulong)WalFileName.SegmentBytes
+                    - _lastAppended % (ulong)WalFileName.SegmentBytes;
+                offset = (int)Math.Min(boundary - _lastAppended, (ulong)data.Length);
+            }
+
+            // Начало нового сегмента — позиция первого записанного байта.
+            if (offset < data.Length && _bufferCount == 0)
+                _segmentStart = chunk.WalStart + (ulong)offset;
+
+            // Копирование чанка в сегментный буфер порциями до границ сегментов;
+            // закрытие — ровно на SegmentBytes (буфер отдан ClosedSegment, следующий
+            // Rent — лениво следующим куском).
+            while (offset < data.Length)
+            {
+                _buffer ??= SegmentBufferPool.Rent();
+                var write = Math.Min(
+                    data.Length - offset, (int)WalFileName.SegmentBytes - _bufferCount);
+                data.Slice(offset, write).CopyTo(_buffer.AsSpan(_bufferCount, write));
+                _bufferCount += write;
+                offset += write;
+                if (_bufferCount == (int)WalFileName.SegmentBytes)
+                    closed.Add(Close());
+            }
+
+            _lastAppended = chunk.WalStart + (ulong)chunk.Data.Length;
+            return closed;
         }
-
-        // Начало нового сегмента — позиция первого записанного байта.
-        if (offset < data.Length && _bufferCount == 0)
-            _segmentStart = chunk.WalStart + (ulong)offset;
-
-        // Копирование чанка в сегментный буфер порциями до границ сегментов;
-        // закрытие — ровно на SegmentBytes (буфер отдан ClosedSegment, следующий
-        // Rent — лениво следующим куском).
-        while (offset < data.Length)
-        {
-            _buffer ??= SegmentBufferPool.Rent();
-            var write = Math.Min(
-                data.Length - offset, (int)WalFileName.SegmentBytes - _bufferCount);
-            data.Slice(offset, write).CopyTo(_buffer.AsSpan(_bufferCount, write));
-            _bufferCount += write;
-            offset += write;
-            if (_bufferCount == (int)WalFileName.SegmentBytes)
-                closed.Add(Close());
-        }
-
-        _lastAppended = chunk.WalStart + (ulong)chunk.Data.Length;
-        return closed;
     }
 
     /// <summary>Закрытие сегмента: имя от границы (WalFileName), TLI из long page
@@ -116,29 +120,67 @@ public sealed class SegmentAssembler(ulong startLsn)
     /// сегменту — сборщик берёт следующий из пула лениво.</summary>
     private ClosedSegment Close()
     {
-        var segmentBytes = _buffer!;
-        _buffer = null;
-        _bufferCount = 0;
-        if (segmentBytes.Length != (int)WalFileName.SegmentBytes)
-            throw new ApplicationException(
-                $"internal: segment {segmentBytes.Length} bytes ≠ {WalFileName.SegmentBytes}");
+        lock (_sync)
+        {
+            var segmentBytes = _buffer!;
+            _buffer = null;
+            _bufferCount = 0;
+            if (segmentBytes.Length != (int)WalFileName.SegmentBytes)
+                throw new ApplicationException(
+                    $"internal: segment {segmentBytes.Length} bytes ≠ {WalFileName.SegmentBytes}");
 
-        uint tli;
-        if (LeU64(segmentBytes, 8) == _segmentStart)
-            tli = LeU32(segmentBytes, 4);
-        else if (_currentTli is { } inherited)
-            tli = inherited;
-        else
-            throw new ApplicationException(
-                $"first uploadable segment at {WalLsn.Text(_segmentStart)} " +
-                "without a valid page header — TLI undefined");
+            uint tli;
+            if (LeU64(segmentBytes, 8) == _segmentStart)
+                tli = LeU32(segmentBytes, 4);
+            else if (_currentTli is { } inherited)
+                tli = inherited;
+            else
+                throw new ApplicationException(
+                    $"first uploadable segment at {WalLsn.Text(_segmentStart)} " +
+                    "without a valid page header — TLI undefined");
 
-        _currentTli = tli;
-        var segId = (uint)(_segmentStart / (ulong)WalFileName.SegmentBytes);
-        var name = new WalFileName(tli, segId / WalFileName.SegsPerLog, segId % WalFileName.SegsPerLog).Name;
-        var endLsn = _segmentStart + (ulong)WalFileName.SegmentBytes;
-        _segmentStart = endLsn;
-        return new ClosedSegment(tli, name, segmentBytes, endLsn);
+            _currentTli = tli;
+            var segId = (uint)(_segmentStart / (ulong)WalFileName.SegmentBytes);
+            var name = new WalFileName(tli, segId / WalFileName.SegsPerLog, segId % WalFileName.SegsPerLog).Name;
+            var endLsn = _segmentStart + (ulong)WalFileName.SegmentBytes;
+            _segmentStart = endLsn;
+            return new ClosedSegment(tli, name, segmentBytes, endLsn);
+        }
+    }
+
+    /// <summary>Снимок валидного префикса незакрытого сегмента (arch/19 §3):
+    /// имя — математика Close (TLI из long page header буфера с валидацией
+    /// xlp_pageaddr, иначе наследование _currentTli), КОПИЯ префикса (буфер —
+    /// исключительное владение hot-path пула, отдаётся копия — WalPrefixScanner
+    /// режет нули-добивку и незавершённые записи), EndLsn = _segmentStart + длина
+    /// префикса. Нет незакрытого сегмента/заголовка, префикс пуст — null.
+    /// Потокобезопасен относительно Append (общий _sync — памп-поток читает
+    /// снимок параллельно стриму).</summary>
+    public (string Name, byte[] Prefix, ulong EndLsn)? PartialSnapshot()
+    {
+        lock (_sync)
+        {
+            if (_buffer is null || _bufferCount < WalPrefixScanner.LongHeaderBytes)
+                return null;
+            var prefixLen = WalPrefixScanner.ValidPrefixLength(_buffer, _bufferCount);
+            if (prefixLen <= 0)
+                return null;
+
+            uint tli;
+            if (LeU64(_buffer, 8) == _segmentStart)
+                tli = LeU32(_buffer, 4);
+            else if (_currentTli is { } inherited)
+                tli = inherited;
+            else
+                return null; // заголовок невалиден и наследовать нечего (§3, развилка 22)
+
+            var segId = (uint)(_segmentStart / (ulong)WalFileName.SegmentBytes);
+            var name = new WalFileName(
+                tli, segId / WalFileName.SegsPerLog, segId % WalFileName.SegsPerLog).Name;
+            var prefix = new byte[prefixLen];
+            Buffer.BlockCopy(_buffer, 0, prefix, 0, prefixLen);
+            return (name, prefix, _segmentStart + (ulong)prefixLen);
+        }
     }
 
     private static uint LeU32(byte[] b, int offset)
