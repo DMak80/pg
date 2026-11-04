@@ -38,6 +38,8 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
     private readonly Dictionary<(string Operation, string Result), long> _operations = new();
     private DateTimeOffset? _lastSnapshotTaken;
     private readonly Dictionary<(string Cluster, string Shard), long> _walLag = new();
+    // Свежесть per-shard прохода wal-sweeper (arch/18 §2.2, arch/19 §4).
+    private readonly Dictionary<(string Cluster, string Shard), long> _walSweepShardUnix = [];
     private readonly Dictionary<(string Cluster, string Shard), long> _fullAgeFinishedUnix = new();
     private readonly Dictionary<(string Cluster, string Shard), long> _fullMaxAge = new();
     private readonly Dictionary<(string Cluster, string Shard), long> _haFailoverSec = new();
@@ -102,6 +104,15 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
                     new KeyValuePair<string, object?>("cluster", kv.Key.Cluster),
                     new KeyValuePair<string, object?>("shard", kv.Key.Shard)))),
             unit: "{segment}", description: "Backup WAL stream lag, segments (arch/19 §3)");
+
+        meter.CreateObservableGauge(
+            "worker.wal_sweep.shard_last_success_timestamp_seconds",
+            () => Measure(() => _walSweepShardUnix.Select(kv =>
+                new Measurement<long>(kv.Value,
+                    new KeyValuePair<string, object?>("cluster", kv.Key.Cluster),
+                    new KeyValuePair<string, object?>("shard", kv.Key.Shard)))),
+            unit: "s",
+            description: "Unix timestamp of the last successful wal-sweeper pass per shard (arch/19 §4)");
 
         //  (arch/18 §2.7): возрастные серии хранят unix-факт, колбэк пересчитывает
         // now − unix на КАЖДОМ scrape — между тиками процессов значение не замирает
@@ -332,6 +343,45 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
                     _walLag[(cluster, shard)] = value;
                 else
                     _walLag.Remove((cluster, shard));
+            }
+        }
+        catch
+        {
+            // Пассивный наблюдатель.
+        }
+    }
+
+    // Gauge worker.wal_sweep.shard_last_success_timestamp_seconds{cluster,shard}:
+    // свежесть per-shard прохода wal-sweeper (arch/19 §4); unix=null — серия
+    // исчезает (образец BackupWalLag).
+    public void WalSweepShardUnix(string cluster, string shard, long? unix)
+    {
+        try
+        {
+            lock (_lock)
+            {
+                if (unix is { } value)
+                    _walSweepShardUnix[(cluster, shard)] = value;
+                else
+                    _walSweepShardUnix.Remove((cluster, shard));
+            }
+        }
+        catch
+        {
+            // Пассивный наблюдатель.
+        }
+    }
+
+    // Чистка серий шардов вне живых (иначе WalSweepShardStale ложно горит на
+    // удалённом шарде): проход вызывает по факту полного перебора.
+    public void WalSweepShardRetain(IReadOnlySet<(string Cluster, string Shard)> live)
+    {
+        try
+        {
+            lock (_lock)
+            {
+                foreach (var gone in _walSweepShardUnix.Keys.Where(k => !live.Contains(k)).ToList())
+                    _walSweepShardUnix.Remove(gone);
             }
         }
         catch
@@ -681,7 +731,8 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
                 age,
                 _haFailoverSec.ToFrozenDictionary(),
                 _haRebuildSec.ToFrozenDictionary(),
-                _orphanSkippedPools.ToFrozenDictionary());
+                _orphanSkippedPools.ToFrozenDictionary(),
+                _walSweepShardUnix.ToFrozenDictionary());
     }
     }
 
@@ -703,7 +754,8 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
         double? SnapshotAgeSeconds,
         IReadOnlyDictionary<(string Cluster, string Shard), long> HaFailoverDurations,
         IReadOnlyDictionary<(string Cluster, string Shard), long> HaRebuildDurations,
-        IReadOnlyDictionary<string, long> OrphanSkippedPools);
+        IReadOnlyDictionary<string, long> OrphanSkippedPools,
+        IReadOnlyDictionary<(string Cluster, string Shard), long> WalSweepShardUnix);
 
     internal sealed record DebugPhase(string Phase, DateTimeOffset StartedAt);
 }

@@ -432,4 +432,35 @@ public sealed class WorkerMetricsInstrumentationTests
         sut.DebugSnapshot().OrphanSkippedPools["p1"].Should().Be(2);
         sut.DebugSnapshot().OrphanSkippedPools["p2"].Should().Be(1);
     }
+
+    // AAA (arch/18 §2.2, arch/19 §4): per-shard свежесть wal-sweeper —
+    // set/retain/null снимает серию.
+    [Fact]
+    public void WalSweepShard_UnixAndRetain()
+    {
+        // Arrange
+        using var meter = new Meter("TestWorker");
+        using var sut = new WorkerMetricsInstrumentation(meter, TimeProvider.System);
+
+        // Act — два шарда прошли проход
+        sut.WalSweepShardUnix("c1", "s1", 1000);
+        sut.WalSweepShardUnix("c1", "s2", 2000);
+        var afterSet = sut.DebugSnapshot().WalSweepShardUnix;
+
+        // Assert — обе серии в снапшоте
+        afterSet.Should().HaveCount(2);
+        afterSet[("c1", "s1")].Should().Be(1000);
+
+        // Act — retain оставляет только живой s1
+        sut.WalSweepShardRetain(new HashSet<(string, string)> { ("c1", "s1") });
+
+        // Assert — серия исчезнувшего шарда снята
+        var afterRetain = sut.DebugSnapshot().WalSweepShardUnix;
+        afterRetain.Should().ContainKey(("c1", "s1"));
+        afterRetain.Should().NotContainKey(("c1", "s2"));
+
+        // Act / Assert — null снимает серию явно
+        sut.WalSweepShardUnix("c1", "s1", null);
+        sut.DebugSnapshot().WalSweepShardUnix.Should().BeEmpty();
+    }
 }
