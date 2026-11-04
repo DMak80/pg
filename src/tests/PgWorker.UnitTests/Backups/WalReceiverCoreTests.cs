@@ -166,6 +166,13 @@ public class WalReceiverCoreTests
                 .ToList();
             return Task.FromResult(Result<IReadOnlyList<WalObject>>.Success(objects));
         }
+        public Task<Result> PutObjectMd5Async(string key, byte[] data, string md5Hex, CancellationToken ct = default)
+            => throw new NotSupportedException();
+
+        public Task<Result<(byte[] Data, string? ETag)>> GetObjectBytesAsync(
+            string cluster, string shard, string key, CancellationToken ct = default)
+            => throw new NotSupportedException();
+
         public Task<Result<string>> GetObjectAsync(
             string cluster, string shard, string key, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<Result<IReadOnlyList<string>>> ListFullsAsync(

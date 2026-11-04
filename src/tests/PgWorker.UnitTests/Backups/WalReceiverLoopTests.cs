@@ -180,6 +180,13 @@ public class WalReceiverLoopTests
                 .Where(k => k.StartsWith(fullPrefix, StringComparison.Ordinal))
                 .Select(k => new WalObject(k[(k.LastIndexOf('/') + 1)..], DateTimeOffset.UnixEpoch))]));
         }
+        public Task<Result> PutObjectMd5Async(string key, byte[] data, string md5Hex, CancellationToken ct = default)
+            => throw new NotSupportedException();
+
+        public Task<Result<(byte[] Data, string? ETag)>> GetObjectBytesAsync(
+            string cluster, string shard, string key, CancellationToken ct = default)
+            => throw new NotSupportedException();
+
         public Task<Result<string>> GetObjectAsync(
             string cluster, string shard, string key, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<Result<IReadOnlyList<string>>> ListFullsAsync(
@@ -1461,6 +1468,36 @@ public class WalReceiverLoopTests
         finally
         {
             await StopLoopAsync(loop, cts);
+        }
+    }
+
+    // ---: env-парсер компакции дельт (t15, spec §4.2) ----
+
+    // AAA: env PGW_WAL_PARTIAL_COMPACT_INTERVAL_SEC — значение ≥60 применяется,
+    // мусор/отсутствие/<60 — дефолт 3600 (клэмп приёмника ≥60).
+    [Theory]
+    [InlineData("120", 120)]
+    [InlineData("", 3600)]
+    [InlineData("abc", 3600)]
+    [InlineData("59", 3600)]
+    [InlineData("3600", 3600)]
+    public void ReadPartialCompactIntervalSec_EnvParsing(string raw, int expected)
+    {
+        // Arrange
+        var previous = Environment.GetEnvironmentVariable("PGW_WAL_PARTIAL_COMPACT_INTERVAL_SEC");
+        Environment.SetEnvironmentVariable("PGW_WAL_PARTIAL_COMPACT_INTERVAL_SEC", raw);
+
+        try
+        {
+            // Act
+            var sec = WalReceiverLoop.ReadPartialCompactIntervalSec();
+
+            // Assert
+            sec.Should().Be(expected);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("PGW_WAL_PARTIAL_COMPACT_INTERVAL_SEC", previous);
         }
     }
 }

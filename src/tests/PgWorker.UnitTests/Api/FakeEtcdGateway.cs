@@ -9,13 +9,19 @@ internal sealed class FakeEtcdGateway : IEtcdGateway
 {
     public Dictionary<string, string> Store { get; } = [];
 
+    // Транспортный отказ чтения выбранных ключей (t15: transient-ветка чтения
+    // счётчика wal-life); null — отказов нет.
+    public Func<string, bool>? FailGet { get; set; }
+
     public Task<Result<IReadOnlyList<Kv>>> RangeAsync(string endpoint, string prefix, CancellationToken ct)
         => Task.FromResult(Result<IReadOnlyList<Kv>>.Success(
             Store.Where(p => p.Key.StartsWith(prefix, StringComparison.Ordinal))
                 .Select(p => new Kv(p.Key, p.Value, 1)).ToList()));
 
     public Task<Result<Kv?>> GetAsync(string endpoint, string key, CancellationToken ct)
-        => Task.FromResult(Result<Kv?>.Success(Store.TryGetValue(key, out var v) ? new Kv(key, v, 1) : null));
+        => Task.FromResult(FailGet?.Invoke(key) == true
+            ? Result<Kv?>.Failed(new EtcdUnreachableException("etcd down"))
+            : Result<Kv?>.Success(Store.TryGetValue(key, out var v) ? new Kv(key, v, 1) : null));
 
     public Task<Result> PutAsync(string endpoint, string key, string value, long? lease, CancellationToken ct)
     {

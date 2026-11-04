@@ -138,6 +138,13 @@ public sealed class FakeBackupS3 : IBackupS3
             (IReadOnlyList<WalObject>)merged));
     }
 
+    public Task<Result> PutObjectMd5Async(string key, byte[] data, string md5Hex, CancellationToken ct = default)
+        => throw new NotSupportedException();
+
+    public Task<Result<(byte[] Data, string? ETag)>> GetObjectBytesAsync(
+        string cluster, string shard, string key, CancellationToken ct = default)
+        => throw new NotSupportedException();
+
     public Task<Result<string>> GetObjectAsync(string cluster, string shard, string key, CancellationToken ct = default)
         => Task.FromResult(Fails || FailsGetObject || !Contents.TryGetValue((cluster, shard, key), out var content)
             ? Result<string>.Failed(new ApplicationException("s3 get failed"))
