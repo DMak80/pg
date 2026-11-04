@@ -1,6 +1,6 @@
 using FluentAssertions;
 using PgWorker.Backups;
-using PgWorker.Backups.Job;
+using PgWorker.Etcd.Backups;
 using Xunit;
 
 namespace PgWorker.UnitTests.Backups;

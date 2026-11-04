@@ -1,6 +1,6 @@
 using System.Collections.Concurrent;
 using Microsoft.Extensions.Logging;
-using PgWorker.Backups.Job;
+using PgWorker.Etcd.Backups;
 using PgWorker.Backups.Sql;
 using PgWorker.Core;
 using PgWorker.Core.Model;
@@ -517,7 +517,7 @@ public sealed class WalStreamProcess(
         // виден TailOf ниже. Неудача bump не роняет тик — факт failed_permanent
         // персистентен (приёмник заморожен), следующий контроль догонит.
         var walLife = new WalLifeStore(etcd, endpoints);
-        if (agentFacts?.Any(WalLifeStore.IsForeignChainFact) == true)
+        if (agentFacts?.Any(f => WalLifeStore.IsForeignChainFact(f.State, f.Error)) == true)
         {
             var bumped = await walLife.BumpAsync(
                 cluster, shard, WalLifeReason.ForeignChain, startedUnix: null, ct);

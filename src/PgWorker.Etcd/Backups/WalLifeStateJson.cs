@@ -1,6 +1,6 @@
 using System.Text.Json;
 
-namespace PgWorker.Backups.Job;
+namespace PgWorker.Etcd.Backups;
 
 // Значение ключа /pgworker/backups/<C>/<X>/wal-life (arch/backups/05 §1):
 // {"chain_life":N,"bumped_unix":T,"reason":"shard-rebuilt|restore|foreign-chain"}.

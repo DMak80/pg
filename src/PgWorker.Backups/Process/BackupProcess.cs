@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Logging;
 using PgWorker.Backups.Job;
+using PgWorker.Etcd.Backups;
 using PgWorker.Core;
 using PgWorker.Core.Model;
 using PgWorker.Core.Templates;

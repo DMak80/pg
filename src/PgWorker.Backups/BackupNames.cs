@@ -20,7 +20,7 @@ public static class BackupNames
     /// /pgworker/backups/&lt;C&gt;/&lt;X&gt;/wal-life; отсутствие ключа = жизнь 0;
     /// пишет ТОЛЬКО воркер (единственный писатель счётчика).</summary>
     public static string WalLifeKey(string cluster, string shard)
-        => $"/pgworker/backups/{cluster}/{shard}/wal-life";
+        => PgWorker.Etcd.Backups.WalLifeKeys.Key(cluster, shard);
 
     /// <summary>Ключ дрилла шарда (reliability, arch/19 §4):
     /// /pgworker/backups/&lt;C&gt;/&lt;X&gt;/drill — один на шард.</summary>

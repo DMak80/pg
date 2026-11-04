@@ -1,6 +1,6 @@
 using FluentAssertions;
 using PgWorker.Backups;
-using PgWorker.Backups.Job;
+using PgWorker.Etcd.Backups;
 using PgWorker.UnitTests.Api;
 using Xunit;
 
@@ -135,18 +135,14 @@ public class WalLifeStoreTests
     [Fact]
     public void IsForeignChainFact_DetectsOnlyForeignChainPermanent()
     {
-        // Arrange
-        var positive = new WalReceiverAgentFacts(
-            "n1", "master", "failed_permanent", false, null,
-            "wal-archive-conflict: foreign WAL chain detected");
-        var otherPermanent = new WalReceiverAgentFacts(
-            "n1", "master", "failed_permanent", false, null, "segment size mismatch");
-        var streaming = new WalReceiverAgentFacts(
-            "n1", "master", "streaming", false, null, "foreign WAL chain");
+        // Arrange — факты статус-ключа: (state, error)
+        var positive = ("failed_permanent", (string?)"wal-archive-conflict: foreign WAL chain detected");
+        var otherPermanent = ("failed_permanent", (string?)"segment size mismatch");
+        var streaming = ("streaming", (string?)"foreign WAL chain");
 
         // Act / Assert
-        WalLifeStore.IsForeignChainFact(positive).Should().BeTrue();
-        WalLifeStore.IsForeignChainFact(otherPermanent).Should().BeFalse();
-        WalLifeStore.IsForeignChainFact(streaming).Should().BeFalse();
+        WalLifeStore.IsForeignChainFact(positive.Item1, positive.Item2).Should().BeTrue();
+        WalLifeStore.IsForeignChainFact(otherPermanent.Item1, otherPermanent.Item2).Should().BeFalse();
+        WalLifeStore.IsForeignChainFact(streaming.Item1, streaming.Item2).Should().BeFalse();
     }
 }

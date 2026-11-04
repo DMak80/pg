@@ -1,3 +1,4 @@
+using PgWorker.Etcd.Backups;
 using System.Collections.Concurrent;
 using System.Text.RegularExpressions;
 using PgWorker.Core;
@@ -55,6 +56,10 @@ public sealed partial class AddShardProcess(
     // Время первого наблюдения «scope без живого Patroni» (бюджет PatroniBootSec).
     private readonly ConcurrentDictionary<string, long> _patroniWaitSince = new();
 
+    // t15: cluster/shard → UTC-момент первого тика прогона add — маркер
+    // идемпотентности инкремента wal-life (пересоздание шарда).
+    private readonly ConcurrentDictionary<string, long> _runStartedUnix = new();
+
     public async Task<Result<ProcessOutcome>> TickAsync(ClusterSnapshot snap, string shardName, CancellationToken ct)
     {
         var cluster = snap.Config.Cluster;
@@ -75,9 +80,9 @@ public sealed partial class AddShardProcess(
 
         // A1: guard'ы add (§4.4). R6: свежий config — смена state прекращает add.
         if (await ClusterStateChangedAsync(cluster, ct))
-            return await Finish(cluster, "aborted", ProcessOutcome.InProgress, ct);
+            return await FinishRunAsync(cluster, shardName, "aborted", ProcessOutcome.InProgress, ct);
         if (shard.Dsn is not null)
-            return await Finish(cluster, "done", ProcessOutcome.Done, ct); // уже поднят
+            return await FinishRunAsync(cluster, shardName, "done", ProcessOutcome.Done, ct); // уже поднят
         if (shard.ToRemove)
             return await Finish(cluster, "blocked-removing", ProcessOutcome.InProgress, ct);
         if (!ShardNamePattern().IsMatch(shardName))
@@ -100,6 +105,38 @@ public sealed partial class AddShardProcess(
                 "scope-taken", ct);
         if (!IsFullyDeclared(shard))
             return await Finish(cluster, "waiting-keys", ProcessOutcome.InProgress, ct);
+
+        // t15 (arch/pgworker/processes/g-add-shard.md A1, решения №31/№32а):
+        // пересоздание шарда на позиции с СУЩЕСТВУЮЩИМ счётчиком жизни — инкремент
+        // (причина shard-rebuilt) ДО старта нод: приёмники новой сессии прочтут уже
+        // свежий номер. Ключа нет — первое создание шарда, жизнь 0 (без записи).
+        var runKey = $"{cluster}/{shardName}";
+        var runStartedUnix = _runStartedUnix.GetOrAdd(
+            runKey, _ => DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+        var lifeStore = new WalLifeStore(etcd, endpoints);
+        var existingLife = await lifeStore.ReadAsync(cluster, shardName, ct);
+        if (!existingLife.IsSuccess)
+        {
+            // transient: journal-факт, следующий тик повторит (номер обязан быть
+            // свежим ДО старта нод — молчаливый пропуск дал бы куски старой жизни).
+            await journal.WritePhaseAsync(cluster, Op, $"wal-life/{shardName}",
+                claims.InstanceId, existingLife.Error!.Message, ct);
+            return Result<ProcessOutcome>.Success(ProcessOutcome.InProgress);
+        }
+        if (existingLife.Value is not null)
+        {
+            var bumped = await lifeStore.BumpAsync(
+                cluster, shardName, WalLifeReason.ShardRebuilt, runStartedUnix, ct);
+            if (!bumped.IsSuccess)
+            {
+                await journal.WritePhaseAsync(cluster, Op, $"wal-life/{shardName}",
+                    claims.InstanceId, bumped.Error!.Message, ct);
+                return Result<ProcessOutcome>.Success(ProcessOutcome.InProgress);
+            }
+            // Takeover-окно (bump прошёл, тик упал до PROVISIONING, новый инстанс):
+            // лишний номер ПУСТОЙ жизни безвреден — номер монотонен, жизней с
+            // пропуском не существует (spec §7 №37).
+        }
 
         // A2: план placement (только ноды нового шарда; занятость живыми шардами —
         // UsedSlots хостов + busy-порты драйвера) + порт-аллокация; merge в
@@ -134,7 +171,7 @@ public sealed partial class AddShardProcess(
 
         // R6 перед ожиданиями/SQL.
         if (await ClusterStateChangedAsync(cluster, ct))
-            return await Finish(cluster, "aborted", ProcessOutcome.InProgress, ct);
+            return await FinishRunAsync(cluster, shardName, "aborted", ProcessOutcome.InProgress, ct);
 
         // A4: ждать Patroni (scope initialize+leader + REST всех нод) → RUNNING.
         var booted = await WaitPatroniAsync(cluster, shard, topology, ct);
@@ -171,7 +208,7 @@ public sealed partial class AddShardProcess(
                 return await FailAsync(cluster, shot.Error!, "snapshot", ct);
         }
 
-        return await Finish(cluster, "done", ProcessOutcome.Done, ct);
+        return await FinishRunAsync(cluster, shardName, "done", ProcessOutcome.Done, ct);
     }
 
     // A1: полное объявление шарда (панель доустанила ключи? ждём — waiting-keys).
@@ -521,6 +558,15 @@ public sealed partial class AddShardProcess(
         return written.IsSuccess
             ? Result<ProcessOutcome>.Success(outcome)
             : Result<ProcessOutcome>.Failed(written.Error!);
+    }
+
+    // t15: терминальный исход прогона add — снять память маркера bump'а
+    // (повторный add того же шарда в этом процессе начнёт новую заявку заново).
+    private Task<Result<ProcessOutcome>> FinishRunAsync(
+        string cluster, string shardName, string phase, ProcessOutcome outcome, CancellationToken ct)
+    {
+        _runStartedUnix.TryRemove($"{cluster}/{shardName}", out _);
+        return Finish(cluster, phase, outcome, ct);
     }
 
     private async Task<Result<ProcessOutcome>> FailAsync(

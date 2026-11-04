@@ -1,5 +1,5 @@
 using PgWorker.Backups;
-using PgWorker.Backups.Job;
+using PgWorker.Etcd.Backups;
 using PgWorker.Etcd.Parsing;
 using PgWorker.Etcd.S3;
 using Shared.Core;

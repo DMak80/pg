@@ -1,8 +1,7 @@
-using PgWorker.Backups.Job;
 using Shared.Core;
 using Shared.Etcd.Client;
 
-namespace PgWorker.Backups;
+namespace PgWorker.Etcd.Backups;
 
 /// <summary>Счётчик жизни цепочки WAL шарда (arch/backups/05 §1, spec §4.6):
 /// `/pgworker/backups/&lt;C&gt;/&lt;X&gt;/wal-life`; отсутствие ключа = жизнь 0;
@@ -24,7 +23,7 @@ public sealed class WalLifeStore(IEtcdGateway etcd, string[] endpoints)
         Result<Kv?> last = default;
         foreach (var endpoint in endpoints)
         {
-            var result = await etcd.GetAsync(endpoint, BackupNames.WalLifeKey(cluster, shard), ct);
+            var result = await etcd.GetAsync(endpoint, WalLifeKeys.Key(cluster, shard), ct);
             if (!result.IsSuccess)
             {
                 last = result; // отказ — пробуем следующий endpoint (failover)
@@ -59,7 +58,7 @@ public sealed class WalLifeStore(IEtcdGateway etcd, string[] endpoints)
     public async Task<Result<uint>> BumpAsync(
         string cluster, string shard, WalLifeReason reason, long? startedUnix, CancellationToken ct)
     {
-        var key = BackupNames.WalLifeKey(cluster, shard);
+        var key = WalLifeKeys.Key(cluster, shard);
         for (var iteration = 0; iteration < 2; iteration++)
         {
             var read = await ReadAsync(cluster, shard, ct);
@@ -106,10 +105,11 @@ public sealed class WalLifeStore(IEtcdGateway etcd, string[] endpoints)
 
     /// <summary>Свежий факт гварда «чужая цепочка» в статус-ключе приёмника
     /// (arch/19 §3): state failed_permanent с причиной foreign WAL chain — триггер
-    /// инкремента жизни (только PgWorker пишет счётчик).</summary>
-    public static bool IsForeignChainFact(WalReceiverAgentFacts fact)
-        => fact.State == "failed_permanent"
-           && fact.Error?.Contains("foreign WAL chain", StringComparison.Ordinal) == true;
+    /// инкремента жизни (только PgWorker пишет счётчик). Предикат над полями
+    /// факта: WalReceiverAgentFacts живёт в слое воркера (Backups).</summary>
+    public static bool IsForeignChainFact(string? state, string? error)
+        => state == "failed_permanent"
+           && error?.Contains("foreign WAL chain", StringComparison.Ordinal) == true;
 
     // txn с failover-перебором endpoints: транспортный отказ — следующая нода;
     // Succeeded=false — достоверный ответ (compare не сошёлся), не ретраится здесь.
