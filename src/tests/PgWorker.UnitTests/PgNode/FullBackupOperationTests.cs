@@ -233,8 +233,8 @@ public class FullBackupOperationTests
     {
         public Result Open = Result.Success();
 
-        // Дефолт: активный сегмент 0xAD=173 — позиции набора 2/4/0xAB закрыты,
-        // 0xAC — хвост набора (публикуется `.partial`, не финалом).
+        // Дефолт: активный сегмент 0xAD=173 — сегменты набора 2 и 0xAB=171
+        // строго ниже активного и дублируются финалами (arch/19 §2).
         public Result<ServerIdentity> Identify =
             Result<ServerIdentity>.Success(new(1, 0xADUL << 24));
 
@@ -287,7 +287,7 @@ public class FullBackupOperationTests
         s3.PutKeys.Should().Contain($"{prefix}/wal/000000010000000000000002");
         s3.PutKeys.Should().Contain($"{prefix}/wal/0000000100000000000000ab");
         // Assert: локальные .partial-файлы набора и .history НЕ дублируются
-        // (`.partial`-версия хвоста публикуется выше — это канонический ключ).
+        // (фильтр «строго ниже активного сегмента источника», arch/19 §2).
         s3.PutKeys.Should().NotContain($"{prefix}/wal/000000010000000000000003.partial");
         s3.PutKeys.Should().NotContain(k => k.StartsWith($"{prefix}/wal/") && k.EndsWith(".history"));
         // Assert: пароль — ТОЛЬКО в env PGPASSWORD (не argv/DSN).

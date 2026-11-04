@@ -261,12 +261,12 @@ internal static class FetchWalCommand
             return (1, listError ?? "wal partial listing failed on all nodes");
 
         // Локальная копия набора полного (`full/<id>/pg_wal/` скачана в PGDATA):
-        // restore_command у postgres ПРИОРИТЕТНЕЕ pg_wal — архивный файл должен
-        // отдаваться, только если он НЕ КОРОЧЕ реального конца набора. Реальный
-        // конец набора — `WAL-Ranges.End-LSN` из локального backup_manifest
-        // (у бэкапа со standby копия набора разрежена/добита — сканером её не
-        // резать). Копия не короче — exit 1: postgres прочитает layout сам
-        // (остановится на её конце), битого хвоста из архива не возьмёт.
+        // restore_command у postgres ПРИОРИТЕТНЕЕ pg_wal — архивный .partial
+        // отдаётся, только если он ДЛИННЕЕ копии (верхняя граница содержимого
+        // копии — её последний ненулевой байт: у бэкапа со standby копия
+        // разрежена и добита — эвристиками префикса её не режем). Копия не
+        // короче — exit 1: postgres прочитает layout сам (остановится на его
+        // реальном конце), битого хвоста из архива не возьмёт.
         if (LocalSetCoversPartial(normalized, bestKey) is { } preferLayout
             && preferLayout)
             return (1, null);
