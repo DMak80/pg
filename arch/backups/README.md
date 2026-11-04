@@ -7,8 +7,9 @@
 
 ## 1. Назначение
 
-Домен защищает данные шардированных PG-кластеров: полные `pg_basebackup`,
-online-WAL (физическая репликация с выгрузкой в S3), проверка
+Домен защищает данные шардированных PG-кластеров: полные бэкапы
+(стриминговый клиент `BASE_BACKUP` → единый tar-объект в S3), online-WAL
+(физическая репликация с выгрузкой в S3), проверка
 восстановимости (verify, drill) и восстановление (PITR latest/target_time).
 Исполнитель операций на ноде — агент **PgNode**
 ([pgnode/README.md](../pgnode/README.md)); оркестратор — **PgWorker**.
@@ -29,8 +30,9 @@ WAL-G/pgBackRest НЕ встраиваются (параллельное исп�
   пишет PgWorker (держатель клэйма `<C>`), приёмники — только свои
   статус-ключи, панель читает ([05-etcd-contract.md](05-etcd-contract.md)).
 - **Хранилище — объектное S3** — один bucket на установку, layout
-  per-cluster/per-shard, файлы `pg_basebackup` 1:1
-  ([06-s3-layout.md](06-s3-layout.md)); цели записи — per-cluster пул S3,
+  per-cluster/per-shard, полный бэкап — ОДИН tar-объект
+  `full/<id>.tar` ([06-s3-layout.md](06-s3-layout.md)); цели записи —
+  per-cluster пул S3,
   креды — per-cluster secrets в etcd ([08-secrets.md](08-secrets.md)).
 - **Паттерны ../synchronization/README.md** — идемпотентность каждого шага,
   journal-before-manipulations, transient vs permanent-отказы.
@@ -45,7 +47,7 @@ WAL-G/pgBackRest НЕ встраиваются (параллельное исп�
 
 | Функция | Содержание | Документ |
 |---|---|---|
-| Полные бэкапы | инструмент `pg_basebackup`, планировщик rolling, выбор источника, WAL набора, идентификатор, бэкофф, наблюдаемость verify | [01-full-backup.md](01-full-backup.md) |
+| Полные бэкапы | стриминговый клиент `BASE_BACKUP` (один tar-объект), планировщик rolling, выбор источника, WAL набора, идентификатор, бэкофф, наблюдаемость verify | [01-full-backup.md](01-full-backup.md) |
 | WAL-архивация | двойная архивация, слоты, контроль непрерывности, `WAL_CHAIN_ERROR`/`gap`, отставание, стоп-семантика | [02-wal-archive.md](02-wal-archive.md) |
 | Восстановление (PITR) | заявка restore, RestoreProcess, демонтаж/подъём шарда, REJOINING, гвард исключения, отмена | [03-restore.md](03-restore.md) |
 | Дрилл восстановимости | периодический неразрушающий прогон DR-пути, отбор кандидата, стоп-семантика | [04-drill.md](04-drill.md) |
@@ -70,8 +72,8 @@ WAL-G/pgBackRest НЕ встраиваются (параллельное исп�
   `/api/ops/*`, `/api/node/*`) по `alias:8080` общей сети воркера и нод
   ([pgnode/02-api.md](../pgnode/02-api.md),
   [communications/02-channel-registry.md](../communications/02-channel-registry.md) №22).
-- **PgNode → PostgreSQL**: физическая репликация, `pg_basebackup`,
-  `pg_verifybackup`, локальный restore — только `127.0.0.1`
+- **PgNode → PostgreSQL**: физическая репликация, `BASE_BACKUP` (собственный
+  стриминговый клиент), локальный restore — только `127.0.0.1`
   ([pgnode/README.md](../pgnode/README.md)).
 - **PgNode / PgWorker → S3**: приёмники нод пишут объекты напрямую; воркер
   читает/чистит (ретенция, супервизор) — [06-s3-layout.md](06-s3-layout.md).
@@ -92,7 +94,7 @@ WAL-G/pgBackRest НЕ встраиваются (параллельное исп�
   сегмента идемпотентен; ретенция/супервизор идемпотентны по проходу.
 - **Данные дороже места**: стоп-семантика и deprovisioning S3-объекты не
   удаляют; удаляющие — только ретенция по политике, wal-sweeper (мусор
-  `wal/`), супервизор (мусор `full/<id>/` и сироты по TTL), явная заявка
-  `orphan-deletes`.
+  `wal/`), супервизор (мусорные `full/<id>.tar`, висячие multipart-сессии
+  и сироты по TTL), явная заявка `orphan-deletes`.
 - **Convergence, не команды**: ensure ролей/слотов/политики — идемпотентная
   сверка на каждом тике; смена policy подхватывается без пересоздания.

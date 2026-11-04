@@ -13,7 +13,8 @@ POST /api/ops/restore (backup_id, target_time?, recovery_timeout_sec,
   202 — принято
   409 — общий ops-реестр занят (своя/чужая операция неразличима)
 downloading
-  скачивание full/<id>/ 1:1 в PGDATA; параллельно — restore_command
+  фиксация endpoint чтения (HEAD) → GetObject-стрим full/<id>.tar →
+  потоковая распаковка tar в PGDATA (без архива на диске)
 recovering
   локальный postgres: pg_ctl start -w -t <recovery_timeout_sec>,
   fetch-wal, поллинг pg_is_in_recovery до promote, снятие

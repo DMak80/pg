@@ -46,8 +46,8 @@ verify-FAILED + НЕпокрывшие COMPLETED (wal_start ниже живой 
 ключей, дополнительных полей контракта не требуется).
 
 Пересъём при живой непокрытой границе ПРЕДВАРЯЕТСЯ `CHECKPOINT` НА МАСТЕРЕ
-шарда (пересъём — следующий тик, без гонки за replay): `pg_basebackup`
-пишет в `backup_label` START WAL с redo/restart-точки источника; restartpoint
+шарда (пересъём — следующий тик, без гонки за replay): BASE_BACKUP-клиент
+получает в `backup_label` START WAL с redo/restart-точки источника; restartpoint
 реплики движется ТОЛЬКО по checkpoint-записям мастера, а idle-мастер их не
 пишет — точка стоит в сегменте ДО границы зазора, и пересъём снимался бы с
 той же позиции бесконечно (CHECKPOINT на самой реплике — restartpoint по

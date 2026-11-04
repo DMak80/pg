@@ -21,8 +21,8 @@
 | Метод+путь | Назначение | Статус/коды |
 |---|---|---|
 | `POST /api/backup/full` | запуск полного, тело `{"id"}` (id детерминирован воркером) | 202; 409 — операция уже идёт; 503 — стоп-гейт (`STOPPED`, `/pgworker/backups-disabled`, `Enabled=false`) |
-| `GET /api/backup/full` | снимок полного: фазы `basebackup|uploading`, `wal_start_segment`, `size_bytes`, `error` | 200; 404 — операции нет/vanished |
-| `POST /api/backup/full/cancel` | отмена полного (гасит дерево child-процесса, чистит staging) | 202/200 (best-effort) |
+| `GET /api/backup/full` | снимок полного: фазы `basebackup|uploading`, `wal_start_segment`, `size_bytes`, прогресс (`bytes_done`/`parts_done`), `error` | 200; 404 — операции нет/vanished |
+| `POST /api/backup/full/cancel` | отмена полного (гасит BASE_BACKUP-соединение и multipart-сессию) | 202/200 (best-effort) |
 | `POST /api/ops/verify` | запуск verify полного (S3-контекст read-списка в теле) | 202; 409 — чужой ops-операции; 503 — гейт |
 | `POST /api/ops/restore` | запуск restore (тело: `backup_id`, `target_time`?, `recovery_timeout_sec`, S3-контекст) ИЛИ drill (поле `id`) | 202; 409 — чужой ops-операции; 503 — гейт |
 | `GET /api/ops/restore` | снимок restore/drill: фазы `downloading|recovering`, `restored_to_lsn`?, `system_id`?, `started_unix`?, `error`? | 200; 404 — операции нет |

@@ -12,7 +12,7 @@ POST /api/ops/restore {id} (id дрилла; latest, БЕЗ target)
   202 — принято
   409 — общий ops-реестр занят
 downloading
-  скачивание full/<id>/ 1:1 в
+  GetObject-стрим full/<id>.tar → потоковая распаковка tar в
   /home/postgres/pgdata/backup-drill/<id>/pgdata (scratch, НЕ PGDATA ноды)
 recovering
   локальный postgres (unix-socket, listen_addresses=''), fetch-wal,
