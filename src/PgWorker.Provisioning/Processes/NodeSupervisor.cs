@@ -593,21 +593,6 @@ public sealed class NodeSupervisor(
             : Result<FailoverAcceleration>.Failed(deleted.Error!);
     }
 
-    // Контейнер ноды существует на docker-хосте (all-инспект): stop/restart —
-    // не смерть процесса. Мутации «ускорение failover»/«rebuild» требуют
-    // положительного свидетельства смерти — ОТСУТСТВИЯ объекта; существующий
-    // остановленный контейнер переживёт рестарт и вернётся сам (факт rtls:
-    // docker restart лидера в окне остановки давал failover-маркер, и Patroni
-    // зацикливался на неисполнимом switchover).
-    private async Task<Result<bool>> NodeContainerExistsAsync(
-        string cluster, string shard, string node, CancellationToken ct)
-    {
-        var objects = await driver.ListNodeObjectsAsync(cluster, ct);
-        return objects.IsSuccess
-            ? Result<bool>.Success(objects.Value.Contains($"pgw-{cluster}-{shard}-{node}"))
-            : Result<bool>.Failed(objects.Error!);
-    }
-
     // Шаг хендшейка/конвергенции (arch/14 §5 C): один range статусных ключей
     // /pgworker/nodes/<C>/ + реакции. Гварды: restore (свежая сверка)/
     // TO_REMOVE-шарды и object-ноды пропускаются; QUARANTINED/REMOVING — вне.
@@ -1071,6 +1056,24 @@ public sealed class NodeSupervisor(
                 dead.Add(node.Name);
         }
 
+        // Устаревший failover-маркер ожившего лидера: ускорение по
+        // недоступности (docker restart/кратковременный флап) ставит
+        // {"leader":<мёртвая нода>,"member":<кандидат>} и снимает leader-ключ;
+        // если «мёртвая» нода уже отвечает (alive), маркер устарел — Patroni
+        // лидера зацикливается на неисполнимом switchover на нездорового
+        // кандидата (факт rtls: обе ноды «following a different leader» 60+ с,
+        // /primary не резолвится). Снимаем маркер — Patroni доделывает выборы
+        // штатно. Маркер про живого лидера — единственный безопасный снос:
+        // заявки на мёртвого (alive не содержит leader) не трогаем.
+        if (leader is null
+            && scopeKvs.Value.FirstOrDefault(kv => kv.Key == $"/service/{scope}/failover") is { } stale
+            && alive.Any(n => stale.Value.Contains($"\"leader\":\"{n}\"", StringComparison.Ordinal)))
+        {
+            var cleanedStale = await DeleteAsync($"/service/{scope}/failover", ct);
+            if (!cleanedStale.IsSuccess)
+                return cleanedStale;
+        }
+
         foreach (var name in dead)
         {
             // Отметка итерации (arch/14 §6): обработка мёртвой ноды — инспект
@@ -1114,30 +1117,17 @@ public sealed class NodeSupervisor(
                     return running.Error!;
                 if (!running.Value.ContainsKey(name))
                 {
-                    // Остановленный, но СУЩЕСТВУЮЩИЙ контейнер — это stop/restart
-                    // (оператор/движок/`docker restart` сценария), не смерть
-                    // процесса. Ускорение здесь ставит failover-маркер на живого
-                    // кандидата и снимает leader-ключ; вернувшийся лидер затем
-                    // зацикливается на неисполнимом switchover (факт rtls: обе
-                    // ноды в «following a different leader» 60+ с). Смерть —
-                    // только ОТСУТСТВИЕ объекта (ListNodeObjects all).
-                    var exists = await NodeContainerExistsAsync(cluster, shard.Name, name, ct);
-                    if (!exists.IsSuccess)
-                        return exists.Error!;
-                    if (!exists.Value)
-                    {
-                        var accelerated = await AccelerateDeadLeaderFailoverAsync(
-                            cluster, shard, name, addresses, ct);
-                        if (!accelerated.IsSuccess)
-                            return accelerated;
-                        // Applied → accelerated, NoCandidate → elections (spec §3.1);
-                        // NotLeader — шард в restore (свежая сверка гварда внутри
-                        // ускорения, arch/19 §3.5) — факта нет, маркер не ставился.
-                        if (!shard.ToRemove && accelerated.Value is not FailoverAcceleration.NotLeader)
-                            haFacts.FailoverDetected(shard.Name, name,
-                                accelerated.Value == FailoverAcceleration.Applied ? "accelerated" : "elections",
-                                track[trackKey]);
-                    }
+                    var accelerated = await AccelerateDeadLeaderFailoverAsync(
+                        cluster, shard, name, addresses, ct);
+                    if (!accelerated.IsSuccess)
+                        return accelerated;
+                    // Applied → accelerated, NoCandidate → elections (spec §3.1);
+                    // NotLeader — шард в restore (свежая сверка гварда внутри
+                    // ускорения, arch/19 §3.5) — факта нет, маркер не ставился.
+                    if (!shard.ToRemove && accelerated.Value is not FailoverAcceleration.NotLeader)
+                        haFacts.FailoverDetected(shard.Name, name,
+                            accelerated.Value == FailoverAcceleration.Applied ? "accelerated" : "elections",
+                            track[trackKey]);
                 }
             }
             else if (isLeader && !adopted && node.State != NodeState.ToRecreate && !shard.ToRemove)
@@ -1164,16 +1154,6 @@ public sealed class NodeSupervisor(
                 if (!inspect.IsSuccess)
                     return inspect.Error!;
                 processDead = !inspect.Value.ContainsKey(name);
-                if (processDead)
-                {
-                    // Как и для ускорения failover: существующий остановленный
-                    // контейнер (restart/stop) — не смерть; rebuild сносит volume,
-                    // поэтому требует ОТСУТСТВИЯ объекта.
-                    var exists = await NodeContainerExistsAsync(cluster, shard.Name, name, ct);
-                    if (!exists.IsSuccess)
-                        return exists.Error!;
-                    processDead = !exists.Value;
-                }
             }
 
             if (!isLeader && quorum && expired && !adopted && processDead
@@ -1232,7 +1212,11 @@ public sealed class NodeSupervisor(
             // TO_RECREATE не перезначим: в этом же тике RecreateMarkedNodes уже
             // писал REBUILDING, а снапшот ещё несёт старый маркер (гонка) —
             // живой/мёртвый путь надзора не перезаписывает заявки оператора.
-            if (node.State is not (NodeState.Unreachable or NodeState.Rebuilding
+            // Ускоренная в этом тике нода (EnsureDeclared уже написал
+            // PROVISIONING) тоже не перезаписывается: снапшот стар (RUNNING),
+            // а UNREACHABLE скрыл бы идущее пересоздание.
+            if (!acceleratedThisTick.Contains(trackKey)
+                && node.State is not (NodeState.Unreachable or NodeState.Rebuilding
                                    or NodeState.Provisioning or NodeState.ToRecreate))
             {
                 var marked = await PutAsync(

@@ -402,10 +402,9 @@ public class NodeSupervisorTests
         // висит (lease протух бы через ttl), реплики живы: надзор должен УСКОРИТЬ
         // failover (ключ + удаление мёртвого лидер-ключа), а не ждать возврата
         // того же лидера рестартом; контейнер поднимается параллельно
-        var rig = await NewRig(_ => Ok(), nodeObjects:
-        [
-            "pgw-shop-shard1-shard1b", "pgw-shop-shard1-shard1c",
-        ]);
+        var rig = await NewRig(
+            port => port == 18000 ? Down() : Ok(), // лидер shard1a недоступен (контейнер снесён)
+            nodeObjects: ["pgw-shop-shard1-shard1b", "pgw-shop-shard1-shard1c"]);
         rig.Etcd.Seed("/service/shop-shard1/leader", "shard1a");
 
         // Act
@@ -496,28 +495,26 @@ public class NodeSupervisorTests
         rig.Driver.EnsuredNodes.Should().Contain("shard1/shard1a");
     }
 
-    // AAA (arch/14 §5 C): контейнер лидера ОСТАНОВЛЕН, но СУЩЕСТВУЕТ
-    // (docker restart/stop в окне) — это не смерть процесса: ускорение
-    // failover молчит (маркер не пишется, leader-ключ жив), нода честно
-    // уходит в UNREACHABLE и вернётся рестартом.
+    // AAA (arch/14 §5 C): устаревший failover-маркер ожившего лидера снимается.
+    // docker restart/кратковременный флап дают маркер {"leader":<нода>} + снятый
+    // leader-ключ; вернувшийся лидер отвечает пробой — маркер устарел, и Patroni
+    // зацикливается на неисполнимом switchover (факт rtls). Надзор снимает
+    // маркер, выборы идут штатно.
     [Fact]
-    public async Task Tick_StoppedLeaderContainerExists_NoFailoverAcceleration()
+    public async Task Tick_StaleFailoverMarker_WokeLeader_Cleaned()
     {
-        // Arrange — все объекты нод на месте (all-инспект), но running-инспект
-        // пуст (все остановлены/рестартятся); лидер-ключ в DCS висит.
-        var rig = await NewRig(_ => Down()); // REST не отвечает ни на одной ноде
-        rig.Etcd.Seed("/service/shop-shard1/leader", "shard1a");
+        // Arrange — все ноды живы пробой, leader-ключ снят ускорением, маркер
+        // указывает на уже ожившую shard1a
+        var rig = await NewRig(_ => Ok());
+        rig.Etcd.Seed("/service/shop-shard1/failover",
+            """{"leader":"shard1a","member":"shard1b","scheduled_at":"2026-11-04T18:29:32Z"}""");
 
         // Act
         var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
 
-        // Assert — ускорения нет: failover-маркера нет, лидер-ключ не снят,
-        // контейнер не пересоздавался (он существует — переживёт restart).
+        // Assert — устаревший маркер снят; заявок про мёртвого лидера не трогали
         outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
         rig.Etcd.Store.Should().NotContainKey("/service/shop-shard1/failover");
-        rig.Etcd.Store.Should().ContainKey("/service/shop-shard1/leader");
-        rig.Driver.EnsuredNodes.Should().NotContain("shard1/shard1a");
-        rig.Etcd.Store["/clusters/shop/shards/shard1/nodes/shard1a/state"].Value.Should().Be("UNREACHABLE");
     }
 
     [Fact]
@@ -726,7 +723,9 @@ public class NodeSupervisorTests
         // Контейнер снесён: декларация пересоздаёт объект (EnsureNode), но
         // volume/лидер-нода в этом же тике не сносится (rebuild запрещён).
         rig.Driver.EnsuredNodes.Should().Contain("shard1/shard1a");
-        rig.Etcd.Store["/clusters/shop/shards/shard1/nodes/shard1a/state"].Value.Should().Be("UNREACHABLE");
+        // Пересоздание идёт в этом же тике (EnsureDeclared → PROVISIONING);
+        // UNREACHABLE не перезаписывает идущий провижининг.
+        rig.Etcd.Store["/clusters/shop/shards/shard1/nodes/shard1a/state"].Value.Should().Be("PROVISIONING");
     }
 
     // AAA (→): DCS-конфиг на дефолтах Patroni — патч несёт ВСЕ канонические

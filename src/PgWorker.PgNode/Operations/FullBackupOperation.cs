@@ -197,20 +197,46 @@ public sealed class FullBackupOperation : IReceiverOperation
                 _id, OperationStates.Uploading, OperationPhases.Uploading,
                 WalStartSegment: walStart));
             var fullDir = Path.Combine(opRoot, "full");
+            // Параллельная заливка: набор — 1000+ файлов, последовательный put
+            // растягивал uploading на ~80 с под нагрузкой (полный COMPLETED не
+            // укладывался в бюджет сходимости после TLI-прыжка). 8 потоков — тот
+            // же параллелизм, что у сборки дельт; порядок put не значим (ключи
+            // независимы, put идемпотентен).
+            var files = Directory.EnumerateFiles(fullDir, "*", SearchOption.AllDirectories).ToList();
             var uploadedFiles = 0;
-            foreach (var file in Directory.EnumerateFiles(fullDir, "*", SearchOption.AllDirectories))
+            string? uploadError = null;
+            using (var gate = new SemaphoreSlim(UploadParallelism))
             {
-                var rel = Path.GetRelativePath(fullDir, file).Replace('\\', '/');
-                var put = await s3.PutFileAsync(
-                    $"{_identity.Cluster}/{_identity.Shard}/full/{_id}/{rel}", file, token);
-                if (!put.IsSuccess)
+                await Task.WhenAll(files.Select(async file =>
                 {
-                    Fail(put.Error!.Message.Split('\n')[0]);
-                    return;
-                }
-                uploadedFiles++;
-                if (uploadedFiles % UploadProgressEveryFiles == 0)
-                    Prog($"upload progress: {uploadedFiles} files, {DirectorySize(fullDir)} bytes");
+                    await gate.WaitAsync(token);
+                    try
+                    {
+                        if (Volatile.Read(ref uploadError) is not null)
+                            return; // первая ошибка — остальные put не начинаем
+                        var rel = Path.GetRelativePath(fullDir, file).Replace('\\', '/');
+                        var put = await s3.PutFileAsync(
+                            $"{_identity.Cluster}/{_identity.Shard}/full/{_id}/{rel}", file, token);
+                        if (!put.IsSuccess)
+                        {
+                            Interlocked.CompareExchange(
+                                ref uploadError, put.Error!.Message.Split('\n')[0], null);
+                            return;
+                        }
+                        var uploaded = Interlocked.Increment(ref uploadedFiles);
+                        if (uploaded % UploadProgressEveryFiles == 0)
+                            Prog($"upload progress: {uploaded} files, {DirectorySize(fullDir)} bytes");
+                    }
+                    finally
+                    {
+                        gate.Release();
+                    }
+                }));
+            }
+            if (uploadError is not null)
+            {
+                Fail(uploadError);
+                return;
             }
             // Закрытость сегментов — ПО ИСТОЧНИКУ НА МОМЕНТ ЗАЛИВКИ (arch/19 §2):
             // дублируются только сегменты набора СТРОГО ниже текущего активного
@@ -311,6 +337,9 @@ public sealed class FullBackupOperation : IReceiverOperation
     // Прогресс-строка в stderr (журнал ноды): шаг прогресс-диагностики —
     // приёмник не молчит в логах между 202 и терминальным статусом.
     private const int UploadProgressEveryFiles = 500;
+
+    // Параллелизм заливки набора full/<id>/ (файлы независимы).
+    private const int UploadParallelism = 8;
 
     private void Prog(string message)
         => Console.Error.WriteLine($"walreceiver: full {_id} {message}");
