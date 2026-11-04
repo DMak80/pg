@@ -310,6 +310,10 @@ public class FetchWalCommandTests
         public readonly Dictionary<string, byte[]> Objects = new(StringComparer.Ordinal);
         public bool FailsList { get; set; }
 
+        /// <summary>Транспортный отказ (НЕ «объекта нет») на GET-to-file: кейс
+        /// «транспортный сбой отличим от конца WAL».</summary>
+        public bool FailsGetToFile { get; set; }
+
         public Task<Result<IReadOnlyList<S3ObjectInfo>>> ListPrefixAsync(
             string prefix, int? maxKeysPerTest = null, CancellationToken ct = default)
         {
@@ -340,6 +344,9 @@ public class FetchWalCommandTests
         public Task<Result> GetObjectToFileAsync(
             string cluster, string shard, string key, string destFilePath, CancellationToken ct = default)
         {
+            if (FailsGetToFile)
+                return Task.FromResult(Result.Failed(new ApplicationException(
+                    $"S3 get-to-file {cluster}/{shard}/{key}: connection reset")));
             var name = key[(key.LastIndexOf('/') + 1)..];
             return Task.FromResult(Objects.TryGetValue(name, out var data)
                 ? WriteFile(destFilePath, data)
@@ -460,5 +467,239 @@ public class FetchWalCommandTests
         exitCode.Should().Be(1);
         transportError.Should().BeNull();
         File.Exists(target).Should().BeFalse();
+    }
+
+    // ---- #11а: восстановленные регрессионные кейсы fetch-wal ----
+
+    // AAA: сегмент (финал) найден на ВТОРОЙ ноде пула — exit 0, перебор до
+    // найденного (первая нода отвечает «объекта нет»).
+    [Fact]
+    public async Task FetchOnce_FoundOnSecondEndpoint_ExitsZero()
+    {
+        // Arrange — первая нода пуста (not found), вторая несёт финал сегмента
+        var first = new FakeS3();
+        var second = new FakeS3();
+        second.Objects[SegmentName] = new byte[SegmentBytes];
+        var target = Path.Combine(Path.GetTempPath(), $"fetchwal-{Guid.NewGuid():N}.seg");
+
+        try
+        {
+            // Act
+            var (exitCode, transportError) = await FetchWalCommand.FetchOnceAsync(
+                [first, second], "c1", "shard1", SegmentName, target, chainLife: 1,
+                CancellationToken.None);
+
+            // Assert — финал отдан второй нодой, файл полного размера
+            exitCode.Should().Be(0);
+            transportError.Should().BeNull();
+            new FileInfo(target).Length.Should().Be(SegmentBytes);
+        }
+        finally
+        {
+            File.Delete(target);
+        }
+    }
+
+    // AAA: транспортный сбой отличим от «сегмента нет» (канон §1: нода с
+    // транспортным отказом пропускается, отказ ВСЕХ нод — транспортный исход
+    // вызова: RunAsync ретраит, а не читает конец WAL).
+    [Fact]
+    public async Task FetchOnce_TransportFailure_IsDistinguishableFromEndOfWal()
+    {
+        // Arrange — единственная нода: транспортный отказ и на GET, и на листинг
+        var broken = new FakeS3 { FailsGetToFile = true, FailsList = true };
+        var target = Path.Combine(Path.GetTempPath(), $"fetchwal-{Guid.NewGuid():N}.seg");
+
+        // Act
+        var (exitCode, transportError) = await FetchWalCommand.FetchOnceAsync(
+            [broken], "c1", "shard1", SegmentName, target, chainLife: 1,
+            CancellationToken.None);
+
+        // Assert
+        exitCode.Should().Be(1);
+        transportError.Should().NotBeNull(
+            "a transport failure must be retried, not read as end-of-WAL");
+        File.Exists(target).Should().BeFalse();
+    }
+
+    // AAA: «ни одна нода не ответила листингом» — транспортный отказ вызова
+    // (transportError ≠ null), а не «конец WAL».
+    [Fact]
+    public async Task FetchOnce_AllNodesListFailed_IsTransportError()
+    {
+        // Arrange — обе ноды отвечают отказом листинга узкого префикса
+        var first = new FakeS3 { FailsList = true };
+        var second = new FakeS3 { FailsList = true };
+        var target = Path.Combine(Path.GetTempPath(), $"fetchwal-{Guid.NewGuid():N}.seg");
+
+        // Act
+        var (exitCode, transportError) = await FetchWalCommand.FetchOnceAsync(
+            [first, second], "c1", "shard1", SegmentName, target, chainLife: 1,
+            CancellationToken.None);
+
+        // Assert — конец WAL не объявлен: причина несётся наружу (ретрай)
+        exitCode.Should().Be(1);
+        transportError.Should().NotBeNull();
+        File.Exists(target).Should().BeFalse();
+    }
+
+    // AAA (#11а, spec §4.3 п.10): локальная копия набора предпочитается, если её
+    // содержимое НЕ короче СОБРАННОГО покрытия диф-кусков; покрытие длиннее —
+    // отдаётся сборка; пустая копия/нет копии — null (решает архивный путь).
+    [Fact]
+    public void LocalSetCoversPartial_LayoutPreferredAgainstAssembledCoverage()
+    {
+        // Arrange — копия сегмента в PGDATA: реальное содержимое до 0x3FFF
+        var root = Path.Combine(Path.GetTempPath(), $"pgdata-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(Path.Combine(root, "pg_wal"));
+        var bytes = new byte[WalFileName.SegmentBytes];
+        bytes[0x3FFF] = 0xAB; // последний ненулевой байт — 0x3FFF
+        File.WriteAllBytes(Path.Combine(root, "pg_wal", SegmentName), bytes);
+        var segStart = SegStart;
+
+        try
+        {
+            // Act — покрытие сборки сравнивается с содержимым копии
+            var shorter = FetchWalCommand.LocalSetCoversPartial(
+                SegmentName, segStart + 0x2000, root);
+            var longer = FetchWalCommand.LocalSetCoversPartial(
+                SegmentName, segStart + 0x5000, root);
+            var emptyCoverage = FetchWalCommand.LocalSetCoversPartial(
+                SegmentName, segStart, root);
+            var noCopy = FetchWalCommand.LocalSetCoversPartial(
+                "000000010000000000000009", segStart + 0x2000, root);
+
+            // PG/pg_basebackup пишут имена ВЕРХНИМ hex, а %f/S3-ключ нормализуются
+            // в строчные: копия обязана находиться и при строчном запросе.
+            const string upperSeg = "00000001000000000000000A";
+            var upperBytes = new byte[WalFileName.SegmentBytes];
+            upperBytes[0x3FFF] = 0xAB;
+            File.WriteAllBytes(Path.Combine(root, "pg_wal", upperSeg), upperBytes);
+            var upper = FetchWalCommand.LocalSetCoversPartial(
+                upperSeg.ToLowerInvariant(),
+                WalDeltaName.SegmentStartOf(WalFileName.TryParse(upperSeg)!.Value) + 0x2000, root);
+
+            // Assert — layout предпочтителен, если не короче покрытия;
+            // длинное покрытие отдаётся из архива (exit 1 на вызове fetch-wal)
+            shorter.Should().BeTrue("the set copy reaches further than the assembled coverage");
+            longer.Should().BeFalse("the assembled coverage extends past the set content");
+            emptyCoverage.Should().BeTrue("without a delta coverage the set copy is preferred");
+            noCopy.Should().BeNull("no local copy — the generic archive path decides");
+            upper.Should().BeTrue(
+                "PG names WAL files UPPER-hex — the lower-cased request must still find the set copy");
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    // ---- owner-дополнение: скан-валидация ТОЛЬКО области дифов ----
+
+    // AAA (owner-дополнение): база-компак ДОВЕРЕНА (как полный бэкап) — порченная
+    // запись в базе сборку не усекает; валидируется только область дифов.
+    [Fact]
+    public async Task FetchOnce_CorruptedBase_Trusted_DeltaValidated()
+    {
+        // Arrange — база [0..104) с испорченным телом записи, дельта [104..168) чистая
+        var prefix = BuildPrefix(64, 64);
+        var corruptedBase = (byte[])prefix[..104].Clone();
+        corruptedBase[50] ^= 0xFF; // порча тела записи базы (CRC не сойдётся)
+        var (deltaKey, deltaData) = Piece(prefix, 104, 168);
+        var baseKey = WalDeltaName.Key(
+            Segment, SegStart, SegStart + 104, 1, true, Md5Hex(corruptedBase));
+        var s3 = new FakeS3();
+        s3.Objects[baseKey] = corruptedBase;
+        s3.Objects[deltaKey] = deltaData;
+        var target = Path.Combine(Path.GetTempPath(), $"fetchwal-{Guid.NewGuid():N}.seg");
+
+        try
+        {
+            // Act
+            var (exitCode, transportError) = await FetchWalCommand.FetchOnceAsync(
+                [s3], "c1", "shard1", SegmentName, target, chainLife: 1,
+                CancellationToken.None);
+
+            // Assert — база доверена, диф дочитан целиком: усечения нет
+            exitCode.Should().Be(0);
+            transportError.Should().BeNull();
+            var written = await File.ReadAllBytesAsync(target, TestContext.Current.CancellationToken);
+            written.Length.Should().Be((int)SegmentBytes);
+            written[..168].Should().Equal([.. corruptedBase, .. deltaData],
+                "the trusted base is emitted as-is and the delta is appended");
+            written.Skip(168).Should().OnlyContain(b => b == 0);
+        }
+        finally
+        {
+            File.Delete(target);
+        }
+    }
+
+    // AAA (owner-дополнение): битый CRC в ДИФЕ — усечение до доверенной границы
+    // (конца базы): в области дифов нет ни одной валидной записи.
+    [Fact]
+    public async Task FetchOnce_CorruptedDelta_TruncatedToTrustedEnd()
+    {
+        // Arrange — база [0..104) чистая, дельта [104..168) с порчей тела записи
+        var prefix = BuildPrefix(64, 64);
+        var corruptedDelta = (byte[])prefix[104..168].Clone();
+        corruptedDelta[30] ^= 0xFF;
+        var (baseKey, baseData) = Piece(prefix, 0, 104);
+        var deltaKey = WalDeltaName.Key(
+            Segment, SegStart + 104, SegStart + 168, 1, true, Md5Hex(corruptedDelta));
+        var s3 = new FakeS3();
+        s3.Objects[baseKey] = baseData;
+        s3.Objects[deltaKey] = corruptedDelta;
+        var target = Path.Combine(Path.GetTempPath(), $"fetchwal-{Guid.NewGuid():N}.seg");
+
+        try
+        {
+            // Act
+            var (exitCode, _) = await FetchWalCommand.FetchOnceAsync(
+                [s3], "c1", "shard1", SegmentName, target, chainLife: 1,
+                CancellationToken.None);
+
+            // Assert — валиден только доверенный префикс базы; диф усечён
+            exitCode.Should().Be(0);
+            var written = await File.ReadAllBytesAsync(target, TestContext.Current.CancellationToken);
+            written.Length.Should().Be((int)SegmentBytes);
+            written[..104].Should().Equal(baseData);
+            written.Skip(104).Should().OnlyContain(b => b == 0,
+                "the diff region has no CRC-valid record — truncated to the trusted end");
+        }
+        finally
+        {
+            File.Delete(target);
+        }
+    }
+
+    // AAA (#4): жадка итеративна — m-кусок с поздним start, рассмотренный раньше
+    // r-куска с ранним start, замыкается повторным проходом (покрытие 300, а не 200).
+    [Fact]
+    public void Greedy_LateMasterPiece_ClosedOnSecondPass()
+    {
+        // Arrange — база [0..100); m-дельта [150..300); r-дельта [100..200)
+        // (порядок кандидатов: m над r, затем start asc)
+        var prefix = new byte[400];
+        for (var i = 0; i < prefix.Length; i++)
+            prefix[i] = (byte)(i * 7 + 1);
+        var (baseKey, baseData) = Piece(prefix, 0, 100, chainLife: 1, isMaster: true);
+        var (masterKey, masterData) = Piece(prefix, 150, 300, chainLife: 1, isMaster: true);
+        var (replicaKey, replicaData) = Piece(prefix, 100, 200, chainLife: 1, isMaster: false);
+
+        // Act
+        var ordered = FetchWalCommand.OrderCandidates(
+            FetchWalCommand.FilterDeltaInventory(
+                [(baseKey, 100L), (masterKey, 150L), (replicaKey, 100L)], chainLife: 1, Segment));
+        var (result, buffer) = FetchWalCommand.GreedyAssembleCore(
+            ordered, new Dictionary<string, byte[]>
+            {
+                [baseKey] = baseData, [masterKey] = masterData, [replicaKey] = replicaData,
+            });
+
+        // Assert — покрытие до конца m-дельты, байты = исходный префикс
+        result.Conflict.Should().BeFalse();
+        result.Coverage.Should().Be(SegStart + 300);
+        buffer.Should().Equal(prefix[..300]);
     }
 }

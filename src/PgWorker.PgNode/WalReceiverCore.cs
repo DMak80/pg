@@ -488,7 +488,13 @@ public sealed class WalReceiverCore
                             listed.Value.Select(x => x.Name), o.ChainLife);
                         if (lying >= shot.EndLsn)
                         {
-                            // Сосед двойной архивации длиннее — ждём прироста за его покрытие.
+                            // Сосед двойной архивации длиннее — ждём прироста за его
+                            // покрытие. Покрытие ЗАПОМИНАЕМ: гейт тика выше сравнивает
+                            // shot.EndLsn с coverage, и без этого отстающий приёмник
+                            // каждый такт делал бы листинг семейства (k имён) вхолостую.
+                            // Байты префикса мастера и sync-реплики идентичны
+                            // (arch/pgnode/03 §2) — брать чужое покрытие как своё можно.
+                            coverage = Math.Max(coverage, lying);
                             Volatile.Write(ref lastPartialEndLsn, lying);
                             continue;
                         }

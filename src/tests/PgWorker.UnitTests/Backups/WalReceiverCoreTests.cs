@@ -1077,6 +1077,36 @@ public class WalReceiverCoreTests
             .Should().BeEquivalentTo([lyingBase]);
     }
 
+    // AAA (#3): ahead-ветка («сосед двойной архивации длиннее») запоминает
+    // покрытие как своё — следующий тик скипается ДО листинга семейства
+    // (отстающий приёмник не делает list на k имён каждые PartialIntervalSec).
+    [Fact]
+    public async Task DeltaPump_AheadNeighborCoverage_NextTickSkipsBeforeList()
+    {
+        // Arrange — в S3 лежит база жизни 0 до 0x5000 (дальше снимка 0x68)
+        var source = new FakeXLogSource { WaitForChunks = true };
+        source.Push(PartialChunk(0, 64));
+        var s3 = new FakeS3();
+        s3.Objects[SeededPieceKey(LiveSegment, 0, 0x5000)] = [1, 2, 3];
+        using var cts = new CancellationTokenSource();
+
+        // Act — первый тик: ahead-ветка (листинг выполнен, покрытие запомнено)
+        var run = RunSession(source, s3, new FakeSlots(0), Options(partialIntervalSec: 1), cts.Token);
+        await WaitUntilAsync(() => s3.ListCalls > 0, TimeSpan.FromSeconds(5),
+            () => $"listCalls={s3.ListCalls}");
+        var afterFirstTick = s3.ListCalls;
+
+        // Act — два периода пампа без прироста стрима
+        await Task.Delay(2500, TestContext.Current.CancellationToken);
+
+        // Assert — новых листингов нет: гейт shot.EndLsn <= coverage срабатывает
+        s3.ListCalls.Should().Be(afterFirstTick,
+            "the ahead-tick remembers the neighbor coverage — later ticks skip before the listing");
+        cts.Cancel();
+        var (outcome, _, _) = await run;
+        outcome.Should().BeNull();
+    }
+
     // AAA: отказ list-сверки (transient) не рвёт стрим — финал доставляется и
     // подтверждается; памп тик пропускает.
     [Fact]

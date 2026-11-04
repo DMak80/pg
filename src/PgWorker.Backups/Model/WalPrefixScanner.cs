@@ -105,26 +105,46 @@ public static class WalPrefixScanner
     /// Несовпадение CRC — стоп на конце последней CRC-валидной записи
     /// (консервативно). Чистая функция.</summary>
     public static int ValidatedPrefixLength(byte[] buffer, int count)
+        => ValidatedPrefixLength(buffer, count, validatedUpTo: 0);
+
+    /// <summary>Инкрементальная форма (survival-сборка и финальная проверка
+    /// fetch-wal): {@code validatedUpTo} — ДОВЕРЕННАЯ граница (конец записи по
+    /// построению кусков: конец куска-базы/предыдущего провалидированного
+    /// дифа) — скан НАЧИНАЕТСЯ с неё, префикс ниже не читается и не
+    /// пересчитывается (O(область дифов) вместо O(L·k)). Доверенная база
+    /// считается корректной как полный бэкап (arch/pgnode/processes/
+    /// g-wal-delta-assembly.md §5); граница вне [0..count] трактуется как 0
+    /// (полный скан). Первая запись от границы всегда пересчитывается;
+    /// позиция на границе страницы — пропуск short-заголовка, как везде.
+    /// Прочие правила — как у полной формы.</summary>
+    public static int ValidatedPrefixLength(byte[] buffer, int count, int validatedUpTo)
     {
         if (count < LongHeaderBytes)
             return 0;
+        // Скан идёт ОТ доверенной границы: область ниже — валидна по построению.
+        var trusted = validatedUpTo > 0 && validatedUpTo <= count ? validatedUpTo : 0;
 
-        var prefix = 0; // конец последней CRC-валидной записи
-        long pos = LongHeaderBytes; // первая страница: long-заголовок 40 байт
+        var prefix = trusted; // доверенный префикс уже принят
+        long pos = trusted;
 
-        // Продолжение записи из предыдущего сегмента — как в ValidPrefixLength.
-        if ((LeU16(buffer, 2) & XlpFirstIsContrecord) != 0)
+        if (trusted == 0)
         {
-            var remaining = LeU32(buffer, 16); // xlp_rem_len
-            if (remaining == 0)
-                return 0;
-            var contEnd = Skip(count, pos, remaining);
-            if (contEnd < 0)
-                return 0;
-            prefix = (int)contEnd;
-            pos = (contEnd + RecordAlign - 1) & ~(RecordAlign - 1); // MAXALIGN
-            if (pos > count)
-                return prefix;
+            // Полный скан: первая страница — long-заголовок 40 байт.
+            pos = LongHeaderBytes;
+            // Продолжение записи из предыдущего сегмента — как в ValidPrefixLength.
+            if ((LeU16(buffer, 2) & XlpFirstIsContrecord) != 0)
+            {
+                var remaining = LeU32(buffer, 16); // xlp_rem_len
+                if (remaining == 0)
+                    return 0;
+                var contEnd = Skip(count, pos, remaining);
+                if (contEnd < 0)
+                    return 0;
+                prefix = (int)contEnd;
+                pos = (contEnd + RecordAlign - 1) & ~(RecordAlign - 1); // MAXALIGN
+                if (pos > count)
+                    return prefix;
+            }
         }
 
         while (pos < count)

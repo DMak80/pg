@@ -205,6 +205,29 @@ public class WalPrefixScannerCrcTests
             data[Physical(pos, 20 + i)] = (byte)(value >> (8 * i));
     }
 
+    [Fact]
+    public void ValidatedPrefixLength_FromTrustedBoundary_MidPage()
+    {
+        // Arrange — две записи [40..104) и [104..204); доверенная граница 104 —
+        // конец записи в СЕРЕДИНЕ страницы (не выровнена по 8192): скан должен
+        // начаться с неё, доверенный префикс не перечитываться
+        var data = SegmentWithRecords(64, 100);
+
+        // Act — валидная диф-область от доверенной границы
+        var fromTrusted = WalPrefixScanner.ValidatedPrefixLength(data, 204, validatedUpTo: 104);
+        var full = WalPrefixScanner.ValidatedPrefixLength(data, 204);
+
+        // Act — порча тела записи диф-области
+        data[104 + 30] ^= 0xFF;
+        var truncated = WalPrefixScanner.ValidatedPrefixLength(data, 204, validatedUpTo: 104);
+
+        // Assert — доверенная граница принимается как есть, диф валидируется;
+        // битая запись диф-области усекает ровно до границы (база не тронута)
+        fromTrusted.Should().Be(204);
+        full.Should().Be(204);
+        truncated.Should().Be(104);
+    }
+
     // CRC по логическому диапазону записи [from..to): физические байты идут
     // в обход short-заголовков страниц.
     private static uint UpdateLogical(uint crc, byte[] data, int pos, int from, int to, int totalLen)

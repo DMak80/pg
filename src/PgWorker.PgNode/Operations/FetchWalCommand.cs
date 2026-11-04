@@ -175,9 +175,16 @@ internal static class FetchWalCommand
             .ToList();
 
     /// <summary>Результат сборки: покрытие (конец собранного префикса, абсолютный
-    /// LSN), факт конфликта байтов и граница дыры (минимальный start куска выше
-    /// покрытия; null — выше покрытия кусков нет).</summary>
-    internal sealed record AssemblyResult(ulong Coverage, bool Conflict, ulong? HoleStart);
+    /// LSN), факт конфликта байтов, граница дыры (минимальный start куска выше
+    /// покрытия; null — выше покрытия кусков нет) и TrustedEnd — конец последней
+    /// применённой КУСКА-БАЗЫ (start == начало сегмента, включая t14-версии; при
+    /// отсутствии — начало сегмента). Область [0..TrustedEnd) ДОВЕРЕНА писателю
+    /// (выкладывается только валидный префикс по границам записей) и транспорту
+    /// (Content-MD5/ETag + md5 в имени); скан-валидации (CRC/границы записей)
+    /// подлежит только [TrustedEnd..Coverage) — область дифов
+    /// (arch/pgnode/processes/g-wal-delta-assembly.md §5).</summary>
+    internal sealed record AssemblyResult(
+        ulong Coverage, bool Conflict, ulong? HoleStart, ulong TrustedEnd = 0);
 
     /// <summary>Штатная сборка (spec §4.3 п.6): жадное применение от начала
     /// сегмента; пересечение с собранным буфером сверяется побайтово, совпало —
@@ -196,32 +203,47 @@ internal static class FetchWalCommand
         var segmentStart = SegmentStartOfCandidate(candidates[0]);
         var buffer = new byte[WalFileName.SegmentBytes];
         var coverage = segmentStart;
+        var trustEnd = segmentStart; // конец последней применённой базы (доверена)
         var conflict = false;
-        foreach (var candidate in candidates)
+        // Жадка ИТЕРИРУЕТСЯ до фиксации покрытия (как итеративное покрытие
+        // контроля CoverageOf): при порядке «роль → start» кусок с start >
+        // coverage мог быть рассмотрен раньше куска с ранним start — повторный
+        // проход замыкает его после расширения покрытия, а не теряет навсегда
+        // (arch/pgnode/processes/g-wal-delta-assembly.md §2).
+        bool applied;
+        do
         {
-            if (candidate.End <= coverage)
-                continue; // уже покрыто — молча пропускаем
-            if (candidate.Start > coverage)
-                continue; // стык за покрытием — кандидат на дыру
-            var data = bytes[candidate.Name];
-            var startOffset = (int)(candidate.Start - segmentStart);
-            var overlapLen = (int)(Math.Min(candidate.End, coverage) - candidate.Start);
-            if (overlapLen > 0
-                && !buffer.AsSpan(startOffset, overlapLen).SequenceEqual(data.AsSpan(0, overlapLen)))
+            applied = false;
+            foreach (var candidate in candidates)
             {
-                conflict = true; // несовпадение байтов пересечения
-                break;           // сборка останавливается на покрытии до конфликта
-            }
+                if (candidate.End <= coverage)
+                    continue; // уже покрыто — молча пропускаем
+                if (candidate.Start > coverage)
+                    continue; // стык за покрытием — кандидат на дыру/повторный проход
+                var data = bytes[candidate.Name];
+                var startOffset = (int)(candidate.Start - segmentStart);
+                var overlapLen = (int)(Math.Min(candidate.End, coverage) - candidate.Start);
+                if (overlapLen > 0
+                    && !buffer.AsSpan(startOffset, overlapLen).SequenceEqual(data.AsSpan(0, overlapLen)))
+                {
+                    conflict = true; // несовпадение байтов пересечения
+                    break;           // сборка останавливается на покрытии до конфликта
+                }
 
-            var copyLsn = Math.Max(candidate.Start, coverage);
-            var copyLen = (int)(candidate.End - copyLsn);
-            data.AsSpan((int)(copyLsn - candidate.Start), copyLen)
-                .CopyTo(buffer.AsSpan((int)(copyLsn - segmentStart), copyLen));
-            coverage = candidate.End;
+                var copyLsn = Math.Max(candidate.Start, coverage);
+                var copyLen = (int)(candidate.End - copyLsn);
+                data.AsSpan((int)(copyLsn - candidate.Start), copyLen)
+                    .CopyTo(buffer.AsSpan((int)(copyLsn - segmentStart), copyLen));
+                coverage = candidate.End;
+                if (candidate.Start == segmentStart)
+                    trustEnd = Math.Max(trustEnd, candidate.End); // база — доверена
+                applied = true;
+            }
         }
+        while (applied && !conflict);
 
         var holeStart = HoleStartOf(candidates, coverage);
-        return (new AssemblyResult(coverage, conflict, holeStart),
+        return (new AssemblyResult(coverage, conflict, holeStart, trustEnd),
             buffer[..(int)(coverage - segmentStart)]);
     }
 
@@ -244,6 +266,7 @@ internal static class FetchWalCommand
         var segmentStart = SegmentStartOfCandidate(candidates[0]);
         var buffer = new byte[WalFileName.SegmentBytes];
         var coverage = segmentStart;
+        var trustEnd = segmentStart; // конец последней применённой базы (доверена)
 
         // Порядок: возрастание md5-строки; безномерные — по ETag; без ETag — в конце.
         var ordered = candidates
@@ -255,38 +278,58 @@ internal static class FetchWalCommand
             .Select(x => x.Candidate)
             .ToList();
 
-        foreach (var candidate in ordered)
+        // Инкрементальный скан ОБЛАСТИ ДИФОВ: граница известна по построению
+        // кусков (концы записей), поэтому скан начинается с неё, а не с начала
+        // сегмента; доверенная база и уже проверенные дифы не пересчитываются.
+        // Жадка итеративна (§2 канона).
+        var validatedUpTo = 0; // offset; 0 — доверенной базы ещё нет
+        bool applied;
+        do
         {
-            if (candidate.End <= coverage || candidate.Start > coverage)
-                continue; // уже покрыт / за дырой — не применяется
-            var data = bytes[candidate.Name];
-            var startOffset = (int)(candidate.Start - segmentStart);
-            var overlapLen = (int)(Math.Min(candidate.End, coverage) - candidate.Start);
-            if (overlapLen > 0
-                && !buffer.AsSpan(startOffset, overlapLen).SequenceEqual(data.AsSpan(0, overlapLen)))
-                continue; // несовпадение пересечения — отброс без ретрая
-
-            var copyLsn = Math.Max(candidate.Start, coverage);
-            var copyLen = (int)(candidate.End - copyLsn);
-            var copyOffset = (int)(copyLsn - segmentStart);
-            var saved = buffer.AsSpan(copyOffset, copyLen).ToArray();
-            data.AsSpan((int)(copyLsn - candidate.Start), copyLen)
-                .CopyTo(buffer.AsSpan(copyOffset, copyLen));
-
-            // Скан-валидация затронутой области: всё собранное покрытие обязано
-            // остаться валидным по границам записей и CRC (уже принятое валидно,
-            // поэтому укорочение означает битые записи нового куска).
-            var target = (int)(candidate.End - segmentStart);
-            if (WalPrefixScanner.ValidatedPrefixLength(buffer, target) < target)
+            applied = false;
+            foreach (var candidate in ordered)
             {
-                saved.CopyTo(buffer.AsSpan(copyOffset, copyLen)); // откат копии
-                continue; // записи битые — кусок отброшен
+                if (candidate.End <= coverage || candidate.Start > coverage)
+                    continue; // уже покрыт / за дырой — не применяется
+                var data = bytes[candidate.Name];
+                var startOffset = (int)(candidate.Start - segmentStart);
+                var overlapLen = (int)(Math.Min(candidate.End, coverage) - candidate.Start);
+                if (overlapLen > 0
+                    && !buffer.AsSpan(startOffset, overlapLen).SequenceEqual(data.AsSpan(0, overlapLen)))
+                    continue; // несовпадение пересечения — отброс без ретрая
+
+                var copyLsn = Math.Max(candidate.Start, coverage);
+                var copyLen = (int)(candidate.End - copyLsn);
+                var copyOffset = (int)(copyLsn - segmentStart);
+                var saved = buffer.AsSpan(copyOffset, copyLen).ToArray();
+                data.AsSpan((int)(copyLsn - candidate.Start), copyLen)
+                    .CopyTo(buffer.AsSpan(copyOffset, copyLen));
+
+                // Скан-валидация — ТОЛЬКО для дифов (start > начала сегмента):
+                // база-компак и t14-версия доверены писателю и транспорту
+                // (arch/pgnode/processes/g-wal-delta-assembly.md §5). Диф
+                // проверяется инкрементально от валидированной границы: всё
+                // собранное ниже уже принято (пересечение куска сверено побайтово),
+                // поэтому укорочение означает битые записи нового куска.
+                var isDelta = candidate.Start > segmentStart;
+                var target = (int)(candidate.End - segmentStart);
+                if (isDelta
+                    && WalPrefixScanner.ValidatedPrefixLength(buffer, target, validatedUpTo) < target)
+                {
+                    saved.CopyTo(buffer.AsSpan(copyOffset, copyLen)); // откат копии
+                    continue; // записи битые — кусок отброшен
+                }
+                coverage = candidate.End;
+                if (!isDelta)
+                    trustEnd = Math.Max(trustEnd, candidate.End); // база — доверена
+                validatedUpTo = target;
+                applied = true;
             }
-            coverage = candidate.End;
         }
+        while (applied);
 
         var holeStart = HoleStartOf(ordered, coverage);
-        return (new AssemblyResult(coverage, false, holeStart),
+        return (new AssemblyResult(coverage, false, holeStart, trustEnd),
             buffer[..(int)(coverage - segmentStart)]);
     }
 
@@ -418,14 +461,23 @@ internal static class FetchWalCommand
     {
         string? transportError = null;
         var normalized = NormalizeSegment(segment);
-        foreach (var client in clients)
+        // Мини-breaker нод на ОДИН вызов (spec §4.3, решение №23): нода,
+        // ответившая транспортным отказом (НЕ «объекта нет»), исключается из
+        // перебора последующих КУСКОВ этого прохода — «висящая» нода иначе стоит
+        // свой пер-запросный таймаут на КАЖДОМ из k кусков (k×15 с при пуле 8).
+        // Попытка внешнего цикла начинает перебор заново (свежий вызов).
+        var failedNodes = new bool[clients.Count];
+        for (var i = 0; i < clients.Count; i++)
         {
-            var got = await client.GetObjectToFileAsync(
+            var got = await clients[i].GetObjectToFileAsync(
                 cluster, shard, $"wal/{normalized}", target, ct);
             if (got.IsSuccess)
                 return (0, null);
             if (!IsNotFound(got))
+            {
                 transportError ??= got.Error!.Message.Split('\n')[0];
+                failedNodes[i] = true; // сид breaker'а для фазы кусков
+            }
         }
 
         if (WalFileName.TryParse(normalized) is not { } segmentName)
@@ -464,6 +516,9 @@ internal static class FetchWalCommand
 
         // (5) Скачивание параллельно (пул 8); сверка md5 байтов с именем куска
         // (безномерная legacy — с ETag одиночного put = md5 содержимого).
+        // Перебор нод на кусок — с breaker'ом этого вызова (failedNodes):
+        // нода, сдавшая транспортный отказ (не 404) на любом объекте вызова,
+        // последующими кусками не перебирается.
         var bytes = new System.Collections.Concurrent.ConcurrentDictionary<string, byte[]>(
             StringComparer.Ordinal);
         var etags = new System.Collections.Concurrent.ConcurrentDictionary<string, string?>(
@@ -476,14 +531,19 @@ internal static class FetchWalCommand
                 await gate.WaitAsync(ct);
                 try
                 {
-                    foreach (var client in clients)
+                    for (var i = 0; i < clients.Count; i++)
                     {
-                        var got = await client.GetObjectBytesAsync(
+                        if (Volatile.Read(ref failedNodes[i]))
+                            continue; // breaker: нода сдала транспортный отказ
+                        var got = await clients[i].GetObjectBytesAsync(
                             cluster, shard, $"wal/{candidate.Name}", ct);
                         if (!got.IsSuccess)
                         {
                             if (!IsNotFound(got))
+                            {
                                 downloadError ??= got.Error!.Message.Split('\n')[0];
+                                Volatile.Write(ref failedNodes[i], true); // последующие куски — мимо
+                            }
                             continue; // ноды нет объекта — следующая
                         }
                         var (data, etag) = got.Value;
@@ -514,7 +574,9 @@ internal static class FetchWalCommand
             return (1, downloadError ?? transportError); // ни один кусок не скачан
 
         // (6) Штатная сборка; несовпадение байтов пересечения — факт + выживание.
+        var segmentStart = WalDeltaName.SegmentStartOf(segmentName);
         var (greedyResult, greedyBuffer) = GreedyAssembleCore(downloaded, bytes);
+        var assembly = greedyResult;
         var coverage = greedyResult.Coverage;
         var holeStart = greedyResult.HoleStart;
         var assembled = greedyBuffer;
@@ -523,6 +585,7 @@ internal static class FetchWalCommand
             await Console.Error.WriteLineAsync(
                 $"fetch-wal: delta conflict at {coverage:x}, survival mode");
             var (survivalResult, survivalBuffer) = SurvivalAssembleCore(downloaded, bytes, etags);
+            assembly = survivalResult;
             coverage = survivalResult.Coverage;
             holeStart = survivalResult.HoleStart;
             assembled = survivalBuffer;
@@ -532,7 +595,6 @@ internal static class FetchWalCommand
         if (holeStart is { } hole)
             await Console.Error.WriteLineAsync($"fetch-wal: delta hole at {hole:x}");
 
-        var segmentStart = WalDeltaName.SegmentStartOf(segmentName);
         if (coverage <= segmentStart)
             return (1, transportError ?? downloadError); // покрытия нет — «конца WAL»
 
@@ -540,11 +602,19 @@ internal static class FetchWalCommand
         if (LocalSetCoversPartial(segment, coverage) is { } preferLayout && preferLayout)
             return (1, null);
 
-        // (9) Финальная скан-валидация всего префикса: CRC-аномалия — усечение + факт.
-        var validated = WalPrefixScanner.ValidatedPrefixLength(assembled, assembled.Length);
+        // (9) Финальная скан-валидация ОБЛАСТИ ДИФОВ (arch/pgnode/processes/
+        // g-wal-delta-assembly.md §5): базы-компаки и t14-версии доверены
+        // писателю и транспорту — скан начинается с конца последней применённой
+        // базы; дифов нет (coverage == TrustedEnd) — валидации нет вовсе,
+        // усечение невозможно. CRC-аномалия диф-области — усечение + факт.
+        var trustedOffset = (int)Math.Max(0L, (long)assembly.TrustedEnd - (long)segmentStart);
+        var validated = assembled.Length <= trustedOffset
+            ? assembled.Length
+            : WalPrefixScanner.ValidatedPrefixLength(
+                assembled, assembled.Length, validatedUpTo: trustedOffset);
         if (validated < assembled.Length)
             await Console.Error.WriteLineAsync(
-                $"fetch-wal: delta {normalized}: prefix truncated {assembled.Length} → {validated} (crc)");
+                $"fetch-wal: delta {normalized}: diff region truncated {assembled.Length} → {validated} (crc)");
 
         // (9) Запись валидного префикса и добивка нулями до wal_segment_size.
         var temp = target + ".delta";
@@ -630,11 +700,34 @@ internal static class FetchWalCommand
                         context.SecretKey, Region: null, CaBundlePath: caBundlePath,
                         MaxErrorRetry: 0),
                     WalReceiverCore.PutAttemptTimeout)).ToList();
+                // Остаток жёсткого дедлайна вызова — ВНУТРЬ прохода (linked-CTS):
+                // листинги/GET/скан прерываются по нему, а не только между
+                // попытками (spec §4.3, решение №23: k кусков × пер-запросный
+                // таймаут иначе не ограничены). Исчерпание — транспортный исход
+                // попытки (НЕ «конец WAL»): ретрай решает внешний цикл.
+                // Бюджет CallDeadline НЕ меняется — он лишь распространяется внутрь.
+                var remaining = CallDeadline - TimeSpan.FromMilliseconds(
+                    Environment.TickCount64 - startTick);
+                using var attemptCts = new CancellationTokenSource(
+                    remaining > TimeSpan.Zero ? remaining : TimeSpan.FromMilliseconds(1));
                 try
                 {
-                    var (exitCode, transportError) = await FetchOnceAsync(
-                        clients, cluster, shard, segment, target, context.ChainLife,
-                        CancellationToken.None);
+                    int exitCode;
+                    string? transportError;
+                    try
+                    {
+                        (exitCode, transportError) = await FetchOnceAsync(
+                            clients, cluster, shard, segment, target, context.ChainLife,
+                            attemptCts.Token);
+                    }
+                    catch (OperationCanceledException) when (attemptCts.IsCancellationRequested)
+                    {
+                        // Дедлайн вызова исчерпан внутри прохода — транспортный
+                        // исход попытки; внешний цикл ниже решит, ретраить ли.
+                        exitCode = 1;
+                        transportError = "call deadline exceeded";
+                    }
+
                     if (exitCode == 0)
                         return 0;
                     if (transportError is null)
