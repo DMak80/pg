@@ -104,32 +104,78 @@ public static partial class RetentionPlanner
             .Cast<WalFileName?>()
             .FirstOrDefault();
 
-    /// <summary>План чистки WAL (spec §3.1): сегменты строго ниже cutoff (TLI
-    /// ниже ИЛИ тот же TLI с позицией log·256+seg ниже cutoff) и `.history`
-    /// TLI ниже стартового — на удаление. Сам cutoff, сегменты выше/новее,
-    /// `.history` cutoff-TLI и новее, `.partial` и нераспознаваемые имена —
-    /// НЕ входят (консервативно: объект TLI&gt;cutoff позицией ниже cutoff не
-    /// трогаем — контроль его игнорирует, удалять незачем).</summary>
+    /// <summary>Самый старый ОСТАВЛЯЕМЫЙ COMPLETED-полный по (TLI, позиции)
+    /// wal_start (нижняя граница WAL-чистки, arch/backups/processes/
+    /// c-retention.md §2): цепочка полного идёт от его wal_start через все
+    /// TLI-переходы, поэтому объекты TLI выше этой границы не удаляются,
+    /// пока полный жив. null — оставляемых полных с wal_start нет (чистка
+    /// ниже cutoff небезопасна). Чистая функция.</summary>
+    public static WalFileName? EarliestKeptWalStart(IReadOnlyList<FullBackupState> kept)
+        => kept
+            .Where(f => f.State == FullBackupStatus.Completed)
+            .Select(f => WalFileName.TryParse(f.WalStartSegment ?? ""))
+            .Where(w => w is not null)
+            .Select(w => w!.Value)
+            .OrderBy(w => w.Tli)
+            .ThenBy(w => (long)w.Log * WalFileName.SegsPerLog + w.Seg)
+            .Cast<WalFileName?>()
+            .FirstOrDefault();
+
+    /// <summary>План чистки WAL (arch/backups/processes/c-retention.md §2):
+    /// сегменты строго ниже cutoff (TLI ниже ИЛИ тот же TLI с позицией
+    /// log·256+seg ниже cutoff). С нижней границей oldestKeptStart (wal_start
+    /// самого старого оставляемого полного) удаляются только объекты вне
+    /// цепочек оставляемых полных: строго ниже oldest (TLI/позиция) и
+    /// сегменты cutoff-TLI ниже cutoff; объекты TLI между oldest и cutoff —
+    /// живут (restore по старому полному идёт через их TLI-переходы).
+    /// `.history` — только TLI ≤ oldest.TLI (переход в TLI самого старого
+    /// оставляемого полного уже позади); история выше — часть цепочек
+    /// оставляемых полных (PITR). oldestKeptStart null — прежняя граница
+    /// (консервативно: вызывающий не передал состав Keep; история — TLI ниже
+    /// cutoff). `.partial` и нераспознаваемые имена — не входят; объект TLI
+    /// выше cutoff позицией ниже cutoff не трогаем (контроль его игнорирует,
+    /// удалять незачем). Чистая функция.</summary>
     public static IReadOnlyList<string> SelectWalForDeletion(
-        IReadOnlyList<string> objectNames, WalFileName cutoff)
+        IReadOnlyList<string> objectNames, WalFileName cutoff,
+        WalFileName? oldestKeptStart = null)
     {
         var result = new List<string>();
         foreach (var name in objectNames)
         {
             if (WalFileName.TryParse(name) is { } segment)
             {
-                var below = segment.Tli < cutoff.Tli
-                    || (segment.Tli == cutoff.Tli
-                        && (long)(segment.Log * WalFileName.SegsPerLog + segment.Seg)
-                           < (long)(cutoff.Log * WalFileName.SegsPerLog + cutoff.Seg));
-                if (below)
+                if (BelowWalCutoff(segment, cutoff, oldestKeptStart))
                     result.Add(name);
             }
-            else if (WalFileName.TryParseHistory(name) is { } tli && tli < cutoff.Tli)
-                result.Add(name); // .history старых TLI — сегменты их диапазонов удалены
+            else if (WalFileName.TryParseHistory(name) is { } tli)
+            {
+                if (oldestKeptStart is { } oldest ? tli <= oldest.Tli : tli < cutoff.Tli)
+                    result.Add(name); // .history TLI вне цепочек оставляемых полных
+            }
         }
 
         return result;
+    }
+
+    // Сегмент ниже границы чистки: вне цепочек оставляемых полных (строго ниже
+    // oldest по TLI/позиции) либо хвост cutoff-TLI до старта новейшего полного.
+    private static bool BelowWalCutoff(
+        WalFileName segment, WalFileName cutoff, WalFileName? oldestKeptStart)
+    {
+        var pos = (long)segment.Log * WalFileName.SegsPerLog + segment.Seg;
+        if (oldestKeptStart is { } oldest)
+        {
+            var oldestPos = (long)oldest.Log * WalFileName.SegsPerLog + oldest.Seg;
+            if (segment.Tli < oldest.Tli || (segment.Tli == oldest.Tli && pos < oldestPos))
+                return true;
+            return segment.Tli == cutoff.Tli
+                && pos < (long)cutoff.Log * WalFileName.SegsPerLog + cutoff.Seg;
+        }
+
+        // Граница неизвестна — прежнее правило (TLI ниже cutoff / позиция в нём).
+        return segment.Tli < cutoff.Tli
+            || (segment.Tli == cutoff.Tli
+                && pos < (long)cutoff.Log * WalFileName.SegsPerLog + cutoff.Seg);
     }
 
     /// <summary>Номер жизни ПОСЛЕДНЕГО полного шарда — вход гейта ветки (д)
@@ -163,7 +209,7 @@ public static partial class RetentionPlanner
     /// нет. Финалы/.history не трогает.</summary>
     public static IReadOnlyList<string> SelectPartialForDeletion(
         IReadOnlyList<string> objectNames, WalFileName? cutoff, uint? chainLife,
-        uint? lastFullLife = null)
+        uint? lastFullLife = null, WalFileName? oldestKeptStart = null)
     {
         var finals = new HashSet<WalFileName>();
         var versions = new Dictionary<WalFileName, List<(string Name, ulong EndLsn)>>();
@@ -200,10 +246,7 @@ public static partial class RetentionPlanner
                 continue;
             }
             if (cutoff is { } limit
-                && (segment.Tli < limit.Tli
-                    || (segment.Tli == limit.Tli
-                        && (long)segment.Log * WalFileName.SegsPerLog + segment.Seg
-                           < (long)limit.Log * WalFileName.SegsPerLog + limit.Seg)))
+                && BelowWalCutoff(segment, limit, oldestKeptStart))
             {
                 // (г) всё кусочное семейство сегмента ниже cutoff
                 doomed.UnionWith(segmentVersions.Select(x => x.Name));

@@ -576,19 +576,18 @@ public sealed class TliSwitchContext : IAsyncLifetime
         await ExecAsync(_newMasterDsn,
             "INSERT INTO tli_switch_probe SELECT g, 'post-switch' FROM generate_series(11, 15) g", ct);
         await SwitchWalsAsync(_newMasterDsn, 3, ct);
-        var tailDelivered = await WaitPhaseAsync("tli2-tail", async () =>
-        {
-            var names = await ListWalNamesAsync(Cluster, "shard1");
-            var tli1Max = names
-                .Select(n => PgWorker.Backups.WalFileName.TryParse(n))
-                .Where(w => w is { Tli: 1 })
-                .Select(w => (long)w!.Value.Log * 256 + w!.Value.Seg)
-                .DefaultIfEmpty(-1).Max();
-            return names.Contains($"{Tli2:x8}.history")
-                   && names.Any(n => PgWorker.Backups.WalFileName.TryParse(n) is { } w
-                       && w.Tli == Tli2
-                       && (long)w.Log * 256 + w.Seg > tli1Max);
-        }, TimeSpan.FromSeconds(90), ct);
+        var tli1Max = (await ListWalNamesAsync(Cluster, "shard1"))
+            .Select(n => PgWorker.Backups.WalFileName.TryParse(n))
+            .Where(w => w is { Tli: 1 })
+            .Select(w => (long)w!.Value.Log * 256 + w!.Value.Seg)
+            .DefaultIfEmpty(-1).Max();
+        // Доставка TLI2-хвоста — НЕПРЕРЫВНОСТЬЮ цепочки от wal_start полного
+        // до первого TLI2-сегмента выше tli1Max (WalChain.CheckRange — та же
+        // проверка, что у воркера/валидатора): «есть хоть один TLI2-сегмент
+        // выше max TLI1» пропускал дыру перед ним, и restore до target_time
+        // обрывался «концом WAL» на дыре (факт t92).
+        var tailDelivered = await WalChainCoversAsync(
+            Cluster, "shard1", WalStartSegment!, Tli2, tli1Max + 1, ct);
         tailDelivered.Should().BeTrue(
             $"wal/{Tli2:x8}.history and TLI2-segments above the switch point must be delivered (the replica agent continues from the tail): "
             + await DumpDiagnosticsAsync(Cluster, "shard1"));
@@ -609,12 +608,14 @@ public sealed class TliSwitchContext : IAsyncLifetime
             "INSERT INTO tli_switch_probe SELECT g, 'after-cut' FROM generate_series(16, 18) g", ct);
         await SwitchWalsAsync(_newMasterDsn, 3, ct);
         AfterCutPos = posBefore + 3;
-        // [PHASE]-телеметрия вокруг гейта доставки (семантика WaitPhaseAsync;
-        // сам WalArchivedAsync — дословная копия образца, не трогаем):
+        // [PHASE]-телеметрия вокруг гейта доставки (семантика WaitPhaseAsync):
         // строка в журнал всегда, фаза > 60 с — docker-логи в артефакты
-        // (spec §3.6/AC4: ВСЕ ожидания — с [PHASE]-строками).
+        // (spec §3.6/AC4: ВСЕ ожидания — с [PHASE]-строками). Гейт — строгий:
+        // непрерывность цепочки от wal_start полного до сегмента не ниже
+        // AfterCutPos (max-позиция дыру не ловит — restore обрывается на ней).
         var afterSw = Stopwatch.StartNew();
-        var afterArchived = await WalArchivedAsync(Cluster, "shard1", AfterCutPos, ct);
+        var afterArchived = await WalChainCoversAsync(
+            Cluster, "shard1", WalStartSegment!, Tli2, AfterCutPos, ct);
         afterSw.Stop();
         Console.WriteLine($"[PHASE] after-cut-archived: ok={afterArchived}, elapsed={afterSw.Elapsed.TotalSeconds:F1}s");
         if (afterSw.Elapsed > TimeSpan.FromSeconds(60))
@@ -980,14 +981,33 @@ public sealed class TliSwitchContext : IAsyncLifetime
         return parsed is { } w ? (long)w.Log * 256 + w.Seg : -1;
     }
 
-    // ДОСТАВКА до позиции: последний закрытый сегмент обязан появиться в
-    // wal/-префиксе (бюджет 180 с).
-    private async Task<bool> WalArchivedAsync(
-        string cluster, string shard, long targetPos, CancellationToken ct)
+    // НЕПРЕРЫВНАЯ доставка до позиции: цепочка от wal_start полного (финалы
+    // + <TLI>.history) доходит без дыр до сегмента TLI endTli с позицией
+    // не ниже targetPos — WalChain.CheckRange, проверка воркера/валидатора
+    // (arch/19 §3). Max-позиция дыру перед собой не ловит: restore до
+    // target_time тогда останавливается «концом WAL» на дыре (факт t92).
+    // Сегмент-конец — ПЕРВЫЙ доставленный подходящий: его наличие и
+    // непрерывность до него и есть покрытие [wal_start..targetPos].
+    private async Task<bool> WalChainCoversAsync(
+        string cluster, string shard, string walStartSegment,
+        uint endTli, long targetPos, CancellationToken ct)
         => await E2eFixture.WaitForAsync(async () =>
         {
+            var chainStart = PgWorker.Backups.WalFileName.TryParse(walStartSegment);
+            if (chainStart is null)
+                return false; // битый wal_start — не цепочечная проблема гейта
             var names = await ListWalNamesAsync(cluster, shard);
-            return names.Select(WalPosOf).DefaultIfEmpty(-1).Max() >= targetPos;
+            var end = names
+                .Select(n => PgWorker.Backups.WalFileName.TryParse(n))
+                .Where(w => w is { } s
+                    && s.Tli == endTli
+                    && (long)s.Log * 256 + s.Seg >= targetPos)
+                .Select(w => w!.Value)
+                .OrderBy(s => (long)s.Log * 256 + s.Seg)
+                .FirstOrDefault();
+            if (end.Tli != endTli)
+                return false; // подходящий сегмент ещё не доставлен
+            return PgWorker.Backups.WalChain.CheckRange(chainStart.Value, end, names).IsContinuous;
         }, TimeSpan.FromSeconds(90), ct);
 
     public async Task<Kv?> GetOrNullAsync(string key)

@@ -154,6 +154,10 @@ public sealed class RetentionProcess(
             f.State == FullBackupStatus.Completed
             && !(selection.Delete.Count > 0 && f.Id == selection.Delete[0])).ToList();
         var cutoff = RetentionPlanner.LatestVerifiedWalStart(remaining);
+        // Нижняя граница чистки — wal_start самого старого ОСТАВЛЯЕМОГО полного:
+        // объекты TLI между ним и cutoff — часть цепочек хранимых полных
+        // (restore/failover-переходы), удалять их нельзя (c-retention §2).
+        var oldestKeptStart = RetentionPlanner.EarliestKeptWalStart(remaining);
         var listed = await S3Pulse.CallAsync(progress, token => s3.ListPrefixAsync($"{cluster}/{shard}/wal/", ct: token), ct);
         if (!listed.IsSuccess)
             throw new ApplicationException($"list wal: {listed.Error!.Message}");
@@ -177,8 +181,9 @@ public sealed class RetentionProcess(
         var lastFullLife = RetentionPlanner.LastFullLife(shardBackups.Full);
 
         var doomed = (cutoff is { } cut
-                ? RetentionPlanner.SelectWalForDeletion(names, cut) : [])
-            .Concat(RetentionPlanner.SelectPartialForDeletion(names, cutoff, chainLife, lastFullLife))
+                ? RetentionPlanner.SelectWalForDeletion(names, cut, oldestKeptStart) : [])
+            .Concat(RetentionPlanner.SelectPartialForDeletion(
+                names, cutoff, chainLife, lastFullLife, oldestKeptStart))
             .ToList();
         if (doomed.Count > 0)
         {
@@ -269,7 +274,10 @@ public sealed class RetentionProcess(
                 failedPools.Add(poolName); // недоступен/без кредов — transient
                 continue;
             }
-            await using var poolS3 = created.Value.Client;
+            // Владелец клиента — фабрика (кэш до конца процесса): dispose здесь
+            // освободил бы AmazonS3Client, и все последующие S3-вызовы этого
+            // пула падали бы «Cannot access a disposed object» (факт E2E).
+            var poolS3 = created.Value.Client;
             var listed = await S3Pulse.CallAsync(progress, token => poolS3.ListPrefixAsync("", ct: token), ct);
             if (!listed.IsSuccess)
             {

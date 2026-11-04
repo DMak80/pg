@@ -45,6 +45,7 @@ public sealed class E2eDrillScenarios(E2eDrillScenariosFx Ctx) : IClassFixture<E
         cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
         var ct = cts.Token;
         var cluster = $"bkdrll{Fx.ClusterTag}";
+        await CleanupPreviousDrillClustersAsync(cluster, ct);
         await SeedClusterAsync(cluster);
         await G.PutAsync(Endpoint, $"/pgworker/backups/{cluster}/policy",
             $$"""{"full_max_age_sec":86400,"verify":{"on_create":false},"drill":{"interval_days":1},{{E2eEnvironment.PoolS3(Pool)}}}""", null, ct);
@@ -137,6 +138,7 @@ public sealed class E2eDrillScenarios(E2eDrillScenariosFx Ctx) : IClassFixture<E
         cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
         var ct = cts.Token;
         var cluster = $"bkdrfl{Fx.ClusterTag}";
+        await CleanupPreviousDrillClustersAsync(cluster, ct);
         await SeedClusterAsync(cluster);
         await G.PutAsync(Endpoint, $"/pgworker/backups/{cluster}/policy",
             $"{{\"full_max_age_sec\":3600,{E2eEnvironment.PoolS3(Pool)}}}", null, ct);
@@ -363,6 +365,52 @@ public sealed class E2eDrillScenarios(E2eDrillScenariosFx Ctx) : IClassFixture<E
 
     private async Task<Kv?> GetOrNullAsync(string key)
         => (await G.GetAsync(Endpoint, key, TestContext.Current.CancellationToken)).Value;
+
+    // Гигиена между фактами класса (один контур на класс — docs/e2e-isolation.md):
+    // прежний drill-кластер снимается ДО старта нового — два кластера × 4 PG-ноды
+    // под параллельной серией вытесняют drill/полный за бюджеты (факт: drill не
+    // дошёл до SUCCEEDED за 90 с).
+    private async Task CleanupPreviousDrillClustersAsync(string keep, CancellationToken ct)
+    {
+        foreach (var prefix in new[] { "bkdrll", "bkdrfl" })
+        {
+            var cluster = $"{prefix}{Fx.ClusterTag}";
+            if (cluster == keep)
+                continue;
+            var config = await GetOrNullAsync($"/clusters/{cluster}/config");
+            if (config is null)
+                continue;
+            await G.DeleteAsync(Endpoint, $"/clusters/{cluster}/", prefix: true, ct);
+            await G.DeleteAsync(Endpoint, $"/pgworker/backups/{cluster}/", prefix: true, ct);
+            await G.DeleteAsync(Endpoint, $"/pgworker/portalloc/{cluster}", prefix: false, ct);
+            await G.DeleteAsync(Endpoint, $"/service/{cluster}-", prefix: true, ct);
+            var containers = await Fx.RunDockerAsync(
+                ["ps", "-a", "--format", "{{.Names}}", "--filter", $"name=pgw-{cluster}-"], ct);
+            foreach (var name in containers.Split('\n',
+                         StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                await Fx.RunDockerAsync(["rm", "-f", name], ct);
+            for (var attempt = 0; attempt < 5; attempt++)
+            {
+                var volumes = await Fx.RunDockerAsync(
+                    ["volume", "ls", "--format", "{{.Name}}", "--filter", $"name=pgw-{cluster}-"], ct);
+                var names = volumes.Split('\n',
+                    StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                if (names.Length == 0)
+                    break;
+                foreach (var volume in names)
+                    await Fx.RunDockerAsync(["volume", "rm", "-f", volume], ct);
+                await Task.Delay(1000, ct);
+            }
+            await using (var s3 = new PgWorker.Backups.BackupS3(new PgWorker.Backups.S3ClientOptions(
+                Fx.S3Endpoint, Bucket, E2eEnvironment.S3RootUser, E2eEnvironment.S3RootPassword)))
+            {
+                var listed = await s3.ListPrefixAsync($"{cluster}/", ct: ct);
+                if (listed.IsSuccess && listed.Value.Count > 0)
+                    await s3.DeleteKeysAsync(listed.Value.Select(o => o.Key).ToList(), ct);
+            }
+            Console.WriteLine($"[DRILL] cleanup of the previous scenario cluster {cluster} done");
+        }
+    }
 
     private async Task SeedClusterAsync(string cluster)
     {
