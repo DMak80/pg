@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Text;
 using FluentAssertions;
 using PgWorker.Backups;
+using PgWorker.Backups.Tar;
 using PgWorker.PgNode;
 using PgWorker.PgNode.Operations;
 using Shared.Core;
@@ -85,45 +86,86 @@ public class RestoreOperationTests
         }
     }
 
-    /// <summary>Фейк IBackupS3: list одного backup_label; GET пишет dest.
-    /// DownloadedKeys — композированные ключи запросов (ассерт состава ключей
-    /// ловит задвоение префикса: полный obj.Key вместо относительного).</summary>
-    private sealed class FakeS3 : IBackupS3
+    /// <summary>Фейк S3 набора: ОДИН tar-объект full/&lt;id&gt;.tar (writer шага 2):
+    /// HEAD — существование/размер, стрим — байты объекта, Range — срез.
+    /// Ranges — запрошенные диапазоны (ассерт фиксации endpoint'а/границ).</summary>
+    private sealed class FakeTarS3 : IBackupS3, IStreamObjectS3
     {
-        public readonly List<string> DownloadedKeys = [];
-        public Task<Result<IReadOnlyList<S3ObjectInfo>>> ListPrefixAsync(
-            string prefix, int? maxKeysPerTest = null, CancellationToken ct = default)
-            => Task.FromResult(Result<IReadOnlyList<S3ObjectInfo>>.Success(
-                new List<S3ObjectInfo> { new($"{prefix}backup_label", 60, DateTimeOffset.UnixEpoch) }));
-
-        public Task<Result> GetObjectToFileAsync(
-            string cluster, string shard, string key, string destFilePath, CancellationToken ct = default)
+        public FakeTarS3(byte[]? tar = null, bool objectExists = true)
         {
-            Directory.CreateDirectory(Path.GetDirectoryName(destFilePath)!);
-            File.WriteAllText(destFilePath,
-                "START WAL LOCATION: 0/2000028 (file 000000010000000000000002)\n");
-            // Композированный ключ — ассерт состава ключей ловит задвоение
-            // префикса (полный obj.Key вместо относительного).
-            DownloadedKeys.Add($"{cluster}/{shard}/{key}");
-            return Task.FromResult(Result.Success());
+            Tar = tar ?? BuildTar();
+            ObjectExists = objectExists;
         }
 
-        public Task<Result> PutFileAsync(string key, string filePath, CancellationToken ct = default) => throw new NotSupportedException();
-        public Task<Result> PutObjectAsync(string key, byte[] data, string? sha256, CancellationToken ct = default) => throw new NotSupportedException();
+        public byte[] Tar { get; }
+
+        public bool ObjectExists { get; }
+
+        public List<(string Key, long Start, long End)> Ranges { get; } = [];
+
+        public List<string> HeadKeys { get; } = [];
+
+        public Task<Result<(bool Exists, long SizeBytes)>> HeadObjectAsync(
+            string cluster, string shard, string key, CancellationToken ct)
+        {
+            HeadKeys.Add($"{cluster}/{shard}/{key}");
+            return Task.FromResult(Result<(bool Exists, long SizeBytes)>.Success(
+                ObjectExists ? (true, (long)Tar.Length) : (false, 0L)));
+        }
+
+        public Task<Result<(Stream Body, long Size)>> GetObjectStreamAsync(
+            string cluster, string shard, string key, CancellationToken ct)
+            => Task.FromResult(Result<(Stream Body, long Size)>.Success(
+                ((Stream)new MemoryStream(Tar), (long)Tar.Length)));
+
+        public Task<Result<byte[]>> GetObjectRangeAsync(
+            string cluster, string shard, string key, long start, long end, CancellationToken ct)
+        {
+            Ranges.Add(($"{cluster}/{shard}/{key}", start, end));
+            return Task.FromResult(Result<byte[]>.Success(Tar[(int)start..(int)(end + 1)]));
+        }
+
+        // IBackupS3 — restore читает только стрим/Range/HEAD.
         public Task<Result<bool>> BucketExistsAsync(CancellationToken ct) => throw new NotSupportedException();
         public Task<Result<IReadOnlyList<WalObject>>> ListWalAsync(string cluster, string shard, int? maxKeysPerTest = null, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<IReadOnlyList<S3ObjectInfo>>> ListPrefixAsync(string prefix, int? maxKeysPerTest = null, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<Result> DeleteKeysAsync(IReadOnlyList<string> keys, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result> PutObjectAsync(string key, byte[] data, string? sha256, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<Result<IReadOnlyList<WalObject>>> ListAsync(string cluster, string shard, string prefix, int? maxKeysPerTest = null, CancellationToken ct = default) => throw new NotSupportedException();
-        public Task<Result> PutObjectMd5Async(string key, byte[] data, string md5Hex, CancellationToken ct = default)
-            => throw new NotSupportedException();
-
-        public Task<Result<(byte[] Data, string? ETag)>> GetObjectBytesAsync(
-            string cluster, string shard, string key, CancellationToken ct = default)
-            => throw new NotSupportedException();
-
         public Task<Result<string>> GetObjectAsync(string cluster, string shard, string key, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result> PutObjectMd5Async(string key, byte[] data, string md5Hex, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<(byte[] Data, string? ETag)>> GetObjectBytesAsync(string cluster, string shard, string key, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<Result<IReadOnlyList<string>>> ListFullsAsync(string cluster, string shard, int? maxKeysPerTest = null, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<Result<string>> DownloadTextAsync(string cluster, string shard, string objectKey, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result> PutFileAsync(string key, string filePath, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result> GetObjectToFileAsync(string cluster, string shard, string key, string destFilePath, CancellationToken ct = default) => throw new NotSupportedException();
+    }
+
+    // Tar-объект тестового набора: backup_label (валидный START WAL LOCATION),
+    // файл, каталог и WAL-сегмент (распаковка в PGDATA).
+    private static byte[] BuildTar()
+    {
+        var buffer = new MemoryStream();
+        using var writer = new TarStreamWriter(buffer);
+        var label = Encoding.ASCII.GetBytes(
+            "START WAL LOCATION: 0/2000028 (file 000000010000000000000002)\n" +
+            "CHECKPOINT LOCATION: 0/2000028\nBACKUP METHOD: streamed\n");
+        writer.WriteEntryAsync(
+            new TarEntry("backup_label", TarTypeFlags.File, label.Length, 0x1A0, ""), label, default)
+            .GetAwaiter().GetResult();
+        var version = Encoding.ASCII.GetBytes("18\n");
+        writer.WriteEntryAsync(
+            new TarEntry("PG_VERSION", TarTypeFlags.File, version.Length, 0x1A4, ""), version, default)
+            .GetAwaiter().GetResult();
+        writer.WriteEntryAsync(
+            new TarEntry("pg_wal/", TarTypeFlags.Dir, 0, 0x1ED, ""), [], default)
+            .GetAwaiter().GetResult();
+        var segment = new byte[16];
+        writer.WriteEntryAsync(
+            new TarEntry("pg_wal/000000010000000000000002", TarTypeFlags.File, segment.Length, 0x1A0, ""),
+            segment, default).GetAwaiter().GetResult();
+        writer.FinishAsync(default).GetAwaiter().GetResult();
+        return buffer.ToArray();
     }
 
     /// <summary>Temp-PGDATA: pristine auto.conf (с archive_mode=on — Spilo-
@@ -143,12 +185,12 @@ public class RestoreOperationTests
     }
 
     private static RestoreOperation Create(
-        string pgdata, FakeRunner runner, string? targetTime = null, FakeS3? s3 = null)
+        string pgdata, FakeRunner runner, string? targetTime = null, FakeTarS3? s3 = null)
     {
         var registry = new OperationRegistry();
         registry.TryBegin(new OperationSnapshot(Id, "running", "downloading"));
         return new RestoreOperation(Request(targetTime), runner, registry,
-            pgdata: Path.Combine(pgdata, "pgroot", "data"), _ => s3 ?? new FakeS3());
+            pgdata: Path.Combine(pgdata, "pgroot", "data"), _ => s3 ?? new FakeTarS3());
     }
 
     [Fact]
@@ -158,7 +200,7 @@ public class RestoreOperationTests
         var root = NewPgdata();
         var pgdata = Path.Combine(root, "pgroot", "data");
         var runner = new FakeRunner();
-        var s3 = new FakeS3();
+        var s3 = new FakeTarS3();
         var op = Create(root, runner, s3: s3);
 
         // Act: полный пайплайн.
@@ -170,9 +212,14 @@ public class RestoreOperationTests
         snap.RestoredToLsn.Should().Be("0/2000028");
         snap.SystemId.Should().Be("7000000000000000001");
         snap.Phase.Should().Be("recovering");
-        // Assert: ключ скачивания — композиция cluster/shard + относительного
-        // ключа листинга (полный obj.Key давал бы задвоение c1/s1/c1/s1/...).
-        s3.DownloadedKeys.Should().BeEquivalentTo([$"c1/s1/full/{Id}/backup_label"]);
+        // Assert: HEAD/стрим — ОДИН объект full/<id>.tar (единственный ключ
+        // набора, spec t01 §6.1); набор распакован в PGDATA.
+        s3.HeadKeys.Should().Equal($"c1/s1/full/{Id}.tar");
+        File.ReadAllText(Path.Combine(pgdata, "backup_label"))
+            .Should().Contain("START WAL LOCATION");
+        File.ReadAllText(Path.Combine(pgdata, "PG_VERSION")).TrimEnd().Should().Be("18");
+        File.Exists(Path.Combine(pgdata, "pg_wal", "000000010000000000000002"))
+            .Should().BeTrue("the tar entries are extracted into PGDATA");
 
         var autoConf = Path.Combine(pgdata, "postgresql.auto.conf");
         var hbaConf = Path.Combine(pgdata, "pg_hba.conf");
@@ -309,7 +356,7 @@ public class RestoreOperationTests
         var registry = new OperationRegistry();
         registry.TryBegin(new OperationSnapshot(Id, "running", "downloading"));
         var op = new RestoreOperation(Request(), runner, registry,
-            pgdata, _ => new FakeS3());
+            pgdata, _ => new FakeTarS3());
         var run = op.RunAsync(CancellationToken.None);
         SpinWait.SpinUntil(() => runner.Invocations.Any(i =>
                     i.FileName == "psql" && i.Args.Contains("pg_is_in_recovery")),
@@ -330,6 +377,53 @@ public class RestoreOperationTests
         registry.TryBegin(new OperationSnapshot(
                 "20260102000000Z", "running", "downloading"))
             .Should().BeTrue("a terminal snapshot is not an active operation");
+        Directory.Delete(root, recursive: true);
+    }
+
+    // AAA: объекта full/<id>.tar нет ни на одном endpoint → failed/downloading
+    // (transient-семантика прежняя), причина — object not found.
+    [Fact]
+    public async Task TarObjectNotFound_AllEndpointsMiss_FailedDownloading()
+    {
+        // Arrange — HEAD отвечает «нет объекта» на всех целях команды.
+        var root = NewPgdata();
+        var registry = new OperationRegistry();
+        registry.TryBegin(new OperationSnapshot(Id, "running", "downloading"));
+        var op = new RestoreOperation(Request(), new FakeRunner(), registry,
+            pgdata: Path.Combine(root, "pgroot", "data"),
+            _ => new FakeTarS3(objectExists: false));
+
+        // Act
+        await op.RunAsync(CancellationToken.None);
+
+        // Assert
+        var snap = op.Snapshot!;
+        snap.State.Should().Be("failed");
+        snap.Phase.Should().Be("downloading");
+        snap.Error.Should().Contain("not found");
+        Directory.Delete(root, recursive: true);
+    }
+
+    // AAA: объект-мусор (не tar) → failed/downloading однострочной причиной.
+    [Fact]
+    public async Task CorruptTar_FailedDownloading()
+    {
+        // Arrange — байты без валидных tar-заголовков.
+        var root = NewPgdata();
+        var registry = new OperationRegistry();
+        registry.TryBegin(new OperationSnapshot(Id, "running", "downloading"));
+        var op = new RestoreOperation(Request(), new FakeRunner(), registry,
+            pgdata: Path.Combine(root, "pgroot", "data"),
+            _ => new FakeTarS3(Encoding.ASCII.GetBytes("not a tar archive at all")));
+
+        // Act
+        await op.RunAsync(CancellationToken.None);
+
+        // Assert
+        var snap = op.Snapshot!;
+        snap.State.Should().Be("failed");
+        snap.Phase.Should().Be("downloading");
+        snap.Error.Should().NotContain("\n");
         Directory.Delete(root, recursive: true);
     }
 

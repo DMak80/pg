@@ -1,15 +1,17 @@
 using System.Diagnostics;
 using System.Text.RegularExpressions;
 using PgWorker.Backups;
+using PgWorker.Backups.Tar;
 using PgWorker.Etcd.S3;
 
 namespace PgWorker.PgNode.Operations;
 
 /// <summary>Restore/drill-операция процесса приёмника ноды (arch/19
-/// §3.5/§3.6 — механика 1:1 из bash-механики restore, Р15): скачивание
-/// full/&lt;id&gt;/ 1:1 в целевой PGDATA (restore — PGDATA ноды, volume пуст
-/// после демонтажа; drill — scratch-каталог backup-drill/&lt;id&gt;/pgdata,
-/// прод-данные недостижимы) → канонические каталоги initdb →
+/// §3.5/§3.6): фиксация endpoint'а (HEAD) → потоковая распаковка ЕДИНОГО
+/// объекта full/&lt;id&gt;.tar в целевой PGDATA (restore — PGDATA ноды, volume
+/// пуст после демонтажа; drill — scratch-каталог backup-drill/&lt;id&gt;/pgdata,
+/// прод-данные недостижимы; файла архива на диске нет, spec t01 §3.6) →
+/// канонические каталоги initdb →
 /// override-строки postgresql.auto.conf (restore_command = fetch-wal sub-режим
 /// того же бинаря; pristine auto.conf в .orig) → standby.signal →
 /// recovery.signal → trust-строка pg_hba → chmod 700 ПОСЛЕ модификаций
@@ -71,7 +73,6 @@ public sealed class RestoreOperation : IReceiverOperation
         var slash = prefix.IndexOf('/');
         var cluster = slash > 0 ? prefix[..slash] : prefix;
         var shard = slash > 0 ? prefix[(slash + 1)..] : string.Empty;
-        var s3Base = $"{prefix}/full/{_request.BackupId}/";
 
         // Patroni ноды — ВНИЗ на время RESTORE (arch/19 §3.5): живой Patroni
         // вмешивается в заполняемую PGDATA (стартует постгрес как secondary на
@@ -85,8 +86,9 @@ public sealed class RestoreOperation : IReceiverOperation
             if (!await StopPatroniAsync(token))
                 return;
 
-        // Тип — PoolBackupS3 (не IBackupS3): union-листинг набора — метод пула.
-        PoolBackupS3? s3 = null;
+        // Клиент единичного endpoint'а (endpoint чтения фиксируется HEAD'ом:
+        // переключение ноды посреди потока недопустимо, spec §6.9).
+        IBackupS3? s3 = null;
         string? caBundlePath = null;
         var phase = OperationPhases.Downloading;
         try
@@ -111,56 +113,50 @@ public sealed class RestoreOperation : IReceiverOperation
                 }
             }
 
-            // Пул-клиент (write=read=endpoints команды, симметрично verify):
-            // скачивание ключа — перебор read-списка до найденного.
-            s3 = new PoolBackupS3(
-                _request.S3.Endpoints, _request.S3.Endpoints,
-                _request.S3.AccessKey, _request.S3.SecretKey, _request.S3.Bucket,
-                caBundlePath, requestTimeout: WalReceiverCore.FileAttemptTimeout,
-                targetFactory: _targetFactory);
-
-            // 2. Фаза downloading: union-лист full/<id>/ по ВСЕМ endpoints с
-            //    дедупом (симметрично VerifyOperation: соло-лист другой ноды —
-            //    отказ посреди заливки/лаг mesh — неполон, недокачанный набор
-            //    дал бы ложный permanent-FAILED) и скачивание 1:1 в PGDATA.
+            // 2. Фаза downloading: фиксация endpoint'а чтения (HEAD до первого
+            //    найденного) и потоковая распаковка ЕДИНОГО объекта
+            //    full/<id>.tar в PGDATA — без файла архива на диске (spec t01
+            //    §3.6, §6.9). Переключение ноды посреди потока недопустимо
+            //    (частичный объект): транспортный отказ = transient-отказ
+            //    операции (failed/downloading), повтор с нуля.
             Update(OperationStates.Running, phase);
-            // Хронометраж набора (диагностика «куда уходит время restore»:
-            // union-лист и пофайловый download — крупнейшие неочевидные шаги).
-            var listSw = System.Diagnostics.Stopwatch.StartNew();
-            var listed = await s3.ListPrefixUnionAsync(s3Base, ct: token);
-            if (!listed.IsSuccess)
+            var objectKey = $"full/{_request.BackupId}.tar";
+            string? endpoint = null;
+            foreach (var candidateEndpoint in _request.S3.Endpoints)
             {
-                Fail(phase, OpText.OneLine(listed.Error!.Message));
+                var candidate = CreateClient(candidateEndpoint, caBundlePath);
+                var head = await ((IStreamObjectS3)candidate).HeadObjectAsync(
+                    cluster, shard, objectKey, token);
+                if (head.IsSuccess && head.Value.Exists)
+                {
+                    endpoint = candidateEndpoint;
+                    s3 = candidate;
+                    break;
+                }
+                if (candidate is IAsyncDisposable disposable)
+                    await disposable.DisposeAsync();
+            }
+            if (endpoint is null || s3 is null)
+            {
+                Fail(phase, $"{objectKey}: object not found");
                 return;
             }
-            Console.WriteLine(
-                $"[restore] union-list {s3Base}: {listed.Value.Count} file(s) in {listSw.Elapsed.TotalSeconds:F1}s");
-            Directory.CreateDirectory(pgdata);
-            var downloadSw = System.Diagnostics.Stopwatch.StartNew();
-            var downloaded = 0;
-            foreach (var obj in listed.Value)
+
+            var streamSw = System.Diagnostics.Stopwatch.StartNew();
+            var opened = await ((IStreamObjectS3)s3).GetObjectStreamAsync(
+                cluster, shard, objectKey, token);
+            if (!opened.IsSuccess)
             {
-                // rel — путь под PGDATA (относительно s3Base); key — ключ
-                // скачивания ОТНОСИТЕЛЬНО {cluster}/{shard}/ (контракт
-                // GetObjectToFileAsync, симметрично VerifyOperation). Срез — от
-                // НОРМАЛИЗОВАННОГО префикса (Trim('/')): сырые '/' на краях
-                // команды сдвигали бы срез на лишние символы.
-                var rel = obj.Key[s3Base.Length..];
-                var key = obj.Key[(prefix.Length + 1)..];
-                var dest = Path.Combine(pgdata, rel.Replace('/', Path.DirectorySeparatorChar));
-                var destDir = Path.GetDirectoryName(dest);
-                if (!string.IsNullOrEmpty(destDir))
-                    Directory.CreateDirectory(destDir);
-                var got = await s3.GetObjectToFileAsync(cluster, shard, key, dest, token);
-                if (!got.IsSuccess)
-                {
-                    Fail(phase, OpText.OneLine(got.Error!.Message));
-                    return;
-                }
-                downloaded++;
+                Fail(phase, OpText.OneLine(opened.Error!.Message));
+                return;
             }
+
+            var (body, totalSize) = opened.Value;
+            Console.WriteLine($"[restore] tar stream {totalSize} bytes from {endpoint}");
+            Directory.CreateDirectory(pgdata);
+            var extracted = await ExtractTarAsync(body, pgdata, token);
             Console.WriteLine(
-                $"[restore] downloaded {downloaded} file(s) in {downloadSw.Elapsed.TotalSeconds:F1}s");
+                $"[restore] extracted {extracted} bytes in {streamSw.Elapsed.TotalSeconds:F1}s");
             // Проверка backup_label набора — нет → failed/downloading.
             if (!File.Exists(Path.Combine(pgdata, "backup_label")))
             {
@@ -429,6 +425,86 @@ public sealed class RestoreOperation : IReceiverOperation
             _request.Id ?? _request.BackupId, state, phase,
             RestoredToLsn: restoredToLsn, SystemId: systemId,
             StartedUnix: _registry.Current?.StartedUnix, Error: error));
+
+    // Клиент одного endpoint'а команды (шов _targetFactory — фабрика от
+    // endpoint): MaxErrorRetry=0 — per-попыточный таймаут вместо ретраев SDK.
+    private IBackupS3 CreateClient(string endpoint, string? caBundlePath)
+        => _targetFactory is { } factory
+            ? factory(endpoint)
+            : new BackupS3(
+                new S3ClientOptions(
+                    endpoint, _request.S3.Bucket, _request.S3.AccessKey, _request.S3.SecretKey,
+                    CaBundlePath: caBundlePath, MaxErrorRetry: 0),
+                WalReceiverCore.FileAttemptTimeout);
+
+    // Потоковая распаковка tar в PGDATA (spec t01 §3.6, §6.22): каталоги — из
+    // записей typeflag '5' И лениво по пути файла (идемпотентно); symlinks —
+    // File.CreateSymbolicLink; права — chmod-эквивалент из заголовка ПОСЛЕ
+    // записи. Возврат — распаковано байт (хронометраж/диагностика).
+    private static async Task<long> ExtractTarAsync(
+        Stream body, string pgdata, CancellationToken ct)
+    {
+        await using (body)
+        {
+            var reader = new TarStreamReader(body);
+            var pgdataFull = Path.GetFullPath(pgdata);
+            long extracted = 0;
+            long logged = 0;
+            while (await reader.ReadHeaderAsync(ct) is { } entry)
+            {
+                var dest = Path.Combine(pgdata, entry.Name.Replace('/', Path.DirectorySeparatorChar));
+                switch (entry.TypeFlag)
+                {
+                    case TarTypeFlags.Dir:
+                        Directory.CreateDirectory(dest);
+                        await reader.SkipDataAsync(ct);
+                        break;
+                    case TarTypeFlags.Symlink:
+                        var destDir = Path.GetDirectoryName(dest);
+                        if (!string.IsNullOrEmpty(destDir))
+                            Directory.CreateDirectory(destDir);
+                        if (Directory.Exists(dest))
+                            Directory.Delete(dest, recursive: true);
+                        else if (File.Exists(dest))
+                            File.Delete(dest);
+                        File.CreateSymbolicLink(dest, entry.LinkName);
+                        await reader.SkipDataAsync(ct);
+                        break;
+                    default:
+                    {
+                        // Файл (типы '0'/NUL): ленивое создание каталога пути —
+                        // порядок записей tar не значим (каталоговая запись
+                        // может идти после файла).
+                        var fileDir = Path.GetDirectoryName(dest);
+                        if (!string.IsNullOrEmpty(fileDir))
+                            Directory.CreateDirectory(fileDir);
+                        await using (var file = new FileStream(
+                                         dest, FileMode.Create, FileAccess.Write, FileShare.None))
+                        {
+                            await reader.OpenData().CopyToAsync(file, 64 * 1024, ct);
+                        }
+
+                        extracted += entry.Size;
+                        if (!OperatingSystem.IsWindows()
+                            && Path.GetFullPath(dest).StartsWith(pgdataFull, StringComparison.Ordinal))
+                        {
+                            File.SetUnixFileMode(dest, (UnixFileMode)(entry.Mode & 0x1FF));
+                        }
+
+                        if (extracted - logged >= 512L * 1024 * 1024)
+                        {
+                            logged = extracted;
+                            Console.WriteLine($"[restore] extracting {extracted} bytes");
+                        }
+
+                        break;
+                    }
+                }
+            }
+
+            return extracted;
+        }
+    }
 
     /// <summary>Patroni ноды вниз перед восстановлением + подтверждение
     /// STOPPED (короткий бюджет): false — операция не начинается (честный

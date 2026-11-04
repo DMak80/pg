@@ -44,7 +44,7 @@ public sealed class TarStreamReader
             if (IsAllZeros(header))
                 return null;
 
-            var entry = TryParseHeader(header, 0)
+            var entry = TryParseHeaderAt(header, 0)
                 ?? throw new TarFormatException("tar header checksum mismatch");
             EnsureSupportedType(entry.TypeFlag);
             _entryRemaining = entry.Size;
@@ -95,6 +95,30 @@ public sealed class TarStreamReader
         return data;
     }
 
+    /// <summary>Пропустить данные текущей записи (каталоги/symlink или
+    /// ненужное содержимое): дочитать Size байт данных + добивку. Вызов после
+    /// <see cref="OpenData"/> той же записи запрещён (поток уже читает).</summary>
+    public async Task SkipDataAsync(CancellationToken ct)
+    {
+        if (_dataOpened)
+            throw new InvalidOperationException("tar entry data stream is already open");
+        var skip = _entryRemaining + _paddingRemaining;
+        if (skip <= 0)
+            return;
+        var buffer = new byte[(int)Math.Min(skip, CopyBufferSize)];
+        while (skip > 0)
+        {
+            var read = await _source.ReadAsync(
+                buffer.AsMemory(0, (int)Math.Min(skip, buffer.Length)), ct);
+            if (read == 0)
+                throw new TarFormatException("tar data truncated: unexpected end of stream");
+            skip -= read;
+        }
+
+        _entryRemaining = 0;
+        _paddingRemaining = 0;
+    }
+
     private static long Padding(long size) => (HeaderSize - size % HeaderSize) % HeaderSize;
 
     private static bool IsAllZeros(ReadOnlySpan<byte> header)
@@ -110,7 +134,8 @@ public sealed class TarStreamReader
 
     // Разбор 512-байт заголовка по смещению: null — checksum не сошёлся или
     // буфер короче записи (вызывающий отличает «мусор» от валидной записи).
-    private static TarEntry? TryParseHeader(byte[] buffer, int offset)
+    // internal — verify сканирует хвост объекта на запись backup_manifest.
+    internal static TarEntry? TryParseHeaderAt(byte[] buffer, int offset)
     {
         if (offset < 0 || buffer.Length - offset < HeaderSize)
             return null;
