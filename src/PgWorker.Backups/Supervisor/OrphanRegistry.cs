@@ -62,7 +62,8 @@ public static class OrphanRegistry
 
     /// <summary>Результат группировки list bucket: суммы размеров по префиксам
     /// «&lt;C&gt;/&lt;X&gt;/» нашей формы + множество префиксов с валидным полным
-    /// (объект full/&lt;id&gt;/backup_manifest — критерий DR-выбора, arch/19 §3.5).</summary>
+    /// (объект `full/&lt;id&gt;.tar` — критерий DR-выбора: существование объекта =
+    /// завершённая загрузка, spec t01 §6.10).</summary>
     public sealed record PrefixGrouping(
         IReadOnlyDictionary<string, long> Sizes,
         IReadOnlySet<string> FullPrefixes);
@@ -127,8 +128,11 @@ public static class OrphanRegistry
                 continue;
             var prefix = $"{parts[0]}/{parts[1]}";
             sizes[prefix] = sizes.TryGetValue(prefix, out var s) ? s + o.SizeBytes : o.SizeBytes;
-            if (parts.Length == 5 && parts[2] == "full"
-                && parts[4] == "backup_manifest")
+            // Валидный полный — объект full/<id>.tar (единственный объект набора,
+            // критерий завершённости/DR-выбора — spec t01 §6.10).
+            if (parts.Length == 4 && parts[2] == "full"
+                && parts[3].EndsWith(".tar", StringComparison.Ordinal)
+                && parts[3].Length > ".tar".Length)
                 fulls.Add(prefix);
         }
 

@@ -46,32 +46,35 @@ public class OrphanRegistryTests
         // Assert — размеры {["c1/s1"]=сумма}, чужие ключи не сгруппированы
         grouped.Sizes.Should().HaveCount(1);
         grouped.Sizes["c1/s1"].Should().Be(46);
-        grouped.FullPrefixes.Should().BeEmpty("no manifest criterion here");
+        grouped.FullPrefixes.Should().BeEmpty("no full/<id>.tar criterion here");
     }
 
-    // AAA (AC1/AC9): детект валидных полных из list-ключей — только
-    // full/<id>/backup_manifest (5 сегментов, 3-й full, последний backup_manifest)
+    // AAA (AC1/AC9, spec t01 §6.10): критерий валидного полного — ОБЪЕКТ
+    // full/<id>.tar (4 сегмента, 3-й full, имя с .tar); прежний формат
+    // full/<id>/backup_manifest — НЕ валидный полный.
     [Fact]
-    public void GroupPrefixes_DetectsFulls_ByManifest()
+    public void GroupPrefixes_DetectsFulls_ByTarObject()
     {
-        // Arrange — в префиксе c1/s1 есть manifest, в c2/s2 — только base.tar
+        // Arrange — c1/s1: tar-объект; c2/s2: старый пофайловый layout;
+        // c4/s4: не-.tar ключ в full/
         var objects = new List<S3ObjectInfo>
         {
-            Obj("c1/s1/full/20260911110000Z/backup_manifest"),
-            Obj("c1/s1/full/20260911110000Z/base.tar", 30),
+            Obj("c1/s1/full/20260911110000Z.tar", 40),
+            Obj("c2/s2/full/20260911110000Z/backup_manifest", 20),
             Obj("c2/s2/full/20260911110000Z/base.tar", 20),
-            Obj("c3/s3/full/20260911110000Z/backup_manifest.extra"), // не manifest
-            Obj("c3/s3/fullx/20260911110000Z/backup_manifest"),      // 3-й сегмент не full
-            Obj("root/full/20260911110000Z/backup_manifest"),        // имя не нашей формы
+            Obj("c3/s3/fullx/20260911110000Z.tar"),          // 3-й сегмент не full
+            Obj("c4/s4/full/20260911110000Z.partial", 7),    // не .tar
+            Obj("root/full/20260911110000Z.tar"),            // имя не нашей формы
         };
 
         // Act
         var grouped = OrphanRegistry.GroupPrefixes(objects);
 
-        // Assert — полные только в c1/s1; размеры по всем префиксам нашей формы
+        // Assert — валидный полный только c1/s1; размеры по всем префиксам формы
         grouped.FullPrefixes.Should().BeEquivalentTo(["c1/s1"]);
         grouped.Sizes["c1/s1"].Should().Be(40);
         grouped.Sizes.Should().ContainKey("c2/s2");
+        grouped.Sizes.Should().ContainKey("c4/s4");
     }
 
     // AAA (AC7): merge переносит first_seen (TTL от первого наблюдения)
