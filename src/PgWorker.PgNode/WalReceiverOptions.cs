@@ -26,4 +26,12 @@ public sealed record WalReceiverOptions(
     // Период .partial-доотправки префикса живого сегмента, с (arch/19 §3/§9);
     // env PGW_WAL_PARTIAL_INTERVAL_SEC ноды, дефолт 3; клэмп ≥1 — приёмник
     // не падает на мусорном env.
-    int PartialIntervalSec = 3);
+    int PartialIntervalSec = 3,
+    // Период компакции дельт незакрытого сегмента, с (t15, spec §4.2): env
+    // PGW_WAL_PARTIAL_COMPACT_INTERVAL_SEC ноды, дефолт 3600; клэмп ≥60.
+    int PartialCompactIntervalSec = 3600,
+    // Номер жизни цепочки шарда (etcd-счётчик wal-life, spec §4.2): кладётся
+    // в имя КАЖДОГО куска/компака сессии; 0 — первая жизнь.
+    uint ChainLife = 0,
+    // Роль источника на момент выгрузки (m|r в имени куска, spec §4.1).
+    bool IsMasterSource = false);

@@ -335,7 +335,10 @@ public sealed class WalReceiverLoop : BackgroundService
                     "postgres", targets.Slot!, identity.Cluster, identity.Shard,
                     writeTargets, pool.ReadAll, bucket,
                     pool.AccessKey, pool.SecretKey,
-                    PartialIntervalSec: ReadPartialIntervalSec());
+                    PartialIntervalSec: ReadPartialIntervalSec(),
+                    PartialCompactIntervalSec: ReadPartialCompactIntervalSec(),
+                    ChainLife: targets.ChainLife,
+                    IsMasterSource: currentRole == WalReceiverRole.Master);
                 IBackupS3 s3 = _s3Factory is { } factory
                     ? factory(options)
                     : new PoolBackupS3(
@@ -757,10 +760,19 @@ public sealed class WalReceiverLoop : BackgroundService
 
     // env PGW_WAL_PARTIAL_INTERVAL_SEC (arch/19 §9): мусор/отсутствие → дефолт 3;
     // клэмп ≥1 — приёмник живёт на любом env (пересоздание ноды не требуется).
-    private static int ReadPartialIntervalSec()
+    internal static int ReadPartialIntervalSec()
     {
         var raw = Environment.GetEnvironmentVariable("PGW_WAL_PARTIAL_INTERVAL_SEC");
         return int.TryParse(raw, out var sec) && sec >= 1 ? sec : 3;
+    }
+
+    // env PGW_WAL_PARTIAL_COMPACT_INTERVAL_SEC (t15, arch/backups/09 §1):
+    // период компакции дельт; мусор/отсутствие/<60 → дефолт 3600 (клэмп ≥60 —
+    // приёмник не падает на мусорном env живой ноды, симметрия fail-fast воркера).
+    internal static int ReadPartialCompactIntervalSec()
+    {
+        var raw = Environment.GetEnvironmentVariable("PGW_WAL_PARTIAL_COMPACT_INTERVAL_SEC");
+        return int.TryParse(raw, out var sec) && sec >= 60 ? sec : 3600;
     }
 
     // Задержка, устойчивая к отмене (SIGTERM не бросает из цикла состояний).
