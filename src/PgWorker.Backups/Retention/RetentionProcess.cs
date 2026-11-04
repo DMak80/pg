@@ -159,7 +159,7 @@ public sealed class RetentionProcess(
         var names = listed.Value.Select(o => o.Key.Split('/')[^1]).ToList();
         var doomed = (cutoff is { } cut
                 ? RetentionPlanner.SelectWalForDeletion(names, cut) : [])
-            .Concat(RetentionPlanner.SelectPartialForDeletion(names, cutoff))
+            .Concat(RetentionPlanner.SelectPartialForDeletion(names, cutoff, chainLife: null))
             .ToList();
         if (doomed.Count > 0)
         {

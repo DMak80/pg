@@ -146,7 +146,7 @@ public sealed class WalSweeperProcess(
 
         var doomed = (cutoff is { } limit
                 ? RetentionPlanner.SelectWalForDeletion(names, limit) : [])
-            .Concat(RetentionPlanner.SelectPartialForDeletion(names, cutoff))
+            .Concat(RetentionPlanner.SelectPartialForDeletion(names, cutoff, chainLife: null))
             .ToList();
         if (doomed.Count == 0)
             return;
