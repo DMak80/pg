@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
@@ -218,5 +219,166 @@ public sealed class E2eStaticInfraTests
         {
             cts.Cancel();
         }
+    }
+
+    // ===== Приоритетный слот-шлюз параллелизма (arch/testing/01-e2e-launch.md §5) =====
+
+    /// <summary>Асинхронное ожидание условия с бюджетом (синхронизация тестов
+    /// шлюза: пробуждение waiter'а асинхронно — RunContinuationsAsynchronously).</summary>
+    private static async Task UntilAsync(Func<bool> condition)
+    {
+        var sw = Stopwatch.StartNew();
+        while (!condition())
+        {
+            sw.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(10), "условие должно наступить (бюджет теста)");
+            await Task.Delay(10);
+        }
+    }
+
+    [Fact]
+    public async Task PrioritySlotGate_FreeSlot_AcquiresSynchronously()
+    {
+        // Arrange: шлюз на 2 слота.
+        var gate = new E2ePrioritySlotGate(2);
+        var ct = TestContext.Current.CancellationToken;
+
+        // Act: два захвата без конкуренции.
+        var first = gate.AcquireAsync(1, ct);
+        var second = gate.AcquireAsync(5, ct);
+
+        // Assert: оба завершились синхронно (быстрый путь, без очереди).
+        first.IsCompletedSuccessfully.Should().BeTrue();
+        second.IsCompletedSuccessfully.Should().BeTrue();
+        gate.WaitersCount.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task PrioritySlotGate_Release_HandsSlotToHeaviestWaiter()
+    {
+        // Arrange: единственный слот занят лёгким классом A(w=1);
+        // в очередь встают B(w=2), C(w=5), D(w=3) — в порядке возрастания
+        // веса, чтобы порядок пробуждения решал ВЕС, а не постановка.
+        var gate = new E2ePrioritySlotGate(1);
+        var ct = TestContext.Current.CancellationToken;
+        var order = new ConcurrentQueue<int>();
+        gate.AcquireAsync(1, ct).IsCompletedSuccessfully.Should().BeTrue();
+
+        async Task Waiter(int weight)
+        {
+            await gate.AcquireAsync(weight, ct);
+            order.Enqueue(weight);
+        }
+
+        var b = Task.Run(() => Waiter(2), ct);
+        await UntilAsync(() => gate.WaitersCount == 1);
+        var c = Task.Run(() => Waiter(5), ct);
+        await UntilAsync(() => gate.WaitersCount == 2);
+        var d = Task.Run(() => Waiter(3), ct);
+        await UntilAsync(() => gate.WaitersCount == 3);
+
+        // Act: три освобождения слота (A отпускает, далее отпускают сами
+        // пробуждённые — слот каждый раз уходит следующему по весу).
+        gate.Release();
+        await UntilAsync(() => order.Count == 1);
+        gate.Release();
+        await UntilAsync(() => order.Count == 2);
+        gate.Release();
+        await UntilAsync(() => order.Count == 3);
+        await Task.WhenAll(b, c, d);
+
+        // Assert: порядок получения слота — по убыванию веса: 5, 3, 2.
+        order.Should().Equal([5, 3, 2]);
+    }
+
+    [Fact]
+    public async Task PrioritySlotGate_EqualWeights_FifoOrder()
+    {
+        // Arrange: слот занят; три ждущих с ОДИНАКОВЫМ весом 2 — строго
+        // последовательно (постановку каждого ждём по WaitersCount).
+        var gate = new E2ePrioritySlotGate(1);
+        var ct = TestContext.Current.CancellationToken;
+        var order = new ConcurrentQueue<string>();
+        gate.AcquireAsync(2, ct).IsCompletedSuccessfully.Should().BeTrue();
+
+        async Task Waiter(string id)
+        {
+            await gate.AcquireAsync(2, ct);
+            order.Enqueue(id);
+        }
+
+        var b = Task.Run(() => Waiter("b"), ct);
+        await UntilAsync(() => gate.WaitersCount == 1);
+        var c = Task.Run(() => Waiter("c"), ct);
+        await UntilAsync(() => gate.WaitersCount == 2);
+        var d = Task.Run(() => Waiter("d"), ct);
+        await UntilAsync(() => gate.WaitersCount == 3);
+
+        // Act: последовательные освобождения.
+        gate.Release();
+        await UntilAsync(() => order.Count == 1);
+        gate.Release();
+        await UntilAsync(() => order.Count == 2);
+        gate.Release();
+        await UntilAsync(() => order.Count == 3);
+        await Task.WhenAll(b, c, d);
+
+        // Assert: равные веса — FIFO: кто раньше встал, тот раньше вышел.
+        order.Should().Equal(["b", "c", "d"]);
+    }
+
+    [Fact]
+    public async Task PrioritySlotGate_CancelledWaiter_DoesNotConsumeSlot()
+    {
+        // Arrange: слот занят A; тяжёлый B(w=9) ждёт с отменяемым токеном.
+        var gate = new E2ePrioritySlotGate(1);
+        var ct = TestContext.Current.CancellationToken;
+        var acquired = new ConcurrentQueue<int>();
+        gate.AcquireAsync(1, ct).IsCompletedSuccessfully.Should().BeTrue();
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+        var b = Task.Run(() => gate.AcquireAsync(9, cts.Token).AsTask(), cts.Token);
+        await UntilAsync(() => gate.WaitersCount == 1);
+        var c = Task.Run(async () =>
+        {
+            await gate.AcquireAsync(1, ct);
+            acquired.Enqueue(1);
+        }, ct);
+
+        // Act: C встаёт в очередь ЗА отменяемым B (B ещё в куче — отменённый
+        // вычищается только в Release); B отменяется ДО освобождения слота;
+        // A отпускает слот — Release пропускает отменённого B.
+        await UntilAsync(() => gate.WaitersCount == 2);
+        cts.Cancel();
+        await UntilAsync(() => b.IsCompleted);
+        gate.Release();
+        await UntilAsync(() => acquired.Count == 1);
+        await c;
+
+        // Assert: отменённый B слота не получил и не «съел» чужой: слот
+        // достался C; очередь пуста; новый претендент встаёт ждать — слот
+        // единственный и не задублирован.
+        b.IsCanceled.Should().BeTrue();
+        acquired.Should().Equal([1]);
+        gate.WaitersCount.Should().Be(0);
+        var next = gate.AcquireAsync(1, ct);
+        next.IsCompletedSuccessfully.Should().BeFalse("слот занят C — претендент обязан ждать");
+        gate.WaitersCount.Should().Be(1);
+    }
+
+    [Fact]
+    public void ParallelismGuard_WeightOf_CountsFactsOfOwningTestClasses()
+    {
+        // Arrange: фикстуры с известным числом фактов у владельцев:
+        // E2eWalStreamScenariosFx → E2eWalStreamScenarios (6 фактов),
+        // TliSwitchContext → E2eTliSwitchScenarios (2 факта).
+
+        // Act: вес по типу фикстуры.
+        var walStream = E2eParallelismGuard.WeightOf(typeof(E2eWalStreamScenariosFx));
+        var tliSwitch = E2eParallelismGuard.WeightOf(typeof(TliSwitchContext));
+
+        // Assert: вес = суммарное число [Fact]/[Theory] тестовых классов
+        // фикстуры (LPT-приоритет захвата слота).
+        walStream.Should().Be(6);
+        tliSwitch.Should().Be(2);
     }
 }

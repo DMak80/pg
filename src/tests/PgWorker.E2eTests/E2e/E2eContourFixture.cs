@@ -15,7 +15,7 @@ public abstract class E2eContourFixture : IAsyncLifetime
     public async ValueTask InitializeAsync()
     {
         var ct = TestContext.Current.CancellationToken;
-        E2eParallelismGuard.Acquire(Slug, ct);
+        await E2eParallelismGuard.AcquireAsync(GetType(), Slug, ct);
         try
         {
             Fx = await E2eEnvironment.StartAsync(Slug, WithS3Node, HaEtcd, ct);

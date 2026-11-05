@@ -63,7 +63,7 @@ public sealed class TliSwitchContext : IAsyncLifetime
     public async ValueTask InitializeAsync()
     {
         var ct = TestContext.Current.CancellationToken;
-        E2eParallelismGuard.Acquire("tlsw", ct);
+        await E2eParallelismGuard.AcquireAsync(typeof(TliSwitchContext), "tlsw", ct);
         try
         {
             // Класс — своё окружение (arch/testing/02-e2e-isolation.md §1): полный контур
