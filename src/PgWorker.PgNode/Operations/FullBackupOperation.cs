@@ -329,11 +329,13 @@ public sealed class FullBackupOperation(
             }
             else
             {
-                // Смещение ДАННЫХ записи в выходном tar — для Range-GET дубля.
-                var offset = tar.Position + 512;
+                // Смещение ДАННЫХ записи в выходном tar — фактическое, после всех
+                // заголовков (служебные longname/PAX тоже сдвигают данные): из
+                // писателя, не «Position + 512» (Range-GET дубля).
+                var dataOffset = await tar.WriteEntryWithDataOffsetAsync(
+                    entry with { Name = name }, reader.OpenData(), ct);
                 if (name.StartsWith("pg_wal/", StringComparison.Ordinal))
-                    _walEntries.Add((name, offset, entry.Size));
-                await tar.WriteEntryAsync(entry with { Name = name }, reader.OpenData(), ct);
+                    _walEntries.Add((name, dataOffset, entry.Size));
             }
 
             if (tar.TotalBytes > MaxObjectBytes)

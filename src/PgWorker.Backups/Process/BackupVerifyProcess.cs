@@ -18,9 +18,11 @@ namespace PgWorker.Backups;
 /// общий контроль цепочки, от формата полного не зависит):
 /// POST /api/ops/verify на `alias:8080` её приёмника, поллинг GET — итог.
 /// Тик не блокируется на длинную проверку: итог — поллинг GET /api/ops/verify
-/// следующих тиков. Transient (S3/приёмник недостижим) — статус кандидата не
-/// трогаем; permanent (дыра цепочки, нет wal_start, pg_verifybackup ≠ 0) —
-/// FAILED сразу, checksums не запускается (вердикт уже определён).
+/// следующих тиков. Transient (сбой скачивания: S3/приёмник недостижим,
+/// манифест не добыт) — статус кандидата не трогаем, операция перезапускается
+/// следующим тиком; permanent (streaming verify failed: данные не сошлись с
+/// манифестом) — FAILED сразу, перепроверка не запускается (вердикт уже
+/// определён).
 /// </summary>
 public sealed class BackupVerifyProcess(
     IEtcdGateway etcd,
@@ -302,8 +304,9 @@ public sealed class BackupVerifyProcess(
             }
             case "failed":
             {
-                // PERMANENT (phase=verifying): pg_verifybackup ≠ 0 — данные плохие.
-                var err = snapshot.Error ?? "pg_verifybackup failed";
+                // PERMANENT (phase=verifying): streaming verify failed — данные
+                // не сошлись с манифестом набора.
+                var err = snapshot.Error ?? "streaming verify failed";
                 var failed = full with { Verify = new BackupVerify(BackupVerifyStatus.Failed, nowUnix, err) };
                 var put = await PutAsync(BackupNames.FullKey(cluster, shard, full.Id),
                     BackupStatusJson.Serialize(failed), ct);

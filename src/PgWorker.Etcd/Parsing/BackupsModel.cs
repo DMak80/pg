@@ -34,7 +34,7 @@ public enum WalStreamStatus
     WalChainError,
 }
 
-/// <summary>Статус проверки полного (pg_verifybackup, arch/19 §8).</summary>
+/// <summary>Статус проверки полного (streaming verify приёмника, arch/19 §8).</summary>
 public enum BackupVerifyStatus
 {
     Pending,

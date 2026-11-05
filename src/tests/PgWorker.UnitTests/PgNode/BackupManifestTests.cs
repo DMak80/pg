@@ -32,6 +32,31 @@ public class BackupManifestTests
         files["global/pg_control"].Size.Should().Be(8192);
     }
 
+    // AAA: symlink-запись манифеста PG (LinkTarget, без Checksum) не роняет
+    // разбор — по содержимому не сверяется и в карту не входит (spec §6.15).
+    [Fact]
+    public void ParseFiles_SymlinkEntryWithoutChecksum_Skipped()
+    {
+        // Arrange — обычный файл + symlink-запись формата PG.
+        const string json = """
+            {
+              "PostgreSQL-Backup-Manifest-Version": 2,
+              "Files": [
+                {"Path":"backup_label","Size":214,"Checksum-Algorithm":"SHA256","Checksum":"DFC32A90"},
+                {"Path":"pg_wal/archive_status","Size":0,"Last-Modified":"2026-11-05 10:00:00 GMT","LinkTarget":"../archive_status"}
+              ]
+            }
+            """;
+
+        // Act
+        var files = BackupManifest.ParseFiles(json);
+
+        // Assert — symlink пропущен, сверяемый файл на месте.
+        files.Should().ContainKey("backup_label");
+        files.Should().HaveCount(1, "symlink-записи не сверяются по содержимому");
+        files.Should().NotContainKey("pg_wal/archive_status");
+    }
+
     // AAA: битый JSON — JsonException (verify трактует как порчу набора).
     [Fact]
     public void ParseFiles_BrokenJson_Throws()

@@ -21,8 +21,7 @@ public sealed class TarStreamWriter : IDisposable
 
     public TarStreamWriter(Stream output) => _output = output;
 
-    /// <summary>Байт записано в выход (для карты смещений записей pg_wal:
-    /// смещение данных записи = Position до записи + 512).</summary>
+    /// <summary>Байт записано в выход (общий размер архива на текущий момент).</summary>
     public long Position => _position;
 
     /// <summary>Синоним <see cref="Position"/>: общий размер архива.</summary>
@@ -32,6 +31,18 @@ public sealed class TarStreamWriter : IDisposable
         => WriteEntryCoreAsync(entry, data, ct);
 
     public Task WriteEntryAsync(TarEntry entry, byte[] data, CancellationToken ct)
+        => WriteEntryCoreAsync(entry, new MemoryStream(data, writable: false), ct);
+
+    /// <summary>Запись с возвратом смещения её ДАННЫХ в выходном tar: считается
+    /// после заголовков (включая служебные longname/PAX-записи) — единственно
+    /// надёжный источник позиции для Range-чтения записей из объекта.</summary>
+    public Task<long> WriteEntryWithDataOffsetAsync(
+        TarEntry entry, Stream data, CancellationToken ct)
+        => WriteEntryCoreAsync(entry, data, ct);
+
+    /// <summary>То же для данных-массива (симметрия с Stream-перегрузкой записи).</summary>
+    public Task<long> WriteEntryWithDataOffsetAsync(
+        TarEntry entry, byte[] data, CancellationToken ct)
         => WriteEntryCoreAsync(entry, new MemoryStream(data, writable: false), ct);
 
     /// <summary>Запись заголовка (и служебных записей) без данных — шов
@@ -47,9 +58,12 @@ public sealed class TarStreamWriter : IDisposable
     /// байты); вызывать строго после <see cref="FinishAsync"/>.</summary>
     public byte[] Sha256Hash() => _hash.GetHashAndReset();
 
-    private async Task WriteEntryCoreAsync(TarEntry entry, Stream data, CancellationToken ct)
+    // Возврат — смещение ДАННЫХ записи в выходе (после всех заголовков):
+    // служебные longname/PAX-записи сдвигают его, «Position + 512» неверно.
+    private async Task<long> WriteEntryCoreAsync(TarEntry entry, Stream data, CancellationToken ct)
     {
         await WriteHeadersAsync(entry, ct);
+        var dataOffset = _position;
         if (entry.Size > 0)
         {
             var buffer = new byte[CopyBufferSize];
@@ -67,6 +81,7 @@ public sealed class TarStreamWriter : IDisposable
         }
 
         await WritePaddingAsync(entry.Size, ct);
+        return dataOffset;
     }
 
     private async Task WriteHeadersAsync(TarEntry entry, CancellationToken ct)

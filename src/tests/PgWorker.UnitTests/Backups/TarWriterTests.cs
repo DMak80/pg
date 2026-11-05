@@ -79,6 +79,48 @@ public class TarWriterTests
         read.Should().Equal(data);
     }
 
+    // AAA: смещение данных учитывает служебные записи: при имени >100 байт
+    // данные лежат не на «Position до записи + 512», а после GNU longname и
+    // основного заголовка — смещение из писателя указывает точно на данные.
+    [Fact]
+    public async Task DataOffset_LongName_PointsToEntryData()
+    {
+        // Arrange — 140-байтное имя (GNU longname) и данные-маркер.
+        var name = new string('w', 140);
+        var data = Encoding.ASCII.GetBytes("wal-segment-bytes");
+        var ms = new MemoryStream();
+        using var writer = new TarStreamWriter(ms);
+
+        // Act
+        var offset = await writer.WriteEntryWithDataOffsetAsync(
+            new TarEntry(name, TarTypeFlags.File, data.Length, 0x1A4, ""), data, CancellationToken.None);
+        await writer.FinishAsync(CancellationToken.None);
+        var bytes = ms.ToArray();
+
+        // Assert — по смещению лежат ровно данные записи (не L-заголовок).
+        offset.Should().BeGreaterThan(512,
+            "служебная longname-запись сдвигает данные за первый блок заголовка");
+        bytes[(int)offset..(int)(offset + data.Length)].Should().Equal(data);
+    }
+
+    // AAA: для записи без служебных записей смещение данных — сразу после
+    // единственного 512-байтного заголовка.
+    [Fact]
+    public async Task DataOffset_ShortName_IsHeaderEnd()
+    {
+        // Arrange
+        var ms = new MemoryStream();
+        using var writer = new TarStreamWriter(ms);
+        var data = Encoding.ASCII.GetBytes("abc");
+
+        // Act
+        var offset = await writer.WriteEntryWithDataOffsetAsync(
+            new TarEntry("wal", TarTypeFlags.File, data.Length, 0x1A4, ""), data, CancellationToken.None);
+
+        // Assert
+        offset.Should().Be(512);
+    }
+
     // AAA: размер >8 ГиБ пишется PAX-записью (основной заголовок size=0),
     // reader возвращает size из PAX — без выделения 8 ГиБ данных.
     [Fact]
