@@ -52,7 +52,7 @@ public class RestPasswordEnsureEtcdTests(EtcdFixture fixture)
         var result = await sut.EnsureAsync(cluster, Config(cluster), ct);
 
         // Assert: put-if-absent — значение не изменилось, Success.
-        result.IsSuccess.Should().BeTrue();
+        result.IsSuccess.Should().BeTrue(result.Error?.ToString());
         var key = (await Gateway.GetAsync(Endpoint, $"/clusters/{cluster}/rest_password", ct)).Value;
         key!.Value.Should().Be("External0Pass00000000000000000000Z");
         result.Value!.RestPassword.Should().Be("External0Pass00000000000000000000Z");
@@ -71,7 +71,7 @@ public class RestPasswordEnsureEtcdTests(EtcdFixture fixture)
         var result = await sut.EnsureAsync(cluster, Config(cluster), ct);
 
         // Assert: пустое значение заменено сгенерированным.
-        result.IsSuccess.Should().BeTrue();
+        result.IsSuccess.Should().BeTrue(result.Error?.ToString());
         var key = (await Gateway.GetAsync(Endpoint, $"/clusters/{cluster}/rest_password", ct)).Value;
         key!.Value.Should().MatchRegex("^[A-Za-z0-9]{32}$");
     }

@@ -122,7 +122,7 @@ public class RetentionProcessTests(EtcdFixture fixture)
     public async Task DeletingFinalizationOnS3Failure()
     {
         // Arrange — свежий COMPLETED (guard/окно) + просроченный COMPLETED
-        // с объектами full/<old>/; клэйм наш
+        // с ОДНИМ объектом full/<old>.tar; клэйм наш
         var ct = TestContext.Current.CancellationToken;
         const string cluster = "rt1";
         await SeedAsync(cluster);
@@ -131,11 +131,8 @@ public class RetentionProcessTests(EtcdFixture fixture)
         var old = Full("20260731000000Z", Now.AddDays(-40));
         await SeedFullAsync(cluster, fresh);
         await SeedFullAsync(cluster, old);
-        var objectKeys = new[]
-        {
-            $"{cluster}/shard1/full/{old.Id}/base.tar",
-            $"{cluster}/shard1/full/{old.Id}/.tables",
-        };
+        // Полный — один объект (spec t01 §6.1): удаление одиночное.
+        var objectKeys = new[] { $"{cluster}/shard1/full/{old.Id}.tar" };
         var s3 = new FakeBackupS3();
         s3.PrefixObjects.AddRange(objectKeys.Select(k => (k, 5L)));
         var process = BuildProcess(Options(policyDays: 1, policyWeeks: 0, policyMonths: 0), s3);
@@ -149,7 +146,7 @@ public class RetentionProcessTests(EtcdFixture fixture)
         var deleting = await GetKvAsync(BackupNames.FullKey(cluster, "shard1", old.Id));
         deleting.Should().NotBeNull();
         deleting!.Value.Should().Contain("\"DELETING\"");
-        s3.PrefixObjects.Should().HaveCount(2, "S3 failure — nothing removed (transient)");
+        s3.PrefixObjects.Should().ContainSingle("S3 failure — nothing removed (transient)");
         s3.DeletedKeys.Should().BeEmpty();
 
         // Act — второй тик без сбоя
