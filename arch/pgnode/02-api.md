@@ -25,8 +25,8 @@
 | `POST /api/backup/full/cancel` | отмена полного (гасит BASE_BACKUP-соединение и multipart-сессию) | 202/200 (best-effort) |
 | `POST /api/ops/verify` | запуск verify полного (S3-контекст read-списка + `sha256`? ожидаемый в теле) | 202; 400 — id вне allowlist; 409 — чужой ops-операции; 503 — гейт |
 | `POST /api/ops/restore` | запуск restore (тело: `backup_id`, `target_time`?, `recovery_timeout_sec`, `chain_life`?, `sha256`?, S3-контекст) ИЛИ drill (поле `id`) | 202; 400 — id вне allowlist; 409 — чужой ops-операции; 503 — гейт |
-| `GET /api/ops/restore` | снимок restore/drill: фазы `downloading|recovering`, `restored_to_lsn`?, `system_id`?, `started_unix`?, `error`? | 200; 404 — операции нет |
-| `GET /api/ops/verify` | снимок verify: `downloading|verifying`, `started_unix` | 200; 404 — операции нет |
+| `GET /api/ops/restore` | снимок restore/drill: `id` операции реестра, фазы `downloading|recovering`, `restored_to_lsn`?, `system_id`?, `started_unix`?, `error`? | 200; 404 — операции нет |
+| `GET /api/ops/verify` | снимок verify: `id` операции реестра, `downloading|verifying`, `started_unix` | 200; 404 — операции нет |
 | `POST /api/ops/cancel` | отмена идущей ops-операции (внешний канал мимо воркера) | операция `state=cancelled` (НЕ failed) |
 | `POST /api/node/pgdump` | `pg_dump --schema-only` схемы (DDL-перенос переезда) | снимок операции/результат |
 | `POST /api/node/pgdata` | проба данных ноды: `PG_VERSION` файловой системой контейнера | Present/Absent/Unknown |
@@ -43,12 +43,22 @@ SQL-команду `BASE_BACKUP (LABEL …)`, S3-ключи и логи — пр
 
 Ops-операции (verify/restore/drill) делят ОДИН реестр — одна ops-операция
 на процесс; полная операция (full) в реестр не входит и ops-операцию не
-блокирует. Снимок операции IMMUTABLE в памяти: фаза, `started_unix`,
+блокирует. Снимок операции IMMUTABLE в памяти: `id`, фаза, `started_unix`,
 результат/`error`; отмена — `state=cancelled` (не failed). `POST` при
 занятом реестре — 409; снимок 409 НЕ различает свою/чужую операцию —
 воркер откладывает запуск (transient) до освобождения реестра. Принять 409
 за «свою живую» нельзя: verify затирает снимки общего реестра, и воркер
 ушёл бы в REJOINING от чужого succeeded без `system_id`.
+
+**GET-снимок несёт `id` операции реестра.** Реестр один на процесс —
+снимок в нём может оказаться чужим (прошлая/параллельная операция другого
+вида); GET-ответ обязан позволять сверку «своя/чужая»: супервизоры
+принимают исход ТОЛЬКО по снимку с собственным `id`, чужой снимок — не
+доказательство (вердиктов по нему не пишут, свои перезапуски продолжают).
+Терминальный `succeeded` restore/drill-операции несёт `restored_to_lsn`
+обязательно (успех доказан выходом из recovery): `succeeded` без LSN —
+нарушение контракта операции, супервизор дрилла трактует его vanished-семантикой
+([../backups/processes/g-drill.md](../backups/processes/g-drill.md) §1).
 
 Повторные команды идемпотентны по смыслу: `POST /api/ops/restore` при уже
 живой операции — 409; повторный пин применения материала — no-op по

@@ -150,14 +150,41 @@ public sealed class S3NodeContainerFixture : IAsyncLifetime
         }
     }
 
-    /// <summary>Остановка своей ownS3-ноды — сценарий «S3-нода недоступен».</summary>
+    /// <summary>Остановка своей ownS3-ноды — сценарий «S3-нода недоступен».
+    /// ОСТОРОЖНО в параллельных сериях: stop освобождает хост-порт, docker
+    /// может выдать его новому контейнеру чужого класса — пробы по
+    /// localhost:&lt;порт&gt; попадут в чужую живую ноду (общие static-креды
+    /// примет она же). Для недоступности с гарантией — <see cref="PauseAsync"/>
+    /// (порт остаётся за контейнером).</summary>
     public async Task StopAsync(CancellationToken ct = default)
         => await _container.StopAsync(ct);
 
-    // Teardown при любом исходе: стоп/rm СВОЕГО контейнера → АССЕРТ ЧИСТОТЫ:
+    /// <summary>Тестовая недоступность S3 (AC3): docker pause — контейнер жив,
+    /// хост-порт ОСТАЁТСЯ за ним (чужой контейнер параллельного класса не
+    /// может занять освободившийся порт и ответить на пробы), put/list/пробы
+    /// таймаутятся.</summary>
+    public async Task PauseAsync(CancellationToken ct = default)
+        => await _container.PauseAsync(ct);
+
+    /// <summary>Снятие паузы (обязателен перед teardown: остановка/удаление
+    /// паузящегося контейнера не выполняется, пока он в paused).</summary>
+    public async Task UnpauseAsync(CancellationToken ct = default)
+        => await _container.UnpauseAsync(ct);
+
+    // Teardown при любом исходе: снятие паузы (остановка/удаление paused-
+    // контейнера не выполняется), стоп/rm СВОЕГО контейнера → АССЕРТ ЧИСТОТЫ:
     // apm-s3-{guid} в docker ps -a отсутствует.
     public async ValueTask DisposeAsync()
     {
+        try
+        {
+            await _container.UnpauseAsync();
+        }
+        catch
+        {
+            // не в паузе/уже снята — teardown ниже разберётся
+        }
+
         try
         {
             await _container.DisposeAsync();

@@ -82,11 +82,21 @@ public class RotationTimeoutTests(KafkaClusterFixture fixture, ITestOutputHelper
                 TimeProvider.System));
     }
 
-    // Provisioning-цикл до готовности (config без state).
+    // Provisioning-цикл до готовности (config без state). Транзиент-толерантен
+    // (как TickAsync ниже): одиночный Result.Failed тика — не провал теста —
+    // процесс идемпотентен, цикл повторяет тик; на бутящихся брокерах
+    // Known-транзиент стека клиента — «Broker handle destroyed without
+    // termination» при ротации admin-клиента (прецедент
+    // docs/superpowers/2026-10-17-kfw-rotation-timeout-flake §6.4; dispose под
+    // операцией закрыт дрейном по счётчику — остаточный источник транзиентен).
+    // Подряд FailedTickLimit неудачных тиков — исключение с ПОЛНЫМ контекстом
+    // (DiagContextAsync + хвост ошибок тиков).
     private async Task UpAsync(Rig rig, string cluster, int budgetSec)
     {
         var ct = TestContext.Current.CancellationToken;
         var deadline = DateTimeOffset.UtcNow.AddSeconds(budgetSec);
+        var failures = 0;
+        var diag = new Queue<string>();
         while (DateTimeOffset.UtcNow < deadline)
         {
             var snap = await fixture.SnapshotAsync(cluster);
@@ -94,8 +104,21 @@ public class RotationTimeoutTests(KafkaClusterFixture fixture, ITestOutputHelper
                 return;
 
             var tick = await rig.Provision.RunAsync(snap, ct);
-            tick.IsSuccess.Should().BeTrue(
-                $"provisioning tick must not fail (waiting-brokers is a success): {tick.Error?.Message}");
+            if (!tick.IsSuccess)
+            {
+                failures++;
+                EnqueueDiag(diag, $"up: tick #{failures} failed — {tick.Error?.Message}");
+                if (failures >= FailedTickLimit)
+                    throw new Xunit.Sdk.XunitException(
+                        $"up: stagnation — {FailedTickLimit} consecutive failed ticks " +
+                        $"(waiting-brokers is a success); {await DiagContextAsync(cluster)}; " +
+                        $"tick tail: {string.Join(" | ", diag)}");
+            }
+            else
+            {
+                failures = 0;
+            }
+
             await Task.Delay(3000, ct);
         }
 

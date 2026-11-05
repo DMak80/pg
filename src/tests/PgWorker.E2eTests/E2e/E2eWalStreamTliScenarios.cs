@@ -283,8 +283,11 @@ public sealed class E2eWalStreamTliScenarios(E2eWalStreamTliScenariosFx Ctx) : I
             await Fx.RunDockerAsync(
                 ["exec", newMasterContainer, "supervisorctl", "start", "pgnode"], ct);
 
-            // Индукция завершена — метка «свежести» полного (инвариант 4)
+            // Индукция завершена — телеметрическая метка (инвариант 4
+            // проверяет ПОКРЫТИЕ заживлённой цепи покрывающим полным, не
+            // тайминг: gap-триггер стартует пересъём и до метки)
             var inductionDoneUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            Console.WriteLine($"[PHASE] wal-t24b: induction done (unix={inductionDoneUnix})");
 
             // [PHASE] возврат S3
             Console.WriteLine($"[PHASE] wal-t24b: docker start {Fx.S3NodeContainerName}");
@@ -339,6 +342,13 @@ public sealed class E2eWalStreamTliScenarios(E2eWalStreamTliScenariosFx Ctx) : I
             // 5 финальных инвариантов сходимости (§3.7) — общий бюджет 900 с:
             // итог при любом пути (прыжок с зазором + пересъём / досыпка без
             // зазора / зазор не возник); stdout-маркеры — телеметрия, не гейт.
+            // TLI стабилен внутри секции сходимости (promote уже состоялся,
+            // проверен ≥ 2 секцией outage): снимок ОДИН раз до поллинга —
+            // Patroni-пробы на каждой итерации условия отставали наблюдение
+            // от факта на секунды (факт: сходимость 172–177 с при бюджете
+            // 170 с — «последние 2–6 с»); жёсткий ассерт ниже перечитывает
+            // timeline свежо и поймал бы смену.
+            var convTli = await PrimaryTimelineAsync(cluster, "shard1", ct);
             string? chainLastSegment = null;
             var converged = await E2ePhase.WaitAsync(Fx, "wal-converged", async () =>
             {
@@ -367,17 +377,18 @@ public sealed class E2eWalStreamTliScenarios(E2eWalStreamTliScenariosFx Ctx) : I
                     return false;
                 chainLastSegment = last.Name;
 
-                // (4) каталог бэкапов здоров: COMPLETED-полный после индукции
-                // с verify ≠ FAILED (null/PENDING/OK допустимы)
+                // (4) каталог бэкапов здоров: COMPLETED-полный, ПОКРЫВАЮЩИЙ
+                // заживлённую цепь (wal_start ≥ chain_start ключа), verify ≠
+                // FAILED (null/PENDING/OK допустимы)
                 var fulls = await FullKeysAsync(cluster, "shard1");
-                var healthyFull = fulls.Any(k => FullAfterInduction(k.Value, inductionDoneUnix));
+                var healthyFull = fulls.Any(k => FullCoveringHealedChain(k.Value, wal.ChainStartSegment));
                 if (!healthyFull)
                     return false;
 
                 // (5) догон: конец непрерывной цепи ≥ сегмента контрольной вставки
-                var checkTli = await PrimaryTimelineAsync(cluster, "shard1", ct);
+                // (TLI — снимок секции, см. выше)
                 var control = PgWorker.Backups.WalFileName.FromLsn(
-                    checkTli, controlLsn!);
+                    convTli, controlLsn!);
                 return string.CompareOrdinal(chainLastSegment, control.Name) >= 0;
             },
             // Канонический бюджет сходимости после прыжка — до 900 с (пересъём
@@ -452,19 +463,25 @@ public sealed class E2eWalStreamTliScenarios(E2eWalStreamTliScenariosFx Ctx) : I
         }
     }
 
-    /// <summary>Инвариант 4 (§3.7): статус полного — COMPLETED, снятый после
-    /// завершения индукции (started_unix ≥ метки), с verify ≠ FAILED
-    /// (verify отсутствует / PENDING / OK допустимы).</summary>
-    private static bool FullAfterInduction(string fullJson, long inductionDoneUnix)
+    /// <summary>Инвариант 4 (§3.7): статус полного — COMPLETED, ПОКРЫВАЮЩИЙ
+    /// заживлённую цепь (wal_start ≥ chain_start ACTIVE-ключа; семантика
+    /// покрывающего полного — та же, что у контроля заживления gap),
+    /// с verify ≠ FAILED (verify отсутствует / PENDING / OK допустимы).
+    /// Таймингового гейта «снят после метки индукции» НЕТ: gap-триггер
+    /// планировщика стартует пересъём ещё В ОКНЕ индукции (раньше метки —
+    /// факт прогона 2026-11-05: полный 18:13:27 при метке ~18:13:28.6,
+    /// wal_start = chain_start заживлённого ключа) — прокси-гейт гонился с
+    /// ретейком и отвергал покрывающий полный весь бюджет сходимости.</summary>
+    private static bool FullCoveringHealedChain(string fullJson, string healedChainStart)
     {
         using var doc = System.Text.Json.JsonDocument.Parse(fullJson);
         var root = doc.RootElement;
         if (!root.TryGetProperty("state", out var stateEl)
             || stateEl.GetString() != "COMPLETED")
             return false;
-        if (!root.TryGetProperty("started_unix", out var startedEl)
-            || !startedEl.TryGetInt64(out var startedUnix)
-            || startedUnix < inductionDoneUnix)
+        if (!root.TryGetProperty("wal_start_segment", out var walStartEl)
+            || walStartEl.GetString() is not { Length: > 0 } walStart
+            || string.CompareOrdinal(walStart, healedChainStart) < 0)
             return false;
         if (!root.TryGetProperty("verify", out var verifyEl)
             || verifyEl.ValueKind != System.Text.Json.JsonValueKind.Object)

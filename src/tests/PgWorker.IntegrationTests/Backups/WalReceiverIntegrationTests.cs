@@ -135,11 +135,15 @@ public class WalReceiverIntegrationTests : IntSlotLifetime
         return (min?.Name, names);
     }
 
-    /// <summary>Доставленные ФИНАЛЬНЫЕ сегменты: `.partial`-версии живого
-    /// сегмента и `.history` — штатные объекты wal/, но не закрытые сегменты.</summary>
+    /// <summary>Доставленные ФИНАЛЬНЫЕ сегменты: частичное семейство живого
+    /// сегмента (t14 `&lt;seg&gt;.&lt;lsn&gt;.partial` И дельта-куски
+    /// `&lt;seg&gt;.partial_…`) и `.history` — штатные объекты wal/, но не
+    /// закрытые сегменты. Финал — строгое имя сегмента (TryParse): кусок
+    /// живого сегмента появляется пампом и поглощается финалом (листинг
+    /// «пульсирует» при активной доставке), суффикс-фильтр `.partial` куски
+    /// `.partial_…` пропускал — подсчёт финалов завышался транзитом.</summary>
     private static IEnumerable<string> Finals(IEnumerable<string> names)
-        => names.Where(n => !n.EndsWith(".partial", StringComparison.Ordinal)
-                            && !n.EndsWith(".history", StringComparison.Ordinal));
+        => names.Where(n => WalFileName.TryParse(n) is not null);
 
     private static int FinalCount(IEnumerable<string> names) => Finals(names).Count();
 
