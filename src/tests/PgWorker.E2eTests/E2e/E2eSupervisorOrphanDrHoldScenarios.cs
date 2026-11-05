@@ -52,7 +52,7 @@ public sealed class E2eSupervisorOrphanDrHoldScenarios(E2eSupervisorOrphanDrHold
         await using var app = await StartOrphanHostAsync(cluster, ct);
 
         // Arrange 2 — provisioning DONE; посев СИРОТЫ С ВАЛИДНЫМ ПОЛНЫМ:
-        //   manifest — критерий DR-выбора (arch/19 §3.5/§5)
+        //   объект full/<id>.tar — критерий DR-выбора (spec t01 §6.10)
         var provisioned = await WaitPhaseAsync("provisioning",
             E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(90), ct);
         provisioned.Should().BeTrue("provisioning must reach DONE");
@@ -87,9 +87,11 @@ public sealed class E2eSupervisorOrphanDrHoldScenarios(E2eSupervisorOrphanDrHold
         }, TimeSpan.FromSeconds(90), ct);
         window.Should().BeTrue("the expired TTL window plus one pass must arrive");
 
-        // Assert 1 — объекты ЖИВЫ, запись OBSERVED с has_valid_full (AC1)
-        (await McLsAsync($"{ghost}/shard1/")).Should().HaveCountGreaterThanOrEqualTo(2,
-            "a DR source with a valid full is NEVER removed by the automation");
+        // Assert 1 — объект ЖИВ, запись OBSERVED с has_valid_full (AC1). Полный
+        // в едином формате — ровно один объект full/<id>.tar (spec t01 §6.1).
+        (await McLsAsync($"{ghost}/shard1/")).Should().ContainSingle(
+            "a DR source with a valid full is NEVER removed by the automation")
+            .Which.Should().Contain("full/20260911110000Z.tar");
         var registryAfter = (await GetOrNullAsync("/pgworker/backups/orphans"))!.Value;
         registryAfter.Should().Contain($"{ghost}/shard1")
             .And.Contain("OBSERVED").And.Contain("\"has_valid_full\":true",
