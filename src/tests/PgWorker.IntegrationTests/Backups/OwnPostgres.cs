@@ -91,6 +91,12 @@ public sealed class OwnPostgres : IAsyncDisposable
         Directory.CreateDirectory(certsDir);
         WriteSelfSignedPems(certsDir);
 
+        // pg_isready строго по TCP (-h 127.0.0.1): entrypoint-образ поднимает
+        // ВРЕМЕННЫЙ сервер initdb только на unix-сокете — wait без -h проходит
+        // по нему ещё ДО рестарта на настоящий, и первое TCP-соединение фикстуры
+        // (ALTER SYSTEM в ConfigureTlsAsync) ловит RST в окне переключения
+        // (Connection reset by peer в SSL-negotiation). TCP-зонд гарантирует:
+        // wait завершён — настоящий postmaster уже слушает 5432.
         var builder = new ContainerBuilder(Image)
             .WithName($"pgw-pg-{runId}")
             .WithEnvironment("POSTGRES_PASSWORD", Password)
@@ -98,7 +104,7 @@ public sealed class OwnPostgres : IAsyncDisposable
             .WithResourceMapping(new FileInfo(Path.Combine(certsDir, "server.crt")), "/tmp/pgw-tls")
             .WithResourceMapping(new FileInfo(Path.Combine(certsDir, "server.key")), "/tmp/pgw-tls")
             .WithWaitStrategy(Wait.ForUnixContainer().UntilCommandIsCompleted(
-                "pg_isready -U postgres",
+                "pg_isready -U postgres -h 127.0.0.1",
                 w => w.WithTimeout(TimeSpan.FromSeconds(45)))); // ≤ 100 c: падаем быстро
         if (initdbArgs is not null)
             builder = builder.WithEnvironment("POSTGRES_INITDB_ARGS", initdbArgs);

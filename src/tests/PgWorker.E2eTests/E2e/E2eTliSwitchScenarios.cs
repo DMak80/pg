@@ -1299,6 +1299,22 @@ public sealed class E2eTliSwitchScenarios(TliSwitchContext Ctx) : IClassFixture<
         var ct = cts.Token;
         try
         {
+            // Предусловие (TLI-зазор после Fact 1): надзор мог штатно rebuild'нуть
+            // убитую на подготовке ноду (docker kill → auto-dead) — второй
+            // TLI-прыжок восстановленной жизни создаёт RPO-зазор в СТАРОЙ цепи
+            // (переходный сегмент ниже wal_start нового полного недоставляем,
+            // b-wal-control §2), и по канону restore от старого полнго обязан
+            // permanent-отказать (f-restore §2 — «честное RPO-окно»). Легитимный
+            // одиночный переход не возник — проверять PITR не по чему: штатный
+            // скип предусловия (тот же статус, что у BoundarySwitchException).
+            var names = await Ctx.ListWalNamesAsync(Ctx.Cluster, "shard1");
+            var oldChainStart = PgWorker.Backups.WalFileName.TryParse(Ctx.WalStartSegment)!.Value;
+            var oldChain = PgWorker.Backups.WalChain.Check(oldChainStart, names);
+            if (!oldChain.IsContinuous)
+                Assert.Skip(
+                    "the old backup chain carries a post-Fact-1 RPO gap (a rebuild opened a second " +
+                    $"TLI jump — canonical permanent refusal): {oldChain.GapError}");
+
             // Act — заявка PITR на T_cut по СТАРОМУ полному (валидация от
             // wal_start старого полного проходит: TLI3-хвост выше конца TLI2,
             // переход TLI2→TLI3 легитимен; recovery остановится на T_cut).

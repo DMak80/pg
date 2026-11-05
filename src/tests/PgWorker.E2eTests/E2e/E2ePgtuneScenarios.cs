@@ -165,13 +165,17 @@ public sealed class E2ePgtuneScenarios(E2ePgtuneScenariosFx Ctx) : IClassFixture
         // Assert: etcd-контракт неизменен — новых ключей вне известного HA-churn
         // не появилось: /service/<scope>/* — состояние Patroni; shards/<X>/master —
         // P11 lease-канал лидерства (мигрирует при пересоздании ноды). Оба канала
-        // существовали до pgtune; pg-параметры воркер в etcd не пишет.
+        // существовали до pgtune; pg-параметры воркер в etcd не пишет. Срез — только
+        // ключи СВОЕГО кластера: классы контура ПАРАЛЛЕЛЬНЫ (maxParallelThreads),
+        // соседние Fact'ы пишут свои ключи (claims/…) в общий etcd между снимками
+        // (факт прогона: /pgworker/claims/dshop… соседнего Fact'а в fresh).
         var fresh = (await AllKeyNamesAsync(ct))
             .Except(keysBefore)
+            .Where(k => k.Contains(cluster, StringComparison.Ordinal))
             .Where(k => !k.StartsWith("/service/", StringComparison.Ordinal))
             .Where(k => !k.EndsWith("/master", StringComparison.Ordinal))
             .ToList();
-        fresh.Should().BeEmpty("parameters are not persisted in etcd — no new keys");
+        fresh.Should().BeEmpty($"parameters are not persisted in etcd — no new keys of {cluster}");
     }
 
     [Fact]
