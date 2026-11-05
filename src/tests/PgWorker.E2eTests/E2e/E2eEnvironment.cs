@@ -736,8 +736,11 @@ public sealed class E2eEnvironment : IAsyncDisposable
         var etcdAliases = Enumerable.Range(1, haEtcd ? 3 : 1).Select(i => $"e2e-etcd{i}").ToList();
         var etcdHostPorts = new List<int>();
         IContainer? s3Node = null;
-        // Артефакты окружения — temp хоста (телеметрия teardown'а и dumps).
-        var artifactsDir = Path.Combine(Path.GetTempPath(), $"pgw-e2e-artifacts-{runId}");
+        // Артефакты окружения — /tmp хоста (канон arch/testing/01-e2e-launch.md:
+        // /tmp/pgw-e2e-artifacts-<guid>/; НЕ Path.GetTempPath() — на macOS это
+        // персессионный $TMPDIR, самоочищаемый ОС: телеметрия упавших прогонов
+        // исчезала до разбора).
+        var artifactsDir = Path.Combine("/tmp", $"pgw-e2e-artifacts-{runId}");
         // per-run CA окружения генерируется здесь.
         var (caPem, caKeyPem) = E2eTestPki.GenerateCa("e2e");
         // Окно портов — локальный счётчик процесса (параллельные контуры
