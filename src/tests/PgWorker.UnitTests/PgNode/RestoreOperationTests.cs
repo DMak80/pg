@@ -448,6 +448,27 @@ public class RestoreOperationTests
         Directory.Delete(root, recursive: true);
     }
 
+    // AAA: штатная форма tar `pg_basebackup` — имена с ведущим `./` и
+    // пустыми сегментами — нормализуются и распаковываются (не tar-slip).
+    [Fact]
+    public async Task DotSlashPrefixedNames_Accepted()
+    {
+        // Arrange — backup_label и файл с префиксом "./".
+        var root = NewPgdata();
+        var label = Encoding.ASCII.GetBytes(
+            "START WAL LOCATION: 0/2000028 (file 000000010000000000000002)\n");
+        var tar = BuildRawTar(
+            (new TarEntry("./backup_label", TarTypeFlags.File, label.Length, 0x1A0, ""), label),
+            (new TarEntry("./PG_VERSION", TarTypeFlags.File, 3, 0x1A4, ""), "18\n"u8.ToArray()));
+        var snap = await RunRestoreAsync(root, tar);
+
+        // Assert — распаковка прошла, файлы на месте.
+        snap.State.Should().Be("succeeded", snap.Error);
+        File.Exists(Path.Combine(root, "pgroot", "data", "PG_VERSION")).Should().BeTrue(
+            "a leading ./ is the normal pg_basebackup tar form");
+        Directory.Delete(root, recursive: true);
+    }
+
     // AAA (L4/tar-slip): сегмент `..` в имени → permanent-отказ (выход из корня).
     [Fact]
     public async Task DotDotEntryName_RejectedPermanent()

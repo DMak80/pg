@@ -565,8 +565,10 @@ public sealed class RestoreOperation : IReceiverOperation
         }
     }
 
-    // Канонический путь записи внутри корня: абсолютные имена/`..`/`.` —
-    // нарушение формата (данные плохие); вхождение — строго с разделителем
+    // Канонический путь записи внутри корня: абсолютные имена и `..` —
+    // нарушение формата (данные плохие). Ведущий `./` и пустые сегменты —
+    // штатная форма tar pg_basebackup: имя лексически нормализуется ДО
+    // проверки (сегменты "." удаляются); вхождение — строго с разделителем
     // (иначе «data2» прошёл бы проверку префикса «data»).
     internal static string ResolveEntryPath(string root, string name)
     {
@@ -574,11 +576,15 @@ public sealed class RestoreOperation : IReceiverOperation
             || name.Contains('\0', StringComparison.Ordinal))
             throw new TarFormatException($"tar entry name is not relative: '{name}'");
         var normalized = name.Replace('\\', '/');
-        var parts = normalized.Split('/');
-        if (parts.Any(p => p is "." or ".."))
+        var parts = normalized.Split('/')
+            .Where(part => part.Length > 0 && part != ".")
+            .ToArray();
+        if (parts.Length == 0)
+            throw new TarFormatException($"tar entry name has no path segments: '{name}'");
+        if (parts.Any(part => part == ".."))
             throw new TarFormatException($"tar entry name contains a dot segment: '{name}'");
         var dest = Path.GetFullPath(Path.Combine(
-            root, normalized.Replace('/', Path.DirectorySeparatorChar)));
+            root, string.Join(Path.DirectorySeparatorChar, parts)));
         if (!dest.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.Ordinal))
             throw new TarFormatException($"tar entry escapes the restore root: '{name}'");
         return dest;
