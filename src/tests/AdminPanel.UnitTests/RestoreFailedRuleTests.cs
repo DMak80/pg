@@ -52,7 +52,7 @@ public class RestoreFailedRuleTests
         alert.Message.Should().Contain("WAL chain hole");
         alert.Details!["restoreId"].Should().Be("20260911120000Z");
         alert.Remedy.Should().Be(AlertRemedy.OperatorRunbook);
-        alert.Hint.Should().Contain("backup-restore.md");
+        alert.Hint.Should().Contain("arch/backups/10-runbook-restore.md");
     }
 
     // AAA: RUNNING/COMPLETED — алерта нет (фазы видны в статусе ключа)
