@@ -168,16 +168,8 @@ public sealed class BackupVerifyProcess(
         {
             // Операции нет: запуск (ретрай сократил окно бута — приёмник ноды
             // уже жив; отказ POST — transient, тик повторит).
-            var launch = await receiver.StartVerifyAsync(receiverUrl, new StartVerifyRequest(
-                id,
-                new S3Context(
-                    Endpoints: [.. pool.ReadAll],
-                    AccessKey: pool.AccessKey,
-                    SecretKey: pool.SecretKey,
-                    Bucket: options.S3Bucket,
-                    Prefix: $"{cluster}/{shard}",
-                    CaPem: BackupCaPem.ReadIfConfigured(options.S3CaBundlePath)),
-                Sha256: candidate.Sha256), ct);
+            var launch = await receiver.StartVerifyAsync(
+                receiverUrl, StartRequest(cluster, shard, full, pool), ct);
             if (launch.IsAccepted || launch.IsConflict)
             {
                 await journal.WritePhaseAsync(cluster, Op, $"started/{shard}/{id}", claims.InstanceId, null, ct);
@@ -247,16 +239,8 @@ public sealed class BackupVerifyProcess(
                     return;
                 }
 
-                var relaunch = await receiver.StartVerifyAsync(receiverUrl, new StartVerifyRequest(
-                    id,
-                    new S3Context(
-                        Endpoints: [.. pool.ReadAll],
-                        AccessKey: pool.AccessKey,
-                        SecretKey: pool.SecretKey,
-                        Bucket: options.S3Bucket,
-                        Prefix: $"{cluster}/{shard}",
-                        CaPem: BackupCaPem.ReadIfConfigured(options.S3CaBundlePath)),
-                    Sha256: full.Sha256), ct);
+                var relaunch = await receiver.StartVerifyAsync(
+                    receiverUrl, StartRequest(cluster, shard, full, pool), ct);
                 if (!relaunch.IsAccepted && !relaunch.IsConflict)
                     observe(cluster, shard, "transient"); // отказ — тик повторит
                 return;
@@ -300,15 +284,20 @@ public sealed class BackupVerifyProcess(
             }
             case "failed" when snapshot.Phase == "downloading":
             {
-                // МАРКЕР ТРАНЗИЕНТА: сбой скачивания — статус не трогаем
-                // (PENDING); следующий тик повторит POST (операция начнётся
-                // заново — резюмов нет).
+                // МАРКЕР ТРАНЗИЕНТА: сбой скачивания — вердикта о данных нет
+                // (статус не трогаем); операция на приёмнике начата ЗАНОВО
+                // (резюмов нет) — иначе терминальный failed-снимок остаётся
+                // текущим и перепроверка по расписанию не возобновляется
+                // (spec t01 §6.7: сбой скачивания — воркер ретраит).
                 await journal.WritePhaseAsync(cluster, Op, $"download-retry/{shard}/{id}",
                     claims.InstanceId, snapshot.Error ?? "download failed", ct);
                 logger.LogWarning(
                     "{Op} {cluster}/{shard}: verify {id} download failed: {Error}",
                     Op, cluster, shard, id, snapshot.Error ?? "download failed");
-                observe(cluster, shard, "transient");
+                var retry = await receiver.StartVerifyAsync(
+                    receiverUrl, StartRequest(cluster, shard, full, pool), ct);
+                if (!retry.IsAccepted && !retry.IsConflict)
+                    observe(cluster, shard, "transient"); // отказ — тик повторит
                 return;
             }
             case "failed":
@@ -328,6 +317,21 @@ public sealed class BackupVerifyProcess(
             }
         }
     }
+
+    // POST-тело запуска verify-операции (spec t01 §3.7): id + S3-контекст пула
+    // чтения (один endpoint-набор, канон §6.4) + ожидаемый sha256 объекта.
+    private StartVerifyRequest StartRequest(
+        string cluster, string shard, FullBackupState full, BackupPoolContext pool)
+        => new(
+            full.Id,
+            new S3Context(
+                Endpoints: [.. pool.ReadAll],
+                AccessKey: pool.AccessKey,
+                SecretKey: pool.SecretKey,
+                Bucket: options.S3Bucket,
+                Prefix: $"{cluster}/{shard}",
+                CaPem: BackupCaPem.ReadIfConfigured(options.S3CaBundlePath)),
+            Sha256: full.Sha256);
 
     // alias:8080 приёмника ноды-источника (arch/19 §2/§5): имя docker-
     // контейнера в общей сети воркера и нод (object — имя её контейнера из

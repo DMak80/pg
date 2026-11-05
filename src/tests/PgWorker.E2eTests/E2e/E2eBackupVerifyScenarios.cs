@@ -82,9 +82,10 @@ public sealed class E2eBackupVerifyScenarios(E2eBackupVerifyScenariosFx Ctx) : I
         panel.Clusters.Single(c => c.Cluster == cluster).ShardVerifyFailures.Should().BeEmpty();
     }
 
-    // AAA: порча набора (AC2): перезаписать объект full/<id>.tar мусором в
-    // ownS3-ноде → policy interval_sec мал → перепроверка → verify.state=FAILED
-    // + error; переснятия в окне теста нет (full_max_age_sec велик)
+    // AAA: порча набора (AC2): перезаписать объект full/<id>.tar tar-ом с битым
+    // backup_manifest в ownS3-ноде → policy interval_sec мал → перепроверка →
+    // verify.state=FAILED + error; переснятия в окне теста нет (full_max_age_sec
+    // велик)
 
     // в окне теста нет (full_max_age_sec велик)
     [Fact]
@@ -124,13 +125,32 @@ public sealed class E2eBackupVerifyScenarios(E2eBackupVerifyScenariosFx Ctx) : I
         var done = (await FullKeysAsync(cluster, "shard1")).Single(f => f.Value.Contains("COMPLETED"));
         var id = done.Key.Split('/').Last();
 
-        // Act — портим ОБЪЕКТ набора: перезаписываем full/<id>.tar мусором
-        // (потоковый verify не найдёт манифест в хвосте объекта и/или не сойдётся
-        // по checksum'ам — гарантированный FAILED)
-        await Fx.RunDockerAsync(
-            ["run", "--rm", "--network", Fx.NetName, "--entrypoint", "/bin/sh", E2eEnvironment.McImage,
-                "-c", $"mc alias set t {Fx.S3EndpointForContainers} {E2eEnvironment.S3RootUser} {E2eEnvironment.S3RootPassword} >/dev/null"
-                      + $" && echo corrupted | mc pipe t/{Bucket}/{cluster}/shard1/full/{id}.tar"], ct1);
+        // Act — портим МАНИФЕСТ набора: перезаписываем full/<id>.tar tar-ом из
+        // одной записи backup_manifest с битым JSON. Verify достаёт манифест
+        // хвостовым Range и падает в фазе verifying — permanent-вердикт FAILED
+        // (+error). Мусор без манифеста даёт failed/downloading — маркер
+        // транзиента (spec t01 §6.7: отсутствие манифеста — сбой скачивания,
+        // воркер ретраит; вердикта о данных нет) — этот путь проверяется
+        // юнитами VerifyOperationTests.
+        using (var corruptedTar = new MemoryStream())
+        {
+            var writer = new PgWorker.Backups.Tar.TarStreamWriter(corruptedTar);
+            await writer.WriteEntryAsync(
+                new PgWorker.Backups.Tar.TarEntry("PG_VERSION", PgWorker.Backups.Tar.TarTypeFlags.File, 3, 420, ""),
+                "18\n"u8.ToArray(), ct1);
+            var brokenManifest = "{\"Files\": [{\"Path\": \"PG_VERSION\", \"Size\": "u8.ToArray();
+            await writer.WriteEntryAsync(
+                new PgWorker.Backups.Tar.TarEntry(
+                    "backup_manifest", PgWorker.Backups.Tar.TarTypeFlags.File,
+                    brokenManifest.Length, 420, ""),
+                brokenManifest, ct1);
+            await writer.FinishAsync(ct1);
+            await using var s3 = new PgWorker.Backups.BackupS3(new PgWorker.Backups.S3ClientOptions(
+                Fx.S3Endpoint, Bucket, E2eEnvironment.S3RootUser, E2eEnvironment.S3RootPassword));
+            var put = await s3.PutObjectAsync(
+                $"{cluster}/shard1/full/{id}.tar", corruptedTar.ToArray(), sha256: null, ct1);
+            put.IsSuccess.Should().BeTrue($"the corrupted object must be uploaded: {put.Error?.Message}");
+        }
 
         // Часть 2 — ct2: перепроверка по interval → FAILED + error (бюджет 120 c —
         // джоб скачивает набор при verify).
