@@ -206,9 +206,17 @@ public abstract class E2eBackupPoolScenarios
     {
         await using var conn = new NpgsqlConnection(adminDsn);
         await conn.OpenAsync(ct);
-        await using (var create = new NpgsqlCommand(
-            "CREATE TABLE IF NOT EXISTS wal_load(id bigserial, payload text)", conn))
+        try
+        {
+            await using var create = new NpgsqlCommand(
+                "CREATE TABLE IF NOT EXISTS wal_load(id bigserial, payload text)", conn);
             await create.ExecuteNonQueryAsync(ct);
+        }
+        catch (Npgsql.PostgresException e) when (e.SqlState == "23505")
+        {
+            // Гонка CREATE IF NOT EXISTS двух сессий (catalog-индекс): таблицу
+            // создаёт параллельная нагрузка (BackgroundWalLoadAsync) — не ошибка.
+        }
         for (var i = 0; i < iterations; i++)
         {
             await using var insert = new NpgsqlCommand(
@@ -225,9 +233,17 @@ public abstract class E2eBackupPoolScenarios
         {
             await using var conn = new NpgsqlConnection(adminDsn);
             await conn.OpenAsync(ct);
-            await using (var create = new NpgsqlCommand(
-                "CREATE TABLE IF NOT EXISTS wal_load(id bigserial, payload text)", conn))
+            try
+            {
+                await using var create = new NpgsqlCommand(
+                    "CREATE TABLE IF NOT EXISTS wal_load(id bigserial, payload text)", conn);
                 await create.ExecuteNonQueryAsync(ct);
+            }
+            catch (Npgsql.PostgresException e) when (e.SqlState == "23505")
+            {
+                // Гонка CREATE IF NOT EXISTS двух сессий (catalog-индекс): таблицу
+                // создаёт синхронная нагрузка сценария — не ошибка.
+            }
             while (!ct.IsCancellationRequested)
             {
                 await using var insert = new NpgsqlCommand(
