@@ -223,116 +223,57 @@ public class BackupVerifyProcessTests
         outcomes.Should().ContainSingle().Which.Should().Be(("vc9", "shard1", "transient"));
     }
 
-    // AAA: дыра в wal/ внутри [start..end] → permanent FAILED с границами,
-    // verify-операция НЕ запускается (AC3: до приёмника дело не доходит)
+    // AAA (#23): стык etcd.sha256 → verify: ожидаемый сквозной хэш полного
+    // (etcd-поле статуса) уходит в POST-теле StartVerify — приёмник сверяет
+    // распаковку с ним (spec t01 §3.5).
     [Fact]
-    public async Task TickChainGapFailedWithoutOperation()
+    public async Task StartRequestCarriesExpectedSha256()
     {
-        // Arrange — wal/: 1,3 (нет 2); набор: pg_wal/3 → end=3
+        // Arrange — COMPLETED с sha256; приёмник отвечает 404 (операции нет).
         var ct = TestContext.Current.CancellationToken;
         await using var fx = await OwnEtcd.StartAsync("verify", ct);
         Fx = fx;
         await SeedAsync("vc2");
-        var s3 = new FakeBackupS3();
-        s3.Objects.Add(("vc2", "shard1", "000000010000000000000001"));
-        s3.Objects.Add(("vc2", "shard1", "000000010000000000000003"));
-        s3.PrefixedObjects.Add(("vc2", "shard1", "full/20260911120000Z/pg_wal/000000010000000000000003"));
-        var process = BuildProcess("vc2", s3);
-        var backups = BackupsOf("vc2", Completed("20260911120000Z", "000000010000000000000001",
-            new BackupVerify(BackupVerifyStatus.Pending, null)));
+        var sha = new string('a', 64);
+        var candidate = Completed("20260911120000Z", null,
+            new BackupVerify(BackupVerifyStatus.Pending, null)) with { Sha256 = sha };
+        Receiver.GetReply = new ReceiverReply(404, null, null);
+        var process = BuildProcess("vc2", new FakeBackupS3());
 
         // Act
-        (await process.TickAsync(BuildSnap("vc2"), backups, ct)).IsSuccess.Should().BeTrue();
+        (await process.TickAsync(BuildSnap("vc2"), BackupsOf("vc2", candidate), ct))
+            .IsSuccess.Should().BeTrue();
 
-        // Assert — verify.state=FAILED + error с границами + checked_unix; запуска нет
-        var verify = await ReadVerifyAsync("vc2", "20260911120000Z");
-        verify.GetProperty("state").GetString().Should().Be("FAILED");
-        verify.GetProperty("error").GetString().Should().Contain("000000010000000000000002");
-        verify.GetProperty("checked_unix").GetInt64().Should().BeGreaterThan(0);
-        Receiver.StartBodies.Should().BeEmpty("the verdict is determined by the chain — no download is spent (spec §3.1)");
+        // Assert — POST запуска несёт тот же sha256.
+        Receiver.StartBodies.Should().ContainSingle().Which.Sha256.Should().Be(sha);
     }
 
-    // AAA: COMPLETED без wal_start_segment (аномалия) — permanent FAILED без запуска
+    // AAA: тело POST запуска verify — S3-контекст ПУЛА чтения кластера:
+    // endpoints read-списка, bucket опций, префикс <C>/<X> (секреты только в
+    // POST-теле, arch/19 §5).
     [Fact]
-    public async Task TickNoWalStartFailedWithoutOperation()
+    public async Task StartRequestCarriesPoolS3Context()
     {
-        // Arrange — wal_start_segment = null (ранний упавший UPLOADING не бывает
-        // COMPLETED — аномалия; но guard обязателен, spec §3.7)
-        var ct = TestContext.Current.CancellationToken;
-        await using var fx = await OwnEtcd.StartAsync("verify", ct);
-        Fx = fx;
-        await SeedAsync("vc3");
-        var process = BuildProcess("vc3", new FakeBackupS3());
-        var backups = BackupsOf("vc3", Completed("20260911120000Z", null,
-            new BackupVerify(BackupVerifyStatus.Pending, null)));
-
-        // Act
-        (await process.TickAsync(BuildSnap("vc3"), backups, ct)).IsSuccess.Should().BeTrue();
-
-        // Assert
-        var verify = await ReadVerifyAsync("vc3", "20260911120000Z");
-        verify.GetProperty("state").GetString().Should().Be("FAILED");
-        verify.GetProperty("error").GetString().Should().Contain("wal_start_segment");
-        Receiver.StartBodies.Should().BeEmpty();
-    }
-
-    // AAA: строгий TLI-переход с валидным switchWALLSN (GET history из S3) —
-    // цепочка цела, verify-операция запускается (AC4: verify использует содержимое history)
-    [Fact]
-    public async Task TickStrictTliValidPointStartsOperation()
-    {
-        // Arrange — wal/: tli1/seg1, history, tli2/seg2; набор: pg_wal/tli2/seg2;
-        // приёмник отвечает 404 (операции нет)
+        // Arrange — приёмник отвечает 404 (операции нет).
         var ct = TestContext.Current.CancellationToken;
         await using var fx = await OwnEtcd.StartAsync("verify", ct);
         Fx = fx;
         await SeedAsync("vc4");
-        var s3 = new FakeBackupS3();
-        s3.Objects.Add(("vc4", "shard1", "000000010000000000000001"));
-        s3.Objects.Add(("vc4", "shard1", "00000002.history"));
-        s3.Objects.Add(("vc4", "shard1", "000000020000000000000002"));
-        s3.PrefixedObjects.Add(("vc4", "shard1", "full/20260911120000Z/pg_wal/000000020000000000000002"));
-        s3.Contents[("vc4", "shard1", "wal/00000002.history")] = "1\t0/2000000\n";
         Receiver.GetReply = new ReceiverReply(404, null, null);
-        var process = BuildProcess("vc4", s3);
-        var backups = BackupsOf("vc4", Completed("20260911120000Z", "000000010000000000000001",
-            new BackupVerify(BackupVerifyStatus.Pending, null)));
+        var process = BuildProcess("vc4", new FakeBackupS3());
 
         // Act
-        (await process.TickAsync(BuildSnap("vc4"), backups, ct)).IsSuccess.Should().BeTrue();
+        (await process.TickAsync(BuildSnap("vc4"), BackupsOf("vc4",
+            Completed("20260911120000Z", "000000010000000000000001",
+                new BackupVerify(BackupVerifyStatus.Pending, null))), ct)).IsSuccess.Should().BeTrue();
 
         // Assert
-        Receiver.StartBodies.Should().ContainSingle().Which.BackupId.Should().Be("20260911120000Z");
-    }
-
-    // AAA: строгий TLI-переход с НЕвалидной точкой (switchWALLSN вне границы) —
-    // FAILED с упоминанием history, без запуска (AC4)
-    [Fact]
-    public async Task TickStrictTliPointOffBoundaryFailed()
-    {
-        // Arrange — как vc4, но history говорит parent=1, lsn=0/5000000 (сегмент 5)
-        var ct = TestContext.Current.CancellationToken;
-        await using var fx = await OwnEtcd.StartAsync("verify", ct);
-        Fx = fx;
-        await SeedAsync("vc5");
-        var s3 = new FakeBackupS3();
-        s3.Objects.Add(("vc5", "shard1", "000000010000000000000001"));
-        s3.Objects.Add(("vc5", "shard1", "00000002.history"));
-        s3.Objects.Add(("vc5", "shard1", "000000020000000000000002"));
-        s3.PrefixedObjects.Add(("vc5", "shard1", "full/20260911120000Z/pg_wal/000000020000000000000002"));
-        s3.Contents[("vc5", "shard1", "wal/00000002.history")] = "1\t0/5000000\n";
-        var process = BuildProcess("vc5", s3);
-        var backups = BackupsOf("vc5", Completed("20260911120000Z", "000000010000000000000001",
-            new BackupVerify(BackupVerifyStatus.Pending, null)));
-
-        // Act
-        (await process.TickAsync(BuildSnap("vc5"), backups, ct)).IsSuccess.Should().BeTrue();
-
-        // Assert
-        var verify = await ReadVerifyAsync("vc5", "20260911120000Z");
-        verify.GetProperty("state").GetString().Should().Be("FAILED");
-        verify.GetProperty("error").GetString().Should().Contain("00000002.history");
-        Receiver.StartBodies.Should().BeEmpty();
+        var body = Receiver.StartBodies.Should().ContainSingle().Subject;
+        body.BackupId.Should().Be("20260911120000Z");
+        body.S3.Endpoints.Should().Equal("http://h1:9000");
+        body.S3.Bucket.Should().Be("bkt");
+        body.S3.Prefix.Should().Be("vc4/shard1");
+        body.S3.AccessKey.Should().Be("ak");
     }
 
     // AAA: transient S3 (list wal/ недоступен) — шард-skip тиком: тик успешен,
@@ -511,8 +452,10 @@ public class BackupVerifyProcessTests
             Completed("20260911120000Z", "000000010000000000000001",
                 new BackupVerify(BackupVerifyStatus.Pending, null))), ct)).IsSuccess.Should().BeTrue();
 
-        // Assert 2 — повторный POST (ретрай тиками, spec §3.1)
-        Receiver.StartBodies.Should().HaveCount(2, "a transient is retried on the next tick (spec §3.1)");
+        // Assert 2 — POST'ы: старт (Arrange) + повтор после transient + перезапуск
+        // по 404 терминального снимка (spec §3.1/§6.7).
+        Receiver.StartBodies.Should().HaveCount(3,
+            "a transient is retried on the next tick; a vanished terminal snapshot is reposted");
     }
 
     // AAA: GET 404 при живом кандидате (операция исчезла — рестарт приёмника) —
@@ -893,19 +836,21 @@ public class BackupVerifyProcessTests
         outcomes.Should().ContainSingle().Which.Should().Be(("vc8", "shard1", "transient"));
     }
 
-    // AAA: — observe-точки verify: S3 недоступен → transient; битый
-    // wal_start → permanent FAILED → failed; succeeded → ok
-    // (процесс не меняется — тест фиксирует вызовы всех трёх исходов)
+    // AAA: — observe-точки verify: приёмник недостижим → transient; permanent
+    // failed+verifying → failed; succeeded → ok (процесс фиксирует все три
+    // исхода одинаково — наблюдатель вызывается на каждом).
     [Fact]
     public async Task VerifyOutcomesCallObserverTransientFailedOk()
     {
-        // Arrange 1 — COMPLETED PENDING-кандидат; S3-транспорт лежит
+        // Arrange 1 — COMPLETED PENDING-кандидат; приёмник ноды недостижим
+        // (транспортный отказ GET) — маркер транзиента тика.
         var ct = TestContext.Current.CancellationToken;
         await using var fx = await OwnEtcd.StartAsync("verify-obs", ct);
         Fx = fx;
         const string cluster = "vo1";
         await SeedAsync(cluster);
-        var s3 = new FakeBackupS3 { Fails = true };
+        var s3 = new FakeBackupS3();
+        Receiver.GetReply = new ReceiverReply(0, null, "connection refused");
         var outcomes = new List<(string C, string S, string Result)>();
         var process = BuildProcess(cluster, s3,
             verifyObserver: (c, s, r) => outcomes.Add((c, s, r)));
@@ -916,19 +861,23 @@ public class BackupVerifyProcessTests
                     new BackupVerify(BackupVerifyStatus.Pending, null))), ct))
             .IsSuccess.Should().BeTrue();
 
-        // Assert 1 — list S3 упал: transient, статус кандидата не тронут
+        // Assert 1 — приёмник недостижим: transient, статус кандидата не тронут
         outcomes.Should().ContainSingle().Which.Should().Be((cluster, "shard1", "transient"));
 
-        // Arrange 2 — wal_start не разбирается: permanent FAILED сразу
+        // Arrange 2 — операция запущена, приёмник отдал permanent failed+verifying
         const string cluster2 = "vo2";
         await SeedAsync(cluster2);
+        Receiver.StartBodies.Clear(); // POST-журнал делят все Arrange теста
+        var s3fail = new FakeBackupS3();
+        await StartOperationAsync(cluster2, s3fail);
+        Receiver.GetReply = ApiVerifyFailed("manifest checksum mismatch");
         var outcomes2 = new List<(string C, string S, string Result)>();
-        var process2 = BuildProcess(cluster2, new FakeBackupS3(),
+        var process2 = BuildProcess(cluster2, s3fail,
             verifyObserver: (c, s, r) => outcomes2.Add((c, s, r)));
 
         // Act 2
         (await process2.TickAsync(BuildSnap(cluster2), BackupsOf(cluster2,
-                Completed("20260911120000Z", "garbage-wal-start",
+                Completed("20260911120000Z", "000000010000000000000001",
                     new BackupVerify(BackupVerifyStatus.Pending, null))), ct))
             .IsSuccess.Should().BeTrue();
 
@@ -939,6 +888,7 @@ public class BackupVerifyProcessTests
         // приёмник отдал succeeded (GET Ok)
         const string cluster3 = "vo3";
         await SeedAsync(cluster3);
+        Receiver.StartBodies.Clear(); // POST-журнал делят все Arrange теста
         var s3ok = new FakeBackupS3();
         await StartOperationAsync(cluster3, s3ok);
         Receiver.GetReply = ApiOk();
@@ -1013,33 +963,31 @@ public class BackupVerifyProcessTests
             && l.Contains("checksum mismatch failed", StringComparison.Ordinal));
     }
 
-    // AAA: итог FAILED цепочечной проверки (без запуска операции) — строка
-    // host-лога с причиной (границы дыры); РОВНО один итог на полный —
-    // transient-пути итоговой строки не пишут.
+    // AAA: permanent-вердикт приёмника (failed+verifying) — РОВНО одна
+    // итоговая строка FAILED на полный; transient-пути итоговых строк не пишут.
     [Fact]
-    public async Task ChainFailedLogsOutcome()
+    public async Task PermanentVerdictLogsExactlyOneOutcome()
     {
-        // Arrange — wal/: 1,3 (дыра на 2); набор pg_wal/3; spy-логгер
+        // Arrange — операция запущена; приёмник отдал failed+verifying.
         var ct = TestContext.Current.CancellationToken;
         await using var fx = await OwnEtcd.StartAsync("verify", ct);
         Fx = fx;
         await SeedAsync("hl3");
         var s3 = new FakeBackupS3();
-        s3.Objects.Add(("hl3", "shard1", "000000010000000000000001"));
-        s3.Objects.Add(("hl3", "shard1", "000000010000000000000003"));
-        s3.PrefixedObjects.Add(("hl3", "shard1", "full/20260911120000Z/pg_wal/000000010000000000000003"));
+        await StartOperationAsync("hl3", s3);
+        Receiver.GetReply = ApiVerifyFailed("manifest checksum mismatch");
         var logger = new SpyLogger();
         var process = BuildProcess("hl3", s3, logger: logger);
 
-        // Act — тик: дыра цепочки → permanent FAILED без запуска
+        // Act
         (await process.TickAsync(BuildSnap("hl3"), BackupsOf("hl3",
             Completed("20260911120000Z", "000000010000000000000001",
                 new BackupVerify(BackupVerifyStatus.Pending, null))), ct)).IsSuccess.Should().BeTrue();
 
-        // Assert — ровно одна итоговая строка FAILED с границей дыры
+        // Assert
         logger.Lines.Should().ContainSingle(l =>
                 l.Contains("verify 20260911120000Z FAILED", StringComparison.Ordinal)
-                && l.Contains("000000010000000000000002", StringComparison.Ordinal),
+                && l.Contains("manifest checksum mismatch", StringComparison.Ordinal),
             "exactly one terminal outcome line per full — transient paths log no outcome");
     }
 }

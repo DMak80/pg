@@ -116,20 +116,39 @@ public sealed class VerifyOperation : IReceiverOperation
 
             var manifestJson = await ReadManifestAsync(
                 streamer, cluster, shard, objectKey, size, token);
+            if (size <= 0)
+            {
+                // Пустой объект у COMPLETED-полного — вердикт о данных.
+                Fail(OperationPhases.Verifying, $"{objectKey}: object is empty");
+                return;
+            }
+
             if (manifestJson is null)
             {
-                Fail(OperationPhases.Downloading, "backup_manifest not found in tail");
+                // Исчерпание попыток хвоста при СУЩЕСТВУЮЩЕМ объекте —
+                // permanent (arch/pgnode/05 §2): данные плохие; иначе воркер
+                // ретраил бы вечно (квоты на transient-цикл нет).
+                Fail(OperationPhases.Verifying,
+                    "backup_manifest not found in the object tail after all attempts");
                 return;
             }
 
             IReadOnlyDictionary<string, ManifestFile> files;
+            IReadOnlyList<ManifestWalRange> walRanges;
             try
             {
                 files = BackupManifest.ParseFiles(manifestJson);
+                walRanges = BackupManifest.ParseWalRanges(manifestJson);
             }
             catch (System.Text.Json.JsonException e)
             {
                 Fail(OperationPhases.Verifying, OpText.OneLine(e.Message));
+                return;
+            }
+
+            if (BackupManifest.VerifyChecksum(manifestJson) is false)
+            {
+                Fail(OperationPhases.Verifying, "backup manifest checksum mismatch");
                 return;
             }
 
@@ -145,9 +164,10 @@ public sealed class VerifyOperation : IReceiverOperation
 
             var (body, _) = opened.Value;
             using var objectHash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
-            await using (var hashing = new HashingStream(body, objectHash))
+            var walSegments = new HashSet<string>(StringComparer.Ordinal);
+            await using (var hashing = new HashingReadStream(body, objectHash))
             {
-                var error = await VerifyPassAsync(hashing, files, token);
+                var error = await VerifyPassAsync(hashing, files, walSegments, token);
                 if (error is not null)
                 {
                     Fail(OperationPhases.Verifying, error);
@@ -164,6 +184,16 @@ public sealed class VerifyOperation : IReceiverOperation
                 }
             }
 
+            // WAL-Ranges: сегменты, заявленные диапазонами манифеста, обязаны
+            // лежать в tar (pg_wal/<segment>) — перечень, не побайтовая сверка
+            // (arch/pgnode/05 §2).
+            var walError = CheckWalRanges(walRanges, walSegments);
+            if (walError is not null)
+            {
+                Fail(OperationPhases.Verifying, walError);
+                return;
+            }
+
             var objectSha = Convert.ToHexString(objectHash.GetHashAndReset()).ToLowerInvariant();
             if (_request.Sha256 is { Length: > 0 } expected
                 && !string.Equals(expected.ToLowerInvariant(), objectSha, StringComparison.Ordinal))
@@ -175,7 +205,7 @@ public sealed class VerifyOperation : IReceiverOperation
 
             Update(OperationStates.Succeeded, OperationPhases.Verifying);
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
         {
             // Операторская отмена: снимок cancelled — НЕ failed (отмена не
             // суждение о данных); воркер вернёт кандидата в PENDING.
@@ -183,7 +213,11 @@ public sealed class VerifyOperation : IReceiverOperation
         }
         catch (Exception e)
         {
-            Fail(CurrentPhase(), $"{e.GetType().Name}: {e.Message.Split('\n')[0]}");
+            // Транспортный сбой чтения на любой фазе — transient (маркер
+            // downloading, arch/pgnode/05 §2): permanent — только вердикт о
+            // данных (формат/хэши/перечень), он ставится выше явно.
+            var phase = IsTransport(e) ? OperationPhases.Downloading : CurrentPhase();
+            Fail(phase, $"{e.GetType().Name}: {e.Message.Split('\n')[0]}");
         }
         finally
         {
@@ -240,7 +274,7 @@ public sealed class VerifyOperation : IReceiverOperation
                 continue;
             if (entry.Size < 0 || entry.Size > data.Length - offset - 512)
                 return false; // данных записи в буфере нет — нужен больший tail
-            manifestJson = Encoding.ASCII.GetString(
+            manifestJson = Encoding.UTF8.GetString(
                 data, offset + 512, (int)entry.Size).TrimEnd('\0');
             return true;
         }
@@ -250,9 +284,11 @@ public sealed class VerifyOperation : IReceiverOperation
 
     // Проход по tar-объекту: sha256 каждой записи на лету, сверка с манифестом;
     // каталоги/symlink'и и записи, которых манифест не содержит по конструкции
-    // (сам манифест, WAL-сегменты), не сверяются. Возврат — первая ошибка.
+    // (сам манифест, WAL-сегменты), не сверяются; WAL-сегменты собираются для
+    // сверки WAL-Ranges. Возврат — первая ошибка.
     private static async Task<string?> VerifyPassAsync(
-        Stream body, IReadOnlyDictionary<string, ManifestFile> files, CancellationToken ct)
+        Stream body, IReadOnlyDictionary<string, ManifestFile> files,
+        HashSet<string> walSegments, CancellationToken ct)
     {
         var reader = new TarStreamReader(body);
         var verified = new HashSet<string>(StringComparer.Ordinal);
@@ -268,6 +304,8 @@ public sealed class VerifyOperation : IReceiverOperation
                 || (entry.Name.StartsWith(WalPrefix, StringComparison.Ordinal)
                     && IsWalSegment(entry.Name[WalPrefix.Length..])))
             {
+                if (entry.Name.StartsWith(WalPrefix, StringComparison.Ordinal))
+                    walSegments.Add(entry.Name[WalPrefix.Length..]);
                 await reader.SkipDataAsync(ct);
                 continue;
             }
@@ -306,6 +344,56 @@ public sealed class VerifyOperation : IReceiverOperation
     private static bool IsWalSegment(string name)
         => name.Length == 24 && name.All(Uri.IsHexDigit);
 
+    // Сверка присутствия сегментов WAL-Ranges в tar: диапазон — непрерывный
+    // ряд сегментов от Start-LSN до End-LSN включительно (Timeline — из
+    // диапазона). Отсутствие — permanent-вердикт (перечень неполон).
+    private static string? CheckWalRanges(
+        IReadOnlyList<ManifestWalRange> ranges, HashSet<string> present)
+    {
+        foreach (var range in ranges)
+        {
+            WalFileName start;
+            WalFileName end;
+            try
+            {
+                start = WalFileName.FromLsn(range.Timeline, range.StartLsn);
+                end = WalFileName.FromLsn(range.Timeline, range.EndLsn);
+            }
+            catch (Exception e) when (e is FormatException or OverflowException
+                                          or IndexOutOfRangeException)
+            {
+                return $"invalid WAL-Ranges entry ({range.Timeline}, {range.StartLsn}, {range.EndLsn})";
+            }
+
+            if (start.DistanceTo(end) < 0)
+                return $"invalid WAL-Ranges entry: end {end.Name} precedes start {start.Name}";
+
+            // Потолок обхода — лимит частей объекта (патологический диапазон
+            // не должен вешать verify); реальный ряд ограничен содержимым tar.
+            if (start.DistanceTo(end) > 10_000)
+                return "WAL-Ranges span is too large to verify";
+            for (var segment = start; ; segment = segment.Next())
+            {
+                if (!present.Contains(segment.Name))
+                    return $"WAL segment {segment.Name} declared by WAL-Ranges is missing (pg_wal/{segment.Name})";
+                if (segment.Equals(end))
+                    break;
+            }
+        }
+
+        return null;
+    }
+
+    // Транспортные исключения чтения S3/сети: transient (маркер downloading).
+    // Таймаут HttpClient приходит как TaskCanceledException (подкласс OCE) —
+    // сюда же; операторская отмена распознаётся отдельно по токену.
+    private static bool IsTransport(Exception e)
+        => e is IOException
+            or System.Net.Http.HttpRequestException
+            or System.Net.Sockets.SocketException
+            or Amazon.S3.AmazonS3Exception
+            or TaskCanceledException or TimeoutException;
+
     private IBackupS3 CreateClient(string endpoint, string? caBundlePath)
         => _targetFactory is { } factory
             ? factory(endpoint)
@@ -329,57 +417,4 @@ public sealed class VerifyOperation : IReceiverOperation
         => _registry.Update(new OperationSnapshot(
             _request.BackupId, OperationStates.Failed, phase,
             StartedUnix: _registry.Current?.StartedUnix, Error: error));
-
-    /// <summary>Прозрачная обёртка потока: каждый прочитанный байт уходит в
-    /// сквозной sha256 объекта (verify сверяет его с etcd-полем `sha256`).</summary>
-    private sealed class HashingStream(Stream inner, IncrementalHash hash) : Stream
-    {
-        public override bool CanRead => true;
-        public override bool CanSeek => false;
-        public override bool CanWrite => false;
-        public override long Length => throw new NotSupportedException();
-
-        public override long Position
-        {
-            get => throw new NotSupportedException();
-            set => throw new NotSupportedException();
-        }
-
-        public override int Read(byte[] buffer, int offset, int count)
-        {
-            var read = inner.Read(buffer, offset, count);
-            if (read > 0)
-                hash.AppendData(buffer, offset, read);
-            return read;
-        }
-
-        public override async ValueTask<int> ReadAsync(
-            Memory<byte> buffer, CancellationToken cancellationToken = default)
-        {
-            var read = await inner.ReadAsync(buffer, cancellationToken);
-            if (read > 0)
-                hash.AppendData(buffer.Span[..read]);
-            return read;
-        }
-
-        public override void Flush()
-        {
-            // Только чтение.
-        }
-
-        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
-
-        public override void SetLength(long value) => throw new NotSupportedException();
-
-        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
-
-        protected override void Dispose(bool disposing)
-        {
-            if (disposing)
-                inner.Dispose();
-            base.Dispose(disposing);
-        }
-
-        public override ValueTask DisposeAsync() => inner.DisposeAsync();
-    }
 }

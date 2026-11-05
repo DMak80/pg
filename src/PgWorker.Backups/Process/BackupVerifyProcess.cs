@@ -142,9 +142,10 @@ public sealed class BackupVerifyProcess(
 
         var id = candidate.Id;
 
-        // (3) Полнота набора (вкл. pg_wal) — манифестом в потоковой
-        //     verify-операции приёмника; дубль wal/ — общий контроль цепочки
-        //     ([02-wal-archive §3], от формата полного не зависит).
+        // (3) Полнота набора — манифестом в потоковой verify-операции
+        //     приёмника (WAL-сегменты — WAL-Ranges манифеста); дубль wal/ —
+        //     общий контроль цепочки ([02-wal-archive §3], от формата
+        //     полного не зависит).
         // (4) Verify-операция WalReceiver ноды-источника полного (arch/19 §5):
         //     alias:8080 приёмника candidate.Node (object — имя её контейнера).
         //     Итог — ТОЛЬКО по API: GET /api/ops/verify; 404 (операции нет —
@@ -347,29 +348,6 @@ public sealed class BackupVerifyProcess(
         return addresses.TryGetValue($"{shard}/{node}", out var addr)
             ? WalReceiverAddress.ForNode(cluster, shard, node, addr.Object)
             : null;
-    }
-
-    // permanent FAILED: полная перезапись ключа статуса (BackupStatusJson), журнал
-    // и наблюдатель; checked_unix — время вердикта.
-    private async Task WritePermanentAsync(
-        string cluster, string shard, FullBackupState full, string error, long nowUnix, CancellationToken ct)
-    {
-        var updated = full with
-        {
-            Verify = new BackupVerify(BackupVerifyStatus.Failed, nowUnix, error),
-        };
-        var put = await PutAsync(BackupNames.FullKey(cluster, shard, full.Id),
-            BackupStatusJson.Serialize(updated), ct);
-        if (!put.IsSuccess)
-        {
-            observe(cluster, shard, "transient"); // put не прошёл — статус остался прежним
-            return;
-        }
-
-        await journal.WritePhaseAsync(cluster, Op, $"verify-failed/{shard}/{full.Id}",
-            claims.InstanceId, error, ct);
-        logger.LogError("{Op} {cluster}/{shard}: verify {full.Id} FAILED: {Error}", Op, cluster, shard, full.Id, error);
-        observe(cluster, shard, "failed");
     }
 
     // Failover-put как BackupProcess.PutAsync (первый успешный endpoint).

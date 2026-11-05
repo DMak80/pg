@@ -11,9 +11,12 @@ using S3Context = PgWorker.PgNode.Operations.S3Context;
 
 namespace PgWorker.UnitTests.PgNode;
 
-// Потоковый verify (spec t01 §3.5, §6.7): манифест из хвоста tar-объекта
-// (Range, размер из HEAD) → один проход потока со сверкой sha256 записей;
-// OK/битый файл/лишний/отсутствующий/транспортный сбой/сквозной sha256.
+// Потоковый verify (spec t01 §3.5, §6.7, arch/pgnode/05): манифест из хвоста
+// tar-объекта (Range, размер из HEAD) → один проход потока со сверкой sha256
+// записей; OK/битый файл/лишний/отсутствующий/транспортный сбой/сквозной
+// sha256; permanent-вердикты (манифест не найден/пустой объект/форма
+// манифеста/Manifest-Checksum/WAL-Ranges) — фаза verifying; транспорт на
+// любой фазе — downloading (transient).
 public class VerifyOperationTests
 {
     private const string Id = "20260101000000Z";
@@ -131,6 +134,25 @@ public class VerifyOperationTests
         snap.Error.Should().NotBeNull();
     }
 
+    // AAA (#4): транспортный обрыв ПОСРЕДИ прохода verifying — transient:
+    // failed/downloading (канон 05-verify), не permanent-вердикт о данных.
+    [Fact]
+    public async Task StreamTransportFailureDuringVerifying_FailedDownloading()
+    {
+        // Arrange — HEAD/Range отвечают, стрим рвётся на чтении.
+        var tar = BuildTar([Version, Control, Label], [Version, Control, Label]);
+        var op = Create(new FakeTarS3(tar) { FailStreamRead = true });
+
+        // Act
+        await op.RunAsync(TestContext.Current.CancellationToken);
+
+        // Assert — маркер транзиента (воркер держит PENDING и повторит POST).
+        var snap = op.Snapshot!;
+        snap.State.Should().Be("failed");
+        snap.Phase.Should().Be("downloading");
+        snap.Error.Should().Contain("IOException");
+    }
+
     // AAA: объекта нет ни на одной цели → failed/downloading.
     [Fact]
     public async Task ObjectNotFound_FailedDownloading()
@@ -149,9 +171,10 @@ public class VerifyOperationTests
         snap.Error.Should().Contain("not found");
     }
 
-    // AAA: манифеста нет в объекте → failed/downloading (хвост не нашёл запись).
+    // AAA (#6): исчерпание попыток хвоста при СУЩЕСТВУЮЩЕМ объекте —
+    // permanent verifying (вечного PENDING нет).
     [Fact]
-    public async Task NoManifestInObject_FailedDownloading()
+    public async Task NoManifestInObject_FailedPermanent()
     {
         // Arrange — tar без записи backup_manifest.
         var tar = BuildTar([Version, Control, Label], [Version, Control, Label], includeManifest: false);
@@ -163,8 +186,126 @@ public class VerifyOperationTests
         // Assert
         var snap = op.Snapshot!;
         snap.State.Should().Be("failed");
-        snap.Phase.Should().Be("downloading");
-        snap.Error.Should().Contain("backup_manifest not found in tail");
+        snap.Phase.Should().Be("verifying");
+        snap.Error.Should().Contain("backup_manifest not found in the object tail");
+    }
+
+    // AAA (#6): пустой объект у COMPLETED-полного — permanent verifying.
+    [Fact]
+    public async Task EmptyObject_FailedPermanent()
+    {
+        // Arrange — 0-байтный объект (HEAD валиден, манифеста нет).
+        var op = Create(new FakeTarS3([]));
+
+        // Act
+        await op.RunAsync(TestContext.Current.CancellationToken);
+
+        // Assert
+        var snap = op.Snapshot!;
+        snap.State.Should().Be("failed");
+        snap.Phase.Should().Be("verifying");
+        snap.Error.Should().Contain("object is empty");
+    }
+
+    // AAA (#15): ошибка ФОРМЫ манифеста (Path — число: InvalidOperationException
+    // у JsonElement) — permanent verifying, не вечный transient.
+    [Fact]
+    public async Task ManifestShapeError_FailedPermanent()
+    {
+        // Arrange — манифест с Path-числом (форма нарушена).
+        var tar = BuildTar(
+            [Version, Control, Label],
+            [Version, Control, Label],
+            rawManifest: """{"Files":[{"Path":123,"Size":1,"Checksum":"aa"}]}""");
+        var op = Create(new FakeTarS3(tar));
+
+        // Act
+        await op.RunAsync(TestContext.Current.CancellationToken);
+
+        // Assert
+        var snap = op.Snapshot!;
+        snap.State.Should().Be("failed");
+        snap.Phase.Should().Be("verifying");
+        snap.Error.Should().Contain("malformed file entry");
+    }
+
+    // AAA (#12): Manifest-Checksum манифеста не сходится с содержимым →
+    // permanent verifying (порча манифеста).
+    [Fact]
+    public async Task ManifestChecksumMismatch_FailedPermanent()
+    {
+        // Arrange — манифест с неверной контрольной суммой.
+        var tar = BuildTar(
+            [Version, Control, Label], [Version, Control, Label],
+            checksum: ManifestChecksum.Corrupt);
+        var op = Create(new FakeTarS3(tar));
+
+        // Act
+        await op.RunAsync(TestContext.Current.CancellationToken);
+
+        // Assert
+        var snap = op.Snapshot!;
+        snap.State.Should().Be("failed");
+        snap.Phase.Should().Be("verifying");
+        snap.Error.Should().Contain("manifest checksum mismatch");
+    }
+
+    // AAA (#12): корректный Manifest-Checksum — сверка проходит (нет ложного
+    // permanent-отказа на штатном манифесте PG).
+    [Fact]
+    public async Task ManifestChecksumValid_Succeeded()
+    {
+        // Arrange — манифест с правильной контрольной суммой.
+        var tar = BuildTar(
+            [Version, Control, Label], [Version, Control, Label],
+            checksum: ManifestChecksum.Valid);
+        var op = Create(new FakeTarS3(tar));
+
+        // Act
+        await op.RunAsync(TestContext.Current.CancellationToken);
+
+        // Assert
+        op.Snapshot!.State.Should().Be("succeeded");
+    }
+
+    // AAA (#12): WAL-Ranges объявляет сегмент, которого нет в tar →
+    // permanent verifying (перечень набора неполон). Сегмент 1 в tar есть.
+    [Fact]
+    public async Task WalRangesMissingSegment_FailedPermanent()
+    {
+        // Arrange — диапазон 0/1000000..0/2000000 (сегменты 1 и 2), в tar — 1
+        // (WAL-сегменты манифест не перечисляет — контракт PG).
+        var tar = BuildTar(
+            [Version, Control, Label, Segment], [Version, Control, Label],
+            walRanges: [WalRange(1, "0/1000000", "0/2000000")]);
+        var op = Create(new FakeTarS3(tar));
+
+        // Act
+        await op.RunAsync(TestContext.Current.CancellationToken);
+
+        // Assert
+        var snap = op.Snapshot!;
+        snap.State.Should().Be("failed");
+        snap.Phase.Should().Be("verifying");
+        snap.Error.Should().Contain("000000010000000000000002");
+        snap.Error.Should().Contain("WAL-Ranges");
+    }
+
+    // AAA (#12): WAL-Ranges покрыт tar полностью — сверка проходит.
+    [Fact]
+    public async Task WalRangesCovered_Succeeded()
+    {
+        // Arrange — диапазон 0/1000000..0/1000028 (оба LSN в сегменте 1).
+        var tar = BuildTar(
+            [Version, Control, Label, Segment], [Version, Control, Label],
+            walRanges: [WalRange(1, "0/1000000", "0/1000028")]);
+        var op = Create(new FakeTarS3(tar));
+
+        // Act
+        await op.RunAsync(TestContext.Current.CancellationToken);
+
+        // Assert
+        op.Snapshot!.State.Should().Be("succeeded");
     }
 
     // AAA: сквозной sha256 объекта не сошёлся с etcd-полем → failed.
@@ -207,12 +348,32 @@ public class VerifyOperationTests
         return new VerifyOperation(request ?? Request(), registry, _ => s3);
     }
 
+    // WAL-Ranges-элемент манифеста PG (snake/PG-имена полей: Start-LSN/End-LSN).
+    private static Dictionary<string, object?> WalRange(uint timeline, string start, string end)
+        => new()
+        {
+            ["Timeline"] = timeline,
+            ["Start-LSN"] = start,
+            ["End-LSN"] = end,
+        };
+
+    private enum ManifestChecksum
+    {
+        None,
+        Valid,
+        Corrupt,
+    }
+
     // Tar-объект: записи + backup_manifest ПОСЛЕДНЕЙ (verify читает хвост);
-    // манифест перечисляет manifestFiles (по умолчанию — все, кроме WAL).
+    // манифест перечисляет manifestFiles (по умолчанию — все, кроме WAL),
+    // опционально несёт WAL-Ranges и Manifest-Checksum (валидную/битую).
     private static byte[] BuildTar(
         IReadOnlyList<(string Name, byte[] Data)> entries,
         IReadOnlyList<(string Name, byte[] Data)>? manifestFiles = null,
-        bool includeManifest = true)
+        bool includeManifest = true,
+        IReadOnlyList<object>? walRanges = null,
+        ManifestChecksum checksum = ManifestChecksum.None,
+        string? rawManifest = null)
     {
         var buffer = new MemoryStream();
         using var writer = new TarStreamWriter(buffer);
@@ -225,21 +386,8 @@ public class VerifyOperationTests
 
         if (includeManifest)
         {
-            var files = (manifestFiles ?? entries)
-                .Select(f => new Dictionary<string, object?>
-                {
-                    ["Path"] = f.Name,
-                    ["Size"] = f.Data.Length,
-                    ["Checksum-Algorithm"] = "SHA256",
-                    ["Checksum"] = Convert.ToHexString(SHA256.HashData(f.Data)),
-                })
-                .ToList();
-            var json = JsonSerializer.Serialize(new Dictionary<string, object?>
-            {
-                ["PostgreSQL-Backup-Manifest-Version"] = 2,
-                ["Files"] = files,
-            });
-            var manifest = Encoding.ASCII.GetBytes(json);
+            var json = rawManifest ?? BuildManifestJson(manifestFiles ?? entries, walRanges, checksum);
+            var manifest = Encoding.UTF8.GetBytes(json);
             writer.WriteEntryAsync(
                 new TarEntry("backup_manifest", TarTypeFlags.File, manifest.Length, 0x1A0, ""),
                 manifest, default).GetAwaiter().GetResult();
@@ -249,13 +397,48 @@ public class VerifyOperationTests
         return buffer.ToArray();
     }
 
+    private static string BuildManifestJson(
+        IReadOnlyList<(string Name, byte[] Data)> manifestFiles,
+        IReadOnlyList<object>? walRanges, ManifestChecksum checksum)
+    {
+        var files = manifestFiles
+            .Select(f => new Dictionary<string, object?>
+            {
+                ["Path"] = f.Name,
+                ["Size"] = f.Data.Length,
+                ["Checksum-Algorithm"] = "SHA256",
+                ["Checksum"] = Convert.ToHexString(SHA256.HashData(f.Data)),
+            })
+            .ToList();
+        var root = new Dictionary<string, object?>
+        {
+            ["PostgreSQL-Backup-Manifest-Version"] = 2,
+            ["Files"] = files,
+            ["WAL-Ranges"] = walRanges ?? [],
+        };
+        if (checksum != ManifestChecksum.None)
+            root["Manifest-Checksum"] = new string('0', 64);
+        var json = JsonSerializer.Serialize(root);
+        if (checksum == ManifestChecksum.None)
+            return json;
+        // PG: sha256 содержимого с обнулённым значением поля; валидная —
+        // подстановка реального хэша, битая — заведомо чужой.
+        var hash = checksum == ManifestChecksum.Valid
+            ? Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(json))).ToLowerInvariant()
+            : new string('a', 64);
+        return json.Replace(new string('0', 64), hash, StringComparison.Ordinal);
+    }
+
     /// <summary>Фейк S3-цели verify: tar-объект, HEAD (существование/размер),
-    /// Range-срезы и стрим; программируемые отказы.</summary>
+    /// Range-срезы и стрим; программируемые отказы (Range/чтение стрима).</summary>
     private sealed class FakeTarS3(byte[] tar) : IBackupS3, IStreamObjectS3
     {
         public bool ObjectExists { get; init; } = true;
 
         public bool FailRange { get; init; }
+
+        // Обрыв транспорта при чтении тела (фаза verifying) — IOException.
+        public bool FailStreamRead { get; init; }
 
         public List<(long Start, long End)> Ranges { get; } = [];
 
@@ -277,7 +460,7 @@ public class VerifyOperationTests
         public Task<Result<(Stream Body, long Size)>> GetObjectStreamAsync(
             string cluster, string shard, string key, CancellationToken ct)
             => Task.FromResult(Result<(Stream Body, long Size)>.Success(
-                ((Stream)new MemoryStream(tar), (long)tar.Length)));
+                (FailStreamRead ? new FailingStream() : new MemoryStream(tar), (long)tar.Length)));
 
         // IBackupS3 — verify не использует.
         public Task<Result<bool>> BucketExistsAsync(CancellationToken ct) => throw new NotSupportedException();
@@ -286,12 +469,33 @@ public class VerifyOperationTests
         public Task<Result> DeleteKeysAsync(IReadOnlyList<string> keys, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<Result> PutObjectAsync(string key, byte[] data, string? sha256, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<Result<IReadOnlyList<WalObject>>> ListAsync(string cluster, string shard, string prefix, int? maxKeysPerTest = null, CancellationToken ct = default) => throw new NotSupportedException();
-        public Task<Result<string>> GetObjectAsync(string cluster, string shard, string key, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<Result> PutObjectMd5Async(string key, byte[] data, string md5Hex, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<Result<(byte[] Data, string? ETag)>> GetObjectBytesAsync(string cluster, string shard, string key, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<Result<IReadOnlyList<string>>> ListFullsAsync(string cluster, string shard, int? maxKeysPerTest = null, CancellationToken ct = default) => throw new NotSupportedException();
-        public Task<Result<string>> DownloadTextAsync(string cluster, string shard, string objectKey, CancellationToken ct = default) => throw new NotSupportedException();
-        public Task<Result> PutFileAsync(string key, string filePath, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<Result> GetObjectToFileAsync(string cluster, string shard, string key, string destFilePath, CancellationToken ct = default) => throw new NotSupportedException();
+    }
+
+    /// <summary>Поток, рвущийся транспортом на первом чтении (обрыв S3).</summary>
+    private sealed class FailingStream : Stream
+    {
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+
+        public override int Read(byte[] buffer, int offset, int count)
+            => throw new IOException("connection reset by peer");
+        public override ValueTask<int> ReadAsync(
+            Memory<byte> buffer, CancellationToken cancellationToken = default)
+            => throw new IOException("connection reset by peer");
+        public override void Flush() { }
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
 }
