@@ -89,6 +89,7 @@
         <Project Path="tests/ValkeyWorker.E2eTests/ValkeyWorker.E2eTests.csproj" />
         <Project Path="tests/S3Worker.UnitTests/S3Worker.UnitTests.csproj" />
         <Project Path="tests/S3Worker.IntegrationTests/S3Worker.IntegrationTests.csproj" />
+        <Project Path="tests/S3Worker.E2eTests/S3Worker.E2eTests.csproj" />
         <Project Path="tests/EtcdWorker.UnitTests/EtcdWorker.UnitTests.csproj" />
         <Project Path="tests/EtcdWorker.IntegrationTests/EtcdWorker.IntegrationTests.csproj" />
     </Folder>
