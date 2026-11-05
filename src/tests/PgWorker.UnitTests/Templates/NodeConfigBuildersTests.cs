@@ -68,7 +68,7 @@ public class NodeConfigBuildersTests
         // Act: генерируем env контейнера ноды.
         var env = SpiloEnvBuilder.Build(Topology, Etcd, syncStrict: false, "shard1a", CaPem);
 
-        // Assert: идентичность приёмника WAL (arch/19 §3/§14 §2.1) — СТРОГО
+        // Assert: идентичность приёмника WAL (arch/backups/02-wal-archive.md §1/§14 §2.1) — СТРОГО
         // всегда, независимо от Backups:Enabled (гейтится etcd-стоп-ключами):
         // координаты из topology/nodeName.
         env["PGW_BACKUP_CLUSTER"].Should().Be(Topology.Cluster);

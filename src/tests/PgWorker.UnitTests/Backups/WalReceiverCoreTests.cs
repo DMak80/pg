@@ -8,7 +8,7 @@ using Xunit;
 
 namespace PgWorker.UnitTests.Backups;
 
-// Ядро приёмника как управляемая сессия (arch/19 §3, spec §3.1 п.6):
+// Ядро приёмника как управляемая сессия (arch/backups/02-wal-archive.md §1, spec §3.1 п.6):
 // инвариант подтверждения — SetConfirmed ТОЛЬКО после успешного S3-put
 // (feedback-инвариант AC1), backpressure при отказе S3 (AC6-ядро), рестарт от
 // хвоста S3, TLI/.history-fallback ФС ноды, исходы сессии (WaitingSlot /
@@ -99,12 +99,12 @@ public class WalReceiverCoreTests
         public readonly HashSet<string> FailKeys = [];
 
         // Устойчивый отказ list по префиксу (полный ключ-префикс) и журнал
-        // batch-delete поглощения .partial (arch/19 §3).
+        // batch-delete поглощения .partial (arch/backups/02-wal-archive.md §1).
         public readonly HashSet<string> FailListPrefixes = [];
         public readonly List<string> DeletedKeys = [];
         public int ListCalls;
 
-        // Гвард чужой цепочки (arch/19 §3): ключи-конфликты — put НЕ пишется,
+        // Гвард чужой цепочки (arch/backups/02-wal-archive.md §1): ключи-конфликты — put НЕ пишется,
         // наружу маркер WalArchiveConflict (permanent, не transient).
         public readonly HashSet<string> ConflictKeys = [];
 
@@ -418,7 +418,7 @@ public class WalReceiverCoreTests
             $"{EndLsn(0)}", $"{EndLsn(1)}", $"{EndLsn(2)}");
     }
 
-    // AAA: гвард чужой цепочки (arch/19 §3): сегмент с тем же именем уже лежит
+    // AAA: гвард чужой цепочки (arch/backups/02-wal-archive.md §1): сегмент с тем же именем уже лежит
     // с другим содержимым — сессия завершается failed_permanent с маркером, слот
     // НЕ подтверждён (put не успешен), ретраев нет (permanent, не transient).
     [Fact]

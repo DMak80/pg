@@ -17,7 +17,7 @@ public sealed partial class NpgsqlMoveSqlExecutor : IMoveSqlExecutor
 
     private static readonly TimeSpan FirstRetryDelay = TimeSpan.FromSeconds(1);
 
-    // Поллинг-инвариант (arch/14 §6): одиночная SQL-операция не молчит дольше
+    // Поллинг-инвариант (arch/pgworker/08-operability.md §3): одиночная SQL-операция не молчит дольше
     // окна проверки watchdog — таймауты подключения и команды = половина окна
     // (7 c при дефолтах 15 c); зависшая операция → исключение → transient-фейл,
     // а не молчание до дефолтных Npgsql 15/30 c.
@@ -116,7 +116,7 @@ public sealed partial class NpgsqlMoveSqlExecutor : IMoveSqlExecutor
             // Command-бюджет обязан ПОКРЫВАТЬ lock_timeout: LOCK-барьер сам
             // ждёт lock_timeout (ретраи — задача процесса, не SQL-слоя); +2 —
             // запас тела батча (SET LOCAL + REVOKE×3); нижняя граница 7 —
-            // поллинг-инвариант arch/14 §6 (дефолтный FreezeLockTimeoutSec = 5
+            // поллинг-инвариант arch/pgworker/08-operability.md §3 (дефолтный FreezeLockTimeoutSec = 5
             // → ровно 7 с, симметрия с остальными методами).
             var bodyTimeoutSec = Math.Max(SqlTimeoutSec, lockTimeoutSec + 2);
             await using (var setup = Command($"SET LOCAL lock_timeout = '{lockTimeoutSec}s'", conn, bodyTimeoutSec))

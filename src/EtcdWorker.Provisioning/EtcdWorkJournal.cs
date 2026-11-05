@@ -4,7 +4,7 @@ using Shared.Etcd.Client;
 
 namespace EtcdWorker.Provisioning;
 
-/// <summary>Журнал фаз состава (arch/25 §5): ключ /etcdworker/work — БЕЗ
+/// <summary>Журнал фаз состава (arch/etcdworker/00-etcd-contract.md): ключ /etcdworker/work — БЕЗ
 /// суффикса (домен один); формат {"op","phase","updated_unix","instance",
 /// "last_error"?} — null-поля опускаются. Failover-put по endpoints.
 /// Событие PhaseWritten — подписка метрик WorkerMetricsInstrumentation

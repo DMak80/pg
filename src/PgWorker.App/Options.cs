@@ -31,13 +31,13 @@ public sealed class PgWorkerOptions
     /// P17: doorman tls_mode=require → клиентский sslmode=require).</summary>
     public AppParamsOptions AppParams { get; set; } = new();
 
-    /// <summary>HTTP API воркера (arch/14 §1.1): advertise-URL + стендовый сид.</summary>
+    /// <summary>HTTP API воркера (arch/pgworker/07-api.md §1): advertise-URL + стендовый сид.</summary>
     public ApiOptions Api { get; set; } = new();
 
-    /// <summary>Экспозиция метрик (arch/18 §3): /metrics на том же порту, что /healthz.</summary>
+    /// <summary>Экспозиция метрик (arch/metrics/03-exposure.md): /metrics на том же порту, что /healthz.</summary>
     public Shared.Metrics.MetricsOptions Metrics { get; set; } = new();
 
-    /// <summary>Подсистема бэкапов шардов (arch/19): каркас конфигурации;
+    /// <summary>Подсистема бэкапов шардов (arch/backups/README.md): каркас конфигурации;
     /// процессная логика. Default Enabled=false.</summary>
     public BackupsOptions Backups { get; set; } = new();
 
@@ -50,11 +50,11 @@ public sealed class PgWorkerOptions
 }
 
 /// <summary>
-/// Входы расчёта PGTune (spec.md §4.2, алгоритм — docs/pgtune-calculation-spec.md):
+/// Входы расчёта PGTune (spec.md §4.2, алгоритм — arch/pgworker/09-pgtune.md):
 /// параметры postgresql.conf нод рассчитываются ядром PgTune.Calculate от
 /// характеристик ноды и этих констант, вместо сегодняшнего хардкода
 /// SPILO_CONFIGURATION. Память/CPU — НЕ конфигурация: их источник — etcd-заявки
-/// /service/&lt;scope&gt;/request_{cpu,mem} на ноду (arch/14 §2.1 п.4, панель
+/// /service/&lt;scope&gt;/request_{cpu,mem} на ноду (arch/pgworker/01-placement.md §2, панель
 /// пишет при создании шарда); всё остальное — константы этого узла.
 /// </summary>
 public sealed class PgtuneOptions
@@ -113,7 +113,7 @@ public sealed class PgtuneOptions
         && domain.Contains(value, StringComparer.OrdinalIgnoreCase);
 }
 
-/// <summary>HTTP API воркера (arch/14 §1.1): advertise-URL в /pgworker/api/&lt;id&gt;
+/// <summary>HTTP API воркера (arch/pgworker/07-api.md §1): advertise-URL в /pgworker/api/&lt;id&gt;
 /// + стендовый сид-эндпоинт.</summary>
 public sealed class ApiOptions
 {
@@ -123,12 +123,12 @@ public sealed class ApiOptions
     /// <summary>Демо-сид-эндпоинт POST /api/seed/demo (стенд; default false).</summary>
     public bool EnableSeedEndpoint { get; set; }
 
-    /// <summary>mTLS-грань API (arch/14 §1.1): серверный серт + ClientCA;
+    /// <summary>mTLS-грань API (arch/pgworker/07-api.md §1): серверный серт + ClientCA;
     /// AllowInsecureHttp — ТОЛЬКО WAF-тесты (warning при старте).</summary>
     public TlsOptions Tls { get; set; } = new();
 }
 
-/// <summary>HTTPS HTTP API воркера (arch/14 §1.1; mTLS — только /api):
+/// <summary>HTTPS HTTP API воркера (arch/pgworker/07-api.md §1; mTLS — только /api):
 /// PEM/PATH-дуализм env-секретов
 /// PGW_API_TLS_{CERT,KEY,CLIENT_CA}[_PATH] (env → конфиг — ApiTlsEndpoints).</summary>
 public sealed class TlsOptions
@@ -183,7 +183,7 @@ public sealed class DockerOptions
 
     /// <summary>
     /// Advertised-имя docker-хоста в записях etcd (portalloc/dsn): адреса нод
-    /// обязаны быть резолвимы КЛИЕНТАМИ записей — панелью (arch/16 advertised-
+    /// обязаны быть резолвимы КЛИЕНТАМИ записей — панелью (arch/kafkaworker/README.md advertised-
     /// правило, прецедент KafkaWorker:AdvertisedClientHost). Внутреннее имя
     /// docker-хоста (напр. "local") резолвится только контейнерами воркеров
     /// (extra_hosts) — пробы панели уходили в DNS-таймаут. Single-host/tunnel-
@@ -194,8 +194,8 @@ public sealed class DockerOptions
     public string? AdvertisedHost { get; set; }
 
     /// <summary>
-    /// Имя docker-сети контура мониторинга поставки (arch/14 §2.1/§2.4,
-    /// arch/18 §5.4): задано → движок Ensure-attach'ит канонические ноды к ней
+    /// Имя docker-сети контура мониторинга поставки (arch/pgworker/01-placement.md §1/§2.4,
+    /// arch/metrics/05-storage.md §4): задано → движок Ensure-attach'ит канонические ноды к ней
     /// (поверх pgw-net-<C>) и точки записи portalloc дописывают alias/net,
     /// sd-generator строит таргеты <alias>:8008. Пусто — поведение идентично
     /// базе (ни attach, ни полей). Сеть принадлежит поставке/сценарию (движок
@@ -205,7 +205,7 @@ public sealed class DockerOptions
     public string ScrapeNetwork { get; set; } = "";
 
     /// <summary>
-    /// Внешняя сеть контура поставки (arch/14 §2.1/§2.4): задана → ноды кластера,
+    /// Внешняя сеть контура поставки (arch/pgworker/01-placement.md §1/§2.4): задана → ноды кластера,
     /// wal-агенты и ephemeral-джобы бэкапов создаются в ней одной; pgw-net-&lt;C&gt;
     /// не создаётся, extra_hosts спек джобов не применяются (адресация по именам
     /// сети). Пусто (прод/умолчание) — per-cluster pgw-net-&lt;C&gt; + default bridge
@@ -215,14 +215,14 @@ public sealed class DockerOptions
     /// </summary>
     public string ContourNetwork { get; set; } = "";
 
-    /// <summary>TLS к Engine API (arch/14 §2.2.1); null — без TLS (unix/dev).</summary>
+    /// <summary>TLS к Engine API (arch/pgworker/01-placement.md §4); null — без TLS (unix/dev).</summary>
     public DockerTlsOptions? Tls { get; set; }
 
-    /// <summary>SSH-туннели ssh://-хостов (arch/14 §2.2.1); null — дефолты.</summary>
+    /// <summary>SSH-туннели ssh://-хостов (arch/pgworker/01-placement.md §4); null — дефолты.</summary>
     public SshTunnelOptions? Ssh { get; set; }
 
     /// <summary>
-    /// REST-TLS нод (arch/14 §8): per-install API-CA и его ключ для
+    /// REST-TLS нод (arch/pgworker/08-operability.md §5): per-install API-CA и его ключ для
     /// выпуска серверных сертов REST-эндпоинтов нод. Оба обязательны —
     /// fail-fast старта (HTTP-режим провижининга не существует); WAF-фикстуры
     /// передают тестовый CA.
@@ -230,7 +230,7 @@ public sealed class DockerOptions
     public RestTlsOptions RestTls { get; set; } = new();
 }
 
-/// <summary>REST-TLS нод (arch/14 §4 гр.3/§8): per-install CA (CaPem|CaPath) +
+/// <summary>REST-TLS нод (arch/pgworker/04-security.md гр.3/§8): per-install CA (CaPem|CaPath) +
 /// ключ выпуска сертов (CaKeyPem|CaKeyPath); env-имена PGW_REST_TLS_*.</summary>
 public sealed class RestTlsOptions
 {
@@ -275,7 +275,7 @@ public sealed class DockerHostOptions
 }
 
 /// <summary>Диапазон портов нод [From, To): последовательные слоты per-node
-/// (pg / patroni / doorman = base / base+1 / base+2 — arch/14 §2.4 п.2:
+/// (pg / patroni / doorman = base / base+1 / base+2 — arch/pgworker/01-placement.md §5 п.2:
 /// схема смещений +3000/+1500 упразднена); параметризуется средой — прод
 /// per-install, E2E — per-contour окно.</summary>
 public sealed class PortRangeOptions
@@ -302,8 +302,8 @@ public sealed class LoopsOptions
 
     public int ErrorDelayMs { get; set; } = 2000;
 
-    /// <summary>Watchdog зависших циклов (arch/14 §6/§8 — у Kafka/Valkey свои
-    /// arch/16 §6/§8 / arch/21 §6/§8): Enabled=false — компонент не регистрируется;
+    /// <summary>Watchdog зависших циклов (arch/pgworker/08-operability.md §3/§8 — у Kafka/Valkey свои
+    /// arch/kafkaworker/08-operability.md §4/§8 / arch/valkeyworker/06-operability.md §3/§8): Enabled=false — компонент не регистрируется;
     /// порог сноса = Multiplier × CheckIntervalSec (30 c при дефолтах, единый для
     /// всех циклов; порог healthz loops-alive в формуле не участвует).</summary>
     public Shared.Core.Hosting.WatchdogOptions Watchdog { get; set; } = new();
@@ -325,7 +325,7 @@ public sealed class ThresholdsOptions
     /// <summary>Бюджет недоступности шарда в ожиданиях переезда (spec §9).</summary>
     public int ConnFailBudgetSec { get; set; } = 120;
 
-    /// <summary>Бэкофф ретраев provision (arch/14 §5 A): база задержки (n-й фейл подряд → Base·2^(n−1)).</summary>
+    /// <summary>Бэкофф ретраев provision (arch/pgworker/processes/a-provisioning.md A): база задержки (n-й фейл подряд → Base·2^(n−1)).</summary>
     public int ProvisionRetryBaseSec { get; set; } = 5;
 
     /// <summary>Кап задержки бэкоффа provision (spec §3.5 E4).</summary>
@@ -381,7 +381,7 @@ public sealed class ParallelismOptions
     public int MaxClusters { get; set; } = 4;
 }
 
-/// <summary>Локальные слепки P12 (arch/14 §8): каталог тома и ретеншн файлов; выгрузка/обслуживание — зона EtcdWorker (arch/25 §4).</summary>
+/// <summary>Локальные слепки P12 (arch/pgworker/08-operability.md §5): каталог тома и ретеншн файлов; выгрузка/обслуживание — зона EtcdWorker (arch/etcdworker/04-snapshots.md).</summary>
 public sealed class SnapshotOptions
 {
     public string Dir { get; set; } = "/snapshots";
@@ -397,7 +397,7 @@ public sealed class AppParamsOptions
     public string Default { get; set; } = "sslmode=require";
 }
 
-/// <summary>Подсистема бэкапов шардов (arch/19): каркас без процессной
+/// <summary>Подсистема бэкапов шардов (arch/backups/README.md): каркас без процессной
 /// логики (джобы/агенты); Enabled=false — поведение воркера не
 /// меняется.</summary>
 public sealed class BackupsOptions
@@ -415,23 +415,23 @@ public sealed class BackupsOptions
 
     public BackupsRetryOptions Retry { get; set; } = new();
 
-    /// <summary>WAL-поток (arch/19 §3/§9): расписание контроля, пороги.</summary>
+    /// <summary>WAL-поток (arch/backups/02-wal-archive.md §1/§9): расписание контроля, пороги.</summary>
     public BackupsWalOptions Wal { get; set; } = new();
 
-    /// <summary>Ретенционный проход (arch/19 §9): период и FAILED-глубина.</summary>
+    /// <summary>Ретенционный проход (arch/backups/09-operability.md §1): период и FAILED-глубина.</summary>
     public BackupsRetentionPassOptions Retention { get; set; } = new();
 
-    /// <summary>Квота bucket установки (arch/19 §9).</summary>
+    /// <summary>Квота bucket установки (arch/backups/09-operability.md §1).</summary>
     public BackupsQuotaOptions Quota { get; set; } = new();
 
-    /// <summary>Восстановление шарда (arch/19 §3.5/§9): бюджеты.</summary>
+    /// <summary>Восстановление шарда (arch/backups/03-restore.md/§9): бюджеты.</summary>
     public BackupsRestoreOptions Restore { get; set; } = new();
 
-    /// <summary>Супервизор бэкапов (arch/19 §4/§9): период сверок S3↔etcd
+    /// <summary>Супервизор бэкапов (arch/backups/05-etcd-contract.md/§9): период сверок S3↔etcd
     /// per-cluster и глобального лидер-прохода; TTL сирот S3.</summary>
     public BackupsSupervisorOptions Supervisor { get; set; } = new();
 
-    /// <summary>Дрилл восстановимости (reliability, arch/19 §9): дефолт
+    /// <summary>Дрилл восстановимости (reliability, arch/backups/09-operability.md §1): дефолт
     /// периода дрилов шардов кластеров без policy-поля drill.interval_days
     /// (0 — глобальное выключение новых запусков) и бюджет активного дрилла.</summary>
     public BackupsDrillOptions Drill { get; set; } = new();
@@ -472,7 +472,7 @@ public sealed class BackupsOptions
         DrillIntervalDays: Drill.IntervalDays,
         DrillTimeoutSec: Drill.TimeoutSec);
 
-    /// <summary>Fail-fast старта (образец TLS arch/14 §2.2.1): Enabled=true
+    /// <summary>Fail-fast старта (образец TLS arch/pgworker/01-placement.md §4): Enabled=true
     /// обязан иметь непустой Bucket (env PGW_BACKUP_S3_BUCKET); env-профили
     /// кредов пулов упразднены — креды читаются per-cluster из etcd
     /// (/s3/clusters/&lt;C&gt;/secrets), проверок их наличия на старте нет;
@@ -484,7 +484,7 @@ public sealed class BackupsOptions
            && Quota.CritPercent <= 100
            && Retention.IntervalSec >= 60
            && Retention.KeepFailed >= 5
-           && Wal.PartialIntervalSec >= 1          // период .partial-доотправки приёмника (arch/19 §9)
+           && Wal.PartialIntervalSec >= 1          // период .partial-доотправки приёмника (arch/backups/09-operability.md §1)
            // период компакции дельт приёмника (t15, arch/backups/09 §1): чаще
            // минуты — разрушает инкрементальность
            && Wal.PartialCompactIntervalSec >= 60
@@ -497,7 +497,7 @@ public sealed class BackupsOptions
            && Drill.TimeoutSec > 0;               // бюджет активного дрилла обязателен
 }
 
-/// <summary>Дрилл восстановимости (reliability, arch/19 §9): IntervalDays —
+/// <summary>Дрилл восстановимости (reliability, arch/backups/09-operability.md §1): IntervalDays —
 /// дефолт периода дрилов (суток) для кластеров без policy-поля drill.interval_days,
 /// 0 — глобальное выключение новых запусков при доводке активных; TimeoutSec —
 /// бюджет активного дрилла от started_unix → FAILED drill-timeout.</summary>
@@ -508,7 +508,7 @@ public sealed class BackupsDrillOptions
     public int TimeoutSec { get; set; } = 21600;
 }
 
-/// <summary>Параметры ретенционного прохода (arch/19 §9): период и
+/// <summary>Параметры ретенционного прохода (arch/backups/09-operability.md §1): период и
 /// FAILED-глубина. Имя НЕ BackupsRetentionOptions — то занято GFS-гранулами
 /// политики (BackupsPolicyOptions.Retention).</summary>
 public sealed class BackupsRetentionPassOptions
@@ -518,7 +518,7 @@ public sealed class BackupsRetentionPassOptions
     public int KeepFailed { get; set; } = 20;
 }
 
-/// <summary>Квота bucket установки (arch/19 §9): Bytes=0 — квота не задана.</summary>
+/// <summary>Квота bucket установки (arch/backups/09-operability.md §1): Bytes=0 — квота не задана.</summary>
 public sealed class BackupsQuotaOptions
 {
     public long Bytes { get; set; }
@@ -528,18 +528,18 @@ public sealed class BackupsQuotaOptions
     public int CritPercent { get; set; } = 90;
 }
 
-/// <summary>Restore-подсистема (arch/19 §9): бюджет локального наката
+/// <summary>Restore-подсистема (arch/backups/09-operability.md §1): бюджет локального наката
 /// WAL restore-джобом (фаза recovering); env-переменная не нужна — не секрет.</summary>
 public sealed class BackupsRestoreOptions
 {
     public int RecoveryTimeoutSec { get; set; } = 1800;
 }
 
-/// <summary>Супервизор бэкапов (arch/19 §4/§9): период сверок S3↔etcd
+/// <summary>Супервизор бэкапов (arch/backups/05-etcd-contract.md/§9): период сверок S3↔etcd
 /// per-cluster и глобального лидер-прохода (реестр сирот
 /// /pgworker/backups/orphans); OrphanTtlSec=0 — авто-удаление выключено,
 /// только алерт панели; GarbageMinAgeSec — дефолт возрастного гейта мусора
-/// (arch/19 §4 «Гейты мусора»; policy-ключ garbage_min_age_sec кластера
+/// (arch/backups/05-etcd-contract.md «Гейты мусора»; policy-ключ garbage_min_age_sec кластера
 /// перекрывает), 0 — гейт снят.</summary>
 public sealed class BackupsSupervisorOptions
 {
@@ -550,7 +550,7 @@ public sealed class BackupsSupervisorOptions
     public long GarbageMinAgeSec { get; set; } = 600;
 }
 
-/// <summary>Бюджеты операций бэкапов (arch/19 §6/§9): возрастные гварды
+/// <summary>Бюджеты операций бэкапов (arch/backups/09-operability.md/§9): возрастные гварды
 /// зависших — полный/verify/restore (исполняют приёмники WalReceiver нод,
 /// воркер супервизит через API приёмника).</summary>
 public sealed class BackupsJobOptions
@@ -571,7 +571,7 @@ public sealed class BackupsJobOptions
     public int RestoreTimeoutSec { get; set; } = 86400;
 }
 
-/// <summary>Бэкофф переснятия FAILED-полного (arch/19 §2):
+/// <summary>Бэкофф переснятия FAILED-полного (arch/backups/01-full-backup.md):
 /// задержка n-й попытки после последнего COMPLETED =
 /// min(BaseSec·2^(n−1), MaxSec), без лимита попыток.</summary>
 public sealed class BackupsRetryOptions
@@ -581,7 +581,7 @@ public sealed class BackupsRetryOptions
     public int MaxSec { get; set; } = 3600;
 }
 
-/// <summary>S3-хранилище бэкапов (arch/19 §5/§7): bucket per-install
+/// <summary>S3-хранилище бэкапов (arch/backups/06-s3-layout.md/§7): bucket per-install
 /// (единый на всех нодах пулов) + CA https; endpoint/креды пула — per-cluster
 /// в etcd (/s3/clusters/&lt;C&gt;/secrets, не конфиг).</summary>
 public sealed class BackupsS3Options
@@ -589,13 +589,13 @@ public sealed class BackupsS3Options
     public string Bucket { get; set; } = "";
 
     /// <summary>Путь CA-bundle (ca.pem) для доверия https S3-endpoint (
-    /// arch/19 §7; env PGW_BACKUP_S3_CA_BUNDLE_PATH → compose-биндинг).
+    /// arch/backups/08-secrets.md; env PGW_BACKUP_S3_CA_BUNDLE_PATH → compose-биндинг).
     /// Пусто — http-endpoint, SDK-доверие системное.</summary>
     public string? CaBundlePath { get; set; }
 }
 
 /// <summary>Дефолт per-cluster политики: ключ
-/// /pgworker/backups/&lt;C&gt;/policy отсутствует → эти значения (arch/19 §4).</summary>
+/// /pgworker/backups/&lt;C&gt;/policy отсутствует → эти значения (arch/backups/05-etcd-contract.md).</summary>
 public sealed class BackupsPolicyOptions
 {
     public BackupsRetentionOptions Retention { get; set; } = new();
@@ -604,7 +604,7 @@ public sealed class BackupsPolicyOptions
 
     public bool VerifyOnCreate { get; set; } = true;
 
-    /// <summary>Период перепроверки оставшихся полных, c (arch/19 §4):
+    /// <summary>Период перепроверки оставшихся полных, c (arch/backups/05-etcd-contract.md):
     /// verify.interval_sec policy-ключа перекрывает; &lt;= 0 — периодика выключена.</summary>
     public long VerifyIntervalSec { get; set; } = 604800;
 }
@@ -620,20 +620,20 @@ public sealed class BackupsRetentionOptions
     public int Months { get; set; } = 1;
 }
 
-/// <summary>Staging полного (arch/19 §9): каталог в data-volume ноды
+/// <summary>Staging полного (arch/backups/09-operability.md §1): каталог в data-volume ноды
 /// (дефолт — канон); ENOSPC — реактивный FAILED приёмника; квоты нет.</summary>
 public sealed class BackupsStagingOptions
 {
     public string Dir { get; set; } = "/home/postgres/pgdata/backup-staging";
 }
 
-/// <summary>WAL-поток шарда (arch/19 §3/§9): период list/контроля цепочки,
+/// <summary>WAL-поток шарда (arch/backups/02-wal-archive.md §1/§9): период list/контроля цепочки,
 /// порог отставания в сегментах, порог тишины загрузок (контроль воркера;
 /// конфигурация приёмника — etcd/env ноды).</summary>
 public sealed class BackupsWalOptions
 {
     /// <summary>Период `.partial`-доотправки префикса живого сегмента
-    /// приёмником (arch/19 §3/§9); доставляется env ноды
+    /// приёмником (arch/backups/02-wal-archive.md §1/§9); доставляется env ноды
     /// PGW_WAL_PARTIAL_INTERVAL_SEC.</summary>
     public int PartialIntervalSec { get; set; } = 3;
 

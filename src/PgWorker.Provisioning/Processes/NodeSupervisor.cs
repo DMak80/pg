@@ -12,14 +12,14 @@ using PgWorker.Provisioning.Sql;
 
 namespace PgWorker.Provisioning.Processes;
 
-/// <summary>Исход попытки ускорения failover (arch/14 §5 C): Applied — маркер
+/// <summary>Исход попытки ускорения failover (arch/pgworker/processes/c-node-supervisor.md C): Applied — маркер
 /// поставлен и leader-ключ снят; NotLeader — нода не лидер scope; NoCandidate —
 /// лидер мёртв, живого кандидата нет (промоушен ждёт Patroni — elections).</summary>
 public enum FailoverAcceleration { Applied, NotLeader, NoCandidate }
 
 /// <summary>
 /// NodeSupervisor — штатный надзор инициализированных кластеров (задача 21;
-/// spec §6.4 C, arch/14 §5 C; эталон rebuild-node.sh): сверка декларации
+/// spec §6.4 C, arch/pgworker/processes/c-node-supervisor.md C; эталон rebuild-node.sh): сверка декларации
 /// (снесённый контейнер пересоздаётся), Patroni-пробы, rebuild мёртвой
 /// не-лидерской ноды при живом кворуме, детект полностью мёртвого шарда
 /// (DeadShards → BucketEvacuator задачи 22/23) и P11-сверка мастер-ключей.
@@ -72,7 +72,7 @@ public sealed class NodeSupervisor(
                 if (sb.Restores.Any(r => r.State
                         is RestoreStatus.Planned or RestoreStatus.Running or RestoreStatus.Rejoining))
                     restoringSnapshot.Add(restoreShard);
-        // Свежее чтение объединяется со снапшот-множеством (arch/19 §3.5
+        // Свежее чтение объединяется со снапшот-множеством (arch/backups/03-restore.md
         // «Гвард исключения»): снапшот тика отстаёт от записи заявки, и долгий
         // тик надзора со старым множеством исполнял мутации посреди
         // демонтажа/REJOINING. Для «не трогать»-гварда консервативен union:
@@ -96,7 +96,7 @@ public sealed class NodeSupervisor(
             return Fail(supervision.Error!);
         var track = new Dictionary<string, long>(supervision.Value.Unreachable);
         var haFacts = HaFactState.FromStored(supervision.Value.LastFailover, supervision.Value.LastRebuild);
-        // Ensure per-cluster кредов + эффективная REST-пара тика (arch/14
+        // Ensure per-cluster кредов + эффективная REST-пара тика (arch/pgworker/README.md
         // §5 I ETCD-FIRST): ensure идемпотентен (put-if-absent) — легаси-
         // кластер без rest_password получает ключ ДО любого EnsureNode-пути
         // тика; пара — ключ etcd (с R2-txn ключ несёт NEW; takeover-безопасно).
@@ -125,7 +125,7 @@ public sealed class NodeSupervisor(
         if (!declared.IsSuccess)
             return Fail(declared.Error!);
 
-        // 1.5) Миграция app_params (ленивый ensure, arch/14 §5 C): ноды шардов
+        // 1.5) Миграция app_params (ленивый ensure, arch/pgworker/processes/c-node-supervisor.md C): ноды шардов
         // с dsn без ключа (кластеры, созданные до app_params) — put-if-absent
         // дефолта; после первого обеспечения последующие тики — no-op (модель
         // снапшота уже несёт наличие ключа). Шард без dsn — домен AddShardProcess.
@@ -141,7 +141,7 @@ public sealed class NodeSupervisor(
                 return Fail(migrated.Error!);
         }
 
-        // 1.7) Шаг хендшейка и конвергенции доставки секретов (arch/14 §5 C,
+        // 1.7) Шаг хендшейка и конвергенции доставки секретов (arch/pgworker/processes/c-node-supervisor.md C,
         // spec §3.7.3): реакции по статусному ключу /pgworker/nodes/<C>/… —
         // not_initialized → доставка; initializing → ждать; ready с
         // расхождением applied_revision → применение; start_failed →
@@ -224,7 +224,7 @@ public sealed class NodeSupervisor(
                 deadShards.Add(evacuated);
         }
 
-        // Запись фактов/трека — финальный put тика (arch/14 §5 C): сбой —
+        // Запись фактов/трека — финальный put тика (arch/pgworker/processes/c-node-supervisor.md C): сбой —
         // warning-лог (наблюдаемость ≠ данные), тик не роняем.
         var supervisionPut = await journal.WriteSupervisionAsync(
             cluster, claims.InstanceId, track, null, ct, haFacts.ToRecord());
@@ -232,7 +232,7 @@ public sealed class NodeSupervisor(
             log.LogWarning("supervise {Cluster}: final work-key write failed: {Error}",
                 cluster, supervisionPut.Error!.Message);
 
-        // RTO-серии (arch/18 §2.7): только завершённые длительности; наблюдатель
+        // RTO-серии (arch/metrics/02-dictionary.md §7): только завершённые длительности; наблюдатель
         // пассивный (try/catch внутри марк-метода).
         if (haDurations is not null)
         {
@@ -253,7 +253,7 @@ public sealed class NodeSupervisor(
                 return Fail(keys.Error!);
         }
 
-        // 4) Конвергенция DCS-конфига (arch/14 §5 C): активный динамический
+        // 4) Конвергенция DCS-конфига (arch/pgworker/processes/c-node-supervisor.md C): активный динамический
         // конфиг кластера сверяется с каноном PatroniTimings + pg-параметры
         // merge(PGTune ∪ канон) от актуальных заявок, расхождение
         // патчится до канона — нода, подтянувшаяся к кластеру с отсутствующим/
@@ -267,7 +267,7 @@ public sealed class NodeSupervisor(
                 continue;
             if (restoring.Contains(shard.Name))
                 continue; //  §3.4: конфиг DCS восстановит свежеподнятая нода
-            progress?.Mark(); // отметка итерации converge (arch/14 §6)
+            progress?.Mark(); // отметка итерации converge (arch/pgworker/08-operability.md §3)
             var converged = await ConvergeDcsConfigAsync(cluster, shard, addresses.Value,
                 snap.Config.SyncStrict, track, haFacts, restPassword, restRotationWindowOpen, ct);
             if (!converged.IsSuccess)
@@ -292,7 +292,7 @@ public sealed class NodeSupervisor(
     private static Result<SuperviseOutcome> Fail(Exception error)
         => Result<SuperviseOutcome>.Failed(error);
 
-    // Живая сверка клэйма перед критической мутацией (arch/17 S5): IsMine на входе
+    // Живая сверка клэйма перед критической мутацией (arch/synchronization/02-predicates-and-mutations.md §S5): IsMine на входе
     // тика не защищает длинный тик от takeover. false — ключа нет/чужой/etcd
     // недоступен: мутация не начинается (P9), журнал несёт claim-lost/<фазу>.
     private async Task<bool> ClaimAliveAsync(string cluster, string phase, CancellationToken ct)
@@ -313,7 +313,7 @@ public sealed class NodeSupervisor(
         Dictionary<string, long> track, HaFactState haFacts, string restPassword,
         HashSet<string> acceleratedThisTick, CancellationToken ct)
     {
-        // Живая сверка клэйма перед фазой пересозданий (arch/17 S5).
+        // Живая сверка клэйма перед фазой пересозданий (arch/synchronization/02-predicates-and-mutations.md §S5).
         if (!await ClaimAliveAsync(cluster, "declared-nodes", ct))
             return Fail(new ApplicationException(
                 $"supervise {cluster}: claim lost before declared-nodes step"));
@@ -334,7 +334,7 @@ public sealed class NodeSupervisor(
             if (topology.Nodes.Count == 0)
                 continue; // нет закреплённых адресов (внешний кластер) — не наш объект
 
-            // Свежая сверка restore-гварда на шаге мутации (arch/19 §3.5):
+            // Свежая сверка restore-гварда на шаге мутации (arch/backups/03-restore.md):
             // шард с активной restore-заявкой — ни ускорения failover, ни
             // recreate (снапшот тика отстаёт от записи заявки); etcd недоступен
             // — null → действует снапшот-множество тика.
@@ -344,19 +344,19 @@ public sealed class NodeSupervisor(
 
             // Заявка ресурсов читается лениво: только если ноду правда recreate'им;
             // тюнинг — один расчёт на шард, сразу после загрузки заявки
-            // (пересчёт на каждый EnsureNode-путь, arch/14 §2.1/§5 C).
+            // (пересчёт на каждый EnsureNode-путь, arch/pgworker/01-placement.md §1/§5 C).
             NodeResources? resources = null;
             PgTuneResult? tuning = null;
             var resourcesLoaded = false;
 
             foreach (var node in shard.Nodes)
             {
-                progress?.Mark(); // отметка итерации сверки декларации (arch/14 §6)
+                progress?.Mark(); // отметка итерации сверки декларации (arch/pgworker/08-operability.md §3)
                 if (node.State is NodeState.Quarantined or NodeState.Removing)
                     continue; // карантин/удаление — не пересоздаём (E3/задача 22)
                 if (!topology.Nodes.TryGetValue(node.Name, out var declaredAddr))
                     continue;
-                // Границы надзора (spec §3.4, arch/14 §5 C/R9): усыновлённая нода
+                // Границы надзора (spec §3.4, arch/pgworker/processes/c-node-supervisor.md C/R9): усыновлённая нода
                 // (object) ВНЕ домена EnsureNode — self-healing off. Её контейнер
                 // не входит в docker-домен pgw-<C>- (ListNodeObjectsAsync отдаёт
                 // только канонические имена, object-контейнер там не виден), а
@@ -376,7 +376,7 @@ public sealed class NodeSupervisor(
                     resourcesLoaded = true;
                 }
 
-                // Failover-first (доступность данных первична, arch/14 §5 C):
+                // Failover-first (доступность данных первична, arch/pgworker/processes/c-node-supervisor.md C):
                 // отсутствует docker-объект ЛИДЕРА — свидетельство смерти
                 // процесса, не сетевой флап. Быстрый рестарт контейнера вернул
                 // бы того же лидера в пределах ttl — без переезда и с простоем
@@ -430,7 +430,7 @@ public sealed class NodeSupervisor(
         return Result.Success();
     }
 
-    // Конвергенция динамического DCS-конфига (arch/14 §5 C; — тайминги,
+    // Конвергенция динамического DCS-конфига (arch/pgworker/processes/c-node-supervisor.md C; — тайминги,
     //  — pg-параметры, — strict): GET /config первого канонического
     // Patroni-узла
     // шарда → сверка с каноном (PatroniTimings + synchronous_mode_strict из
@@ -468,7 +468,7 @@ public sealed class NodeSupervisor(
         if (!config.IsSuccess)
             return Result.Success(); // транзиент — сверка следующим тиком
 
-        // Желаемый набор: от ОБЯЗАТЕЛЬНЫХ заявок (arch/14 §2.1 п.4). Отсутствие
+        // Желаемый набор: от ОБЯЗАТЕЛЬНЫХ заявок (arch/pgworker/01-placement.md §2). Отсутствие
         // ИЛИ неполнота (любое поле null) — skip pg-части с warning, НЕ фейл
         // тика (в отличие от EnsureNode-путей, где размер ноды обязателен).
         var resources = await ReadShardResourcesAsync(cluster, shard.Name, ct);
@@ -488,7 +488,7 @@ public sealed class NodeSupervisor(
             desired = PgParametersCanon.Desired(tuning, pgtuneSettings.ExcludeParams);
         }
 
-        // Гвард окна REST-ротации (arch/14 §5 I): до txn-коммита воркер не
+        // Гвард окна REST-ротации (arch/pgworker/processes/i-secret-rotator.md I): до txn-коммита воркер не
         // инициирует PATCH /config кластера по REST — транзиент-skip тика,
         // конвергенция повторится после закрытия окна.
         if (restRotationWindowOpen)
@@ -502,7 +502,7 @@ public sealed class NodeSupervisor(
         if (divergence.Patch is null)
             return Result.Success(); // конвергентно — мутаций нет
 
-        // Живая сверка клэйма перед PATCH /config (arch/17 S5).
+        // Живая сверка клэйма перед PATCH /config (arch/synchronization/02-predicates-and-mutations.md §S5).
         if (!await ClaimAliveAsync(cluster, $"dcs-converge/{shard.Name}", ct))
             return Result.Success(); // транзиент-подобный отказ тика: конвергенция повторится
 
@@ -523,7 +523,7 @@ public sealed class NodeSupervisor(
         return Result.Success();
     }
 
-    // Ускорение failover при доказанно мёртвом лидере (arch/14 §5 C —
+    // Ускорение failover при доказанно мёртвом лидере (arch/pgworker/processes/c-node-supervisor.md C —
     // положительное свидетельство смерти процесса, флапа нет: docker-объект
     // ОТсутствует, ИЛИ контейнер есть, но не running — оба варианта означают,
     // что лидер не обслуживает, а его лидер-ключ держал бы lease до истечения
@@ -538,7 +538,7 @@ public sealed class NodeSupervisor(
         string cluster, ShardSpec shard, string missing,
         IReadOnlyDictionary<string, NodeAddress> addresses, CancellationToken ct)
     {
-        // Свежая сверка restore-гварда перед мутацией DCS (arch/19 §3.5):
+        // Свежая сверка restore-гварда перед мутацией DCS (arch/backups/03-restore.md):
         // маркер, положенный ускорением шарда в restore, переживает чистку
         // HA-scope демонтажём и для Patroni новой жизни — «accelerated
         // failover» на неинициализированного кандидата (лидерство
@@ -576,7 +576,7 @@ public sealed class NodeSupervisor(
             return Result<FailoverAcceleration>.Success(FailoverAcceleration.NoCandidate);
 
         // Живая сверка клэйма перед мутацией DCS (failover-ключ + снятие
-        // лидер-ключа — самые опасные гонки двух инстансов, arch/17 S5).
+        // лидер-ключа — самые опасные гонки двух инстансов, arch/synchronization/02-predicates-and-mutations.md §S5).
         if (!await ClaimAliveAsync(cluster, $"failover/{shard.Name}/{missing}", ct))
             return Result<FailoverAcceleration>.Failed(new ApplicationException(
                 $"supervise {cluster}: claim lost before failover acceleration of {shard.Name}/{missing}"));
@@ -593,7 +593,7 @@ public sealed class NodeSupervisor(
             : Result<FailoverAcceleration>.Failed(deleted.Error!);
     }
 
-    // Шаг хендшейка/конвергенции (arch/14 §5 C): один range статусных ключей
+    // Шаг хендшейка/конвергенции (arch/pgworker/processes/c-node-supervisor.md C): один range статусных ключей
     // /pgworker/nodes/<C>/ + реакции. Гварды: restore (свежая сверка)/
     // TO_REMOVE-шарды и object-ноды пропускаются; QUARANTINED/REMOVING — вне.
     // ≤1 мутация на тик кластера. start_failed → RemoveNodeAsync (kill+rm
@@ -606,7 +606,7 @@ public sealed class NodeSupervisor(
         IReadOnlyDictionary<string, NodeAddress> addresses,
         HashSet<string> restoring, string restPassword, CancellationToken ct)
     {
-        // Живая сверка клэйма перед шагом реакций (arch/17 S5).
+        // Живая сверка клэйма перед шагом реакций (arch/synchronization/02-predicates-and-mutations.md §S5).
         if (!await ClaimAliveAsync(cluster, "bootstrap-convergence", ct))
             return (Fail(new ApplicationException(
                 $"supervise {cluster}: claim lost before bootstrap-convergence step")), false);
@@ -637,7 +637,7 @@ public sealed class NodeSupervisor(
 
             foreach (var node in shard.Nodes)
             {
-                progress?.Mark(); // отметка итерации реакций bootstrap (arch/14 §6)
+                progress?.Mark(); // отметка итерации реакций bootstrap (arch/pgworker/08-operability.md §3)
                 if (node.State is NodeState.Removing)
                     continue; // демонтаж — вне надзора
                 if (!addresses.TryGetValue($"{shard.Name}/{node.Name}", out var addr) || addr.Object is not null)
@@ -645,11 +645,11 @@ public sealed class NodeSupervisor(
                 if (!statuses.TryGetValue($"{shard.Name}/{node.Name}", out var status))
                     continue; // статуса нет — агент стартует, следующий тик увидит not_initialized
 
-                // Карантин (arch/14 §5 A: state не трогаем, вне проб) —
+                // Карантин (arch/pgworker/processes/a-provisioning.md A: state не трогаем, вне проб) —
                 // ИСКЛЮЧЕНИЕ: not_initialized-доставка. REST эвакуированной ноды
                 // при t05-модели оживает только после доставки (spilo/pg_doorman
                 // стартует агент по команде, autostart=false), а E3-детект
-                // возврата (arch/14 §5 D: journal DONE + живой REST) опирается
+                // возврата (arch/pgworker/processes/d-bucket-evacuator.md D: journal DONE + живой REST) опирается
                 // на него — без доставки возврат карантинного шарда не
                 // обнаруживается никогда. ready-apply и start_failed-реакции на
                 // карантинной ноде не выполняются — карантин держится
@@ -666,7 +666,7 @@ public sealed class NodeSupervisor(
 
                     case "not_initialized":
                     {
-                        // Тюнинг — от АКТУАЛЬНЫХ заявок (arch/14 §2.1: пересчёт на
+                        // Тюнинг — от АКТУАЛЬНЫХ заявок (arch/pgworker/01-placement.md §1: пересчёт на
                         // каждый EnsureNode-путь): null рендерил YAML ключа без
                         // PGTune-параметров — bootstrap расходился с provisioning.
                         var resources = await ReadShardResourcesAsync(cluster, shard.Name, ct);
@@ -693,7 +693,7 @@ public sealed class NodeSupervisor(
                         if (keyRead.Value is null || status.AppliedRevision == (long)keyRead.Value.ModRevision)
                             continue; // ключ ещё не доставлен / нода на ревизии — мутаций нет
 
-                        // Тюнинг — от АКТУАЛЬНЫХ заявок (arch/14 §2.1) — тот же
+                        // Тюнинг — от АКТУАЛЬНЫХ заявок (arch/pgworker/01-placement.md §1) — тот же
                         // рендер, что у provisioning: null расходился бы с ним.
                         var applyResources = await ReadShardResourcesAsync(cluster, shard.Name, ct);
                         var outcome = await bootstrap.EnsureAsync(
@@ -719,13 +719,13 @@ public sealed class NodeSupervisor(
                         // тик ждёт (журнальная фаза start-failed-waiting-quorum,
                         // идемпотентная сигнализация). Одноузловой шард — сам
                         // себе лидер → вечно waiting: снос только через
-                        // restore-контур (arch/19 §3.5), не «в пустоту».
+                        // restore-контур (arch/backups/03-restore.md), не «в пустоту».
                         // §8-27 (2) RemoveNode НЕ чистит Patroni-scope живого
                         // кластера (initialize/leader/смежные остаются — драйвер
                         // side-удалений etcd не делает; чистка scope только
                         // D2/S3) — новая нода бутстрапается репликой по
                         // существующему scope, пара восстановима.
-                        // Значение leader-ключа — ИМЯ лидера (arch/14 §5 F, шаг 2
+                        // Значение leader-ключа — ИМЯ лидера (arch/pgworker/processes/f-move.md F, шаг 2
                         // резолва): голое имя Patroni (JSON-обёртка демо-сидов —
                         // легаси; обе формы — LeaderKeyName).
                         var leaderKv = await GetAsync($"/service/{cluster}-{shard.Name}/leader", ct);
@@ -858,7 +858,7 @@ public sealed class NodeSupervisor(
 
         foreach (var node in marked)
         {
-            progress?.Mark(); // отметка итерации recreate (arch/14 §6)
+            progress?.Mark(); // отметка итерации recreate (arch/pgworker/08-operability.md §3)
             if (!addresses.TryGetValue($"{shard.Name}/{node.Name}", out var addr))
                 continue;
 
@@ -916,7 +916,7 @@ public sealed class NodeSupervisor(
                 continue; // не лидер, но и источника basebackup нет — ждём
             }
 
-            // Живая сверка клэйма перед сносом/пересозданием ноды (arch/17 S5).
+            // Живая сверка клэйма перед сносом/пересозданием ноды (arch/synchronization/02-predicates-and-mutations.md §S5).
             if (!await ClaimAliveAsync(cluster, $"recreate/{shard.Name}/{node.Name}", ct))
                 return Fail(new ApplicationException(
                     $"supervise {cluster}: claim lost before recreate of {shard.Name}/{node.Name}"));
@@ -927,7 +927,7 @@ public sealed class NodeSupervisor(
 
             var topology = TopologyOf(cluster, snap, shard.Name, addresses);
             // Лимиты/параметры пересозданной ноды — от заявки request_* на момент
-            // пересоздания (rework №5 + pgtune: пересчёт, arch/14 §5 C).
+            // пересоздания (rework №5 + pgtune: пересчёт, arch/pgworker/processes/c-node-supervisor.md C).
             var resources = await ReadShardResourcesAsync(cluster, shard.Name, ct);
             var tuning = pgtune.Create(resources);
             var ensured = await driver.EnsureNodeAsync(
@@ -953,7 +953,7 @@ public sealed class NodeSupervisor(
             if (!rebuilding.IsSuccess)
                 return rebuilding;
 
-            // Наблюдатель (arch/14 §5 C): rebuild по заявке оператора. Для живой
+            // Наблюдатель (arch/pgworker/processes/c-node-supervisor.md C): rebuild по заявке оператора. Для живой
             // ноды трека нет — detected = момент исполнения маркера; object-ветка
             // уже сделала continue раньше — усыновлённые фактов не порождают.
             if (!shard.ToRemove)
@@ -1017,14 +1017,14 @@ public sealed class NodeSupervisor(
         var dead = new List<string>();
         foreach (var node in shard.Nodes)
         {
-            // Прогресс-отметка итерации (arch/14 §6, поллинг-инвариант): пробы
+            // Прогресс-отметка итерации (arch/pgworker/08-operability.md §3, поллинг-инвариант): пробы
             // нод — SQL/HTTP-вызовы с собственными бюджетами; под деградировавшим
             // Patroni каждая тянется секунды, и тик из 4-8 проб без отметок
             // выглядит для watchdog'а зависанием (факт прогона ha-etcd: снос на
             // 32-й секунде живого тика).
             progress?.Mark();
 
-            // Карантин/демонтаж — не домен надзора (E3-инвариант arch/14 §5):
+            // Карантин/демонтаж — не домен надзора (E3-инвариант arch/pgworker/README.md):
             // QUARANTINED ставится эвакуатором и держится до разбора runbook'ом
             // (возврат обрабатывает эвакуатор), REMOVING — RemoveShardProcess/
             // Deprovisioning. Проба мёртвой карантинной ноды затирала бы state
@@ -1076,14 +1076,14 @@ public sealed class NodeSupervisor(
 
         foreach (var name in dead)
         {
-            // Отметка итерации (arch/14 §6): обработка мёртвой ноды — инспект
+            // Отметка итерации (arch/pgworker/08-operability.md §3): обработка мёртвой ноды — инспект
             // драйвера/ускорение failover/rebuild, бюджетные вызовы подряд.
             progress?.Mark();
             var node = shard.Nodes.Single(n => n.Name == name);
             var trackKey = $"{shard.Name}/{name}";
             track.TryAdd(trackKey, Now());
 
-            // Лидер недоступен → ускоряем failover (arch/14 §5 C): если
+            // Лидер недоступен → ускоряем failover (arch/pgworker/processes/c-node-supervisor.md C): если
             // его контейнер не running (положительное свидетельство смерти —
             // транспортный флап контейнер не останавливает), удаляем
             // лидер-ключ (lease держал бы до ttl≥20 — мимо бюджета ≤5с) и
@@ -1103,7 +1103,7 @@ public sealed class NodeSupervisor(
             var adopted = addresses.TryGetValue(trackKey, out var addr) && addr.Object is not null;
 
             // «Нет в running-инспекте» — свидетельство смерти ТОЛЬКО у драйверов
-            // с честной инспекцией (SupportsRunningInspection, arch/14 §5 C):
+            // с честной инспекцией (SupportsRunningInspection, arch/pgworker/processes/c-node-supervisor.md C):
             // Swarm-инспект — заглушка (всегда пуст), и без гварда любой
             // транспортный флап пробы лидера давал ложный failover живого
             // лидера (удаление leader-ключа + failover-маркер).
@@ -1123,7 +1123,7 @@ public sealed class NodeSupervisor(
                         return accelerated;
                     // Applied → accelerated, NoCandidate → elections (spec §3.1);
                     // NotLeader — шард в restore (свежая сверка гварда внутри
-                    // ускорения, arch/19 §3.5) — факта нет, маркер не ставился.
+                    // ускорения, arch/backups/03-restore.md) — факта нет, маркер не ставился.
                     if (!shard.ToRemove && accelerated.Value is not FailoverAcceleration.NotLeader)
                         haFacts.FailoverDetected(shard.Name, name,
                             accelerated.Value == FailoverAcceleration.Applied ? "accelerated" : "elections",
@@ -1137,7 +1137,7 @@ public sealed class NodeSupervisor(
                 haFacts.FailoverDetected(shard.Name, name, "elections", track[trackKey]);
             }
 
-            // Положительное свидетельство смерти процесса (arch/14 §5 C):
+            // Положительное свидетельство смерти процесса (arch/pgworker/processes/c-node-supervisor.md C):
             // rebuild — невозвратный снос контейнера+volume, он требует большего,
             // чем молчание REST-пробы. У драйвера с честной running-инспекцией
             // нода в бюджете недоступности ДОЛЖНА отсутствовать в инспекте
@@ -1163,13 +1163,13 @@ public sealed class NodeSupervisor(
                 // пересоздать с тем же адресом; Patroni сделает pg_basebackup.
                 if (addr is null)
                     continue;
-                // Свежая сверка restore-гварда перед сносом volume (arch/19
+                // Свежая сверка restore-гварда перед сносом volume (arch/backups/README.md
                 // §3.5): снос — невозвратная мутация, гвард снапшота тика
                 // отстаёт от записи заявки.
                 var rebuildingShard = await ReadRestoringShardsAsync(cluster, ct);
                 if (rebuildingShard?.Contains(shard.Name) == true)
                     continue;
-                // Живая сверка клэйма перед сносом/пересозданием ноды (arch/17 S5).
+                // Живая сверка клэйма перед сносом/пересозданием ноды (arch/synchronization/02-predicates-and-mutations.md §S5).
                 if (!await ClaimAliveAsync(cluster, $"rebuild/{shard.Name}/{name}", ct))
                     return Fail(new ApplicationException(
                         $"supervise {cluster}: claim lost before rebuild of {shard.Name}/{name}"));
@@ -1178,7 +1178,7 @@ public sealed class NodeSupervisor(
                     return removed;
                 var topology = TopologyOf(cluster, snap, shard.Name, addresses);
                 // Лимиты пересозданной ноды — из той же заявки request_* (rework №5);
-                // параметры PG — тюнинг от актуальных заявок (arch/14 §2.1/§5 C).
+                // параметры PG — тюнинг от актуальных заявок (arch/pgworker/01-placement.md §1/§5 C).
                 var resources = await ReadShardResourcesAsync(cluster, shard.Name, ct);
                 var tuning = pgtune.Create(resources);
                 var ensured = await driver.EnsureNodeAsync(
@@ -1201,7 +1201,7 @@ public sealed class NodeSupervisor(
                     $"/clusters/{cluster}/shards/{shard.Name}/nodes/{name}/state", "REBUILDING", ct);
                 if (!rebuilding.IsSuccess)
                     return rebuilding;
-                // Наблюдатель (arch/14 §5 C): rebuild по недоступности — detected
+                // Наблюдатель (arch/pgworker/processes/c-node-supervisor.md C): rebuild по недоступности — detected
                 // читается ДО Remove (первый тик недоступности из трека).
                 if (!shard.ToRemove)
                     haFacts.RebuildDetected(shard.Name, name, "auto-dead", track[trackKey]);
@@ -1231,7 +1231,7 @@ public sealed class NodeSupervisor(
         // а RUNNING живого пути затёр бы заявку оператора без исполнения.
         foreach (var name in alive)
         {
-            progress?.Mark(); // отметка итерации (arch/14 §6)
+            progress?.Mark(); // отметка итерации (arch/pgworker/08-operability.md §3)
             var node = shard.Nodes.Single(n => n.Name == name);
             track.Remove($"{shard.Name}/{name}");
             // Флап-оживание лидера: недоступность БЕЗ смены лидера — факта не было.
@@ -1303,7 +1303,7 @@ public sealed class NodeSupervisor(
     private Task<Result<IReadOnlyList<Kv>>> RangeAsync(string prefix, CancellationToken ct)
         => EtcdEndpointFailover.CallAsync(endpoints, (endpoint, token) => etcd.RangeAsync(endpoint, prefix, token), ct);
 
-    // Свежее чтение restore-гварда (arch/19 §3.5 «Гвард исключения»): множество
+    // Свежее чтение restore-гварда (arch/backups/03-restore.md «Гвард исключения»): множество
     // шардов с активной (PLANNED/RUNNING/REJOINING) restore-заявкой — из etcd,
     // НЕ из снапшота тика: снапшот отстаёт от записи заявки, и долгий тик
     // надзора со старым множеством исполнял мутации посреди демонтажа/REJOINING

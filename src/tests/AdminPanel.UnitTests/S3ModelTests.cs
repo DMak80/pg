@@ -4,7 +4,7 @@ using Xunit;
 
 namespace AdminPanel.UnitTests;
 
-// Маппинг состояний S3-домена (arch/23 §2: отсутствие state = Active).
+// Маппинг состояний S3-домена (arch/s3-clusters/02-keys.md §1: отсутствие state = Active).
 public sealed class S3ModelTests
 {
     // Arrange: raw-строки state. Act: S3ClusterStates.Parse. Assert: канон §2.

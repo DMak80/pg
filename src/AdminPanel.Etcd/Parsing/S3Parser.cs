@@ -12,15 +12,15 @@ public sealed record S3ClustersParseResult(
     IReadOnlyList<KeyParseError> Errors,
     int UnknownKeyCount);
 
-// Результат разбора очереди ротаций /s3worker/rotations/ (arch/23 §8).
+// Результат разбора очереди ротаций /s3worker/rotations/ (arch/s3-clusters/08-coordination.md).
 public sealed record S3RotationsParseResult(
     IReadOnlyList<S3RotationTicket> Tickets,
     IReadOnlyList<KeyParseError> Errors);
 
 // Парсер s3-домена: чистые функции Kv[] → модель, битые значения не бросают
-// исключений — порождают KeyParseError (порт ValkeyParser; arch/23 §2).
+// исключений — порождают KeyParseError (порт ValkeyParser; arch/s3-clusters/02-keys.md §1).
 // PKI-ключи (pki/*, nodes/<I>/pki) пропускаются МОЛЧА — материал только
-// воркеру (arch/23 §6), без unknownKeys-счётчика.
+// воркеру (arch/s3-clusters/06-secrets.md), без unknownKeys-счётчика.
 public static class S3Parser
 {
     private sealed class NodeAcc(string name)
@@ -66,7 +66,7 @@ public static class S3Parser
             var acc = GetOrAdd(accs, segments[3], static name => new ClusterAcc(name));
             switch (segments[4])
             {
-                // PKI репликации — только воркеру (arch/23 §6): молча, без unknownKeys.
+                // PKI репликации — только воркеру (arch/s3-clusters/06-secrets.md): молча, без unknownKeys.
                 case "pki":
                     break;
 
@@ -104,7 +104,7 @@ public static class S3Parser
                         or "usage" or "pki":
                 {
                     if (segments[6] == "pki")
-                        break; // PKI инстанса — молча (arch/23 §6)
+                        break; // PKI инстанса — молча (arch/s3-clusters/06-secrets.md)
 
                     var node = GetOrAdd(acc.Nodes, segments[5], static name => new NodeAcc(name));
                     switch (segments[6])
@@ -130,7 +130,7 @@ public static class S3Parser
                 }
 
                 default:
-                    // система развивается — неизвестный ключ не ошибка, только счётчик (arch/23 §2)
+                    // система развивается — неизвестный ключ не ошибка, только счётчик (arch/s3-clusters/02-keys.md §1)
                     unknown++;
                     break;
             }
@@ -231,7 +231,7 @@ public static class S3Parser
     }
 
     // placement: {"docker_host"?,"swarm_node"?,"swarm_labels"?{…}} — конъюнкция
-    // указанных атрибутов (arch/23 §4); пустой объект → null (не ошибка).
+    // указанных атрибутов (arch/s3-clusters/04-placement.md); пустой объект → null (не ошибка).
     private static S3NodePlacement? ParsePlacement(string cluster, string node, string? raw,
         List<KeyParseError> errors)
     {
@@ -342,7 +342,7 @@ public static class S3Parser
             ParseResources(cluster, acc.Name, acc.ResourcesRaw, errors),
             ParseUsage(cluster, acc.Name, acc.UsageRaw, errors));
 
-    // links: [{"a","b"},…] — произвольный набор пар (arch/23 §2).
+    // links: [{"a","b"},…] — произвольный набор пар (arch/s3-clusters/02-keys.md §1).
     private static IReadOnlyList<S3ReplicationLink> ParseLinks(
         string cluster, string? raw, List<KeyParseError> errors)
     {
@@ -394,7 +394,7 @@ public static class S3Parser
         }
     }
 
-    // connectivity (arch/23 §3): state/checked_unix/links-матрица/probe_error?.
+    // connectivity (arch/s3-clusters/03-observation-statuses.md): state/checked_unix/links-матрица/probe_error?.
     private static S3ConnectivityInfo? ParseConnectivity(
         string cluster, string? raw, List<KeyParseError> errors)
     {
@@ -431,7 +431,7 @@ public static class S3Parser
         }
     }
 
-    // sync (arch/23 §3): state/checked_unix/pairs/last_error?.
+    // sync (arch/s3-clusters/03-observation-statuses.md): state/checked_unix/pairs/last_error?.
     private static S3SyncInfo? ParseSync(string cluster, string? raw, List<KeyParseError> errors)
     {
         if (raw is null)
@@ -514,7 +514,7 @@ public static class S3Parser
             : null;
 
     // Unchecked-каст (порт ValkeyParser): config.nodes вне int не бросает —
-    // контракт парсера «битые значения не бросают исключений» (arch/23 §2).
+    // контракт парсера «битые значения не бросают исключений» (arch/s3-clusters/02-keys.md §1).
     private static int AsInt(long? value) => value is null ? 0 : (int)value.Value;
 
     private static TValue GetOrAdd<TKey, TValue>(Dictionary<TKey, TValue> dictionary, TKey key, Func<TKey, TValue> factory)

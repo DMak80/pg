@@ -4,7 +4,7 @@ using Xunit;
 
 namespace PgWorker.UnitTests.Backups;
 
-// Разбор/сравнение имён WAL-файлов (arch/19 §3: TLI(8)+log(8)+seg(8) hex).
+// Разбор/сравнение имён WAL-файлов (arch/backups/02-wal-archive.md §1: TLI(8)+log(8)+seg(8) hex).
 public class WalFileNameTests
 {
     [Theory]
@@ -92,7 +92,7 @@ public class WalFileNameTests
     [Fact]
     public void Next_0xFFOverflow_CarriesIntoLog()
     {
-        // Arrange — seg=0xFF: следующий = log+1, seg=0 (arch/19 §3)
+        // Arrange — seg=0xFF: следующий = log+1, seg=0 (arch/backups/02-wal-archive.md §1)
         var segment = WalFileName.TryParse("0000000100000000000000FF")!.Value;
 
         // Act / Assert

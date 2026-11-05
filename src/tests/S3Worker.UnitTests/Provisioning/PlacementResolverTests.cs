@@ -6,7 +6,7 @@ using Xunit;
 
 namespace S3Worker.UnitTests.Provisioning;
 
-// Резолвер размещения (arch/23 §4): предикат равенства по атрибутам хостов,
+// Резолвер размещения (arch/s3-clusters/04-placement.md): предикат равенства по атрибутам хостов,
 // least-loaded + лексикографический tie-break — детерминизм повторных проходов.
 public class PlacementResolverTests
 {

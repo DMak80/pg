@@ -3,9 +3,9 @@ using System.Text.RegularExpressions;
 
 namespace PgWorker.PgNode.Operations;
 
-/// <summary>pg_dump схемы-бакета (arch/14 §Move M1, канал arch/25 №22):
+/// <summary>pg_dump схемы-бакета (arch/pgworker/processes/f-move.md M1, канал arch/communications/02-channel-registry.md №22):
 /// приёмник ноды-источника запускает pg_dump ЛОКАЛЬНО в своём контейнере
-/// (ProcessRunner, arch/19 §3.4) с socket-коннектом к своей базе — секретов
+/// (ProcessRunner, arch/pgnode/08-operability.md) с socket-коннектом к своей базе — секретов
 /// нет (локальный pg_hba Spilo — trust, юзер приёмника postgres). Имя схемы
 /// валидируется до подстановки в argv (SQL/shell-инъекции).</summary>
 public sealed partial class PgDumpOperation(IProcessRunner runner)

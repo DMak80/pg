@@ -4,7 +4,7 @@ using S3Worker.Docker.Drivers;
 namespace S3Worker.Provisioning.Processes;
 
 /// <summary>
-/// Резолвер размещения ноды (arch/23 §4): селектор placement-заявки — предикат
+/// Резолвер размещения ноды (arch/s3-clusters/04-placement.md): селектор placement-заявки — предикат
 /// равенства по атрибутам хостов (конъюнкция всех указанных: docker_host →
 /// Name plain-таблицы, swarm_node → Name (hostname), swarm_labels → подмножество
 /// Labels). Кандидаты сортируются least-loaded (UsedSlots, потом имя Ordinal) —

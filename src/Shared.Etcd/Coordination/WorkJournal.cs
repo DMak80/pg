@@ -5,7 +5,7 @@ using Shared.Etcd.Client;
 
 namespace Shared.Etcd.Coordination;
 
-// Журнал текущего процесса кластера (spec §4.3, arch/16 §5): journal-before-manipulations.
+// Журнал текущего процесса кластера (spec §4.3, arch/kafkaworker/README.md): journal-before-manipulations.
 // Unreachable — трек недоступности нод надзора (значение state — плоская строка
 // по контракту панели, время живёт здесь): "нода" → first_seen_unix.
 public sealed record WorkState(
@@ -24,11 +24,11 @@ public sealed record WorkState(
     [property: JsonPropertyName("rotate_quiet_ticks")] int? RotateQuietTicks = null,
     [property: JsonPropertyName("start_failed_recreate_count")] int? StartFailedRecreateCount = null);
 
-/// <summary>Серия подряд идущих фейлов процесса (бэкофф ретраев, arch/14 §3.3/§5 A):
+/// <summary>Серия подряд идущих фейлов процесса (бэкофф ретраев, arch/pgworker/00-etcd-contract.md §4/§5 A):
 /// живёт в {prefix}/work/&lt;C&gt;, пишется фейлом, переносится фазами, сбрасывается Done.</summary>
 public sealed record RetrySeries(int FailCount, long FailFirstUnix, long RetryNotBeforeUnix);
 
-/// <summary>HA-факт надзора (arch/14 §3.3): последнее событие вида в
+/// <summary>HA-факт надзора (arch/pgworker/00-etcd-contract.md §4): последнее событие вида в
 /// {prefix}/work/&lt;C&gt;; открытое событие — без ResolvedUnix/DurationSec.</summary>
 public sealed record HaSupervisionFact(
     [property: JsonPropertyName("shard")] string Shard,
@@ -42,7 +42,7 @@ public sealed record HaSupervisionFact(
 public sealed record HaSupervisionFacts(HaSupervisionFact? LastFailover, HaSupervisionFact? LastRebuild);
 
 /// <summary>Состояние надзора из work-ключа одним чтением: трек + факты +
-/// маркер открытого окна REST-ротации (rest_window_open, arch/14 §5 I
+/// маркер открытого окна REST-ротации (rest_window_open, arch/pgworker/processes/i-secret-rotator.md I
 /// ETCD-FIRST; отсутствие поля/ключа = окно закрыто).</summary>
 public sealed record SupervisionState(
     IReadOnlyDictionary<string, long> Unreachable,
@@ -66,7 +66,7 @@ public sealed class WorkJournal(string keyPrefix, IEtcdGateway gateway, string[]
     };
 
     // Наблюдатели метрик подписываются на событие (WorkerMetricsInstrumentation,
-    // arch/18 §2.2 — seam S2). Наблюдатели — пассивные: NotifyPhase глотает
+    // arch/metrics/02-dictionary.md §2 — seam S2). Наблюдатели — пассивные: NotifyPhase глотает
     // исключения подписчиков, журнал от метрик не зависит.
     public sealed record WorkPhaseEntry(string Cluster, string Op, string Phase);
 
@@ -95,7 +95,7 @@ public sealed class WorkJournal(string keyPrefix, IEtcdGateway gateway, string[]
     // unreachable — трек недоступности надзора (: фазовые записи в тике
     // надзора — конвергенция DCS/брокеров — обязаны его сохранять, иначе
     // пороги сбрасываются каждой фазовой записью).
-    // rest_window_open — маркер открытого окна REST-ротации (arch/14 §3.3/§5 I
+    // rest_window_open — маркер открытого окна REST-ротации (arch/pgworker/00-etcd-contract.md §4/§5 I
     // ETCD-FIRST): true/false задают открытие/закрытие, null — carry-forward
     // всеми писателями (как unreachable/факты).
     public async Task<Result> WritePhaseAsync(
@@ -141,7 +141,7 @@ public sealed class WorkJournal(string keyPrefix, IEtcdGateway gateway, string[]
             if (!current.IsSuccess)
                 return current;
             track ??= current.Value?.Unreachable;
-            // carry-forward фактов (arch/14 §3.3): фазовая запись без явных
+            // carry-forward фактов (arch/pgworker/00-etcd-contract.md §4): фазовая запись без явных
             // фактов сохраняет существующие из ключа (как unreachable).
             carryFailover ??= current.Value?.LastFailover;
             carryRebuild ??= current.Value?.LastRebuild;
@@ -181,13 +181,13 @@ public sealed class WorkJournal(string keyPrefix, IEtcdGateway gateway, string[]
 
     // Тик надзора: op=supervise + трек недоступности (пороги NodeDead/BrokerDead);
     // lastError — накопленные warning-ы тика (RF=1-пересоздания и т.п.);
-    // facts — HA-факты тика (arch/14 §3.3: facts=null → поля опускаются —
+    // facts — HA-факты тика (arch/pgworker/00-etcd-contract.md §4: facts=null → поля опускаются —
     // kfw/vwk-ключи фактов не несут; Pg-надзор передаёт всегда, в т.ч.
     // null-полями внутри = сброс/флап).
     // rest_window_open : carry-forward — супервизионная запись НЕ затирает
     // открытое окно REST-ротации (флаг переносится между тиками).
     // ВНИМАНИЕ: стационарная запись надзора событие PhaseWritten НЕ эмитит —
-    // supervise подавлен в фазовых сериях (arch/18 §2.2, решение ревью Ф4-2).
+    // supervise подавлен в фазовых сериях (arch/metrics/02-dictionary.md §2, решение ревью Ф4-2).
     public async Task<Result> WriteSupervisionAsync(
         string cluster, string instance, IReadOnlyDictionary<string, long> unreachable,
         string? lastError, CancellationToken ct, HaSupervisionFacts? facts = null)
@@ -218,7 +218,7 @@ public sealed class WorkJournal(string keyPrefix, IEtcdGateway gateway, string[]
     }
 
     // Состояние надзора одним чтением: трек недоступности + HA-факты
-    // (takeover-продолжение открытых событий, arch/14 §5 C).
+    // (takeover-продолжение открытых событий, arch/pgworker/processes/c-node-supervisor.md C).
     public async Task<Result<SupervisionState>> ReadSupervisionStateAsync(string cluster, CancellationToken ct)
     {
         var state = await ReadAsync(cluster, ct);
@@ -232,7 +232,7 @@ public sealed class WorkJournal(string keyPrefix, IEtcdGateway gateway, string[]
 
     private string WorkKey(string cluster) => $"{keyPrefix}/work/{cluster}";
 
-    // Единая точка failover (arch/17 S7: sticky + per-attempt бюджет + негативный
+    // Единая точка failover (arch/synchronization/03-fault-tolerance.md §S7: sticky + per-attempt бюджет + негативный
     // кэш; дубликат цикла обхода удалён — журнал, самый частый писатель, платил
     // полным HTTP-бюджетом за мёртвый endpoint каждым put'ом).
     private Task<Result<T>> WithFailoverAsync<T>(Func<string, Task<Result<T>>> call)

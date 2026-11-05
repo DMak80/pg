@@ -34,7 +34,7 @@ public class SyncProbeEtcdTests(S3EtcdFixture etcd) : IAsyncLifetime
     public async ValueTask InitializeAsync()
     {
         // Сид Active-кластера: config без state, обе ноды RUNNING, portalloc;
-        // креды — предзаписанный per-cluster secrets-ключ (канон arch/23 §2).
+        // креды — предзаписанный per-cluster secrets-ключ (канон arch/s3-clusters/02-keys.md §1).
         await etcd.PutAsync($"/s3/clusters/{_cluster}/config",
             """{"platform":"owns3","nodes":2,"created_unix":1760156800}""");
         await etcd.PutAsync($"/s3/clusters/{_cluster}/secrets",
@@ -47,7 +47,7 @@ public class SyncProbeEtcdTests(S3EtcdFixture etcd) : IAsyncLifetime
 
     public async ValueTask DisposeAsync()
     {
-        // Полная чистка СВОИХ ключей (own-only, docs/e2e-isolation.md).
+        // Полная чистка СВОИХ ключей (own-only, arch/testing/02-e2e-isolation.md).
         var ct = CancellationToken.None;
         await etcd.Gateway.DeleteAsync(etcd.Endpoint, $"/s3/clusters/{_cluster}/", prefix: true, ct);
         await etcd.Gateway.DeleteAsync(etcd.Endpoint, $"/s3worker/probes/{_cluster}", prefix: false, ct);

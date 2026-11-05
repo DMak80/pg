@@ -8,7 +8,7 @@ using Xunit;
 
 namespace ValkeyWorker.UnitTests.Provisioning;
 
-// DeprovisioningProcess X0–X3 (arch/21 §5 B): порядок «сначала docker, потом
+// DeprovisioningProcess X0–X3 (arch/valkeyworker/02-cluster-lifecycle.md §3 B): порядок «сначала docker, потом
 // etcd», 404 = ок, ошибка docker оставляет декларацию нетронутой.
 public class DeprovisioningProcessTests
 {
@@ -82,7 +82,7 @@ public class DeprovisioningProcessTests
         var dockerIndex = rig.Log.FindIndex(l => l.StartsWith("docker:"));
         var etcdIndex = rig.Log.FindIndex(l => l.StartsWith("etcd:"));
         dockerIndex.Should().BeGreaterThanOrEqualTo(0);
-        etcdIndex.Should().BeGreaterThan(dockerIndex, "arch/21 §5 B ordering: docker first, then etcd");
+        etcdIndex.Should().BeGreaterThan(dockerIndex, "arch/valkeyworker/02-cluster-lifecycle.md §3 B ordering: docker first, then etcd");
 
         rig.Driver.Containers.Should().NotContainKey($"vwk-{cluster}-node1");
         // X1 (env-TLS): remove-tls-volume-шага НЕТ — легаси-том демонтаж не
@@ -93,7 +93,7 @@ public class DeprovisioningProcessTests
         rig.Etcd.Store.Keys.Where(k => k.Contains($"/valkeyworker/portalloc/{cluster}")).Should().BeEmpty();
         rig.Etcd.Store.Keys.Where(k => k.Contains($"/valkeyworker/rotations/{cluster}")).Should().BeEmpty();
         // Координация <C> пуста ЦЕЛИКОМ: journal-записи после чистки нет
-        // (запись done воскресила бы удалённый work/<C> — arch/21 §5 B),
+        // (запись done воскресила бы удалённый work/<C> — arch/valkeyworker/02-cluster-lifecycle.md §3 B),
         // стейт доигрывания ротации тоже удалён.
         rig.Etcd.Store.Keys.Where(k => k.Contains($"/valkeyworker/work/{cluster}")).Should().BeEmpty();
         (await rig.Claims.TryClaimClusterAsync(cluster, TestContext.Current.CancellationToken)).Value

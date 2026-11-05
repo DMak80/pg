@@ -184,7 +184,7 @@ public class KafkaAdminClientFactoryTests
         factory.CreatedClients.Should().Be(2);
     }
 
-    // ===== Дрейн-dispose заменяемого (arch/16 §6): dispose под висящей
+    // ===== Дрейн-dispose заменяемого (arch/kafkaworker/08-operability.md §4): dispose под висящей
     // операцией запрещён (ERR__DESTROYED) — тесты через шов
     // RunUnderOperationAsync (нативный клиент не строится). =====
 

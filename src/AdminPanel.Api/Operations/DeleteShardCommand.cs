@@ -10,7 +10,7 @@ public sealed record DeleteShardCommand(string Cluster, string Shard) : ICommand
 
 public sealed record ShardDeletedDto(string Cluster, string Shard, string State);
 
-// Прокси: панель не пишет в etcd — команда уходит в API PgWorker (arch/14 §1.1);
+// Прокси: панель не пишет в etcd — команда уходит в API PgWorker (arch/pgworker/07-api.md §1);
 // у delete-shard нет оператора — requestedBy: null.
 [InjectAsScoped]
 public sealed class DeleteShardCommandHandler(IWorkerApiGateway api)

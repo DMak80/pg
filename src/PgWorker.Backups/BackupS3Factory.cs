@@ -6,7 +6,7 @@ namespace PgWorker.Backups;
 
 /// <summary>
 /// Фабрика per-cluster пула-клиента : резолв policy+пула (резолвер) +
-/// КЭШ пул-клиентов per-контекст (arch/19 §5 «Кэш пул-клиентов»): клиент
+/// КЭШ пул-клиентов per-контекст (arch/backups/06-s3-layout.md «Кэш пул-клиентов»): клиент
 /// живёт в фабрике ДО КОНЦА ПРОЦЕССА, пока не сменился контекст пула
 /// (endpoints/креды/bucket/CA) — circuit-breaker-стейт отказных целей
 /// переживает тики: недоступная нода пула оплачивает свой S3-таймаут один
@@ -34,7 +34,7 @@ public sealed class BackupS3Factory(
 
     /// <summary>Пул-клиент из резолвнутого контекста — КЭШИРОВАННЫЙ
     /// (владелец — фабрика; вызывающий НЕ диспоузит). Чтение — ВСЕГДА ReadAll
-    /// (все ноды пула, arch/19 §5 «где данные есть»): write-реплика — не
+    /// (все ноды пула, arch/backups/06-s3-layout.md «где данные есть»): write-реплика — не
     /// read-список (per-cluster клиент обслуживает контроль/verify/restore —
     /// перебор чтения обязан доходить до живой ноды пула).</summary>
     public PoolBackupS3 Create(BackupPoolContext ctx)
@@ -73,7 +73,7 @@ public sealed class BackupS3Factory(
         var ctx = resolved.Value;
         if (ctx is null)
             return Result<PoolBackupS3>.Failed(new ApplicationException(
-                $"s3-pool: cluster {cluster} policy has no s3 section — pool not selected (arch/19 §4)"));
+                $"s3-pool: cluster {cluster} policy has no s3 section — pool not selected (arch/backups/05-etcd-contract.md)"));
         return Result<PoolBackupS3>.Success(Create(ctx));
     }
 
@@ -100,7 +100,7 @@ public sealed class BackupS3Factory(
                 $"s3-pool: pool {s3pool.Name} has no readable secrets in etcd (/s3/clusters/{s3pool.Name}/secrets, key backups)"));
 
         // Адреса чтения — portalloc-пары в порядке endpoints, http-URI (тот же
-        // резолв, что в резолвере; endpoints-ключ схему не несёт — arch/23 §2).
+        // резолв, что в резолвере; endpoints-ключ схему не несёт — arch/s3-clusters/02-keys.md §1).
         var endpoints = BackupPoolResolver.ReadAllUris(s3pool);
         var ctx = new BackupPoolContext(pool, poolSecrets.AccessKey, poolSecrets.SecretKey,
             endpoints, endpoints, endpoints);

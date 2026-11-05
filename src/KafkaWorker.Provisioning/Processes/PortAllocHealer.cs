@@ -9,7 +9,7 @@ using Shared.Etcd.Client;
 
 namespace KafkaWorker.Provisioning.Processes;
 
-// Лестница источников адреса при утере portalloc (E9, arch/17; spec §3.3):
+// Лестница источников адреса при утере portalloc (E9, arch/synchronization/README.md; spec §3.3):
 // 1) portalloc есть → адрес из журнала (advertise стабилен);
 // 2) журнала нет, контейнер есть (положительная инспекция) → реконструкция
 //    из docker inspect (published-порт + host) RMW-merge по mod_revision
@@ -51,7 +51,7 @@ public sealed class PortAllocHealer(
         if (!inspection.IsSuccess)
             return Result<HealedAddress>.Failed(inspection.Error!); // слепота — не лечим
 
-        // journal-before-manipulations (spec §3.3 / arch/16 §5): фаза
+        // journal-before-manipulations (spec §3.3 / arch/kafkaworker/README.md): фаза
         // ДО первого txn/EnsureNode — ветка известна после инспекции.
         var started = await journal.WritePhaseAsync(cluster, Op, "started", claims.InstanceId, null, ct);
         if (!started.IsSuccess)
@@ -123,11 +123,11 @@ public sealed class PortAllocHealer(
 
     // Ветка 3: новая аллокация (паттерн AddBrokerProcess.EnsurePortsAsync).
     // Под клэймом — ТОЛЬКО узкая секция «чтение занятости → выбор портов →
-    // RMW portalloc (mod_revision)» (контракт клэйма arch/15 §4: секция
+    // RMW portalloc (mod_revision)» (контракт клэйма arch/kafka-clusters/04-coordination.md §1: секция
     // короткая, без keepalive — docker-операции, не укладывающиеся в TTL 15 с,
     // в неё не входят). EnsureNode и RMW endpoints — ПОСЛЕ освобождения:
     // адрес закреплён в portalloc (окно «записан, контейнеров ещё нет» для
-    // чужих довыделений закрывает union-чтение занятости, arch/16 §2.1),
+    // чужих довыделений закрывает union-чтение занятости, arch/kafkaworker/01-placement.md §1),
     // endpoints строятся из СВЕЖЕГО portalloc — сосед, довыделивший порты
     // за время docker-фазы, из bootstrap-списка не выпадает.
     private async Task<Result<HealedAddress>> ReallocateAsync(
@@ -309,7 +309,7 @@ public sealed class PortAllocHealer(
         return Result<IReadOnlyDictionary<string, NodeAddress>>.Success(ParsePortAlloc(kv.Value));
     }
 
-    // Формат arch/15 §4: {"broker<k>":{"host":"h","client":16001}}.
+    // Формат arch/kafka-clusters/04-coordination.md §1: {"broker<k>":{"host":"h","client":16001}}.
     private static Dictionary<string, NodeAddress> ParsePortAlloc(string json)
     {
         var addresses = new Dictionary<string, NodeAddress>();

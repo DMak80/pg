@@ -52,7 +52,7 @@ public sealed class ValkeyConnection(TimeSpan? connectAndCommandTimeout = null) 
             using var client = new TcpClient();
             await client.ConnectAsync(ep.Host, ep.Port, timeout.Token);
 
-            // TLS (arch/21 §6): доверие — ТОЛЬКО per-cluster CA; системные
+            // TLS (arch/valkeyworker/06-operability.md §3): доверие — ТОЛЬКО per-cluster CA; системные
             // якоря не участвуют (SslPolicyErrors игнорируем — строим свою цепочку
             // CustomRootTrust) + SAN обязан покрывать хост endpoint'а.
             // Валидатор — ЗАМЫКАНИЕ на распарсенный CA и ep.Host (не поле класса:
@@ -120,7 +120,7 @@ public sealed class ValkeyConnection(TimeSpan? connectAndCommandTimeout = null) 
         }
     }
 
-    // SAN-хост (arch/21 §2): advertised DNS либо IP; ровно один SAN у сертов
+    // SAN-хост (arch/valkeyworker/01-placement.md): advertised DNS либо IP; ровно один SAN у сертов
     // домена, но сверяем весь список — отказ при отсутствии покрытия.
     private static bool SanMatchesHost(X509Certificate certificate, string host)
     {
@@ -170,7 +170,7 @@ public sealed class ValkeyConnection(TimeSpan? connectAndCommandTimeout = null) 
             : [];
 
     // INFO all (bulk-строка) → словарь; не-bulk ответ — пустой словарь (не-error
-    // кадр: сбор успешен, серии не эмитятся — консервативно, arch/18 §2.6).
+    // кадр: сбор успешен, серии не эмитятся — консервативно, arch/metrics/02-dictionary.md §6).
     private static IReadOnlyDictionary<string, string> ProjectInfo(object? reply)
         => reply is string bulk ? ParseInfo(bulk) : new Dictionary<string, string>();
 

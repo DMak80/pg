@@ -12,7 +12,7 @@ public sealed record KafkaClustersParseResult(
     IReadOnlyList<KeyParseError> Errors,
     int UnknownKeyCount);
 
-// Результат разбора очереди ротаций /kafkaworker/rotations/ (arch/15 §4).
+// Результат разбора очереди ротаций /kafkaworker/rotations/ (arch/kafka-clusters/04-coordination.md §1).
 public sealed record KafkaRotationsParseResult(
     IReadOnlyList<KafkaRotationTicket> Tickets,
     IReadOnlyList<KeyParseError> Errors);
@@ -43,7 +43,7 @@ public sealed record KafkaTicketOutcomesParseResult(
     IReadOnlyList<KeyParseError> Errors);
 
 // Парсер kafka-домена: чистые функции Kv[] → модель, битые значения не бросают
-// исключений — порождают KeyParseError (порт стиля ClustersParser; arch/15 §6).
+// исключений — порождают KeyParseError (порт стиля ClustersParser; arch/kafka-clusters/06-fault-tolerance.md).
 public static class KafkaParser
 {
     private sealed class BrokerAcc(string name)
@@ -133,7 +133,7 @@ public static class KafkaParser
                     break;
 
                 default:
-                    // система развивается — неизвестный ключ не ошибка, только счётчик (arch/15 §6)
+                    // система развивается — неизвестный ключ не ошибка, только счётчик (arch/kafka-clusters/06-fault-tolerance.md)
                     unknown++;
                     break;
             }
@@ -184,7 +184,7 @@ public static class KafkaParser
         return new(tickets, errors);
     }
 
-    // Заявка ротации admin-пароля /kafkaworker/admin_rotations/<C> (arch/15 §4):
+    // Заявка ротации admin-пароля /kafkaworker/admin_rotations/<C> (arch/kafka-clusters/04-coordination.md §1):
     // формат заявки идентичен ротациям app — requested_unix обязателен.
     public static KafkaRotationsParseResult ParseAdminRotations(IReadOnlyList<Kv> kvs)
     {
@@ -223,7 +223,7 @@ public static class KafkaParser
         return new(tickets, errors);
     }
 
-    // Заявка CA-ротации /kafkaworker/ca_rotations/<C> (arch/15 §4):
+    // Заявка CA-ротации /kafkaworker/ca_rotations/<C> (arch/kafka-clusters/04-coordination.md §1):
     // формат ротаций app/admin — requested_unix обязателен (порт ParseAdminRotations).
     public static KafkaCaRotationsParseResult ParseCaRotations(IReadOnlyList<Kv> kvs)
     {
@@ -262,7 +262,7 @@ public static class KafkaParser
         return new(tickets, errors);
     }
 
-    // Исходы заявок /kafkaworker/ticket_outcomes/<C> (arch/15 §4):
+    // Исходы заявок /kafkaworker/ticket_outcomes/<C> (arch/kafka-clusters/04-coordination.md §1):
     // обязательны kind/outcome/requested_unix/finished_unix (outcome —
     // толерантно-строковый, без enum); reason/requested_by опциональны.
     public static KafkaTicketOutcomesParseResult ParseTicketOutcomes(IReadOnlyList<Kv> kvs)
@@ -394,7 +394,7 @@ public static class KafkaParser
         return new(progress, errors);
     }
 
-    // /kafkaworker/regens/<C> (arch/15 §4): live-прогресс регенерации.
+    // /kafkaworker/regens/<C> (arch/kafka-clusters/04-coordination.md §1): live-прогресс регенерации.
     public static KafkaRegensParseResult ParseRegens(IReadOnlyList<Kv> kvs)
     {
         var progress = new List<KafkaRegenProgress>();
@@ -463,7 +463,7 @@ public static class KafkaParser
             acc.Endpoints, brokerInfos, topics, lifecycle);
     }
 
-    // Lifecycle-заявка topics/<T>/desired.{create,delete} (arch/15 §3.1):
+    // Lifecycle-заявка topics/<T>/desired.{create,delete} (arch/kafka-clusters/03-topics.md §2):
     // толерантный разбор; битый JSON или отсутствие requested_unix → parseError
     // (образец ParseRotations), тикет не создаётся.
     private static KafkaTopicLifecycleTicket? BuildLifecycleTicket(
@@ -565,7 +565,7 @@ public static class KafkaParser
         return new KafkaBrokerInfo(acc.Name, acc.State, acc.Role, cpu, memGi, diskGi);
     }
 
-    // null — ключ пропущен с parseError-записью (arch/15 §6 «битый JSON → ключ пропускается»).
+    // null — ключ пропущен с parseError-записью (arch/kafka-clusters/06-fault-tolerance.md «битый JSON → ключ пропускается»).
     private static KafkaTopicInfo? BuildTopic(
         string cluster, string topic, string raw, List<KeyParseError> errors)
     {
@@ -605,7 +605,7 @@ public static class KafkaParser
         }
     }
 
-    // configs — словарь строковых значений (как отдаёт Kafka, arch/15 §3).
+    // configs — словарь строковых значений (как отдаёт Kafka, arch/kafka-clusters/03-topics.md §1).
     private static long? ConfigValue(JsonElement root, string name)
         => root.TryGetProperty("configs", out var configs)
            && configs.ValueKind == JsonValueKind.Object

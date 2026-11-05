@@ -27,7 +27,7 @@ public class TlsEnvBindingsTests
         config["KafkaWorker:Api:Tls:ClientCaPath"].Should().Be("/tls/ca.pem");
         config["KafkaWorker:Api:Tls:ServerKeyPem"].Should().BeNull();
 
-        // Таблица покрывает все 6 секретов (spec §5.3 / arch/16 §8).
+        // Таблица покрывает все 6 секретов (spec §5.3 / arch/kafkaworker/08-operability.md §6).
         TlsEndpoints.EnvBindings.Should().HaveCount(6);
     }
 }

@@ -4,7 +4,7 @@ using Shared.Etcd.Client;
 
 namespace PgWorker.Etcd.Parsing;
 
-// Парсер префикса /pgworker/backups/ в модель подсистемы бэкапов (arch/19
+// Парсер префикса /pgworker/backups/ в модель подсистемы бэкапов (arch/backups/README.md
 // §4) по образцу ClusterSnapshotParser: чистые функции Kv[] → модель;
 // битые значения — в parseErrors с пропуском записи (не исключение), неизвестные
 // ключи — игнор (обратная совместимость). Подключение к снапшоту воркера —
@@ -193,7 +193,7 @@ public static class BackupsParser
 
             // секция s3 — пул + списки по роли источника. Отсутствие/битая
             // секция = пул не выбран — как drill, толерантность парсеров
-            // (arch/19 §4): parseError не валид, S3=null, policy читается.
+            // (arch/backups/05-etcd-contract.md): parseError не валид, S3=null, policy читается.
             var s3 = TryParsePolicyS3(root);
 
             return new BackupPolicy(
@@ -208,7 +208,7 @@ public static class BackupsParser
         }
     }
 
-    // Секция s3 (arch/19 §4): pool — непустая строка, списки — массивы
+    // Секция s3 (arch/backups/05-etcd-contract.md): pool — непустая строка, списки — массивы
     // строк; любое несоответствие формы → null (пул не выбран).
     private static BackupPolicyS3? TryParsePolicyS3(JsonElement root)
     {
@@ -356,7 +356,7 @@ public static class BackupsParser
                 ReadLong(root, "started_unix"), ReadLong(root, "finished_unix"),
                 ReadString(root, "phase"), ReadString(root, "restored_to_lsn"),
                 ReadString(root, "error"),
-                // пул DR-источника (arch/14 §1.1); отсутствие — свой пул.
+                // пул DR-источника (arch/pgworker/07-api.md §1); отсутствие — свой пул.
                 ReadString(root, "source_pool"),
                 // t15: номер жизни цепочки выбранного полного (DR-orphan — нет).
                 ReadChainLife(root))
@@ -435,7 +435,7 @@ public static class BackupsParser
                 "ACTIVE" => WalStreamStatus.Active,
                 "DEGRADED" => WalStreamStatus.Degraded,
                 "STOPPED" => WalStreamStatus.Stopped,
-                //  (arch/19 §4): WAL_CHAIN_ERROR обязан читаться СНАПШОТНЫМ
+                //  (arch/backups/05-etcd-contract.md): WAL_CHAIN_ERROR обязан читаться СНАПШОТНЫМ
                 // парсером. Прогон 2026-09-13: неизвестное состояние разрыва
                 // давало Wal=null → контроль шёл от ratchet=null (min COMPLETED,
                 // ниже границы разрыва), дыра «вечно свежая», ключ замерал в
@@ -461,9 +461,9 @@ public static class BackupsParser
                 return null;
             }
 
-            //  (arch/19 §4): границы RPO-зазора tli-прыжка — обязательны для
+            //  (arch/backups/05-etcd-contract.md): границы RPO-зазора tli-прыжка — обязательны для
             // СНАПШОТНОГО чтения (планировщик переснимает полный по
-            // walGapUncovered из снапшота, arch/19 §2). Прогон 
+            // walGapUncovered из снапшота, arch/backups/01-full-backup.md). Прогон 
             // (2026-10-27): снапшотный парсер Gap терял — живой непокрытый
             // зазор для планировщика не существовал, пересъём не планировался
             // (wal-ключ вечно DEGRADED+gap), а WalStreamProcess (свой парсер)

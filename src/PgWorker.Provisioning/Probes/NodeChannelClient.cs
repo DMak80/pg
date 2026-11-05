@@ -4,7 +4,7 @@ using System.Text.Json.Serialization;
 
 namespace PgWorker.Provisioning.Probes;
 
-/// <summary>Адрес mTLS-канала агента ноды (arch/25 №23): порт :8081 ВНУТРИ
+/// <summary>Адрес mTLS-канала агента ноды (arch/communications/02-channel-registry.md №23): порт :8081 ВНУТРИ
 /// docker-сети кластера, на хост не публикуется; имя — полное docker-имя ноды
 /// (SAN серта, прецедент WalReceiverAddress).</summary>
 public static class NodeChannelAddress

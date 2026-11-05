@@ -7,13 +7,13 @@ using System.Diagnostics;
 
 namespace PgWorker.App.Loops;
 
-/// <summary>Лидерный фоновый цикл чистки wal/ (arch/19 §4 «wal-sweeper»):
+/// <summary>Лидерный фоновый цикл чистки wal/ (arch/backups/05-etcd-contract.md «wal-sweeper»):
 /// глобальный лидер /pgworker/leader выполняет WalSweeperProcess.SweepAsync
 /// раз в 60 с (канон: per-shard оценка .partial-гигиены НЕ РЕЖЕ раза в
 /// минуту); не-лидер пере-захватывает лидерство и ждёт Loops:ScanIntervalSec.
 /// Backups:Enabled=false — серию LoopTick не пишем (живость выключенной
-/// подсистемы не алертится — паттерн orphan-sweep, arch/18 §2.2). Потеря
-/// leader-lease прерывает проход (гвард arch/17 S5). НЕ входит в
+/// подсистемы не алертится — паттерн orphan-sweep, arch/metrics/02-dictionary.md §2). Потеря
+/// leader-lease прерывает проход (гвард arch/synchronization/02-predicates-and-mutations.md §S5). НЕ входит в
 /// LoopsVitality/healthz: живость — только метрики LoopTick/LoopDuration.</summary>
 internal sealed class WalSweeperLoop(
     IOptionsMonitor<PgWorkerOptions> options,
@@ -22,7 +22,7 @@ internal sealed class WalSweeperLoop(
     Shared.Metrics.Worker.WorkerMetricsInstrumentation metrics,
     ILogger<WalSweeperLoop> logger) : BackgroundService
 {
-    // Канон arch/19 §4: оценка per-shard не реже раза в минуту (константа,
+    // Канон arch/backups/05-etcd-contract.md: оценка per-shard не реже раза в минуту (константа,
     // internal — инъекция тестам).
     internal static readonly TimeSpan SweepInterval = TimeSpan.FromSeconds(60);
 
@@ -42,7 +42,7 @@ internal sealed class WalSweeperLoop(
 
                 if (claims.IsLeader && options.CurrentValue.Backups.Enabled)
                 {
-                    // Cancellation-гвард лидерства (arch/17 S5).
+                    // Cancellation-гвард лидерства (arch/synchronization/02-predicates-and-mutations.md §S5).
                     using var leaderLease = CancellationTokenSource.CreateLinkedTokenSource(
                         stoppingToken, claims.LeaderToken);
                     var tick = leaderLease.Token;

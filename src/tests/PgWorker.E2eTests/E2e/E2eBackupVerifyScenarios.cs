@@ -12,13 +12,13 @@ namespace PgWorker.IntegrationTests.E2e;
 // Verify_Ok/Verify_Corruption (~2,5 мин суммарно — под порогом класса).
 // E2E полных бэкапов (t02, spec §7.1–7.4): изолированное окружение E2eEnvironment
 // (своя docker-сеть, свой etcd, СВОЯ ownS3-нода — withS3Node:true; порт динамический)
-// + verify/drill-операции в приёмниках WalReceiver нод (arch/19 §5) + живой кластер воркером с Backups:Enabled=true.
+// + verify/drill-операции в приёмниках WalReceiver нод (arch/backups/06-s3-layout.md) + живой кластер воркером с Backups:Enabled=true.
 // COMPLETED с полными полями и объектами в S3; FAILED по недоступному S3 с
 // переснятием новым id; deprovisioning чистит джобы и префикс; ротация
 // backup_password включает backup_exec. Каждый Fact — своё окружение: методы
 // оставляют после себя Active-кластеры, и без per-method изоляции воркер
 // следующего Fact'а подхватывал бы чужие джобы (инцидент Release). Имя кластера сценария —
-// {slug}{Fx.ClusterTag} (уникально на прогон, docs/e2e-isolation.md §1):
+// {slug}{Fx.ClusterTag} (уникально на прогон, arch/testing/02-e2e-isolation.md §1):
 // движковые контейнеры/тома pgw-*-<C>-* опознаются teardown'ом окружения.
 public sealed class E2eBackupVerifyScenarios(E2eBackupVerifyScenariosFx Ctx) : IClassFixture<E2eBackupVerifyScenariosFx>
 {
@@ -181,7 +181,7 @@ public sealed class E2eBackupVerifyScenarios(E2eBackupVerifyScenariosFx Ctx) : I
     // AAA (AC1/AC3/AC4): первый дрилл стартует сам после COMPLETED-полного,
 
     // Воркер с включённой подсистемой бэкапов: пул — policy.s3 (etcd), bucket и
-    // env-профиль кредов — env (t36); операции — в приёмниках нод (arch/19 §5), ускоренный бэкофф.
+    // env-профиль кредов — env (t36); операции — в приёмниках нод (arch/backups/06-s3-layout.md), ускоренный бэкофф.
     private Task<HostInstance> StartBackupHostAsync(
         string name, CancellationToken ct,
         IReadOnlyDictionary<string, string>? extraEnv = null)
@@ -228,7 +228,7 @@ public sealed class E2eBackupVerifyScenarios(E2eBackupVerifyScenariosFx Ctx) : I
 }
 
 /// <summary>Компаньон-фикстура окружения класса (полный контур на класс:
-/// сеть/etcd/CA/окно портов; docs/e2e-isolation.md §1).</summary>
+/// сеть/etcd/CA/окно портов; arch/testing/02-e2e-isolation.md §1).</summary>
 public sealed class E2eBackupVerifyScenariosFx : E2eContourFixture
 {
     protected override string Slug => "bk-verify";

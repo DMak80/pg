@@ -1,6 +1,6 @@
 
-# Образ сервиса ValkeyWorker (arch/21 §8; порт KafkaWorker.Dockerfile):
-# multi-stage publish → aspnet-runtime. Env-секретов per-install нет (arch/21 §4).
+# Образ сервиса ValkeyWorker (arch/valkeyworker/06-operability.md §5; порт KafkaWorker.Dockerfile):
+# multi-stage publish → aspnet-runtime. Env-секретов per-install нет (arch/valkeyworker/04-security.md §3).
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS publish
 WORKDIR /src
 COPY src/ ./src/
@@ -15,7 +15,7 @@ RUN apt-get update \
 COPY --from=publish /app ./
 ENV ASPNETCORE_HTTP_PORTS=8080
 EXPOSE 8080
-# /healthz — открытая https-грань без клиентского серта (arch/21 §1.1):
+# /healthz — открытая https-грань без клиентского серта (arch/valkeyworker/05-api.md §1):
 # серверный TLS + доверие ca.pem (volume /tls:ro в compose).
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
     CMD curl -sf --cacert /tls/ca.pem https://localhost:8080/healthz || exit 1

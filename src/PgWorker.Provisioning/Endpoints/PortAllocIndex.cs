@@ -52,7 +52,7 @@ public sealed class PortAllocIndex(
         return Result<IReadOnlySet<(string Host, int Port)>>.Success(busy);
     }
 
-    // Failover-обёртка — единая точка (arch/17 S7: sticky + per-attempt бюджет +
+    // Failover-обёртка — единая точка (arch/synchronization/03-fault-tolerance.md §S7: sticky + per-attempt бюджет +
     // негативный кэш; дубликат цикла обхода удалён).
     private Task<Result<T>> WithFailoverAsync<T>(Func<string, Task<Result<T>>> call)
         => EtcdEndpointFailover.CallAsync(endpoints, call);

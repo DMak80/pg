@@ -14,7 +14,7 @@ public sealed class E2eAppSecretScenarios(E2eAppSecretScenariosFx Ctx) : IClassF
 {
     private E2eEnvironment Fx => Ctx.Fx;
 
-    // Уникальное имя кластера на прогон ({slug}{тег прогона}, docs/e2e-isolation.md
+    // Уникальное имя кластера на прогон ({slug}{тег прогона}, arch/testing/02-e2e-isolation.md
     // §1): движковые контейнеры/тома pgw-<C>-* опознаются teardown'ом окружения
     // по своему тегу (OwnName) и снимаются им; константное имя запрещено.
     private string Cluster => $"appsecret{Fx.ClusterTag}";
@@ -60,7 +60,7 @@ public sealed class E2eAppSecretScenarios(E2eAppSecretScenariosFx Ctx) : IClassF
         // Assert 2 (критерий 2): подключение user=app паролем из etcd выполняет
         // запрос к данным. ПРЯМОЙ pg-порт ноды (пофрагментный проб multi-host DSN,
         // образец E2eScenarios); клиентский вход через пулер :6432 — отдельный
-        // ассерт базового сценария E2eScenarios (arch/14 §8).
+        // ассерт базового сценария E2eScenarios (arch/pgworker/08-operability.md §5).
         var hosts = Regex.Match(dsnKv.Value, "host=([^ ]+)").Groups[1].Value.Split(',');
         var ports = Regex.Match(dsnKv.Value, "port=([^ ]+)").Groups[1].Value.Split(',');
         hosts.Should().HaveCount(2);
@@ -114,7 +114,7 @@ public sealed class E2eAppSecretScenarios(E2eAppSecretScenariosFx Ctx) : IClassF
             await G.PutAsync(Endpoint, $"/clusters/{cluster}/shards/{shard}/replicas", "2", null, ct);
             await G.PutAsync(Endpoint, $"/clusters/{cluster}/shards/{shard}/nodes/{shard}a/state", "NOT_INITIALIZED", null, ct);
             await G.PutAsync(Endpoint, $"/clusters/{cluster}/shards/{shard}/nodes/{shard}b/state", "NOT_INITIALIZED", null, ct);
-            // Заявки ресурсов панель-создания (arch/14 §2.1 п.4): pgtune-фаза
+            // Заявки ресурсов панель-создания (arch/pgworker/01-placement.md §2): pgtune-фаза
             // provisioning требует их обязательно (f6d4574: дефолтов нет).
             await G.PutAsync(Endpoint, $"/service/{cluster}-{shard}/request_cpu", "2", null, ct);
             await G.PutAsync(Endpoint, $"/service/{cluster}-{shard}/request_mem", "2Gi", null, ct);
@@ -133,7 +133,7 @@ public sealed class E2eAppSecretScenarios(E2eAppSecretScenariosFx Ctx) : IClassF
 }
 
 /// <summary>Компаньон-фикстура окружения класса (полный контур на класс:
-/// сеть/etcd/CA/окно портов; docs/e2e-isolation.md §1).</summary>
+/// сеть/etcd/CA/окно портов; arch/testing/02-e2e-isolation.md §1).</summary>
 public sealed class E2eAppSecretScenariosFx : E2eContourFixture
 {
     protected override string Slug => "app-secret";

@@ -9,7 +9,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace KafkaWorker.UnitTests.Provisioning;
 
-// NodeSupervisor (arch/16 §5 C, spec §4.2 C): снесённый контейнер
+// NodeSupervisor (arch/kafkaworker/02-cluster-lifecycle.md §4 C, spec §4.2 C): снесённый контейнер
 // пересоздаётся с тем же томом; молчание дольше NodeDeadSec → UNREACHABLE +
 // пересоздание КОНТЕЙНЕРА без удаления тома (чистый том — только при
 // доказанной физической утрате тома в docker; RF=1 + утрата → warning);

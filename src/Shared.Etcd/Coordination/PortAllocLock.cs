@@ -6,7 +6,7 @@ using Shared.Etcd.Client;
 namespace Shared.Etcd.Coordination;
 
 /// <summary>
-/// Глобальный portalloc-клэйм (arch/14 §2.4/§3.3): взаимоисключение секции
+/// Глобальный portalloc-клэйм (arch/pgworker/01-placement.md §5/§3.3): взаимоисключение секции
 /// довыделения портов «чтение занятости → выбор троек → запись portalloc» —
 /// пер-кластерные клэймы кросс-кластерную гонку не закрывают (два параллельно
 /// сеемых кластера читают {prefix}/portalloc/* до первой записи соседа и
@@ -123,7 +123,7 @@ public sealed class PortAllocLock(
 
     private long Now() => clock.GetUtcNow().ToUnixTimeSeconds();
 
-    // Failover по endpoints — единая точка (arch/17 S7: sticky + per-attempt
+    // Failover по endpoints — единая точка (arch/synchronization/03-fault-tolerance.md §S7: sticky + per-attempt
     // бюджет + негативный кэш; дубликат цикла обхода удалён).
     private Task<Result<T>> WithFailoverAsync<T>(Func<string, Task<Result<T>>> call)
         => EtcdEndpointFailover.CallAsync(endpoints, call);
@@ -131,7 +131,7 @@ public sealed class PortAllocLock(
     private Task<Result> WithFailoverAsync(Func<string, Task<Result>> call)
         => EtcdEndpointFailover.CallAsync(endpoints, call);
 
-    // Value ключа {prefix}/locks/portalloc (arch/14 §3.3).
+    // Value ключа {prefix}/locks/portalloc (arch/pgworker/00-etcd-contract.md §4).
     private sealed record LockPayload(
         [property: JsonPropertyName("instance")] string Instance,
         [property: JsonPropertyName("since_unix")] long SinceUnix);

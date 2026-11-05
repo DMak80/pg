@@ -12,7 +12,7 @@ namespace PgWorker.IntegrationTests.Backups;
 // docker, динамические порты, guid-окружение, полный teardown при любом исходе
 // + ассерт чистоты). Кейсы:
 // 1. Приёмник жив под supervisord (RUNNING), /metrics внутри контейнера отдаёт
-//    словарь arch/18 §2.8 (минимум walreceiver_streaming), в etcd появляется
+//    словарь arch/metrics/02-dictionary.md §8 (минимум walreceiver_streaming), в etcd появляется
 //    ключ /pgworker/backups/<C>/<X>/agent/<N> с "state":"waiting_role" (REST
 //    ноды не поднят — роль none). SIGKILL приёмника → supervisord перезапускает
 //    (падение ≠ exit 0), ключ возвращается свежим lease-put'ом нового процесса.
@@ -27,7 +27,7 @@ public class NodePgNodeTests
         $"pgworker-node:sanity-{Shared.TestInfra.E2eImageTags.SuffixFor(E2eFixture.FindRoot(AppContext.BaseDirectory))}";
     private const string EtcdImage = "quay.io/coreos/etcd:v3.5.21";
 
-    // Пин pg_doorman (arch/14 §2.1 R1): пулер — ОБЯЗАТЕЛЬНАЯ часть образа ноды,
+    // Пин pg_doorman (arch/pgworker/01-placement.md §1 R1): пулер — ОБЯЗАТЕЛЬНАЯ часть образа ноды,
     // docker build без build-arg DOORMAN_IMAGE падает fail-fast. Пин — те же
     // четыре рабочие точки, что в ранбуке («Обновить пин pg_doorman»):
     // 00-up.sh, E2eEnvironment.DoormanImage, сам этот файл (DoormanImage —
@@ -35,7 +35,7 @@ public class NodePgNodeTests
     // ранбука; images.txt — отдельный шаг рутины.
     private const string DoormanImage = "ghcr.io/ozontech/pg_doorman:v3.11.0";
 
-    // Пулер обязателен (arch/14 §8): entrypoint ноды без непустого DOORMAN_CONFIG_TEMPLATE
+    // Пулер обязателен (arch/pgworker/08-operability.md §5): entrypoint ноды без непустого DOORMAN_CONFIG_TEMPLATE
     // гасит контейнер (fail-fast ДО supervisord) — контейнерам серии нужен YAML,
     // который парсер фактического pg_doorman v3.11.0 принимает: general/pools
     // с обязательными admin_username/admin_password (как в DoormanConfigBuilder;
@@ -44,7 +44,7 @@ public class NodePgNodeTests
     // pg_doorman его не трогает).
     // TLS disable: серт/конфиг в tmpfs доставляет агент PgNode — у изолированной
     // серии канала нет, пулер стартуют руками (supervisorctl-механика та же,
-    // arch/14 §2.1/§4).
+    // arch/pgworker/01-placement.md §1/§4).
     private const string DoormanConfigYaml =
         """
         general:
@@ -273,7 +273,7 @@ public class NodePgNodeTests
                 async () => await SupervisordStatusAsync(node, "pgnode", ct));
 
             // Assert — пулер стартуется supervisorctl-механикой (та же, что у
-            // агента PgNode: старт — командой после доставки; arch/14 §2.1/§4):
+            // агента PgNode: старт — командой после доставки; arch/pgworker/01-placement.md §1/§4):
             // изолированная серия канала не имеет — конфиг кладём руками в
             // tmpfs и стартуем; pg_doorman RUNNING под supervisord'ом
             // (user=postgres).
@@ -300,7 +300,7 @@ public class NodePgNodeTests
                 Budget,
                 async () => $"logs=[{await DockerAsync("logs", "--tail", "40", nodeName)}]");
 
-            // Assert — /metrics внутри контейнера отдаёт словарь arch/18 §2.8
+            // Assert — /metrics внутри контейнера отдаёт словарь arch/metrics/02-dictionary.md §8
             // (минимум walreceiver_streaming — серия есть при любом состоянии)
             var metrics = await node.ExecAsync(
                 ["curl", "-fsS", "http://127.0.0.1:8080/metrics"], ct: ct);
@@ -360,7 +360,7 @@ public class NodePgNodeTests
         return parsed?.Status.UpdatedUnix;
     }
 
-    // 9.2 (ревью, arch/19 §4 «ключ жив = приёмник жив»): supervisorctl stop
+    // 9.2 (ревью, arch/backups/05-etcd-contract.md «ключ жив = приёмник жив»): supervisorctl stop
     // pgnode (агент) — процесс получает SIGTERM (graceful: lease revoke — ключ
     // гаснет сразу), ПОТОЛОК ожидания — lease TTL 15 c; supervisorctl start —
     // ключ возвращается свежим процессом. Смерть процесса не оставляет
@@ -484,7 +484,7 @@ public class NodePgNodeTests
         await using var node = new ContainerBuilder(NodeImage)
             .WithName(nodeName)
             // Идентичности бэкапов нет (суть теста), но entrypoint требует
-            // непустой DOORMAN_CONFIG_TEMPLATE (пулер обязателен, arch/14 §8).
+            // непустой DOORMAN_CONFIG_TEMPLATE (пулер обязателен, arch/pgworker/08-operability.md §5).
             .WithEnvironment("DOORMAN_CONFIG_TEMPLATE", DoormanConfigYaml)
             .Build();
         await node.StartAsync(ct);

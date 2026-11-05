@@ -9,7 +9,7 @@ using Xunit;
 namespace S3Worker.UnitTests.App;
 
 // ReconcileLoop на моках, чтение состояния из слепка опросного кэша
-// (arch/17 S10, реестр E10): тик работает КАЖДЫЙ раз (self-healing ждёт
+// (arch/synchronization/05-delta-application.md §S10, реестр E10): тик работает КАЖДЫЙ раз (self-healing ждёт
 // не-etcd события — гейтов по дельте нет), etcd в тике не читается;
 // обработки идут по текущему слепку кэша.
 public class ReconcileLoopTests
@@ -29,12 +29,12 @@ public class ReconcileLoopTests
             new Shared.Metrics.Worker.WorkerMetricsInstrumentation(
                 new System.Diagnostics.Metrics.Meter("TestReconcile"), TimeProvider.System));
 
-    // Active-кластер (канонический минимум конфига, парсер arch/23 §2).
+    // Active-кластер (канонический минимум конфига, парсер arch/s3-clusters/02-keys.md §1).
     private void SeedCluster(string name)
         => _etcd.Seed($"/s3/clusters/{name}/config",
             """{"platform":"owns3","nodes":1,"created_unix":1756500000}""");
 
-    // AAA (arch/17 S10): тик работает КАЖДЫЙ раз — между тиками состояния не
+    // AAA (arch/synchronization/05-delta-application.md §S10): тик работает КАЖДЫЙ раз — между тиками состояния не
     // менялось, но self-healing не гейтится: processes зовутся каждым тиком.
     [Fact]
     public async Task Tick_ProcessesEveryTick()
@@ -54,7 +54,7 @@ public class ReconcileLoopTests
         processes.Ticks.Should().Equal(1, 1);
     }
 
-    // AAA (arch/17 S10, реестр E10): etcd-чтений в тике ноль — Range делает
+    // AAA (arch/synchronization/05-delta-application.md §S10, реестр E10): etcd-чтений в тике ноль — Range делает
     // только первичная загрузка кэша; тик читает слепок кэша, не etcd.
     [Fact]
     public async Task Tick_ReadsSnapshotFromCache_NoEtcdRangeInTick()
@@ -103,7 +103,7 @@ public class ReconcileLoopTests
         return last;
     }
 
-    // AAA (arch/17 S10): изменение домена доезжает до тика через слепок кэша —
+    // AAA (arch/synchronization/05-delta-application.md §S10): изменение домена доезжает до тика через слепок кэша —
     // обработка по НОВОМУ состоянию.
     [Fact]
     public async Task Tick_DomainChange_ProcessesNewStateFromSnapshot()
@@ -144,7 +144,7 @@ public class ReconcileLoopTests
     }
 
     // Управляемый источник контроль-плейна тика (замена EtcdPrefixSources на
-    // фейках, arch/17 S10): слепок правит тест — «опрос принёс изменение»
+    // фейках, arch/synchronization/05-delta-application.md §S10): слепок правит тест — «опрос принёс изменение»
     // эмулируется перечитыванием Store (реальный кэш обновляет слепок своим
     // фоновым опросом); «сбой опроса» — слепок остаётся прежним.
     private sealed class FakeSources : IPrefixPollSources

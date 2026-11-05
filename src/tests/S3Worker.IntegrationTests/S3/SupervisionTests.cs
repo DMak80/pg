@@ -77,7 +77,7 @@ public class SupervisionTests(S3ClusterFixture fx)
             $"supervision/{cluster}/marker.txt", TestContext.Current.CancellationToken);
         new StreamReader(marker.ResponseStream).ReadToEnd().Should().Be("volume-preserved");
 
-        // Доводка: тики надзора до RUNNING (задержка — бюджет ≤ 30 c; arch/24 §5 C
+        // Доводка: тики надзора до RUNNING (задержка — бюджет ≤ 30 c; arch/s3worker/02-cluster-lifecycle.md §4 C
         // «в RUNNING переводит следующий тик по health»).
         var deadline = DateTimeOffset.UtcNow.AddSeconds(30);
         while (DateTimeOffset.UtcNow < deadline)

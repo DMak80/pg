@@ -12,7 +12,7 @@ namespace KafkaWorker.IntegrationTests.E2e;
 
 /// <summary>
 /// Изолированное docker-E2E окружение KafkaWorker с ДВУМЯ инстансами сразу
-/// (порт ValkeyE2eEnvironment; docs/e2e-isolation.md + docs/e2e-launch.md):
+/// (порт ValkeyE2eEnvironment; arch/testing/02-e2e-isolation.md + arch/testing/01-e2e-launch.md):
 /// своя docker-сеть kfw-en-{runId}, свой etcd kfw-ee-{runId}, два
 /// воркер-контейнера kfw-ew1/ew2-{runId} (образ kafkaworker:e2e из
 /// docker/KafkaWorker.Dockerfile). Идентификатор прогона — полный guid во всех
@@ -26,7 +26,7 @@ namespace KafkaWorker.IntegrationTests.E2e;
 public sealed class KafkaE2eEnvironment : IAsyncDisposable
 {
     private const string EtcdImage = "quay.io/coreos/etcd:v3.5.21";
-    // Per-branch тег (docs/e2e-isolation.md §9): одна ветка — один набор образов.
+    // Per-branch тег (arch/testing/02-e2e-isolation.md §9): одна ветка — один набор образов.
     private static readonly string WorkerImageTag =
         $"e2e-{E2eImageTags.SuffixFor(FindRepoRoot())}";
     private static readonly string WorkerImage = $"kafkaworker:{WorkerImageTag}";
@@ -223,7 +223,7 @@ public sealed class KafkaE2eEnvironment : IAsyncDisposable
            || ex.Message.Contains("already allocated", StringComparison.OrdinalIgnoreCase)
            || ex.Message.Contains("address already in use", StringComparison.OrdinalIgnoreCase);
 
-    /// <summary>Сборка per-branch образа ONCE-per-process (docs/e2e-isolation.md
+    /// <summary>Сборка per-branch образа ONCE-per-process (arch/testing/02-e2e-isolation.md
     /// §9): параллельные классы ждут SemaphoreSlim-гейт; повторным StartAsync
     /// образ не пересобирается. NOBUILD (бисект) — сборка скипается, требуется
     /// существующий тег (отсутствие — fail-fast с подсказкой). После успешного
@@ -376,7 +376,7 @@ public sealed class KafkaE2eEnvironment : IAsyncDisposable
         }
     }
 
-    /// <summary>Объединение потоков (канон docs/e2e-launch.md §1):
+    /// <summary>Объединение потоков (канон arch/testing/01-e2e-launch.md §1):
     /// stdout-блок, затем stderr-блок; между двумя непустыми блоками ровно
     /// один перевод строки, края тримятся. docker-CLI разводит потоки
     /// контейнера по своим потокам — stdout-only теряет stderr-диагностику.
@@ -399,7 +399,7 @@ public sealed class KafkaE2eEnvironment : IAsyncDisposable
 
     /// <summary>docker logs — всегда объединённо (stdout+stderr контейнера):
     /// ["logs", .. logsArgs] — подкоманду logs подставляет сам хелпер;
-    /// бюджет 60 с (канон docs/e2e-launch.md §1).</summary>
+    /// бюджет 60 с (канон arch/testing/01-e2e-launch.md §1).</summary>
     public Task<string> RunDockerLogsAsync(IReadOnlyList<string> logsArgs, CancellationToken ct)
         => RunProcessMergedAsync("docker", ["logs", .. logsArgs], ct,
             TimeSpan.FromSeconds(60));
@@ -418,7 +418,7 @@ public sealed class KafkaE2eEnvironment : IAsyncDisposable
     public Task PutAsync(string key, string value, CancellationToken ct)
         => Gateway.PutAsync(EtcdEndpoint, key, value, lease: null, ct);
 
-    // Телеметрия (docs/e2e-launch.md §1): docker-логи+inspect etcd/ew1/ew2 и
+    // Телеметрия (arch/testing/01-e2e-launch.md §1): docker-логи+inspect etcd/ew1/ew2 и
     // всех kfw-{tag}* — ДО любого удаления; вызывается в teardown и на
     // slow/failed-phase.
     public async Task CollectDiagnosticsAsync(string mark)
@@ -473,7 +473,7 @@ public sealed class KafkaE2eEnvironment : IAsyncDisposable
     /// (брокеры/тома/сети, если демонтаж не успел) → ассерт чистоты.</summary>
     public async ValueTask DisposeAsync()
     {
-        // Телеметрия ДО любого удаления (docs/e2e-launch.md §1).
+        // Телеметрия ДО любого удаления (arch/testing/01-e2e-launch.md §1).
         try
         {
             await CollectDiagnosticsAsync("teardown");
@@ -485,7 +485,7 @@ public sealed class KafkaE2eEnvironment : IAsyncDisposable
 
         if (_failed)
         {
-            // docs/e2e-launch.md §3: упавший сценарий — контейнеры ОСТАНОВИТЬ,
+            // arch/testing/01-e2e-launch.md §3: упавший сценарий — контейнеры ОСТАНОВИТЬ,
             // не удалить (брокеры/тома/сети/etcd остаются для разбора).
             await SafeStopAsync(_worker2, remove: false);
             await SafeStopAsync(_worker1, remove: false);

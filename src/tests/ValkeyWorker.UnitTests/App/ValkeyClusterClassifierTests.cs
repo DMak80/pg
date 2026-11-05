@@ -5,7 +5,7 @@ using Xunit;
 
 namespace ValkeyWorker.UnitTests.App;
 
-// Классификация тика (arch/21 §5): 4 ветки + незнакомое state → Active (raw).
+// Классификация тика (arch/valkeyworker/README.md): 4 ветки + незнакомое state → Active (raw).
 public class ValkeyClusterClassifierTests
 {
     private static ValkeyClusterSnapshot Snap(string? state)
@@ -63,7 +63,7 @@ public class ValkeyClusterClassifierTests
     [Fact]
     public void UnknownState_ActiveRaw()
     {
-        // Arrange: state вне канона (система развивается, arch/20 §5).
+        // Arrange: state вне канона (система развивается, arch/valkey-clusters/05-fault-tolerance.md).
         // Act/Assert
         ValkeyClusterClassifier.Classify(Snap("DRAFT")).Should().Be(ValkeyClusterKind.Active);
     }

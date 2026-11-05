@@ -1,6 +1,6 @@
 namespace S3Worker.App.Api.Operations;
 
-// Эффективный конфиг установки (arch/24 §1.1 GET /api/config, u15): read-only,
+// Эффективный конфиг установки (arch/s3worker/07-api.md §1 GET /api/config, u15): read-only,
 // БЕЗ секретов/TLS/endpoints (Etcd/Docker/Api/OwnS3/Metrics-секции и любые
 // креды наружу не выходят никогда); поле source=env — значения применяются
 // рестартом воркера. Панель отдаёт это как есть через on-demand прокси

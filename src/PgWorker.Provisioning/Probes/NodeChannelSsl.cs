@@ -6,7 +6,7 @@ namespace PgWorker.Provisioning.Probes;
 /// §3.4): цепочка к per-install REST-CA (Shared.Tls) И SAN-пиннинг полного
 /// docker-имени ноды (SslStream.TargetHostName = host URL; мини-разбор DER
 /// SAN, тег 0x82 dNSName — образец PatroniRoleProbe.SanContainsLoopback,
-/// arch/13 §4). false — сертификат/цепочка/SAN не прошли (транспорт-фейл
+/// arch/pg-clusters/13-network-security.md §4). false — сертификат/цепочка/SAN не прошли (транспорт-фейл
 /// тика, transient).</summary>
 public static class NodeChannelSsl
 {

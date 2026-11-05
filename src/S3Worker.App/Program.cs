@@ -10,10 +10,10 @@ using Shared.Core.HealthChecks;
 using Shared.Core.Hosting;
 using Shared.Etcd.Client;
 
-// Точка входа S3Worker (arch/24 §8): host-builder с HTTPS-гранью HTTP API
+// Точка входа S3Worker (arch/s3worker/08-operability.md §5): host-builder с HTTPS-гранью HTTP API
 // (mTLS — только /api; /healthz — открытая грань), конфигурация appsettings+env, DI. Per-install
 // env-секреты — TLS API (S3W_API_TLS_*), docker-транспорт (S3W_DOCKER_*),
-// спец-ключ бэкапа etcd (S3W_ETCD_BACKUP_{ACCESSKEY,SECRETKEY}, arch/23 §6).
+// спец-ключ бэкапа etcd (S3W_ETCD_BACKUP_{ACCESSKEY,SECRETKEY}, arch/s3-clusters/06-secrets.md).
 var builder = WebApplication.CreateBuilder(args);
 
 // Конфигурация: appsettings.json + env-оверрайды S3Worker__*.
@@ -23,9 +23,9 @@ builder.Services.AddSingleton<HealthState>();
 // Прогресс-отметки долгих фаз reconcile в глубину процессов (provisioning).
 builder.Services.AddSingleton<Shared.Core.Hosting.ILoopProgress>(sp => sp.GetRequiredService<HealthState>());
 
-// Метрики (arch/18 §2.2): /metrics на том же HTTPS-Kestrel-порту, что /healthz —
-// открытая грань скрейпа без клиентского серта (arch/18 §5.2). Meter "S3Worker" —
-// s3worker_*-метрики домена (arch/24 §7).
+// Метрики (arch/metrics/02-dictionary.md §2): /metrics на том же HTTPS-Kestrel-порту, что /healthz —
+// открытая грань скрейпа без клиентского серта (arch/metrics/05-storage.md §2). Meter "S3Worker" —
+// s3worker_*-метрики домена (arch/s3worker/08-operability.md §4).
 builder.Services.AddAppMetrics("S3Worker", builder.Configuration.GetSection("S3Worker:Metrics"));
 builder.Services.AddSingleton(sp =>
 {
@@ -41,7 +41,7 @@ builder.Services.AddSingleton(sp =>
 
 // etcd-клиент: HTTP JSON gateway /v3/*; handler против DNS-флейпа Docker
 // embedded DNS : PooledConnectionLifetime + IPv4-first резолв.
-// Поллинг-инвариант (arch/24 §6): одиночный HTTP-вызов к etcd не молчит дольше
+// Поллинг-инвариант (arch/s3worker/08-operability.md §3): одиночный HTTP-вызов к etcd не молчит дольше
 // окна проверки watchdog — таймаут = половина окна (7.5 c при дефолтах).
 builder.Services.AddHttpClient("etcd", c => c.Timeout = TimeSpan.FromSeconds(7.5))
     .ConfigurePrimaryHttpMessageHandler(EtcdConnectCallback.CreateHandler);
@@ -50,12 +50,12 @@ builder.Services.AddHttpClient("etcd", c => c.Timeout = TimeSpan.FromSeconds(7.5
 DockerEnvBindings.ApplyTlsEnvOverrides(builder.Configuration);
 DockerEnvBindings.ApplySshEnvOverrides(builder.Configuration);
 
-// Fail-fast при старте (arch/24 §8): чистые предикаты S3StartupChecks —
+// Fail-fast при старте (arch/s3worker/08-operability.md §5): чистые предикаты S3StartupChecks —
 // endpoints etcd, advertise, docker-топология, пороги, bucket, порт-диапазон.
 builder.Services.AddOptions<S3WorkerOptions>()
     .Validate(o => S3StartupChecks.EtcdEndpoints(o), "S3Worker:Etcd:Endpoints are not configured")
     .Validate(o => S3StartupChecks.AdvertiseUrl(o),
-        "S3Worker:Api:AdvertiseUrl is not set or not https:// (env S3W_API_ADVERTISE_URL; HTTPS-only edge, mTLS on /api only — arch/24 §1.1)")
+        "S3Worker:Api:AdvertiseUrl is not set or not https:// (env S3W_API_ADVERTISE_URL; HTTPS-only edge, mTLS on /api only — arch/s3worker/07-api.md §1)")
     .Validate(o => S3StartupChecks.DockerTopology(o),
         "S3Worker:Docker: invalid topology (Swarm → SwarmManager required; Plain → non-empty Hosts table without duplicate names)")
     .Validate(o => S3StartupChecks.Thresholds(o),
@@ -66,9 +66,9 @@ builder.Services.AddOptions<S3WorkerOptions>()
         "S3Worker:Docker:PortRange: 0 < From < To ≤ 65535")
     .ValidateOnStart();
 
-// Клиентские креды кластеров — per-cluster в etcd (arch/23 §6):
+// Клиентские креды кластеров — per-cluster в etcd (arch/s3-clusters/06-secrets.md):
 // ClusterSecretsStore. Fail-fast полупары спец-ключа бэкапа etcd
-// (arch/24 §8) — СТАТИЧЕСКИЙ гвард (транспорт стору не нужен; задана
+// (arch/s3worker/08-operability.md §5) — СТАТИЧЕСКИЙ гвард (транспорт стору не нужен; задана
 // одна из S3W_ETCD_BACKUP_{ACCESSKEY,SECRETKEY} — воркер с обрезанным
 // env не стартует; полное отсутствие пары — легально, спец-ключ
 // обязателен только к моменту создания etcd-backup кластера).
@@ -79,7 +79,7 @@ builder.Services.AddSingleton(sp => new S3Worker.Provisioning.ClusterSecretsStor
     sp.GetRequiredService<Shared.Etcd.Client.IEtcdGateway>(),
     sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<S3WorkerOptions>>().Value.Etcd.Endpoints));
 
-// HTTP API хендлеры (arch/24 §1.1; Task 14) + счётчик операций.
+// HTTP API хендлеры (arch/s3worker/07-api.md §1; Task 14) + счётчик операций.
 builder.Services.AddSingleton(sp => new S3Worker.App.Api.S3ApiMetrics(
     sp.GetRequiredService<System.Diagnostics.Metrics.Meter>()));
 builder.Services.AddSingleton(sp => new S3Worker.App.Api.Operations.CreateClusterHandler(
@@ -106,7 +106,7 @@ builder.Services.AddSingleton(sp => new S3Worker.App.Api.Operations.SyncProbeHan
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<S3WorkerOptions>>().Value.Etcd.Endpoints,
     sp.GetRequiredService<TimeProvider>()));
-// Граф репликации и отзыв ключей (arch/24 §1.1): put-links, deny/allow.
+// Граф репликации и отзыв ключей (arch/s3worker/07-api.md §1): put-links, deny/allow.
 builder.Services.AddSingleton(sp => new S3Worker.App.Api.Operations.PutLinksHandler(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<S3WorkerOptions>>().Value.Etcd.Endpoints));
@@ -122,17 +122,17 @@ builder.Services.AddSingleton(sp => new S3Worker.App.Api.Operations.SeedDemoHand
     sp.GetRequiredService<S3Worker.App.Api.Operations.CreateClusterHandler>(),
     sp.GetRequiredService<IOptionsMonitor<S3WorkerOptions>>()));
 
-// Управляемый серт API (arch/24 §1.1): чтение ключа /workers/api_tls/s3worker
+// Управляемый серт API (arch/s3worker/07-api.md §1): чтение ключа /workers/api_tls/s3worker
 // ДО поднятия Kestrel; приоритет etcd > env; битый ключ — fail-fast.
 var etcdEndpoints = builder.Configuration.GetSection("S3Worker:Etcd:Endpoints").Get<string[]>() ?? [];
 var managedCert = await WorkerApiCertReader.ReadAsync(etcdEndpoints, "s3worker", CancellationToken.None);
 
-// HTTPS HTTP API (arch/24 §1.1): env-секреты TLS → конфиг, Kestrel c
+// HTTPS HTTP API (arch/s3worker/07-api.md §1): env-секреты TLS → конфиг, Kestrel c
 // серверным сертом; клиентский серт опционален, mTLS — только /api.
 TlsEndpoints.ApplyEnvOverrides(builder.Configuration);
 var apiTls = TlsEndpoints.ConfigureMtls(builder, port: 8080, managedCert);
 
-// Thumbprint применённого серта → дискавери-ключ (arch/24 §1.1): панель
+// Thumbprint применённого серта → дискавери-ключ (arch/s3worker/07-api.md §1): панель
 // сверяет с целевым → applied/pending restart.
 var apiCertThumbprint = apiTls.ServerCert is { } appliedCert
     ? Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(appliedCert.RawData)).ToLowerInvariant()
@@ -140,12 +140,12 @@ var apiCertThumbprint = apiTls.ServerCert is { } appliedCert
 
 // etcd-клиент (HTTP JSON gateway /v3/*) + координация (клэймы/лидерство, журнал).
 // Единое место литерала префикса etcd-ключей: Shared-координация параметризована
-// (arch/23 §8: /s3worker/{leader,claims,work,portalloc,locks/portalloc,instances,api,rotations}).
+// (arch/s3-clusters/08-coordination.md: /s3worker/{leader,claims,work,portalloc,locks/portalloc,instances,api,rotations}).
 const string KeyPrefix = "/s3worker";
 builder.Services.AddSingleton<IEtcdGateway>(sp =>
     new EtcdGateway(sp.GetRequiredService<IHttpClientFactory>().CreateClient("etcd")));
 
-// Клиент ownS3-ноды (arch/23 §5): health/bucket/usage; таймаут — поллинг-
+// Клиент ownS3-ноды (arch/s3-clusters/05-platform.md): health/bucket/usage; таймаут — поллинг-
 // инвариант (половина окна watchdog).
 builder.Services.AddHttpClient("owns3-node", c => c.Timeout = TimeSpan.FromSeconds(7.5));
 builder.Services.AddSingleton<S3Worker.Core.OwnS3.IOwnS3NodeClient>(sp =>
@@ -158,7 +158,7 @@ builder.Services.AddSingleton(sp => new ClaimStore(
     sp.GetRequiredService<TimeProvider>(),
     sp.GetRequiredService<IOptions<S3WorkerOptions>>().Value.Api.AdvertiseUrl,
     apiCertThumbprint));
-// Глобальный portalloc-клэйм (arch/23 §8) — DI-синглтон, InstanceId единый с
+// Глобальный portalloc-клэйм (arch/s3-clusters/08-coordination.md) — DI-синглтон, InstanceId единый с
 // ClaimStore (сквозная диагностика держателя).
 builder.Services.AddSingleton(sp => new PortAllocLock(
     KeyPrefix,
@@ -173,13 +173,13 @@ builder.Services.AddSingleton(sp => new WorkJournal(
 
 // docker-фабрика движков (health-пробы docker-hosts) + драйвер по режиму
 // (Plain: таблица Hosts; Swarm: manager endpoint) — fail-fast на противоречивой
-// конфигурации уже в S3StartupChecks.DockerTopology (arch/24 §8).
+// конфигурации уже в S3StartupChecks.DockerTopology (arch/s3worker/08-operability.md §5).
 builder.Services.AddSingleton<DockerEngineFactory>();
 builder.Services.AddSingleton<S3Worker.Docker.Drivers.IS3ClusterDriver>(sp =>
 {
     var docker = sp.GetRequiredService<IOptions<S3WorkerOptions>>().Value.Docker;
     var factory = sp.GetRequiredService<DockerEngineFactory>();
-    // Контурная сеть (arch/24 §2): Mode=Swarm + ContourNetwork — ошибка
+    // Контурная сеть (arch/s3worker/01-placement.md): Mode=Swarm + ContourNetwork — ошибка
     // конфигурации (сеть overlay назначает сам Swarm) — fail-fast старта.
     S3StartupChecks.EnsureContourNetworkMode(docker);
     if (string.Equals(docker.Mode, "Swarm", StringComparison.OrdinalIgnoreCase))
@@ -220,8 +220,8 @@ builder.Services.AddSingleton(ToProvisioningOptions(
 // done/aborted-state-changed выводит из provisioning, демонтаж начинается с нуля.
 builder.Services.AddSingleton(sp => new S3Worker.Provisioning.Processes.BootWaitBudget(
     sp.GetRequiredService<TimeProvider>()));
-// PKI репликации per-cluster + единая сборка env инстанса (arch/24 §4/§5);
-// процесс G — доводка состава mesh (arch/24 §5 G).
+// PKI репликации per-cluster + единая сборка env инстанса (arch/s3worker/04-security.md/§5);
+// процесс G — доводка состава mesh (arch/s3worker/05-mesh-governance.md G).
 builder.Services.AddSingleton(sp => new S3Worker.Provisioning.PkiStore(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<S3WorkerOptions>>().Value.Etcd.Endpoints,
@@ -237,7 +237,7 @@ builder.Services.AddSingleton(sp => new S3Worker.Provisioning.Processes.MeshGove
     sp.GetRequiredService<S3Worker.Core.OwnS3.IOwnS3NodeClient>(),
     ToProvisioningOptions(sp.GetRequiredService<IOptions<S3WorkerOptions>>().Value),
     sp.GetRequiredService<System.Diagnostics.Metrics.Meter>()));
-// Процесс F — зонд связности/синхронности (arch/24 §5 F).
+// Процесс F — зонд связности/синхронности (arch/s3worker/06-sync-probes.md F).
 builder.Services.AddSingleton(sp => new S3Worker.Provisioning.Processes.SyncProbeProcess(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<S3WorkerOptions>>().Value.Etcd.Endpoints,
@@ -331,7 +331,7 @@ builder.Services.AddSingleton(sp => new S3Worker.Provisioning.Processes.SecretRo
 builder.Services.AddSingleton<IS3ClusterProcesses, S3ClusterProcesses>();
 
 // Циклы: keepalive первым (lease живут до Reconcile), затем снапшоты и reconcile.
-// Опросные кэши контроль-плейна тика (arch/17 S10, arch/24 §5): ReconcileLoop
+// Опросные кэши контроль-плейна тика (arch/synchronization/05-delta-application.md §S10, arch/s3worker/README.md): ReconcileLoop
 // читает слепок и гейтится по дельте — etcd в каждом тике не range-ится.
 builder.Services.AddSingleton<IPrefixPollSources, EtcdPrefixSources>();
 builder.Services.AddSingleton<KeepaliveLoop>();
@@ -341,7 +341,7 @@ builder.Services.AddHostedService(sp => sp.GetRequiredService<KeepaliveLoop>());
 builder.Services.AddHostedService(sp => sp.GetRequiredService<SnapshotLoop>());
 builder.Services.AddHostedService(sp => sp.GetRequiredService<ReconcileLoop>());
 
-// Наблюдаемость (arch/24 §7): агрегированный health + per-loop обёртки.
+// Наблюдаемость (arch/s3worker/08-operability.md §4): агрегированный health + per-loop обёртки.
 builder.Services.AddSingleton<ServiceProbes>();
 builder.Services.AddSingleton<S3WorkerHealth>();
 builder.Services.AddSingleton<HealthCheckAbstract<ReconcileLoop>>(
@@ -356,7 +356,7 @@ builder.Services.AddHealthChecks()
     .AddCheck<HealthCheckAbstract<KeepaliveLoop>>("keepalive-loop")
     .AddCheck<HealthCheckAbstract<SnapshotLoop>>("snapshot-loop");
 
-// Watchdog зависших циклов (arch/24 §6): staleness активности (тик или
+// Watchdog зависших циклов (arch/s3worker/08-operability.md §3): staleness активности (тик или
 // прогресс-отметка) всех циклов → журнал + метрика + graceful self-stop;
 // Enabled=false (секция S3Worker:Loops:Watchdog) — компонент не регистрируется.
 builder.Services.AddSingleton<S3WorkerLoopsVitality>();
@@ -368,7 +368,7 @@ builder.Services.AddLoopWatchdog(
     loopsWatchdog,
     (sp, loop) => sp.GetRequiredService<Shared.Metrics.Worker.WorkerMetricsInstrumentation>()
         .WatchdogRestart(loop));
-// fail-fast инварианта живости (arch/24 §8): тики быстрых циклов чаще порога
+// fail-fast инварианта живости (arch/s3worker/08-operability.md §5): тики быстрых циклов чаще порога
 // сноса (Multiplier × CheckIntervalSec); конфиг watchdog не меняется
 var loopsCfg = builder.Configuration.GetSection("S3Worker:Loops").Get<LoopsOptions>() ?? new LoopsOptions();
 if (loopsWatchdog.Enabled)
@@ -378,12 +378,12 @@ if (loopsWatchdog.Enabled)
 var app = builder.Build();
 if (app.Services.GetRequiredService<IOptions<S3WorkerOptions>>().Value.Api.Tls.AllowInsecureHttp)
     app.Logger.LogWarning(
-        "S3Worker:Api:Tls:AllowInsecureHttp=true — HTTP without TLS (WAF tests ONLY, arch/24 §1.1)");
+        "S3Worker:Api:Tls:AllowInsecureHttp=true — HTTP without TLS (WAF tests ONLY, arch/s3worker/07-api.md §1)");
 if (apiTls.Source is { } certSource)
     app.Logger.LogInformation("S3Worker:Api:Tls: API server certificate — source {Source}", certSource);
 if (apiTls.Warning is { } certWarning)
     app.Logger.LogWarning("S3Worker:Api:Tls: {Warning}", certWarning);
-// Открытая грань (arch/24 §1.1): клиентский серт опционален на хендшейке;
+// Открытая грань (arch/s3worker/07-api.md §1): клиентский серт опционален на хендшейке;
 // 401 без валидного серта — только на /api; /healthz и /metrics — без серта.
 app.UseMiddleware<Shared.Tls.ClientCertAuthMiddleware>();
 app.MapAppMetrics();
@@ -392,7 +392,7 @@ app.MapWorkerApi();
 
 await app.RunAsync();
 
-// Опции процессов из дерева конфигурации (arch/24 §8; порт valkey).
+// Опции процессов из дерева конфигурации (arch/s3worker/08-operability.md §5; порт valkey).
 static S3Worker.Provisioning.Processes.S3ProvisioningOptions ToProvisioningOptions(S3WorkerOptions opts) => new(
     opts.Docker.PortRange.From,
     opts.Docker.PortRange.To,

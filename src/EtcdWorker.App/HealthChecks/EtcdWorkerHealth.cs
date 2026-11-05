@@ -4,7 +4,7 @@ using Microsoft.Extensions.Options;
 namespace EtcdWorker.App.HealthChecks;
 
 /// <summary>
-/// Агрегированный health EtcdWorker (arch/25 §1.1/§7): секции
+/// Агрегированный health EtcdWorker (arch/etcdworker/05-api.md §1/§7): секции
 /// etcd-reachable, docker-hosts, loops-alive (keepalive), snapshot-export.
 /// Пассивные данные — из HealthState (тики циклов), активные пробы —
 /// ServiceProbes. Недоступный etcd / docker-хост / зависший цикл → Degraded
@@ -75,7 +75,7 @@ public sealed class EtcdWorkerHealth(
             degraded.Add(
                 $"loop keepalive has not ticked for {(clock.GetUtcNow() - snapshot.LastKeepaliveTick.Value).TotalSeconds:F0} s");
 
-        // snapshot-export (arch/25 §1.1/§5): факт последней выгрузки DR-слепка
+        // snapshot-export (arch/etcdworker/05-api.md §1/§5): факт последней выгрузки DR-слепка
         // в S3 — секция ИНФОРМАЦИОННАЯ (OK/FAILED/возраст): FAILED-выгрузка не
         // деградирует health (алерт etcd-snapshot-export-failed — панель;
         // установка может жить без etcd-backup S3-кластера — R6, §7.3-стенд);

@@ -6,14 +6,14 @@ using Xunit;
 
 namespace S3Worker.IntegrationTests.E2e;
 
-// Takeover-E2E S3Worker (spec §11 сценарий 7, arch/17): kill ДЕРЖАТЕЛЯ клэйма
+// Takeover-E2E S3Worker (spec §11 сценарий 7, arch/synchronization/README.md): kill ДЕРЖАТЕЛЯ клэйма
 // посреди provisioning (P2: ноды PROVISIONING, контейнер east1 есть) —
 // выживший инстанс пере-захватывает клэйм (TTL ≤ 15 с) и доигрывает
 // provisioning до Active (endpoints/config финальны), без двойного
 // контроллера (клэйм один — instance выжившего). Держатель резолвится по
 // etcd-фактам ПЕРЕД kill (claims.instance → api-ключ → url → порт →
-// сопоставление с Api1/Api2Port). Изоляция/телеметрия — docs/e2e-isolation.md,
-// docs/e2e-launch.md.
+// сопоставление с Api1/Api2Port). Изоляция/телеметрия — arch/testing/02-e2e-isolation.md,
+// arch/testing/01-e2e-launch.md.
 public class S3E2eTakeoverTests
 {
     [Fact]
@@ -142,7 +142,7 @@ public class S3E2eTakeoverTests
         }
         catch
         {
-            // docs/e2e-launch.md §3: упавший сценарий — teardown остановит
+            // arch/testing/01-e2e-launch.md §3: упавший сценарий — teardown остановит
             // контейнеры, но не удалит (разбор по артефактам).
             fx.MarkFailed();
             throw;
@@ -177,7 +177,7 @@ public class S3E2eTakeoverTests
         }
     }
 
-    // config существует и state снят (Active, канон arch/23 §2.1).
+    // config существует и state снят (Active, канон arch/s3-clusters/02-keys.md §2).
     private static async Task<bool> JsonConfigWithoutStateAsync(
         S3E2eEnvironment fx, string cluster, CancellationToken ct)
     {

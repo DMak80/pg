@@ -4,7 +4,7 @@
 # health инстансов healthy (стенд поднимает 2); 2) /api/etcd/domain — 200 и
 # стендовый инвариант внешнего контура as-etcd: declaredNodes null («только
 # наблюдение»), managed-узлов нет, snapshots отсутствует, OK или FAILED с
-# маркером etcd-backup-missing («не настроено», arch/25 §5); иная причина
+# маркером etcd-backup-missing («не настроено», arch/etcdworker/00-etcd-contract.md); иная причина
 # FAILED — fail; 3) /api/etcd/status — members ≥ 3, все external
 # (peer-URL без etcdw-node-паттерна). Без мутаций; чистка — только сессионный
 # JAR (trap).
@@ -31,7 +31,7 @@ echo "$row" | jq -e 'all(.instances[]; .health == "healthy")' >/dev/null \
 echo "  etcdworker: $(echo "$row" | jq '.instances | length') instance(s), all healthy"
 
 # 2) Домен: внешний контур — «только наблюдение»; слепки отсутствуют, OK или
-#    FAILED с маркером etcd-backup-missing («не настроено», arch/25 §5);
+#    FAILED с маркером etcd-backup-missing («не настроено», arch/etcdworker/00-etcd-contract.md);
 #    иная причина FAILED — fail.
 dom="$(api /api/etcd/domain)"
 echo "$dom" | jq -e '.declaredNodes == null and (.nodes | length) == 0' >/dev/null \

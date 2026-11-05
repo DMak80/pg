@@ -17,7 +17,7 @@ namespace PgWorker.Backups;
 /// ПОСЛЕ контроля (записанное контролем или прежнее при «не время»); ChainBroken —
 /// вычисляется из State: state=WAL_CHAIN_ERROR (разрыв цепочки/слот — permanent, 
 /// маркер живёт в etcd-ключе и переживает рестарт/takeover) — приёмники шарда
-/// замирают сами по WAL_CHAIN_ERROR-гейту (arch/19 §3). Transient-деградация
+/// замирают сами по WAL_CHAIN_ERROR-гейту (arch/backups/02-wal-archive.md §1). Transient-деградация
 /// (DEGRADED lag/тишина) держит ChainBroken=false — приёмник живёт в контейнере
 /// ноды и продолжает стрим/ретраи без пересоздания (spec §3.2 п.5/п.7).</summary>
 public sealed record ControlOutcome(WalStreamState? State)
@@ -26,7 +26,7 @@ public sealed record ControlOutcome(WalStreamState? State)
 }
 
 /// <summary>WalStreamProcess — машина одного тика WAL-архивации шардов кластера
-/// под клэймом <C> (/, arch/19 §3): (0) санитарный снос legacy wal-контейнеров
+/// под клэймом <C> (/, arch/backups/02-wal-archive.md §1): (0) санитарный снос legacy wal-контейнеров
 /// pgw-backup-wal-&lt;C&gt;-* (миграция без оператора), (1) креды/ensure-зависимости,
 /// (2) резолв ДВУХ источников (мастер + sync-standby — двойная архивация), (3) ensure
 /// слота per-instance (живой слот на любой ноде — не WAL_CHAIN_ERROR), (4–5) факты приёмников
@@ -37,7 +37,7 @@ public sealed record ControlOutcome(WalStreamState? State)
 /// agents-фактами. runtime() == null (Enabled=false) — стоп-семантика через
 /// etcd-ключ /pgworker/backups-disabled (docker-сносов нет).
 /// Ошибка шарда не роняет остальные; guard'ы: Active-кластер, шард с dsn.
-/// Идемпотентность каждого шага (arch/17).</summary>
+/// Идемпотентность каждого шага (arch/synchronization/README.md).</summary>
 public sealed class WalStreamProcess(
     IEtcdGateway etcd,
     string[] endpoints,
@@ -53,7 +53,7 @@ public sealed class WalStreamProcess(
     TimeProvider clock,
     Action<string, string, long?>? lagObserver = null,
     ILogger? logger = null,
-    Action<string, string, long?>? uploadedAgeObserver = null, // uploaded-age (arch/18 §2.7)
+    Action<string, string, long?>? uploadedAgeObserver = null, // uploaded-age (arch/metrics/02-dictionary.md §7)
     TimeSpan? watchdogWindow = null,
     Shared.Core.Hosting.ILoopProgress? progress = null) // аудит долгих фаз: итерации поллинга дают Mark (spec §1.2 п.4)
 {
@@ -64,7 +64,7 @@ public sealed class WalStreamProcess(
     // контроль каждый тик (/).
     private readonly ConcurrentDictionary<string, long> _lastVerifyUnix = [];
 
-    // Пул-клиент per-pool: кэш теперь в САМОЙ фабрике (arch/19 §5 «Кэш
+    // Пул-клиент per-pool: кэш теперь в САМОЙ фабрике (arch/backups/06-s3-layout.md «Кэш
     // пул-клиентов» — breaker-стейт переживает тики, владелец — фабрика);
     // WalStream-кэш упразднён: локальный dispose кэшированного фабрикой
     // клиента закрывал бы общие HttpClients. Смена контекста — новая запись
@@ -77,12 +77,12 @@ public sealed class WalStreamProcess(
     {
         var cluster = snap.Config.Cluster;
 
-        // Мутации — только держателем живого клэйма (инвариант arch/14 §4.3).
+        // Мутации — только держателем живого клэйма (инвариант arch/pgworker/00-etcd-contract.md §6).
         if (!claims.IsMine(cluster))
             return Result<ProcessOutcome>.Failed(new ApplicationException(
                 $"backup-wal {cluster}: claim is not ours (or lost) — mutations are forbidden"));
 
-        //  (arch/19 §3, решение spec §7 №11): санитарный снос legacy
+        //  (arch/backups/02-wal-archive.md §1, решение spec §7 №11): санитарный снос legacy
         // wal-контейнеров pgw-backup-wal-<C>-* (без него старый агент держит
         // физический слот — один активный consumer — и блокирует приёмник).
         // Один list на тик кластера, идемпотентно (404 = успех); недоступность
@@ -112,7 +112,7 @@ public sealed class WalStreamProcess(
 
         var shardBackups = backups?.Shards
                            ?? (IReadOnlyDictionary<string, ShardBackups>)new Dictionary<string, ShardBackups>();
-        //  (arch/19 §4): резолв пула — ОДИН на тик кластера (контекст общий для
+        //  (arch/backups/05-etcd-contract.md): резолв пула — ОДИН на тик кластера (контекст общий для
         // всех шардов): etcd-чтения policy/пула/кредов не повторяются per-shard;
         // разбор результата (null/Failed-побочные эффекты) — per-shard ниже.
         var poolResult = await s3Factory.ResolveAsync(cluster, ct);
@@ -149,7 +149,7 @@ public sealed class WalStreamProcess(
 
     // ── Шаги одного шарда (spec §3.2 п.1–5) ──
 
-    // Наблюдатели контрольного прохода (arch/18 §2.7): лаг и uploaded-age —
+    // Наблюдатели контрольного прохода (arch/metrics/02-dictionary.md §7): лаг и uploaded-age —
     // один факт одного прохода, одинаковая null-семантика (WAL_CHAIN_ERROR/STOPPED/факта
     // нет — серии исчезают; null идемпотентен).
     private void Observe(string cluster, string shard, long? lagSegments, long? uploadedAgeSec)
@@ -158,7 +158,7 @@ public sealed class WalStreamProcess(
         uploadedAgeObserver?.Invoke(cluster, shard, uploadedAgeSec);
     }
 
-    // Диагностика медленных шагов тика (arch/19 §3): вызов к недоступной ноде
+    // Диагностика медленных шагов тика (arch/backups/02-wal-archive.md §1): вызов к недоступной ноде
     // пула (S3/Patroni/SQL) тянет тик до таймаута — шаг с длительностью обязан
     // быть виден в логе: без этого между «backup-wal Done» тишина, и причина
     // 60-секундных пауз тика недоказуема.
@@ -196,7 +196,7 @@ public sealed class WalStreamProcess(
             return;
         }
 
-        // (1.5) (arch/19 §4): разбор результата резолва пула (резолв — один
+        // (1.5) (arch/backups/05-etcd-contract.md): разбор результата резолва пула (резолв — один
         //     на тик кластера). null (пул не выбран) → стоп-семантика (агенты
         //     вниз, ключ не пишем); Failed (пул удалён/нода не заявлена/профиль
         //     без кредов/без адреса) → transient: journal + маркер
@@ -251,7 +251,7 @@ public sealed class WalStreamProcess(
             return;
         }
 
-        // (3) Слот per-instance (§3.3 п.3; arch/19 §3): имя слота одно и то же
+        // (3) Слот per-instance (§3.3 п.3; arch/backups/02-wal-archive.md §1): имя слота одно и то же
         //     на КАЖДОЙ ноде-источнике (слоты разных инстансов независимы); зонд —
         //     существование И wal_status: alive = существует и НЕ lost. WAL_CHAIN_ERROR —
         //     слоты ВСЕХ источников исчезли ИЛИ потеряны при живой цепочке (живой слот
@@ -275,7 +275,7 @@ public sealed class WalStreamProcess(
         {
             if (chainKnown && wal!.State is WalStreamStatus.Active or WalStreamStatus.Degraded)
             {
-                //  (arch/19 §3): инвариант писателя (last_uploaded_unix в живом
+                //  (arch/backups/02-wal-archive.md §1): инвариант писателя (last_uploaded_unix в живом
                 // ACTIVE/DEGRADED-ключе) может быть нарушен (ручная правка ключа/
                 // будущий писатель при ослабленном гварде парсера — прецедент
                 // ed1561b): битый ключ не роняет тик форс-мьютом. Фолбэк
@@ -320,7 +320,7 @@ public sealed class WalStreamProcess(
         else
         {
             // lost при живом втором источнике — НЕ WAL_CHAIN_ERROR: recreate потерянного
-            // (journal-before-manipulations, arch/17: фаза ДО мутации — видимость
+            // (journal-before-manipulations, arch/synchronization/README.md: фаза ДО мутации — видимость
             // действия при падении между drop и create; тик повторит).
             foreach (var lost in slotProbes.Where(p => p.Exists && p.WalStatus == "lost"))
             {
@@ -340,7 +340,7 @@ public sealed class WalStreamProcess(
             }
         }
 
-        // (4) (arch/19 §4): факты приёмников из статус-ключей etcd — Range
+        // (4) (arch/backups/05-etcd-contract.md): факты приёмников из статус-ключей etcd — Range
         //     /pgworker/backups/<C>/<X>/agent/ (мастер+sync — живые ключи lease).
         //     Транспорт etcd недоступен — null (transient: not-running-проверка и
         //     факты пропускаются, контроль продолжается по S3).
@@ -375,7 +375,7 @@ public sealed class WalStreamProcess(
         return read.IsSuccess ? read.Value : null;
     }
 
-    //  (arch/19 §4): agents-факты wal-ключа из статус-ключей приёмников —
+    //  (arch/backups/05-etcd-contract.md): agents-факты wal-ключа из статус-ключей приёмников —
     // по нодам portalloc шарда: ключ жив (есть в Range) → Running, нет → Absent.
     // exited новыми записями не пишется (легаси-значение панельного парсера).
     internal static IReadOnlyList<WalAgentState> BuildAgentFacts(
@@ -386,7 +386,7 @@ public sealed class WalStreamProcess(
                 ? WalAgentPresence.Running
                 : WalAgentPresence.Absent))];
 
-    //  (arch/19 §4): разбор ГОТОВОГО результата резолва пула (резолв — один
+    //  (arch/backups/05-etcd-contract.md): разбор ГОТОВОГО результата резолва пула (резолв — один
     // на тик кластера, результат общий для всех шардов). Контекст | null;
     // «пул не выбран» и Failed-резолв оба возвращают null (тик без мутаций),
     // различие — в побочных эффектах ниже.
@@ -411,7 +411,7 @@ public sealed class WalStreamProcess(
             return null;
         }
 
-        // Failed-резолв — transient (arch/19 §4): journal + маркер s3-pool-exhausted
+        // Failed-резолв — transient (arch/backups/05-etcd-contract.md): journal + маркер s3-pool-exhausted
         // в живом wal-статусе (алерт backup-pool-unreachable закрывает и случай
         // «policy записана, но резолв не удался»); ретраи тиком.
         // Диагностика (разбор): причина — в host.log (etcd-journal сносит teardown).
@@ -435,7 +435,7 @@ public sealed class WalStreamProcess(
     private sealed record WalSource(string Node, NodeAddress Addr, string PgHost, int PgPort);
 
     // nodeRef + conninfo-пара ноды-источника: каноническая нода → alias :5432 в
-    // сети нод; усыновлённая (object) → host:pg-port из portalloc (arch/19 §3).
+    // сети нод; усыновлённая (object) → host:pg-port из portalloc (arch/backups/02-wal-archive.md §1).
     // DRY: общий для мастера и sync.
     private (string NodeRef, string PgHost, int PgPort) ResolveNodeRef(
         ShardSpec shard, IReadOnlyDictionary<string, NodeAddress> addresses, NodeAddress node)
@@ -478,7 +478,7 @@ public sealed class WalStreamProcess(
         return null;
     }
 
-    // (5–7) Контроль (spec §3.2 п.6–8; arch/19 §3): при WAL_CHAIN_ERROR-ключе — КАЖДЫЙ
+    // (5–7) Контроль (spec §3.2 п.6–8; arch/backups/02-wal-archive.md §1): при WAL_CHAIN_ERROR-ключе — КАЖДЫЙ
     // тик (без VerifyIntervalSec-расчёта: скорость заживления; list дырного
     // префикса дёшев); иначе по расписанию. list S3 → chain_start (:
     // wal_start новейшего verify-OK COMPLETED-полного, ratchet — не понижается
@@ -488,7 +488,7 @@ public sealed class WalStreamProcess(
     // либо прошлого ключа, никогда от now() («факт над записью», ревью Ф4-2 №2);
     // lag-зонд; transient-деградации (not-running/gap/exhaustion/lag/тишина)
     // docker-сносов не требуют. gap (tli_jump) и pool_exhausted — факты
-    // статус-ключа МАСТЕР-приёмника (arch/19 §4); agents-факты — в ключе.
+    // статус-ключа МАСТЕР-приёмника (arch/backups/05-etcd-contract.md); agents-факты — в ключе.
     private async Task<ControlOutcome> ControlDueAsync(
         string cluster, string shard, WalStreamState? wal, ShardBackups? shardBackups,
         BackupsRuntimeOptions options, IReadOnlyList<WalSource> sources, string slot, string adminDsn,
@@ -535,8 +535,8 @@ public sealed class WalStreamProcess(
                 $"read wal-life {cluster}/{shard}: {chainLifeRead.Error!.Message}");
         var chainLife = chainLifeRead.Value;
 
-        // Истина прогресса — объекты S3 (arch/19 §3): list префикса wal/ —
-        // UNION по всем нодам пула (arch/19 §5 «где данные есть»): первая
+        // Истина прогресса — объекты S3 (arch/backups/02-wal-archive.md §1): list префикса wal/ —
+        // UNION по всем нодам пула (arch/backups/06-s3-layout.md «где данные есть»): первая
         // доступная нода может отставать (лаг mesh) — её соло-листинг даёт
         // ложную дыру и WAL_CHAIN_ERROR (прецедент AC4: нода после рестарта догоняет
         // mesh). Пульс прогресса на время вызова (канон): прямой S3-вызов
@@ -548,7 +548,7 @@ public sealed class WalStreamProcess(
             throw new ApplicationException($"list S3 {cluster}/{shard}/wal: {listed.Error!.Message}");
         var objects = listed.Value.Objects;
 
-        // chain_start (arch/19 §3): wal_start новейшего (по started_unix)
+        // chain_start (arch/backups/02-wal-archive.md §1): wal_start новейшего (по started_unix)
         // COMPLETED-полного с verify.state=OK — ОДНА точка с cutoff-ретенции
         // (§4 п.5; расщепление точек давало бы ложный WAL_CHAIN_ERROR после среза WAL);
         // ratchet — не понижается ниже записанной границы; нет OK-полного →
@@ -580,7 +580,7 @@ public sealed class WalStreamProcess(
 
         if (!chain.IsContinuous)
         {
-            // Дыра при НЕПОЛНОМ union-наблюдении (arch/19 §3/§5): среди read-целей
+            // Дыра при НЕПОЛНОМ union-наблюдении (arch/backups/02-wal-archive.md §1/§5): среди read-целей
             // пула есть не ответившие — сегмент «дыры» может лежать на
             // недоступной ноде (она была write-целью доставки), разрыв НЕ
             // доказан. Transient-DEGRADED с маркером (алерт
@@ -649,7 +649,7 @@ public sealed class WalStreamProcess(
             return new ControlOutcome(broken);
         }
 
-        // Факты прогресса — только из наблюдений: хвост потока (arch/19 §3) —
+        // Факты прогресса — только из наблюдений: хвост потока (arch/backups/02-wal-archive.md §1) —
         // финальный объект цепочки ИЛИ лучший .partial (версии схлопнуты по
         // сегменту WalChain.TailOf); цепочка не наблюдалась — прошлый ключ,
         // НИКОГДА не now() (ревью Ф4-2 №2). last_uploaded_segment — имя сегмента
@@ -682,7 +682,7 @@ public sealed class WalStreamProcess(
 
         Observe(cluster, shard, lag, now - lastUploadedUnix.Value); // факт прохода
 
-        //  (arch/19 §3/§4): tli-зазор — факт tli_jump из статус-ключа
+        //  (arch/backups/02-wal-archive.md §1/§4): tli-зазор — факт tli_jump из статус-ключа
         // МАСТЕР-приёмника (ключ живёт в etcd до следующего прыжка; docker-лог
         // агента не читается). Персистентная фиксация в ключе wal (переживает
         // рестарты воркера — не зависит от лога контейнера); снятие — покрытием
@@ -723,7 +723,7 @@ public sealed class WalStreamProcess(
         var state = WalStreamStatus.Active;
         if (gap is not null)
         {
-            //  (arch/19 §3/§4): первый приоритет деградаций — живой gap. Текст
+            //  (arch/backups/02-wal-archive.md §1/§4): первый приоритет деградаций — живой gap. Текст
             // строится ВСЕГДА из полей записи (from_tli = TLI хвостового сегмента
             // gap.From — первые 8 hex имени, через TliOfSegment; имена валидированы
             // парсером/писателем) — шаблон един для установки и удержания,
@@ -734,7 +734,7 @@ public sealed class WalStreamProcess(
         }
         else
         {
-            //  (arch/19 §4): «источник без живого приёмника» — мастер или sync
+            //  (arch/backups/05-etcd-contract.md): «источник без живого приёмника» — мастер или sync
             // без живого статус-ключа (lease истёк — процесс мёртв/нода вниз) при
             // не-WAL_CHAIN_ERROR wal-ключе → DEGRADED (transient-семантика, приоритет
             // ПОСЛЕ gap, ДО lag/тишины; алерт панельный по DEGRADED общий).
@@ -763,7 +763,7 @@ public sealed class WalStreamProcess(
             error = $"upload silence {now - lastUploadedUnix} s (threshold {options.WalStaleSec})";
         }
 
-        // // (arch/19 §3): исчерпание write-списка мастер-приёмника —
+        // // (arch/backups/02-wal-archive.md §1): исчерпание write-списка мастер-приёмника —
         // по флагу pool_exhausted статус-ключа (факт персистентен в etcd до
         // первого успешного put — окно вымывания лога ушло); контроль КАЖДЫЙ тик
         // при exhaustion-DEGRADED (IsExhaustionDegraded — расписание не
@@ -787,7 +787,7 @@ public sealed class WalStreamProcess(
                 cluster, shard, wal?.State.ToString() ?? "<none>", state,
                 error is null ? "" : $"; error={error}");
 
-        //  (arch/19 §4): agents-факты — в той же записи ключа (один писатель
+        //  (arch/backups/05-etcd-contract.md): agents-факты — в той же записи ключа (один писатель
         // WalStatusWriter, WriteIfChanged — идемпотентно; null — ключ без фактов).
         var next = new WalStreamState(
             state, slot, masterRef, start.Name, lastUploadedName, lastUploadedName,
@@ -796,7 +796,7 @@ public sealed class WalStreamProcess(
         return new ControlOutcome(next); // цепочка цела (ACTIVE/DEGRADED)
     }
 
-    // Разрыв цепочки (arch/19 §3): WAL_CHAIN_ERROR + error + граница разрыва в
+    // Разрыв цепочки (arch/backups/02-wal-archive.md §1): WAL_CHAIN_ERROR + error + граница разрыва в
     // chain_start. Маркер разрыва — ключ etcd (не память): переживает рестарт
     // воркера/takeover; заживление — контроль (COMPLETED-полный ≥ границы с
     // непрерывной цепью → ACTIVE). Агентов-контейнеров больше нет :
@@ -811,7 +811,7 @@ public sealed class WalStreamProcess(
     // (создание записи с нуля); при живом wal запись строится из него —
     // now()-фолбэк вызывающего в ключ не попадает. Если будущая правка начнёт
     // использовать baseUnix при живом wal — место пересмотреть: подмена факта
-    // now()-временем запрещена («факт над записью», arch/19 §3).
+    // now()-временем запрещена («факт над записью», arch/backups/02-wal-archive.md §1).
     private async Task<WalStreamState> BreakAsync(
         string cluster, string shard, WalStreamState? wal, string slot, string masterRef,
         string adminDsn, CancellationToken ct,
@@ -884,7 +884,7 @@ public sealed class WalStreamProcess(
         Func<CancellationToken, Task<Result>> call, CancellationToken ct)
         => await S3Pulse.CallAsync(progress, call, ct, (watchdogWindow ?? TimeSpan.FromSeconds(15)) / 2);
 
-    // / (arch/19 §3): exhaustion-DEGRADED — DEGRADED-ключ с маркером
+    // / (arch/backups/02-wal-archive.md §1): exhaustion-DEGRADED — DEGRADED-ключ с маркером
     // s3-pool-exhausted в error (исчерпание write-списка мастер-приёмника —
     // флаг pool_exhausted его статус-ключа) — контроль КАЖДЫЙ тик, симметрично
     // WAL_CHAIN_ERROR (скорость заживления; union-листинг — один класс вызовов).

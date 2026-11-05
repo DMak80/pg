@@ -2,7 +2,7 @@ using PgWorker.Core.Model;
 
 namespace PgWorker.Docker.Drivers;
 
-/// <summary>Нода, опознанная docker-инспекцией (spec §3.1, arch/14 §5 J AD1):
+/// <summary>Нода, опознанная docker-инспекцией (spec §3.1, arch/pgworker/processes/j-adoption.md J AD1):
 /// Host — docker-хост находки, Object — имя контейнера ноды; Patroni может
 /// прийти из сайдкара (env NODE_NAME), Doorman=0 при отсутствии биндинга.</summary>
 public sealed record DiscoveredNode(string NodeName, string Host, string Object, int Pg, int Patroni, int Doorman)

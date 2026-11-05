@@ -3,7 +3,7 @@ using Shared.Etcd.Coordination;
 
 namespace PgWorker.UnitTests.Provisioning;
 
-// HaFactState (arch/14 §5 C): чистые переходы HA-фактов — открытие/закрытие/
+// HaFactState (arch/pgworker/processes/c-node-supervisor.md C): чистые переходы HA-фактов — открытие/закрытие/
 // флап-сброс/перезапись; без etcd и часов (времена приходят параметрами).
 public class HaFactStateTests
 {

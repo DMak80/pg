@@ -10,7 +10,7 @@ using Xunit;
 
 namespace S3Worker.UnitTests.OwnS3;
 
-// Грань ownS3-ноды (arch/23 §5): health/usage — на мок-handler'е (наш HttpClient);
+// Грань ownS3-ноды (arch/s3-clusters/05-platform.md): health/usage — на мок-handler'е (наш HttpClient);
 // bucket-ветки — через loopback-сервер (AWSSDK строит СВОЙ HttpClient — мок
 // handler'а он не видит); контракты таймаутов — поллинг-инвариант (7.5 c).
 public class OwnS3NodeClientTests
@@ -246,7 +246,7 @@ public class OwnS3NodeClientTests
         client.Timeout.Should().Be(TimeSpan.FromSeconds(7.5));
     }
 
-    // ============ mesh-расширения (arch/24 §5 G, spec §5.1/§8.1.6) ============
+    // ============ mesh-расширения (arch/s3worker/05-mesh-governance.md G, spec §5.1/§8.1.6) ============
 
     // AAA: status 200 → active + имена соседей; SigV4-подпись присутствует.
     [Fact]
@@ -440,7 +440,7 @@ public class OwnS3NodeClientTests
         ok.PeerName.Should().Be(orchestrator.Certificate.Name);
     }
 
-    // ============ расширения зонда (arch/24 §5 F, spec §3.6) ============
+    // ============ расширения зонда (arch/s3worker/06-sync-probes.md F, spec §3.6) ============
 
     // AAA: probe 200 → парсинг camelCase-отчёта; rttMs отсутствует у непинганутого
     // пира → null (owns3/07 §2 — rttMs только при полученном ответе).

@@ -51,14 +51,14 @@ public static class InstallSecretsGuard
     }
 }
 
-/// <summary>Env бэкап-целей ноды для приёмника WAL (arch/19 §7):
+/// <summary>Env бэкап-целей ноды для приёмника WAL (arch/backups/08-secrets.md):
 /// bucket/CA https S3 — per-install константы (не секреты, не дрейфуют);
 /// ставит BuildSpec драйвера из Backups-опций воркера. Bucket null/пуст ⇒
 /// env не ставится — приёмник старт-фейлится (подсистема выключена
 /// валидацией старта: Enabled=true ⇒ Bucket непустой). StagingDir — путь
-/// staging полного в data-volume ноды (arch/19 §9; null/пуст ⇒ env не
+/// staging полного в data-volume ноды (arch/backups/09-operability.md §1; null/пуст ⇒ env не
 /// ставится — приёмник возьмёт дефолт /home/postgres/pgdata/backup-staging).
-/// PartialIntervalSec — период `.partial`-доотправки приёмника (arch/19 §9;
+/// PartialIntervalSec — период `.partial`-доотправки приёмника (arch/backups/09-operability.md §1;
 /// null/≤1 ⇒ env не ставится — приёмник берёт дефолт 3 с).</summary>
 public sealed record NodeBackupEnv(
     string? Bucket, string? CaPem, string? StagingDir = null, int? PartialIntervalSec = null,
@@ -68,7 +68,7 @@ public sealed record NodeBackupEnv(
 
 /// <summary>
 /// ENV контейнера pgworker-node для Spilo/Patroni — ТОЛЬКО неконфиденциальное
-/// (t05, arch/14 §4): идентификация Patroni-DCS, lease-скрипт, идентичность
+/// (t05, arch/pgworker/04-security.md): идентификация Patroni-DCS, lease-скрипт, идентичность
 /// приёмника, публичные CA. Секреты (SPILO_CONFIGURATION с rest_password,
 /// серт/ключ ноды, пароли PG) доставляет агент PgNode: bootstrap-ключ etcd
 /// (NodeBootstrapBuilder) + mTLS-push per-install паролей. Полный YAML
@@ -78,7 +78,7 @@ public sealed record NodeBackupEnv(
 public static class SpiloEnvBuilder
 {
     /// <summary>ENV контейнера ноды — ТОЛЬКО неконфиденциальное (t05,
-    /// arch/14 §4): идентификация Patroni-DCS, lease-скрипт, идентичность
+    /// arch/pgworker/04-security.md): идентификация Patroni-DCS, lease-скрипт, идентичность
     /// приёмника, публичные CA. Секреты (SPILO_CONFIGURATION с rest_password,
     /// серт/ключ ноды, пароли PG) доставляет агент PgNode: bootstrap-ключ etcd
     /// (NodeBootstrapBuilder) + mTLS-push per-install паролей.</summary>
@@ -95,14 +95,14 @@ public static class SpiloEnvBuilder
         var masterKey = $"/clusters/{topology.Cluster}/shards/{topology.Shard}/master";
         return new Dictionary<string, string>
         {
-            // Идентификация Patroni-кластера (scope глобально уникален, arch/11 §2).
+            // Идентификация Patroni-кластера (scope глобально уникален, arch/pg-clusters/11-buckets.md §2).
             ["SCOPE"] = topology.Scope,
             ["ETCD3_HOSTS"] = etcdHosts,
 
-            // Публичный CA REST-слоя (не секретен: arch/13 §4).
+            // Публичный CA REST-слоя (не секретен: arch/pg-clusters/13-network-security.md §4).
             ["SSL_RESTAPI_CA"] = caPem,
 
-            // Идентичность приёмника WAL (arch/19 §3 + arch/14 §2.1): СТРОГО
+            // Идентичность приёмника WAL (arch/backups/02-wal-archive.md §1 + arch/pgworker/01-placement.md §1): СТРОГО
             // всегда, независимо от Backups:Enabled — приёмник гейтится
             // etcd-стоп-ключами; включение подсистемы не требует пересоздания нод.
             ["PGW_BACKUP_CLUSTER"] = topology.Cluster,
@@ -122,7 +122,7 @@ public static class SpiloEnvBuilder
     }
 
     /// <summary>Полный YAML SPILO_CONFIGURATION (rest_password внутри) —
-    /// содержимое bootstrap-ключа etcd (arch/14 §3.2/§4); в docker-env НЕ
+    /// содержимое bootstrap-ключа etcd (arch/pgworker/00-etcd-contract.md §3/§4); в docker-env НЕ
     /// попадает. Тело — прежний YAML без изменений (байт-в-байт): эталон
     /// pg.env; параметры PG — merge(PGTune ∪ канон) при tuning != null, иначе
     /// прежний хардкод-набор; тайминги — из канона PatroniTimings (полы
@@ -247,14 +247,14 @@ public static class SpiloEnvBuilder
 
 /// <summary>
 /// Шаблон конфига pg_doorman ноды (env DOORMAN_CONFIG_TEMPLATE —
-/// неконфиденциальный; arch/11 §4; формат фактического pg_doorman
+/// неконфиденциальный; arch/pg-clusters/11-buckets.md §4; формат фактического pg_doorman
 /// v3.11.0 — YAML general/pools): ЕДИНСТВЕННЫЙ пул &lt;dbname&gt; (P14) с
 /// бэкендом 127.0.0.1:5432 этой ноды, transaction-режим (P13), бюджет
 /// серверных соединений — синхронизирован от рассчитанного PGTune
 /// max_connections (P15). Клиентский вход — :6432 c TLS (sslmode=require,
 /// P17 — TLS-файлы рендерит агент PgNode в tmpfs). Допуск клиентов —
 /// per-pool auth_query; литеральный плейсхолдер ${PGW_SU_PASSWORD} в
-/// password подставляет агент PgNode при рендере в tmpfs (arch/14 §4):
+/// password подставляет агент PgNode при рендере в tmpfs (arch/pgworker/04-security.md):
 /// пароль в docker-env НЕ попадает. InstallSecretsGuard остаётся гвардом
 /// алфавита подстановки в YAML-строку. admin_username/admin_password —
 /// обязательные поля general фактического v3.11.0 (без них отказ парса,

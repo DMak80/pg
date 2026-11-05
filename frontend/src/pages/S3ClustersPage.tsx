@@ -10,7 +10,7 @@ import { ErrorSection, LoadingSection } from '../components/LoadState';
 import { usePollingIntervalMs } from '../polling/PollingContext';
 import { CreateS3ClusterModal } from './s3-cluster/CreateS3ClusterModal';
 
-// State-бейдж канона arch/23 §2 (ACTIVE/NOT_INITIALIZED/TO_REMOVE).
+// State-бейдж канона arch/s3-clusters/02-keys.md §1 (ACTIVE/NOT_INITIALIZED/TO_REMOVE).
 function StateBadge({ state }: { state: S3ClusterSummaryDto['state'] }) {
   if (state === 'ACTIVE')
     return <Badge color="green" variant="light">ACTIVE</Badge>;

@@ -12,7 +12,7 @@ using PgWorker.Provisioning.Probes;
 
 namespace PgWorker.UnitTests.Provisioning;
 
-// AddShardProcess A0–A6 (spec §5.2; arch/14 §5 G): подъём ОТДЕЛЬНОГО
+// AddShardProcess A0–A6 (spec §5.2; arch/pgworker/processes/g-add-shard.md G): подъём ОТДЕЛЬНОГО
 // пустого шарда в Active-кластере. Главный ассерт границы §2.1 — SQL не
 // содержит CREATE SCHEMA bucket_*, routing/status не пишутся.
 public class AddShardProcessTests
@@ -56,13 +56,13 @@ public class AddShardProcessTests
         etcd.Seed("/service/shop-shard1/leader", """{"name":"shard1a","poll_queued_commands":0}""");
         etcd.Seed("/service/shop-shard2/initialize", "7403705125687833962");
         etcd.Seed("/service/shop-shard2/leader", """{"name":"shard2a","poll_queued_commands":0}""");
-        // Заявки ресурсов ОБЯЗАТЕЛЬНЫ (arch/14 §2.1 п.4) — сидим как панель.
+        // Заявки ресурсов ОБЯЗАТЕЛЬНЫ (arch/pgworker/01-placement.md §2) — сидим как панель.
         etcd.Seed("/service/shop-shard1/request_cpu", "2");
         etcd.Seed("/service/shop-shard1/request_mem", "8Gi");
         etcd.Seed("/service/shop-shard2/request_cpu", "2");
         etcd.Seed("/service/shop-shard2/request_mem", "8Gi");
 
-        // Тройки портов ПОСЛЕДОВАТЕЛЬНЫЕ (arch/14 §2.4 п.2): per-host базы
+        // Тройки портов ПОСЛЕДОВАТЕЛЬНЫЕ (arch/pgworker/01-placement.md §5 п.2): per-host базы
         // разносятся на ширину тройки — shard1 h1/h2 15000-15002, shard2 15003-15005.
         var existing = new Dictionary<string, NodeAddress>
         {
@@ -297,7 +297,7 @@ public class AddShardProcessTests
     }
 
     // AAA (advertised-режим, канон формата master-ключа <host>:<doormanPort>,
-    // arch/14 §5): хост-часть ключа у всех нод одного хоста ОДНА (E2E:
+    // arch/pgworker/README.md): хост-часть ключа у всех нод одного хоста ОДНА (E2E:
     // host.docker.internal) — дискриминирует только doorman-порт. Старый
     // host-матч выбирал произвольную ноду (на практике реплику) — SQL-фаза
     // падала 25006 «cannot execute CREATE DATABASE in a read-only

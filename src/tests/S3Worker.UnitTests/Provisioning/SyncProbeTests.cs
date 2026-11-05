@@ -8,7 +8,7 @@ using Xunit;
 
 namespace S3Worker.UnitTests.Provisioning;
 
-// Процесс F — SyncProbe (arch/24 §5 F, spec §8.1): матрица connectivity по
+// Процесс F — SyncProbe (arch/s3worker/06-sync-probes.md F, spec §8.1): матрица connectivity по
 // фактическим targets, пары сверек, свёртка/бюджет страниц, вердикты
 // synced/lagging/diverged по прогресс-критерию, гейт SyncIntervalSec и заявка
 // /s3worker/probes/<C> (прогон → del). Канонические JSON — строгими строками.
@@ -19,7 +19,7 @@ public class SyncProbeTests
     // getenv-профиль store'а: спец-ключ etcd-backup (тестами не используется).
     private static readonly Dictionary<string, string?> Env = [];
 
-    // Валидный secrets-ключ кластера (канон arch/23 §6): root-пара +
+    // Валидный secrets-ключ кластера (канон arch/s3-clusters/06-secrets.md): root-пара +
     // backups(read-write) и panel(read-only); значения — фиксированные
     // несекретные литералы.
     private static string SecretsJson(string cluster) => ClusterSecretsStore.Serialize(new ClusterSecrets(
@@ -115,7 +115,7 @@ public class SyncProbeTests
         // Act
         var result = await rig.Probe.TickAsync(Snap(), TestContext.Current.CancellationToken);
 
-        // Assert: строгий канон arch/23 §3 — полная матрица ok.
+        // Assert: строгий канон arch/s3-clusters/03-observation-statuses.md — полная матрица ok.
         result.IsSuccess.Should().BeTrue(result.Error?.Message);
         rig.Etcd.Store["/s3/clusters/demo/connectivity"].Value.Should().Be(
             "{\"state\":\"OK\",\"checked_unix\":" + now +
@@ -194,7 +194,7 @@ public class SyncProbeTests
         var result = await rig.Probe.TickAsync(Snap(), TestContext.Current.CancellationToken);
 
         // Assert: строки east1 в links нет; линки east2 по его ответу; единственный
-        // линк offline (живых нет) → DOWN по канону arch/23 §3; probe_error
+        // линк offline (живых нет) → DOWN по канону arch/s3-clusters/03-observation-statuses.md; probe_error
         // называет east1 (реконструкции нет — §3.2 п.4).
         result.IsSuccess.Should().BeTrue(result.Error?.Message);
         var json = rig.Etcd.Store["/s3/clusters/demo/connectivity"].Value;

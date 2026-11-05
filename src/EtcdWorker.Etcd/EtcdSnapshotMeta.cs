@@ -3,7 +3,7 @@ using System.Text.Json.Serialization;
 
 namespace EtcdWorker.Etcd;
 
-/// <summary>Метаданные выгрузки слепка etcd (t08 → EtcdWorker, arch/19 §5): объект
+/// <summary>Метаданные выгрузки слепка etcd (t08 → EtcdWorker, arch/backups/06-s3-layout.md): объект
 /// etcd/snapshot-&lt;id&gt;.meta.json в bucket бэкапов. UploadedUnix —
 /// фактическое время put'а объекта; TakenUnix — метка снятия из имени файла
 /// (семантика «покрытия» статус-ключа — не здесь). Revision — ревизия etcd

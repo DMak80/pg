@@ -101,5 +101,5 @@ public sealed class KafkaLifecycleNotFoundException(string cluster, string topic
     : Exception($"{op} request for topic {topic} of kafka cluster {cluster} not found");
 
 // Ресурс/эндпоинт воркера не найден или выключен — 404 (напр., seed-эндпоинт
-// за флагом EnableSeedEndpoint, arch/16 §1.1; Task 10).
+// за флагом EnableSeedEndpoint, arch/kafkaworker/07-api.md §1; Task 10).
 public sealed class WorkerApiNotFoundException(string message) : Exception(message);

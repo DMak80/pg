@@ -14,7 +14,7 @@ public sealed record UpdateClusterConfigCommand(string Cluster, UpdateClusterCon
 // Панель отвечает 204 — DTO-заглушка (паттерн 204-мутаций DELETE; тело пустое).
 public sealed record ClusterConfigUpdatedDto(string Cluster);
 
-// Прокси: панель не пишет в etcd — команда уходит в API PgWorker (arch/14 §1.1);
+// Прокси: панель не пишет в etcd — команда уходит в API PgWorker (arch/pgworker/07-api.md §1);
 // применение к Patroni — конвергенция DCS воркера («применит воркер», 02 §9.10).
 [InjectAsScoped]
 public sealed class UpdateClusterConfigCommandHandler(IWorkerApiGateway api)

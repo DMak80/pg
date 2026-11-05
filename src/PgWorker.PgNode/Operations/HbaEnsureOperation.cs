@@ -2,7 +2,7 @@ using System.Diagnostics;
 
 namespace PgWorker.PgNode.Operations;
 
-/// <summary>Обеспечение pg_hba-строки backup_exec (arch/19 §7, канал arch/25
+/// <summary>Обеспечение pg_hba-строки backup_exec (arch/backups/08-secrets.md, канал arch/etcdworker/README.md
 /// №22): приёмник в СВОЁМ контейнере добавляет идемпотентную строку в
 /// ИСТОЧНИК конфига Patroni /run/postgres.yml (секция postgresql.pg_hba —
 /// единственная «  pg_hba:» в файле) и будит Patroni SIGHUP'ом — тот сам
@@ -15,7 +15,7 @@ namespace PgWorker.PgNode.Operations;
 public sealed class HbaEnsureOperation(IProcessRunner runner)
 {
     /// <summary>Идемпотентная hba-строка физического стриминга pg_basebackup
-    /// под ролью backup_exec (arch/19 §7).</summary>
+    /// под ролью backup_exec (arch/backups/08-secrets.md).</summary>
     public const string HbaLine = "hostssl replication backup_exec all scram-sha-256";
 
     /// <summary>Маркер поиска строки в файлах (подстрока — как grep -q
@@ -52,7 +52,7 @@ public sealed class HbaEnsureOperation(IProcessRunner runner)
 
         // SIGHUP Patroni — безусловно после возможной вставки (семантика
         // прежнего скрипта); exit-код pkill не значим. Паттерн «patro[n]i» —
-        // regex-группа против само-матча по cmdline (arch/19 §7).
+        // regex-группа против само-матча по cmdline (arch/backups/08-secrets.md).
         var pkill = new ProcessStartInfo { FileName = "pkill" };
         pkill.ArgumentList.Add("-HUP");
         pkill.ArgumentList.Add("-f");

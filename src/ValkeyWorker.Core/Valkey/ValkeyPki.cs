@@ -6,7 +6,7 @@ using System.Security.Cryptography.X509Certificates;
 namespace ValkeyWorker.Core.Valkey;
 
 /// <summary>
-/// Per-cluster PKI valkey (arch/20 §2, arch/21 §2;): self-signed CA
+/// Per-cluster PKI valkey (arch/valkey-clusters/02-keys.md §1, arch/valkeyworker/01-placement.md;): self-signed CA
 /// (RSA-2048, CN=vwk-&lt;C&gt;-ca-&lt;отпечаток&gt; — subject уникален на генерацию,
 /// 10 лет) и серверные серты нод (CN=node&lt;k&gt;, SAN ТОЛЬКО advertised-хост
 /// DNS|IP, EKU ServerAuth, 10 лет зажаты в CA) — CertificateRequest .NET,
@@ -44,7 +44,7 @@ public static class ValkeyPki
         var request = new CertificateRequest(
             $"CN={commonName}", rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
         var san = new SubjectAlternativeNameBuilder();
-        // SAN — ТОЛЬКО advertised-хост кластера (arch/21 §2): standalone,
+        // SAN — ТОЛЬКО advertised-хост кластера (arch/valkeyworker/01-placement.md): standalone,
         // inter-node-алиаса нет; IP-хост — IP-запись SAN.
         if (IPAddress.TryParse(advertisedHost, out var ip))
             san.AddIpAddress(ip);

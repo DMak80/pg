@@ -6,7 +6,7 @@ using Xunit;
 
 namespace ValkeyWorker.UnitTests.App;
 
-// etcd-клиент против DNS-флейпа Docker embedded DNS ( arch/21 §7):
+// etcd-клиент против DNS-флейпа Docker embedded DNS ( arch/valkeyworker/06-operability.md §4):
 // PooledConnectionLifetime (пере-резолв после пересоздания etcd-контейнера) +
 // IPv4-first последовательный резолв (параллельные A/AAAA флейпят).
 public class EtcdConnectCallbackTests

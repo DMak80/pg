@@ -7,7 +7,7 @@ using Shared.Core.HealthChecks;
 
 namespace EtcdWorker.App.Loops;
 
-// Цикл DR-слепков etcd (arch/25 §4): лидер ClaimStore доводит
+// Цикл DR-слепков etcd (arch/etcdworker/04-snapshots.md): лидер ClaimStore доводит
 // отстающую выгрузку (CatchUp ДО снятия — транзиент цели не растягивает
 // RPO-окно), решает снятие чистым SnapshotSchedule (плановый раз в
 // IntervalMin + внеочередной при росте revision и выгрузке старше
@@ -59,7 +59,7 @@ internal sealed class SnapshotLoop(
                 {
                     try
                     {
-                        // Cancellation-гвард лидерства (arch/17 S5): потеря leader-lease
+                        // Cancellation-гвард лидерства (arch/synchronization/02-predicates-and-mutations.md §S5): потеря leader-lease
                         // прерывает тик лидера; цикл продолжит как не-лидер.
                         using var leaderLease = CancellationTokenSource.CreateLinkedTokenSource(
                             stoppingToken, claims.LeaderToken);
@@ -82,7 +82,7 @@ internal sealed class SnapshotLoop(
                     }
                     catch (OperationCanceledException) when (!stoppingToken.IsCancellationRequested)
                     {
-                        // Потеря leader-lease прервала тик (гвард arch/17 S5): не ошибка —
+                        // Потеря leader-lease прервала тик (гвард arch/synchronization/02-predicates-and-mutations.md §S5): не ошибка —
                         // цикл продолжит как не-лидер и пере-захватит ≤ TTL + тик скана.
                         logger.LogWarning("snapshot leadership lost mid-tick");
                     }
@@ -155,7 +155,7 @@ internal sealed class SnapshotLoop(
                 }
                 else
                 {
-                    // Отказ выгрузки — домен статус-ключа, НЕ цикла (arch/25 §5:
+                    // Отказ выгрузки — домен статус-ключа, НЕ цикла (arch/etcdworker/00-etcd-contract.md:
                     // FAILED с маркером etcd-backup-missing/транзиент — ретраи
                     // тиком, CatchUp догонит; алерт — панель): снятие прошло,
                     // слепок в локальном томе, цикл здоров.

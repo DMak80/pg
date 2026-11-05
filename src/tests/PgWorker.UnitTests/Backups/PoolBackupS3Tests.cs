@@ -3,7 +3,7 @@ using Shared.Core;
 
 namespace PgWorker.UnitTests.Backups;
 
-// PoolBackupS3 (arch/19 §5): перебор write/read-целей на фейках
+// PoolBackupS3 (arch/backups/06-s3-layout.md): перебор write/read-целей на фейках
 // FakeTargetS3 с управляемым отказом (инъекция targetFactory).
 public class PoolBackupS3Tests
 {
@@ -92,7 +92,7 @@ public class PoolBackupS3Tests
             targetFactory: uri => map[uri]);
     }
 
-    // Управляемое время breaker-окна (arch/19 §5): сдвиг часов имитирует
+    // Управляемое время breaker-окна (arch/backups/06-s3-layout.md): сдвиг часов имитирует
     // истечение окна исключения отказавшей цели.
     private sealed class FakeClock : TimeProvider
     {
@@ -232,7 +232,7 @@ public class PoolBackupS3Tests
         result.IsSuccess.Should().BeTrue();
     }
 
-    // ===== Circuit-breaker цели (arch/19 §5 «Исключение отказавшей цели») =====
+    // ===== Circuit-breaker цели (arch/backups/06-s3-layout.md «Исключение отказавшей цели») =====
 
     // AAA: транспортный отказ первой цели исключает её из перебора на окно
     // breaker'а — повторный вызов идёт сразу на вторую цель (без пер-попыточного
@@ -325,7 +325,7 @@ public class PoolBackupS3Tests
         t2.Calls.Should().Be(2);
     }
 
-    // AAA (arch/19 §5): отмена/исчерпание бюджета ИСТОЧНИКА — не транспортный
+    // AAA (arch/backups/06-s3-layout.md): отмена/исчерпание бюджета ИСТОЧНИКА — не транспортный
     // отказ цели: breaker цели НЕ открывается, цель остаётся в переборе
     // (иначе истёкший общий бюджет одного вызова исключал бы на 45 с все
     // неуспешные цели, включая возможно здоровую, и доводка тормозила бы
@@ -383,7 +383,7 @@ public class PoolBackupS3Tests
         second.Error!.Message.Should().Contain("conn refused");
     }
 
-    // AAA (arch/19 §5 «где данные есть»): union-листинг ПРОИЗВОЛЬНОГО
+    // AAA (arch/backups/06-s3-layout.md «где данные есть»): union-листинг ПРОИЗВОЛЬНОГО
     // префикса объединяет ответы ВСЕХ read-целей с дедупом по имени и живёт,
     // пока отвечает хотя бы одна (первая живая может не иметь сегмента,
     // залитого на вторую — прецедент AC4: полный заливается на первую живую
@@ -496,7 +496,7 @@ public class PoolBackupS3Tests
 
     // AAA: детальный union — одна цель не ответила: успех, объекты живой цели
     // ДОСТАВЛЕНЫ, FailedTargets несёт отказавший uri (факт неполноты для
-    // контроля дыры, arch/19 §5).
+    // контроля дыры, arch/backups/06-s3-layout.md).
     [Fact]
     public async Task ListWalUnionDetailed_PartialFailure_ReportsFailedTargets()
     {

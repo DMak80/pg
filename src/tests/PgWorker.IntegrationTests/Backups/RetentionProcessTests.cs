@@ -475,7 +475,7 @@ public class RetentionProcessTests(EtcdFixture fixture)
         second!.Value.Should().Be(first.Value, "no put when the observed fields are unchanged");
     }
 
-    // AC6-семантика «при изменении» (arch/19 §4): два прохода с неизменными
+    // AC6-семантика «при изменении» (arch/backups/05-etcd-contract.md): два прохода с неизменными
     // данными при ИДУЩИХ часах — второй put НЕ выполняется: updated_unix не
     // участвует в сравнении, свежесть прохода видна по возрасту updated_unix.
     [Fact]
@@ -561,7 +561,7 @@ public class RetentionProcessTests(EtcdFixture fixture)
             .And.NotContain("used_percent");
     }
 
-    //  (arch/19 §5): недоступный пул — used_bytes был бы занижен, частичный
+    //  (arch/backups/06-s3-layout.md): недоступный пул — used_bytes был бы занижен, частичный
     // вердикт НЕ публикуется (ключа нет → квота-алерт не молчит зря, прежнее
     // полное значение остаётся); тик успешен — неполнота transient, полный
     // проход повторит.

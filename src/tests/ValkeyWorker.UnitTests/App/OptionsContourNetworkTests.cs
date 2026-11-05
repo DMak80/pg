@@ -4,7 +4,7 @@ using Xunit;
 
 namespace ValkeyWorker.UnitTests.App;
 
-// Fail-fast старта (arch/21 §2): ContourNetwork не поддерживается в Mode=Swarm —
+// Fail-fast старта (arch/valkeyworker/01-placement.md): ContourNetwork не поддерживается в Mode=Swarm —
 // сеть overlay назначает сам Swarm (канон PgWorker).
 public class OptionsContourNetworkTests
 {

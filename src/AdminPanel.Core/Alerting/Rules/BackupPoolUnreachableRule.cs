@@ -5,7 +5,7 @@ namespace AdminPanel.Core.Alerting.Rules;
 // backup-pool-unreachable (critical, каталог 03 §4): маркер
 // s3-pool-exhausted в error статусов воркера — wal DEGRADED (приёмник в
 // ретрай-цикле исчерпания списка) или любой full FAILED (исчерпание
-// списка/Failed-резолв пула, arch/19 §4). Единая алертная грань «запись в пул
+// списка/Failed-резолв пула, arch/backups/05-etcd-contract.md). Единая алертная грань «запись в пул
 // не доставлена ни на одну ноду списков».
 [InjectAsSingleton(typeof(IAlertRule))]
 public sealed class BackupPoolUnreachableRule : IAlertRule

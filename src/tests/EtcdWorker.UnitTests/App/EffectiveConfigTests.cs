@@ -6,7 +6,7 @@ using Xunit;
 
 namespace EtcdWorker.UnitTests.App;
 
-// Эффективный конфиг (arch/25 §1.1 GET /api/config): состав групп ровно по
+// Эффективный конфиг (arch/etcdworker/05-api.md §1 GET /api/config): состав групп ровно по
 // канону, значения — из EtcdWorkerOptions; секретные секции (Etcd-endpoints,
 // Api/TLS, Docker Tls/Ssh, Snapshots.Dir/Hosts) в тело НЕ попадают.
 public class EffectiveConfigTests
@@ -104,7 +104,7 @@ public class EffectiveConfigTests
         using var doc = JsonDocument.Parse(
             JsonSerializer.Serialize(EtcdWorkerEffectiveConfig.From(o), Json));
 
-        // Assert — ровно 5 ключей верхнего уровня канона (arch/25 §1.1):
+        // Assert — ровно 5 ключей верхнего уровня канона (arch/etcdworker/05-api.md §1):
         // любой ЛИШНИЙ ( unmapped-поле Options, добавленное «для диагностики»)
         // валит тест — секретные секции наружу не выходят по whitelist, а здесь
         // лочится сам состав тела.

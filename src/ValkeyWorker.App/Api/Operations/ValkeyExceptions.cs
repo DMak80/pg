@@ -1,6 +1,6 @@
 namespace ValkeyWorker.App.Api.Operations;
 
-// Исключения API воркера valkey-домена (arch/21 §1.1; порт KafkaExceptions):
+// Исключения API воркера valkey-домена (arch/valkeyworker/05-api.md §1; порт KafkaExceptions):
 // тексты ProblemDetails-маппинга ApiModule.
 
 // Все etcd-endpoint'ы недоступны — писать некуда — 503.

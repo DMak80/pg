@@ -5,7 +5,7 @@ using Shared.Etcd.Client;
 namespace EtcdWorker.App.HealthChecks;
 
 /// <summary>
-/// Активные пробы внешних зависимостей для /healthz (arch/25 §7):
+/// Активные пробы внешних зависимостей для /healthz (arch/etcdworker/06-operability.md §4):
 /// etcd-reachable (range по всем endpoints) и docker-hosts (ping каждого хоста
 /// plain-таблицы / manager swarm). Пробы с коротким таймаутом — health не висит.
 /// </summary>

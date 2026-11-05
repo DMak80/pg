@@ -233,7 +233,7 @@ public sealed class CancelPasswordRotationHandler(
 
     protected override string TicketKey(string cluster) => $"/valkeyworker/rotations/{cluster}";
 
-    // Стейт доигрывания E-ротации (arch/21 §5 E) — участвует в гварде и txn.
+    // Стейт доигрывания E-ротации (arch/valkeyworker/04-security.md §4 E) — участвует в гварде и txn.
     protected override string? StateKey(string cluster)
         => $"/valkeyworker/work/{cluster}/rotation";
 

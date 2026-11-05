@@ -13,7 +13,7 @@ namespace PgWorker.IntegrationTests.Backups;
 
 /// <summary>
 /// СОБСТВЕННАЯ ownS3-нода одного Fact (: хранилище — пул ownS3; e2e-isolation
-/// §1/§3, docs/e2e-isolation.md): guid-имя pgw-eo-{guid}, динамический хост-порт,
+/// §1/§3, arch/testing/02-e2e-isolation.md): guid-имя pgw-eo-{guid}, динамический хост-порт,
 /// свой bucket — тесты не делят хранилище ни с соседними классами, ни с чужими
 /// прогонами, посев одного теста физически не виден другому. Готовность —
 /// wait-стратегия /healthz; bucket создаётся прямым AWSSDK-клиентом (создание

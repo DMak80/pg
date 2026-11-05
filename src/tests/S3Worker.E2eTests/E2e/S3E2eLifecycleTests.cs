@@ -13,9 +13,9 @@ namespace S3Worker.IntegrationTests.E2e;
 // s3worker:e2e-{run} → API-create → контейнеры s3w-<C>-node{k} + тома данных
 // → дискавери (config без state, endpoints host:port, placed_on) → S3-проба
 // root-кредом (bucket per-install) → идемпотентность тиков → add-node (RMW
-// endpoints, config.nodes актуализируется). Изоляция по docs/e2e-isolation.md
+// endpoints, config.nodes актуализируется). Изоляция по arch/testing/02-e2e-isolation.md
 // (guid во всех именах, полный teardown, ассерт чистоты), телеметрия по
-// docs/e2e-launch.md ([PHASE]-фазы, артефакты до удаления).
+// arch/testing/01-e2e-launch.md ([PHASE]-фазы, артефакты до удаления).
 public class S3E2eLifecycleTests
 {
     // Сценарий 1 Provisioning (spec §5.1, §2.1): create nodes=2 → 201 →
@@ -39,7 +39,7 @@ public class S3E2eLifecycleTests
             // [PHASE] wait-worker: /healthz по mTLS готов (бюджет ≤ 30 с).
             await WaitWorkerAsync(fx, api, ct);
 
-            // Act: создание кластера через API → 201 (заявка, arch/23 §2).
+            // Act: создание кластера через API → 201 (заявка, arch/s3-clusters/02-keys.md §1).
             using var created = await api.PostAsJsonAsync("/api/s3/clusters",
                 new
                 {
@@ -78,7 +78,7 @@ public class S3E2eLifecycleTests
                 .And.Contain("\"policy\":\"read-only\"");
 
             // Assert 1b: ЗНАЧЕНИЯ секретов не появляются в журнале воркера,
-            // его docker-логах и его env (инвариант arch/23 §6; сверка в
+            // его docker-логах и его env (инвариант arch/s3-clusters/06-secrets.md; сверка в
             // коде — провал ассерта не печатает значения в артефакты).
             using (var secretsDoc = JsonDocument.Parse(secretsKey.Value))
             {
@@ -116,7 +116,7 @@ public class S3E2eLifecycleTests
             }
 
             // Assert 3: endpoints — advertised-пары host.docker.internal:P для обеих нод
-            // (формат arch/23 §2.1; литералов портов нет — из portalloc).
+            // (формат arch/s3-clusters/02-keys.md §2; литералов портов нет — из portalloc).
             var endpoints = (await fx.Gateway.GetAsync(fx.EtcdEndpoint,
                 $"/s3/clusters/{cluster}/endpoints", ct)).Value!.Value;
             var addresses = endpoints.Split(',');
@@ -163,7 +163,7 @@ public class S3E2eLifecycleTests
         }
         catch
         {
-            // docs/e2e-launch.md §3: упавший сценарий — teardown остановит
+            // arch/testing/01-e2e-launch.md §3: упавший сценарий — teardown остановит
             // контейнеры, но не удалит (разбор по артефактам).
             fx.MarkFailed();
             throw;
@@ -236,7 +236,7 @@ public class S3E2eLifecycleTests
         }
     }
 
-    // Сценарий 3 AddNode (spec §5.2, arch/23 §2.2): Active N=2 → POST /nodes →
+    // Сценарий 3 AddNode (spec §5.2, arch/s3-clusters/02-keys.md §3): Active N=2 → POST /nodes →
     // 201 → west1 RUNNING ≤ бюджета; endpoints RMW — 3 адреса, прежние на
     // месте; config.nodes актуализирован до 3; volume west1 есть, bucket
     // на west1 создан.
@@ -297,7 +297,7 @@ public class S3E2eLifecycleTests
                 return config is not null && config.Contains("\"nodes\":3");
             }, TimeSpan.FromSeconds(115), ct);
 
-            // Assert 1: endpoints RMW — 3 адреса, прежние 2 на месте (arch/23 §2.2).
+            // Assert 1: endpoints RMW — 3 адреса, прежние 2 на месте (arch/s3-clusters/02-keys.md §3).
             var endpointsAfter = (await fx.Gateway.GetAsync(fx.EtcdEndpoint,
                 $"/s3/clusters/{cluster}/endpoints", ct)).Value!.Value;
             var addresses = endpointsAfter.Split(',');
@@ -356,7 +356,7 @@ public class S3E2eLifecycleTests
         }, TimeSpan.FromSeconds(30), ct);
 
     // [PHASE] wait-active: все ноды RUNNING + endpoints записан + config.state
-    // снят — канонический факт Active (arch/23 §2: воркер снимает state ПОСЛЕ
+    // снят — канонический факт Active (arch/s3-clusters/02-keys.md §1: воркер снимает state ПОСЛЕ
     // подъёма нод и записи endpoints; бюджет ≤ 100 c + тики — NodeBootSec).
     private static async Task WaitClusterActiveAsync(
         S3E2eEnvironment fx, string cluster, CancellationToken ct, params string[] nodes)
@@ -407,7 +407,7 @@ public class S3E2eLifecycleTests
     }
 
     // S3-клиент к ноде root-кредом кластера из per-cluster secrets-ключа etcd
-    // (arch/23 §2; path-style; advertised-хост резолвим с хоста; значения
+    // (arch/s3-clusters/02-keys.md §1; path-style; advertised-хост резолвим с хоста; значения
     // только в память — без печати).
     private static async Task<List<string>> ListBucketsWithRootAsync(
         S3E2eEnvironment fx, string cluster, int port, CancellationToken ct)

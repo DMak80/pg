@@ -5,7 +5,7 @@ using KafkaWorker.Provisioning.Processes;
 
 namespace KafkaWorker.UnitTests.Kafka;
 
-// Кодек примитивов Kafka-протокола (arch/16 §2.4; spec §4.1/§4.8,
+// Кодек примитивов Kafka-протокола (arch/kafkaworker/06-rebalancing.md §1; spec §4.1/§4.8,
 // Приложение A): golden bytes против apache/kafka 4.0.0.
 public sealed class KafkaProtocolCodecTests
 {

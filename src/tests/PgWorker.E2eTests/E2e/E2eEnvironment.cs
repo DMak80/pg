@@ -12,12 +12,12 @@ using Xunit;
 namespace PgWorker.IntegrationTests.E2e;
 
 /// <summary>
-/// Изолированное e2e-окружение контура «Вариант A» (docs/e2e-isolation.md).
+/// Изолированное e2e-окружение контура «Вариант A» (arch/testing/02-e2e-isolation.md).
 /// RYUK ОТКЛЮЧЁН: владелец всех объектов контура — сам прогон (фаза 1/teardown,
 /// stop-режим упавшего сценария обязан ОСТАВИТЬ etcd/сеть для разбора), ryuk же
 /// сносит testcontainers-объекты (etcd, сеть окружения) при смерти host-процесса
 /// — ломает и телеметрию failed-прогона, и ассерт чистоты.
-/// Подъём (StartAsync, docs/e2e-isolation.md §1): собственная docker-сеть
+/// Подъём (StartAsync, arch/testing/02-e2e-isolation.md §1): собственная docker-сеть
 /// pgw-en-{guid}, etcd-контур (1 или 3 узла), опционально ownS3-нода; etcd/ownS3
 /// и API SUT-воркера публикуют ДИНАМИЧЕСКИЕ хост-порты (тест ходит по
 /// localhost:{порт}), etcd/ownS3 закреплены за СТАТИЧЕСКИМИ IP сети (t02:
@@ -43,7 +43,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
 
     private const string EtcdImage = "quay.io/coreos/etcd:v3.5.21";
 
-    // ===== Теги pg-собираемых e2e-образов: PER-BRANCH (docs/e2e-isolation.md §9) =====
+    // ===== Теги pg-собираемых e2e-образов: PER-BRANCH (arch/testing/02-e2e-isolation.md §9) =====
 
     // Суффикс — ТОЛЬКО имя ветки (одна ветка — один набор образов; git-инвариант
     // «одна ветка — один checkout»); git недоступен / HEAD detached — fallback
@@ -65,23 +65,23 @@ public sealed class E2eEnvironment : IAsyncDisposable
     // dl.min.io метки времени расходятся).
     internal const string McImage = "minio/mc:RELEASE.2025-08-13T08-35-41Z";
 
-    // Пин pg_doorman (arch/14 §2.1 R1): обязательный build-arg DOORMAN_IMAGE
+    // Пин pg_doorman (arch/pgworker/01-placement.md §1 R1): обязательный build-arg DOORMAN_IMAGE
     // при сборке образа ноды (EnsureStaticAsync); внешний мульти-арх образ —
     // зеркалируется в локальный registry (images.txt + pull-images.sh).
     internal const string DoormanImage = "ghcr.io/ozontech/pg_doorman:v3.11.0";
 
-    // Образ узла: несёт ОБЯЗАТЕЛЬНЫЙ пулер (arch/14 §8) — пин DOORMAN_IMAGE
+    // Образ узла: несёт ОБЯЗАТЕЛЬНЫЙ пулер (arch/pgworker/08-operability.md §5) — пин DOORMAN_IMAGE
     // при сборке EnsureStaticAsync (константа DoormanImage ниже).
     public static string NodeImage => $"pgworker-node:e2e-{ImageTagSuffix}";
 
-    /// <summary>Образ file_sd-генератора (t15, arch/18 §5.4): собирается ЛЕНИВО —
+    /// <summary>Образ file_sd-генератора (t15, arch/metrics/05-storage.md §4): собирается ЛЕНИВО —
     /// из сценария E2ePatroniFileSd (EnsureSdImageAsync), чтобы остальные E2E-серии
     /// (включая кейс-маркер Scale_AddEmptyShard) не платили этой сборкой.</summary>
     public static string SdImage => $"sdgenerator:e2e-{ImageTagSuffix}";
 
     // Креды ownS3-ноды E2E: root-пара (mc/сид/чтение теста) и read-write ключ
     // ноды — им соответствует ключ «backups» per-cluster secrets-ключа пула
-    // (arch/19 §7: PgWorker читает /s3/clusters/<C>/secrets, env-профилей нет).
+    // (arch/backups/08-secrets.md: PgWorker читает /s3/clusters/<C>/secrets, env-профилей нет).
     // Секреты генерируются в рантайме (криптостойкий RNG) — не зашиваются в
     // исходник; инициализация раз на процесс, переиспользуются всеми сериями.
     public const string S3RootUser = "owns3-e2e-root";
@@ -98,9 +98,9 @@ public sealed class E2eEnvironment : IAsyncDisposable
     }
     private const string BucketName = "pgworker-backups";
 
-    // Пул S3 E2E — bucket per-install (единый на всех нодах пула, arch/19 §5;
+    // Пул S3 E2E — bucket per-install (единый на всех нодах пула, arch/backups/06-s3-layout.md;
     // ownS3-ноды окружения поднимаются с ним в StartAsync); креды пула сеет
-    // SeedS3PoolAsync в secrets-ключ (канон arch/23 §2).
+    // SeedS3PoolAsync в secrets-ключ (канон arch/s3-clusters/02-keys.md §1).
     public const string PoolBucket = BucketName;
 
     private readonly List<HostInstance> _hosts = [];
@@ -120,7 +120,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
     // сеть окружения одна, alias'ы резолвятся напрямую).
     private readonly int _s3HostPort;
 
-    // Политика телеметрии E2E (docs/e2e-launch.md): упавший сценарий (exit≠0
+    // Политика телеметрии E2E (arch/testing/01-e2e-launch.md): упавший сценарий (exit≠0
     // раннера / MarkFailed) — teardown ОСТАНАВЛИВАЕТ контейнеры, не удаляя:
     // логи «что произошло» доступны до зачистки. Перезапуск теста для
     // выяснения причин запрещён.
@@ -306,7 +306,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
         };
     }
 
-    /// <summary>Каталог телеметрии прогона (docs/e2e-launch.md): docker-логи
+    /// <summary>Каталог телеметрии прогона (arch/testing/01-e2e-launch.md): docker-логи
     /// контейнеров (снимаются ПЕРЕД любым удалением), фазовый журнал, дампы.
     /// Фаза 1 — хост-каталог (volume /artifacts раннера смонтирован сюда:
     /// записи видны с обеих сторон); фаза 2 — /artifacts.</summary>
@@ -343,7 +343,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
     public EtcdGateway Gateway { get; }
 
     /// <summary>Факт одного приёмника WAL из статус-ключа agent/&lt;N&gt; (t25,
-    /// arch/19 §4): сценарии сверяют доставку по ключам etcd и объектам S3,
+    /// arch/backups/05-etcd-contract.md): сценарии сверяют доставку по ключам etcd и объектам S3,
     /// а не по docker ps wal-контейнеров (их больше нет). State/Role — строковые
     /// значения ключа ("streaming"/"waiting_role"/...; "master"/"sync"/"none").</summary>
     public sealed record WalAgentFact(
@@ -352,7 +352,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
 
     /// <summary>Чтение фактов приёмников шарда (t25): Range
     /// /pgworker/backups/&lt;C&gt;/&lt;X&gt;/agent/ — толерантный парсинг
-    /// arch/19 §4 (битые/чужие значения пропускаются); отсутствующие ключи
+    /// arch/backups/05-etcd-contract.md (битые/чужие значения пропускаются); отсутствующие ключи
     /// (lease истёк) в списке не появляются — «ключ жив = приёмник жив».</summary>
     public async Task<IReadOnlyList<WalAgentFact>> ReadWalAgentFactsAsync(
         string cluster, string shard, CancellationToken ct)
@@ -395,7 +395,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
             }
             catch (System.Text.Json.JsonException)
             {
-                // битое/чужое значение — не факт (толерантность arch/19 §4)
+                // битое/чужое значение — не факт (толерантность arch/backups/05-etcd-contract.md)
             }
         }
         return facts;
@@ -449,7 +449,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
 
     // ===== Порт-план нод: per-контур окно =====
 
-    // База окна и ширина (arch/14 §2.4 п.2): контуры процесса получают
+    // База окна и ширина (arch/pgworker/01-placement.md §5 п.2): контуры процесса получают
     // непересекающиеся окна счётчиком (физический bind-резерв упразднён —
     // тестовая инфраструктура не публикует порты; фактические коллизии троек
     // с чужими публикациями аллокатор воркера обходит штатной проверкой
@@ -463,7 +463,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
 
     /// <summary>Окно PortRange контура (публикации троек продуктовых нод):
     /// одинаковый диапазон всем воркерам контура — их аллокаторы согласованы
-    /// общим etcd (portalloc ∪ busy-проверка docker, arch/14 §2.4).</summary>
+    /// общим etcd (portalloc ∪ busy-проверка docker, arch/pgworker/01-placement.md §5).</summary>
     public (int From, int To) RemainingPortRange => (_portFrom, _portTo);
 
     // Секреты установки (Д7) — общие обоим процессам контура.
@@ -497,7 +497,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
         _s3Node = s3Node;
         _s3HostPort = s3HostPort;
         Gateway = new EtcdGateway(_gatewayHttp);
-        // Динамические публикации (docs/e2e-isolation.md §2): тестовый процесс
+        // Динамические публикации (arch/testing/02-e2e-isolation.md §2): тестовый процесс
         // ходит по localhost:{фактический порт}. Контейнерные потребители
         // (воркеры, агенты, Patroni-ноды) — по СТАТИЧЕСКИМ IP etcd/ownS3 в сети
         // окружения (t02): embedded-DNS docker при churn ~50 контейнеров +
@@ -620,7 +620,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
 
     // ===== Подъём окружения (хост): класс-фикстура = своё окружение =====
 
-    /// <summary>Точка входа сценария (docs/e2e-isolation.md §1): тест исполняется
+    /// <summary>Точка входа сценария (arch/testing/02-e2e-isolation.md §1): тест исполняется
     /// на хосте — класс-фикстура поднимает ПОЛНЫЙ контур класса (Guard-слот
     /// захвачен вызывающим ДО этого вызова; сеть/etcd/ownS3/CA/окно портов),
     /// тело факта — обычный код хост-процесса. Раннер-контейнер и двухфазный
@@ -693,7 +693,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
     {
         await EnsureStaticAsync(ct);
 
-        // Ретрай старта (docs/e2e-isolation.md §6): гонка сети (чужой глобальный
+        // Ретрай старта (arch/testing/02-e2e-isolation.md §6): гонка сети (чужой глобальный
         // prune — только что созданная сеть без контейнеров может быть снесена
         // до старта etcd) И занятость зондируемого хост-порта динамической
         // публикации («already allocated», «address already in use»).
@@ -748,7 +748,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
         var envS3HostPort = 0;
 
         // Дроссель параллельности: слот КОНТУРА захвачен класс-фикстурой ДО
-        // этого вызова (docs/e2e-isolation.md §1/§9); Release — в DisposeAsync
+        // этого вызова (arch/testing/02-e2e-isolation.md §1/§9); Release — в DisposeAsync
         // фикстуры / при провале подъёма.
         try
         {
@@ -780,7 +780,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
                     // Статический IP в подсети сети окружения (t02): peer-/client-
                     // URL etcd — по IP, пиринг и клиенты не резолвят имена.
                     "--ip", ip,
-                    // Динамическая публикация клиента (docs/e2e-isolation.md §2):
+                    // Динамическая публикация клиента (arch/testing/02-e2e-isolation.md §2):
                     // docker выделяет свободный хост-порт; контейнеры-потребители
                     // ходят через host.docker.internal:{фактический порт} (env),
                     // тест — через localhost:{фактический порт}. add-host — шлюз
@@ -848,7 +848,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
             {
                 // ownS3 в сети окружения (mc ходит по алиасу; джобы/воркер — по
                 // host.docker.internal:{динамический порт}). Динамическая
-                // публикация API ноды на хост — docs/e2e-isolation.md §2.
+                // публикация API ноды на хост — arch/testing/02-e2e-isolation.md §2.
                 s3Node = null;
                 await E2eFixture.RunDockerAsync(
                 [
@@ -982,7 +982,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
     }
 
     /// <summary>Фактический динамический хост-порт публикации контейнера
-    /// (docs/e2e-isolation.md §2): `docker port {name} {containerPort}/tcp` →
+    /// (arch/testing/02-e2e-isolation.md §2): `docker port {name} {containerPort}/tcp` →
     /// строка вида «127.0.0.1:54321» → парс порта.</summary>
     private static async Task<int> DockerHostPortAsync(string containerName, int containerPort, CancellationToken ct)
     {
@@ -1072,7 +1072,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
 
     /// <summary>
     /// Старт инстанса PgWorker.App — КОНТЕЙНЕРА pgworker:e2e в сети окружения
-    /// (docs/e2e-isolation.md §3): docker.sock смонтирован (воркер провижинит
+    /// (arch/testing/02-e2e-isolation.md §3): docker.sock смонтирован (воркер провижинит
     /// ноды в контур-сеть), etcd — по статическим IP узлов контура (t02),
     /// mTLS-серт с SAN [алиас, "localhost"] (выпускается из per-run CA; второй
     /// элемент покрывает хост-адрес тестовых проб https://localhost:{порт}).
@@ -1096,7 +1096,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
 
         var env = new Dictionary<string, string>(SecretEnv)
         {
-            // Конфигурация (env-оверрайды appsettings): контур-режим (arch/14
+            // Конфигурация (env-оверрайды appsettings): контур-режим (arch/pgworker/README.md
             // §2.1) — ноды/джобы/агенты в сети контура, pgw-net-<C> не создаётся.
             ["PgWorker__Docker__Mode"] = "Plain",
             // Имя docker-хоста = advertised-имя для записей etcd (portalloc,
@@ -1134,7 +1134,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
             ["PgWorker__Snapshots__Dir"] = "/snapshots",
             ["PgWorker__Snapshots__RetentionFiles"] = "10",
 
-            // mTLS HTTP API (t03, arch/14 §1.1): внутрисетевой порт, SAN=алиас.
+            // mTLS HTTP API (t03, arch/pgworker/07-api.md §1): внутрисетевой порт, SAN=алиас.
             ["PGW_API_TLS_CERT"] = serverCertPem,
             ["PGW_API_TLS_KEY"] = serverKeyPem,
             ["PGW_API_TLS_CLIENT_CA"] = _caPem,
@@ -1148,7 +1148,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
             ["DOTNET_ENVIRONMENT"] = "Production",
         };
 
-        // HA-контур (t09, arch/04 §8): воркер получает СПИСОК всех узлов
+        // HA-контур (t09, arch/etcdworker/06-operability.md §7): воркер получает СПИСОК всех узлов
         // (failover перебирает); Advertised — те же внутрисетевые URL
         // (Patroni-ноды и master-lease живут в той же сети контура).
         for (var i = 0; i < EtcdEndpoints.Count; i++)
@@ -1187,13 +1187,13 @@ public sealed class E2eEnvironment : IAsyncDisposable
             "run", "-d", "--name", containerName,
             "--network", NetName,
             "--network-alias", alias,
-            // Без рестарт-политики (docs/e2e-isolation.md §3): контейнеры
+            // Без рестарт-политики (arch/testing/02-e2e-isolation.md §3): контейнеры
             // E2E-контура живут в руках сценария и teardown'а — демон их
             // самостоятельно не поднимает, убитый воркер не воскресает и не
             // конкурирует с выжившим инстансом.
             "-v", "/var/run/docker.sock:/var/run/docker.sock",
             "-v", $"{hostSnapsDir}/{name}:/snapshots",
-            // Динамическая публикация API (docs/e2e-isolation.md §2): тест —
+            // Динамическая публикация API (arch/testing/02-e2e-isolation.md §2): тест —
             // https://localhost:{фактический порт}; внутрисетевые потребители —
             // advertise https://{alias}:8443.
             "-p", "127.0.0.1::8443",
@@ -1308,7 +1308,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
     /// контура без окна выборов: отказ ЛИДЕРА = переизбрание ~2–4 с, в котором
     /// ЛЮБОЙ etcd-put отклоняется — lease-ключи с TTL 5 с (master-ключ) неминуемо
     /// гаснут и перезаказываются, и пробы «ключ непрерывно жив» невыполнимы
-    /// конструктивно; отказ folловера кворум-запись не трогает (arch/04 §8).
+    /// конструктивно; отказ folловера кворум-запись не трогает (arch/etcdworker/06-operability.md §7).
     /// Возврат — индекс остановленного узла (0-based; для StartEtcdNodeAsync).
     /// Лидер — член, чей member_id совпадает с Status.leader
     /// («endpoint status -w json»; сравнение сырых токенов — uint64).</summary>
@@ -1370,7 +1370,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
     /// nodes/&lt;I&gt;/{state,placement}, secrets, endpoints},
     /// /s3worker/portalloc/&lt;pool&gt; — прямо в etcd окружения (PgWorker —
     /// только читатель /s3/). Инстанс пула — ownS3-контейнер; имена нод
-    /// node1..N; secrets-ключ — канон arch/23 §2 (root-пара окружения + ключ
+    /// node1..N; secrets-ключ — канон arch/s3-clusters/02-keys.md §1 (root-пара окружения + ключ
     /// «backups» = writer-комплект ноды). endpoints: null → одна нода
     /// (ownS3-ноды окружения); иначе — список "host:port" (внутрисетевые
     /// адреса: вторые ownS3 сценариев AC2/AC4/AC6).</summary>
@@ -1411,12 +1411,12 @@ public sealed class E2eEnvironment : IAsyncDisposable
     }
 
     /// <summary>Секция s3 policy однонодового пула (node1 в обоих списках записи;
-    /// формат spec §5 / arch/19 §4). Многонодовые списки сценарии пишут сами.</summary>
+    /// формат spec §5 / arch/backups/05-etcd-contract.md). Многонодовые списки сценарии пишут сами.</summary>
     public static string PoolS3(string pool)
         => $"\"s3\":{{\"pool\":\"{pool}\",\"write_master\":[\"node1\"],\"write_replica\":[\"node1\"]}}";
 
     /// <summary>Дополнительная нода ownS3-пула (сценарии AC2/AC4/AC6): контейнер
-    /// в сети окружения с ДИНАМИЧЕСКОЙ публикацией API (docs/e2e-isolation.md
+    /// в сети окружения с ДИНАМИЧЕСКОЙ публикацией API (arch/testing/02-e2e-isolation.md
     /// §2), алиас внутрисетевой; bucket per-install на ноде; teardown чистит
     /// own-only (имя содержит guid прогона). Возврат —
     /// http://host.docker.internal:{динамический порт} (env/portalloc).</summary>
@@ -1460,7 +1460,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
     // ===== Teardown (фаза 1, хост) =====
 
     /// <summary>
-    /// Полный teardown при ЛЮБОМ исходе. Политика телеметрии (docs/e2e-launch.md):
+    /// Полный teardown при ЛЮБОМ исходе. Политика телеметрии (arch/testing/01-e2e-launch.md):
     /// 0) ДО любых удалений — docker logs+inspect всех своих контейнеров
     /// (etcd, ownS3, воркеры, движковые pgw-*) в ArtifactsDir.
     /// 1) Упавший сценарий: контейнеры ОСТАНАВЛИВАЮТСЯ, тома/сети остаются до
@@ -1471,7 +1471,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
     /// </summary>
     public async ValueTask DisposeAsync()
     {
-        // TEARDOWN ОКРУЖЕНИЯ КЛАССА (docs/e2e-isolation.md): воркеры →
+        // TEARDOWN ОКРУЖЕНИЯ КЛАССА (arch/testing/02-e2e-isolation.md): воркеры →
         // телеметрия ДО удалений → MarkFailed: stop-режим (контейнеры стоят
         // для разбора, README-cleanup) → успех: rm своих контейнеров
         // (etcd/ownS3/mc/воркеры/ноды/джобы — всё с runId-guid) и томов →
@@ -1654,7 +1654,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
         var cleanup = """
             Failed E2E scenario — the environment is STOPPED but NOT removed (investigate in place).
             Logs of all containers are saved into this directory (container-*.log).
-            Re-running the test just to grab logs is forbidden (docs/e2e-launch.md).
+            Re-running the test just to grab logs is forbidden (arch/testing/01-e2e-launch.md).
             Clean up when the report data is no longer needed:
               docker rm -f $(docker ps -aq --filter name=__RUN__)
               docker rm -f $(docker ps -aq --filter name=__TAG__)
@@ -1667,7 +1667,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
                 .Replace("__NET__", NetName));
     }
 
-    // ===== Телеметрия (docs/e2e-launch.md) =====
+    // ===== Телеметрия (arch/testing/01-e2e-launch.md) =====
 
     /// <summary>Сбор состояния окружения в ArtifactsDir: docker logs+inspect
     /// каждого СВОЕГО контейнера (etcd, ownS3, воркеры, раннер, движковые
@@ -1798,7 +1798,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
         var cleanup = """
             Failed E2E scenario — the environment is STOPPED but NOT removed (investigate in place).
             Logs of all containers are saved into this directory (container-*.log, runner.log).
-            Re-running the test just to grab logs is forbidden (docs/e2e-launch.md).
+            Re-running the test just to grab logs is forbidden (arch/testing/01-e2e-launch.md).
             Clean up when the report data is no longer needed:
               docker rm -f $(docker ps -aq --filter name=__RUN__)
               docker rm -f $(docker ps -aq --filter name=__TAG__)
@@ -2037,7 +2037,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
                 logFile: E2eFixture.StaticProcessLogPath("worker-e2e"));
             E2eFixture.StaticPhase($"e2e-image {WorkerImage}: ready in {sw.Elapsed.TotalSeconds:F0} s");
 
-            // Образ узла (задача 25): двухшаговая сборка (t25, arch/19 §3) —
+            // Образ узла (задача 25): двухшаговая сборка (t25, arch/backups/02-wal-archive.md §1) —
             // (1) publish приёмника WAL и NodeTools self-contained НА ХОСТЕ
             // (RID хоста, без trimming) → artifacts/e2e/node-wal|node-tools;
             // (2) docker build ноды с publish-аргументами (в образ — только
@@ -2109,7 +2109,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
     }
 
 
-    // Образ file_sd-генератора (t15, arch/18 §5.4): .NET-сервис — publish НА
+    // Образ file_sd-генератора (t15, arch/metrics/05-storage.md §4): .NET-сервис — publish НА
     // ХОСТЕ (инкрементально, секунды), в образ — только готовый вывод
     // (docker/Metrics.SdGenerator.Dockerfile, runtime-слой; канон AGENTS.md).
     // Вызов — лениво из сценария E2ePatroniFileSd: чужие серии и кейс-маркер

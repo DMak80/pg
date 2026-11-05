@@ -5,14 +5,14 @@ using Shared.Etcd.Client;
 namespace S3Worker.Provisioning.Processes;
 
 /// <summary>
-/// Deprovisioning S3-кластера (arch/24 §5 B, фазы X0–X3): от заявки TO_REMOVE
+/// Deprovisioning S3-кластера (arch/s3worker/02-cluster-lifecycle.md §3 B, фазы X0–X3): от заявки TO_REMOVE
 /// до чистого etcd и снесённых docker-объектов. ПОРЯДОК «сначала docker,
 /// потом etcd»: ошибка docker-хоста оставляет etcd-декларацию нетронутой —
 /// следующий тик повторит демонтаж. X1 маркеры REMOVING всем нодам; X2 снос
 /// контейнеров и volumes на всех хостах (404 = ок) + del portalloc; X3 del
 /// префикса домена + координации &lt;C&gt;; journal done; клэйм снят явно.
 /// Снос кластера уничтожает данные бэкапов его нод — осознанное действие
-/// оператора (risk R2 arch/24 §9). Снапшоты P12 «до»/«после» — snapshot-делегат.
+/// оператора (risk R2 arch/s3worker/08-operability.md §6). Снапшоты P12 «до»/«после» — snapshot-делегат.
 /// Вызывается только держателем клэйма.
 /// </summary>
 public sealed class DeprovisioningProcess(
@@ -30,7 +30,7 @@ public sealed class DeprovisioningProcess(
     {
         var cluster = snap.Cluster;
 
-        // Мутации — только держателем живого клэйма (arch/17 S5).
+        // Мутации — только держателем живого клэйма (arch/synchronization/02-predicates-and-mutations.md §S5).
         var claimed = S3ProcessCommon.EnsureClaimed(claims, cluster, Op);
         if (!claimed.IsSuccess)
             return claimed;
@@ -104,7 +104,7 @@ public sealed class DeprovisioningProcess(
                 return Fail(cluster, del.Error!, $"delete {key}");
         }
 
-        // Journal done (arch/24 §5 B: финальная фаза X3) + снапшот «после» +
+        // Journal done (arch/s3worker/02-cluster-lifecycle.md §3 B: финальная фаза X3) + снапшот «после» +
         // ЯВНОЕ снятие клэйма (не ждём TTL). Демонтаж завершён — бюджет
         // boot-ожидания имени кластера начинается заново (повторный
         // provisioning того же имени — без старого since).

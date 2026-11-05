@@ -4,7 +4,7 @@ using Shared.Etcd.Client;
 
 namespace PgWorker.PgNode;
 
-/// <summary>Главный цикл приёмника WAL (arch/19 §3, spec §3.1) — hosted-сервис
+/// <summary>Главный цикл приёмника WAL (arch/backups/02-wal-archive.md §1, spec §3.1) — hosted-сервис
 /// WebApplication-хоста. Старт: идентичность из env (`PgNodeIdentity`) —
 /// невалидный набор → лог в stdout контейнера + exit 1 (supervisord с
 /// `exitcodes=0` не перезапускает). Каждая итерация (~5 c при ожидании):
@@ -41,13 +41,13 @@ public sealed class WalReceiverLoop : BackgroundService
     private readonly TimeSpan? _statusKeepalive;
     private readonly TimeSpan? _roleProbePeriod;
 
-    // Повтор инвентарного прохода в ЖИВОЙ сессии (arch/19 §3): сегменты,
+    // Повтор инвентарного прохода в ЖИВОЙ сессии (arch/backups/02-wal-archive.md §1): сегменты,
     // закрывшиеся после старта сессии, доезжают без переподключения —
     // долгоживущая сессия не консервирует дыру.
     private readonly TimeSpan _inventoryPeriod;
     private readonly string _pgWalDir;
 
-    // HBA-самообеспечение (arch/19 §7): приёмник — владелец строки backup_exec;
+    // HBA-самообеспечение (arch/backups/08-secrets.md): приёмник — владелец строки backup_exec;
     // null в тестах без локального /run/postgres.yml (прод — из DI).
     private readonly Func<CancellationToken, Task<PgWorker.PgNode.Operations.HbaEnsureResponse>>? _hbaEnsure;
 
@@ -55,7 +55,7 @@ public sealed class WalReceiverLoop : BackgroundService
     private WalReceiverMetrics? _metrics;
     private WalReceiverStatusSession? _status;
 
-    /// <summary>Текущие живые факты (spec §7 №8/arch/19 §4: персистентны до
+    /// <summary>Текущие живые факты (spec §7 №8/arch/backups/05-etcd-contract.md: персистентны до
     /// события-снятия): единая IMMUTABLE-структура — публикации MERGE (атомарная
     /// замена ссылки), НЕ затирают другие факты значениями по умолчанию
     /// (tli_jump живёт до следующего прыжка; pool_exhausted снимается первым
@@ -123,7 +123,7 @@ public sealed class WalReceiverLoop : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken ct)
     {
-        // 1. Идентичность: невалидный env — старт-отказ процесса (arch/19 §3):
+        // 1. Идентичность: невалидный env — старт-отказ процесса (arch/backups/02-wal-archive.md §1):
         //    лог в stdout контейнера (диагностика) + ненулевой exit; supervisord
         //    с exitcodes=0 перезапускает только падения — лупинг env-дефекта
         //    исключён.
@@ -155,7 +155,7 @@ public sealed class WalReceiverLoop : BackgroundService
         var state = WalReceiverState.Starting;
         // Бэкофф ретраев failed_permanent-сессий (сек; 0 — сброшен, см. исходы).
         var permanentBackoffSec = 0.0;
-        // Конфликт содержимого WAL-архива (arch/19 §3 «Гвард чужой цепочки»):
+        // Конфликт содержимого WAL-архива (arch/backups/02-wal-archive.md §1 «Гвард чужой цепочки»):
         // сегмент с тем же именем лежит с ДРУГИМИ байтами — в префиксе цепочка
         // чужой инкарнации. Новые сессии не стартуют (иначе сегменты выше
         // хвоста легли бы миксом поверх чужой цепочки); состояние — failed_permanent
@@ -202,7 +202,7 @@ public sealed class WalReceiverLoop : BackgroundService
         {
             try
             {
-                // Граница сессии (arch/19 §3 «Агент»): факт pool_exhausted
+                // Граница сессии (arch/backups/02-wal-archive.md §1 «Агент»): факт pool_exhausted
                 // наблюдала СЕССИЯ прошлой итерации — новая итерация
                 // перепубликует флаг фактическим состоянием (исчерпания нет);
                 // при живом исчерпании факт вернёт первый же неудачный put.
@@ -254,7 +254,7 @@ public sealed class WalReceiverLoop : BackgroundService
                 }
                 if (archiveBlockedError is { } blocked)
                 {
-                    // Чужая цепочка в префиксе (arch/19 §3): сессии НЕ стартуют —
+                    // Чужая цепочка в префиксе (arch/backups/02-wal-archive.md §1): сессии НЕ стартуют —
                     // иначе микс сегментов поверх DR-источника. Лечение —
                     // restore/демонтаж шарда (нода пересоздаётся вместе с процессом).
                     state = WalReceiverState.FailedPermanent;
@@ -264,7 +264,7 @@ public sealed class WalReceiverLoop : BackgroundService
                     continue;
                 }
 
-                // HBA-самообеспечение (arch/19 §7, первый канал): приёмник —
+                // HBA-самообеспечение (arch/backups/08-secrets.md, первый канал): приёмник —
                 // владелец строки backup_exec — гарантирует правило ДО сессии и
                 // инвентарного прохода. Воркерный тик не связан со стартом
                 // контейнера: свежеподнятая/пересозданная нода без строки
@@ -367,16 +367,16 @@ public sealed class WalReceiverLoop : BackgroundService
                 await PublishStateAsync(status, metrics, state, currentRole, ct);
 
                 // Ре-доклады инвентаря (history spec §3.1 п.6; сегменты
-                // arch/19 §3) — ВСПОМОГАТЕЛЬНАЯ доставка ПЕРВЫМ проходом цикла
+                // arch/backups/02-wal-archive.md §1) — ВСПОМОГАТЕЛЬНАЯ доставка ПЕРВЫМ проходом цикла
                 // подключения и ПОВТОРАМИ в живой сессии периодом
-                // _inventoryPeriod (arch/19 §3): pg_wal своей ноды →
+                // _inventoryPeriod (arch/backups/02-wal-archive.md §1): pg_wal своей ноды →
                 // отсутствующие в S3 put'ятся. Выполняется ПАРАЛЛЕЛЬНО сессии,
                 // не блокируя вход в стрим: синхронный list-tail при
                 // недоступном/медленном пуле висел на транспортном таймауте до
                 // PUT-фазы — сессия не доходила до PUT, где ставится факт
                 // pool_exhausted (детекция исчерпания списка глушится).
                 // Граница сегментного прохода — СОБСТВЕННЫЙ доставленный
-                // прогресс (LiveFacts.LastDelivered, arch/19 §3): соло-хвост
+                // прогресс (LiveFacts.LastDelivered, arch/backups/02-wal-archive.md §1): соло-хвост
                 // чужой ноды не останавливает донос локально-закрывшихся
                 // сегментов между своим прогрессом и чужим хвостом (дубль на
                 // чужой ноде идемпотентен). Отказ прохода — diagnostic-log,
@@ -385,7 +385,7 @@ public sealed class WalReceiverLoop : BackgroundService
                 var startDelivered = Volatile.Read(ref _facts).LastDelivered;
                 var roleAtStart = currentRole;
                 var confirmedBase = 0UL;
-                // Отказ прохода = свидетельство недостижимости пула S3 (arch/19
+                // Отказ прохода = свидетельство недостижимости пула S3 (arch/backups/README.md
                 // §3): флаг ставится БЕЗ ожидания закрытия сегмента (idle-источник)
                 // — один раз на серию отказов; снятие — только проходом,
                 // ДОВЕДЁННЫМ без отказов (симметрия с «снятый первым успешным
@@ -487,11 +487,11 @@ public sealed class WalReceiverLoop : BackgroundService
                     StreamProgress = lsn => metrics.SetBacklog(
                         Math.Max(0, (long)lsn - (long)confirmedBase)),
                     // Подтверждение слота после успешного put двигает базу
-                    // backlog-гейджа (serverWalEnd − confirmedBase, arch/18 §2.8).
+                    // backlog-гейджа (serverWalEnd − confirmedBase, arch/metrics/02-dictionary.md §8).
                     Confirmed = lsn => Volatile.Write(ref confirmedBase, lsn),
                     HistoryDelivered = count => metrics.HistoryDelivered(count),
                     RoleChangedProbe = token => ProbeRoleChangedAsync(token, roleAtStart),
-                    // Стоп-гейт из стрима (/arch/19 §3): живой стрим замирает
+                    // Стоп-гейт из стрима (/arch/backups/02-wal-archive.md §1): живой стрим замирает
                     // по ЛЮБОМУ гейту — /pgworker/backups-disabled ИЛИ wal-ключ
                     // шарда STOPPED/WAL_CHAIN_ERROR — ≤ 5 c, не ждёт обрыва транспорта;
                     // etcd-моргание проба глотает (false).
@@ -634,7 +634,7 @@ public sealed class WalReceiverLoop : BackgroundService
     private readonly SemaphoreSlim _publishGate = new(1, 1);
 
     // Одноразовая диагностика «CA задан, но пул http» (п.9 ревью): резолвер
-    // пула строит http-URI (канон arch/23) — CA-fabрика S3 при этом нечему
+    // пула строит http-URI (канон arch/s3-clusters/README.md) — CA-fabрика S3 при этом нечему
     // применять; оператор должен видеть расхождение конфига и схемы.
     private bool _s3CaHttpWarned;
 
@@ -758,7 +758,7 @@ public sealed class WalReceiverLoop : BackgroundService
 
     private static long NowUnix() => DateTimeOffset.UtcNow.ToUnixTimeSeconds();
 
-    // env PGW_WAL_PARTIAL_INTERVAL_SEC (arch/19 §9): мусор/отсутствие → дефолт 3;
+    // env PGW_WAL_PARTIAL_INTERVAL_SEC (arch/backups/09-operability.md §1): мусор/отсутствие → дефолт 3;
     // клэмп ≥1 — приёмник живёт на любом env (пересоздание ноды не требуется).
     internal static int ReadPartialIntervalSec()
     {

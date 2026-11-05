@@ -8,9 +8,9 @@ using Shared.Etcd.Client;
 namespace KafkaWorker.Etcd.Parsing;
 
 // Парсер контроль-плейна /kafka/clusters/ в доменную модель KafkaWorker
-// (arch/15 §2–3; порт стиля ClusterSnapshotParser PgWorker). Чистая функция
+// (arch/kafka-clusters/02-keys.md §1–3; порт стиля ClusterSnapshotParser PgWorker). Чистая функция
 // Kv[] → модель: битые значения не бросают исключений, а попадают в
-// parseErrors; неизвестные ключи — в счётчик unknownKeys (arch/15 §6).
+// parseErrors; неизвестные ключи — в счётчик unknownKeys (arch/kafka-clusters/06-fault-tolerance.md).
 public static class KafkaSnapshotParser
 {
     private sealed class BrokerAcc(string name)
@@ -73,7 +73,7 @@ public static class KafkaSnapshotParser
                     acc.AppPassword = string.IsNullOrWhiteSpace(kv.Value) ? null : kv.Value.Trim();
                     break;
 
-                // Поля безопасности (arch/15 §2): admin-креды + per-cluster CA.
+                // Поля безопасности (arch/kafka-clusters/02-keys.md §1): admin-креды + per-cluster CA.
                 case "admin_user" when segments.Length == 5:
                     acc.AdminUser = string.IsNullOrWhiteSpace(kv.Value) ? null : kv.Value.Trim();
                     break;
@@ -85,7 +85,7 @@ public static class KafkaSnapshotParser
                 case "ca_pem" when segments.Length == 5:
                 {
                     var value = string.IsNullOrWhiteSpace(kv.Value) ? null : kv.Value.Trim();
-                    // Битый PEM — не исключение: parseError + поле null (arch/15 §6).
+                    // Битый PEM — не исключение: parseError + поле null (arch/kafka-clusters/06-fault-tolerance.md).
                     // Окно ротации CA : ca_pem — bundle OLD+NEW — валидное значение.
                     if (value is null || !ClusterPki.TryParseCertificateBundle(value))
                     {
@@ -103,7 +103,7 @@ public static class KafkaSnapshotParser
                 case "ca_key" when segments.Length == 5:
                 {
                     var value = string.IsNullOrWhiteSpace(kv.Value) ? null : kv.Value.Trim();
-                    // Битый PEM-ключ — не исключение: parseError + поле null (arch/15 §6).
+                    // Битый PEM-ключ — не исключение: parseError + поле null (arch/kafka-clusters/06-fault-tolerance.md).
                     if (value is null || !ClusterPki.TryParseRsaKey(value, out _))
                     {
                         acc.Errors.Add($"/kafka/clusters/{acc.Name}/ca_key: malformed key PEM");
@@ -206,7 +206,7 @@ public static class KafkaSnapshotParser
                 ReadInt(root, "default_partitions") ?? 0,
                 ReadLong(root, "default_retention_ms") ?? 0,
                 ReadLong(root, "created_unix"), // может отсутствовать (старые заявки)
-                ReadString(root, "state")); // отсутствие state = Active (arch/15 §2.1)
+                ReadString(root, "state")); // отсутствие state = Active (arch/kafka-clusters/02-keys.md §2)
         }
         catch (JsonException)
         {
@@ -296,7 +296,7 @@ public static class KafkaSnapshotParser
         }
     }
 
-    // Lifecycle-заявка topics/<T>/desired.{create,delete} (arch/15 §3.1):
+    // Lifecycle-заявка topics/<T>/desired.{create,delete} (arch/kafka-clusters/03-topics.md §2):
     // толерантный разбор; битый JSON или отсутствие requested_unix → parseError,
     // null (заявка битая — воркер не исполняет).
     private static TopicLifecycleTicket? BuildLifecycleTicket(
@@ -329,7 +329,7 @@ public static class KafkaSnapshotParser
         }
     }
 
-    // configs — объект строковых значений (как отдаёт Kafka, arch/15 §3).
+    // configs — объект строковых значений (как отдаёт Kafka, arch/kafka-clusters/03-topics.md §1).
     private static IReadOnlyDictionary<string, string>? ReadConfigs(JsonElement root)
     {
         if (!root.TryGetProperty("configs", out var configs)

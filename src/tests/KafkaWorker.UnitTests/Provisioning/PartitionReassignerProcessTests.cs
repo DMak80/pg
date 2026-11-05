@@ -8,7 +8,7 @@ using KafkaWorker.Provisioning.Processes;
 
 namespace KafkaWorker.UnitTests.Provisioning;
 
-// PartitionReassignerProcess (arch/16 §5 I; spec §5.1–§5.4): drain
+// PartitionReassignerProcess (arch/kafkaworker/06-rebalancing.md §2 I; spec §5.1–§5.4): drain
 // TO_REMOVE-брокера (батчи/дедуп/завершение по факту+USR), balance по заявке
 // панели, слепая проба без подач, отмена, клэйм-guard.
 

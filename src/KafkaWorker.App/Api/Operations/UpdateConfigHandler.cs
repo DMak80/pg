@@ -13,7 +13,7 @@ public sealed record KafkaConfigUpdatedDto(
 // Изменение default-конфигов через API воркера (arch/02 §10.2-3): RMW-txn по
 // mod_revision прочитанного config. Порт панельного UpdateKafkaConfigCommandHandler;
 // проигрыш compare → KafkaConcurrentWriteException = 503 (retry клиентом).
-// Применение значений — converge dynamic broker configs воркера (arch/16 §5 E).
+// Применение значений — converge dynamic broker configs воркера (arch/kafkaworker/02-cluster-lifecycle.md §5 E).
 public sealed class UpdateConfigHandler(IEtcdGateway gateway, string[] endpoints)
 {
     public async Task<Result<KafkaConfigUpdatedDto>> HandleAsync(

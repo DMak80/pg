@@ -1,6 +1,6 @@
 namespace EtcdWorker.Core;
 
-/// <summary>Чистое решение тика SnapshotLoop (arch/25 §4): плановый слепок
+/// <summary>Чистое решение тика SnapshotLoop (arch/etcdworker/04-snapshots.md): плановый слепок
 /// раз в IntervalMin; внеочередной — revision вырос относительно последней
 /// выгрузки И выгрузка отстала ≥ MinIntervalSec (RPO ≈ 5 мин при активности,
 /// без лишних слепков в тишине).</summary>

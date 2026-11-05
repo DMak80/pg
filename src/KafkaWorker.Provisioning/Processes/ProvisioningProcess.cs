@@ -14,7 +14,7 @@ using KafkaWorker.Provisioning.Kafka;
 namespace KafkaWorker.Provisioning.Processes;
 
 /// <summary>
-/// Provisioning KRaft-кластера (arch/16 §5 A, фазы K0–K6): от заявки
+/// Provisioning KRaft-кластера (arch/kafkaworker/02-cluster-lifecycle.md §2 A, фазы K0–K6): от заявки
 /// NOT_INITIALIZED до рабочего кластера. Все фазы идемпотентны и перепроверяют
 /// факт; перед фазами — перечитывание config (R6: TO_REMOVE посреди работы
 /// безопасно прекращает процесс). Снапшоты P12 «до» (после claim) и «после»
@@ -53,7 +53,7 @@ public sealed class ProvisioningProcess(
     {
         var cluster = snap.Cluster;
 
-        // Мутации — только держателем живого клэйма (arch/16 §5).
+        // Мутации — только держателем живого клэйма (arch/kafkaworker/README.md).
         if (!claims.IsMine(cluster))
             return Result.Failed(new ApplicationException(
                 $"provisioning {cluster}: claim is not ours (or lost) — mutations are forbidden"));
@@ -93,7 +93,7 @@ public sealed class ProvisioningProcess(
         if (!ensured.IsSuccess)
         {
             // Частичный portalloc после takeover: адрес появится K1-фиксацией/
-            // healer'ом — transient-ретрай тиком (arch/16 §5 A), не сбой.
+            // healer'ом — transient-ретрай тиком (arch/kafkaworker/02-cluster-lifecycle.md §2 A), не сбой.
             if (ensured.Error is MissingPortAllocException missing)
                 return await FinishAsync(cluster, $"waiting-portalloc/{missing.Broker}", ct);
             return Fail(cluster, ensured.Error!, "ensure-nodes");
@@ -151,7 +151,7 @@ public sealed class ProvisioningProcess(
 
     // K1: placement → порт-аллокация → закрепление /kafkaworker/portalloc/<C>
     // (txn compare version==0; конкурент закрепил первым → берём его) + роли.
-    //  (arch/16 §2.1): довыделение портов — под глобальным клэймом
+    //  (arch/kafkaworker/01-placement.md §1): довыделение портов — под глобальным клэймом
     // /kafkaworker/locks/portalloc: без него два параллельно сеемых кластера
     // читают занятость до первой записи соседа и выбирают одинаковые порты.
     // Занятость = docker-публикации ∪ portalloc ЧУЖИХ кластеров (свой —
@@ -208,7 +208,7 @@ public sealed class ProvisioningProcess(
             // закреплённый план (takeover: держатель убит посреди аллокации) —
             // RMW-достроение под клэймом (ModRevisionEqual): без этого
             // NotExists проигрывает на существующем частичном ключе, адреса
-            // теряются и K3 циклится waiting-portalloc (arch/16 §5 A: план
+            // теряются и K3 циклится waiting-portalloc (arch/kafkaworker/02-cluster-lifecycle.md §2 A: план
             // достроит K1-фиксация/healer). Чужой concurrent writer под тем
             // же клэймом невозможен; проигрыш — re-read (прежняя семантика).
             var key = PortAllocKey(cluster);
@@ -232,7 +232,7 @@ public sealed class ProvisioningProcess(
                 existing = new Dictionary<string, NodeAddress>(reread.Value);
             }
 
-            // Фиксация ролей (put только при отличии; роль навсегда, arch/15 §2) —
+            // Фиксация ролей (put только при отличии; роль навсегда, arch/kafka-clusters/02-keys.md §1) —
             // ВСЕГДА, независимо от исхода txn (порт семантики исходного кода:
             // ключ мог быть записан до без ролей). Внутри секции, до release.
             foreach (var broker in snap.Brokers)
@@ -294,7 +294,7 @@ public sealed class ProvisioningProcess(
             if (!addresses.TryGetValue(broker.Name, out var addr))
                 return Result.Failed(new MissingPortAllocException(broker.Name));
             var advertisedClient = $"{options.AdvertisedClientHost ?? addr.Host}:{addr.ClientPort}";
-            // Серт ноды — один раз на (кластер, нода, CA) (R3, arch/16 §2.3).
+            // Серт ноды — один раз на (кластер, нода, CA) (R3, arch/kafkaworker/04-security.md).
             var (certPem, keyPem) = certificates.GetOrCreate(
                 cluster, broker.Name, secret.CaPem, secret.CaKey, advertisedClient);
             var env = NodeEnvBuilder.Build(new NodeEnvSpec(
@@ -364,7 +364,7 @@ public sealed class ProvisioningProcess(
         return Result<bool>.Success(false);
     }
 
-    // endpoints: advertised host:clientPort по нодам через запятую (arch/15 §2).
+    // endpoints: advertised host:clientPort по нодам через запятую (arch/kafka-clusters/02-keys.md §1).
     private string BuildEndpoints(KafkaClusterSnapshot snap, IReadOnlyDictionary<string, NodeAddress> addresses)
         => string.Join(",", snap.Brokers
             .OrderBy(b => b.Name, StringComparer.Ordinal)
@@ -447,7 +447,7 @@ public sealed class ProvisioningProcess(
             return Result<IReadOnlyDictionary<string, NodeAddress>>.Success(
                 (IReadOnlyDictionary<string, NodeAddress>)new Dictionary<string, NodeAddress>());
 
-        // Формат arch/15 §4: {"broker<k>":{"host":"h","client":16001}}.
+        // Формат arch/kafka-clusters/04-coordination.md §1: {"broker<k>":{"host":"h","client":16001}}.
         var addresses = new Dictionary<string, NodeAddress>();
         using var doc = JsonDocument.Parse(kv.Value);
         foreach (var node in doc.RootElement.EnumerateObject())
@@ -528,7 +528,7 @@ public sealed class ProvisioningProcess(
         return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 
-    // Канонический config после provisioning: state отсутствует (arch/15 §2.1).
+    // Канонический config после provisioning: state отсутствует (arch/kafka-clusters/02-keys.md §2).
     private sealed record CanonicalConfig(
         [property: JsonPropertyName("brokers")] int Brokers,
         [property: JsonPropertyName("replication_factor")] int ReplicationFactor,
@@ -537,7 +537,7 @@ public sealed class ProvisioningProcess(
         [property: JsonPropertyName("default_retention_ms")] long DefaultRetentionMs,
         [property: JsonPropertyName("created_unix")] long? CreatedUnix);
 
-    // K3-гвард (arch/16 §5 A): адреса нет в portalloc (частичный план после
+    // K3-гвард (arch/kafkaworker/02-cluster-lifecycle.md §2 A): адреса нет в portalloc (частичный план после
     // takeover) → transient-фаза waiting-portalloc/<broker>, не исключение тика.
     private sealed class MissingPortAllocException(string broker)
         : Exception($"portalloc has no address for {broker}")

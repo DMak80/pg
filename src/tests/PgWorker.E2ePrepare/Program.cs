@@ -2,7 +2,7 @@ using System.Diagnostics;
 using PgWorker.IntegrationTests.E2e;
 
 // Фаза подготовки E2E-статических ассетов — ОТДЕЛЬНЫЙ запуск ДО тестов,
-// одним процессом (канон docs/e2e-launch.md): publish-выводы и docker-образы
+// одним процессом (канон arch/testing/01-e2e-launch.md): publish-выводы и docker-образы
 // собираются здесь; тестовые процессы статику не строят — параллельные
 // dotnet publish в общий каталог ломают друг друга. По успеху пишет штамп
 // artifacts/e2e/.prepared — тесты сверяют его со свежестью исходников.

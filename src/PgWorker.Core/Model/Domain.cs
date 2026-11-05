@@ -13,7 +13,7 @@ public enum ClusterState
     ToRemove,
 }
 
-/// <summary>Значения /clusters/&lt;C&gt;/shards/&lt;X&gt;/nodes/&lt;n&gt;/state (arch/14 §5).</summary>
+/// <summary>Значения /clusters/&lt;C&gt;/shards/&lt;X&gt;/nodes/&lt;n&gt;/state (arch/pgworker/README.md).</summary>
 public enum NodeState
 {
     NotInitialized,
@@ -26,7 +26,7 @@ public enum NodeState
     ToRecreate,
 }
 
-/// <summary>Статус-ключ бакета; null (нет ключа) = ACTIVE (arch/11 §2).</summary>
+/// <summary>Статус-ключ бакета; null (нет ключа) = ACTIVE (arch/pg-clusters/11-buckets.md §2).</summary>
 public enum BucketMoveState
 {
     NotInitialized,
@@ -64,7 +64,7 @@ public sealed record BucketRoute(int Id, string? Owner, BucketMoveState? Status,
     string? MovePhase = null, long? MoveUpdatedUnix = null);
 
 /// <summary>Полный снапшот кластера: config + шарды + все N маршрутов бакетов
-/// + per-cluster креды (app — spec §4.1; mover/bucket_admin, arch/14
+/// + per-cluster креды (app — spec §4.1; mover/bucket_admin, arch/pgworker/README.md
 /// §3.3; rest — basic-auth Patroni REST; null до первого ensure —
 /// потребители применяют env-fallback).</summary>
 public sealed record ClusterSnapshot(ClusterConfig Config, IReadOnlyList<ShardSpec> Shards,
@@ -76,9 +76,9 @@ public sealed record ClusterSnapshot(ClusterConfig Config, IReadOnlyList<ShardSp
 public sealed record NodePorts(int Pg, int Patroni, int Doorman);
 
 /// <summary>Адрес ноды: docker-хост + выделенные host-порты; Object — имя
-/// фактического docker-контейнера усыновлённой ноды (arch/14 §2.4/§5 J),
+/// фактического docker-контейнера усыновлённой ноды (arch/pgworker/01-placement.md §5/§5 J),
 /// null = каноническая pgw-нода нашего провижининга. ScrapeAlias/ScrapeNetwork
-/// (arch/14 §2.4) — сетевая идентичность ноды для скрейпа (alias =
+/// (arch/pgworker/01-placement.md §5) — сетевая идентичность ноды для скрейпа (alias =
 /// docker-имя, резолвится DNS сети контура; net = имя сети, информационное):
 /// пишутся только каноническим нодам при заданном PgWorker:Docker:ScrapeNetwork,
 /// в dsn/endpoints/пробы не попадают.</summary>
@@ -106,7 +106,7 @@ public sealed record NodeResources(double? CpuCores, long? MemoryBytes);
 public static class NodeResourcesParser
 {
     // Оба значения нечитаемы/отсутствуют → null (заявки нет; обязательность решает
-    // потребитель — EnsureNode-пути фейлятся без заявки, arch/14 §2.1 п.4).
+    // потребитель — EnsureNode-пути фейлятся без заявки, arch/pgworker/01-placement.md §2).
     public static NodeResources? Parse(string? requestCpu, string? requestMem)
     {
         var cpu = ParseCpu(requestCpu);

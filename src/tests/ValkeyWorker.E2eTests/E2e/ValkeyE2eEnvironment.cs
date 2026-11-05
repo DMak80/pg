@@ -12,8 +12,8 @@ using Xunit;
 namespace ValkeyWorker.IntegrationTests.E2e;
 
 /// <summary>
-/// Изолированное docker-E2E окружение ValkeyWorker (docs/e2e-isolation.md +
-/// docs/e2e-launch.md): собственная docker-сеть vwk-en-{runId}, свой etcd
+/// Изолированное docker-E2E окружение ValkeyWorker (arch/testing/02-e2e-isolation.md +
+/// arch/testing/01-e2e-launch.md): собственная docker-сеть vwk-en-{runId}, свой etcd
 /// vwk-ee-{runId}, свой воркер-контейнер vwk-ew-{runId} (образ
 /// valkeyworker:e2e — свежий Release из docker/ValkeyWorker.Dockerfile).
 /// Идентификатор прогона — полный guid во всех именах; чистка и ассерт чистоты
@@ -27,7 +27,7 @@ namespace ValkeyWorker.IntegrationTests.E2e;
 public sealed class ValkeyE2eEnvironment : IAsyncDisposable
 {
     private const string EtcdImage = "quay.io/coreos/etcd:v3.5.21";
-    // Per-branch тег (docs/e2e-isolation.md §9): одна ветка — один набор образов.
+    // Per-branch тег (arch/testing/02-e2e-isolation.md §9): одна ветка — один набор образов.
     private static readonly string WorkerImageTag =
         $"e2e-{E2eImageTags.SuffixFor(FindRepoRoot())}";
     private static readonly string WorkerImage = $"valkeyworker:{WorkerImageTag}";
@@ -336,7 +336,7 @@ public sealed class ValkeyE2eEnvironment : IAsyncDisposable
            || ex.Message.Contains("already allocated", StringComparison.OrdinalIgnoreCase)
            || ex.Message.Contains("address already in use", StringComparison.OrdinalIgnoreCase);
 
-    /// <summary>Сборка per-branch образа ONCE-per-process (docs/e2e-isolation.md
+    /// <summary>Сборка per-branch образа ONCE-per-process (arch/testing/02-e2e-isolation.md
     /// §9): параллельные классы ждут SemaphoreSlim-гейт; повторным StartAsync
     /// образ не пересобирается. Способ сборки (прод-Dockerfile, ProcessStartInfo)
     /// не меняется — [PHASE]-меток нет, logFile нет. NOBUILD — существующий тег
@@ -484,7 +484,7 @@ public sealed class ValkeyE2eEnvironment : IAsyncDisposable
         }
     }
 
-    /// <summary>Объединение потоков (канон docs/e2e-launch.md §1):
+    /// <summary>Объединение потоков (канон arch/testing/01-e2e-launch.md §1):
     /// stdout-блок, затем stderr-блок; между двумя непустыми блоками ровно
     /// один перевод строки, края тримятся. docker-CLI разводит потоки
     /// контейнера по своим потокам — stdout-only теряет stderr-диагностику.
@@ -505,7 +505,7 @@ public sealed class ValkeyE2eEnvironment : IAsyncDisposable
 
     /// <summary>docker logs — всегда объединённо (stdout+stderr контейнера):
     /// ["logs", .. logsArgs] — подкоманду logs подставляет сам хелпер;
-    /// бюджет 60 с (канон docs/e2e-launch.md §1).</summary>
+    /// бюджет 60 с (канон arch/testing/01-e2e-launch.md §1).</summary>
     public Task<string> RunDockerLogsAsync(IReadOnlyList<string> logsArgs, CancellationToken ct)
         => RunProcessMergedAsync("docker", ["logs", .. logsArgs], ct,
             TimeSpan.FromSeconds(60));
@@ -606,7 +606,7 @@ public sealed class ValkeyE2eEnvironment : IAsyncDisposable
         return process.ExitCode == 0;
     }
 
-    // Телеметрия (docs/e2e-launch.md §1): docker-логи+inspect всех контейнеров
+    // Телеметрия (arch/testing/01-e2e-launch.md §1): docker-логи+inspect всех контейнеров
     // окружения (воркеры — 1 или 2 + etcd) — ДО любого удаления; вызывается в
     // teardown и на slow-phase.
     public async Task CollectDiagnosticsAsync(string mark)
@@ -639,7 +639,7 @@ public sealed class ValkeyE2eEnvironment : IAsyncDisposable
                 Path.Combine(ArtifactsDir, $"node-{name}-{mark}.log"));
     }
 
-    /// <summary>Отчёт по фазе (docs/e2e-launch.md §2): замер + строка [PHASE];
+    /// <summary>Отчёт по фазе (arch/testing/01-e2e-launch.md §2): замер + строка [PHASE];
     /// фаза дольше 60 с — немедленный сбор логов в артефакты.</summary>
     public async Task<TimeSpan> WaitPhaseAsync(string phase, Func<Task<bool>> condition,
         TimeSpan budget, CancellationToken ct)
@@ -667,7 +667,7 @@ public sealed class ValkeyE2eEnvironment : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        // Телеметрия ДО любого удаления (docs/e2e-launch.md §1).
+        // Телеметрия ДО любого удаления (arch/testing/01-e2e-launch.md §1).
         try
         {
             await CollectDiagnosticsAsync("teardown");
@@ -679,7 +679,7 @@ public sealed class ValkeyE2eEnvironment : IAsyncDisposable
 
         if (_failed)
         {
-            // docs/e2e-launch.md §3: упавший сценарий — контейнеры ОСТАНОВИТЬ,
+            // arch/testing/01-e2e-launch.md §3: упавший сценарий — контейнеры ОСТАНОВИТЬ,
             // не удалить (тома/сети/etcd остаются для разбора).
             foreach (var worker in _workers)
                 await SafeStopAsync(worker, remove: false);
@@ -752,7 +752,7 @@ public sealed class ValkeyE2eEnvironment : IAsyncDisposable
 
     // Телеметрия процесса в файл ОБЪЕДИНЁННО (stdout-блок, затем stderr-блок —
     // docker-CLI разводит потоки контейнера по своим потокам, канон
-    // docs/e2e-launch.md §1). Оба потока читаются ПАРАЛЛЕЛЬНО до ожидания
+    // arch/testing/01-e2e-launch.md §1). Оба потока читаются ПАРАЛЛЕЛЬНО до ожидания
     // выхода — полный stderr-пайп при непараллельном чтении дедлокит процесс;
     // бюджет 60 с: по истечении дерево убивается, доступный вывод дренажится
     // и пишется. Телеметрия — «лучшими усилиями»: исключения наружу не

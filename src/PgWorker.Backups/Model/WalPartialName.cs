@@ -2,7 +2,7 @@ using System.Globalization;
 
 namespace PgWorker.Backups;
 
-/// <summary>Ключ .partial-версии незакрытого сегмента (arch/19 §3):
+/// <summary>Ключ .partial-версии незакрытого сегмента (arch/backups/02-wal-archive.md §1):
 /// wal/&lt;segment&gt;.&lt;endLsn&gt;.partial — segment 24 hex строчных, endLsn РОВНО
 /// 16 hex строчных (LSN конца валидного префикса): фиксированная ширина даёт
 /// лексикографический порядок суффиксов = числовому — лучший выбирается

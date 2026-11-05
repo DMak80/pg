@@ -10,7 +10,7 @@ namespace KafkaWorker.IntegrationTests.Api;
 
 // WAF-хост KafkaWorker с настоящим etcd (fixture) и выключенными фоновыми
 // циклами (task etcd-via-worker-api): loops не нужны для API-мутаций, а их
-// тики в тесте — шум. Env-секретов per-install у KafkaWorker нет (arch/16 §8) —
+// тики в тесте — шум. Env-секретов per-install у KafkaWorker нет (arch/kafkaworker/08-operability.md §6) —
 // фабрика проще зеркала PgWorkerApiFactory.
 // Не sealed: кейсы с оверрайдом конфигурации наследуются (ApiKey-кейс).
 public class KafkaApiFactory(Etcd.EtcdFixture etcd) : WebApplicationFactory<Program>

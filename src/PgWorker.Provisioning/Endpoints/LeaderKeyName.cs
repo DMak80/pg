@@ -4,7 +4,7 @@ namespace PgWorker.Provisioning.Endpoints;
 
 /// <summary>
 /// Имя лидера HA-контура из значения ключа <c>/service/&lt;C&gt;-&lt;X&gt;/leader</c>
-/// (arch/14 §5 F, шаг 2 резолва мастера). Значение пишет Patroni — ГОЛОЕ имя
+/// (arch/pgworker/processes/f-move.md F, шаг 2 резолва мастера). Значение пишет Patroni — ГОЛОЕ имя
 /// члена; исторические сиды демо/фикстур кладут JSON-обёртку
 /// <c>{"name":"…"}</c> — обе формы разбираются, прочий мусор → null.
 /// </summary>

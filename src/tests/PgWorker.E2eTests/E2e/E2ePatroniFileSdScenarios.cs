@@ -48,7 +48,7 @@ public sealed class E2ePatroniFileSdScenarios(E2ePatroniFileSdScenariosFx Ctx) :
         var sdGenName = $"pgw-sdgen-{Fx.ClusterTag}";
         var promName = $"pgw-prom-{Fx.ClusterTag}";
         // API опрашивает ТЕСТ — хостовый потребитель: динамическая публикация
-        // (localhost:{фактический порт}, docs/e2e-isolation.md §2; внутрисетевое
+        // (localhost:{фактический порт}, arch/testing/02-e2e-isolation.md §2; внутрисетевое
         // имя с хоста не резолвится). Скрейп нод при этом целиком
         // внутрисетевой (<alias>:8008, host-форвардинга в контуре нет).
         var promUrl = "";
@@ -182,18 +182,18 @@ public sealed class E2ePatroniFileSdScenarios(E2ePatroniFileSdScenariosFx Ctx) :
                 async () => await PatroniSeriesFactAsync(promHttp, promUrl) is not null,
                 TimeSpan.FromSeconds(60), ct);
             factSeries.Should().BeTrue(
-                "with an up-scrape of the series targets, patroni_* must appear in the TSDB (the fact for arch/18 §2.5)");
+                "with an up-scrape of the series targets, patroni_* must appear in the TSDB (the fact for arch/metrics/02-dictionary.md §5)");
             var fact = await PatroniSeriesFactAsync(promHttp, promUrl);
-            fact!.Should().NotBeEmpty("native Patroni series — the arch/18 §2.5 dictionary (M3 fact)");
+            fact!.Should().NotBeEmpty("native Patroni series — the arch/metrics/02-dictionary.md §5 dictionary (M3 fact)");
             // M3-факт — в артефакты прогона: xUnit буферизует Console, файл виден
-            // сразу и остаётся в дампе (фиксация словаря arch/18 §2.5 по факту).
+            // сразу и остаётся в дампе (фиксация словаря arch/metrics/02-dictionary.md §5 по факту).
             await File.WriteAllTextAsync(
                 Path.Combine(Fx.ArtifactsDir, "patroni-series-fact.txt"),
                 string.Join("\n", fact), ct);
             Console.WriteLine(
                 $"[PHASE] e2e[{Fx.Slug}]: the patroni_* dictionary fact: {string.Join(", ", fact)}");
 
-            // Канон-минимум arch/18 §2.5 (M3-факт прогона: словарь Patroni 4.x —
+            // Канон-минимум arch/metrics/02-dictionary.md §5 (M3-факт прогона: словарь Patroni 4.x —
             // роли отдельными сериями, patroni_primary вместо master,
             // patroni_postgres_timeline и patroni_xlog_replayed_timestamp).
             foreach (var series in new[]
@@ -207,7 +207,7 @@ public sealed class E2ePatroniFileSdScenarios(E2ePatroniFileSdScenariosFx Ctx) :
                 var present = await E2eFixture.WaitForAsync(
                     () => SeriesPresentAsync(promHttp, promUrl, series),
                     TimeSpan.FromSeconds(60), ct);
-                present.Should().BeTrue($"the series {series} must be in the TSDB (arch/18 §2.5 / §5.4 canon minimum)");
+                present.Should().BeTrue($"the series {series} must be in the TSDB (arch/metrics/02-dictionary.md §5 / §5.4 canon minimum)");
             }
 
             // ---------- демонтаж ----------
@@ -220,7 +220,7 @@ public sealed class E2ePatroniFileSdScenarios(E2ePatroniFileSdScenariosFx Ctx) :
         }
         catch
         {
-            // docs/e2e-launch.md §3: упавший сценарий — окружение ОСТАНОВИТЬ, не удалить.
+            // arch/testing/01-e2e-launch.md §3: упавший сценарий — окружение ОСТАНОВИТЬ, не удалить.
             Fx.MarkFailed();
             throw;
         }
@@ -230,7 +230,7 @@ public sealed class E2ePatroniFileSdScenarios(E2ePatroniFileSdScenariosFx Ctx) :
             // Шаг 0 — ПОЛНЫЙ дамп окружения (docker logs+inspect ВСЕХ СВОИХ
             // контейнеров: etcd/ноды/prom/sdgen + host.log воркеров) ДО любого
             // удаления — «что произошло» отвечает по логам без перезапуска
-            // (docs/e2e-launch.md); жёсткий kill процесса теста — единственный
+            // (arch/testing/01-e2e-launch.md); жёсткий kill процесса теста — единственный
             // случай, когда этот шаг не выполняется.
             Console.WriteLine($"[PHASE] e2e[{Fx.Slug}]: teardown — telemetry first, then removals…");
             await Fx.CollectDiagnosticsAsync("scenario-finally");
@@ -449,7 +449,7 @@ public sealed class E2ePatroniFileSdScenarios(E2ePatroniFileSdScenariosFx Ctx) :
         }
     }
 
-    // Факт словаря arch/18 §2.5: фактические имена серий patroni_* этого
+    // Факт словаря arch/metrics/02-dictionary.md §5: фактические имена серий patroni_* этого
     // Patroni (M3 — словарь фиксируется прогоном, спека §6.5); null — TSDB
     // ещё пуста (полл повторит).
     private async Task<IReadOnlyList<string>?> PatroniSeriesFactAsync(HttpClient http, string promUrl)
@@ -488,7 +488,7 @@ public sealed class E2ePatroniFileSdScenarios(E2ePatroniFileSdScenariosFx Ctx) :
 }
 
 /// <summary>Компаньон-фикстура окружения класса (полный контур на класс:
-/// сеть/etcd/CA/окно портов; docs/e2e-isolation.md §1).</summary>
+/// сеть/etcd/CA/окно портов; arch/testing/02-e2e-isolation.md §1).</summary>
 public sealed class E2ePatroniFileSdScenariosFx : E2eContourFixture
 {
     protected override string Slug => "patroni-file-sd";

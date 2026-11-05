@@ -4,11 +4,11 @@ using System.Text.Json.Serialization;
 namespace PgWorker.Core.Model;
 
 /// <summary>
-/// Формат значения /pgworker/portalloc/&lt;C&gt; (spec §4.3, arch/14 §3):
+/// Формат значения /pgworker/portalloc/&lt;C&gt; (spec §4.3, arch/pgworker/00-etcd-contract.md):
 /// плоский lowercase-JSON {"&lt;shard&gt;/&lt;node&gt;":{host,pg,patroni,doorman,object}}
 /// — единый контракт для процессов, панели-диагностики и тестов; object — имя
-/// docker-контейнера усыновлённой ноды (arch/14 §2.4), отсутствует у канонических;
-/// alias/net (arch/14 §2.4) — сетевая идентичность канонической ноды для
+/// docker-контейнера усыновлённой ноды (arch/pgworker/01-placement.md §5), отсутствует у канонических;
+/// alias/net (arch/pgworker/01-placement.md §5) — сетевая идентичность канонической ноды для
 /// скрейпа (docker-имя + имя сети контура), отсутствуют без ключа ScrapeNetwork.
 /// </summary>
 public sealed record PortallocEntry(
@@ -58,7 +58,7 @@ public static class Portalloc
     }
 }
 
-/// <summary>Сетевая идентичность записей portalloc (arch/14 §2.4): при
+/// <summary>Сетевая идентичность записей portalloc (arch/pgworker/01-placement.md §5): при
 /// заданном ключе ScrapeNetwork каноническим записям (без object) дописываются
 /// alias = pgw-&lt;C&gt;-&lt;X&gt;-&lt;n&gt; (из ключа "&lt;X&gt;/&lt;n&gt;") и net = имя сети. Чистая,
 /// идемпотентная; null/пустой ключ — словарь без изменений (дефолт поставки:

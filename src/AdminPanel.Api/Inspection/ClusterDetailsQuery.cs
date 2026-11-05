@@ -28,7 +28,7 @@ public sealed record ClusterDto(
     IReadOnlyList<EvacuationDto>? Evacuations = null, // u12: журналы эвакуаций кластера
     bool SecretsRotationPending = false); // u07-бейдж: живая заявка /pgworker/rotations/<C>
 
-// Журнал эвакуации шарда (u12, arch/14 §3.2): buckets — словарь «старый → новый».
+// Журнал эвакуации шарда (u12, arch/pgworker/00-etcd-contract.md §3): buckets — словарь «старый → новый».
 public sealed record EvacuationDto(
     string Shard, long EvacuatedUnix, string Reason,
     IReadOnlyDictionary<string, string> Buckets, string State, long? ReturnedUnix);

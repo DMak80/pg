@@ -3,7 +3,7 @@ using Xunit;
 
 namespace PgWorker.IntegrationTests.E2e;
 
-// Механика объединённого съёма stdout+stderr (канон docs/e2e-launch.md §1):
+// Механика объединённого съёма stdout+stderr (канон arch/testing/01-e2e-launch.md §1):
 // docker-CLI разводит потоки контейнера по своим потокам — телеметрия обязана
 // видеть оба; контракт RunProcessAsync (только stdout при exit=0) не меняется.
 // Не-E2E факт: локальный /bin/sh, без docker.

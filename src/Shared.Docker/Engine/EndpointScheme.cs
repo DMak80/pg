@@ -1,6 +1,6 @@
 namespace Shared.Docker;
 
-// Разбор endpoint-схем Engine API (arch/14 §2.2): unix://<path> |
+// Разбор endpoint-схем Engine API (arch/pgworker/01-placement.md §3.1): unix://<path> |
 // tcp://[host][:port] | ssh://[user@]host[:port]. Чистая функция — юнит-тесты
 // без сети; дефолты портов: tcp — 2375 (plain Engine API), ssh — 22.
 public sealed record EndpointScheme(string Scheme, string Host, int Port, string? User)
@@ -44,6 +44,6 @@ public sealed record EndpointScheme(string Scheme, string Host, int Port, string
         }
 
         throw new ApplicationException(
-            $"unknown endpoint scheme: {endpoint} (expected unix://|tcp://|ssh://, arch/14 §2.2)");
+            $"unknown endpoint scheme: {endpoint} (expected unix://|tcp://|ssh://, arch/pgworker/01-placement.md §3.1)");
     }
 }

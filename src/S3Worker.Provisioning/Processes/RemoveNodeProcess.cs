@@ -5,7 +5,7 @@ using Shared.Etcd.Client;
 namespace S3Worker.Provisioning.Processes;
 
 /// <summary>
-/// RemoveNode (arch/24 §5 E): маркер TO_REMOVE → гварды (ДО деструктива:
+/// RemoveNode (arch/s3worker/03-node-scaling.md §2 E): маркер TO_REMOVE → гварды (ДО деструктива:
 /// последняя нода; нет живых RUNNING кроме выводимой — вывод не рвёт последнюю
 /// точку записи пула) → REMOVING → снос контейнера+volume по placed_on →
 /// del ключей ноды + исключение из portalloc (RMW под locks/portalloc) →
@@ -29,7 +29,7 @@ public sealed class RemoveNodeProcess(
     {
         var cluster = snap.Cluster;
 
-        // Мутации — только держателем живого клэйма (arch/17 S5).
+        // Мутации — только держателем живого клэйма (arch/synchronization/02-predicates-and-mutations.md §S5).
         var claimed = S3ProcessCommon.EnsureClaimed(claims, cluster, Op);
         if (!claimed.IsSuccess)
             return claimed;
@@ -41,13 +41,13 @@ public sealed class RemoveNodeProcess(
             return Result.Success(); // заявок нет — no-op (защита повторного тика)
 
         // ГВАРДЫ ДО деструктива (journal-отказ, без мутаций):
-        // 1) последняя нода — пул не может быть пуст (arch/23 §2: nodes 1..9);
+        // 1) последняя нода — пул не может быть пуст (arch/s3-clusters/02-keys.md §1: nodes 1..9);
         if (snap.Nodes.Count <= 1)
             return await RejectAsync(cluster, node.Node,
                 "last node of the cluster — removal forbidden (withdraw the request or delete the cluster)", ct);
 
         // 2) «мёртвые остальные»: живых RUNNING-нод кроме выводимой нет →
-        // вывод рвёт последнюю точку записи пула (arch/24 §5 E).
+        // вывод рвёт последнюю точку записи пула (arch/s3worker/03-node-scaling.md §2 E).
         var aliveOthers = snap.Nodes
             .Where(n => n.Node != node.Node && n.State == S3NodeStates.Running)
             .ToList();
@@ -79,7 +79,7 @@ public sealed class RemoveNodeProcess(
             return Fail(cluster, node.Node, removed.Error!, "remove-node");
 
         // del ключей ноды (включая pki — имя освобождается; повторное создание
-        // инстанса с тем же именем — новый выпуск, arch/23 §6).
+        // инстанса с тем же именем — новый выпуск, arch/s3-clusters/06-secrets.md).
         foreach (var key in new[]
                  {
                      S3ProcessCommon.NodePlacementKey(cluster, node.Node),

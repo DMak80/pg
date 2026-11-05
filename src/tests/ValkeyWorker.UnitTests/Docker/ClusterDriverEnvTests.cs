@@ -6,7 +6,7 @@ using Xunit;
 
 namespace ValkeyWorker.UnitTests.Docker;
 
-// env-TLS (arch/21 §2): Env спецификации ноды доезжает до docker-объекта
+// env-TLS (arch/valkeyworker/01-placement.md): Env спецификации ноды доезжает до docker-объекта
 // (Plain — ContainerSpec контейнера; Swarm — TaskTemplate.ContainerSpec
 // сервиса), NodeEnvAsync отдаёт env фактического объекта (null = объекта
 // нет), CleanupLegacyVolumeAsync удаляет легаси-том старой volume-модели.

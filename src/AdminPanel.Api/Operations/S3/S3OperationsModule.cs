@@ -7,7 +7,7 @@ using Microsoft.AspNetCore.Routing;
 
 namespace AdminPanel.Api.Operations.S3;
 
-// Модуль s3-мутаций (arch/03 §12.1) — ПРОКСИ в API S3Worker (arch/24 §1.1):
+// Модуль s3-мутаций (arch/03 §12.1) — ПРОКСИ в API S3Worker (arch/s3worker/07-api.md §1):
 // панель не пишет в etcd; успех — код воркера 1:1 (202|204 различаются,
 // 201|200 у ротации — WorkerRaw<T>.StatusCode), ошибки — ProblemDetails как
 // есть, недоступность API — собственный 503. Успех не дёргает refresher:

@@ -9,7 +9,7 @@ namespace PgWorker.Provisioning.Processes;
 /// PGTune-параметров, вырезаемые при сборке YAML (SpiloEnvBuilder), не в ядре:
 /// Calculate всегда даёт полный вывод. Память/CPU — НЕ конфигурация и НЕ
 /// дефолты: их единственный источник — ОБЯЗАТЕЛЬНЫЕ etcd-заявки
-/// /service/&lt;scope&gt;/request_{cpu,mem} на ноду (arch/14 §2.1 п.4).
+/// /service/&lt;scope&gt;/request_{cpu,mem} на ноду (arch/pgworker/01-placement.md §2).
 /// </summary>
 public sealed record PgtuneSettings(
     int DbVersion,

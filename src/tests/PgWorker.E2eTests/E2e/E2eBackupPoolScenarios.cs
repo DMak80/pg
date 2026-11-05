@@ -260,7 +260,7 @@ public abstract class E2eBackupPoolScenarios
     }
 
     // Внутрисетевой адрес мастера шарда: primary — пробы Patroni /primary по
-    // контейнерным именам нод (REST :8008 — константа контракта, arch/14 §2.1);
+    // контейнерным именам нод (REST :8008 — константа контракта, arch/pgworker/01-placement.md §1);
     // pg — тот же контейнер :5432 (адресация теста целиком внутрисетевая).
     protected async Task<(string Host, int Port, string Node)> MasterPgAsync(
         string cluster, string shard, CancellationToken ct)
@@ -370,7 +370,7 @@ public abstract class E2eBackupPoolScenarios
 
 // AC1 (молчание без выбора пула → policy с s3 → COMPLETED (AC1)) — отдельный класс: свой guid-контур; коллекции классов
 // не сериализуют сценарии между собой (параллельный запуск E2E, ≤5 живых
-// контуров — канон docs/e2e-launch.md).
+// контуров — канон arch/testing/01-e2e-launch.md).
 public sealed class PoolNotSelectedScenarios(PoolNotSelectedScenariosFx Ctx) : E2eBackupPoolScenarios, IClassFixture<PoolNotSelectedScenariosFx>
 {
     protected override E2eEnvironment Fx => Ctx.Fx;
@@ -409,7 +409,7 @@ public sealed class PoolNotSelectedScenarios(PoolNotSelectedScenariosFx Ctx) : E
             await TimedAsync("ac1 silence-window-13s",
                 () => Task.Delay(TimeSpan.FromSeconds(13), ct));
             (await FullKeysAsync(cluster, "shard1")).Should().BeEmpty(
-                "no s3 in policy — the cluster subsystem does not write (arch/19 §4)");
+                "no s3 in policy — the cluster subsystem does not write (arch/backups/05-etcd-contract.md)");
 
             // Act 2 — policy с секцией s3 (применяется следующим тиком).
             await TimedAsync("ac1 policy-s3", () => G.PutAsync(Endpoint, PolicyKey(cluster),
@@ -433,7 +433,7 @@ public sealed class PoolNotSelectedScenarios(PoolNotSelectedScenariosFx Ctx) : E
 
 // AC2 (раскладка записи мастер/реплика по своим нодам (AC2)) — отдельный класс: свой guid-контур; коллекции классов
 // не сериализуют сценарии между собой (параллельный запуск E2E, ≤5 живых
-// контуров — канон docs/e2e-launch.md).
+// контуров — канон arch/testing/01-e2e-launch.md).
 public sealed class PoolMasterReplicaSplitScenarios(PoolMasterReplicaSplitScenariosFx Ctx) : E2eBackupPoolScenarios, IClassFixture<PoolMasterReplicaSplitScenariosFx>
 {
     protected override E2eEnvironment Fx => Ctx.Fx;
@@ -511,7 +511,7 @@ public sealed class PoolMasterReplicaSplitScenarios(PoolMasterReplicaSplitScenar
 
 // AC3 (однонодовый пул: оба потока + restore (AC3)) — отдельный класс: свой guid-контур; коллекции классов
 // не сериализуют сценарии между собой (параллельный запуск E2E, ≤5 живых
-// контуров — канон docs/e2e-launch.md).
+// контуров — канон arch/testing/01-e2e-launch.md).
 public sealed class PoolSingleNodeScenarios(PoolSingleNodeScenariosFx Ctx) : E2eBackupPoolScenarios, IClassFixture<PoolSingleNodeScenariosFx>
 {
     protected override E2eEnvironment Fx => Ctx.Fx;
@@ -577,7 +577,7 @@ public sealed class PoolSingleNodeScenarios(PoolSingleNodeScenariosFx Ctx) : E2e
 
 // AC4 (failover списка записи и исчерпание с маркером (AC4)) — отдельный класс: свой guid-контур; коллекции классов
 // не сериализуют сценарии между собой (параллельный запуск E2E, ≤5 живых
-// контуров — канон docs/e2e-launch.md).
+// контуров — канон arch/testing/01-e2e-launch.md).
 public sealed class PoolFailoverExhaustionScenarios(PoolFailoverExhaustionScenariosFx Ctx) : E2eBackupPoolScenarios, IClassFixture<PoolFailoverExhaustionScenariosFx>
 {
     protected override E2eEnvironment Fx => Ctx.Fx;
@@ -594,7 +594,7 @@ public sealed class PoolFailoverExhaustionScenarios(PoolFailoverExhaustionScenar
             TestContext.Current.CancellationToken);
         // Потолок — бюджет ×1.2 от фактического замера (согласован владельцем):
         // AC4 целиком ~270 с (Act A — фейловер write-списка 68 с: put-ретрай и
-        // каденция закрытия сегментов 15 с — штатная механика arch/19 §3; Act B —
+        // каденция закрытия сегментов 15 с — штатная механика arch/backups/02-wal-archive.md §1; Act B —
         // рестарт воркера/реконнект/исчерпание/самолечение) → 330 с; неверное
         // ожидание не может длиться дольше.
         cts.CancelAfter(TimeSpan.FromSeconds(330));
@@ -654,7 +654,7 @@ public sealed class PoolFailoverExhaustionScenarios(PoolFailoverExhaustionScenar
             await PutPolicyAsync(cluster, ["node1"], ["node2"]);
             // Рецикл подключения приёмников (воркер ВНИЗ — его стартовый del
             // ключа не помешает): write-список резолвится ТОЛЬКО на цикле
-            // подключения (arch/19 §3 — новая сессия), а живые сессии Act A
+            // подключения (arch/backups/02-wal-archive.md §1 — новая сессия), а живые сессии Act A
             // стримят со старым списком [node1,node2] — исчерпания списка
             // [node1] без рецикла не случится. Форсируем новую сессию
             // легитимным arch-гейтом: put /pgworker/backups-disabled → сессии
@@ -705,7 +705,7 @@ public sealed class PoolFailoverExhaustionScenarios(PoolFailoverExhaustionScenar
 
 // AC5 (promote: агент пересоздан со списком мастера (AC5)) — отдельный класс: свой guid-контур; коллекции классов
 // не сериализуют сценарии между собой (параллельный запуск E2E, ≤5 живых
-// контуров — канон docs/e2e-launch.md).
+// контуров — канон arch/testing/01-e2e-launch.md).
 public sealed class PoolRoleSwitchScenarios(PoolRoleSwitchScenariosFx Ctx) : E2eBackupPoolScenarios, IClassFixture<PoolRoleSwitchScenariosFx>
 {
     protected override E2eEnvironment Fx => Ctx.Fx;
@@ -787,7 +787,7 @@ public sealed class PoolRoleSwitchScenarios(PoolRoleSwitchScenariosFx Ctx) : E2e
             }, TimeSpan.FromSeconds(90), ct);
             switched.Should().BeTrue(
                 "the agent of the new role writes to the master-list node (node1), .history in S3, the chain is continuous");
-            // Двойная архивация (arch/19 §3): .history нового TLI доставляют ОБА
+            // Двойная архивация (arch/backups/02-wal-archive.md §1): .history нового TLI доставляют ОБА
             // приёмника шарда — каждый в список СВОЕЙ роли (мастер → node1,
             // реплика → node2), поэтому сравнение счётчиков «node2 < node1» —
             // гонка сходимости, а не свойство системы; намерение «переключение
@@ -806,7 +806,7 @@ public sealed class PoolRoleSwitchScenarios(PoolRoleSwitchScenariosFx Ctx) : E2e
 
 // AC6 (чтение с живой ноды после стопа (AC6)) — отдельный класс: свой guid-контур; коллекции классов
 // не сериализуют сценарии между собой (параллельный запуск E2E, ≤5 живых
-// контуров — канон docs/e2e-launch.md).
+// контуров — канон arch/testing/01-e2e-launch.md).
 public sealed class PoolReadAnyNodeScenarios(PoolReadAnyNodeScenariosFx Ctx) : E2eBackupPoolScenarios, IClassFixture<PoolReadAnyNodeScenariosFx>
 {
     protected override E2eEnvironment Fx => Ctx.Fx;
@@ -955,7 +955,7 @@ public sealed class PoolReadAnyNodeScenarios(PoolReadAnyNodeScenariosFx Ctx) : E
 
 // AC8 (policy-API 400 по полям + restore source_pool (AC8)) — отдельный класс: свой guid-контур; коллекции классов
 // не сериализуют сценарии между собой (параллельный запуск E2E, ≤5 живых
-// контуров — канон docs/e2e-launch.md).
+// контуров — канон arch/testing/01-e2e-launch.md).
 public sealed class PoolPolicyValidationScenarios(PoolPolicyValidationScenariosFx Ctx) : E2eBackupPoolScenarios, IClassFixture<PoolPolicyValidationScenariosFx>
 {
     protected override E2eEnvironment Fx => Ctx.Fx;
@@ -1069,7 +1069,7 @@ public sealed class PoolPolicyValidationScenarios(PoolPolicyValidationScenariosF
 }
 
 /// <summary>Компаньон-фикстура окружения PoolNotSelectedScenarios (полный контур на класс:
-/// сеть/etcd/ownS3/CA/окно портов; docs/e2e-isolation.md §1).</summary>
+/// сеть/etcd/ownS3/CA/окно портов; arch/testing/02-e2e-isolation.md §1).</summary>
 public sealed class PoolNotSelectedScenariosFx : E2eContourFixture
 {
     protected override string Slug => "pool-ac1";
@@ -1077,7 +1077,7 @@ public sealed class PoolNotSelectedScenariosFx : E2eContourFixture
 }
 
 /// <summary>Компаньон-фикстура окружения PoolMasterReplicaSplitScenarios (полный контур на класс:
-/// сеть/etcd/ownS3/CA/окно портов; docs/e2e-isolation.md §1).</summary>
+/// сеть/etcd/ownS3/CA/окно портов; arch/testing/02-e2e-isolation.md §1).</summary>
 public sealed class PoolMasterReplicaSplitScenariosFx : E2eContourFixture
 {
     protected override string Slug => "pool-ac2";
@@ -1085,7 +1085,7 @@ public sealed class PoolMasterReplicaSplitScenariosFx : E2eContourFixture
 }
 
 /// <summary>Компаньон-фикстура окружения PoolSingleNodeScenarios (полный контур на класс:
-/// сеть/etcd/ownS3/CA/окно портов; docs/e2e-isolation.md §1).</summary>
+/// сеть/etcd/ownS3/CA/окно портов; arch/testing/02-e2e-isolation.md §1).</summary>
 public sealed class PoolSingleNodeScenariosFx : E2eContourFixture
 {
     protected override string Slug => "pool-ac3";
@@ -1093,7 +1093,7 @@ public sealed class PoolSingleNodeScenariosFx : E2eContourFixture
 }
 
 /// <summary>Компаньон-фикстура окружения PoolFailoverExhaustionScenarios (полный контур на класс:
-/// сеть/etcd/ownS3/CA/окно портов; docs/e2e-isolation.md §1).</summary>
+/// сеть/etcd/ownS3/CA/окно портов; arch/testing/02-e2e-isolation.md §1).</summary>
 public sealed class PoolFailoverExhaustionScenariosFx : E2eContourFixture
 {
     protected override string Slug => "pool-ac4";
@@ -1101,7 +1101,7 @@ public sealed class PoolFailoverExhaustionScenariosFx : E2eContourFixture
 }
 
 /// <summary>Компаньон-фикстура окружения PoolRoleSwitchScenarios (полный контур на класс:
-/// сеть/etcd/ownS3/CA/окно портов; docs/e2e-isolation.md §1).</summary>
+/// сеть/etcd/ownS3/CA/окно портов; arch/testing/02-e2e-isolation.md §1).</summary>
 public sealed class PoolRoleSwitchScenariosFx : E2eContourFixture
 {
     protected override string Slug => "pool-ac5";
@@ -1109,7 +1109,7 @@ public sealed class PoolRoleSwitchScenariosFx : E2eContourFixture
 }
 
 /// <summary>Компаньон-фикстура окружения PoolReadAnyNodeScenarios (полный контур на класс:
-/// сеть/etcd/ownS3/CA/окно портов; docs/e2e-isolation.md §1).</summary>
+/// сеть/etcd/ownS3/CA/окно портов; arch/testing/02-e2e-isolation.md §1).</summary>
 public sealed class PoolReadAnyNodeScenariosFx : E2eContourFixture
 {
     protected override string Slug => "pool-ac6";
@@ -1117,7 +1117,7 @@ public sealed class PoolReadAnyNodeScenariosFx : E2eContourFixture
 }
 
 /// <summary>Компаньон-фикстура окружения PoolPolicyValidationScenarios (полный контур на класс:
-/// сеть/etcd/ownS3/CA/окно портов; docs/e2e-isolation.md §1).</summary>
+/// сеть/etcd/ownS3/CA/окно портов; arch/testing/02-e2e-isolation.md §1).</summary>
 public sealed class PoolPolicyValidationScenariosFx : E2eContourFixture
 {
     protected override string Slug => "pool-ac8";

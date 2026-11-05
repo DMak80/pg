@@ -5,11 +5,11 @@ using Shared.Core;
 
 namespace Shared.Etcd.Client;
 
-// Единый etcd-endpoint-failover монорепо (паттерн arch/17 S7): обход endpoints
+// Единый etcd-endpoint-failover монорепо (паттерн arch/synchronization/03-fault-tolerance.md §S7): обход endpoints
 // по кругу; первый успешный ответ — истина; все недоступны — ПОСЛЕДНЯЯ ошибка
 // наружу (причина жива в статусе/логе); пустой список — EtcdUnreachableException.
 // Sticky последнего живого + per-attempt бюджет + негативный кэш мёртвых
-// (arch/17 S7): мёртвый IP — «чёрная дыра» транспорта (SYN висит до
+// (arch/synchronization/03-fault-tolerance.md §S7): мёртвый IP — «чёрная дыра» транспорта (SYN висит до
 // TCP-таймаута) — последовательный обход платил бы штраф каждым вызовом, пока
 // список начинается с мёртвого; следующий вызов стартует с ПОСЛЕДНЕГО
 // ответившего endpoint, каждая попытка ограничена бюджетом AttemptTimeout.
@@ -26,7 +26,7 @@ public static class EtcdEndpointFailover
     /// префиксов) укладываются с запасом; переопределяется тестами.</summary>
     internal static TimeSpan AttemptTimeout { get; set; } = TimeSpan.FromSeconds(5);
 
-    /// <summary>Cooldown негативного кэша = 3 бюджета попытки (arch/17 S7):
+    /// <summary>Cooldown негативного кэша = 3 бюджета попытки (arch/synchronization/03-fault-tolerance.md §S7):
     /// переживает фазу тика из нескольких последовательных вызовов разных
     /// списков; переопределяется тестами.</summary>
     internal static TimeSpan DeadCooldown { get; set; } = TimeSpan.FromSeconds(15);
@@ -181,7 +181,7 @@ public static class EtcdEndpointFailover
 
     // Пометка мёртвым — ТОЛЬКО транспорт-отказ (бюджет попытки/connect/сокет):
     // прикладной отказ живого etcd (HTTP-ответ с ошибкой, lease TTL=0) —
-    // НЕ свидетельство смерти endpoint (arch/17 S7: «не отвечает» ≠ смерть).
+    // НЕ свидетельство смерти endpoint (arch/synchronization/03-fault-tolerance.md §S7: «не отвечает» ≠ смерть).
     private static void MarkDead(string endpoint, Exception? error)
     {
         if (error is not null && IsTransportLoss(error))

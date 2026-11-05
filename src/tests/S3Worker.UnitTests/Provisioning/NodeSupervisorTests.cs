@@ -8,7 +8,7 @@ using Xunit;
 
 namespace S3Worker.UnitTests.Provisioning;
 
-// Надзор C (arch/24 §5 C): пересоздание снесённого (S7, одно за тик),
+// Надзор C (arch/s3worker/02-cluster-lifecycle.md §4 C): пересоздание снесённого (S7, одно за тик),
 // PROVISIONING → RUNNING по health, UNREACHABLE по NodeDeadSec (без деструктива),
 // слепой inspect — никаких действий, usage-сбор (snake_case, HealthIntervalSec),
 // rolling-ресурсы, чужие states не трогаются.
@@ -19,7 +19,7 @@ public class NodeSupervisorTests
     // getenv-профиль store'а: спец-ключ etcd-backup (тестами не используется).
     private static readonly Dictionary<string, string?> Env = [];
 
-    // Валидный secrets-ключ кластера (канон arch/23 §6): root-пара +
+    // Валидный secrets-ключ кластера (канон arch/s3-clusters/06-secrets.md): root-пара +
     // backups(read-write) и panel(read-only); значения — фиксированные
     // несекретные литералы.
     private static string SecretsJson(string cluster) => ClusterSecretsStore.Serialize(new ClusterSecrets(

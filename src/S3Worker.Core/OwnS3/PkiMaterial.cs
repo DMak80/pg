@@ -2,7 +2,7 @@ using OwnS3.Protocol.PeerAuth;
 
 namespace S3Worker.Core.OwnS3;
 
-/// <summary>Материал CA кластера (arch/23 §6, spec §3.2): trust-anchor
+/// <summary>Материал CA кластера (arch/s3-clusters/06-secrets.md, spec §3.2): trust-anchor
 /// (name/publicKeyPem) + приватный ключ CA (выпуск сертификатов — только воркеру).
 /// Модель — в Core: потребители и PkiStore (Provisioning), и клиент ноды
 /// (IOwnS3NodeClient — до-join подпись оркестратором).</summary>

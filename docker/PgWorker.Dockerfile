@@ -16,7 +16,7 @@ RUN apt-get update \
 COPY --from=publish /app ./
 ENV ASPNETCORE_HTTP_PORTS=8080
 EXPOSE 8080
-# /healthz — открытая https-грань без клиентского серта (arch/14 §1.1):
+# /healthz — открытая https-грань без клиентского серта (arch/pgworker/07-api.md §1):
 # серверный TLS + доверие ca.pem (volume /tls:ro в compose).
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
     CMD curl -sf --cacert /tls/ca.pem https://localhost:8080/healthz || exit 1

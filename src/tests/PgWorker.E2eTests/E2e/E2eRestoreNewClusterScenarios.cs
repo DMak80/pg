@@ -15,7 +15,7 @@ namespace PgWorker.IntegrationTests.E2e;
 // прецедент :385-386).
 // E2E восстановления шарда из бэкапов (spec §4 Ф5): изолированное окружение
 // E2eEnvironment (своя сеть/etcd/ownS3 по guid, динамические порты, полный
-// teardown с ассертом чистоты в DisposeAsync — docs/e2e-isolation.md) +
+// teardown с ассертом чистоты в DisposeAsync — arch/testing/02-e2e-isolation.md) +
 // provisioned-кластер с включённой подсистемой бэкапов → реальный COMPLETED
 // полный + WAL-цепочка → restore-заявка (прямой PUT PLANNED-ключа, принятое
 // отступление плана: API-путь покрыт WAF-тестами Task 13) → COMPLETED + данные.
@@ -159,7 +159,7 @@ public sealed class E2eRestoreNewClusterScenarios(E2eRestoreNewClusterScenariosF
             // Гейт готовности мастера : COMPLETED не гарантирует закрытия
             // рестарт-окна postmaster (Npgsql 57P01) — SQL-проба SELECT 1 до
             // финального чтения (эталон — backup_exec-гвард E2eBackupScenarios;
-            // docs/e2e-launch.md §2: новый ожидания-участок — только через
+            // arch/testing/01-e2e-launch.md §2: новый ожидания-участок — только через
             // WaitPhaseAsync). Бюджет 120 с согласован с PatroniBootSec хоста.
             var masterReady = await WaitPhaseAsync("master-ready", async () =>
             {
@@ -210,7 +210,7 @@ public sealed class E2eRestoreNewClusterScenarios(E2eRestoreNewClusterScenariosF
     // ===== Хелперы (копии образцов E2eBackupScenarios/E2eRetentionScenarios —
     // файлы сценариев независимы, паттерн репо) =====
 
-    // Запуск сценария под политикой телеметрии (docs/e2e-launch.md): упавший
+    // Запуск сценария под политикой телеметрии (arch/testing/01-e2e-launch.md): упавший
     // тест помечает окружение MarkFailed — teardown ОСТАНАВЛИВАЕТ контейнеры
     // (не удаляет: логи/тома остаются для отчёта «что произошло»), перезапуск
     // теста ради логов запрещён. Зачистка — вручную по README-cleanup.txt.
@@ -228,7 +228,7 @@ public sealed class E2eRestoreNewClusterScenarios(E2eRestoreNewClusterScenariosF
         }
     }
 
-    // Ожидание фазы с телеметрией (docs/e2e-launch.md): длительность в журнал
+    // Ожидание фазы с телеметрией (arch/testing/01-e2e-launch.md): длительность в журнал
     // теста всегда; фаза дольше 60 с — docker-логи окружения снимаются в
     // артефакты немедленно (отчёт «почему так долго» собирается по логам,
     // без перезапуска), независимо от исхода фазы.
@@ -255,7 +255,7 @@ public sealed class E2eRestoreNewClusterScenarios(E2eRestoreNewClusterScenariosF
         {
             ["PgWorker__Backups__Enabled"] = "true",
             ["PgWorker__Backups__S3__Bucket"] = Bucket,
-            // креды пула — env-профиль (arch/19 §7); пул — policy.s3, адреса
+            // креды пула — env-профиль (arch/backups/08-secrets.md); пул — policy.s3, адреса
             // резолвит воркер из /s3/ (advertised host.docker.internal, extra_hosts).
             ["PgWorker__Backups__Retry__BaseSec"] = "2",
             ["PgWorker__Backups__Retry__MaxSec"] = "4",
@@ -310,7 +310,7 @@ public sealed class E2eRestoreNewClusterScenarios(E2eRestoreNewClusterScenariosF
             return status is not null && (status["state"].GetString() is "COMPLETED" or "FAILED");
         }, budget, ct);
         sw.Stop();
-        // Телеметрия (docs/e2e-launch.md): длительность restore — в журнал всегда;
+        // Телеметрия (arch/testing/01-e2e-launch.md): длительность restore — в журнал всегда;
         // медленная (> 60 с), но успешная фаза тоже снимает docker-логи окружения.
         Console.WriteLine(
             $"[PHASE] restore {cluster}/{shard}/{id}: state={status?["state"].GetString()}, elapsed={sw.Elapsed.TotalSeconds:F1}s");
@@ -680,7 +680,7 @@ public sealed class E2eRestoreNewClusterScenarios(E2eRestoreNewClusterScenariosF
 }
 
 /// <summary>Компаньон-фикстура окружения класса (полный контур на класс:
-/// сеть/etcd/CA/окно портов; docs/e2e-isolation.md §1).</summary>
+/// сеть/etcd/CA/окно портов; arch/testing/02-e2e-isolation.md §1).</summary>
 public sealed class E2eRestoreNewClusterScenariosFx : E2eContourFixture
 {
     protected override string Slug => "rs-dr";

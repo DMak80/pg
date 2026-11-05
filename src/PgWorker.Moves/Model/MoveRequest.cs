@@ -15,7 +15,7 @@ public enum MoveOp
 
 /// <summary>
 /// Заявка оператора на переезд/откат/уборку/отмену бакета — значение ключа
-/// /pgworker/moves/&lt;C&gt;/bucket_&lt;i&gt; (spec §4.1, arch/14 §3.3).
+/// /pgworker/moves/&lt;C&gt;/bucket_&lt;i&gt; (spec §4.1, arch/pgworker/00-etcd-contract.md §4).
 /// Успех или перманентный отказ — заявку удаляет процесс; transient — живёт до успеха.
 /// </summary>
 public sealed record MoveRequest(

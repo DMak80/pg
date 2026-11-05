@@ -104,7 +104,7 @@ public class PortAllocatorTests
             new HashSet<(string, int)>(), 15000, 16000,
             PortsOf, HostOf, MakeAddress, KeyOf);
 
-        // Assert: последовательные слоты (arch/14 §2.4 п.2): тройка
+        // Assert: последовательные слоты (arch/pgworker/01-placement.md §5 п.2): тройка
         // pg/patroni/doorman идёт подряд — смещения +3000/+1500 упразднены.
         var addr = result.Value["shard1/shard1a"];
         addr.Host.Should().Be("h1");
@@ -113,7 +113,7 @@ public class PortAllocatorTests
         addr.Doorman.Should().Be(15002);
     }
 
-    // AAA (arch/14 §2.4 п.2): последовательное выделение — тройки нод
+    // AAA (arch/pgworker/01-placement.md §5 п.2): последовательное выделение — тройки нод
     // НЕ пересекаются и идут подряд по диапазону (никаких +3000/+1500-дыр).
     [Fact]
     public void Allocate_MultipleNodes_DisjointConsecutiveTriples()

@@ -5,7 +5,7 @@ using PgWorker.Core.Templates;
 
 namespace PgWorker.UnitTests.Templates;
 
-// PKI REST-эндпоинтов нод (arch/14 §2.1/§2.4): серты нод из per-install CA,
+// PKI REST-эндпоинтов нод (arch/pgworker/01-placement.md §1/§2.4): серты нод из per-install CA,
 // SAN = DNS <n> + DNS pgw-<C>-<X>-<n> + IP 127.0.0.1, EKU ServerAuth.
 public class RestPkiTests
 {
@@ -106,7 +106,7 @@ public class RestPkiTests
         chain.Build(cert).Should().BeTrue();
     }
 
-    // AAA : клиентский серт воркера mTLS-канала доставки (spec §3.4, arch/25
+    // AAA : клиентский серт воркера mTLS-канала доставки (spec §3.4, arch/etcdworker/README.md
     // №23) — EKU ровно ClientAuth, издан тем же per-install CA; серверной
     // роли (SAN/ServerAuth) у него нет.
     [Fact]

@@ -6,7 +6,7 @@ using Xunit;
 
 namespace S3Worker.IntegrationTests.Api;
 
-// WAF-мутации S3-домена (arch/24 §1.1, spec §8.2): create c instances[] 0..9
+// WAF-мутации S3-домена (arch/s3worker/07-api.md §1, spec §8.2): create c instances[] 0..9
 // (201/409/400/422), add-node с именем из запроса (201/409/404), delete-node
 // (202/204/404/409 гвард последнего), PUT links (202/400/404), deny/allow
 // (202/204/404), rotations 201/200/404, метрика операций API, секретность
@@ -161,7 +161,7 @@ public class ClusterMutationsApiTests(S3ApiFixture fx)
         config.Value.Should().BeNull();
     }
 
-    // Гварды etcdBackup (arch/24 §1.1): гвард читает env-пару ЖИВО на каждом
+    // Гварды etcdBackup (arch/s3worker/07-api.md §1): гвард читает env-пару ЖИВО на каждом
     // запросе, тест управляет переменными вокруг вызова и восстанавливает
     // в finally (ModuleInitializer TestSecrets ставит обе = "it-secret");
     // тесты коллекции последовательны — гонки нет.

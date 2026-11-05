@@ -3,7 +3,7 @@ using System.Diagnostics.Metrics;
 
 namespace KafkaWorker.App;
 
-// Стейт + ObservableGauge-серии коллектора (arch/18 §2.3–§4). Пассивный
+// Стейт + ObservableGauge-серии коллектора (arch/metrics/02-dictionary.md §3–§4). Пассивный
 // наблюдатель: чтение стейта под lock, серии пустые до первого тика.
 public sealed class KafkaMetricsState
 {
@@ -20,7 +20,7 @@ public sealed class KafkaMetricsState
                 new KeyValuePair<string, object?>("cluster", kv.Key.Cluster),
                 new KeyValuePair<string, object?>("group", kv.Key.Group),
                 new KeyValuePair<string, object?>("topic", kv.Key.Topic)))),
-            description: "Total consumer lag per group and topic (arch/18 §2.3)");
+            description: "Total consumer lag per group and topic (arch/metrics/02-dictionary.md §3)");
 
         meter.CreateObservableGauge(
             "kafka.under_replicated_partitions",

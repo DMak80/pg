@@ -283,7 +283,7 @@ public class ValkeyConnectionTests
     [Fact]
     public async Task Ping_BrokenCaPem_Failed()
     {
-        // Arrange — сервер валиден, но клиент получил мусор вместо ca_pem (arch/20 §5)
+        // Arrange — сервер валиден, но клиент получил мусор вместо ca_pem (arch/valkey-clusters/05-fault-tolerance.md)
         var (cert, key) = ServerCert();
         await using var server = TlsTestServer.Start(cert, key);
         var handle = server.HandleOneAsync();
@@ -357,7 +357,7 @@ public class ValkeyConnectionTests
         list.Should().Equal("foo", "bar");
     }
 
-    // ── INFO all: парсер + команда (arch/18 §4.2) ──
+    // ── INFO all: парсер + команда (arch/metrics/04-collectors.md §2) ──
 
     // AAA: заголовки секций «# Name», пустые строки и \r\n — парсер даёт плоский словарь.
     [Fact]

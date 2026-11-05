@@ -20,7 +20,7 @@
 #
 # Конфиг: configs/buckets/buckets.env (переопределяется через BUCKETS_ENV):
 # адреса etcd, CLUSTER_NAME, роли и ПАРОЛИ (в etcd паролей нет — только DSN).
-# См. arch/11-bucket-sharding.md.
+# См. arch/pg-clusters/11-buckets.md.
 
 BUCKETS_ENV="${BUCKETS_ENV:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../configs/buckets" && pwd)/buckets.env}"
 if [ ! -r "$BUCKETS_ENV" ]; then

@@ -7,7 +7,7 @@ namespace AdminPanel.UnitTests;
 
 // Проекция пулов для грани «Хранилище бэкапов» (adminpanel/02 §12.4):
 // S3Snapshot → S3PoolDto (единый домен S3 — второго парсера/тика нет).
-// Active — по канону arch/23 §2: только отсутствие state (= S3ClusterState.Active).
+// Active — по канону arch/s3-clusters/02-keys.md §1: только отсутствие state (= S3ClusterState.Active).
 public class S3PoolMappingTests
 {
     // AAA: Active-кластер из двух нод (одна RUNNING, одна заявлена без state)
@@ -38,7 +38,7 @@ public class S3PoolMappingTests
         pool.Endpoints.Should().Equal("h1:18001", "h2:18002");
     }
 
-    // AAA: NOT_INITIALIZED/TO_REMOVE — не Active (отсутствие state = Active, arch/23 §2;
+    // AAA: NOT_INITIALIZED/TO_REMOVE — не Active (отсутствие state = Active, arch/s3-clusters/02-keys.md §1;
     // read-минимум считал Active любой не-TO_REMOVE — унификация выравнивает на канон).
     [Theory]
     [InlineData(S3ClusterState.NotInitialized)]
@@ -66,7 +66,7 @@ public class S3PoolMappingTests
         // Act
         var pools = S3Mappers.MapPools(snapshot.Clusters);
 
-        // Assert — порядок строки сохранён (порядок чтения ReadAll, arch/19 §5).
+        // Assert — порядок строки сохранён (порядок чтения ReadAll, arch/backups/06-s3-layout.md).
         pools.Single().Endpoints.Should().Equal("h2:18002", "h1:18001");
     }
 

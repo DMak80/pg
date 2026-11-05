@@ -1,7 +1,7 @@
 using S3Worker.Core.Model;
 
 /// <summary>S3-инстанс обобщённых планировщиков (порт KfwPlanning): одна группа
-/// на кластер, адрес = один S3-порт, ключ результата — имя ноды (arch/23 §2).</summary>
+/// на кластер, адрес = один S3-порт, ключ результата — имя ноды (arch/s3-clusters/02-keys.md §1).</summary>
 public static class S3Planning
 {
     public static IReadOnlyList<NodeGroup> Group(string cluster, IReadOnlyList<string> nodes)

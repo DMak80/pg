@@ -13,13 +13,13 @@ using KafkaWorker.Provisioning.Kafka;
 namespace KafkaWorker.App.Loops;
 
 /// <summary>
-/// Главный цикл воркера (arch/16 §5; порт ReconcileLoop PgWorker; чтение
-/// состояния — arch/17 S10): контроль-плейн читается из слепка опросного
+/// Главный цикл воркера (arch/kafkaworker/README.md; порт ReconcileLoop PgWorker; чтение
+/// состояния — arch/synchronization/05-delta-application.md §S10): контроль-плейн читается из слепка опросного
 /// кэша (IPrefixPollSources) — etcd-чтений в тике ноль (E10). Тик работает
 /// КАЖДЫЙ раз, без гейтов по дельте: self-healing ждёт не-etcd события
 /// (готовность брокеров, docker-факты) — применения etcd-значений процессами
 /// идут по факту изменения значения (S10). Heartbeat и healthz loops-alive
-/// отмечаются каждым тиком (arch/16 §6). Кластеры обрабатываются параллельно
+/// отмечаются каждым тиком (arch/kafkaworker/08-operability.md §4). Кластеры обрабатываются параллельно
 /// (SemaphoreSlim MaxClusters), внутри кластера — строго последовательно.
 /// Ошибка тика не роняет цикл (лог + ErrorDelayMs, следующий тик — ретрай).
 /// </summary>
@@ -136,7 +136,7 @@ internal sealed class ReconcileLoop(
         health.MarkReconcileActivity();
 
         // Парсинг контроль-плейна — из слепка кэша (не etcd; P9 выполняется
-        // опросным циклом кэша, единая точка failover — arch/17 S7).
+        // опросным циклом кэша, единая точка failover — arch/synchronization/03-fault-tolerance.md §S7).
         var parsed = KafkaSnapshotParser.Parse(ToKvs(sources.ClustersSnapshot));
         foreach (var cluster in parsed.Value)
         foreach (var error in cluster.ParseErrors)
@@ -196,7 +196,7 @@ internal sealed class ReconcileLoop(
             if (!claimed.Value)
                 return; // обрабатывает другой инстанс
 
-            // Cancellation-гвард клэйма (arch/17 S5): потеря lease прерывает
+            // Cancellation-гвард клэйма (arch/synchronization/02-predicates-and-mutations.md §S5): потеря lease прерывает
             // исполняющийся тик кластера — linked-токен течёт во все операции.
             lease = CancellationTokenSource.CreateLinkedTokenSource(ct, claims.LeaseToken(cluster));
             var tick = lease.Token;
@@ -215,7 +215,7 @@ internal sealed class ReconcileLoop(
 
                 default:
                     // Active-ветка: надзор → converge; scale-проход (remove → add),
-                    // ротация и TopicSync — расширения волн B/C (arch/16 §5).
+                    // ротация и TopicSync — расширения волн B/C (arch/kafkaworker/README.md).
                     await RunClusterOpAsync(cluster, "active",
                         () => processes.ActiveAsync(snap, tick), ct, tick);
                     break;
@@ -227,7 +227,7 @@ internal sealed class ReconcileLoop(
         }
         catch (OperationCanceledException oce) when (lease?.IsCancellationRequested == true)
         {
-            // Потеря клэйма прервала операцию кластера (гвард arch/17 S5):
+            // Потеря клэйма прервала операцию кластера (гвард arch/synchronization/02-predicates-and-mutations.md §S5):
             // внятная фаза в журнале; кластер подхватит следующий тик/инстанс.
             logger.LogWarning("cluster {Cluster}: lease lost — tick aborted ({Message})",
                 snap.Cluster, oce.Message);
@@ -250,7 +250,7 @@ internal sealed class ReconcileLoop(
     // Вызов процесса под catch-all: исключение процесса → лог + журнал
     // (phase=crashed, last_error), штатный Result — в обычный лог цикла.
     // host — токен остановки хоста (дискриминатор: OCE по нему = остановка,
-    // OCE по ct = потеря клэйма — гварда arch/17 S5).
+    // OCE по ct = потеря клэйма — гварда arch/synchronization/02-predicates-and-mutations.md §S5).
     private async Task RunClusterOpAsync(
         string cluster, string op, Func<Task<Result>> call, CancellationToken host, CancellationToken ct)
     {
@@ -268,7 +268,7 @@ internal sealed class ReconcileLoop(
         }
         catch (OperationCanceledException)
         {
-            await WriteLeaseLostAsync(cluster, op); // потеря клэйма — гвард arch/17 S5
+            await WriteLeaseLostAsync(cluster, op); // потеря клэйма — гвард arch/synchronization/02-predicates-and-mutations.md §S5
         }
         catch (Exception ex)
         {
@@ -276,7 +276,7 @@ internal sealed class ReconcileLoop(
         }
     }
 
-    // Фаза lease-lost в журнале воркера (arch/17 S5); CancellationToken.None —
+    // Фаза lease-lost в журнале воркера (arch/synchronization/02-predicates-and-mutations.md §S5); CancellationToken.None —
     // токен тика отменён, запись обязана доехать (как в LogCrashAsync).
     private async Task WriteLeaseLostAsync(string cluster, string op)
     {

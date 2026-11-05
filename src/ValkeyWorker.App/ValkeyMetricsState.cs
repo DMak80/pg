@@ -3,7 +3,7 @@ using System.Diagnostics.Metrics;
 
 namespace ValkeyWorker.App;
 
-// Срез доменных метрик ноды из INFO (arch/18 §2.6): null — поле INFO
+// Срез доменных метрик ноды из INFO (arch/metrics/02-dictionary.md §6): null — поле INFO
 // отсутствует/нечислово → серия НЕ эмитится (консервативно, без нулей-фантомов).
 public sealed record ValkeyNodeSample(
     string Node,
@@ -22,7 +22,7 @@ public sealed record ValkeyNodeSample(
     string? Role,
     long? ConnectedSlaves);
 
-// Стейт + ObservableGauge-серии valkey-коллектора (arch/18 §2.6/§4.2; зеркало
+// Стейт + ObservableGauge-серии valkey-коллектора (arch/metrics/02-dictionary.md §6/§4.2; зеркало
 // KafkaMetricsState). Пассивный наблюдатель: чтение стейта под lock, серии пустые
 // до первого тика; все доменные серии — gauge (persistence off сбрасывает
 // кумулятивы ноды — counter ломал бы rate()/increase()).

@@ -6,7 +6,7 @@ using Xunit;
 
 namespace ValkeyWorker.UnitTests.Provisioning;
 
-// Ensure per-cluster кредов + CA (arch/21 §4): txn put-if-absent
+// Ensure per-cluster кредов + CA (arch/valkeyworker/04-security.md §3): txn put-if-absent
 // отсутствующих из шести ключей, проигрыш → re-read, частичный набор —
 // дозаполнение только отсутствующих; CA из одной генерации (пара).
 public class ClusterSecretEnsurerTests

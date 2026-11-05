@@ -34,7 +34,7 @@ public sealed partial class DatabaseProvisioner : ISqlExecutor
 
     private static readonly TimeSpan FirstRetryDelay = TimeSpan.FromSeconds(1);
 
-    // Поллинг-инвариант (arch/14 §6): одиночная SQL-операция не молчит дольше
+    // Поллинг-инвариант (arch/pgworker/08-operability.md §3): одиночная SQL-операция не молчит дольше
     // окна проверки watchdog — таймауты подключения и команды = половина окна
     // (7 c при дефолтах 15 c); зависшая операция → исключение → transient-фейл,
     // а не молчание до дефолтных Npgsql 15/30 c.
@@ -103,11 +103,11 @@ public sealed partial class DatabaseProvisioner : ISqlExecutor
         return $"ALTER ROLE \"{role}\" PASSWORD '{Escape(password)}';";
     }
 
-    /// <summary>Роль полного бэкапа (arch/19 §7): LOGIN + REPLICATION,
+    /// <summary>Роль полного бэкапа (arch/backups/08-secrets.md): LOGIN + REPLICATION,
     /// per-cluster пароль /clusters/&lt;C&gt;/backup_password (ensure).</summary>
     public const string BackupExecRole = "backup_exec";
 
-    // gexec-ensure роли backup_exec (G2, arch/19 §7): DO-блок —
+    // gexec-ensure роли backup_exec (G2, arch/backups/08-secrets.md): DO-блок —
     // CREATE-if-absent И выравнивание пароля ALTER'ом в ОДНОМ исполнении
     // (порядок «создать → выровнять» гарантирован). Выполняется ТОЛЬКО при
     // расхождении (BackupExecPasswordMatches=false) — без каталог-записи в
@@ -128,7 +128,7 @@ public sealed partial class DatabaseProvisioner : ISqlExecutor
             "END $$;";
     }
 
-    // Проверка «сохранённый rolpassword соответствует etcd-значению?» (arch/19
+    // Проверка «сохранённый rolpassword соответствует etcd-значению?» (arch/backups/README.md
     // §7): verifier'ы необратимы — пересчитываем от etcd-значения по СОЛЬ
     // СОХРАНЁННОГО. md5-формат: 'md5'+md5(пароль+роль); SCRAM-SHA-256:
     // 'SCRAM-SHA-256$<iter>:<salt-b64>$<StoredKey-b64>:<ServerKey-b64>',

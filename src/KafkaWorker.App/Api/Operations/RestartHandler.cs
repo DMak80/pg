@@ -11,7 +11,7 @@ public sealed record RestartDto(bool Restarting);
 // restart: unless-stopped. 202 → пауза ~1 c (ответ успевает уйти) →
 // StopApplication. В etcd ничего не пишет: клэймы/джорнал живут в lease,
 // операцию продолжит этот же или другой инстанс.
-// Копия PgWorker.App/Api/Operations/RestartHandler.cs (arch/16 §1.1).
+// Копия PgWorker.App/Api/Operations/RestartHandler.cs (arch/kafkaworker/07-api.md §1).
 public sealed class RestartHandler(
     IHostApplicationLifetime lifetime,
     ILogger<RestartHandler> logger,

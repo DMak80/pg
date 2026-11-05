@@ -8,7 +8,7 @@ using Shared.Tls;
 
 namespace KafkaWorker.App.Api;
 
-// HTTPS HTTP-грань воркера (arch/16 §1.1): клиентский серт опционален на
+// HTTPS HTTP-грань воркера (arch/kafkaworker/07-api.md §1): клиентский серт опционален на
 // хендшейке, mTLS обязателен только на /api (401 без валидного серта —
 // Shared.Tls.ClientCertAuthMiddleware); /healthz и /metrics — открытая грань
 // доверенной docker-сети. Вызывается на WebApplicationBuilder ДО Build()
@@ -16,7 +16,7 @@ namespace KafkaWorker.App.Api;
 // Сертификаты живут всё приложение (без using).
 public static class TlsEndpoints
 {
-    // env-секреты → конфиг-дерево (arch/16 §8): PEM-значения и _PATH-файлы.
+    // env-секреты → конфиг-дерево (arch/kafkaworker/08-operability.md §6): PEM-значения и _PATH-файлы.
     public static readonly (string Env, string Key)[] EnvBindings =
     [
         ("KFW_API_TLS_CERT", "KafkaWorker:Api:Tls:ServerCertPem"),
@@ -67,12 +67,12 @@ public static class TlsEndpoints
 
         if (serverCert is null)
             throw new ApplicationException(
-                "KafkaWorker:Api:Tls: server certificate/key is not set (KFW_API_TLS_CERT/KEY or *_PATH; etcd key /workers/api_tls/kafkaworker; arch/16 §1.1)");
+                "KafkaWorker:Api:Tls: server certificate/key is not set (KFW_API_TLS_CERT/KEY or *_PATH; etcd key /workers/api_tls/kafkaworker; arch/kafkaworker/07-api.md §1)");
 
         var clientCa = LoadClientCa(tls) ?? throw new ApplicationException(
             "KafkaWorker:Api:Tls: ClientCA is not set (KFW_API_TLS_CLIENT_CA[_PATH])");
 
-        // 401-политика /api (arch/16 §1.1): опция middleware — DI-синглтон;
+        // 401-политика /api (arch/kafkaworker/07-api.md §1): опция middleware — DI-синглтон;
         // clientCa живёт всё приложение (уже загружен без using, как серверный).
         builder.Services.AddSingleton(new ClientCertAuthOptions(Enabled: true, ClientCa: clientCa));
 

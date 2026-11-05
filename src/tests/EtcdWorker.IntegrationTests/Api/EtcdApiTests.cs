@@ -140,7 +140,7 @@ public sealed class EtcdApiTests(EtcdApiFixture fx)
         response.StatusCode.Should().Be(HttpStatusCode.Accepted);
     }
 
-    // AAA: GET /api/config — 200 в mTLS-зоне /api (arch/25 §1.1): JSON
+    // AAA: GET /api/config — 200 в mTLS-зоне /api (arch/etcdworker/05-api.md §1): JSON
     // эффективного конфига с source:"env"; секретных секций в теле нет.
     [Fact]
     public async Task GetConfig_200_WithSourceAndNoSecrets()

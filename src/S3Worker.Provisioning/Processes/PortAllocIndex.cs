@@ -6,7 +6,7 @@ using Shared.Etcd.Client;
 namespace S3Worker.Provisioning.Processes;
 
 /// <summary>
-/// Индекс занятости портов из etcd (arch/23 §8; порт PortAllocIndex valkey):
+/// Индекс занятости портов из etcd (arch/s3-clusters/08-coordination.md; порт PortAllocIndex valkey):
 /// busy = docker-публикации (добавляет вызывающий) ∪ записи portalloc ВСЕХ
 /// чужих кластеров (поле "s3"). Свои записи исключает вызывающий
 /// (exceptCluster). Чужой мусор любой формы — Warning-лог + skip ключа:
@@ -32,7 +32,7 @@ public sealed class PortAllocIndex(
             if (cluster == exceptCluster)
                 continue;
 
-            // Формат arch/23 §8: {"<I>":{"host":"h","s3":18001}}.
+            // Формат arch/s3-clusters/08-coordination.md: {"<I>":{"host":"h","s3":18001}}.
             // Фильтр catch — все формы чужого мусора: JsonException (битый JSON),
             // KeyNotFoundException (нет обязательного поля), InvalidOperationException
             // (поле не того типа).

@@ -15,7 +15,7 @@ public enum HandshakeResult { Started, Nop, Invalid, EtcdError }
 /// 409 / EtcdError → 503).</summary>
 public sealed record ApplyResult(bool Ok, long? AppliedRevision, bool NotReady, bool EtcdError);
 
-/// <summary>Статусная машина агента PgNode (arch/14 §3.3/§4, spec §3.6):
+/// <summary>Статусная машина агента PgNode (arch/pgworker/00-etcd-contract.md §4/§4, spec §3.6):
 /// публикация not_initialized после чтения bootstrap-ключа; хендшейк —
 /// валидация аргументов + атомарный txn-переход в initializing; фазы — старт
 /// компонентов ≤3 попытки (параллельно) и ожидание SELECT 1 без бюджета
@@ -35,7 +35,7 @@ public sealed class PgNodeMachine : IDisposable
     private readonly TimeProvider _clock;
 
     // Ключи etcd: bootstrap (пишет воркер, читает агент) и статусный (пишет
-    // только агент lease-сессией, arch/14 §3.2/§3.3).
+    // только агент lease-сессией, arch/pgworker/00-etcd-contract.md §3/§3.3).
     private readonly string _bootstrapKey;
     private readonly string _statusKey;
 
@@ -68,7 +68,7 @@ public sealed class PgNodeMachine : IDisposable
     // Машина состояний в памяти процесса: секреты и применённый материал
     // переживают только жизнь процесса (рестарт контейнера — lease гасит
     // статус, хендшейк заново, spec §3.6-5). Применённый материал — ПО
-    // МАТЕРИАЛУ (arch/14 §5 I, spec §3.6-4): YAML и серт применяются
+    // МАТЕРИАЛУ (arch/pgworker/processes/i-secret-rotator.md I, spec §3.6-4): YAML и серт применяются
     // раздельно (reload против рестарта) — и трекаются раздельно.
     private string _state = PgNodeStatus.NotInitialized;
     private long? _appliedRevision;
@@ -110,7 +110,7 @@ public sealed class PgNodeMachine : IDisposable
     // stop/start, каждый виток которого убивает поднимающийся PG (факт E2E:
     // ротация rest-пары, нода пересоздавалась надзором). Коулдаун даёт
     // компонентам доездить; повтор применения неудавшегося материала —
-    // обязанность агента (самоповтор применителя, arch/14 §5 I R3), воркер
+    // обязанность агента (самоповтор применителя, arch/pgworker/processes/i-secret-rotator.md I R3), воркер
     // пинает один раз на ревизию. Гейт коулдауна — ОТ МАТЕРИАЛА (отпечаток
     // YAML+серт+ключ), не от ревизии: переписывание ключа тем же контентом
     // (растущий mod_revision) коулдаун НЕ снимает. Мутируемый internal
@@ -324,8 +324,8 @@ public sealed class PgNodeMachine : IDisposable
     /// <summary>Команда применения (POST /api/bootstrap/apply): только ready;
     /// перечитать ключ, ревизия изменилась — запустить фонового применителя
     /// (догоняет ключ сам, при неудаче повторяет с анти-дребезг-паузой —
-    /// arch/14 §5 I R3). Прогресс воркер видит по статусному ключу
-    /// (applied_revision, arch/14 §5 I): рестарт spilo занимает десятки
+    /// arch/pgworker/processes/i-secret-rotator.md I R3). Прогресс воркер видит по статусному ключу
+    /// (applied_revision, arch/pgworker/processes/i-secret-rotator.md I): рестарт spilo занимает десятки
     /// секунд — дольше HttpClient-таймаута канала (10 c, spec §2.7),
     /// синхронное применение рвало каждую команду по таймауту и зацикливало
     /// окно ротации на одной ноде.</summary>
@@ -361,7 +361,7 @@ public sealed class PgNodeMachine : IDisposable
                 return new ApplyResult(Ok: true, AppliedRevision: _appliedRevision,
                     NotReady: false, EtcdError: false); // ревизия без изменений — no-op
 
-            // Анти-дребезг по МАТЕРИАЛУ (arch/14 §5 I R3): тот же материал
+            // Анти-дребезг по МАТЕРИАЛУ (arch/pgworker/processes/i-secret-rotator.md I R3): тот же материал
             // недавно дал сбой применения — ok-пинок без запуска (самоповтор
             // применителя идёт по своей паузе). Растущая ревизия ТОГО ЖЕ
             // контента гейт НЕ снимает — отпечаток материала, не ревизии.
@@ -371,7 +371,7 @@ public sealed class PgNodeMachine : IDisposable
 
             // Применение — фоновая задача ПРОЦЕССА (RequestAborted запроса умирает
             // по таймауту клиента и рвало применение посреди); машина остаётся
-            // ready, факт применения — публикация статусного ключа (arch/14 §5 I).
+            // ready, факт применения — публикация статусного ключа (arch/pgworker/processes/i-secret-rotator.md I).
             _applyTask = Task.Run(ApplyConvergeLoopAsync, _loopCts.Token);
             return new ApplyResult(Ok: true, AppliedRevision: (long)mod,
                 NotReady: false, EtcdError: false);
@@ -397,7 +397,7 @@ public sealed class PgNodeMachine : IDisposable
         _failedApplyUnix = unix;
     }
 
-    // Фоновый применитель-конвергер (arch/14 §5 I R3, spec §3.6-4): доводит
+    // Фоновый применитель-конвергер (arch/pgworker/processes/i-secret-rotator.md I R3, spec §3.6-4): доводит
     // ноду до материала ТЕКУЩЕГО bootstrap-ключа. На каждой итерации ключ
     // ПЕРЕЧИТЫВАЕТСЯ — применитель догоняет актуальный материал (пин мог
     // прийти под старую ревизию; ключ мог быть переписан тем же контентом —
@@ -481,7 +481,7 @@ public sealed class PgNodeMachine : IDisposable
         {
             // Материал уже применён (ключ переписан тем же контентом —
             // mod_revision вырос): фиксация ревизии БЕЗ рестартов
-            // (arch/14 §5 I R3: переписывание тем же контентом не триггерит
+            // (arch/pgworker/processes/i-secret-rotator.md I R3: переписывание тем же контентом не триггерит
             // re-применение).
             _appliedRevision = (long)mod;
             _failedApplyMaterial = null;
@@ -585,7 +585,7 @@ public sealed class PgNodeMachine : IDisposable
         return certDeferredToWorker;
     }
 
-    // Отпечаток материала применения (гейт анти-дребезга, arch/14 §5 I R3):
+    // Отпечаток материала применения (гейт анти-дребезга, arch/pgworker/processes/i-secret-rotator.md I R3):
     // YAML + серт + ключ. Ревизии в отпечатке НЕТ — переписывание ключа тем
     // же контентом (растущий mod_revision) коулдаун не снимает; doorman-
     // материал производен от шаблона и паролей процесса (константы в жизни

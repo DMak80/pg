@@ -16,7 +16,7 @@ using PgWorker.Provisioning.Sql;
 namespace PgWorker.Provisioning.Processes;
 
 /// <summary>
-/// Provisioning — главная машина состояний (задача 19; spec §6.4 A, arch/14
+/// Provisioning — главная машина состояний (задача 19; spec §6.4 A, arch/pgworker/README.md
 /// §5 A; эталон init-cluster.sh). Фазы P0–P5, каждая идемпотентна и
 /// перепроверяет факт; перед фазами — перечитывание config (R6: смена state
 /// посреди работы безопасно прекращает процесс) и проверка клэйма (мутации
@@ -76,7 +76,7 @@ public sealed class ProvisioningProcess(
             return Result<ProcessOutcome>.Failed(new ApplicationException(
                 $"provisioning {cluster}: claim is not ours (or lost) — mutations forbidden"));
 
-        // Guard входа (arch/14 §5 A): полный набор ключей панели, иначе
+        // Guard входа (arch/pgworker/processes/a-provisioning.md A): полный набор ключей панели, иначе
         // полуфабрикат NOT_INITIALIZED не provisioning'уем.
         if (!HasFullDeclaration(snap))
             return await Finish(cluster, "waiting-keys", ProcessOutcome.InProgress, ct);
@@ -115,7 +115,7 @@ public sealed class ProvisioningProcess(
             return await FailAsync(cluster, creds.Error!, "ensure-app-secret", ct, series);
 
         // Per-cluster credentials : ensured-значения из etcd — env-fallback
-        // исчезает после ensure (arch/14 §4: порядок чтения ключи → config → env).
+        // исчезает после ensure (arch/pgworker/04-security.md: порядок чтения ключи → config → env).
         var clusterSecrets = secrets with
         {
             BucketAdminUser = creds.Value.BucketAdmin.User,
@@ -137,7 +137,7 @@ public sealed class ProvisioningProcess(
             var topology = Topology(cluster, shard.Name, addresses);
             topologies[shard.Name] = topology;
             var resources = await ReadShardResourcesAsync(cluster, shard, token);
-            // P2.0 (arch/14 §5 A): тюнинг per-shard — ОДИН расчёт на шард до
+            // P2.0 (arch/pgworker/processes/a-provisioning.md A): тюнинг per-shard — ОДИН расчёт на шард до
             // цикла нод, от уже прочитанных заявок. Заявки ОБЯЗАТЕЛЬНЫ: их
             // отсутствие — фейл ЭТОГО кластера (ensureErrors → FailAsync:
             // journal-ошибка + транзиент-ретрай), а не всего тика.
@@ -190,7 +190,7 @@ public sealed class ProvisioningProcess(
             if (master is null)
                 return; // waiting-master — InProgress
 
-            // Поллинг SQL-фазы (arch/14 §6 инвариант поллинга; разбор E2E-маркера:
+            // Поллинг SQL-фазы (arch/pgworker/08-operability.md §3 инвариант поллинга; разбор E2E-маркера:
             // фаза молчала десятки секунд на Npgsql-вызовах): последовательность
             // идемпотентна (guard-SELECT/IF NOT EXISTS/ALTER) — итерация с таймаутом
             // короче окна повторяет её с начала; каждая итерация — Mark по факту +
@@ -249,7 +249,7 @@ public sealed class ProvisioningProcess(
     }
 
     // Guard входа: config с константами, replicas/nodes у каждого шарда,
-    // routing всех N бакетов заполнен (arch/14 §5 A).
+    // routing всех N бакетов заполнен (arch/pgworker/processes/a-provisioning.md A).
     private static bool HasFullDeclaration(ClusterSnapshot snap) =>
         snap.Config.Buckets > 0
         && !string.IsNullOrWhiteSpace(snap.Config.DbName)
@@ -291,7 +291,7 @@ public sealed class ProvisioningProcess(
 
         // глобальный portalloc-клэйм — секция «busy → detach → allocate →
         // commit portalloc» взаимоисключающа между кластерами/инстансами
-        // (гонка параллельного посева, arch/14 §2.4/§3.3). Сбой захвата —
+        // (гонка параллельного посева, arch/pgworker/01-placement.md §5/§3.3). Сбой захвата —
         // обычный фейл (бэкофф); занят — PortLockBusyException → тик-ретрай.
         var acquired = await portLock.TryAcquireAsync(ct);
         if (!acquired.IsSuccess)
@@ -487,7 +487,7 @@ public sealed class ProvisioningProcess(
                     return marked;
             }
 
-            // Поллинг create/start (arch/14 §5 A P2.1): одиночный вызов таймаутом
+            // Поллинг create/start (arch/pgworker/processes/a-provisioning.md A P2.1): одиночный вызов таймаутом
             // короче окна проверки (половина — 7.5 c при дефолтах), идемпотентный
             // повтор; каждая итерация — Mark по факту + лог elapsed (внутри
             // LongCallPolling). Бюджет — существующий порог PatroniBootSec.
@@ -577,7 +577,7 @@ public sealed class ProvisioningProcess(
                 // заново (E3); далее — лечение HA-scope при доказанной утрате (Д3).
                 _patroniWaitSince.TryRemove(scope, out _);
 
-                // Д3 (spec §3.7, arch/14 R11): трёхуровневая проба данных нод scope.
+                // Д3 (spec §3.7, arch/pgworker/README.md R11): трёхуровневая проба данных нод scope.
                 var presences = new List<DataPresence>();
                 foreach (var node in shard.Nodes)
                 {
@@ -618,9 +618,9 @@ public sealed class ProvisioningProcess(
 
     // Д3: чистка HA-scope (Patroni бутстрапится заново): точечные initialize/leader/
     // sync/failover + префиксы optime//members/; request_* — декларации панели — НЕ трогаем
-    // (spec §3.7 Д3, arch/14 §5 A P2.2/R11). failover обязателен: остаточный маркер
+    // (spec §3.7 Д3, arch/pgworker/processes/a-provisioning.md A P2.2/R11). failover обязателен: остаточный маркер
     // с scheduled_at в прошлом гонит Patroni новой жизни в accelerated failover на
-    // неинициализированного кандидата — лидерство недостижимо (arch/14 §5 C).
+    // неинициализированного кандидата — лидерство недостижимо (arch/pgworker/processes/c-node-supervisor.md C).
     // Одна чистка на scope за бюджет —
     // трекер сброшен, следующая не раньше нового бюджета.
     private async Task<Result> ResetScopeAsync(string scope, CancellationToken ct)
@@ -645,7 +645,7 @@ public sealed class ProvisioningProcess(
     // Адрес master-ноды шарда для SQL-фаз: master-ключ (host|имяНоды:clientPort —
     // порт ключа клиентский, SQL-порт берём из portalloc) → fallback Patroni REST.
     // Ключ дискриминирует ноду только ОДНОЗНАЧНЫМ матчем: advertised-режим
-    // (arch/16) несёт ОДИН host у всех нод шарда (E2E: host.docker.internal), и
+    // (arch/kafkaworker/README.md) несёт ОДИН host у всех нод шарда (E2E: host.docker.internal), и
     // host-матч выбирал бы произвольную ноду — на практике реплику (25006 на
     // CREATE DATABASE, provisioning-stuck); callback on_start пишет ключ ещё до
     // provisioning. Имя ноды приоритетнее; совпадений 0 или >1 — истина
@@ -751,7 +751,7 @@ public sealed class ProvisioningProcess(
                 return dsnPut;
         }
 
-        // P2.5' (spec §4.2, arch/14 §5 A): ensure app_params КАЖДОЙ ноды шарда —
+        // P2.5' (spec §4.2, arch/pgworker/processes/a-provisioning.md A): ensure app_params КАЖДОЙ ноды шарда —
         // put-if-absent дефолта; существующие (ручные) значения не трогаем.
         // Выполняется и при уже записанном dsn (повторные тики доводят миграцию).
         var appParamsEnsured = await appParams.EnsureShardAsync(
@@ -787,7 +787,7 @@ public sealed class ProvisioningProcess(
     // P4: txn compare config.mod_revision → put канонического JSON без state (Д1).
     // synchronous_mode_strict — переносится из прочитанного config БЕЗ
     // изменения: пер-кластерная опция не стирается (созданный со strict=false
-    // кластер не «молча» становится strict, arch/14 §3.2).
+    // кластер не «молча» становится strict, arch/pgworker/00-etcd-contract.md §3).
     private async Task<Result> CommitConfigAsync(ClusterSnapshot snap, CancellationToken ct)
     {
         var key = $"/clusters/{snap.Config.Cluster}/config";
@@ -874,7 +874,7 @@ public sealed class ProvisioningProcess(
         return Portalloc.Parse(cluster, kv.Value);
     }
 
-    //  (arch/14 §2.4): при заданном ключе ScrapeNetwork каноническим записям
+    //  (arch/pgworker/01-placement.md §5): при заданном ключе ScrapeNetwork каноническим записям
     // дописывается сетевая идентичность (alias/net) — покрывает обе точки
     // CommitPortAllocAsync; пустой ключ — словарь без изменений.
     private string SerializePortAlloc(string cluster, IReadOnlyDictionary<string, NodeAddress> addresses)
@@ -901,7 +901,7 @@ public sealed class ProvisioningProcess(
     private Task<Result<TxnResult>> TxnAsync(TxnRequest req, CancellationToken ct)
         => EtcdEndpointFailover.CallAsync(endpoints, endpoint => etcd.TxnAsync(endpoint, req, ct));
 
-    // Единая точка failover (arch/17 S7: sticky + per-attempt бюджет + негативный
+    // Единая точка failover (arch/synchronization/03-fault-tolerance.md §S7: sticky + per-attempt бюджет + негативный
     // кэш; дубликат цикла обхода удалён — под деградировавшим etcd он платил
     // полным HTTP-бюджетом за мёртвый endpoint каждым вызовом провижининга).
     private Task<Result<T>> WithFailoverAsync<T>(Func<string, Task<Result<T>>> call)
@@ -920,7 +920,7 @@ public sealed class ProvisioningProcess(
 /// <summary>Отпечаток значения секрета для диагностики (t06/t07): SHA256[..10]
 /// hex — значение секрета НЕ попадает в лог, только несекретный отпечаток.
 /// null/пустое — не сбой диагностики (re-read из опросного кэша может отставать
-/// от только что записанного txn, arch/17 S10) — «<null>»/«<empty>».</summary>
+/// от только что записанного txn, arch/synchronization/05-delta-application.md §S10) — «<null>»/«<empty>».</summary>
 public static class SecretFingerprint
 {
     public static string Of(string? value)

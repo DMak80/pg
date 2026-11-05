@@ -1,6 +1,6 @@
 // Модалка «Изменить ресурсы ноды» valkey (02 §11.2-4) — обёртка над общим
 // ResourcesForm (u02): валидация — validation.ts; применяет автоконверге
-// надзора (arch/21 §5 C — пересоздание контейнера, одно за тик).
+// надзора (arch/valkeyworker/02-cluster-lifecycle.md §4 C — пересоздание контейнера, одно за тик).
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { notifications } from '@mantine/notifications';
 import { updateValkeyNodeResources, valkeyQueryKeys } from '../../api/queries';

@@ -3,18 +3,18 @@ using Shared.Etcd.Client;
 
 namespace PgWorker.PgNode;
 
-/// <summary>Снимок стоп-гейтов приёмника (arch/19 §3 «Стоп-семантика»):
+/// <summary>Снимок стоп-гейтов приёмника (arch/backups/02-wal-archive.md §1 «Стоп-семантика»):
 /// Disabled — глобальный ключ /pgworker/backups-disabled жив (Backups:Enabled=false
 /// воркера); Paused — wal-ключ шарда в STOPPED (карантин) или WAL_CHAIN_ERROR
 /// (разрыв цепочки); ChainError — wal-ключ именно в WAL_CHAIN_ERROR (Paused=true;
 /// для гейта ОПЕРАЦИИ полного НЕ стоп-гейт — пересъём полным единственное
-/// лечение разрыва, arch/19 §2); Unknown — транспортный отказ etcd при чтении
+/// лечение разрыва, arch/backups/01-full-backup.md); Unknown — транспортный отказ etcd при чтении
 /// (значения полей не доверенные: живой цикл работает по последним известным
 /// гейтам, перепроверка через 5 c — etcd-моргание стрим не рвёт, слот держит
 /// WAL).</summary>
 public sealed record WalReceiverGateState(bool Disabled, bool Paused, bool ChainError, bool Unknown);
 
-/// <summary>Читатель стоп-гейтов etcd (arch/19 §4): чтение обоих ключей —
+/// <summary>Читатель стоп-гейтов etcd (arch/backups/05-etcd-contract.md): чтение обоих ключей —
 /// failover-перебор endpoints (образец WalStatusWriter.ReadAsync).</summary>
 public static class WalReceiverGates
 {
@@ -42,14 +42,14 @@ public static class WalReceiverGates
             Unknown: false);
     }
 
-    /// <summary>Проба ПОЛНОГО стоп-гейта из живого стрима (arch/19 §3):
+    /// <summary>Проба ПОЛНОГО стоп-гейта из живого стрима (arch/backups/02-wal-archive.md §1):
     /// true — глобальный ключ /pgworker/backups-disabled жив ИЛИ wal-ключ
     /// шарда в STOPPED/WAL_CHAIN_ERROR: живой стрим обязан замирать по ЛЮБОМУ из
     /// гейтов (исход Reconnect — цикл перепроверит и уйдёт в
     /// waiting_disabled/paused), а не ждать обрыва транспорта. Транспортный
     /// отказ etcd → false (стрим не рвём по морганию: перепроверка следующим
     /// периодом пробы; последнее известное — канон живого цикла). Это гейт
-    /// СТРИМА — к операции полного не применяется (arch/19 §2: при
+    /// СТРИМА — к операции полного не применяется (arch/backups/01-full-backup.md: при
     /// WAL_CHAIN_ERROR пересъём не блокируется).</summary>
     public static async Task<bool> IsStopGatedAsync(
         IEtcdGateway etcd, string[] endpoints, string cluster, string shard, CancellationToken ct)
@@ -113,7 +113,7 @@ public static class WalReceiverGates
         IsChainError(walJson);
 
     // WAL_CHAIN_ERROR — разрыв цепочки WAL в архиве: стрим паузится, а гейтом
-    // ОПЕРАЦИИ полного НЕ является (пересъём — единственное лечение, arch/19 §2).
+    // ОПЕРАЦИИ полного НЕ является (пересъём — единственное лечение, arch/backups/01-full-backup.md).
     private static bool IsChainError(string walJson) =>
         walJson.Contains("\"state\":\"WAL_CHAIN_ERROR\"", StringComparison.Ordinal);
 }

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Per-install docker-CA (t03, arch/14 §2.2.1): изолированное от API-пакеты
+# Per-install docker-CA (t03, arch/pgworker/01-placement.md §4): изолированное от API-пакеты
 # доверие docker-хостов. Выпускает: docker-ca.pem/key (CN=pgw-docker-ca),
 # клиентскую пару воркера pgworker-docker.* (PGW_DOCKER_TLS_{CERT,KEY}),
 # серверный серт демона docker-server.* (SAN по первому аргументу; демоны

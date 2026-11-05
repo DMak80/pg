@@ -4,10 +4,10 @@ namespace KafkaWorker.IntegrationTests.Api;
 
 // Сид-декларации API-тестов kafka-домена (task etcd-via-worker-api): прямые
 // put в fixture-gateway (порт панельного KafkaCommandHarness.SeedActiveCluster,
-// канонические значения arch/02 §10.2 / arch/15 §2).
+// канонические значения arch/02 §10.2 / arch/kafka-clusters/02-keys.md §1).
 internal static class KafkaApiTestSeed
 {
-    /// <summary>Active-кластер: config без state (arch/15 §2.1) + N брокеров
+    /// <summary>Active-кластер: config без state (arch/kafka-clusters/02-keys.md §2) + N брокеров
     /// (controller у первых трёх, как сид панели) + endpoints + app-креды.</summary>
     public static async Task SeedActiveClusterAsync(
         EtcdFixture etcd, string cluster, int brokers = 3)
@@ -38,7 +38,7 @@ internal static class KafkaApiTestSeed
             "OldPassword0123456789abcdef", null, ct);
     }
 
-    /// <summary>Факт-ключ топика (arch/15 §3): partitions/RF/configs/desired/missing.</summary>
+    /// <summary>Факт-ключ топика (arch/kafka-clusters/03-topics.md §1): partitions/RF/configs/desired/missing.</summary>
     public static Task SeedTopicKeyAsync(
         EtcdFixture etcd, string cluster, string topic, int partitions,
         string? desiredJson = null, bool missing = false)
@@ -51,7 +51,7 @@ internal static class KafkaApiTestSeed
             + ",\"missing\":" + (missing ? "true" : "false") + "}",
             null, TestContext.Current.CancellationToken);
 
-    /// <summary>Живая lifecycle-заявка topics/<t>/desired.&lt;op&gt; (arch/15 §3.1).</summary>
+    /// <summary>Живая lifecycle-заявка topics/<t>/desired.&lt;op&gt; (arch/kafka-clusters/03-topics.md §2).</summary>
     public static Task SeedLifecycleTicketAsync(
         EtcdFixture etcd, string cluster, string topic, string op,
         long unix = 1756501200, string by = "seed")

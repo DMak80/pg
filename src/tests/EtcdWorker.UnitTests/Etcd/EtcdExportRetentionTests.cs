@@ -5,7 +5,7 @@ using Xunit;
 
 namespace EtcdWorker.UnitTests.Etcd;
 
-// Ретенция S3-выгрузки etcd (arch/19 §5): пары.db+.meta.json сортируются
+// Ретенция S3-выгрузки etcd (arch/backups/06-s3-layout.md): пары.db+.meta.json сортируются
 // по id (таймстемп лексикографически = хронологически), старше N последних —
 // к удалению; одиночный .meta.json без .db — мусор; guard ≥1 полной пары.
 public class EtcdExportRetentionTests

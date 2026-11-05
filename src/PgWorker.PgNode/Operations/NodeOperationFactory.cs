@@ -1,7 +1,7 @@
 namespace PgWorker.PgNode.Operations;
 
 /// <summary>Прод-фабрика ops-операций ноды (DI Program): все операции — в
-/// ОДНОМ процессе приёмника (arch/19 §5); реестр — ОБЩИЙ singleton
+/// ОДНОМ процессе приёмника (arch/backups/06-s3-layout.md); реестр — ОБЩИЙ singleton
 /// ops-операций (одна активная ops-операция на процесс, гвард TryBegin);
 /// пути — на data-volume ноды (NodePaths). Тесты подменяют сам интерфейс
 /// IOpsOperationFactory фейком — этот класс при подмене не инстанцируется.</summary>

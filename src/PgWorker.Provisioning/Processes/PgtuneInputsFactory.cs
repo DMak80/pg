@@ -6,9 +6,9 @@ namespace PgWorker.Provisioning.Processes;
 
 /// <summary>
 /// Фабрика входов PGTune (spec.md §4.3): расчёт тюнинга шарда от ОБЯЗАТЕЛЬНЫХ
-/// заявок ресурсов (/service/&lt;scope&gt;/request_{cpu,mem} на ноду — arch/14
+/// заявок ресурсов (/service/&lt;scope&gt;/request_{cpu,mem} на ноду — arch/pgworker/README.md
 /// §2.1 п.4, панель пишет при создании шарда) и констант PgWorker:Pgtune.
-/// Пересчёт на каждый EnsureNode-путь и каждый тик конвергенции DCS (arch/14
+/// Пересчёт на каждый EnsureNode-путь и каждый тик конвергенции DCS (arch/pgworker/README.md
 /// §5 C: параметры НЕ фиксируются в etcd — никакого состояния; повторный
 /// вызов БЕЗ изменения входа возвращает кэшированный результат — тот же
 /// расчёт, без повторного warning-лога: тик надзора ~1/с не должен штормить
@@ -37,16 +37,16 @@ public sealed class PgtuneInputsFactory(PgtuneSettings settings, ILogger<PgtuneI
     /// заявка нет — InvalidOperationException (фейл фазы, не тихий дефолт).</summary>
     public PgTuneResult Create(NodeResources? resources)
     {
-        // Заявки ресурсов ОБЯЗАТЕЛЬНЫ (arch/14 §2.1 п.4): размер ноды знает
+        // Заявки ресурсов ОБЯЗАТЕЛЬНЫ (arch/pgworker/01-placement.md §2): размер ноды знает
         // только etcd-заявка — выдумывать его нельзя ни при каких условиях.
         if (resources?.MemoryBytes is not { } memoryBytes)
             throw new InvalidOperationException(
                 "pgtune: mandatory request_mem request is missing/unreadable — PGTune calculation is impossible " +
-                "(the request is written by the panel when creating a shard; arch/14 §2.1)");
+                "(the request is written by the panel when creating a shard; arch/pgworker/01-placement.md §1)");
         if (resources.CpuCores is null)
             throw new InvalidOperationException(
                 "pgtune: mandatory request_cpu request is missing/unreadable — PGTune calculation is impossible " +
-                "(the request is written by the panel when creating a shard; arch/14 §2.1)");
+                "(the request is written by the panel when creating a shard; arch/pgworker/01-placement.md §1)");
 
         // Память: floor(MemoryBytes/1024) от etcd-заявки request_mem.
         var totalMemoryKb = memoryBytes / 1024;

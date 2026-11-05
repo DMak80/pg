@@ -4,7 +4,7 @@ using Xunit;
 
 namespace PgWorker.UnitTests.Api;
 
-// policy-поле garbage_min_age_sec (u16, arch/02 §9.12 / arch/19 §4): тело с
+// policy-поле garbage_min_age_sec (u16, arch/02 §9.12 / arch/backups/05-etcd-contract.md): тело с
 // garbage_min_age_sec=600 → policy-put содержит поле; < 600 → валидация
 // (BackupsPolicyValidationException, поле garbage_min_age_sec); без поля →
 // поле в payload отсутствует (замещение целиком снимает пер-кластерный гейт —

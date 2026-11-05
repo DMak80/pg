@@ -16,7 +16,7 @@ internal static class MoveTickets
     // Снимок очереди: заявки кластера по leaf'ам + глобальный max requested_unix.
     internal sealed record Queue(IReadOnlyDictionary<string, Existing> Mine, long MaxUnix);
 
-    // Канон тела заявки (arch/14 §3.3, snake_case): только заполненные поля
+    // Канон тела заявки (arch/pgworker/00-etcd-contract.md §4, snake_case): только заполненные поля
     // пишутся в JSON (WhenWritingNull; force:true пишется, false — опускается).
     internal sealed record TicketBody(
         [property: JsonPropertyName("op")] string Op,

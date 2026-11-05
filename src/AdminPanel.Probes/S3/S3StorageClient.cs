@@ -15,7 +15,7 @@ public sealed record S3Page(IReadOnlyList<S3ObjectInfo> Items, string? NextConti
 
 /// <summary>Read-only клиент S3-хранилища (ownS3) панели (adminpanel/02 §2.5): контракт
 /// уровня кода — только ListBuckets/ListObjectsV2 и публичные health-эндпоинты;
-/// пишущих/удаляющих методов и admin-API НЕТ (они — только воркер, arch/19 §4/§5).
+/// пишущих/удаляющих методов и admin-API НЕТ (они — только воркер, arch/backups/05-etcd-contract.md/§5).
 /// Осознанный дубль PgWorker.Backups.BackupS3 (панель не ссылается на PgWorker.*).</summary>
 public interface IS3StorageClient
 {

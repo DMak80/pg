@@ -1,6 +1,6 @@
 namespace PgWorker.Backups;
 
-/// <summary>Материал CA https S3-endpoint (arch/19 §7): воркер читает PEM
+/// <summary>Материал CA https S3-endpoint (arch/backups/08-secrets.md): воркер читает PEM
 /// из CaBundlePath (TLS-пакет установки) — S3-клиенты с фабрикой доверия по
 /// корню цепочки; tool-операции получают PEM в POST-команде (материализация на
 /// приёмнике), приёмник ноды — env ноды (PGW_BACKUP_S3_CA_PEM).</summary>

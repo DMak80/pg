@@ -3,7 +3,7 @@ using Shared.Etcd.Client;
 
 namespace PgWorker.PgNode;
 
-/// <summary>Писатель статусного ключа машины (arch/14 §3.3): развязка
+/// <summary>Писатель статусного ключа машины (arch/pgworker/00-etcd-contract.md §4): развязка
 /// PgNodeMachine от lease-сессии для юнит-тестов (фейк-писатель по образцу
 /// internal-seam плана; прод — NodeStatusSession).</summary>
 internal interface INodeStatusWriter : IAsyncDisposable
@@ -15,21 +15,21 @@ internal interface INodeStatusWriter : IAsyncDisposable
 }
 
 /// <summary>Lease-сессия статусного ключа агента /pgworker/nodes/&lt;C&gt;/&lt;X&gt;/&lt;N&gt;/status
-/// (arch/14 §3.3, spec §3.6): lease TTL 15 c → первичный put → фоновый цикл
+/// (arch/pgworker/00-etcd-contract.md §4, spec §3.6): lease TTL 15 c → первичный put → фоновый цикл
 /// каждые 5 c — LeaseKeepalive + put актуального значения (ключ жив = агент
 /// жив, статус не «застревает» мёртвого процесса). КОПИЯ-адаптация
 /// WalReceiverStatusSession: тот же семафор-паттерн (put'ы значения и переходы
 /// lease — под ОДНИМ operation-семофором; потеря lease — revoke старого +
 /// grant нового + немедленный put; SIGTERM — revoke). Значение — PgNodeStatus
-/// (сериализация ToJson; node-суффикс в ключ не пишется — контракт arch/14
+/// (сериализация ToJson; node-суффикс в ключ не пишется — контракт arch/pgworker/README.md
 /// §3.3). Атомарный txn-переход машины — TryTransitionAsync (compare по
 /// VALUE — устойчив к keepalive-put'ам того же значения).</summary>
 public sealed class NodeStatusSession : INodeStatusWriter
 {
-    /// <summary>TTL lease статус-ключа (arch/14 §3.3): 15 c.</summary>
+    /// <summary>TTL lease статус-ключа (arch/pgworker/00-etcd-contract.md §4): 15 c.</summary>
     public const int LeaseTtlSec = 15;
 
-    /// <summary>Период keepalive + put статуса по умолчанию (arch/14 §3.3): 5 c.</summary>
+    /// <summary>Период keepalive + put статуса по умолчанию (arch/pgworker/00-etcd-contract.md §4): 5 c.</summary>
     public static readonly TimeSpan DefaultKeepalivePeriod = TimeSpan.FromSeconds(5);
 
     private readonly string _key;
@@ -140,7 +140,7 @@ public sealed class NodeStatusSession : INodeStatusWriter
     }
 
     /// <summary>Атомарный переход машины txn'ом (spec §3.6-2, §8.16,
-    /// arch/14 §3.3): compare по VALUE — прочитанное значение статуса (где
+    /// arch/pgworker/00-etcd-contract.md §4): compare по VALUE — прочитанное значение статуса (где
     /// state была not_initialized) обязано быть неизменным; put нового
     /// значения на lease сессии. Compare по значению, а не по mod_revision —
     /// keepalive-put'ы сессии ТОГО ЖЕ значения (каждые 5 c, value не меняется,

@@ -32,7 +32,7 @@ public sealed record StartVerifyRequest(
 
 public sealed record StartRestoreRequest(
     [property: JsonPropertyName("backup_id")] string BackupId,
-    // id ЛИШЬ у drill-запуска (arch/19 §3.6): scratch-каталог
+    // id ЛИШЬ у drill-запуска (arch/backups/04-drill.md): scratch-каталог
     // backup-drill/<id>/pgdata; restore (null) пишет в PGDATA ноды.
     [property: JsonPropertyName("id")] string? Id,
     [property: JsonPropertyName("target_time")] string? TargetTime, // PG-совместимый yyyy-MM-dd HH:mm:sszzz (воркер нормализует RFC3339); null = latest
@@ -43,7 +43,7 @@ public sealed record StartRestoreRequest(
     [property: JsonPropertyName("chain_life")] uint? ChainLife = null);
 
 /// <summary>Статус ops-операции (GET /api/ops/verify|restore); started_unix —
-/// время TryBegin (возрастной бюджет verify воркера, arch/19 §6).</summary>
+/// время TryBegin (возрастной бюджет verify воркера, arch/backups/09-operability.md).</summary>
 public sealed record OpsStatusResponse(
     [property: JsonPropertyName("state")] string State,
     [property: JsonPropertyName("phase")] string Phase,
@@ -54,7 +54,7 @@ public sealed record OpsStatusResponse(
 
 public sealed record ErrorResponse([property: JsonPropertyName("error")] string Error);
 
-/// <summary>Тело POST /api/node/pgdump (pg_dump схемы — arch/14 §Move M1):
+/// <summary>Тело POST /api/node/pgdump (pg_dump схемы — arch/pgworker/processes/f-move.md M1):
 /// имя схемы-бакета и БД кластера; секретов нет — локальный socket-коннект.</summary>
 public sealed record StartPgDumpRequest(
     [property: JsonPropertyName("schema")] string Schema,
@@ -63,13 +63,13 @@ public sealed record StartPgDumpRequest(
 /// <summary>Ответ 200 /api/node/pgdump — текст дампа схемы (stdout pg_dump).</summary>
 public sealed record PgDumpResponse([property: JsonPropertyName("ddl")] string Ddl);
 
-/// <summary>Ответ 200 /api/node/hba-ensure (arch/19 §7): applied — вставлял ли
+/// <summary>Ответ 200 /api/node/hba-ensure (arch/backups/08-secrets.md): applied — вставлял ли
 /// приёмник строку (и будил Patroni); bootstrap — нода ещё без PG_VERSION
 /// (строка применится при первом старте postgres, ожидания не было).</summary>
 public sealed record HbaEnsureResponse(
     [property: JsonPropertyName("applied")] bool Applied,
     [property: JsonPropertyName("bootstrap")] bool Bootstrap);
 
-/// <summary>Ответ 200 GET /api/node/pgdata — проба данных ноды (arch/14 Д3):
+/// <summary>Ответ 200 GET /api/node/pgdata — проба данных ноды (arch/pgworker/README.md Д3):
 /// факт PG_VERSION файловой системой контейнера ноды.</summary>
 public sealed record PgDataResponse([property: JsonPropertyName("pg_version")] string PgVersion);

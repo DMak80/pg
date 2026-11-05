@@ -3,7 +3,7 @@ using PgWorker.Core.Planning;
 
 namespace PgWorker.UnitTests.Planning;
 
-// PortPlanConvergence (spec §3.7 Д1, arch/14 §5 A P1): закрепление, не
+// PortPlanConvergence (spec §3.7 Д1, arch/pgworker/processes/a-provisioning.md A P1): закрепление, не
 // подтверждённое фактом СВОЕГО контейнера и занятое любой фактической
 // публикацией (docker-биндинг соседа — в т.ч. СВОЕГО кластера — минус свой
 // контейнер ∪ portalloc соседей), снимается — PortAllocator выделит ноде
@@ -82,7 +82,7 @@ public class PortPlanConvergenceTests
         existing.Should().NotContainKey("s1/n2");
     }
 
-    // AAA: пулер обязателен (arch/14 §8): каноническая запись с doorman=0 —
+    // AAA: пулер обязателен (arch/pgworker/08-operability.md §5): каноническая запись с doorman=0 —
     // расхождение с обязательной тройкой (5432/8008/6432) — запись НЕ
     // подтверждена фактом → detach → recreate (легаси-запись или контейнер
     // старого образа без 6432 конвергирует пересозданием, volume жив).
@@ -110,7 +110,7 @@ public class PortPlanConvergenceTests
     }
 
     // AAA: нулевой doorman канонической записи невозможен (пулер обязателен,
-    // arch/14 §8) — detach ВСЕГДА, независимо от занятости портов: даже без
+    // arch/pgworker/08-operability.md §5) — detach ВСЕГДА, независимо от занятости портов: даже без
     // коллизий запись не может считаться валидной, recreate даст полную
     // тройку портов (PortAllocator выделит свободные).
     [Fact]

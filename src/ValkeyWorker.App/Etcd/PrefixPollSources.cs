@@ -4,7 +4,7 @@ using Shared.Etcd.Coordination;
 
 namespace ValkeyWorker.App;
 
-// Источник контроль-плейна тика ReconcileLoop (arch/17 S10, arch/21 §5):
+// Источник контроль-плейна тика ReconcileLoop (arch/synchronization/05-delta-application.md §S10, arch/valkeyworker/README.md):
 // опросный кэш домена вместо полных Range в каждом тике. Тик работает
 // КАЖДЫЙ раз (self-healing ждёт не-etcd события — гейтов по дельте нет) и
 // читает слепок кэша: etcd-чтений в тике ноль (E10 — чтение уходит в
@@ -34,7 +34,7 @@ internal sealed class EtcdPrefixSources(
     IOptionsMonitor<ValkeyWorkerOptions> options,
     IEtcdGateway gateway) : IPrefixPollSources
 {
-    // Наблюдаемый префикс — домен (arch/21 §5).
+    // Наблюдаемый префикс — домен (arch/valkeyworker/README.md).
     private const string DomainPrefix = "/valkey/clusters/";
 
     private readonly SemaphoreSlim _gate = new(1, 1);

@@ -313,7 +313,7 @@ public class KafkaRefresherTests
     [Fact]
     public async Task Refresh_AdminAndCaKeys_SecretsStoreCarriesAdminCreds()
     {
-        // Arrange: кластерные kvs с admin_user/admin_password/ca_pem (arch/15 §2).
+        // Arrange: кластерные kvs с admin_user/admin_password/ca_pem (arch/kafka-clusters/02-keys.md §1).
         var gateway = DemoGateway();
         gateway.ClustersKv =
         [
@@ -340,7 +340,7 @@ public class KafkaRefresherTests
     [Fact]
     public async Task Refresh_BrokenCaPem_NotInStore_ParseErrorRecorded()
     {
-        // Arrange: ca_pem — мусор (arch/15 §6: битый PEM → parseError, ключ пропускается).
+        // Arrange: ca_pem — мусор (arch/kafka-clusters/06-fault-tolerance.md: битый PEM → parseError, ключ пропускается).
         var gateway = DemoGateway();
         gateway.ClustersKv =
         [
@@ -365,7 +365,7 @@ public class KafkaRefresherTests
     [Fact]
     public async Task Refresh_AdminRotationTicket_InSnapshot()
     {
-        // Arrange: заявка ротации admin-пароля (arch/15 §4).
+        // Arrange: заявка ротации admin-пароля (arch/kafka-clusters/04-coordination.md §1).
         var gateway = DemoGateway();
         gateway.RotationsKv = EtcdFixtures.LoadKv("Kafka/kafka-rotations.json");
         gateway.WorkerApiKv = [];

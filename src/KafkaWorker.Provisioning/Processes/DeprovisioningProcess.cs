@@ -5,7 +5,7 @@ using Shared.Etcd.Client;
 namespace KafkaWorker.Provisioning.Processes;
 
 /// <summary>
-/// Deprovisioning — полный демонтаж Kafka-кластера (arch/16 §5 B, фазы X0–X3).
+/// Deprovisioning — полный демонтаж Kafka-кластера (arch/kafkaworker/02-cluster-lifecycle.md §3 B, фазы X0–X3).
 /// X1 удаляет контейнеры/сервисы и тома kfw-&lt;C&gt;-* (включая сирот; 404 = ок) ДО
 /// чистки etcd — «мёртвые» ключи при сбое безвредны (кластер в TO_REMOVE,
 /// повторный тик продолжает). X2: del --prefix /kafka/clusters/&lt;C&gt;/ +
@@ -27,7 +27,7 @@ public sealed class DeprovisioningProcess(
 
     public async Task<Result> RunAsync(string cluster, IReadOnlyList<string> declaredBrokers, CancellationToken ct)
     {
-        // Мутации — только держателем живого клэйма (arch/16 §5).
+        // Мутации — только держателем живого клэйма (arch/kafkaworker/README.md).
         if (!claims.IsMine(cluster))
             return Result.Failed(new ApplicationException(
                 $"deprovisioning {cluster}: claim is not ours (or lost) — mutations are forbidden"));
@@ -51,7 +51,7 @@ public sealed class DeprovisioningProcess(
             return Fail(cluster, removed.Error!, "removing-nodes");
 
         // Guard: docker-объектов кластера не осталось — только теперь чистим etcd
-        // (порядок «сначала docker, потом etcd» — arch/16 §5 B).
+        // (порядок «сначала docker, потом etcd» — arch/kafkaworker/02-cluster-lifecycle.md §3 B).
         var objects = await driver.ListNodeObjectsAsync(cluster, ct);
         if (!objects.IsSuccess)
             return Fail(cluster, objects.Error!, "listing-objects");

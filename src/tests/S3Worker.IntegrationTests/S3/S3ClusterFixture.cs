@@ -77,7 +77,7 @@ public sealed class S3ClusterFixture : IAsyncLifetime
         new(HostPorts.From, HostPorts.To, NodeBootSec: 100, NodeDeadSec: 90, HealthIntervalSec: 15,
             AdvertisedHost, "owns3:dev", "pgworker-backups");
 
-    // Креды рига — канонический состав per-cluster secrets (arch/23 §6:
+    // Креды рига — канонический состав per-cluster secrets (arch/s3-clusters/06-secrets.md:
     // root-пара + backups rw + panel ro; значения — тестовые). Предзаписаны
     // сидом в /s3/clusters/<C>/secrets: put-if-absent воркера сохраняет их,
     // клиенты теста знают ожидаемые креды контейнеров.
@@ -95,7 +95,7 @@ public sealed class S3ClusterFixture : IAsyncLifetime
     {
     }
 
-    // Креды процессов — per-cluster secrets в etcd (arch/23 §6); ленивая
+    // Креды процессов — per-cluster secrets в etcd (arch/s3-clusters/06-secrets.md); ленивая
     // фабрика: Gateway/Endpoint готовы к моменту сборки процессов.
     public ClusterSecretsStore NewSecrets() => new(Gateway, [Endpoint]);
 
@@ -141,7 +141,7 @@ public sealed class S3ClusterFixture : IAsyncLifetime
 
     public async ValueTask DisposeAsync()
     {
-        // Телеметрия ДО удаления (docs/e2e-launch.md): списки объектов прогона.
+        // Телеметрия ДО удаления (arch/testing/01-e2e-launch.md): списки объектов прогона.
         var artifactsDir = EnsureArtifactsDir();
         try
         {
@@ -236,7 +236,7 @@ public sealed class S3ClusterFixture : IAsyncLifetime
             Options with { NodeDeadSec = nodeDeadSec }, healer);
 
     // Сид заявки кластера (config NOT_INITIALIZED + instances[] с именами —
-    // arch/24 §1.1: placement/resources/state на каждый инстанс) + предзапись
+    // arch/s3worker/07-api.md §1: placement/resources/state на каждый инстанс) + предзапись
     // per-cluster secrets-ключа канонического состава (креды процессов).
     public async Task SeedClusterAsync(string cluster, params string[] instances)
     {
@@ -258,7 +258,7 @@ public sealed class S3ClusterFixture : IAsyncLifetime
         }
     }
 
-    // Канонический JSON secrets-ключа (arch/23 §2; порядок полей как сериализация
+    // Канонический JSON secrets-ключа (arch/s3-clusters/02-keys.md §1; порядок полей как сериализация
     // воркера) из известных тесту кредов.
     public string SecretsJson() =>
         $$"""{"root_user":"{{Secrets.RootUser}}","root_password":"{{Secrets.RootPassword}}","access_keys":[{"name":"backups","access_key":"it-rw-key","secret_key":"it-rw-secret","policy":"read-write"},{"name":"panel","access_key":"it-ro-key","secret_key":"it-ro-secret","policy":"read-only"}]}""";

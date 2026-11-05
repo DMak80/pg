@@ -24,7 +24,7 @@ public class BackupsS3Options
 
         public string Bucket { get; set; } = "";
 
-        // ForcePathStyle: ownS3 и облако одним клиентом (arch/19 §5).
+        // ForcePathStyle: ownS3 и облако одним клиентом (arch/backups/06-s3-layout.md).
         public bool PathStyle { get; set; } = true;
     }
 }

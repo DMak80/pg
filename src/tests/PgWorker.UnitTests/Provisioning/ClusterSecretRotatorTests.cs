@@ -14,7 +14,7 @@ using Xunit;
 namespace PgWorker.UnitTests.Provisioning;
 
 // Ротация per-cluster секретов по заявке /pgworker/rotations/<C> — ETCD-FIRST
-// (arch/14 §5 I, t05 рев. 8): R2 txn-коммит NEW-четвёрки В НАЧАЛЕ окна (флаг
+// (arch/pgworker/processes/i-secret-rotator.md I, t05 рев. 8): R2 txn-коммит NEW-четвёрки В НАЧАЛЕ окна (флаг
 // rest_window_open), R3 rolling rest-пары каналом БЕЗ пересоздания
 // (bootstrap-перерендер ключа ОДНОЙ ноды/тик, реплики вперёд; fake-агент
 // публикует статусные ключи по факту «применения»), R4 финальный ALTER
@@ -37,7 +37,7 @@ public class ClusterSecretRotatorTests
     // Сид: Active-кластер, 2 шарда с dsn + master-ключи (формат писателя —
     // <host>:<doormanPort> фактической ноды-мастера), тройка per-cluster кредов
     // (ensure читает, txn не ставит), portalloc (мастера — первые ноды,
-    // host h1/pg 15000 и h2/pg 15001), заявки ресурсов (arch/14 §2.1 п.4 —
+    // host h1/pg 15000 и h2/pg 15001), заявки ресурсов (arch/pgworker/01-placement.md §2 —
     // без них PgtuneInputsFactory фейлит тик).
     private static void SeedCluster(Fakes.FakeEtcd etcd, string cluster = "shop")
     {
@@ -341,7 +341,7 @@ public class ClusterSecretRotatorTests
     public async Task Rotate_ShardWithoutMaster_WindowOpen_WaitingMaster()
     {
         // Arrange — у shard2 НЕТ резолва мастера: master-ключа нет, leader-ключ
-        // снят (шаг 2 цепочки arch/14 §5 F), Patroni мёртв (шаг 3, transient).
+        // снят (шаг 2 цепочки arch/pgworker/processes/f-move.md F), Patroni мёртв (шаг 3, transient).
         var rig = await NewRig();
         rig.Etcd.Store.Remove("/clusters/shop/shards/shard2/master");
         rig.Etcd.Store.Remove("/service/shop-shard2/leader");
@@ -372,7 +372,7 @@ public class ClusterSecretRotatorTests
         (await rig.Journal.ReadAsync("shop", CancellationToken.None)).Value!.Phase.Should().Be("done");
     }
 
-    // Шаг 2 цепочки arch/14 §5 F: master-ключа нет, leader-ключ (ГОЛОЕ имя
+    // Шаг 2 цепочки arch/pgworker/processes/f-move.md F: master-ключа нет, leader-ключ (ГОЛОЕ имя
     // Patroni) разрешает мастера — R4 доводит окно до done БЕЗ waiting-фазы.
     // Регресс: JSON-парс значения leader-ключа валил мастер-резолв (факт E2E
     // Rotate/StartFailed — всегда fallback на Patroni-REST шага 3).
@@ -465,7 +465,7 @@ public class ClusterSecretRotatorTests
     // Ревью 2 (BLOCKER, контр-кейс): ready-нода, НЕ применяющая NEW (refuse —
     // рестарт против OLD отвергнут) — НЕ «меньшинство» (unappliedNotReady
     // = false): ALTER не выполняется, окно остаётся открытым, тики ждут
-    // (waiting-refusal) — операторский разбор. Дисциплина пина (arch/14 §5 I
+    // (waiting-refusal) — операторский разбор. Дисциплина пина (arch/pgworker/processes/i-secret-rotator.md I
     // R3): отказник пинется ОДИН раз (delivered-факт), дальше тихие тики —
     // долбёжка apply каждый тик запрещена.
     [Fact]

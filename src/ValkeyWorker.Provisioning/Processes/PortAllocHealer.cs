@@ -6,7 +6,7 @@ using ValkeyWorker.Docker.Drivers;
 
 namespace ValkeyWorker.Provisioning.Processes;
 
-// Фасад общего лестничного хилера portalloc (Shared.Etcd, arch/17 E9) над
+// Фасад общего лестничного хилера portalloc (Shared.Etcd, arch/synchronization/README.md E9) над
 // доменным драйвером/индексом: успешный результат — клиентский порт ноды.
 public sealed class PortAllocHealer(
     IEtcdGateway etcd,
@@ -47,7 +47,7 @@ public sealed class PortAllocHealer(
                 dict.ToDictionary(p => p.Key, p => new NodeAddress(p.Value.Host, p.Value.Port))),
         });
 
-    // Восстановление порта ОДНОЙ ноды (arch/21 §5 C): запись portalloc есть →
+    // Восстановление порта ОДНОЙ ноды (arch/valkeyworker/02-cluster-lifecycle.md §4 C): запись portalloc есть →
     // её порт (реконструкция не нужна); нет — инспекция живого контейнера →
     // put-if-absent под глобальным клэймом. Успех: фактический порт ноды.
     public async Task<Result<int>> HealNodePortAsync(string cluster, string node, CancellationToken ct)

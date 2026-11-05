@@ -837,7 +837,7 @@ public void Parse_FullKey_UnknownState_Tolerated()
     [Fact]
     public void Parse_AgentKeyStreaming_GoesToAgents()
     {
-        // Arrange — приёмник в штатном стриме (arch/19 §4)
+        // Arrange — приёмник в штатном стриме (arch/backups/05-etcd-contract.md)
         var kvs = new[]
         {
             new Kv("/pgworker/backups/demo/s1/agent/s1b",

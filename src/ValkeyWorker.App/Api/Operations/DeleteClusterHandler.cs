@@ -10,7 +10,7 @@ namespace ValkeyWorker.App.Api.Operations;
 // (уже TO_REMOVE → успех без записи). Успех = 202: демонтаж исполняет процесс B.
 public sealed class DeleteClusterHandler(IEtcdGateway gateway, string[] endpoints)
 {
-    public const string ToRemoveState = "TO_REMOVE"; // канон config.state (arch/20 §2)
+    public const string ToRemoveState = "TO_REMOVE"; // канон config.state (arch/valkey-clusters/02-keys.md §1)
 
     public async Task<Result> HandleAsync(string cluster, CancellationToken ct)
     {

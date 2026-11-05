@@ -16,7 +16,7 @@ public sealed record OldestMoveRequest(
 
 /// <summary>
 /// Заявки на переезды кластера — чтение/удаление ключей /pgworker/moves/&lt;C&gt;/bucket_&lt;i&gt;
-/// (spec §4.1, arch/14 §3.3). Успех или перманентный отказ — заявку удаляет процесс;
+/// (spec §4.1, arch/pgworker/00-etcd-contract.md §4). Успех или перманентный отказ — заявку удаляет процесс;
 /// одновременно обрабатывается старейшая заявка кластера (Д2).
 /// Failover по endpoints — паттерн WorkJournal.WithFailoverAsync.
 /// </summary>

@@ -4,7 +4,7 @@ using Xunit;
 
 namespace S3Worker.UnitTests.Provisioning;
 
-// Лестница E9 (arch/17): реконструкция portalloc из inspect живого контейнера
+// Лестница E9 (arch/synchronization/README.md): реконструкция portalloc из inspect живого контейнера
 // (put-if-absent под locks/portalloc, проигрыш → re-read); контейнера нет →
 // Failed «новая аллокация» (S7); inspect недоступен → Failed (вслепую нет).
 public class PortAllocHealerTests

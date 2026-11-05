@@ -45,7 +45,7 @@ builder
 // cookie-схема аутентификации (настройки — AdminPanel:Auth).
 builder.Services.AddCookieAuth();
 
-// Метрики (arch/18 §2.4/§3): /metrics без cookie-авторизации (guard — только
+// Метрики (arch/metrics/02-dictionary.md §4/§3): /metrics без cookie-авторизации (guard — только
 // /api/*); refresher-гейдж — пассивное чтение BuiltAtUtc снапшота (обновляется
 // только успешным тиком сборки — отказ тика честно стареет, FailTick хранит
 // прежний; ревью Ф4-8: pull эквивалентен марк-методу, второго писателя нет).
@@ -59,7 +59,7 @@ builder.Services.AddSingleton(sp =>
         () => new Measurement<double>(
             store.Current?.BuiltAtUtc.ToUnixTimeSeconds() ?? 0),
         unit: "s",
-        description: "Unix timestamp of the last successful etcd-refresher tick (arch/18 §2.4)");
+        description: "Unix timestamp of the last successful etcd-refresher tick (arch/metrics/02-dictionary.md §4)");
 });
 
 var app = builder.Build();
@@ -99,7 +99,7 @@ app.UseStaticFiles();
 // аутентификация + default-deny guard — всё /api/*, кроме login и healthz, → 401.
 app.UseAuthentication();
 app.UseApiAuthorization();
-app.MapAppMetrics(); // /metrics мимо guard'а (guard матчит только /api/*) — arch/18 §3
+app.MapAppMetrics(); // /metrics мимо guard'а (guard матчит только /api/*) — arch/metrics/03-exposure.md
 app.MapAuthApi();
 app.MapInspectionApi(); // эндпоинты инспекции etcd из снапшота (arch/03 §1)
 app.MapBackupsInspectionApi(); // грань «Хранилище бэкапов» (arch/03 §1)

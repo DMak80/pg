@@ -5,7 +5,7 @@ using Shared.Core.DI;
 namespace AdminPanel.Api.Operations.Kafka;
 
 // ===== Kafka-мутации — прокси в API KafkaWorker (task etcd-via-worker-api,
-// arch/16 §1.1): панель не пишет в etcd; воркер выполняет клэймы/RMW/компенсации
+// arch/kafkaworker/07-api.md §1): панель не пишет в etcd; воркер выполняет клэймы/RMW/компенсации
 // 1:1 (arch/02 §10.2). Оператор (requestedBy) передают мутации с аудитом:
 // rotate (8), desired (7), create-topic (9), delete-topic (10) — заголовком
 // X-Requested-By (spec §3.7); остальные шлют null (заголовок не ставится). =====
@@ -171,7 +171,7 @@ public sealed class RotateCaCommandHandler(IWorkerApiGateway api)
             body: null, command.RequestedBy, ct);
 }
 
-// ===== 7. Конфиг-заявка топика — desired (arch/02 §10.2-7; arch/15 §3) =====
+// ===== 7. Конфиг-заявка топика — desired (arch/02 §10.2-7; arch/kafka-clusters/03-topics.md §1) =====
 
 public sealed record UpsertTopicDesiredCommand(
     string Cluster, string Topic, TopicDesiredRequest Request, string RequestedBy)

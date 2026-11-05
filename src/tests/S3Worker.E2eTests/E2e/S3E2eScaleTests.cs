@@ -10,11 +10,11 @@ namespace S3Worker.IntegrationTests.E2e;
 // снос контейнера+volume, del ключей ноды, portalloc без ноды, RMW endpoints,
 // config.nodes актуализирован; гварды 409 последняя нода / 404 чужая) и
 // B (deprovision X0–X3: пустой домен + пустая координация + нет контейнеров/
-// томов; 404 повтор). Изоляция/телеметрия — docs/e2e-isolation.md,
-// docs/e2e-launch.md.
+// томов; 404 повтор). Изоляция/телеметрия — arch/testing/02-e2e-isolation.md,
+// arch/testing/01-e2e-launch.md.
 public class S3E2eScaleTests
 {
-    // Сценарий 4 RemoveNode (spec §5.2, arch/23 §2.2): Active N=2 → DELETE
+    // Сценарий 4 RemoveNode (spec §5.2, arch/s3-clusters/02-keys.md §3): Active N=2 → DELETE
     // nodes/east2 → 202 → снос контейнера+volume east2, del ключей ноды,
     // portalloc без east2, endpoints = 1 адрес, config.nodes = 1. Докомплект
     // гвардов: delete последней ноды → 409; повтор delete east2 → 404.
@@ -65,7 +65,7 @@ public class S3E2eScaleTests
             endpoints.Should().NotBeNull("endpoints up to date after the E-final");
             endpoints!.Split(',')[0].Should().StartWith("host.docker.internal:");
 
-            // Assert 2: гварды — delete последней ноды → 409 (arch/23 §2: 1..9).
+            // Assert 2: гварды — delete последней ноды → 409 (arch/s3-clusters/02-keys.md §1: 1..9).
             using var lastNode = await api.DeleteAsync(
                 $"/api/s3/clusters/{cluster}/nodes/east1", ct);
             lastNode.StatusCode.Should().Be(HttpStatusCode.Conflict,
@@ -81,14 +81,14 @@ public class S3E2eScaleTests
         }
         catch
         {
-            // docs/e2e-launch.md §3: упавший сценарий — teardown остановит
+            // arch/testing/01-e2e-launch.md §3: упавший сценарий — teardown остановит
             // контейнеры, но не удалит (разбор по артефактам).
             fx.MarkFailed();
             throw;
         }
     }
 
-    // Сценарий 5 Deprovision (spec §5.3, arch/24 §5 B X0–X3): Active N=2 →
+    // Сценарий 5 Deprovision (spec §5.3, arch/s3worker/02-cluster-lifecycle.md §3 B X0–X3): Active N=2 →
     // DELETE кластера → 202 → etcd-префикс кластера пуст, координация
     // (work/rotations/portalloc/claims) снята, контейнеров/томов нет;
     // повтор DELETE → 404.
@@ -115,7 +115,7 @@ public class S3E2eScaleTests
             deleted.StatusCode.Should().Be(HttpStatusCode.Accepted, deletedBody);
 
             // [PHASE] wait-deprovision: X0–X3 — терминальная чистота
-            // (journal-запись done У демонтажа ЕСТЬ — arch/24 §5 B фаза X3,
+            // (journal-запись done У демонтажа ЕСТЬ — arch/s3worker/02-cluster-lifecycle.md §3 B фаза X3,
             // в отличие от valkey; терминал = done + чистота).
             await fx.WaitPhaseAsync("wait-deprovision", async () =>
             {
@@ -162,7 +162,7 @@ public class S3E2eScaleTests
             }
         }, TimeSpan.FromSeconds(30), ct);
 
-    // create c instances[] (arch/24 §1.1): имена инстансов — из списка
+    // create c instances[] (arch/s3worker/07-api.md §1): имена инстансов — из списка
     // (произвольные, паттерн кластера; дефолт east1/east2 — 2 инстанса).
     internal static async Task CreateClusterAsync(
         S3E2eEnvironment fx, HttpClient api, string cluster, CancellationToken ct,

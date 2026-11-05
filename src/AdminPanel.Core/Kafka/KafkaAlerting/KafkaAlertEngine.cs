@@ -44,7 +44,7 @@ public sealed class KafkaAlertEngine(IOptions<KafkaAlertsOptions> options) : IKa
     private IEnumerable<Alert> Enumerate(
         KafkaSnapshot next, KafkaSnapshot? previous, IReadOnlyCollection<string>? securityReady)
     {
-        // kafka-security-missing (critical, arch/15 §6): Active-кластер без
+        // kafka-security-missing (critical, arch/kafka-clusters/06-fault-tolerance.md): Active-кластер без
         // полного набора admin-кредов/CA в сторе — пробы SASL_SSL не исполнимы
         // (премиграционный кластер ждёт SecurityMigrator).
         if (securityReady is not null)
@@ -151,7 +151,7 @@ public sealed class KafkaAlertEngine(IOptions<KafkaAlertsOptions> options) : IKa
         }
 
         // Ротационные алерты — только заявки живых кластеров: демонтаж кластера
-        // удаляет заявку (arch/16 X-фазы) — вечного kafka-rotation-pending нет.
+        // удаляет заявку (arch/kafkaworker/README.md X-фазы) — вечного kafka-rotation-pending нет.
         var alive = next.Clusters.Select(c => c.Name).ToHashSet(StringComparer.Ordinal);
         foreach (var rotation in next.Rotations.Where(r => alive.Contains(r.Cluster)))
             yield return new Alert(
@@ -170,7 +170,7 @@ public sealed class KafkaAlertEngine(IOptions<KafkaAlertsOptions> options) : IKa
                 AlertRemedy.WorkerAuto,
                 "the worker executes the rotation (phases A/B/C), the key will disappear; if it hangs — the worker is stuck, check the journal");
 
-        // Ротации admin-пароля (arch/15 §4): порт kafka-rotation-pending —
+        // Ротации admin-пароля (arch/kafka-clusters/04-coordination.md §1): порт kafka-rotation-pending —
         // только заявки живых кластеров.
         foreach (var rotation in (next.AdminRotations ?? []).Where(r => alive.Contains(r.Cluster)))
             yield return new Alert(
@@ -316,9 +316,9 @@ public sealed class KafkaAlertEngine(IOptions<KafkaAlertsOptions> options) : IKa
                 $"kafka key not parsed: {error.Key}",
                 new Dictionary<string, string> { ["reason"] = error.Reason },
                 null,
-                "kafka key not parsed by the panel parser: the malformed value does not reach the model — the UI is blind to the key; the kafka domain value format is canon arch/15",
+                "kafka key not parsed by the panel parser: the malformed value does not reach the model — the UI is blind to the key; the kafka domain value format is canon arch/kafka-clusters/README.md",
                 AlertRemedy.OperatorRunbook,
-                "fix the source of the malformed record (external writer) and bring the value to the arch/15 canon; the next tick will parse the key");
+                "fix the source of the malformed record (external writer) and bring the value to the arch/kafka-clusters/README.md canon; the next tick will parse the key");
     }
 
     // Топиковые алерты волны C (arch/03 §7.4): missing-desired и stale по etcd-

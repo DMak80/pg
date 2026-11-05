@@ -6,17 +6,17 @@ using Xunit;
 
 namespace KafkaWorker.IntegrationTests.Api;
 
-// Интеграционные тесты /metrics KafkaWorker (arch/18 §3): scrape-грань открыта
+// Интеграционные тесты /metrics KafkaWorker (arch/metrics/03-exposure.md): scrape-грань открыта
 // без ApiKey/cookie (симметрия /healthz); защита API — транспортная (mTLS: 401
 // без валидного серта на /api покрывает MtlsApiTests); /metrics — открытая
-// грань (arch/18 §3).
+// грань (arch/metrics/03-exposure.md).
 [Collection(KafkaMetricsCollection.Name)]
 public sealed class MetricsTests(KafkaMetricsFixture fx)
 {
     [Fact]
     public async Task Metrics_Responds_200_WithoutApiKey_EvenWhenApiKeySet()
     {
-        // Arrange: фабрика по умолчанию (ApiKey в каноне нет — arch/16 §4)
+        // Arrange: фабрика по умолчанию (ApiKey в каноне нет — arch/kafkaworker/04-security.md §3)
         using var client = fx.Factory.CreateClient();
 
         // Act: GET /metrics без X-Api-Key

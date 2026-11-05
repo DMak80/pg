@@ -6,7 +6,7 @@ using Xunit;
 
 namespace AdminPanel.UnitTests;
 
-// Точечный парсер ключа /pgworker/backups-disabled (u10, arch/19 §4): валидный
+// Точечный парсер ключа /pgworker/backups-disabled (u10, arch/backups/05-etcd-contract.md): валидный
 // JSON; битый JSON → parseError; пустое значение → parseError; ключа нет → null
 // без ошибки (бэкапы работают). AAA.
 public class BackupsDisabledParserTests
@@ -14,7 +14,7 @@ public class BackupsDisabledParserTests
     [Fact]
     public void Parse_ValidValue_InfoWithAuthor()
     {
-        // Arrange — канон arch/19 §4: {"updated_unix","updated_by"?}
+        // Arrange — канон arch/backups/05-etcd-contract.md: {"updated_unix","updated_by"?}
         var kv = new Kv("/pgworker/backups-disabled",
             """{"updated_unix":1761900000,"updated_by":"ops"}""", 1);
 

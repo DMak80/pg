@@ -37,10 +37,10 @@ export function AddShardModal({ cluster, strict, opened, onClose }: {
   });
 
   // Зеркало серверной валидации §9.3 (replicas/cpu/mem/disk — те же границы);
-  // t06: strict-кластер — минимум 2 реплики (серверная — arch/14 §5 G).
+  // t06: strict-кластер — минимум 2 реплики (серверная — arch/pgworker/processes/g-add-shard.md G).
   function validate(): boolean {
     const errors: Record<string, string> = {};
-    // Границы — validation.ts (u02); strict-минимум 2 — зеркало серверной (arch/14 §5 G).
+    // Границы — validation.ts (u02); strict-минимум 2 — зеркало серверной (arch/pgworker/processes/g-add-shard.md G).
     const replicasError = validateReplicas(form.replicas);
     if (replicasError !== null) errors.replicas = replicasError;
     if (strict && form.replicas < 2)

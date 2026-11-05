@@ -7,7 +7,7 @@ using KafkaWorker.App.Api.Operations;
 using KafkaWorker.Core.Writing;
 namespace KafkaWorker.App.Api;
 
-// HTTP API воркера (arch/16 §1.1, task etcd-via-worker-api): мутации
+// HTTP API воркера (arch/kafkaworker/07-api.md §1, task etcd-via-worker-api): мутации
 // декларативного etcd-контракта kafka-домена (arch/02 §10.2) принимает
 // исполнитель. Маппинг исключений — порт панельного KafkaOperationsModule 1:1
 // (коды/тексты ProblemDetails не меняются); успешные POST/PUT отвечают
@@ -263,7 +263,7 @@ public static class ApiModule
         });
 
         // POST /api/kafka/clusters/{cluster}/ca/rotate — мутация №17 (
-        // adminpanel/02 §10.2); исполнение — CaRotator (фазы P/D/R/C, arch/16 §5 K).
+        // adminpanel/02 §10.2); исполнение — CaRotator (фазы P/D/R/C, arch/kafkaworker/04-security.md §4 K).
         // requested_by — заголовок X-Requested-By (панель шлёт оператора), fallback "api".
         endpoints.MapPost("/api/kafka/clusters/{cluster}/ca/rotate", async (
             string cluster, HttpRequest http, RotateCaHandler handler, CancellationToken ct) =>
@@ -522,12 +522,12 @@ public static class ApiModule
             string cluster, string topic, CancelLifecycleHandler handler, CancellationToken ct) =>
             await CancelTopicLifecycleAsync(cluster, topic, "delete", handler, ct));
 
-        // GET /api/config — эффективный конфиг установки (arch/16 §1.1, u15):
+        // GET /api/config — эффективный конфиг установки (arch/kafkaworker/07-api.md §1, u15):
         // read-only, mTLS-зона /api, без снапшота и etcd.
         endpoints.MapGet("/api/config", (IOptions<KafkaWorkerOptions> options)
             => Results.Ok(KafkaWorkerEffectiveConfig.From(options.Value)));
 
-        // POST /api/seed/demo — демо-сид kafka-домена (arch/16 §1.1.1, стенд):
+        // POST /api/seed/demo — демо-сид kafka-домена (arch/kafkaworker/07-api.md §1, стенд):
         // перенос kafka-seed.sh 1:1; идемпотентен по /kafka/clusters/events/config.
         // Флаг EnableSeedEndpoint проверяет хендлер (выключен → 404).
         endpoints.MapPost("/api/seed/demo", async (SeedDemoHandler handler, CancellationToken ct) =>
@@ -549,7 +549,7 @@ public static class ApiModule
             };
         });
 
-        // POST /api/restart — graceful self-stop (spec §3.2 п.2, arch/16 §3.1):
+        // POST /api/restart — graceful self-stop (spec §3.2 п.2, arch/kafka-clusters/02-keys.md §1):
         // 202 {"restarting":true}, стоп отложен на ~1 c; etcd не пишет.
         endpoints.MapPost("/api/restart", (
             [Microsoft.AspNetCore.Mvc.FromHeader(Name = "X-Requested-By")] string? requestedBy,

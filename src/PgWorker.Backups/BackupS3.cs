@@ -7,10 +7,10 @@ using PgWorker.Core;
 namespace PgWorker.Backups;
 
 /// <summary>Объект WAL-префикса: имя (последний компонент ключа) + факт времени
-/// последней модификации (для last_uploaded_unix — S3 истина, arch/19 §3).</summary>
+/// последней модификации (для last_uploaded_unix — S3 истина, arch/backups/02-wal-archive.md §1).</summary>
 public sealed record WalObject(string Name, DateTimeOffset LastModified);
 
-/// <summary>Объект bucket с размером (ретенционные list'ы, arch/19 §5).</summary>
+/// <summary>Объект bucket с размером (ретенционные list'ы, arch/backups/06-s3-layout.md).</summary>
 public sealed record S3ObjectInfo(string Key, long SizeBytes, DateTimeOffset LastModified);
 
 /// <summary>Тонкая обёртка S3-клиента : list-objects-v2 с пагинацией по
@@ -24,7 +24,7 @@ public sealed record S3ObjectInfo(string Key, long SizeBytes, DateTimeOffset Las
 /// и GET history; общий кор пагинации с листом.
 /// ListFullsAsync/DownloadTextAsync — DR-поиск полных по CommonPrefixes и
 /// чтение маленьких текстовых объектов (backup_label/backup_manifest);
-/// restore S3 ТОЛЬКО читает — удаляющих операций тут нет (arch/19 §3.5).</summary>
+/// restore S3 ТОЛЬКО читает — удаляющих операций тут нет (arch/backups/03-restore.md).</summary>
 public interface IBackupS3
 {
     Task<Result<bool>> BucketExistsAsync(CancellationToken ct);
@@ -83,12 +83,12 @@ public interface IBackupS3
     Task<Result<string>> DownloadTextAsync(
         string cluster, string shard, string objectKey, CancellationToken ct = default);
 
-    /// <summary>: put файла 1:1 объектом (upload полного — arch/19 §2);
+    /// <summary>: put файла 1:1 объектом (upload полного — arch/backups/01-full-backup.md);
     /// key — ПОЛНЫЙ ключ в bucket (&lt;C&gt;/&lt;X&gt;/full/&lt;id&gt;/…). Содержимое —
     /// FileStream (файл не читается в память целиком — наборы бывают большими).</summary>
     Task<Result> PutFileAsync(string key, string filePath, CancellationToken ct = default);
 
-    /// <summary>: скачивание объекта в файл (verify/restore — arch/19 §5/§3.5);
+    /// <summary>: скачивание объекта в файл (verify/restore — arch/backups/06-s3-layout.md/§3.5);
     /// key — относительно &lt;C&gt;/&lt;X&gt;/, как GetObjectAsync; ответ — через
     /// временный &lt;dest&gt;.part с атомарной заменой по успеху (обрыв не оставляет
     /// частичный файл; dest перезаписывается — ретраи идемпотентны).</summary>
@@ -96,7 +96,7 @@ public interface IBackupS3
         string cluster, string shard, string key, string destFilePath, CancellationToken ct = default);
 }
 
-/// <summary>Запись WAL-сегмента без разрушения чужой цепочки (arch/19 §3):
+/// <summary>Запись WAL-сегмента без разрушения чужой цепочки (arch/backups/02-wal-archive.md §1):
 /// существующий объект с ИДЕНТИЧНЫМ содержимым — идемпотентный успех (повтор
 /// put двух приёмников одного потока — канон идемпотентности); с ДРУГИМ
 /// содержимым — отказ с маркером <see cref="WalArchiveConflict.Marker"/>
@@ -116,7 +116,7 @@ public interface IWalSegmentGuard
         string key, string filePath, CancellationToken ct = default);
 }
 
-/// <summary>Маркер permanent-конфликта WAL-архива (arch/19 §3): сегмент с тем
+/// <summary>Маркер permanent-конфликта WAL-архива (arch/backups/02-wal-archive.md §1): сегмент с тем
 /// же именем уже лежит с другим содержимым — это НЕ transient (ретрай ничего
 /// не изменит) и НЕ исчерпание пула: приёмник обязан замереть, а не
 /// перезаписывать чужую цепочку.</summary>
@@ -138,8 +138,8 @@ public sealed class BackupS3 : IBackupS3, IWalSegmentGuard, IAsyncDisposable
     private readonly AmazonS3Client _client;
     private readonly string _bucket;
 
-    // Пер-попыточный таймаут S3-запроса (arch/14 §6 «пульс конечного внешнего
-    // вызова», arch/19 §5): короче окна проверки watchdog — симметрия таймаутов
+    // Пер-попыточный таймаут S3-запроса (arch/pgworker/08-operability.md §3 «пульс конечного внешнего
+    // вызова», arch/backups/06-s3-layout.md): короче окна проверки watchdog — симметрия таймаутов
     // etcd/patroni/SQL. Дефолт — полокна (10 с при дефолтных опциях);
     // фабрика передаёт производный от Loops:Watchdog:CheckIntervalSec.
     private static readonly TimeSpan DefaultRequestTimeout = TimeSpan.FromSeconds(10);
@@ -348,7 +348,7 @@ public sealed class BackupS3 : IBackupS3, IWalSegmentGuard, IAsyncDisposable
         }
     }
 
-    /// <summary>WAL-сегмент с гвардом чужой цепочки (arch/19 §3): HEAD
+    /// <summary>WAL-сегмент с гвардом чужой цепочки (arch/backups/02-wal-archive.md §1): HEAD
     /// существующего объекта, сверка ETag (одиночный PUT ownS3/S3 — md5-hex)
     /// с md5 содержимого. Совпал — байт-в-байт уже в архиве, put НЕ
     /// повторяется (идемпотентность двух приёмников одного потока); не совпал

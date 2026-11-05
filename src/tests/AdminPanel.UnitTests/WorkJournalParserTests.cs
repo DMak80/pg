@@ -16,7 +16,7 @@ public class WorkJournalParserTests
     [Fact]
     public void Parse_ProvisionFailed_AllSeriesFields()
     {
-        // Arrange: журнал с серией фейлов (канон arch/14 §3.3).
+        // Arrange: журнал с серией фейлов (канон arch/pgworker/00-etcd-contract.md §4).
         var json = File.ReadAllText("EtcdFixtures/work-provision-failed.json");
 
         // Act
@@ -145,7 +145,7 @@ public class WorkJournalParserTests
     [Fact]
     public void Parse_DomainJournalWithoutFactFields_NullFacts()
     {
-        // Arrange — доменный формат (arch/15 §4/§20 §3/§23 §8)
+        // Arrange — доменный формат (arch/kafka-clusters/04-coordination.md §1/§20 §3/§23 §8)
         var kv = WorkKv("events",
             """{"op":"rotate","phase":"phase-a","instance":"kfw-1","updated_unix":1761900000,"last_error":"node broker3 unreachable"}""");
 

@@ -6,17 +6,17 @@ using Shared.Etcd.Client;
 
 namespace EtcdWorker.App.Api.Operations;
 
-// Тело PUT /api/etcd/config (arch/25 §1.1): {"nodes":N} — замещение декларации.
+// Тело PUT /api/etcd/config (arch/etcdworker/05-api.md §1): {"nodes":N} — замещение декларации.
 public sealed record PutEtcdConfigRequest([property: JsonPropertyName("nodes")] int Nodes);
 
 // 409: итоговый состав ниже безопасного (external + N < 3).
 public sealed class EtcdQuorumGuardException(int nodes, int external)
-    : Exception($"unsafe membership: {external} external + {nodes} managed < 3 members (quorum guard, arch/25 §1.1)");
+    : Exception($"unsafe membership: {external} external + {nodes} managed < 3 members (quorum guard, arch/etcdworker/05-api.md §1)");
 
 // 400: N вне 0..7.
 public sealed class EtcdConfigValidationException(string message) : Exception(message);
 
-/// <summary>PUT /api/etcd/config (arch/25 §1.1/§5): валидация 0..7 → гвард
+/// <summary>PUT /api/etcd/config (arch/etcdworker/05-api.md §1/§5): валидация 0..7 → гвард
 /// кворума (external + N ≥ 3) → RMW /etcd/config по mod_revision (нет ключа →
 /// txn version==0; проигрыш гонки → Failed-транзиент, вызывающий отдаёт 503).
 /// created_unix — исходная метка появления декларации (сохраняется при замене).

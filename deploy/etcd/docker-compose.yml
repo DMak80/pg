@@ -1,14 +1,14 @@
-# Seed-узел etcd-контура контроль-плейна воркер-инсталляции (arch/04 §8 п.5,
-# arch/25 §1): ПОДНИМАЕТСЯ ОПЕРАТОРОМ ОДИН раз для бутстрапа контура; состав
+# Seed-узел etcd-контура контроль-плейна воркер-инсталляции (arch/etcdworker/06-operability.md §7 п.5,
+# arch/etcdworker/README.md): ПОДНИМАЕТСЯ ОПЕРАТОРОМ ОДИН раз для бутстрапа контура; состав
 # до целевого доводит EtcdWorker (PUT /api/etcd/config nodes=N), после чего
-# seed рекомендуется вывести (runbook, arch/04 §8 п.4).
+# seed рекомендуется вывести (runbook, arch/etcdworker/06-operability.md §7 п.4).
 #   docker network create etcdw-net            # перед первым стартом
 #   sudo mkdir -p /opt/etcd-seed && cd /opt/etcd-seed
 #   # скопировать docker-compose.yml + etcd.env (из etcd.env.example)
 #   docker compose --env-file etcd.env up -d
-# Адресация контура — ТОЛЬКО имена узлов в общей сети etcdw-net (arch/25 §2):
+# Адресация контура — ТОЛЬКО имена узлов в общей сети etcdw-net (arch/etcdworker/01-placement.md):
 # peer managed-узлов http://etcdw-node-<k>:2380, client host-порты из
-# PortRange EtcdWorker. Мультихост — Swarm (arch/04 §8 п.5, runbook).
+# PortRange EtcdWorker. Мультихост — Swarm (arch/etcdworker/06-operability.md §7 п.5, runbook).
 # ВАЖНО: env_file передаёт переменные ТОЛЬКО внутрь контейнера; интерполяция
 # ${…} в этом YAML (image/volumes/command) идёт из --env-file — запуск всегда
 # `docker compose --env-file etcd.env up -d`.
@@ -18,7 +18,7 @@ services:
     container_name: ${NODE_NAME}
     restart: unless-stopped
     env_file: etcd.env
-    networks: [etcdw-net]        # общая сеть контура (external, arch/25 §2)
+    networks: [etcdw-net]        # общая сеть контура (external, arch/etcdworker/01-placement.md)
     logging:
       driver: json-file
       options: { max-size: "10m", max-file: "3" }
@@ -44,7 +44,7 @@ services:
       - --heartbeat-interval=250
       - --election-timeout=2000
       - --auto-compaction-retention=1
-      - --quota-backend-bytes=8589934592   # 8 ГБ (arch/04 §3)
+      - --quota-backend-bytes=8589934592   # 8 ГБ (arch/etcdworker/01-placement.md)
 networks:
   etcdw-net:
     external: true

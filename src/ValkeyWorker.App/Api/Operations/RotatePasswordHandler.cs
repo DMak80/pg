@@ -7,7 +7,7 @@ namespace ValkeyWorker.App.Api.Operations;
 // Ответ 202 POST /api/valkey/clusters/{c}/password/rotate (сигнатуры — порт kfw).
 public sealed record ValkeyPasswordRotatedDto(string Cluster, string Role, long RequestedUnix, string RequestedBy);
 
-// Заявка ротации пароля через API воркера (arch/21 §5 E): клэйм-txn
+// Заявка ротации пароля через API воркера (arch/valkeyworker/04-security.md §4 E): клэйм-txn
 // /valkeyworker/rotations/<C> version==0; исполнение — PasswordRotator (окно
 // двух паролей). requested_by — заголовок X-Requested-By, fallback "api".
 public sealed class RotatePasswordHandler(IEtcdGateway gateway, string[] endpoints, TimeProvider time)
@@ -19,7 +19,7 @@ public sealed class RotatePasswordHandler(IEtcdGateway gateway, string[] endpoin
         if (!ValkeyLimits.ClusterPattern().IsMatch(cluster))
             return Result<ValkeyPasswordRotatedDto>.Failed(new ValkeyClusterNotFoundException(cluster));
 
-        // Роль канона (arch/21 §5 E): app | admin.
+        // Роль канона (arch/valkeyworker/04-security.md §4 E): app | admin.
         if (role is not ("app" or "admin"))
             return Result<ValkeyPasswordRotatedDto>.Failed(new ValkeyValidationException(
                 [new ValidationError("role", "role: app|admin")]));
@@ -59,7 +59,7 @@ public sealed class RotatePasswordHandler(IEtcdGateway gateway, string[] endpoin
     }
 }
 
-// Заявка ротации (arch/20 §3): {"role":"app"|"admin","requested_unix","requested_by"}.
+// Заявка ротации (arch/valkey-clusters/03-coordination.md §1): {"role":"app"|"admin","requested_unix","requested_by"}.
 public sealed record RotationTicketJson(
     [property: System.Text.Json.Serialization.JsonPropertyName("role")] string Role,
     [property: System.Text.Json.Serialization.JsonPropertyName("requested_unix")] long RequestedUnix,

@@ -3,7 +3,7 @@ using Xunit;
 
 namespace S3Worker.IntegrationTests.E2e;
 
-// Юнит-факты ретрай-маски старта окружения (docs/e2e-isolation.md §6):
+// Юнит-факты ретрай-маски старта окружения (arch/testing/02-e2e-isolation.md §6):
 // гонка сети И занятость зондируемого хост-порта — в ретрай; прочие причины — нет.
 public class S3RetryMaskTests
 {

@@ -1,6 +1,6 @@
 namespace PgWorker.App.Api.Operations;
 
-// Эффективный конфиг установки (arch/14 §1.1 GET /api/config, u15): read-only,
+// Эффективный конфиг установки (arch/pgworker/07-api.md §1 GET /api/config, u15): read-only,
 // БЕЗ секретов/TLS/endpoints (Etcd/Docker/Api/Metrics-секции и любые креды
 // наружу не выходят никогда); поле source=env — значения применяются
 // рестартом воркера. Панель отдаёт это как есть через on-demand прокси
@@ -39,8 +39,8 @@ public static class PgWorkerEffectiveConfig
         backups = new { enabled = o.Backups.Enabled },
         snapshots = new
         {
-            // Локальные слепки P12 (arch/14 §8); выгрузка в S3 и обслуживание
-            // контура (compact/defrag) — зона EtcdWorker (arch/25 §4), секции
+            // Локальные слепки P12 (arch/pgworker/08-operability.md §5); выгрузка в S3 и обслуживание
+            // контура (compact/defrag) — зона EtcdWorker (arch/etcdworker/04-snapshots.md), секции
             // Export у PgWorker нет.
             dir = o.Snapshots.Dir,
             retentionFiles = o.Snapshots.RetentionFiles,

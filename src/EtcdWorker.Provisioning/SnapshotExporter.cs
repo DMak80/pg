@@ -6,7 +6,7 @@ using Shared.Etcd.Client;
 
 namespace EtcdWorker.Provisioning;
 
-/// <summary>Перенос EtcdSnapshotSink (arch/25 §4): цель — живой резолв
+/// <summary>Перенос EtcdSnapshotSink (arch/etcdworker/04-snapshots.md): цель — живой резолв
 /// etcd-backup кластера, bucket etcd-backups; статус/ретенция/CatchUp/пульс —
 /// механика 1:1. Путь ОДИН, без сравнения с прошлым состоянием — каждый снятый
 /// слепок уезжает новой парой: put etcd/&lt;имя&gt;.db (серверная SHA256-проверка
@@ -30,7 +30,7 @@ public sealed class SnapshotExporter(
     int timeoutSec,
     string instanceId,
     int intervalMin,
-    Action? pulse = null, // пульс активности цикла выгрузки: S3-шаги — «пульс конечного вызова» (arch/14 §6)
+    Action? pulse = null, // пульс активности цикла выгрузки: S3-шаги — «пульс конечного вызова» (arch/pgworker/08-operability.md §3)
     TimeSpan? pulsePeriod = null)
 {
     // Период пульса — полокна проверки watchdog (инъекция от хоста;
@@ -39,7 +39,7 @@ public sealed class SnapshotExporter(
 
     public async Task<Result> ExportAsync(string snapshotFileName, byte[] data, long? revision, CancellationToken ct)
     {
-        // Живой резолв цели (arch/25 §4) и прошлый статус — ОДИН раз на попытку;
+        // Живой резолв цели (arch/etcdworker/04-snapshots.md) и прошлый статус — ОДИН раз на попытку;
         // Failed-резолв → статус FAILED с маркер-текстом ошибки (поля
         // последнего успеха сохраняются).
         var target = await resolver.ResolveAsync(ct);
@@ -199,7 +199,7 @@ public sealed class SnapshotExporter(
             ? Directory.GetFiles(dir, "snapshot-*.db").OrderByDescending(f => f, StringComparer.Ordinal).FirstOrDefault()
             : null;
 
-    /// <summary>S3-вызов с пульсом активности цикла выгрузки (arch/14 §6
+    /// <summary>S3-вызов с пульсом активности цикла выгрузки (arch/pgworker/08-operability.md §3
     /// «пульс конечного внешнего вызова»): пер-попыточный таймаут несёт
     /// S3-клиент, бюджет попытки — linked-CTS ExportAsync; пульс живёт ровно
     /// вокруг вызова. Пульс — канал активности цикла, поэтому Action, а не

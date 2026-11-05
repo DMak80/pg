@@ -9,7 +9,7 @@ using Xunit;
 
 namespace PgWorker.UnitTests.PgNode;
 
-// Инцидентная механика restore/drill в.NET (arch/19 §3.5, spec §3.4,
+// Инцидентная механика restore/drill в.NET (arch/backups/03-restore.md, spec §3.4,
 // Р15 — перенос 1:1): сигналы (standby.signal →
 // recovery.signal), override-строки auto.conf (в т.ч. target_time только при
 // цели; latest — без строки), trust-строка pg_hba, порядок runner-вызовов
@@ -295,7 +295,7 @@ public class RestoreOperationTests
 
     // AAA: операторская отмена в recovery-поллинге (cancel API — внешний канал
     // мимо воркера) — снимок state=cancelled, НЕ failed («операции не было»,
-    // arch/19 §3.5; воркер отличает её от vanished: удаляет запись заявки и
+    // arch/backups/03-restore.md; воркер отличает её от vanished: удаляет запись заявки и
     // сносит volume); чистку сигналов НЕ делаем (контейнер снесёт воркер);
     // терминальный снимок персистентен и не активен — гвард пропускает новую
     // операцию.
@@ -439,7 +439,7 @@ public class RestoreOperationTests
     }
 
     // AAA: транспортный ретрай ограничен ЛИБО лимитом попыток, ЛИБО жёстким
-    // дедлайном вызова (arch/19 §3.5): первый транспортный сбой при запасе
+    // дедлайном вызова (arch/backups/03-restore.md): первый транспортный сбой при запасе
     // лимита и дедлайна — ретрай; последняя попытка — стоп; дедлайн наступил
     // — стоп при неисчерпанном лимите (мёртвая нода не растягивает вызов
     // сверх бюджета, промоут восстановления не уезжает из бюджета операции)
@@ -459,7 +459,7 @@ public class RestoreOperationTests
         // наступил дедлайн вызова: стоп при неисчерпанном лимите попыток
         FetchWalCommand.ShouldRetryTransport(
             1, start, start + FetchWalCommand.CallDeadline.Ticks).Should().BeFalse(
-            "the call deadline stops the call even with attempts left (arch/19 §3.5)");
+            "the call deadline stops the call even with attempts left (arch/backups/03-restore.md)");
     }
 
     // Snapshot читается из операции (реестр — приватный в тесте).

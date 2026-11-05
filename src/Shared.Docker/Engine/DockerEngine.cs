@@ -17,7 +17,7 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
     private const string Api = "/v1.44";
 
     // Общий пустой словарь labels swarm-нод (не null — унифицированный доступ
-    // placement-селекторов, arch/23 §4).
+    // placement-селекторов, arch/s3-clusters/04-placement.md).
     private static readonly IReadOnlyDictionary<string, string> EmptyLabels =
         new Dictionary<string, string>();
 
@@ -74,7 +74,7 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
 
             var networksMap = dto.NetworkSettings?.Networks ?? new Dictionary<string, NetworkDto>();
             var aliases = networksMap.Values.SelectMany(n => n.Aliases ?? []).Distinct().ToArray();
-            //  (arch/14 §2.1): ключи NetworkSettings.Networks — факт сетей
+            //  (arch/pgworker/01-placement.md §1): ключи NetworkSettings.Networks — факт сетей
             // контейнера (ensure-инвариант кластерной сети движков).
             var networks = networksMap.Keys.ToArray();
             // StartedAt (RFC3339) → unix; отсутствие/битая строка → null
@@ -147,7 +147,7 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
             }
         });
 
-    // Останов контейнера — поллинг до exited-факта (arch/14 §6): блокирующий
+    // Останов контейнера — поллинг до exited-факта (arch/pgworker/08-operability.md §3): блокирующий
     // POST /stop?t=N живого контейнера (graceful-shutdown PG/spilo) длится
     // дольше пер-попыточного клиентского таймаута — обрыв НЕ неудача: демон
     // продолжает остановку. Итерации ≤ клиентского таймаута (повторный
@@ -212,7 +212,7 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
         }
     }
 
-    // Жёсткая остановка spilo-нод (arch/14 §6/§5 D E3): SIGKILL — грейса нет,
+    // Жёсткая остановка spilo-нод (arch/pgworker/08-operability.md §3/§5 D E3): SIGKILL — грейса нет,
     // exited-факт немедленный, поллинг не нужен; одиночный запрос ≤ CallTimeout.
     // 404 = контейнера нет; 409 = контейнер не running (уже остановлен) —
     // оба = целевое состояние «не живой» (идемпотентность kill-пути);
@@ -298,7 +298,7 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
         => await EnsureVolumeAsync(name, labelKey: null!, label: null!, ct);
 
     // POST /volumes/create с label-атрибуцией (s3worker=<C> — точный листинг
-    // сирот X2: имена инстансов произвольные, arch/24 §2); 409 «already
+    // сирот X2: имена инстансов произвольные, arch/s3worker/01-placement.md); 409 «already
     // exists» = успех (идемпотентность).
     public async Task<Result> EnsureVolumeAsync(string name, string labelKey, string label, CancellationToken ct)
         => await Result.FromAsync(async () =>
@@ -376,7 +376,7 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
             }
         });
 
-    // POST /networks/<net>/connect (arch/14 §2.1): подключить контейнер к
+    // POST /networks/<net>/connect (arch/pgworker/01-placement.md §1): подключить контейнер к
     // сети; 404 сети/контейнера и 403 «already connected» — наверх (вызывающий
     // держит сеть созданной Ensure'ом, а повторное подключение docker
     // молча принимает как no-op — идемпотентность API).
@@ -538,7 +538,7 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
     }
 
     // Имена + label'ы сервисов по префиксу (архив: label s3worker=<C> — точность
-    // перечисления объектов кластера, arch/24 §2; docker-фильтр name — подстрочный,
+    // перечисления объектов кластера, arch/s3worker/01-placement.md; docker-фильтр name — подстрочный,
     // строгий StartsWith дублируется на клиенте, образец ListServicesAsync).
     public async Task<Result<IReadOnlyList<DockerService>>> ListServiceRecordsAsync(
         string namePrefix, CancellationToken ct)
@@ -966,7 +966,7 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
         if (spec.MemoryBytes is { } memory)
             hostConfig["Memory"] = memory;
 
-        // Джобы бэкапов : tmpfs-квота staging (arch/19 §6) + extra_hosts
+        // Джобы бэкапов : tmpfs-квота staging (arch/backups/09-operability.md) + extra_hosts
         // host.docker.internal:host-gateway (advertised-адресация).
         if (spec.Tmpfs is { Count: > 0 })
             hostConfig["Tmpfs"] = spec.Tmpfs;
@@ -1092,7 +1092,7 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
             };
         }
 
-        // Top-level Labels сервиса (arch/24 §2: перечисление объектов кластера —
+        // Top-level Labels сервиса (arch/s3worker/01-placement.md: перечисление объектов кластера —
         // по префиксу + label; ListServiceRecordsAsync читает Spec.Labels —
         // сервисный уровень; ContainerSpec.Labels остаются для контейнеров тасков).
         var serviceLabels = new Dictionary<string, string>();
@@ -1188,20 +1188,20 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
     }
 
     // Pull образа (POST /images/create) — долгая операция: поллинг-цикл
-    // идемпотентных итераций (arch/14 §6, образец StopContainerAsync).
+    // идемпотентных итераций (arch/pgworker/08-operability.md §3, образец StopContainerAsync).
     // Пер-попыточный клиентский таймаут итерации меньше длительности загрузки —
     // обрыв итерации НЕ неудача: демон продолжает загрузку (завершённые слои
     // кэшированы), следующая итерация повторяет запрос. Бюджет — порог сноса
-    // (30 с, arch/14 §6); факт = 2xx ответа. Не-2xx (образ не найден, registry
+    // (30 с, arch/pgworker/08-operability.md §3); факт = 2xx ответа. Не-2xx (образ не найден, registry
     // недоступен) — DockerHttpException немедленно (путь в сообщении — по нему
     // диагностируется pull-fallback §7.2); бюджет без факта → Failed, путь
     // в тексте.
     internal async Task PullImageAsync(string imageName, CancellationToken ct)
         => await PullImageAsync(imageName, ct, PullBudget);
 
-    // Бюджет pull-цикла — порог сноса (arch/14 §6, единый для долгих фаз):
+    // Бюджет pull-цикла — порог сноса (arch/pgworker/08-operability.md §3, единый для долгих фаз):
     // 4 итерации по пер-попыточному таймауту; исчерпание — transient-фейл
-    // тика (повтор ПРОЦЕССОМ, канон arch/14 §6). Тестовое окно — internal-
+    // тика (повтор ПРОЦЕССОМ, канон arch/pgworker/08-operability.md §3). Тестовое окно — internal-
     // перегрузка (прецедент DockerEngineFactory.Create).
     internal static readonly TimeSpan PullBudget = TimeSpan.FromSeconds(30);
 

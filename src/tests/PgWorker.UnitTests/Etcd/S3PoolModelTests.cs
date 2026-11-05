@@ -3,7 +3,7 @@ using Shared.Etcd.Client;
 
 namespace PgWorker.UnitTests.Etcd;
 
-// Модель пула S3 (arch/23 §2/§8): парсинг endpoints-строки/config/portalloc,
+// Модель пула S3 (arch/s3-clusters/02-keys.md §1/§8): парсинг endpoints-строки/config/portalloc,
 // имена инстансов — из ключей заявки nodes/<I>/state|placement (portalloc —
 // только адреса).
 public class S3PoolModelTests
@@ -25,7 +25,7 @@ public class S3PoolModelTests
     }
 
     // AAA: config с secret_profile (поле игнорируется, не читается) —
-    // Active-пул, ToRemove=false (state отсутствует = Active, arch/23 §2)
+    // Active-пул, ToRemove=false (state отсутствует = Active, arch/s3-clusters/02-keys.md §1)
     [Fact]
     public void ParseConfig_ActiveCluster_HasNoToRemove()
     {
@@ -46,7 +46,7 @@ public class S3PoolModelTests
         cfg!.ToRemove.Should().BeTrue();
     }
 
-    // AAA: валидный secrets-JSON (arch/23 §2.1) — креды элемента
+    // AAA: валидный secrets-JSON (arch/s3-clusters/02-keys.md §2) — креды элемента
     // access_keys с name=="backups"
     [Fact]
     public void ParseSecrets_BackupsKey_ReturnsCredentials()

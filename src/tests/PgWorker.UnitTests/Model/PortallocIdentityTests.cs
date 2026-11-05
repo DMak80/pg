@@ -3,7 +3,7 @@ using Xunit;
 
 namespace PgWorker.UnitTests.Model;
 
-// PortallocIdentity (ревизия 3, arch/14 §2.4): при заданном ключе
+// PortallocIdentity (ревизия 3, arch/pgworker/01-placement.md §5): при заданном ключе
 // PgWorker:Docker:ScrapeNetwork каноническим записям (без object) дописываются
 // alias = pgw-<C>-<X>-<n> и net = имя сети; чистая, идемпотентная функция.
 public class PortallocIdentityTests

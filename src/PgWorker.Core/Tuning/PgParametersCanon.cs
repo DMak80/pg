@@ -1,7 +1,7 @@
 namespace PgWorker.Core.Tuning;
 
 /// <summary>
-/// Единый желаемый набор pg-параметров (arch/14 §2.1/§5 C):
+/// Единый желаемый набор pg-параметров (arch/pgworker/01-placement.md §1/§5 C):
 /// merge(PGTune ∪ канон) — ОДИН источник и для bootstrap (SpiloEnvBuilder,
 /// SPILO_CONFIGURATION), и для конвергенции живого DCS-конфига
 /// (DcsConfigConvergence, PATCH /config). Bootstrap и конвергенция не могут

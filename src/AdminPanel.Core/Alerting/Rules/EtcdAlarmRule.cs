@@ -41,7 +41,7 @@ public sealed class EtcdAlarmRule : IAlertRule
                 null,
                 "active etcd alarm (NOSPACE/CORRUPT etc.): etcd is the single store of declarations (the panel reads it, workers write), an alarm means the storage cluster is unhealthy; the alarm must be disarmed after the cause is resolved",
                 AlertRemedy.OperatorRunbook,
-                "check members/disk of the etcd circuit per arch/09 (etcdctl alarm list; alarm disarm — only after the cause is resolved)");
+                "check members/disk of the etcd circuit per arch/pg-clusters/09-troubleshooting.md (etcdctl alarm list; alarm disarm — only after the cause is resolved)");
         }
     }
 }

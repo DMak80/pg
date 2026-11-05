@@ -2,7 +2,7 @@ using Shared.Etcd.Client;
 
 namespace EtcdWorker.Etcd;
 
-/// <summary>Разбор листов /etcd/nodes/&lt;k&gt;/{state,placed_on} (arch/25 §5):
+/// <summary>Разбор листов /etcd/nodes/&lt;k&gt;/{state,placed_on} (arch/etcdworker/00-etcd-contract.md):
 /// Kv[] префикса → узлы; толерантно (битые номера/чужие листы — игнор,
 /// значения — raw-строки с обрезкой кавычек JSON-строк).</summary>
 public static class EtcdNodesParser

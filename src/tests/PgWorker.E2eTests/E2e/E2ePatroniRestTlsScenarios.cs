@@ -14,7 +14,7 @@ namespace PgWorker.IntegrationTests.E2e;
 // парой), P11 мастер-ключ через https /primary после рестарта мастера, шаг
 // конвергенции легаси-контейнера (без SSL_RESTAPI_*) с сохранением volume.
 // Изолированное окружение E2eEnvironment — guid во всех именах, полный
-// teardown при любом исходе, ассерт чистоты (docs/e2e-isolation.md).
+// teardown при любом исходе, ассерт чистоты (arch/testing/02-e2e-isolation.md).
 [Collection("e2e-serial")]
 public sealed class E2ePatroniRestTlsScenarios(E2ePatroniRestTlsScenariosFx Ctx) : IClassFixture<E2ePatroniRestTlsScenariosFx>
 {
@@ -59,7 +59,7 @@ public sealed class E2ePatroniRestTlsScenarios(E2ePatroniRestTlsScenariosFx Ctx)
                 var addresses = await PortallocAsync(cluster);
                 addresses.Should().ContainKey("shard1/shard1a");
                 // Публикация REST ноды на хост: localhost:{динамический порт}
-                // (docs/e2e-isolation.md §2; hostname серта не сверяется — цепочка).
+                // (arch/testing/02-e2e-isolation.md §2; hostname серта не сверяется — цепочка).
                 var addr1a = addresses["shard1/shard1a"];
 
                 // (а) http-only отказ: голый HTTP на TLS-порт не отвечает 200
@@ -218,7 +218,7 @@ public sealed class E2ePatroniRestTlsScenarios(E2ePatroniRestTlsScenariosFx Ctx)
         }
         catch
         {
-            // docs/e2e-launch.md §3: упавший сценарий — окружение остановить,
+            // arch/testing/01-e2e-launch.md §3: упавший сценарий — окружение остановить,
             // не удалить (телеметрия в артефактах + живые объекты для разбора).
             Fx.MarkFailed();
             throw;
@@ -359,7 +359,7 @@ public sealed class E2ePatroniRestTlsScenarios(E2ePatroniRestTlsScenariosFx Ctx)
 }
 
 /// <summary>Компаньон-фикстура окружения класса (полный контур на класс:
-/// сеть/etcd/CA/окно портов; docs/e2e-isolation.md §1).</summary>
+/// сеть/etcd/CA/окно портов; arch/testing/02-e2e-isolation.md §1).</summary>
 public sealed class E2ePatroniRestTlsScenariosFx : E2eContourFixture
 {
     protected override string Slug => "rest-tls";

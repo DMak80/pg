@@ -5,7 +5,7 @@ using Shared.Core;
 
 namespace PgWorker.UnitTests.Backups;
 
-// BackupPoolResolver (arch/19 §4): policy.s3 + пул (Secrets) →
+// BackupPoolResolver (arch/backups/05-etcd-contract.md): policy.s3 + пул (Secrets) →
 // контекст списков; null — «пул не выбран», Failed — transient-диагностика.
 public class BackupPoolResolverTests
 {

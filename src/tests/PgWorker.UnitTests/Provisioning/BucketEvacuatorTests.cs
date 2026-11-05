@@ -12,7 +12,7 @@ using PgWorker.Provisioning.Probes;
 
 namespace PgWorker.UnitTests.Provisioning;
 
-// BucketEvacuator E0–E4 + SnapshotJob (задача 22; arch/14 §5 D/E, P12):
+// BucketEvacuator E0–E4 + SnapshotJob (задача 22; arch/pgworker/processes/d-bucket-evacuator.md D/E, P12):
 // journal-before-manipulations, txn-flip routing, карантин вернувшегося
 // шарда (stop без rm — данные целы), снапшеты до/после, ретеншн файлов.
 public class BucketEvacuatorTests
@@ -208,7 +208,7 @@ public class BucketEvacuatorTests
     public async Task Tick_MovingBucketInProgress_EvacuationBlocked()
     {
         // Arrange — у кластера бакет в статусе SYNCING (незавершённый переезд):
-        // guard блокирует эвакуацию (arch/14 §5 D), alert — в work-журнале
+        // guard блокирует эвакуацию (arch/pgworker/processes/d-bucket-evacuator.md D), alert — в work-журнале
         var rig = await NewRig(port => port >= 18002 ? PatroniOk() : Down());
         rig.Etcd.Seed("/clusters/shop/buckets/status/bucket_1", """{"state":"SYNCING"}""");
 
@@ -246,7 +246,7 @@ public class BucketEvacuatorTests
         evacuation.Value.ReturnedUnix.Should().NotBeNull();
     }
 
-    // AAA (P7, arch/14 §5 D/E3): факт возврата (QUARANTINED + returned_unix)
+    // AAA (P7, arch/pgworker/processes/d-bucket-evacuator.md D/E3): факт возврата (QUARANTINED + returned_unix)
     //      фиксируется в журнале ДО docker-стопов; сбой стопа НЕ отменяет
     //      возврат: тик Failed, журнал уже QUARANTINED; повторный тик дозавершает
     [Fact]

@@ -4,8 +4,8 @@ using KafkaWorker.Core.Templates;
 
 namespace KafkaWorker.UnitTests.Templates;
 
-// Тесты генератора env брокера (arch/16 §2.2): детерминированный набор KAFKA_*
-// из заявки + ролей KRaft + кредов; advertised CLIENT — по правилу arch/16 §2.1
+// Тесты генератора env брокера (arch/kafkaworker/01-placement.md §2): детерминированный набор KAFKA_*
+// из заявки + ролей KRaft + кредов; advertised CLIENT — по правилу arch/kafkaworker/01-placement.md §1
 // (AdvertisedClient передан вычисленным: AdvertisedClientHost ?? docker-хост).
 
 public class NodeEnvBuilderTests
@@ -90,7 +90,7 @@ public class NodeEnvBuilderTests
     [Fact]
     public void Build_AdvertisedListeners_ClientFromSpec_InternalDnsName()
     {
-        // Arrange: advertised CLIENT уже вычислен по правилу arch/16 §2.1.
+        // Arrange: advertised CLIENT уже вычислен по правилу arch/kafkaworker/01-placement.md §1.
         var spec = Spec(advertisedClient: "host.docker.internal:16002", nodeName: "broker2", nodeId: 2);
 
         // Act: генерация env.
@@ -103,7 +103,7 @@ public class NodeEnvBuilderTests
     [Fact]
     public void Build_Jaas_SingleAndDualUsers()
     {
-        // Arrange: обычный режим — один кред; окно ротации — два (arch/16 §5 H).
+        // Arrange: обычный режим — один кред; окно ротации — два (arch/kafkaworker/04-security.md §4 H).
         var single = Spec(passwords: ["OldPassword0123456789AbCdEf01"]);
         var dual = Spec(passwords: ["OldPassword0123456789AbCdEf01", "NewPassword0123456789AbCdEf0"]);
 

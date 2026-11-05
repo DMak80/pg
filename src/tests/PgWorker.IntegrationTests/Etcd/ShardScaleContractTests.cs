@@ -17,7 +17,7 @@ public class ShardScaleContractTests(EtcdFixture fixture)
 
     private string Endpoint => fixture.Endpoint;
 
-    // Per-class guid-тег (канон docs/e2e-isolation.md §1: guid во всех именах):
+    // Per-class guid-тег (канон arch/testing/02-e2e-isolation.md §1: guid во всех именах):
     // имена кластеров несут уникальный суффикс — пересечение с соседними классами
     // не-E2E-коллекции (NonE2eCollection) механически невозможно (инцидент :
     // BackupSupervisor взял имена sc1..sc3, клэйм sc3 жил 15с по TTL и ронял

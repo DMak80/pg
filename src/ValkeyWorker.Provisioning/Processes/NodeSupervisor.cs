@@ -12,7 +12,7 @@ using ValkeyWorker.Docker.Drivers;
 namespace ValkeyWorker.Provisioning.Processes;
 
 /// <summary>
-/// Надзор (arch/21 §5 C): сверка декларации с docker-фактом + PING-проба
+/// Надзор (arch/valkeyworker/02-cluster-lifecycle.md §4 C): сверка декларации с docker-фактом + PING-проба
 /// admin-кредом. Снесённый контейнер (положительное свидетельство) и
 /// расхождение лимитов (автоконверге) → пересоздание, state=PROVISIONING;
 /// молчание дольше NodeDeadSec → UNREACHABLE + пересоздание (трек first_seen
@@ -78,7 +78,7 @@ public sealed class NodeSupervisor(
 
             // Ноды демонтажа — не трогаем никогда. PROVISIONING чужих процессов
             // (provisioning A) не пересоздаётся и лимитами не сверяется, но
-            // надзор переводит её в RUNNING по зрячей пробе (arch/21 §5 C).
+            // надзор переводит её в RUNNING по зрячей пробе (arch/valkeyworker/02-cluster-lifecycle.md §4 C).
             var isRemoving = stateValue is "TO_REMOVE" or "REMOVING";
             var isForeignProvisioning = stateValue == "PROVISIONING";
             if (isRemoving)
@@ -136,7 +136,7 @@ public sealed class NodeSupervisor(
                 }
             }
 
-            // Сверка env живой ноды (env-TLS, arch/21 §5 C): env отсутствует
+            // Сверка env живой ноды (env-TLS, arch/valkeyworker/02-cluster-lifecycle.md §4 C): env отсутствует
             // или невалиден против ca_pem → пересоздание с env + cmd-обёрткой
             // (дисциплина «одно пересоздание за тик», journal-warning).
             // Непроверяемая нода (foreign PROVISIONING) сбрасывает флаг
@@ -230,7 +230,7 @@ public sealed class NodeSupervisor(
         if (!converge.IsSuccess)
             return converge;
 
-        // Легаси-чистка (env-TLS миграция живых кластеров, arch/21 §5 C):
+        // Легаси-чистка (env-TLS миграция живых кластеров, arch/valkeyworker/02-cluster-lifecycle.md §4 C):
         // все ноды на env-модели — удалить осиротевший том vwk-<C>-tls старой
         // volume-модели. 404 = успех; 409 volume-in-use НЕ фейлит тик и НЕ
         // пишется в warnings — безусловный ретрай следующим тиком (вызов

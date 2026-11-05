@@ -7,7 +7,7 @@ namespace AdminPanel.Core.Alerting.Rules;
 // backup-full-stale (critical): возраст последнего COMPLETED полного
 // шарда > full_max_age_sec политики кластера (нет policy — панельный дефолт);
 // COMPLETED нет вовсе — «полного никогда не было»; пустой префикс кластера
-// (подсистема не включена) — молчим (arch/19 §4). Воркер алерты не пишет.
+// (подсистема не включена) — молчим (arch/backups/05-etcd-contract.md). Воркер алерты не пишет.
 [InjectAsSingleton(typeof(IAlertRule))]
 public sealed class BackupFullStaleRule(IOptions<AlertsOptions> options) : IAlertRule
 {

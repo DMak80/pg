@@ -10,19 +10,19 @@ public sealed record S3Snapshot(
     bool EtcdReachable,
     int ConsecutiveFailures,
     IReadOnlyList<S3ClusterInfo> Clusters,           // /s3/clusters/
-    IReadOnlyList<S3RotationTicket> Rotations,       // /s3worker/rotations/ (arch/23 §8)
+    IReadOnlyList<S3RotationTicket> Rotations,       // /s3worker/rotations/ (arch/s3-clusters/08-coordination.md)
     IReadOnlyList<WorkerEndpoint> WorkerEndpoints,   // живые ключи /s3worker/api/ (arch/02 §2.3.4)
     IReadOnlyList<WorkerHealth> WorkerHealth,        // опрос /healthz живых инстансов
     IReadOnlyList<Alert> Alerts,                     // S3AlertEngine (arch/03 §12.4)
-    IReadOnlyList<KeyParseError> ParseErrors,        // битые JSON s3-ключей (arch/23 §2)
+    IReadOnlyList<KeyParseError> ParseErrors,        // битые JSON s3-ключей (arch/s3-clusters/02-keys.md §1)
     int UnknownKeyCount,
     WorkerApiCert? WorkerApiCert = null,            // целевой серт /workers/api_tls/s3worker (arch/02 §9.9)
-    IReadOnlyList<WorkJournalInfo>? WorkJournals = null, // /s3worker/work/ (u13, arch/23 §8)
+    IReadOnlyList<WorkJournalInfo>? WorkJournals = null, // /s3worker/work/ (u13, arch/s3-clusters/08-coordination.md)
     WorkerCoordination? Coordination = null);  // leader/claims/instances (u14, adminpanel/02 §2.3.4)
 
-// Кластер /s3/clusters/<C>/ (arch/23 §2): config + ноды + граф + факты;
+// Кластер /s3/clusters/<C>/ (arch/s3-clusters/02-keys.md §1): config + ноды + граф + факты;
 // креды кластера — per-cluster secrets-ключ etcd (/s3/clusters/<C>/secrets,
-// arch/23 §6; поле Secrets — состав без значений наружу).
+// arch/s3-clusters/06-secrets.md; поле Secrets — состав без значений наружу).
 public sealed record S3ClusterInfo(
     string Name,
     S3ClusterState State,                    // config.state; отсутствие = Active
@@ -34,12 +34,12 @@ public sealed record S3ClusterInfo(
     IReadOnlyList<S3NodeInfo> NodesList,
     IReadOnlyList<S3ReplicationLink> Links,  // граф репликации
     IReadOnlyList<string> DenyList,          // отозванные инстансы
-    S3ConnectivityInfo? Connectivity = null, // зонд (arch/23 §3)
+    S3ConnectivityInfo? Connectivity = null, // зонд (arch/s3-clusters/03-observation-statuses.md)
     S3SyncInfo? Sync = null,                 // зонд
     S3RotationTicket? Rotation = null,       // живая заявка ротации (джойн по кластеру)
-    S3ClusterSecretsInfo? Secrets = null);   // креды /secrets — только S3-клиенту панели (arch/23 §6)
+    S3ClusterSecretsInfo? Secrets = null);   // креды /secrets — только S3-клиенту панели (arch/s3-clusters/06-secrets.md)
 
-// Креды кластера /s3/clusters/<C>/secrets (arch/23 §6): значения — ТОЛЬКО
+// Креды кластера /s3/clusters/<C>/secrets (arch/s3-clusters/06-secrets.md): значения — ТОЛЬКО
 // внутреннему S3-клиенту панели (грань «Хранилище бэкапов»); в API/UI
 // отдаются исключительно root_user и имена/политики ключей (AC8).
 public sealed record S3ClusterSecretsInfo(
@@ -55,11 +55,11 @@ public sealed record S3NodeInfo(
     string Name,
     string? State,
     string? PlacedOn,                        // фактический docker-хост (резолвция placement)
-    S3NodePlacement? Placement,              // селектор arch/23 §4
+    S3NodePlacement? Placement,              // селектор arch/s3-clusters/04-placement.md
     S3NodeResources? Resources,              // cpu/mem/disk декларации
     S3NodeUsage? Usage);                     // занятость диска (надзор C)
 
-// Селектор размещения: конъюнкция указанных атрибутов (arch/23 §4).
+// Селектор размещения: конъюнкция указанных атрибутов (arch/s3-clusters/04-placement.md).
 public sealed record S3NodePlacement(
     string? DockerHost,
     string? SwarmNode,
@@ -68,13 +68,13 @@ public sealed record S3NodePlacement(
 // Декларация ресурсов: cpu — decimal; mem/disk — GiB (etcd хранит "<n>Gi").
 public sealed record S3NodeResources(decimal? Cpu, int? MemGi, int? DiskGi);
 
-// Занятость диска nodes/<I>/usage (arch/23 §2).
+// Занятость диска nodes/<I>/usage (arch/s3-clusters/02-keys.md §1).
 public sealed record S3NodeUsage(long UsedBytes, long TotalBytes, long UpdatedUnix);
 
-// Связь графа репликации links (arch/23 §2).
+// Связь графа репликации links (arch/s3-clusters/02-keys.md §1).
 public sealed record S3ReplicationLink(string A, string B);
 
-// Связность connectivity (arch/23 §3): state — raw-строка OK|DEGRADED|DOWN;
+// Связность connectivity (arch/s3-clusters/03-observation-statuses.md): state — raw-строка OK|DEGRADED|DOWN;
 // Links — матрица «нода → сосед → ok|offline» по настроенным линкам.
 public sealed record S3ConnectivityInfo(
     string? State,
@@ -82,7 +82,7 @@ public sealed record S3ConnectivityInfo(
     IReadOnlyDictionary<string, IReadOnlyDictionary<string, string>> Links,
     string? ProbeError);
 
-// Синхронность sync (arch/23 §3): state — raw-строка SYNCED|LAGGING|DIVERGED.
+// Синхронность sync (arch/s3-clusters/03-observation-statuses.md): state — raw-строка SYNCED|LAGGING|DIVERGED.
 public sealed record S3SyncInfo(
     string? State,
     long? CheckedUnix,
@@ -93,7 +93,7 @@ public sealed record S3SyncInfo(
 public sealed record S3SyncPair(
     string From, string To, long Missing, long Extra, long? LagBytes, long? LagObjects);
 
-// Заявка ротации /s3worker/rotations/<C> (arch/23 §8).
+// Заявка ротации /s3worker/rotations/<C> (arch/s3-clusters/08-coordination.md).
 public sealed record S3RotationTicket(string Cluster, long RequestedUnix, string? RequestedBy);
 
 // Состояние кластера: config.state; отсутствие = Active.

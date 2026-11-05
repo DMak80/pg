@@ -47,7 +47,7 @@ public class DeprovisioningTests(ValkeyClusterFixture fx)
         }
 
         // work/<C> пуст ПОСЛЕ чистки (финальной journal-записи нет: «done»
-        // воскресил бы удалённый ключ — arch/21 §5 B, образец kfw).
+        // воскресил бы удалённый ключ — arch/valkeyworker/02-cluster-lifecycle.md §3 B, образец kfw).
         (await fx.GetAsync($"/valkeyworker/work/{cluster}")).Should().BeNull("coordination <C> is clean");
     }
 }

@@ -6,7 +6,7 @@ using Renci.SshNet;
 
 namespace Shared.Docker;
 
-// SSH-туннель к Engine API (arch/14 §2.2.1, О3): одна SshClient-сессия
+// SSH-туннель к Engine API (arch/pgworker/01-placement.md §4, О3): одна SshClient-сессия
 // (key-аутентификация, fingerprint-pin/TOFU) + ForwardedPortLocal
 // ("127.0.0.1":0 → RemoteDaemonHost:RemoteDaemonPort); фактический bound-порт
 // отдаётся фабрике — Engine-клиент ходит на него как на обычный tcp:// (+TLS
@@ -38,7 +38,7 @@ public sealed class SshHostConnection : IAsyncDisposable
         _logger = logger ?? NullLogger.Instance;
         var keyPem = ReadKeyMaterial(options)
             ?? throw new ApplicationException(
-                $"PgWorker:Docker:Ssh: key not set (env PGW_DOCKER_SSH_KEY[_PATH]) for {_endpoint}, arch/14 §2.2.1");
+                $"PgWorker:Docker:Ssh: key not set (env PGW_DOCKER_SSH_KEY[_PATH]) for {_endpoint}, arch/pgworker/01-placement.md §4");
         _fingerprint = options.FingerprintSha256;
         var keyFile = new PrivateKeyFile(new MemoryStream(Encoding.UTF8.GetBytes(keyPem)));
         var user = scheme.User ?? "root"; // дефолт docker-хостов: операторские демоны

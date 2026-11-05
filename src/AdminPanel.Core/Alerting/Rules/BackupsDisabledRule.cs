@@ -5,7 +5,7 @@ namespace AdminPanel.Core.Alerting.Rules;
 
 // backups-disabled (warning, u10): ключ /pgworker/backups-disabled жив —
 // глобальный стоп бэкапов установки (приёмники всех кластеров замирают,
-// arch/19 §4). Remedy OperatorRunbook: запуск — снять ключ (Backups:Enabled=true
+// arch/backups/05-etcd-contract.md). Remedy OperatorRunbook: запуск — снять ключ (Backups:Enabled=true
 // снимает его самим воркером) или включить подсистему; алерт гаснет первым
 // тиком после исчезновения ключа ( панель — толерантный читатель: битый JSON —
 // parseError-запись и алерта нет).

@@ -128,7 +128,7 @@ public sealed class ValkeyAlertEngine(IOptions<ValkeyAlertsOptions> options) : I
                     ["requestedUnix"] = rotation.RequestedUnix.ToString(),
                 },
                 null,
-                "the rotation request is alive (key /valkeyworker/rotations/<C>): the worker is executing the two-password window E1–E3 and will remove the key; there is no cancel from the panel (arch/20 §3)",
+                "the rotation request is alive (key /valkeyworker/rotations/<C>): the worker is executing the two-password window E1–E3 and will remove the key; there is no cancel from the panel (arch/valkey-clusters/03-coordination.md §1)",
                 AlertRemedy.WorkerAuto,
                 "the rotation is executed by the worker, the key will disappear; if it hangs, the worker is stuck — check the journal");
 
@@ -172,7 +172,7 @@ public sealed class ValkeyAlertEngine(IOptions<ValkeyAlertsOptions> options) : I
                 AlertRemedy.OperatorRunbook,
                 "fix the cause of the waiting phase (waiting-cluster — bring the cluster up, migration T will complete it) and re-submit the request; a successful rotation will overwrite the outcome with done and the alert will clear");
 
-        // valkey-key-malformed (warning): parseError-записи (arch/20 §5).
+        // valkey-key-malformed (warning): parseError-записи (arch/valkey-clusters/05-fault-tolerance.md).
         foreach (var error in next.ParseErrors)
             yield return new Alert(
                 $"valkey-key-malformed:{error.Key}",
@@ -182,9 +182,9 @@ public sealed class ValkeyAlertEngine(IOptions<ValkeyAlertsOptions> options) : I
                 $"valkey key failed to parse: {error.Key}",
                 new Dictionary<string, string> { ["reason"] = error.Reason },
                 null,
-                "the panel parser failed to parse the valkey key: a malformed value does not reach the model — the UI is blind to the key; the value format of the valkey domain is canonical per arch/20",
+                "the panel parser failed to parse the valkey key: a malformed value does not reach the model — the UI is blind to the key; the value format of the valkey domain is canonical per arch/valkey-clusters/README.md",
                 AlertRemedy.OperatorRunbook,
-                "fix the source of the malformed entry (external writer) and bring the value to the arch/20 canon; the next tick will parse the key");
+                "fix the source of the malformed entry (external writer) and bring the value to the arch/valkey-clusters/README.md canon; the next tick will parse the key");
     }
 
     // Stale-алерт ротационной заявки : warning с возрастом и остатком до
@@ -224,7 +224,7 @@ public sealed class ValkeyAlertEngine(IOptions<ValkeyAlertsOptions> options) : I
                 "the worker will append endpoints after provisioning; if it hangs, the node is unreachable for the worker — check the vwk-<C>-node1 container");
 
         // valkey-security-missing (critical): Active-кластер без ca_pem —
-        // миграция TLS не доиграна либо ключ потерян (arch/20 §5).
+        // миграция TLS не доиграна либо ключ потерян (arch/valkey-clusters/05-fault-tolerance.md).
         if (!cluster.HasCaPem)
             yield return new Alert(
                 $"valkey-security-missing:{cluster.Name}",
@@ -233,7 +233,7 @@ public sealed class ValkeyAlertEngine(IOptions<ValkeyAlertsOptions> options) : I
                 cluster.Name,
                 $"cluster {cluster.Name}: Active without ca_pem — TLS canon is violated",
                 null, null,
-                "Active cluster without ca_pem: the TLS migration (worker migrate-tls) has not completed or the key is lost; client connections without the TLS canon — risk R5 arch/21",
+                "Active cluster without ca_pem: the TLS migration (worker migrate-tls) has not completed or the key is lost; client connections without the TLS canon — risk R5 arch/valkeyworker/README.md",
                 AlertRemedy.OperatorRunbook,
                 "wait for the worker to complete the migration (journal work/<C>, op=migrate-tls); if it hangs, check the worker and the /valkey/clusters/<C>/ca_pem key in etcd");
 

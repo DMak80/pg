@@ -5,7 +5,7 @@ using PgWorker.Etcd.Parsing;
 
 namespace PgWorker.UnitTests.Backups;
 
-// Сериализация статуса полного в JSON канона (arch/19 §4): воркер —
+// Сериализация статуса полного в JSON канона (arch/backups/05-etcd-contract.md): воркер —
 // единственный писатель; round-trip через BackupsParser.
 public class BackupStatusJsonTests
 {
@@ -94,7 +94,7 @@ public class BackupStatusJsonTests
         json.Should().Contain("\"state\":\"COMPLETED\"").And.Contain("\"role\":\"master\"");
     }
 
-    // AAA: FAILED-verify сериализуется с error и checked_unix (канон arch/19 §4)
+    // AAA: FAILED-verify сериализуется с error и checked_unix (канон arch/backups/05-etcd-contract.md)
     [Fact]
     public void Serialize_VerifyFailed_ErrorAndCheckedUnix()
     {

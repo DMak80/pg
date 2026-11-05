@@ -1,5 +1,5 @@
 
-# Образ SdGenerator (t15, arch/18 §5.4): dotnet publish НА ХОСТЕ (инкрементально,
+# Образ SdGenerator (t15, arch/metrics/05-storage.md §4): dotnet publish НА ХОСТЕ (инкрементально,
 # секунды), в контейнер — ТОЛЬКО publish-вывод (runtime-слой, без sdk/исходников).
 # Контекст сборки — каталог артефактов (узкий; канон AGENTS.md):
 #   dotnet publish src/Metrics.SdGenerator/Metrics.SdGenerator.csproj \

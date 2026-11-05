@@ -5,14 +5,14 @@ using Xunit;
 
 namespace S3Worker.UnitTests.Provisioning;
 
-// Общие хелперы процессов: ключи etcd точны (arch/23 §8), ресурсы/roundtrip
+// Общие хелперы процессов: ключи etcd точны (arch/s3-clusters/08-coordination.md), ресурсы/roundtrip
 // portalloc по канону.
 public class S3ProcessCommonTests
 {
     [Fact]
     public void KeysPathsExact()
     {
-        // Arrange + Act + Assert: пути arch/23 §8 один в один.
+        // Arrange + Act + Assert: пути arch/s3-clusters/08-coordination.md один в один.
         S3ProcessCommon.ConfigKey("c").Should().Be("/s3/clusters/c/config");
         S3ProcessCommon.EndpointsKey("c").Should().Be("/s3/clusters/c/endpoints");
         S3ProcessCommon.NodeStateKey("c", "node2").Should().Be("/s3/clusters/c/nodes/node2/state");
@@ -54,7 +54,7 @@ public class S3ProcessCommonTests
         var nullParsed = S3ProcessCommon.ParseResources(null);
 
         // Assert: cpu decimal, mem → bytes; мусор → null-лимиты (толерантность);
-        // disk не парсится (декларация, arch/23 §2).
+        // disk не парсится (декларация, arch/s3-clusters/02-keys.md §1).
         parsed.Should().NotBeNull();
         parsed!.Value.Cpu.Should().Be(2m);
         parsed.Value.MemBytes.Should().Be(4L * 1024 * 1024 * 1024);
@@ -81,7 +81,7 @@ public class S3ProcessCommonTests
     [Fact]
     public void PortAlloc_RoundtripCanonicalFormat()
     {
-        // Arrange: формат arch/23 §8 {"node<k>":{"host":"h","s3":18001}}.
+        // Arrange: формат arch/s3-clusters/08-coordination.md {"node<k>":{"host":"h","s3":18001}}.
         var alloc = new Dictionary<string, NodeAddress>
         {
             ["node1"] = new("h1", 18001),
@@ -112,12 +112,12 @@ public class S3ProcessCommonTests
         noPort.Should().Be(("h1", 9000));
     }
 
-    // ============ зонды : ключи/сериализаторы/парсеры (arch/23 §3/§8) ============
+    // ============ зонды : ключи/сериализаторы/парсеры (arch/s3-clusters/03-observation-statuses.md/§8) ============
 
     [Fact]
     public void ProbeKeysExact()
     {
-        // Arrange + Act + Assert: пути arch/23 §3/§8 один в один.
+        // Arrange + Act + Assert: пути arch/s3-clusters/03-observation-statuses.md/§8 один в один.
         S3ProcessCommon.ConnectivityKey("c").Should().Be("/s3/clusters/c/connectivity");
         S3ProcessCommon.SyncKey("c").Should().Be("/s3/clusters/c/sync");
         S3ProcessCommon.ProbeRequestKey("c").Should().Be("/s3worker/probes/c");

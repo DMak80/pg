@@ -7,7 +7,7 @@ using KafkaWorker.Provisioning.Processes;
 
 namespace KafkaWorker.UnitTests.Provisioning;
 
-// RemoveBrokerProcess (arch/16 §5 G): guards (controller/последний/партиции),
+// RemoveBrokerProcess (arch/kafkaworker/03-broker-scaling.md §2 G): guards (controller/последний/партиции),
 // демонтаж контейнера+тома, очистка ключей brokers/<b>/, RMW endpoints,
 // portalloc-фильтрация, идемпотентность повтора.
 

@@ -11,7 +11,7 @@ using KafkaWorker.Provisioning.Kafka;
 namespace KafkaWorker.Provisioning.Processes;
 
 /// <summary>
-/// SecurityMigrator (arch/16 §5 M): converge-миграция премиграционного
+/// SecurityMigrator (arch/kafkaworker/06-rebalancing.md §3 M): converge-миграция премиграционного
 /// кластера (SASL_PLAINTEXT) в канон (SASL_SSL + authorizer). Детект —
 /// чистая функция NeedsMigration (etcd-поля CA/admin отсутствуют ИЛИ env
 /// живого контейнера без KAFKA_SSL_TRUSTSTORE_TYPE). Фазы: M0 guard'ы НАЧАТЫХ
@@ -55,7 +55,7 @@ public sealed class SecurityMigrator(
     }
 
     /// <summary>
-    /// Чистый детект премиграционного кластера (arch/16 §5 M): CA/admin-ключи
+    /// Чистый детект премиграционного кластера (arch/kafkaworker/06-rebalancing.md §3 M): CA/admin-ключи
     /// в etcd отсутствуют ИЛИ любой живой контейнер без KAFKA_SSL_TRUSTSTORE_TYPE.
     /// </summary>
     public static bool NeedsMigration(
@@ -77,7 +77,7 @@ public sealed class SecurityMigrator(
     {
         var cluster = snap.Cluster;
 
-        // Мутации — только держателем живого клэйма (arch/16 §5).
+        // Мутации — только держателем живого клэйма (arch/kafkaworker/README.md).
         if (!claims.IsMine(cluster))
             return Result<MigrationOutcome>.Failed(new ApplicationException(
                 $"migrate-security {cluster}: claim is not ours (or lost) — mutations are forbidden"));
@@ -141,7 +141,7 @@ public sealed class SecurityMigrator(
             return Result<MigrationOutcome>.Success(MigrationOutcome.InProgress);
 
         // M2: пересоздание ВСЕХ живых брокеров разом (не rolling: смешанные
-        // inter-broker протоколы роняют ISR ниже minISR, arch/16 §5 M). Env —
+        // inter-broker протоколы роняют ISR ниже minISR, arch/kafkaworker/06-rebalancing.md §3 M). Env —
         // нового канона (BrokerEnvBuilder guard защищает от премиграционного
         // снапшота); тома сохраняются, адреса — portalloc.
         foreach (var broker in brokers)

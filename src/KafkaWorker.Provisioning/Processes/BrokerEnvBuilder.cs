@@ -8,8 +8,8 @@ namespace KafkaWorker.Provisioning.Processes;
 /// <summary>
 /// Сборка env брокера для процессов B-волны (add-broker, ротация, надзор):
 /// кворум — ТОЛЬКО из существующих controller-нод (роль фиксируется при
-/// создании, arch/15 §2), advertised — по правилу arch/16 §2.1; креды
-/// admin/app и per-cluster PKI — из снапшота + кеша сертов (arch/16
+/// создании, arch/kafka-clusters/02-keys.md §1), advertised — по правилу arch/kafkaworker/01-placement.md §1; креды
+/// admin/app и per-cluster PKI — из снапшота + кеша сертов (arch/kafkaworker/README.md
 /// §2.2/§2.3). Дублирование с ProvisioningProcess осознанное (прецедент
 /// надзора).
 /// </summary>
@@ -26,7 +26,7 @@ internal static class BrokerEnvBuilder
         => $"{options.AdvertisedClientHost ?? addr.Host}:{addr.ClientPort}";
 
     // Кворум "id@broker<k>:9093" по controller-ролям декларации (не меняется
-    // при добавлении broker-only нод — arch/16 §5 F).
+    // при добавлении broker-only нод — arch/kafkaworker/03-broker-scaling.md §1 F).
     internal static IReadOnlyList<string> QuorumVoters(KafkaClusterSnapshot snap)
         => snap.Brokers
             .Where(b => b.Role == "controller")
@@ -36,7 +36,7 @@ internal static class BrokerEnvBuilder
 
     // Env одного брокера: guard премиграционного кластера (нет CA/admin-ключей —
     // сначала M), креды (1 пароль штатно, 2 — окно ротации), серт ноды — один
-    // раз на (кластер, нода, CA) через кеш R3. Окно ротации CA (arch/16
+    // раз на (кластер, нода, CA) через кеш R3. Окно ротации CA (arch/kafkaworker/README.md
     // §2.3): подпись серта — NEW CA (signingCa*), truststore — bundle OLD+NEW
     // (trustCaPem); вне ротации все три параметра null → snap-значения.
     internal static IReadOnlyDictionary<string, string> Build(

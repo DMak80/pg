@@ -5,7 +5,7 @@ using Shared.Tls;
 
 namespace Shared.Docker;
 
-// Фабрика движков (arch/14 §2.2/§2.2.1): endpoint "unix:///var/run/docker.sock"
+// Фабрика движков (arch/pgworker/01-placement.md §3.1/§2.2.1): endpoint "unix:///var/run/docker.sock"
 // | "tcp://host[:2375]" (+TLS при заданном DockerTlsOptions) | "ssh://[user@]host[:22]"
 // (туннель — SshTunnelOptions). API-версия закреплена v1.44 (docker >= 23).
 // Общая фабрика трёх воркеров : SSH/TLS — опции, доступные всем доменам
@@ -72,20 +72,20 @@ public class DockerEngineFactory : IAsyncDisposable
         else if (scheme.Scheme == EndpointScheme.Tcp)
         {
             // R15: plaintext tcp — только dev/тесты/локальные стенды; канон прода —
-            // 2376+mTLS или ssh (arch/14 §2.2.1).
+            // 2376+mTLS или ssh (arch/pgworker/01-placement.md §4).
             _logger?.LogWarning(
-                "Engine API {Endpoint} without TLS (plaintext tcp; production canon is tcp://:2376 mTLS or ssh://, arch/14 §2.2.1)",
+                "Engine API {Endpoint} without TLS (plaintext tcp; production canon is tcp://:2376 mTLS or ssh://, arch/pgworker/01-placement.md §4)",
                 endpoint);
         }
 
         return sockets;
     }
 
-    // Поллинг-инвариант (arch/14 §6): одиночный docker-вызов не молчит дольше
+    // Поллинг-инвариант (arch/pgworker/08-operability.md §3): одиночный docker-вызов не молчит дольше
     // окна проверки watchdog — пер-попыточный таймаут = половина окна (7.5 с при
     // дефолтах), симметрия etcd/patroni (AddHttpClient воркеров). Зависший вызов →
     // исключение → transient-фейл тика, а не молчание до дефолтных 100 с HttpClient.
-    // Гарантия для глобального portalloc-лока (arch/15 §4: без keepalive, секция
+    // Гарантия для глобального portalloc-лока (arch/kafka-clusters/04-coordination.md §1: без keepalive, секция
     // ≪ TTL 15 с): любой одиночный docker-чтение секции довыделения умирает
     // таймаутом задолго до истечения lease.
     internal static readonly TimeSpan CallTimeout = TimeSpan.FromSeconds(7.5);
@@ -166,7 +166,7 @@ internal sealed class DockerTlsMaterial
         if (caPem is null || certPem is null || keyPem is null)
             throw new ApplicationException(
                 "PgWorker:Docker:Tls: partial TLS configuration — CA+CERT+KEY are required "
-                + "(env PGW_DOCKER_TLS_{CA,CERT,KEY}[_PATH], arch/14 §2.2.1)");
+                + "(env PGW_DOCKER_TLS_{CA,CERT,KEY}[_PATH], arch/pgworker/01-placement.md §4)");
 
         // PFX round-trip: ключ CreateFromPem эфемерный — macOS SslStream требует
         // ре-импорт (паттерн WorkerTlsHandler.Build).

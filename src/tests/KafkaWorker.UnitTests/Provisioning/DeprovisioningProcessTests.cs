@@ -4,7 +4,7 @@ using KafkaWorker.Provisioning.Processes;
 
 namespace KafkaWorker.UnitTests.Provisioning;
 
-// DeprovisioningProcess X0–X3 (arch/16 §5 B): docker→etcd порядок, полная
+// DeprovisioningProcess X0–X3 (arch/kafkaworker/02-cluster-lifecycle.md §3 B): docker→etcd порядок, полная
 // очистка координации (вкл. заявки ротации), идемпотентность, снапшоты «до/после».
 
 public class DeprovisioningProcessTests

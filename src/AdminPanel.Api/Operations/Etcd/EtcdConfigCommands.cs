@@ -5,7 +5,7 @@ using Shared.Core.DI;
 namespace AdminPanel.Api.Operations.Etcd;
 
 // ===== Мутация состава etcd-контура (adminpanel/02 §9.14) — ПРОКСИ в API
-// EtcdWorker (arch/25 §1.1): панель не пишет в etcd; воркер валидирует
+// EtcdWorker (arch/etcdworker/05-api.md §1): панель не пишет в etcd; воркер валидирует
 // (N — целое 0..7, кворум-гвард external+N ≥ 3) и замещает декларацию
 // /etcd/config целиком. Коды 1:1: 200 успех, 400 валидация, 409 гвард
 // кворума, 503 живых инстансов нет. =====

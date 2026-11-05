@@ -3,7 +3,7 @@ using Xunit;
 
 namespace Shared.Etcd.UnitTests;
 
-// WorkJournal: событие PhaseWritten (seam S2 — arch/18 §2.2), JSON-контракт
+// WorkJournal: событие PhaseWritten (seam S2 — arch/metrics/02-dictionary.md §2), JSON-контракт
 // {prefix}/work/<C>, серия ретраев и unreachable-трек. : объединение копий
 // WorkJournalPhaseEventTests (Pg/Kfw) и journal-кейсов CoordinationTests +
 // новые регресс-кейсы сохранения трека (§7.1 — фазовая запись не сбрасывает трек).
@@ -56,7 +56,7 @@ public class WorkJournalTests
     [Fact]
     public async Task WriteSupervisionAsync_Success_DoesNotEmitEvent()
     {
-        // Arrange: надзор — не фазовый процесс (arch/18 §2.2, ревью Ф4-2):
+        // Arrange: надзор — не фазовый процесс (arch/metrics/02-dictionary.md §2, ревью Ф4-2):
         // стационарные записи мимо события; подавление дублируется на потребителе.
         var gateway = new FakeCoordinationGateway();
         var journal = NewJournal(gateway);
@@ -268,7 +268,7 @@ public class WorkJournalTests
         state.Value!.Unreachable.Should().BeEmpty();
     }
 
-    // --- HA-факты надзора (arch/14 §3.3: last_failover/last_rebuild) ---
+    // --- HA-факты надзора (arch/pgworker/00-etcd-contract.md §4: last_failover/last_rebuild) ---
 
     [Fact]
     public async Task WriteSupervisionAsync_WithFacts_RoundTrip()
@@ -373,7 +373,7 @@ public class WorkJournalTests
         var state = await journal.ReadAsync("demo", TestContext.Current.CancellationToken);
         state.Value!.LastRebuild!.DetectedUnix.Should().Be(500);
     }
-    // --- rest_window_open (arch/14 §5 I ETCD-FIRST: маркер открытого окна) ---
+    // --- rest_window_open (arch/pgworker/processes/i-secret-rotator.md I ETCD-FIRST: маркер открытого окна) ---
 
     [Fact]
     public async Task WritePhaseAsync_OpenRestWindow_RoundTrip()

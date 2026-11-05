@@ -1,12 +1,12 @@
 namespace S3Worker.Core.Model;
 
-// Доменная модель S3-кластера (arch/23 §2): снапшоты чтения /s3/ — чистые
+// Доменная модель S3-кластера (arch/s3-clusters/02-keys.md §1): снапшоты чтения /s3/ — чистые
 // неизменяемые записи; битые значения — parseError-поля без падения тика
-// (arch/23 §9), неизвестные ключи — unknownKeys (arch/23 §2).
+// (arch/s3-clusters/09-panel.md), неизвестные ключи — unknownKeys (arch/s3-clusters/02-keys.md §1).
 
-/// <summary>JSON-значение ключа config (arch/23 §2): State null = Active
+/// <summary>JSON-значение ключа config (arch/s3-clusters/02-keys.md §1): State null = Active
 /// (семантика pg/kafka/valkey), NOT_INITIALIZED/TO_REMOVE — заявки;
-/// EtcdBackup — признак «бэкапный кластер etcd» (arch/23 §2: bool, default
+/// EtcdBackup — признак «бэкапный кластер etcd» (arch/s3-clusters/02-keys.md §1: bool, default
 /// false, immutable, единственный в установке).</summary>
 public sealed record S3ClusterConfig(
     string? Platform,
@@ -15,22 +15,22 @@ public sealed record S3ClusterConfig(
     long? CreatedUnix,
     string? State);
 
-/// <summary>JSON-селектор атрибутов хоста (arch/23 §4): docker_host (plain) |
+/// <summary>JSON-селектор атрибутов хоста (arch/s3-clusters/04-placement.md): docker_host (plain) |
 /// swarm_node | swarm_labels | комбинация — привязка = конъюнкция равенств.</summary>
 public sealed record S3NodePlacement(
     string? DockerHost,
     string? SwarmNode,
     IReadOnlyDictionary<string, string>? SwarmLabels);
 
-/// <summary>JSON-значение ключа resources (arch/23 §2): cpu — десятичные ядра
+/// <summary>JSON-значение ключа resources (arch/s3-clusters/02-keys.md §1): cpu — десятичные ядра
 /// ("2"), mem/disk — целые GiB ("4Gi"); парсинг в лимиты — S3ProcessCommon.</summary>
 public sealed record S3NodeResources(string? Cpu, string? Mem, string? Disk);
 
-/// <summary>JSON-значение ключа usage (arch/23 §2.1): snake_case etcd-канон —
+/// <summary>JSON-значение ключа usage (arch/s3-clusters/02-keys.md §2): snake_case etcd-канон —
 /// маппинг из camelCase-грани GET /admin/storage делает надзор (C).</summary>
 public sealed record S3NodeUsage(long UsedBytes, long TotalBytes, long UpdatedUnix);
 
-/// <summary>Пара графа репликации (arch/23 §2 links): связь {A,B} — неориентированная
+/// <summary>Пара графа репликации (arch/s3-clusters/02-keys.md §1 links): связь {A,B} — неориентированная
 /// (зеркальный дубль ≡ одна связь; реализуется join-механикой ownS3 двусторонне).</summary>
 public sealed record S3ReplicationLink(string A, string B);
 
@@ -64,7 +64,7 @@ public sealed record S3DomainSnapshot(
     IReadOnlyList<S3ClusterSnapshot> Clusters,
     IReadOnlyList<string> UnknownKeys);
 
-/// <summary>Статусы нод (arch/23 §2 / arch/24 §5): NOT_INITIALIZED — панель;
+/// <summary>Статусы нод (arch/s3-clusters/02-keys.md §1 / arch/s3worker/README.md): NOT_INITIALIZED — панель;
 /// PROVISIONING/RUNNING/UNREACHABLE/REMOVING — воркер; TO_REMOVE — панель
 /// (one-way маркер демонтажа).</summary>
 public static class S3NodeStates

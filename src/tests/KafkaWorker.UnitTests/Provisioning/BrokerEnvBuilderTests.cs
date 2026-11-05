@@ -6,7 +6,7 @@ using Xunit;
 
 namespace KafkaWorker.UnitTests.Provisioning;
 
-// Окно ротации CA (arch/16 §2.3): Build с раздельными Signing/Trust CA —
+// Окно ротации CA (arch/kafkaworker/04-security.md): Build с раздельными Signing/Trust CA —
 // серт ноды подписан NEW CA, truststore несёт bundle; вне ротации — snap-значения.
 public class BrokerEnvBuilderTests
 {

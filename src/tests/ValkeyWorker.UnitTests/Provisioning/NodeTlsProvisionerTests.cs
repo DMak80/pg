@@ -7,7 +7,7 @@ using Xunit;
 
 namespace ValkeyWorker.UnitTests.Provisioning;
 
-// NodeTlsProvisioner (env-TLS, arch/21 §2): сборка env VALKEY_TLS_{CERT,KEY,CA}
+// NodeTlsProvisioner (env-TLS, arch/valkeyworker/01-placement.md): сборка env VALKEY_TLS_{CERT,KEY,CA}
 // со свежим сертом ноды и валидность факта по env (идемпотентность по факту).
 public class NodeTlsProvisionerTests
 {
@@ -26,7 +26,7 @@ public class NodeTlsProvisionerTests
         // Act
         var env = NodeTlsProvisioner.BuildNodeTlsEnv(caPem, caKeyPem, "node1", "localhost");
 
-        // Assert — набор ключей канона arch/21 §2 и валидность факта
+        // Assert — набор ключей канона arch/valkeyworker/01-placement.md и валидность факта
         env.Keys.Should().BeEquivalentTo("VALKEY_TLS_CERT", "VALKEY_TLS_KEY", "VALKEY_TLS_CA");
         env["VALKEY_TLS_CA"].Should().Be(caPem);
         NodeTlsProvisioner.IsValidNodeEnv(env, "localhost", caPem, Clock).Should().BeTrue();

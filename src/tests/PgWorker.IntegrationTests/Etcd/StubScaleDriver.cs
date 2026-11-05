@@ -10,7 +10,7 @@ namespace PgWorker.IntegrationTests.Etcd;
 // удаления/создания, отдаёт фиксированные хосты/объекты — etcd-сторона реальна.
 public sealed class StubScaleDriver : IClusterDriver
 {
-    // Plain-семантика: инспект отражает факт running-процесса (arch/14 §5 C).
+    // Plain-семантика: инспект отражает факт running-процесса (arch/pgworker/processes/c-node-supervisor.md C).
     public bool SupportsRunningInspection { get; init; } = true;
 
     // стабы джобов бэкапов — контрактным тестам scale движки не нужны.

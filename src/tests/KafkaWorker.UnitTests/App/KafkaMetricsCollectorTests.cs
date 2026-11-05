@@ -9,7 +9,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace KafkaWorker.UnitTests.App;
 
-// Юнит-тесты KafkaMetricsCollector (arch/18 §4) на фейках seam: лаг =
+// Юнит-тесты KafkaMetricsCollector (arch/metrics/04-collectors.md) на фейках seam: лаг =
 // watermark − committed (clamped), USR по ISR, устойчивость к ошибке кластера,
 // самонаблюдение LastSuccess, пропуск неподнятых и не-Active кластеров.
 public sealed class KafkaMetricsCollectorTests
@@ -277,7 +277,7 @@ public sealed class KafkaMetricsCollectorTests
     public async Task Collect_OnlyActiveClusters_StateNullMeansActive()
     {
         // Arrange (ревью Ф4-6): Active (Config.State == null) и невыполненная
-        // заявка (Config.State == "PROVISIONING"; KafkaDomain.cs:11-18, arch/15 §2.1)
+        // заявка (Config.State == "PROVISIONING"; KafkaDomain.cs:11-18, arch/kafka-clusters/02-keys.md §2)
         var factory = new FakeFactory { Next = new FakeAdmin() };
         var state = new KafkaMetricsState(new Meter("TestKafkaWorker"));
         var collector = new KafkaMetricsCollector(30,

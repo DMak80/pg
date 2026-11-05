@@ -3,7 +3,7 @@ using PgWorker.Etcd.Parsing;
 
 namespace PgWorker.Backups;
 
-/// <summary>Итог GFS-отбора (arch/19 §4): Keep — id оставляемых COMPLETED,
+/// <summary>Итог GFS-отбора (arch/backups/05-etcd-contract.md): Keep — id оставляемых COMPLETED,
 /// Delete — кандидаты на удаление в порядке исполнения (verify-FAILED первыми,
 /// далее по возрастанию started_unix — место освобождается от самого старого).</summary>
 public sealed record RetentionSelection(
@@ -23,7 +23,7 @@ public enum StorageState
 public sealed record StorageVerdict(
     StorageState State, long UsedBytes, long QuotaBytes, double? UsedPercent);
 
-/// <summary>Чистые функции ретенции (arch/19 §4/§5): без I/O, момент —
+/// <summary>Чистые функции ретенции (arch/backups/05-etcd-contract.md/§5): без I/O, момент —
 /// аргументом (TimeProvider не нужен). Полное юнит-покрытие — риск «удалили
 /// нужное» закрывается тестами детерминированности (spec §2 п.5).</summary>
 public static partial class RetentionPlanner
@@ -86,7 +86,7 @@ public static partial class RetentionPlanner
         return new RetentionSelection(keep, delete);
     }
 
-    /// <summary>Точка отсчёта WAL-ретенции и контроля цепочки (arch/19
+    /// <summary>Точка отсчёта WAL-ретенции и контроля цепочки (arch/backups/README.md
     /// §4 п.5/§3): wal_start новейшего (по started_unix) COMPLETED-полного с
     /// verify.state=OK — ОДНА точка для cutoff-чистки WAL и chain_start.
     /// verify-OK-полного нет (PENDING/FAILED/verify отсутствует) → null:
@@ -191,7 +191,7 @@ public static partial class RetentionPlanner
             : fulls.MaxBy(f => f.Id, StringComparer.Ordinal)?.ChainLife;
 
     /// <summary>Мусорные объекты кусочного семейства незакрытого сегмента
-    /// (arch/19 §4 п.5, arch/backups/processes/d-wal-sweeper.md, spec §4.1;
+    /// (arch/backups/05-etcd-contract.md, arch/backups/processes/d-wal-sweeper.md, spec §4.1;
     /// чистая функция): (а) поглощённые финалом — лежит wal/&lt;seg&gt; ⇒ все
     /// версии и куски мусор; (б) куски ниже лучшей базы жизни (база — компак
     /// start=0 с max end; дельты выше базы — живое покрытие, не мусор);
@@ -350,7 +350,7 @@ public static partial class RetentionPlanner
     }
 
     // Универсальная гранула (недели/месяцы): кандидаты — полные ПЕРИОДА
-    // СТРОГО РАНЬШЕ текущего (arch/19 §4 п.1: счётчики считают предыдущие
+    // СТРОГО РАНЬШЕ текущего (arch/backups/05-etcd-contract.md: счётчики считают предыдущие
     // календарные периоды; полные текущей недели/месяца вне дневного окна
     // точками не удерживаются — текущий период держит только дневная гранула)
     // → группы по календарному периоду UTC → N свежайших групп (сравнение

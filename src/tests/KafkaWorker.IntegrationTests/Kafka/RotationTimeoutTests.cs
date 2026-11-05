@@ -204,7 +204,7 @@ public class RotationTimeoutTests(KafkaClusterFixture fixture, ITestOutputHelper
 
     // Транзиент-толерантный тик (spec §5.1): одиночный Result.Failed — не
     // провал теста: процесс идемпотентен, следующий тик переподаст батч
-    // (arch/16 §5 I); подряд FailedTickLimit неудачных — исключение с
+    // (arch/kafkaworker/06-rebalancing.md §2 I); подряд FailedTickLimit неудачных — исключение с
     // ПОЛНЫМ контекстом (DiagContextAsync + хвост ошибок тиков). Backstop
     // на хелпер не заводится: тик завершается сам (≤30 с etcd-транзиент,
     // ≤SubmitSec=60 подачи), три подряд провала — быстрое красное. Возвращает
@@ -744,7 +744,7 @@ public class RotationTimeoutTests(KafkaClusterFixture fixture, ITestOutputHelper
                 // Вырожденный путь (H5) — валидный исход §2 п.3: гварды §2 п.2
                 // вырождены (balance не открывалась — снимать нечего), финальный
                 // цикл §5.3 не исполняется (заявки нет; RF юзер-топиков без
-                // заявки воркер не конвергит — arch/16 §5 E); демонтаж —
+                // заявки воркер не конвергит — arch/kafkaworker/02-cluster-lifecycle.md §5 E); демонтаж —
                 // teardown-гигиеной. Различительная валидация подготовки:
                 // вырожденный исход обязан быть гонкой метаданных (H5-i), НЕ
                 // дефектом подготовки (H5-ii) — снижение RF применилось.

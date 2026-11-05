@@ -1,6 +1,6 @@
 namespace EtcdWorker.Etcd;
 
-/// <summary>Ключи домена /etcd/ (arch/25 §5).</summary>
+/// <summary>Ключи домена /etcd/ (arch/etcdworker/00-etcd-contract.md).</summary>
 public static class EtcdDomainKeys
 {
     public const string ConfigKey = "/etcd/config";

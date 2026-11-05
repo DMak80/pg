@@ -1,6 +1,6 @@
 namespace AdminPanel.Core;
 
-// Бэкапы кластера из /pgworker/backups/ (arch/19 §4; дубль воркерной модели
+// Бэкапы кластера из /pgworker/backups/ (arch/backups/05-etcd-contract.md; дубль воркерной модели
 // осознанный — бэкапные модели выведены за скоуп унификации). FullMaxAgeSec — null,
 // если policy-ключа нет (правило берёт панельный дефолт). В словаре — шарды,
 // у которых есть ХОТЯ БЫ ОДИН ключ полных: значение null = COMPLETED не было
@@ -14,18 +14,18 @@ public sealed record ShardVerifyFailure(string Shard, string Id, string Error, l
 /// <summary>Статус дрилла шарда (reliability, ключ /pgworker/backups/&lt;C&gt;/&lt;X&gt;/drill):
 /// панель читает, панель в etcd не пишет (пишет воркер под клэймом). Phase —
 /// downloading|recovering; снятая фаза у терминального = чистый итог
-/// (scratch чистит приёмник при любом исходе, arch/19 §3.6).</summary>
+/// (scratch чистит приёмник при любом исходе, arch/backups/04-drill.md).</summary>
 public sealed record DrillInfo(
     string Cluster, string Shard, string Id, string State, string BackupId,
     long StartedUnix, long? FinishedUnix, string? Phase, string? RestoredToLsn, string? Error);
 
-/// <summary>Полная per-cluster политика бэкапов (arch/19 §4; reliability —
+/// <summary>Полная per-cluster политика бэкапов (arch/backups/05-etcd-contract.md; reliability —
 /// drill.interval_days): null-поля = отсутствуют в policy-ключе — форма фронта
 /// читает и дефолтирует (панель PUTит полный набор через policy-API воркера).</summary>
 public sealed record BackupsPolicyInfo(
     int? RetentionDays, int? RetentionWeeks, int? RetentionMonths,
     long? FullMaxAgeSec, bool? VerifyOnCreate, int? DrillIntervalDays,
-    //  (arch/19 §4): секция s3 policy; null — пул не выбран (алерт
+    //  (arch/backups/05-etcd-contract.md): секция s3 policy; null — пул не выбран (алерт
     // backup-pool-missing), списки — имена нод пула по приоритету записи.
     BackupsPolicyS3Info? S3 = null);
 
@@ -72,7 +72,7 @@ public sealed record BackupFullInfo(
 /// <summary>DELETING-полный : возраст для backup-deleting-stuck.</summary>
 public sealed record DeletingFullInfo(string Id, long StartedUnix, long? FinishedUnix);
 
-/// <summary>Операция восстановления шарда (arch/19 §4): только поля статусов
+/// <summary>Операция восстановления шарда (arch/backups/05-etcd-contract.md): только поля статусов
 /// — UI restore-операций ; RequestedUnix обязателен, остальное — по факту.</summary>
 public sealed record RestoreOperationInfo(
     string Cluster,

@@ -1,6 +1,6 @@
 namespace PgWorker.PgNode;
 
-/// <summary>Параметры одной стрим-сессии приёмника (arch/19 §3): DSN
+/// <summary>Параметры одной стрим-сессии приёмника (arch/backups/02-wal-archive.md §1): DSN
 /// источника репликации (фиксирует цикл приёмника: host 127.0.0.1:5432 ноды,
 /// user backup_exec, dbname postgres — НЕ env), слот, координаты шарда и S3-цели
 /// пула — write-список роли источника (порядок = приоритет) + read-список (все
@@ -23,7 +23,7 @@ public sealed record WalReceiverOptions(
     string S3Bucket,
     string S3AccessKey,
     string S3SecretKey,
-    // Период .partial-доотправки префикса живого сегмента, с (arch/19 §3/§9);
+    // Период .partial-доотправки префикса живого сегмента, с (arch/backups/02-wal-archive.md §1/§9);
     // env PGW_WAL_PARTIAL_INTERVAL_SEC ноды, дефолт 3; клэмп ≥1 — приёмник
     // не падает на мусорном env.
     int PartialIntervalSec = 3,

@@ -1,6 +1,6 @@
 namespace EtcdWorker.Core;
 
-/// <summary>Значения /etcd/nodes/&lt;k&gt;/state (arch/25 §5) — семантика
+/// <summary>Значения /etcd/nodes/&lt;k&gt;/state (arch/etcdworker/00-etcd-contract.md) — семантика
 /// kafka/valkey/s3.</summary>
 public static class ManagedNodeStates
 {

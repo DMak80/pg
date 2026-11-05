@@ -10,9 +10,9 @@ using Shared.Metrics.Worker;
 namespace Shared.Metrics.UnitTests;
 
 // Интеграционные тесты /metrics на минимальном WebApplication-хосте: фиксируют
-// ФАКТИЧЕСКИЕ экспортированные OTel-имена против словаря arch/18 §2 (риск M3/S1)
+// ФАКТИЧЕСКИЕ экспортированные OTel-имена против словаря arch/metrics/02-dictionary.md (риск M3/S1)
 // и фактические значения лейбла process (канон = факт, ревью Ф4-5).
-// При расхождении — тест правится на факт + arch/18 §2 тем же коммитом.
+// При расхождении — тест правится на факт + arch/metrics/02-dictionary.md тем же коммитом.
 public sealed class MetricsEndpointTests
 {
     // Минимальный хост с модулем метрик (порт 0 — случайный, без коллизий).
@@ -59,14 +59,14 @@ public sealed class MetricsEndpointTests
             sut.ProcessPhase("demo", "provision", "started", now);
             sut.Operation("provision", ok: true);
             sut.SnapshotTaken(now);
-            //  (arch/18 §2.7): RTO-длительности — пин обоих гейджей
+            //  (arch/metrics/02-dictionary.md §7): RTO-длительности — пин обоих гейджей
             sut.HaDurations("demo", new Dictionary<string, (long?, long?)> { ["s1"] = (12, 34) });
 
             // Act: первый запрос — прогрев, второй — фактическая проверка экспорта
             await GetAsync(app);
             var (code, body) = await GetAsync(app);
 
-            // Assert: ВСЕ канонические имена arch/18 §2.2 присутствуют в экспорте
+            // Assert: ВСЕ канонические имена arch/metrics/02-dictionary.md §2 присутствуют в экспорте
             code.Should().Be(HttpStatusCode.OK);
             body.Should().Contain("worker_loop_ticks_total");
             body.Should().Contain("worker_loop_last_success_timestamp_seconds");
@@ -81,7 +81,7 @@ public sealed class MetricsEndpointTests
             // минимальном хосте гистограмма http_server_request_duration_seconds
             // не эмитится; фактический ASP.NET-метр — http_server_active_requests
             // (+ kestrel_*/aspnetcore_memory_pool_*). Реальные сервисы сверяют
-            // интеграционные тесты Ф3–Ф5; см. arch/18 §2.1.
+            // интеграционные тесты Ф3–Ф5; см. arch/metrics/02-dictionary.md §1.
             body.Should().Contain("dotnet_");
             body.Should().Contain("http_server_active_requests");
         }
@@ -95,7 +95,7 @@ public sealed class MetricsEndpointTests
     [Fact]
     public async Task MetricsEndpoint_ProcessLabelValues_Canonical()
     {
-        // Arrange: все фактические op журналов воркеров (arch/18 §2.2, канон = факт;
+        // Arrange: все фактические op журналов воркеров (arch/metrics/02-dictionary.md §2, канон = факт;
         // ревью Ф4.2-1: rollback/finalize — MoveProcess.cs:592/691/755)
         var pgOps = new[]
         {
@@ -108,7 +108,7 @@ public sealed class MetricsEndpointTests
         };
         var valkeyOps = new[] { "provision", "deprovision", "rotate" };
         var s3Ops = new[] { "provision", "deprovision", "add-node", "remove-node", "rotate-secrets" };
-        // Подавляемые ops (arch/18 §2.2): фазовых серий не эмитят вовсе.
+        // Подавляемые ops (arch/metrics/02-dictionary.md §2): фазовых серий не эмитят вовсе.
         var suppressedOps = new[] { "supervise", "evacuate", "backup-orphan-sweeper", "healing-portalloc" };
         var app = await StartHostAsync();
         try
@@ -130,7 +130,7 @@ public sealed class MetricsEndpointTests
             // Assert: после done фазовых серий нет вовсе; каждая op посчитана ok;
             // подавляемые ops фазовых серий не создали (вечные серии не копятся).
             // Факт экспортёра 1.16.0-beta.1: системный лейбл otel_scope_name (= имя
-            // Meter) добавляется к сериям — фиксируем (канон = факт, arch/18 §2.2).
+            // Meter) добавляется к сериям — фиксируем (канон = факт, arch/metrics/02-dictionary.md §2).
             code.Should().Be(HttpStatusCode.OK);
             body.Should().NotContain("worker_process_phase_duration_seconds{");
             body.Should().Contain("otel_scope_name=\"TestWorker\"");

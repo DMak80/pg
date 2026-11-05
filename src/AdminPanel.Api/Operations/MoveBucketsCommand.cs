@@ -18,7 +18,7 @@ public sealed record MoveBucketsCommand(
     string Cluster, string From, string To, IReadOnlyList<int> Buckets, string RequestedBy)
     : ICommand<MovesQueuedDto>;
 
-// Прокси: панель не пишет в etcd — команда уходит в API PgWorker (arch/14 §1.1);
+// Прокси: панель не пишет в etcd — команда уходит в API PgWorker (arch/pgworker/07-api.md §1);
 // requestedBy передаётся заголовком X-Requested-By (шлюз Task 12) — воркер
 // пишет его в requested_by заявок, значения etcd не меняются (spec §3.7).
 [InjectAsScoped]

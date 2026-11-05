@@ -14,7 +14,7 @@ using PgWorker.Provisioning.Probes;
 
 namespace PgWorker.UnitTests.Provisioning;
 
-// ProvisioningProcess P0–P5 (задача 19; arch/14 §5 A): guard входа, план
+// ProvisioningProcess P0–P5 (задача 19; arch/pgworker/processes/a-provisioning.md A): guard входа, план
 // placement+portalloc, EnsureNode×ноды, ожидание Patroni, БД/роли/схемы, dsn,
 // снятие status-ключей, config без state, снапшот, journal-фазы.
 public class ProvisioningProcessTests
@@ -50,7 +50,7 @@ public class ProvisioningProcessTests
         etcd.Seed("/service/shop-shard1/leader", """{"name":"shard1a","poll_queued_commands":0}""");
         etcd.Seed("/service/shop-shard2/initialize", "7403705125687833962");
         etcd.Seed("/service/shop-shard2/leader", """{"name":"shard2a","poll_queued_commands":0}""");
-        // Заявки ресурсов ОБЯЗАТЕЛЬНЫ (arch/14 §2.1 п.4): PGTune-тюнинг нод
+        // Заявки ресурсов ОБЯЗАТЕЛЬНЫ (arch/pgworker/01-placement.md §2): PGTune-тюнинг нод
         // считается от них; сидим как панель (§9.5 контракта панели).
         etcd.Seed("/service/shop-shard1/request_cpu", "2");
         etcd.Seed("/service/shop-shard1/request_mem", "8Gi");
@@ -267,7 +267,7 @@ public class ProvisioningProcessTests
 
     // AAA : созданный со strict=false кластер — финальный коммит config
     // provisioning ПЕРЕНОСИТ значение (не стирает): кластер не «молча» становится
-    // strict (arch/14 §3.2, спека §2.5 — без вечной блокировки однорепликных).
+    // strict (arch/pgworker/00-etcd-contract.md §3, спека §2.5 — без вечной блокировки однорепликных).
     [Fact]
     public async Task Tick_CommitConfig_CarriesSyncStrictFalse()
     {
@@ -311,7 +311,7 @@ public class ProvisioningProcessTests
     public async Task Tick_RequestResources_PassedToEnsureNodePerShard()
     {
         // Arrange — каждый шард несёт СВОЮ обязательную заявку ресурсов
-        // (arch/14 §2.1 п.4; SeedCluster сеет 2cpu/8Gi обоим) — переопределим
+        // (arch/pgworker/01-placement.md §2; SeedCluster сеет 2cpu/8Gi обоим) — переопределим
         // shard2 другой заявкой: заявка доходит до драйвера per-shard.
         var rig = await NewRig(_ => DeadPatroni(), identityByEndpoint: EmptyIdentity);
         rig.Etcd.Seed("/service/shop-shard1/request_cpu", "2");
@@ -896,7 +896,7 @@ public class ProvisioningProcessTests
     }
 
     // AAA: Д3 — данные есть хотя бы у одной ноды scope: чистки НЕТ, фейл оператору
-    // (чистка scope уничтожила бы данные, arch/14 R11)
+    // (чистка scope уничтожила бы данные, arch/pgworker/README.md R11)
     [Fact]
     public async Task Tick_BudgetDeadAnyNodePresent_NoResetOperatorFail()
     {

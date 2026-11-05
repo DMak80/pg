@@ -5,7 +5,7 @@ using Xunit;
 
 namespace PgWorker.UnitTests.Backups;
 
-// Чистые функции реестра сирот (arch/19 §4): группировка по префиксам
+// Чистые функции реестра сирот (arch/backups/05-etcd-contract.md): группировка по префиксам
 // нашей формы (с детектом валидных полных — DR-hold, reliability), merge
 // с переносом first_seen/has_valid_full, гвард воскресения, TTL-отбор с
 // hold-множеством, JSON roundtrip формата ключа /pgworker/backups/orphans,
@@ -188,7 +188,7 @@ public class OrphanRegistryTests
         OrphanRegistry.SelectTtlCandidate(registry, 0, Now, held).Should().BeNull();
     }
 
-    // AAA (AC8): JSON roundtrip симметричен (формат arch/19 §4); битый JSON → null
+    // AAA (AC8): JSON roundtrip симметричен (формат arch/backups/05-etcd-contract.md); битый JSON → null
     [Fact]
     public void ToJsonParse_Roundtrip()
     {
@@ -242,7 +242,7 @@ public class OrphanRegistryTests
             .BeFalse("a has_valid_full change is a reason to put");
     }
 
-    // AAA (AC6): ключи/JSON hold-заявки канона arch/19 §4
+    // AAA (AC6): ключи/JSON hold-заявки канона arch/backups/05-etcd-contract.md
     [Fact]
     public void HoldDelete_Keys_AndCanonicalJson()
     {

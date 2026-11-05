@@ -10,7 +10,7 @@ using KafkaWorker.Provisioning.Kafka;
 namespace KafkaWorker.Provisioning.Processes;
 
 /// <summary>
-/// CaRotator (arch/16 §5 K): ротация per-cluster CA и серверных сертов по
+/// CaRotator (arch/kafkaworker/04-security.md §4 K): ротация per-cluster CA и серверных сертов по
 /// заявке /kafkaworker/ca_rotations/&lt;C&gt; — окно двойного доверия без остановки
 /// записи. Фазы: P (staging ca_next_* put-if-absent — в etcd, переживает рестарт
 /// воркера) → D (ca_pem = bundle OLD+NEW — клиенты начинают доверять NEW до
@@ -207,7 +207,7 @@ public sealed class CaRotator(
 
         // Фаза R: rolling по одному брокеру за тик; env — серт от NEW CA (кеш R3
         // по хешу CA-ключа), truststore — bundle. Ожидание сходимости после
-        // КАЖДОГО брокера (arch/16 §2.3); трек не повторяет пересозданное.
+        // КАЖДОГО брокера (arch/kafkaworker/04-security.md); трек не повторяет пересозданное.
         var bundle = caPem.Contains(nextPem) ? caPem : caPem + "\n" + nextPem;
         var markedR = await journal.WritePhaseAsync(cluster, Op, "phase-r", claims.InstanceId, null, ct);
         if (!markedR.IsSuccess)
@@ -374,7 +374,7 @@ public sealed class CaRotator(
                 return Result<bool>.Failed(mark.Error!);
             rolled.Add(broker.Name);
 
-            // Ожидание сходимости после каждого брокера (arch/16 §2.3):
+            // Ожидание сходимости после каждого брокера (arch/kafkaworker/04-security.md):
             // следующий брокер пересоздаётся только на сошедшемся кластере.
             var ready = await WaitForBrokersAsync(snap, brokers.Count, ct);
             if (!ready.IsSuccess)

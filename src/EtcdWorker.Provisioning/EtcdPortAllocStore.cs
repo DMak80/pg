@@ -5,7 +5,7 @@ using Shared.Etcd.Client;
 
 namespace EtcdWorker.Provisioning;
 
-/// <summary>Закрепление client host-портов managed-узлов (arch/25 §5): один
+/// <summary>Закрепление client host-портов managed-узлов (arch/etcdworker/00-etcd-contract.md): один
 /// JSON-ключ /etcdworker/portalloc {"<k>":{"host","client"}}; RMW по
 /// mod_revision ПОД глобальным клэймом PortAllocLock (занятость дополнительно
 /// сверяется с docker-публикациями вызывающего).</summary>

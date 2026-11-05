@@ -55,7 +55,7 @@ public sealed partial class AddShardHandler(IEtcdGateway gateway, string[] endpo
         if (rawState is not null)
             return Result<ShardAddedDto>.Failed(new ClusterNotActiveException(cluster, rawState));
 
-        //  (arch/14 §5 G): strict-кластер требует replicas ≥ 2 и на новом шарде —
+        //  (arch/pgworker/processes/g-add-shard.md G): strict-кластер требует replicas ≥ 2 и на новом шарде —
         // однорепликный шард в strict-кластере навсегда блокирует запись.
         var clusterStrict = ReadStrictField(config.Value);
         if (clusterStrict && request.Replicas < 2)
@@ -172,7 +172,7 @@ public sealed partial class AddShardHandler(IEtcdGateway gateway, string[] endpo
             : 0;
     }
 
-    // strict из config-JSON; отсутствие/не-bool = true (arch/14 §3).
+    // strict из config-JSON; отсутствие/не-bool = true (arch/pgworker/00-etcd-contract.md).
     internal static bool ReadStrictField(string raw)
     {
         using var doc = JsonDocument.Parse(raw);

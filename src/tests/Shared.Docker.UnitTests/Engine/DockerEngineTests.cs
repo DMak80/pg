@@ -321,7 +321,7 @@ public class DockerEngineTests
         handler.Requests.Single().Url.Should().Contain("filters=");
     }
 
-    // ListServiceRecordsAsync (arch/24 §2): labels сервисов парсятся из
+    // ListServiceRecordsAsync (arch/s3worker/01-placement.md): labels сервисов парсятся из
     // Spec.Labels; filters-запрос — валидный JSON {"name":["…"]} (регресс
     // рассыпавшихся кавычек: невалидный filters → 400 Engine API → отказ X2).
     [Fact]
@@ -351,7 +351,7 @@ public class DockerEngineTests
         doc.RootElement.GetProperty("name")[0].GetString().Should().Be("s3w-c1-");
     }
 
-    // Placement-селекторы swarm_labels (arch/23 §4) — парсинг node.Spec.Labels
+    // Placement-селекторы swarm_labels (arch/s3-clusters/04-placement.md) — парсинг node.Spec.Labels
     // из GET /nodes; у ноды без labels — пустой словарь (не null).
     [Fact]
     public async Task ListNodes_ParsesSpecLabels_UnknownNodeGetsEmpty()

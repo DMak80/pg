@@ -8,7 +8,7 @@ using ValkeyWorker.App;
 namespace ValkeyWorker.App.Loops;
 
 /// <summary>
-/// Цикл регулярных снапшотов etcd (arch/21 §6, P12): только глобальный лидер
+/// Цикл регулярных снапшотов etcd (arch/valkeyworker/06-operability.md §3, P12): только глобальный лидер
 /// (/valkeyworker/leader) снимает слепок раз в SnapshotIntervalMin (контроль-плейн
 /// /valkey/ + /valkeyworker/ — SnapshotJob снимает etcd целиком); не-лидер
 /// периодически пытается захватить лидерство (takeover ≤ TTL 15 с + тик).
@@ -49,7 +49,7 @@ internal sealed class SnapshotLoop(
                 {
                     try
                     {
-                        // Cancellation-гвард лидерства (arch/17 S5): потеря leader-lease
+                        // Cancellation-гвард лидерства (arch/synchronization/02-predicates-and-mutations.md §S5): потеря leader-lease
                         // прерывает тик лидера; цикл продолжит как не-лидер.
                         using var leaderLease = CancellationTokenSource.CreateLinkedTokenSource(
                             stoppingToken, claims.LeaderToken);
@@ -88,7 +88,7 @@ internal sealed class SnapshotLoop(
                     }
                     catch (OperationCanceledException) when (!stoppingToken.IsCancellationRequested)
                     {
-                        // Потеря leader-lease прервала тик (гвард arch/17 S5): не ошибка —
+                        // Потеря leader-lease прервала тик (гвард arch/synchronization/02-predicates-and-mutations.md §S5): не ошибка —
                         // цикл продолжит как не-лидер и пере-захватит ≤ TTL + тик скана.
                         logger.LogWarning("snapshot leadership lost mid-tick");
                     }

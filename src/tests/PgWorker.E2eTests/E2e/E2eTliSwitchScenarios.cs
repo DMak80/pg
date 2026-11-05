@@ -15,16 +15,16 @@ using RestoreStatus = PgWorker.Etcd.Parsing.RestoreStatus;
 
 namespace PgWorker.IntegrationTests.E2e;
 
-// E2E восстанавливаемости через точку TLI-переключения (t28, arch/19 §10):
+// E2E восстанавливаемости через точку TLI-переключения (t28, arch/backups/09-operability.md §5):
 // полный бэкап на TLI1 → docker stop мастера (Patroni failover, TLI ≥ 2) →
 // контрольные данные на новом TLI → строгий гейт смешанности (точка
 // переключения ВНУТРИ сегмента, объект wal/ с байтами обеих таймлайнов
 // доставлен) → ДВЕ restore-заявки на ОДНОЙ цепочке и ОДНОМ контуре класса
-// (граница изоляции — сценарный класс, docs/e2e-isolation.md §1): (a) latest —
+// (граница изоляции — сценарный класс, arch/testing/02-e2e-isolation.md §1): (a) latest —
 // полный хвост через точку; (b) PITR target_time — остановка в цели ПОСЛЕ
 // переключения. Окружение целиком своё (сеть/etcd/ownS3 по guid, динамические
 // порты, teardown при любом исходе с ассертом чистоты); телеметрия —
-// docs/e2e-launch.md ([PHASE]-строки, MarkFailed-режим оставляет контейнеры).
+// arch/testing/01-e2e-launch.md ([PHASE]-строки, MarkFailed-режим оставляет контейнеры).
 public sealed class TliSwitchContext : IAsyncLifetime
 {
     private const string Bucket = "pgworker-backups";
@@ -66,7 +66,7 @@ public sealed class TliSwitchContext : IAsyncLifetime
         E2eParallelismGuard.Acquire("tlsw", ct);
         try
         {
-            // Класс — своё окружение (docs/e2e-isolation.md §1): полный контур
+            // Класс — своё окружение (arch/testing/02-e2e-isolation.md §1): полный контур
             // (сеть/etcd/ownS3/CA/окно портов) + подготовка TLI-профиля.
             Fx = await E2eEnvironment.StartAsync("tlsw", withS3Node: true, ct: ct);
             await PrepareAsync(ct);
@@ -709,7 +709,7 @@ public sealed class TliSwitchContext : IAsyncLifetime
         {
             ["PgWorker__Backups__Enabled"] = "true",
             ["PgWorker__Backups__S3__Bucket"] = Bucket,
-            // t36: креды пула — env-профиль (arch/19 §7); пул — policy.s3.
+            // t36: креды пула — env-профиль (arch/backups/08-secrets.md); пул — policy.s3.
             ["PgWorker__Backups__Retry__BaseSec"] = "2",
             ["PgWorker__Backups__Retry__MaxSec"] = "4",
             ["PgWorker__Backups__Wal__VerifyIntervalSec"] = "2",
@@ -722,7 +722,7 @@ public sealed class TliSwitchContext : IAsyncLifetime
     // ===== Хелперы (копии E2eRestoreScenarios/E2eBackupScenarios — файлы
     // сценариев независимы, паттерн репо; в общие утилиты не выносятся) =====
 
-    // Ожидание фазы с телеметрией (docs/e2e-launch.md): [PHASE]-строка в
+    // Ожидание фазы с телеметрией (arch/testing/01-e2e-launch.md): [PHASE]-строка в
     // журнал всегда; фаза дольше 60 с — docker-логи окружения в артефакты.
     public async Task<bool> WaitPhaseAsync(
         string phase, Func<Task<bool>> condition, TimeSpan timeout, CancellationToken ct)
@@ -984,7 +984,7 @@ public sealed class TliSwitchContext : IAsyncLifetime
     // НЕПРЕРЫВНАЯ доставка до позиции: цепочка от wal_start полного (финалы
     // + <TLI>.history) доходит без дыр до сегмента TLI endTli с позицией
     // не ниже targetPos — WalChain.CheckRange, проверка воркера/валидатора
-    // (arch/19 §3). Max-позиция дыру перед собой не ловит: restore до
+    // (arch/backups/02-wal-archive.md §1). Max-позиция дыру перед собой не ловит: restore до
     // target_time тогда останавливается «концом WAL» на дыре (факт t92).
     // Сегмент-конец — ПЕРВЫЙ доставленный подходящий: его наличие и
     // непрерывность до него и есть покрытие [wal_start..targetPos].

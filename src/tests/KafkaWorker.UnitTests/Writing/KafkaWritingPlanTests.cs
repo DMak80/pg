@@ -19,7 +19,7 @@ public class KafkaWritingPlanTests
         // Act
         var plan = KafkaClusterCreatePlan.Build(request, 1756500000);
 
-        // Assert: config — канон arch/15 §2.1 со state заявки; 6 ключей брокеров.
+        // Assert: config — канон arch/kafka-clusters/02-keys.md §2 со state заявки; 6 ключей брокеров.
         plan.ConfigKey.Should().Be("/kafka/clusters/events/config");
         plan.ConfigValue.Should().Be(
             """{"brokers":3,"replication_factor":3,"min_insync_replicas":2,"default_partitions":12,"default_retention_ms":604800000,"created_unix":1756500000,"state":"NOT_INITIALIZED"}""");
@@ -205,7 +205,7 @@ public class KafkaWritingPlanTests
         // Act
         var json = KafkaTopicCreatePlan.Build(request, config, 1750000000L, "admin").Serialize();
 
-        // Assert: канон arch/15 §2.1 (значения явные — дефолты не подставлялись).
+        // Assert: канон arch/kafka-clusters/02-keys.md §2 (значения явные — дефолты не подставлялись).
         using var doc = System.Text.Json.JsonDocument.Parse(json);
         doc.RootElement.GetProperty("partitions").GetInt32().Should().Be(6);
         doc.RootElement.GetProperty("replication_factor").GetInt32().Should().Be(2);
@@ -238,7 +238,7 @@ public class KafkaWritingPlanTests
         // Arrange / Act
         var json = new TopicLifecycleDeleteJson(1750000100L, "admin").Serialize();
 
-        // Assert: только аудит (arch/15 §2.1).
+        // Assert: только аудит (arch/kafka-clusters/02-keys.md §2).
         json.Should().Be("""{"requested_unix":1750000100,"requested_by":"admin"}""");
     }
 }

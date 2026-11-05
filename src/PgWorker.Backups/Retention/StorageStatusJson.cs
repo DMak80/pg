@@ -3,7 +3,7 @@ using System.Text.Json;
 namespace PgWorker.Backups;
 
 /// <summary>Занятость хранилища установки — ключ /pgworker/backups/storage
-/// (arch/19 §4): глобальный, пишет ретенционный проход при изменении;
+/// (arch/backups/05-etcd-contract.md): глобальный, пишет ретенционный проход при изменении;
 /// quota_bytes=0 → поля квоты опускаются, state=OK.</summary>
 public sealed record StorageStatus(
     long UsedBytes, long QuotaBytes, double? UsedPercent, StorageState State, long UpdatedUnix);

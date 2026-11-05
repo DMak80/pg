@@ -6,7 +6,7 @@ using Xunit;
 
 namespace S3Worker.UnitTests.Provisioning;
 
-// InstanceEnvComposer — единая точка сборки env инстанса (arch/24 §4, spec §3.6,
+// InstanceEnvComposer — единая точка сборки env инстанса (arch/s3worker/04-security.md, spec §3.6,
 // §8.1.4): клиентская грань профиля + полный набор OWNS3_REPLICATION_* (значения,
 // не пути); advertised-endpoint из portalloc/AdvertisedHost строит вызывающий.
 public class InstanceEnvComposerTests
@@ -40,7 +40,7 @@ public class InstanceEnvComposerTests
         env["OWNS3_REPLICATION_ADVERTISED_ENDPOINT"].Should().Be("http://s3-host:18001");
     }
 
-    // AAA (arch/24 §5 A/§8): опция reconcile-интервала — 0/не задана → env НЕ
+    // AAA (arch/s3worker/02-cluster-lifecycle.md §2 A/§8): опция reconcile-интервала — 0/не задана → env НЕ
     // ставится (прод-дефолт OwnS3 3 ч); задана → переменная равна значению
     [Theory]
     [InlineData(0, false)]

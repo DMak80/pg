@@ -2,7 +2,7 @@ using KafkaWorker.Core.Model;
 
 namespace KafkaWorker.Provisioning.Processes;
 
-// Факт топика из Kafka (describe-шаг автосинка, arch/16 §5 D): партиции,
+// Факт топика из Kafka (describe-шаг автосинка, arch/kafkaworker/05-topics.md D): партиции,
 // RF и фактические значения управляемых конфигов (строковые, как отдаёт Kafka).
 public sealed record TopicFact(
     string Topic,
@@ -11,7 +11,7 @@ public sealed record TopicFact(
     IReadOnlyDictionary<string, string>? Configs);
 
 /// <summary>
-/// Действие автосинка одного топика (чистый decide-выход, arch/15 §3).
+/// Действие автосинка одного топика (чистый decide-выход, arch/kafka-clusters/03-topics.md §1).
 /// Один топик — ровно одно действие; акт исполняет его поверх свежего
 /// значения ключа (RMW по mod_revision).
 /// </summary>
@@ -67,7 +67,7 @@ public abstract record TopicSyncAction
         IReadOnlyDictionary<string, string>? Configs) : TopicSyncAction;
 
     /// <summary>
-    /// Чистка заявки без исполнения (arch/15 §3.1): create при живом топике /
+    /// Чистка заявки без исполнения (arch/kafka-clusters/03-topics.md §2): create при живом топике /
     /// delete при отсутствующем / коллизия / __-имя. Op определяет, сносит ли
     /// act и факт-ключ (delete + топика нет → да).
     /// </summary>
@@ -75,7 +75,7 @@ public abstract record TopicSyncAction
 }
 
 /// <summary>
-/// Чистые decision-функции автосинка топиков (arch/15 §3, arch/16 §5 D;
+/// Чистые decision-функции автосинка топиков (arch/kafka-clusters/03-topics.md §1, arch/kafkaworker/05-topics.md D;
 /// describe→decide→act из Puzzle §7.2): сопоставление факта Kafka с реестром
 /// etcd → план действий. Без побочных эффектов — таблица юнит-тестов покрывает
 /// все ветки протокола.
@@ -103,7 +103,7 @@ public static class TopicSyncDecision
 
         foreach (var fact in facts)
         {
-            // Internal-топики Kafka (__*) в реестр не попадают (arch/15 §3).
+            // Internal-топики Kafka (__*) в реестр не попадают (arch/kafka-clusters/03-topics.md §1).
             if (IsInternal(fact.Topic))
             {
                 actions.Add(new TopicSyncAction.Skip(fact.Topic));
@@ -181,7 +181,7 @@ public static class TopicSyncDecision
     }
 
     /// <summary>
-    /// Decide-ветки lifecycle-заявок (arch/15 §3.1, чистые функции): один
+    /// Decide-ветки lifecycle-заявок (arch/kafka-clusters/03-topics.md §2, чистые функции): один
     /// топик — одно lifecycle-действие за тик; порядок выхода — чистка
     /// create-коллизий → delete → чистка delete → create (исполнение перед
     /// факт-синком процесса).
@@ -201,7 +201,7 @@ public static class TopicSyncDecision
             var create = group.FirstOrDefault(t => t.Op == TopicLifecycleOps.Create);
 
             // Коллизия заявок (etcd-мусор): delete авторитетен — create чистится
-            // ДО исполнения delete (arch/15 §3.1: «del desired.create; исполняется delete»).
+            // ДО исполнения delete (arch/kafka-clusters/03-topics.md §2: «del desired.create; исполняется delete»).
             if (delete is not null && create is not null)
                 actions.Add(new TopicSyncAction.LifecycleCleanup(
                     group.Key, TopicLifecycleOps.Create, "collision with a delete ticket — delete is authoritative"));
@@ -235,7 +235,7 @@ public static class TopicSyncDecision
             }
         }
 
-        // Порядок исполнения за тик (arch/15 §3.1): сначала чистка create-заявок
+        // Порядок исполнения за тик (arch/kafka-clusters/03-topics.md §2): сначала чистка create-заявок
         // (в т.ч. коллизия — до delete), затем delete-действия и чистка delete-заявок,
         // затем создание. Факт-синк процесса идёт после всех lifecycle-действий.
         return actions
@@ -251,7 +251,7 @@ public static class TopicSyncDecision
     }
 
     // Internal-топик Kafka (__*): в реестр не попадает, lifecycle-заявки на
-    // него — etcd-мусор (arch/15 §3/§3.1).
+    // него — etcd-мусор (arch/kafka-clusters/03-topics.md §1/§3.1).
     private static bool IsInternal(string topic)
         => topic.StartsWith("__", StringComparison.Ordinal);
 

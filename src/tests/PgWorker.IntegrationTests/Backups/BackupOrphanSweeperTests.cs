@@ -10,7 +10,7 @@ namespace PgWorker.IntegrationTests.Backups;
 
 // Интеграции BackupOrphanSweeper (spec §3.4 глобальная часть): реальный
 // etcd (реестр/лидерство/кластеры) + FakeBackupS3 + MutableClock (сжатое TTL).
-// Целевая архитектура E2E (docs/e2e-isolation.md §1): единица изоляции —
+// Целевая архитектура E2E (arch/testing/02-e2e-isolation.md §1): единица изоляции —
 // класс; окружение — СВОЙ etcd в СВОЙ docker-сети (OwnedEtcdFixture) —
 // чужие записи в общий etcd коллекции на класс не влияют.
 [Collection(NonE2eCollection.Name)]
@@ -226,7 +226,7 @@ public class BackupOrphanSweeperTests(OwnedEtcdFixture fixture) : IClassFixture<
         s3.DeletedKeys.Should().BeEmpty();
     }
 
-    // ── DR-hold (reliability, arch/19 §4) ──
+    // ── DR-hold (reliability, arch/backups/05-etcd-contract.md) ──
 
     // Хелпер сида: put hold-ключа/заявки канона (AAA-Act общий).
     private async Task PutHoldAsync(string prefix, long unix = 1757764800)
@@ -439,7 +439,7 @@ public class BackupOrphanSweeperTests(OwnedEtcdFixture fixture) : IClassFixture<
         s3.DeletedKeys.Should().BeEmpty("no candidate — no removal");
     }
 
-    // AAA (arch/19 §5): дедуп union-листинга — по (пул, ключ): одинаковый
+    // AAA (arch/backups/06-s3-layout.md): дедуп union-листинга — по (пул, ключ): одинаковый
     // ключ в двух пулах учитывается КАЖДОЙ пул-копией (размер реестра = сумма
     // по пулам); дедуп по голому ключу схлопывал бы межпулевые дубли
     [Fact]
@@ -465,7 +465,7 @@ public class BackupOrphanSweeperTests(OwnedEtcdFixture fixture) : IClassFixture<
         entry.SizeBytes.Should().Be(200, "dedup by (pool, key) — a cross-pool duplicate is not collapsed");
     }
 
-    // ── Перепроверка перед удалением (arch/19 §4): окно гонки снимок→удаление ──
+    // ── Перепроверка перед удалением (arch/backups/05-etcd-contract.md): окно гонки снимок→удаление ──
 
     // Декоратор gateway — инъекция события в окно гонки свипера: подмешивает
     // ключи в результат range-вызова с заданным префиксом после skip совпавших
@@ -554,7 +554,7 @@ public class BackupOrphanSweeperTests(OwnedEtcdFixture fixture) : IClassFixture<
             => inner.DefragmentAsync(endpoint, ct);
     }
 
-    // AAA (arch/19 §4): воскресение владельца, видимое ТОЛЬКО перепроверкой
+    // AAA (arch/backups/05-etcd-contract.md): воскресение владельца, видимое ТОЛЬКО перепроверкой
     // (снимок /clusters/ шага (2) чист), отменяет и DELETING-доводку: объекты
     // живого владельца не трогаются, гасятся запись реестра, hold и заявка
     [Fact]
@@ -596,7 +596,7 @@ public class BackupOrphanSweeperTests(OwnedEtcdFixture fixture) : IClassFixture<
             .BeFalse("the request is retired with the cancelled deletion");
     }
 
-    // AAA (arch/19 §4): hold, появившийся ПОСЛЕ TTL-отбора (видим только
+    // AAA (arch/backups/05-etcd-contract.md): hold, появившийся ПОСЛЕ TTL-отбора (видим только
     // перепроверкой), откладывает удаление: объекты живы, запись остаётся OBSERVED
     [Fact]
     public async Task SweepHoldAppearedAfterSelectionDelaysRemoval()

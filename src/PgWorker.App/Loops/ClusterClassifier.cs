@@ -2,7 +2,7 @@ using PgWorker.Core.Model;
 
 namespace PgWorker.App.Loops;
 
-// Тип работы над кластером (spec §6.2, arch/14 §4): классификация по config.state.
+// Тип работы над кластером (spec §6.2, arch/pgworker/04-security.md): классификация по config.state.
 
 /// <summary>NOT_INITIALIZED → Provision; TO_REMOVE → Deprovision; иначе → Supervise.</summary>
 public enum ClusterWork

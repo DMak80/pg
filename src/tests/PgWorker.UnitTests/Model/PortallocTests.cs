@@ -4,7 +4,7 @@ using Xunit;
 namespace PgWorker.UnitTests.Model;
 
 // Portalloc-контракт с object-полем усыновлённых нод (adopt-repair spec §3.2 AD2,
-// arch/14 §2.4): имя фактического docker-контейнера; null = каноническая pgw-нода.
+// arch/pgworker/01-placement.md §5): имя фактического docker-контейнера; null = каноническая pgw-нода.
 public class PortallocTests
 {
     [Fact]
@@ -81,7 +81,7 @@ public class PortallocTests
 
     // AAA (ревизия 3): RMW-цикл parse→serialize БЕЗ Decorate сохраняет поля —
     // это и есть preserve remove-shard/чужих read-modify-write (симметричная
-    // сериализация, arch/14 §2.4).
+    // сериализация, arch/pgworker/01-placement.md §5).
     [Fact]
     public void RoundTrip_PreservesScrapeFields()
     {

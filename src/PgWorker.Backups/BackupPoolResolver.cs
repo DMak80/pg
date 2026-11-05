@@ -4,7 +4,7 @@ using Shared.Core;
 
 namespace PgWorker.Backups;
 
-/// <summary>Резолв per-cluster (arch/19 §4/§2.6-2.7): policy.s3 + пул +
+/// <summary>Резолв per-cluster (arch/backups/05-etcd-contract.md/§2.6-2.7): policy.s3 + пул +
 /// per-cluster secrets → контекст списков. null = пул не выбран (policy без
 /// s3 — подсистема кластера молчит); Failed — диагностическая ошибка (пул не
 /// найден / TO_REMOVE / нет читаемых secrets / списки пусты / имя ноды не в
@@ -18,12 +18,12 @@ public sealed record BackupPoolContext(
     IReadOnlyList<string> ReadAll);
 
 /// <summary>
-/// Единая точка «какой кластер куда пишет/читает» (arch/19 §4): имена нод
+/// Единая точка «какой кластер куда пишет/читает» (arch/backups/05-etcd-contract.md): имена нод
 /// списков — ссылки (nodes/&lt;I&gt;/placement), адреса — portalloc/Endpoints
 /// пула; креды — per-cluster secrets из etcd
 /// (/s3/clusters/&lt;C&gt;/secrets, ключ backups — арх/19 §7). Схема URI
 /// фиксирована http — owns3-контур; https появится вместе с external-целями
-/// (точка расширения arch/19 §7).
+/// (точка расширения arch/backups/08-secrets.md).
 /// </summary>
 public sealed class BackupPoolResolver(
     IS3PoolStore pools,
@@ -51,7 +51,7 @@ public sealed class BackupPoolResolver(
                 new ApplicationException($"s3-pool: pool {s3.Pool} is in TO_REMOVE state"));
 
         // Креды — per-cluster secrets из etcd (ключ backups, read-write;
-        // arch/19 §7): отсутствие/битость — transient-диагностика (ретраи тиком,
+        // arch/backups/08-secrets.md): отсутствие/битость — transient-диагностика (ретраи тиком,
         // маркер s3-pool-exhausted у процессов — НЕ краш тика), без значений.
         if (pool.Secrets is not { } poolSecrets)
             return Result<BackupPoolContext?>.Failed(new ApplicationException(
@@ -67,8 +67,8 @@ public sealed class BackupPoolResolver(
 
         // ReadAll — все ноды пула без приоритетов, порядок endpoints-ключа:
         // адреса — portalloc-пары нод (http-URI, как write-списки; endpoints-ключ
-        // — host:port без схемы, arch/23 §2). Нода без адреса пропускается —
-        // пул поднимается (arch/19 §5).
+        // — host:port без схемы, arch/s3-clusters/02-keys.md §1). Нода без адреса пропускается —
+        // пул поднимается (arch/backups/06-s3-layout.md).
         var readAll = ReadAllUris(pool);
         return Result<BackupPoolContext?>.Success(new BackupPoolContext(
             pool.Name, poolSecrets.AccessKey, poolSecrets.SecretKey,
@@ -88,7 +88,7 @@ public sealed class BackupPoolResolver(
 
     // Резолв одного write-списка: имена → "http://host:port"; пустой список =
     // записанная битая policy (transient-диагностика; «не выбрано» — это
-    // отсутствие секции s3 целиком, arch/19 §4).
+    // отсутствие секции s3 целиком, arch/backups/05-etcd-contract.md).
     private static Result<IReadOnlyList<string>> ResolveWriteList(
         S3Pool pool, string poolName, string fieldName, IReadOnlyList<string> names)
     {

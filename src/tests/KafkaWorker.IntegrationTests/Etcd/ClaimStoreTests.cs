@@ -36,7 +36,7 @@ public class ClaimStoreTests(EtcdFixture etcd)
         var firstClaim = await first.TryClaimClusterAsync("events", ct);
         var secondClaim = await second.TryClaimClusterAsync("events", ct);
 
-        // Assert: exclusivity — кластер обрабатывает один инстанс (arch/16 §6).
+        // Assert: exclusivity — кластер обрабатывает один инстанс (arch/kafkaworker/08-operability.md §4).
         firstClaim.IsSuccess.Should().BeTrue();
         firstClaim.Value.Should().BeTrue();
         secondClaim.IsSuccess.Should().BeTrue();
@@ -73,7 +73,7 @@ public class ClaimStoreTests(EtcdFixture etcd)
     }
 
     // AAA: инстанс ClaimStore с advertiseApiUrl ставит ключ /kafkaworker/api/<id>
-    // (arch/16 §1.1) со значением-JSON url+instance; DisposeAsync гасит lease —
+    // (arch/kafkaworker/07-api.md §1) со значением-JSON url+instance; DisposeAsync гасит lease —
     // ключ исчезает. Store без await using: DisposeAsync не идемпотентен, зовём явно.
     [Fact]
     public async Task StartAsync_WithAdvertiseApiUrl_PutsApiDiscoveryKey()

@@ -12,7 +12,7 @@ public sealed class S3WorkerLoopsVitality(
 {
     public IReadOnlyList<LoopHeartbeat> Snapshot()
     {
-        // Порог сноса — от собственных опций watchdog (arch/14 §6):
+        // Порог сноса — от собственных опций watchdog (arch/pgworker/08-operability.md §3):
         // Multiplier × CheckIntervalSec = 30 c при дефолтах, ЕДИНЫЙ для всех
         // циклов; healthz-порог (LoopStaleness) в формуле не участвует.
         var watchdog = options.CurrentValue.Loops.Watchdog;

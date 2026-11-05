@@ -3,7 +3,7 @@ using System.Security.Cryptography;
 namespace KafkaWorker.Core.Model;
 
 /// <summary>
-/// Генератор per-cluster SASL-пароля приложения (arch/16 §4): криптостойкий
+/// Генератор per-cluster SASL-пароля приложения (arch/kafkaworker/04-security.md §3): криптостойкий
 /// источник, 32 символа, алфавит [A-Za-z0-9] — без спецсимволов, чтобы
 /// пароль был безопасен для JAAS-литералов, env и JSON без экранирования.
 /// По образцу AppSecretGenerator PgWorker.

@@ -6,7 +6,7 @@ using Xunit;
 
 namespace S3Worker.UnitTests.Provisioning;
 
-// RemoveNode E (arch/24 §5 E): гварды ДО деструктива (последняя нода; нет
+// RemoveNode E (arch/s3worker/03-node-scaling.md §2 E): гварды ДО деструктива (последняя нода; нет
 // живых RUNNING кроме выводимой), REMOVING → снос (контейнер+volume) → del
 // ключей ноды + portalloc без неё → RMW endpoints + config.nodes → done.
 public class RemoveNodeProcessTests

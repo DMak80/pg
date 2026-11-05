@@ -37,6 +37,6 @@ public sealed class SnapshotStaleRule : IAlertRule
             null,
             "panel snapshot has not been refreshed for more than 3 ticks: the panel is running on stale data (BuiltAtUtc is not advancing), UI and alerts may be inaccurate; a tick must complete every RefreshIntervalSeconds",
             AlertRemedy.OperatorRunbook,
-            "check the etcd environment per arch/09 (endpoints/quorum/alarms) — the refresher will recover on its own after the etcd cluster is restored");
+            "check the etcd environment per arch/pg-clusters/09-troubleshooting.md (endpoints/quorum/alarms) — the refresher will recover on its own after the etcd cluster is restored");
     }
 }

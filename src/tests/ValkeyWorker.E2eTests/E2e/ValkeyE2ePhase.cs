@@ -4,7 +4,7 @@ namespace ValkeyWorker.IntegrationTests.E2e;
 
 /// <summary>
 /// Фазовый телеметрический контур docker-E2E ValkeyWorker — порт паттерна
-/// PgWorker E2ePhase (docs/e2e-launch.md §2): замер фазы + строки
+/// PgWorker E2ePhase (arch/testing/01-e2e-launch.md §2): замер фазы + строки
 /// [PHASE]/[PHASE-TICK] в журнал теста (Console) и в
 /// <see cref="ValkeyE2eEnvironment.ArtifactsDir"/>/phases.log с UTC-меткой;
 /// пересечение 60 с — немедленный сбор docker-диагностики; провал окна
@@ -15,7 +15,7 @@ namespace ValkeyWorker.IntegrationTests.E2e;
 /// </summary>
 internal static class ValkeyE2ePhase
 {
-    /// <summary>Порог автосбора диагностики (docs/e2e-launch.md §2).</summary>
+    /// <summary>Порог автосбора диагностики (arch/testing/01-e2e-launch.md §2).</summary>
     private static readonly TimeSpan SlowPhaseThreshold = TimeSpan.FromSeconds(60);
 
     /// <summary>Интервал прогресс-тиков: короткие окна 10–15 с дают 2–3 строки
@@ -28,7 +28,7 @@ internal static class ValkeyE2ePhase
 
     /// <summary>Ожидание условия с фазовой телеметрией: полл, тики и пороги — в
     /// одном цикле. Прогресс-делегат — только дешёвые etcd-снапшоты; docker-CLI
-    /// в тиках запрещён (docs/e2e-launch.md §2) — docker-картина попадает в
+    /// в тиках запрещён (arch/testing/01-e2e-launch.md §2) — docker-картина попадает в
     /// slow/failed-phase-сбор.</summary>
     public static async Task<bool> WaitAsync(
         ValkeyE2eEnvironment fx,
@@ -55,7 +55,7 @@ internal static class ValkeyE2ePhase
                 break;
 
             // Немедленный slow-phase-сбор: фаза > 60 с — картина живого окружения
-            // ДО исчерпания бюджета (docs/e2e-launch.md §2), однократно.
+            // ДО исчерпания бюджета (arch/testing/01-e2e-launch.md §2), однократно.
             if (!slowCollected && sw.Elapsed >= SlowPhaseThreshold)
             {
                 slowCollected = true;
@@ -86,7 +86,7 @@ internal static class ValkeyE2ePhase
         return false;
     }
 
-    // Итоговая строка фазы строго формата docs/e2e-launch.md §2; progress-часть —
+    // Итоговая строка фазы строго формата arch/testing/01-e2e-launch.md §2; progress-часть —
     // только при заданном делегате (снапшот снят тиком либо однократно для
     // коротких фаз, когда тиков не было).
     private static string FinalLine(

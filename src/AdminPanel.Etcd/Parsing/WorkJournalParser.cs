@@ -15,7 +15,7 @@ public sealed record WorkJournalParseResult(
 
 /// <summary>
 /// Чистая функция: KV префикса /pgworker/work/ → журналы процессов кластеров
-/// (arch/adminpanel/02 §2.3.1). Формат value (arch/14 §3.3):
+/// (arch/adminpanel/02 §2.3.1). Формат value (arch/pgworker/00-etcd-contract.md §4):
 /// {"op","phase","instance","updated_unix","last_error", серия ретраев
 /// "fail_count"/"fail_first_unix"/"retry_not_before_unix" — optional}.
 /// Битый JSON → KeyParseError (толерантность, тик не роняют); Cluster = лист ключа.

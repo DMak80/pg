@@ -8,14 +8,14 @@ using Shared.Tls;
 
 namespace PgWorker.App.Api;
 
-// HTTPS HTTP-грань PgWorker (arch/14 §1.1): клиентский серт опционален на
+// HTTPS HTTP-грань PgWorker (arch/pgworker/07-api.md §1): клиентский серт опционален на
 // хендшейке, mTLS обязателен только на /api (401 без валидного серта —
 // Shared.Tls.ClientCertAuthMiddleware); /healthz и /metrics — открытая грань
 // доверенной docker-сети. Вызывается на WebApplicationBuilder ДО Build().
 // Сертификаты живут всё приложение (без using).
 public static class ApiTlsEndpoints
 {
-    // env-секреты → конфиг-дерево (arch/14 §4): PEM-значения и _PATH-файлы.
+    // env-секреты → конфиг-дерево (arch/pgworker/04-security.md): PEM-значения и _PATH-файлы.
     public static readonly (string Env, string Key)[] EnvBindings =
     [
         ("PGW_API_TLS_CERT", "PgWorker:Api:Tls:ServerCertPem"),
@@ -82,12 +82,12 @@ public static class ApiTlsEndpoints
 
         if (serverCert is null)
             throw new ApplicationException(
-                "PgWorker:Api:Tls: server cert/key not set (PGW_API_TLS_CERT/KEY or *_PATH; etcd key /workers/api_tls/pgworker; arch/14 §1.1)");
+                "PgWorker:Api:Tls: server cert/key not set (PGW_API_TLS_CERT/KEY or *_PATH; etcd key /workers/api_tls/pgworker; arch/pgworker/07-api.md §1)");
 
         var clientCa = LoadClientCa(tls) ?? throw new ApplicationException(
             "PgWorker:Api:Tls: ClientCA not set (PGW_API_TLS_CLIENT_CA[_PATH])");
 
-        // 401-политика /api (arch/14 §1.1): опция middleware — DI-синглтон;
+        // 401-политика /api (arch/pgworker/07-api.md §1): опция middleware — DI-синглтон;
         // clientCa живёт всё приложение (уже загружен без using, как серверный).
         builder.Services.AddSingleton(new ClientCertAuthOptions(Enabled: true, ClientCa: clientCa));
 

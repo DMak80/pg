@@ -5,7 +5,7 @@ using Xunit;
 
 namespace AdminPanel.UnitTests;
 
-// Модель valkey-домена: толерантный state-маппинг (arch/20 §5); маппер
+// Модель valkey-домена: толерантный state-маппинг (arch/valkey-clusters/05-fault-tolerance.md); маппер
 // деталей API : CaRotation Core-тикета → API-DTO (null-пропagation).
 public sealed class ValkeyModelTests
 {

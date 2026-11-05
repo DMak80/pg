@@ -7,7 +7,7 @@ using PgWorker.App.Api.Operations;
 using PgWorker.Core.Writing;
 namespace PgWorker.App.Api;
 
-// HTTP API воркера (arch/14 §1.1, task etcd-via-worker-api): мутации декларативного
+// HTTP API воркера (arch/pgworker/07-api.md §1, task etcd-via-worker-api): мутации декларативного
 // etcd-контракта принимает исполнитель. Маппинг исключений — порт панельного
 // OperationsModule 1:1 (коды/тексты ProblemDetails не меняются); успешный POST
 // отвечает 201 БЕЗ Location — Location строит панель (прокси).
@@ -344,7 +344,7 @@ public static class ApiModule
         });
 
         // POST /api/clusters/{cluster}/backups/policy — per-cluster политика
-        // ретенции/бэкапов (arch/19 §4): валидация + put policy-ключа;
+        // ретенции/бэкапов (arch/backups/05-etcd-contract.md): валидация + put policy-ключа;
         // применяется следующим тиком планировщика/ретенции. Мусорный JSON — 400.
         endpoints.MapPost("/api/clusters/{cluster}/backups/policy", async (
             string cluster, HttpRequest http, BackupsPolicyHandler handler, CancellationToken ct) =>
@@ -421,7 +421,7 @@ public static class ApiModule
         });
 
         // POST /api/clusters/{cluster}/shards/{shard}/restore — заявка восстановления
-        // шарда из бэкапа (arch/19 §3.5/§4): 202 Accepted (не 201 — операция
+        // шарда из бэкапа (arch/backups/03-restore.md/§4): 202 Accepted (не 201 — операция
         // разрушающая, долгая; воркер пишет PLANNED-ключ сам, исполняет держатель
         // клэйма). Гварды: confirm/активная заявка/RFC3339/Active/шард заявлен.
         endpoints.MapPost("/api/clusters/{cluster}/shards/{shard}/restore", async (
@@ -458,7 +458,7 @@ public static class ApiModule
         });
 
         // POST /api/backups/orphans/{cluster}/{shard}/hold — hold-флаг сироты
-        // (reliability, arch/19 §4): put per-префиксного ключа orphan-holds;
+        // (reliability, arch/backups/05-etcd-contract.md): put per-префиксного ключа orphan-holds;
         // 204; 404 не-сирота/мусорные имена; 409 DELETING; 503 etcd/выключено.
         endpoints.MapPost("/api/backups/orphans/{cluster}/{shard}/hold", async (
             string cluster, string shard, HttpRequest http, OrphanHoldHandler handler, CancellationToken ct) =>
@@ -532,12 +532,12 @@ public static class ApiModule
             };
         });
 
-        // GET /api/config — эффективный конфиг установки (arch/14 §1.1, u15):
+        // GET /api/config — эффективный конфиг установки (arch/pgworker/07-api.md §1, u15):
         // read-only, mTLS-зона /api, без снапшота и etcd.
         endpoints.MapGet("/api/config", (IOptions<PgWorkerOptions> options)
             => Results.Ok(PgWorkerEffectiveConfig.From(options.Value)));
 
-        // POST /api/seed/demo — демо-сид pg-контура (arch/14 §1.1.1, стенд):
+        // POST /api/seed/demo — демо-сид pg-контура (arch/pgworker/07-api.md §5, стенд):
         // перенос seed.sh 1:1; идемпотентен по /clusters/demo/config.
         // Флаг EnableSeedEndpoint проверяет хендлер (выключен → 404).
         endpoints.MapPost("/api/seed/demo", async (SeedDemoHandler handler, CancellationToken ct) =>
@@ -557,7 +557,7 @@ public static class ApiModule
             };
         });
 
-        // POST /api/restart — graceful self-stop (spec §3.2 п.2, arch/14 §3.3):
+        // POST /api/restart — graceful self-stop (spec §3.2 п.2, arch/pgworker/00-etcd-contract.md §4):
         // 202 {"restarting":true}, стоп отложен на ~1 c; etcd не пишет.
         endpoints.MapPost("/api/restart", (
             [Microsoft.AspNetCore.Mvc.FromHeader(Name = "X-Requested-By")] string? requestedBy,

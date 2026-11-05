@@ -1,6 +1,6 @@
 namespace EtcdWorker.Core;
 
-/// <summary>Провижининг-параметры состава (arch/25 §2/§8) для процессов
+/// <summary>Провижининг-параметры состава (arch/etcdworker/01-placement.md/§8) для процессов
 /// EtcdWorker.Provisioning — срез EtcdWorkerOptions (App) без зависимости от
 /// App-сборки (прецедент S3ProvisioningOptions).</summary>
 public sealed record EtcdProvisioningOptions(

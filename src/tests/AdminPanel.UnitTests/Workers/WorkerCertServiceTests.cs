@@ -185,7 +185,7 @@ public class WorkerCertServiceTests
     [Fact]
     public void Validate_KafkaCaBundle_AllPiecesChecked()
     {
-        // Arrange: ca_pem в окне ротации — бандл OLD+NEW (arch/15 §2.1);
+        // Arrange: ca_pem в окне ротации — бандл OLD+NEW (arch/kafka-clusters/02-keys.md §2);
         // валидируем NEW-пару бандла — она тоже известный материал.
         var (oldCa, _) = TestPki.GenerateCa();
         var (newCa, newKey) = TestPki.GenerateCa();

@@ -9,12 +9,12 @@ using Xunit;
 namespace PgWorker.IntegrationTests.Docker;
 
 // Entrypoint ноды: материализация CA REST-TLS в /home/postgres/pgw-node-ca.pem
-// + строка-путь PGW_NODE_CA в pgw-node.env (arch/14 §2.1) — PEM в
+// + строка-путь PGW_NODE_CA в pgw-node.env (arch/pgworker/01-placement.md §1) — PEM в
 // KEY=VALUE-файл не переносится. Прогон скрипта ДО supervisord: заглушки
 // supervisord и pg_doorman bind-mount'ятся ПОВЕРХ реальных путей
 // (exec идёт по абсолютным путям; python-образ не несёт пулера),
 // adduser добавляет postgres (alpine образа ноды его не имеет). Пулер
-// обязателен (arch/14 §8): DOORMAN_CONFIG_TEMPLATE — неконфиденциальный
+// обязателен (arch/pgworker/08-operability.md §5): DOORMAN_CONFIG_TEMPLATE — неконфиденциальный
 // шаблон с плейсхолдером (проверки бинарника/шаблона entrypoint проходят,
 // до supervisord дело не доходит). t05: openssl-генерации нет — серт
 // пулера доставляет агент PgNode в tmpfs.
@@ -101,7 +101,7 @@ public class NodeEntrypointRestCaTests
         }
     }
 
-    // Негативный fail-fast (arch/14 §8): в образе (python-заглушке) НЕТ
+    // Негативный fail-fast (arch/pgworker/08-operability.md §5): в образе (python-заглушке) НЕТ
     // бинарника pg_doorman — маунт заглушки не делается — entrypoint обязан
     // погасить контейнер с ненулевым exit и диагностикой про обязательный
     // пулер, ДО supervisord.
@@ -150,7 +150,7 @@ public class NodeEntrypointRestCaTests
         }
     }
 
-    // Негативный fail-fast (arch/14 §8): бинарник заглушкой есть, но
+    // Негативный fail-fast (arch/pgworker/08-operability.md §5): бинарник заглушкой есть, но
     // DOORMAN_CONFIG_TEMPLATE пуст — entrypoint обязан погасить контейнер с
     // ненулевым exit и диагностикой про пустой шаблон, ДО supervisord.
     [Fact]

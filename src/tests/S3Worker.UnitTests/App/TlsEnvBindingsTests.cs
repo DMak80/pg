@@ -3,7 +3,7 @@ using S3Worker.App.Api;
 
 namespace S3Worker.UnitTests.App;
 
-// Options-биндинг TLS (arch/24 §8): S3W_API_TLS_* → конфиг-дерево; таблица
+// Options-биндинг TLS (arch/s3worker/08-operability.md §5): S3W_API_TLS_* → конфиг-дерево; таблица
 // EnvBindings — единственный источник соответствий (Program + тест).
 public class TlsEnvBindingsTests
 {
@@ -26,7 +26,7 @@ public class TlsEnvBindingsTests
         config["S3Worker:Api:Tls:ClientCaPath"].Should().Be("/tls/ca.pem");
         config["S3Worker:Api:Tls:ServerKeyPem"].Should().BeNull();
 
-        // Таблица покрывает все 6 секретов (arch/24 §8).
+        // Таблица покрывает все 6 секретов (arch/s3worker/08-operability.md §5).
         TlsEndpoints.EnvBindings.Should().HaveCount(6);
     }
 }

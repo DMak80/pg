@@ -1,7 +1,7 @@
 
 namespace PgWorker.Core.Seed;
 
-// Демо-сид pg-контура (arch/14 §1.1.1, task etcd-via-worker-api): перенос
+// Демо-сид pg-контура (arch/pgworker/07-api.md §5, task etcd-via-worker-api): перенос
 // dev-stand/adminpanel/seed.sh + обязательные заявки ресурсов шардов (—
 // обязательность EnsureNode-путей введена позже переноса, f6d4574). Чистые
 // (key, value)-пары: порядок/значения каноничны, txn не нужен (скрипт писал
@@ -62,7 +62,7 @@ public sealed record PostgresDemoSeedPlan(long NowUnix)
         foreach (var s in new[] { "s1", "s2" })
         {
             var (a, b) = ($"{s}a", $"{s}b");
-            // Обязательные заявки ресурсов шарда (arch/14 §2.1 п.4): как
+            // Обязательные заявки ресурсов шарда (arch/pgworker/01-placement.md §2): как
             // панель при создании через API (ClusterCreatePlan: CanonicalCpu /
             // CanonicalGiB) — без заявки EnsureNode-пути (adopt-репарация,
             // надзор) фейлят каждый тик. request_disk не сеется — воркером

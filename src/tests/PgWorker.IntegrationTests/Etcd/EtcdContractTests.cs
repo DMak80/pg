@@ -23,7 +23,7 @@ public class EtcdContractTests(EtcdFixture fixture)
 
     private string Endpoint => fixture.Endpoint;
 
-    // Per-class guid-тег (канон docs/e2e-isolation.md §1, инвариант
+    // Per-class guid-тег (канон arch/testing/02-e2e-isolation.md §1, инвариант
     // NonE2eCollection): имена кластеров в сидах /clusters/, /service/ и
     // /pgworker/* несут уникальный суффикс — литеральная коллизия с
     // соседними классами коллекции (парсеры читают общий /clusters/)
@@ -116,7 +116,7 @@ public class EtcdContractTests(EtcdFixture fixture)
     [Fact]
     public async Task WorkJournal_RetrySeries_RoundTrip_AgainstRealEtcd()
     {
-        // Arrange — журнал с контекстом серии ретраев (arch/14 §3.3);
+        // Arrange — журнал с контекстом серии ретраев (arch/pgworker/00-etcd-contract.md §4);
         // имя кластера с guid-тегом класса
         var cluster = $"ct3{Tag}";
         var ct = TestContext.Current.CancellationToken;

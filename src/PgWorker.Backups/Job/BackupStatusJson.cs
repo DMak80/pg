@@ -4,7 +4,7 @@ using PgWorker.Etcd.Parsing;
 namespace PgWorker.Backups.Job;
 
 // Сериализация статуса полного в JSON канона /pgworker/backups/<C>/<X>/full/<id>
-// (arch/19 §4): пишет ТОЛЬКО воркер (держатель клэйма); поля состояния —
+// (arch/backups/05-etcd-contract.md): пишет ТОЛЬКО воркер (держатель клэйма); поля состояния —
 // по факту (null/опциональные не сериализуем).
 public static class BackupStatusJson
 {

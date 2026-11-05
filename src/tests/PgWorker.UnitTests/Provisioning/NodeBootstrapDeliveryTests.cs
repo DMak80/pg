@@ -179,7 +179,7 @@ public class NodeBootstrapDeliveryTests
         channel.Calls.Should().Contain(c => c.StartsWith("apply", StringComparison.Ordinal));
     }
 
-    // Дисциплина пина (arch/14 §5 C/§5 I R3): пин этой ревизии уже принят —
+    // Дисциплина пина (arch/pgworker/processes/c-node-supervisor.md C/§5 I R3): пин этой ревизии уже принят —
     // повторная доставка (тот же applied != mod, ключ не менялся) apply НЕ
     // отправляет (Wait): повтор — только по транспорт-фейлу/новой ревизии;
     // долбёжка apply при не-applied запрещена.
@@ -210,7 +210,7 @@ public class NodeBootstrapDeliveryTests
     }
 
     // Транспорт-фейл apply снимает delivered-факт: следующая доставка пинит
-    // СНОВА (повтор по транспорт-фейлу — канон arch/14 §5 I R3).
+    // СНОВА (повтор по транспорт-фейлу — канон arch/pgworker/processes/i-secret-rotator.md I R3).
     [Fact]
     public async Task Ensure_ApplyTransportFail_RetriesNextEnsure()
     {

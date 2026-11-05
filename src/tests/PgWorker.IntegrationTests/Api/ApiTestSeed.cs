@@ -51,7 +51,7 @@ internal static class ApiTestSeed
             $$"""{"bucket":"bucket_{{bucket}}","state":"{{state}}","owner":"{{owner}}","target":"{{target}}","started_unix":{{updatedUnix}},"updated_unix":{{updatedUnix}},"phase":"copy"{{(lastError is null ? "" : $",\"last_error\":\"{lastError}\"")}}}""",
             null, TestContext.Current.CancellationToken);
 
-    /// <summary>Заявка произвольного op в очереди /pgworker/moves/&lt;C&gt;/bucket_&lt;N&gt; (канон arch/14 §3.3).</summary>
+    /// <summary>Заявка произвольного op в очереди /pgworker/moves/&lt;C&gt;/bucket_&lt;N&gt; (канон arch/pgworker/00-etcd-contract.md §4).</summary>
     public static Task SeedTicketAsync(
         EtcdFixture etcd, string cluster, int bucket, string op,
         string? to = null, string? oldShard = null, bool? force = null, long unix = 100, string by = "seed")

@@ -9,7 +9,7 @@ public sealed record KafkaRebalanceRequestedDto(string Cluster, long RequestedUn
 
 // Ребалансировка партиций через API воркера (arch/02 §10.2-13/14): клэйм-txn
 // /kafkaworker/rebalances/<C> (протокол ротаций §9.8 один в один); исполнение —
-// PartitionReassigner воркера (arch/16 §5 I); отмена — del ключа (новые батчи
+// PartitionReassigner воркера (arch/kafkaworker/06-rebalancing.md §2 I); отмена — del ключа (новые батчи
 // не подаются, поданные Kafka доиграет сама). Порт панельных
 // RequestKafkaRebalanceCommandHandler + CancelKafkaRebalanceCommandHandler.
 // requested_by — заголовок X-Requested-By (панель шлёт оператора), fallback

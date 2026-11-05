@@ -6,7 +6,7 @@ using Shared.Etcd.Coordination;
 
 namespace S3Worker.Provisioning.Processes;
 
-// Фасад общего лестничного хилера portalloc (Shared.Etcd, arch/17 E9) над
+// Фасад общего лестничного хилера portalloc (Shared.Etcd, arch/synchronization/README.md E9) над
 // доменным драйвером/индексом: успешный результат — адрес ноды (host, порт).
 public sealed class PortAllocHealer(
     IEtcdGateway etcd,

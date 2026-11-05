@@ -10,7 +10,7 @@ using Xunit;
 namespace PgWorker.IntegrationTests.Etcd;
 
 // Собственный etcd-контур сценарного класса (целевая архитектура E2E,
-// docs/e2e-isolation.md §1–§3): единица изоляции — тест-класс, окружение —
+// arch/testing/02-e2e-isolation.md §1–§3): единица изоляции — тест-класс, окружение —
 // полностью своё. СВОЯ docker-сеть с guid-именем + СВОЙ etcd-контейнер
 // (динамический хост-порт): никто вне класса не может писать в этот etcd,
 // а чужие записи в общий etcd коллекции классу не видны — обе стороны
@@ -19,13 +19,13 @@ namespace PgWorker.IntegrationTests.Etcd;
 // Teardown при ЛЮБОМ исходе: stop/rm контейнера, rm сети, ассерт чистоты
 // окружения (опознание по guid-именам; чужие объекты не включаются).
 // Ключи etcd умирают вместе с контейнером — отдельная чистка ключей не нужна
-// (docs/e2e-isolation.md §3.2). Готовность — POST-ретрай /v3/maintenance/status
+// (arch/testing/02-e2e-isolation.md §3.2). Готовность — POST-ретрай /v3/maintenance/status
 // (встроенные HTTP-wait шлют GET, а /v3/* требует POST), бюджет ≤ 30 c.
 public sealed class OwnedEtcdFixture : IAsyncLifetime
 {
     // ЕДИНЫЙ runId окружения (канон per-runId: «все сети частные на один
     // тест класс»): один guid опознаёт и сеть, и контейнер — own-only чистка
-    // и ассерт чистоты по этому идентификатору (docs/e2e-isolation.md §2–3).
+    // и ассерт чистоты по этому идентификатору (arch/testing/02-e2e-isolation.md §2–3).
     // Прежние имена сохранены свойствами-выражениями: конструктор (:43/:45)
     // не меняется; ассерт DisposeAsync переформулирован по _runId (ниже).
     private readonly string _runId = Guid.NewGuid().ToString("N");
@@ -61,7 +61,7 @@ public sealed class OwnedEtcdFixture : IAsyncLifetime
 
     public async ValueTask InitializeAsync()
     {
-        // Retry старта (docs/e2e-isolation.md §4): свежесозданную пустую сеть
+        // Retry старта (arch/testing/02-e2e-isolation.md §4): свежесозданную пустую сеть
         // может снести чужой глобальный prune до старта контейнера — окружение
         // пересоздаётся целиком; ретрай только на распознанную гонку.
         for (var attempt = 1; ; attempt++)
@@ -89,7 +89,7 @@ public sealed class OwnedEtcdFixture : IAsyncLifetime
         _http.Dispose();
         await TeardownAsync(CancellationToken.None);
 
-        // АССЕРТ ЧИСТОТЫ окружения (docs/e2e-isolation.md §3.6): не осталось
+        // АССЕРТ ЧИСТОТЫ окружения (arch/testing/02-e2e-isolation.md §3.6): не осталось
         // ни контейнера, ни сети СВОЕГО окружения — иначе тесты класса краснеют
         // сразу, а не когда кончатся подсети. Фильтр по единому runId покрывает
         // оба объекта; чужие не включаются.

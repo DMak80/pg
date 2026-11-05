@@ -11,7 +11,7 @@ public sealed record KafkaBrokerResourcesDto(
 
 // Изменение ресурсов существующего брокера — мутация №15 (adminpanel/02
 // §10.2-15): guard'ы по прямым чтениям etcd → канонизация → put ключа целиком.
-// Применение — автоматическое: NodeRegenerator воркера (arch/16 §5 J) сверяет
+// Применение — автоматическое: NodeRegenerator воркера (arch/kafkaworker/03-broker-scaling.md §3 J) сверяет
 // лимиты живого контейнера и rolling-ит по одному за тик; disk — инфо-поле.
 // Порт DeleteBrokerHandler (guard'ы) + UpdateConfigHandler (DTO-ответ).
 public sealed partial class UpdateBrokerResourcesHandler(IEtcdGateway gateway, string[] endpoints)

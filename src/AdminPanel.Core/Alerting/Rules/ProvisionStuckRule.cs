@@ -40,7 +40,7 @@ public sealed class ProvisionStuckRule(IOptions<AlertsOptions> options) : IAlert
                 null,
                 "worker reports the provision failure reason in /pgworker/work/<C>: the series lives from the first failure (fail_first_unix) until success; an endless series = worker or environment defect (ports/image/etcd)",
                 AlertRemedy.WorkerAuto,
-                "see the /pgworker/work/<C> journal and worker logs; the worker retries on its own with backoff — if the cause is external (busy ports, broken image), follow runbook arch/09");
+                "see the /pgworker/work/<C> journal and worker logs; the worker retries on its own with backoff — if the cause is external (busy ports, broken image), follow runbook arch/pg-clusters/09-troubleshooting.md");
         }
     }
 }

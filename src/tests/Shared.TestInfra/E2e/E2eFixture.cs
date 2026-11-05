@@ -9,7 +9,7 @@ namespace PgWorker.IntegrationTests.E2e;
 /// процессов, журналы статических фаз подготовки. Рантайм-окружение (docker-сеть,
 /// etcd, ownS3, SUT-воркер-контейнер) — ИЗОЛИРОВАННОЕ per-класс, владелец
 /// жизненного цикла — класс-фикстура окружения PgWorker-проектов
-/// (docs/e2e-isolation.md §1).
+/// (arch/testing/02-e2e-isolation.md §1).
 /// </summary>
 public static class E2eFixture
 {
@@ -89,7 +89,7 @@ public static class E2eFixture
     // бюджетом/cancelled) — все серии получают хронометраж ожиданий без правки
     // вызовов; длительные ожидания каждые 5 с пишут [TIMING-TICK] (живой
     // прогресс полла — «что происходило» видно между итоговыми строками,
-    // docs/e2e-launch.md §1).
+    // arch/testing/01-e2e-launch.md §1).
     public static async Task<bool> WaitForAsync(
         Func<Task<bool>> condition, TimeSpan timeout, CancellationToken ct = default,
         [System.Runtime.CompilerServices.CallerArgumentExpression(nameof(condition))] string? what = null)
@@ -240,7 +240,7 @@ public static class E2eFixture
         string? logFile = null)
         => RunProcessCoreAsync(file, args, ct, timeout, env, logFile);
 
-    /// <summary>Объединение потоков (канон docs/e2e-launch.md §1):
+    /// <summary>Объединение потоков (канон arch/testing/01-e2e-launch.md §1):
     /// stdout-блок, затем stderr-блок; между двумя непустыми блоками ровно
     /// один перевод строки, края тримятся. docker-CLI разводит потоки
     /// контейнера по СВОИМ потокам (docker logs: stdout контейнера → stdout
@@ -345,7 +345,7 @@ public static class E2eFixture
     // per-process (ниже) — xUnit буферизует Console до конца факта,
     // файл виден наблюдателю во время «тихих» фаз (канон e2e-launch).
 
-    // ===== Per-process журналы статических фаз (docs/e2e-launch.md §0) =====
+    // ===== Per-process журналы статических фаз (arch/testing/01-e2e-launch.md §0) =====
 
     // Суффикс {ветка|fallback}-{pid} вычисляется ОДИН раз на процесс; соседние
     // процессы (любые ветки) пишут в разные файлы.

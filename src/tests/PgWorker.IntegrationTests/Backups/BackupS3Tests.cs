@@ -9,7 +9,7 @@ namespace PgWorker.IntegrationTests.Backups;
 
 // S3-листер против живого ownS3: у КАЖДОГО Fact своё окружение OwnS3
 // (guid-имя pgw-em-*, динамический порт, свой bucket, own-only teardown с
-// ассертом чистоты — docs/e2e-isolation.md §1/§3): посев одного теста не виден
+// ассертом чистоты — arch/testing/02-e2e-isolation.md §1/§3): посев одного теста не виден
 // другому. Сценарии: list/пагинация/отсутствие префикса (spec Ф2),
 // ретенционные list/delete, verify-листинг/GET history (Ф2).
 [Collection(NonE2eCollection.Name)]
@@ -434,7 +434,7 @@ public class BackupS3Tests
         got.IsSuccess.Should().BeFalse();
     }
 
-    // AAA: гвард чужой цепочки (arch/19 §3): первый put — запись; повтор теми
+    // AAA: гвард чужой цепочки (arch/backups/02-wal-archive.md §1): первый put — запись; повтор теми
     // же байтами — идемпотентный успех БЕЗ перезаписи; иное содержимое под тем
     // же именем (другая инкарнация в общем префиксе) — конфликт с маркером,
     // архивный объект не тронут (DR-источник цел).

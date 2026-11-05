@@ -6,7 +6,7 @@ namespace PgWorker.Moves;
 /// <summary>
 /// Статус-ключ переезда /clusters/&lt;C&gt;/buckets/status/bucket_&lt;i&gt; (формат скриптов,
 /// spec §4.2, Д6) + атомарный flip-txn: compare routing=cur → put routing=new +
-/// delete status (эквивалент etcd_flip скриптов, arch/11 §5). Failover по
+/// delete status (эквивалент etcd_flip скриптов, arch/pg-clusters/11-buckets.md §5). Failover по
 /// endpoints — паттерн WorkJournal.WithFailoverAsync.
 /// </summary>
 public sealed class MoveStatusStore(IEtcdGateway gateway, string[] endpoints)

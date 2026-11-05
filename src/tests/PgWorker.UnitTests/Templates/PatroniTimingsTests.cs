@@ -4,7 +4,7 @@ using PgWorker.Core.Templates;
 
 namespace PgWorker.UnitTests.Templates;
 
-// PatroniTimings (arch/14 §2.1/§5 C): канон таймингов Patroni (полы
+// PatroniTimings (arch/pgworker/01-placement.md §1/§5 C): канон таймингов Patroni (полы
 // Patroni 4.x: loop_wait≥1, retry_timeout≥3, ttl≥20). Построение патча
 // конвергенции с живёт в DcsConfigConvergence — кейсы патча см.
 // DcsConfigConvergenceTests (кейсы Regression_T09_Divergence_* мигрированы).

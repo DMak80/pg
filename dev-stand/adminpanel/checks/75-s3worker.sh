@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 75-s3worker.sh (arch/24 §1.1; мерж-гейт задачи): S3-домен против ЖИВОГО
+# 75-s3worker.sh (arch/s3worker/07-api.md §1; мерж-гейт задачи): S3-домен против ЖИВОГО
 # воркера (s3worker из deploy-контура: /healthz и /metrics — https без клиентского серта, /api — пара seed): демо-кластер
 # через API (201 → provisioning воркером ≤ NodeBootSec+тик-запас → Active) →
 # валидации (400/422) → sync-probe 202 → снос (202 → чистота etcd/docker/volume).
@@ -40,7 +40,7 @@ done
   || { echo "❌ s3worker not responding (:${S3W_PORT}/healthz; did 00-up.sh bring it up?)"; exit 1; }
 echo "  s3worker alive: /healthz via https"
 
-# /api без клиентского серта — ровно 401 (mTLS-политика /api, arch/24 §1.1;
+# /api без клиентского серта — ровно 401 (mTLS-политика /api, arch/s3worker/07-api.md §1;
 # /healthz выше — открытая грань). GET на существующий маршрут мутации:
 # middleware замыкает 401 до роутинга — состояние не мутируется.
 s3_no_cert_code="$("${HEALTH[@]}" -o /dev/null -w '%{http_code}' "$BASE/api/s3/clusters" 2>/dev/null)"
@@ -72,7 +72,7 @@ docker volume ls -q --filter name="s3w-$TAG-node1-data" | grep -q . || { echo "�
 
 # 3) Валидации: невалидный name → 400; etcdBackup без env-пары спец-ключа → 422
 #    (стенд: S3W_ETCD_BACKUP_* не заданы — отсутствие пары = неполная, гвард
-#    полноты arch/24 §1.1).
+#    полноты arch/s3worker/07-api.md §1).
 c="$("${CURL[@]}" -o /dev/null -w '%{http_code}' -X POST "$BASE/api/s3/clusters" -H 'Content-Type: application/json' \
   -d "{\"name\":\"Bad-Name\",\"platform\":\"owns3\",\"instances\":[{\"name\":\"node1\",\"placement\":{\"dockerHost\":\"local\"},\"resources\":{\"cpu\":1,\"memGi\":1,\"diskGi\":5}}]}")"
 [ "$c" = 400 ] || { echo "❌ invalid name → $c, expected 400"; exit 1; }

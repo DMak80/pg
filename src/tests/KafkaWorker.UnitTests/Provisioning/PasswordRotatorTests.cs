@@ -8,7 +8,7 @@ using KafkaWorker.Core.Templates;
 
 namespace KafkaWorker.UnitTests.Provisioning;
 
-// PasswordRotator (arch/16 §5 H): фазы A/B/C без окна недоступности, отказ
+// PasswordRotator (arch/kafkaworker/04-security.md §4 H): фазы A/B/C без окна недоступности, отказ
 // между фазами продолжает повтор, снапшоты P12 «до/после», нет заявки → no-op.
 
 public class PasswordRotatorTests

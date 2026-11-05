@@ -433,7 +433,7 @@ public class KafkaAlertRulesTests
     public void RotationTicketOfDeadCluster_NotAlerted()
     {
         // Arrange: заявка-сирота (кластера нет) — не алертится; живой кластер её
-        // не переживёт (arch/16 X-фазы удаляют rotations вместе с кластером).
+        // не переживёт (arch/kafkaworker/README.md X-фазы удаляют rotations вместе с кластером).
         var snapshot = Snapshot(ActiveCluster()) with
         {
             Rotations = [new KafkaRotationTicket("ghost", 1750000200, "admin")],
@@ -653,7 +653,7 @@ public class KafkaAlertRulesTests
         alerts.Should().NotContain(a => a.Kind == "kafka-reassignment-stale");
     }
 
-    // ===== (arch/15 §6): kafka-security-missing / kafka-admin-rotation-pending =====
+    // ===== (arch/kafka-clusters/06-fault-tolerance.md): kafka-security-missing / kafka-admin-rotation-pending =====
 
     [Fact]
     public void Evaluate_ActiveClusterWithoutSecurity_CriticalKafkaSecurityMissing()

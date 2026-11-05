@@ -10,7 +10,7 @@ using Xunit;
 
 namespace S3Worker.IntegrationTests.E2e;
 
-// Docker-E2E mesh-управления (spec §8.3, arch/24 §5 G): PKI-провижининг +
+// Docker-E2E mesh-управления (spec §8.3, arch/s3worker/05-mesh-governance.md G): PKI-провижининг +
 // репликация по links, переживание переезда (тот же сертификат), deny/allow
 // (изоляция доводкой G), частичный граф, 0 инстансов. S3-клиент — AWSSDK
 // root-креды профиля по host-портам из portalloc; админ-грань — SigV4 root.
@@ -214,7 +214,7 @@ public class S3E2eMeshTests
             // Доведение denylist (не тот же факт, что снос связей: deny-перезапись
             // и delete-пара — разные операции тика): ручной join честен после того,
             // как отзыва достоверно на приёмнике.
-            // Доведение denylist — всем RUNNING КРОМЕ отозванного (arch/24 §5 G п.1:
+            // Доведение denylist — всем RUNNING КРОМЕ отозванного (arch/s3worker/05-mesh-governance.md G п.1:
             // отозванному собственный список не шлётся, изоляция — записи у соседей);
             // факт отзыва на приёмнике доказывает ручной join ниже (403).
             await fx.WaitPhaseAsync("denylist-pushed", async () =>
@@ -285,7 +285,7 @@ public class S3E2eMeshTests
                     && c is not null && NeighborsOf(c.Value).SetEquals(["east1"]);
             }, TimeSpan.FromSeconds(90), ct);
 
-            // Это НЕ дефект: full-mesh не инвариант (arch/23 §2) — доводка строит
+            // Это НЕ дефект: full-mesh не инвариант (arch/s3-clusters/02-keys.md §1) — доводка строит
             // ровно заданный links; состав выше проверен (у east2/west1 нет связи).
 
             await S3E2eScaleTests.DeleteClusterAndWaitCleanAsync(fx, api, cluster, ct, "east1", "east2", "west1");
@@ -332,7 +332,7 @@ public class S3E2eMeshTests
                     && config.Contains("\"nodes\":0");
             }, TimeSpan.FromSeconds(30), ct);
             (await S3E2eScaleTests.GetOrNullAsync(fx, $"/s3/clusters/{cluster}/endpoints", ct))
-                .Should().BeNull("endpoints exists ⟺ ≥1 instance (arch/23 §2)");
+                .Should().BeNull("endpoints exists ⟺ ≥1 instance (arch/s3-clusters/02-keys.md §1)");
 
             // Act: добавление двух инстансов в живой кластер + links.
             foreach (var name in new[] { "east1", "east2" })
@@ -389,7 +389,7 @@ public class S3E2eMeshTests
     private static async Task<IAmazonS3> S3ClientAsync(
         S3E2eEnvironment fx, string cluster, int port, CancellationToken ct)
     {
-        // Креды — per-cluster secrets-ключ etcd (arch/23 §2); без печати.
+        // Креды — per-cluster secrets-ключ etcd (arch/s3-clusters/02-keys.md §1); без печати.
         var (rootUser, rootPassword) = await fx.RootPairOfAsync(cluster, ct);
         return new AmazonS3Client(
             new Amazon.Runtime.BasicAWSCredentials(rootUser, rootPassword),
@@ -421,7 +421,7 @@ public class S3E2eMeshTests
     {
         try
         {
-            // Креды — per-cluster secrets-ключ etcd (arch/23 §2); без печати.
+            // Креды — per-cluster secrets-ключ etcd (arch/s3-clusters/02-keys.md §1); без печати.
             var (rootUser, rootPassword) = await fx.RootPairOfAsync(cluster, ct);
             using var request = new HttpRequestMessage(HttpMethod.Get, $"http://localhost:{port}/admin/replication/status");
             var signed = SigV4GetSigner.Sign(
@@ -450,7 +450,7 @@ public class S3E2eMeshTests
     {
         try
         {
-            // Креды — per-cluster secrets-ключ etcd (arch/23 §2); без печати.
+            // Креды — per-cluster secrets-ключ etcd (arch/s3-clusters/02-keys.md §1); без печати.
             var (rootUser, rootPassword) = await fx.RootPairOfAsync(cluster, ct);
             using var request = new HttpRequestMessage(HttpMethod.Get, $"http://localhost:{port}/admin/replication/denylist");
             var signed = SigV4GetSigner.Sign(
@@ -483,7 +483,7 @@ public class S3E2eMeshTests
     private static async Task<HttpStatusCode> AdminJoinAsync(
         S3E2eEnvironment fx, string cluster, int initiatorPort, int neighborPort, CancellationToken ct)
     {
-        // Креды — per-cluster secrets-ключ etcd (arch/23 §2); без печати.
+        // Креды — per-cluster secrets-ключ etcd (arch/s3-clusters/02-keys.md §1); без печати.
         var (rootUser, rootPassword) = await fx.RootPairOfAsync(cluster, ct);
         var body = JsonSerializer.SerializeToUtf8Bytes(new
         {

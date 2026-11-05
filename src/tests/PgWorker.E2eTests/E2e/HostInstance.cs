@@ -1,7 +1,7 @@
 namespace PgWorker.IntegrationTests.E2e;
 
 /// <summary>Запущенный SUT-воркер — КОНТЕЙНЕР в сети контура (Вариант A,
-/// docs/e2e-isolation.md §3). Имя класса сохранено (HostInstance) — сценарии
+/// arch/testing/02-e2e-isolation.md §3). Имя класса сохранено (HostInstance) — сценарии
 /// не переписываются на новый тип. Dispose идемпотентен: сценарий dispose-ит
 /// воркер сам, teardown окружения может попытаться ещё раз (страховка).</summary>
 public sealed class HostInstance : IAsyncDisposable
@@ -28,7 +28,7 @@ public sealed class HostInstance : IAsyncDisposable
     public string ContainerName { get; }
 
     /// <summary>mTLS-адрес HTTP API воркера для ТЕСТА: динамическая публикация
-    /// API на хост (docs/e2e-isolation.md §2) — https://localhost:{фактический
+    /// API на хост (arch/testing/02-e2e-isolation.md §2) — https://localhost:{фактический
     /// порт} (SAN серверного серта покрывает "localhost"); внутрисетевые
     /// потребители ходят по advertise https://{Alias}:8443.</summary>
     public string ApiUrl => $"https://localhost:{_apiHostPort}";

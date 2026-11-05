@@ -1,6 +1,6 @@
 namespace S3Worker.Core.OwnS3;
 
-/// <summary>Статическая access key профиля (arch/23 §6): read-write для записи
+/// <summary>Статическая access key профиля (arch/s3-clusters/06-secrets.md): read-write для записи
 /// бэкапов, read-only для панели (owns3/05 §6).</summary>
 public sealed record OwnS3AccessKey(string AccessKey, string SecretKey, string Policy);
 
@@ -13,7 +13,7 @@ public sealed record OwnS3NodeSecrets(
     string RootPassword,
     IReadOnlyList<OwnS3AccessKey> AccessKeys)
 {
-    // env ноды (arch/23 §6): прецедент формата OWNS3_ACCESS_KEYS__<i>__*
+    // env ноды (arch/s3-clusters/06-secrets.md): прецедент формата OWNS3_ACCESS_KEYS__<i>__*
     // (owns3/05 §2, сервис owns3 deploy-compose).
     public IReadOnlyDictionary<string, string> ToContainerEnv()
     {

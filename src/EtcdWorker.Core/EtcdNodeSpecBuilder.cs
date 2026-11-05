@@ -1,6 +1,6 @@
 namespace EtcdWorker.Core;
 
-/// <summary>Флаги managed-узла etcd (arch/04 §3, arch/25 §2): peer — только
+/// <summary>Флаги managed-узла etcd (arch/etcdworker/01-placement.md, arch/etcdworker/01-placement.md): peer — только
 /// имя узла сети; client — host-публикация; initial-cluster-state=existing
 /// (член добавлен member-API ДО старта). initialCluster — полный состав
 /// кластера для join (без него etcd строит initial-cluster только из себя и
@@ -30,7 +30,7 @@ public static class EtcdNodeSpecBuilder
             "--heartbeat-interval=250",
             "--election-timeout=2000",
             "--auto-compaction-retention=1",
-            "--quota-backend-bytes=8589934592", // 8 GiB (arch/04 §3)
+            "--quota-backend-bytes=8589934592", // 8 GiB (arch/etcdworker/01-placement.md)
         ]);
         return ([.. cmd], new Dictionary<string, string>());
     }

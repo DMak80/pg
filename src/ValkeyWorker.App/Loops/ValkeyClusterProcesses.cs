@@ -14,8 +14,8 @@ namespace ValkeyWorker.App.Loops;
 // unit-тестах цикла). Валю-туннель Active-ветки: надзор (C) → converge (D) →
 // ротация (E) — без kafka-специфики (нет reassign/topic-sync/security/backoff).
 
-/// <summary>Один reconcile-тик над всеми кластерами (процессы arch/21 §5).
-/// Слепок /valkey/clusters/ читает ReconcileLoop из опросного кэша (arch/17 S10)
+/// <summary>Один reconcile-тик над всеми кластерами (процессы arch/valkeyworker/README.md).
+/// Слепок /valkey/clusters/ читает ReconcileLoop из опросного кэша (arch/synchronization/05-delta-application.md §S10)
 /// и передаёт сюда.</summary>
 public interface IValkeyClusterProcesses
 {
@@ -25,7 +25,7 @@ public interface IValkeyClusterProcesses
 
 /// <summary>
 /// Реализация поверх процессов (синглтоны DI): слепок опросного кэша
-/// /valkey/clusters/ (arch/17 S10 — читает ReconcileLoop) → парсер → клэйм →
+/// /valkey/clusters/ (arch/synchronization/05-delta-application.md §S10 — читает ReconcileLoop) → парсер → клэйм →
 /// классификация → процесс. Ошибки кластера не роняют тик; параллелизм —
 /// SemaphoreSlim MaxClusters (внутри кластера — последовательно).
 /// </summary>
@@ -92,7 +92,7 @@ internal sealed class ValkeyClusterProcesses(
             if (!claimed.Value)
                 return; // обрабатывает другой инстанс
 
-            // Cancellation-гвард клэйма (arch/17 S5): потеря lease прерывает
+            // Cancellation-гвард клэйма (arch/synchronization/02-predicates-and-mutations.md §S5): потеря lease прерывает
             // исполняющийся тик кластера — linked-токен течёт во все операции.
             lease = CancellationTokenSource.CreateLinkedTokenSource(ct, claims.LeaseToken(cluster));
             var tick = lease.Token;
@@ -110,7 +110,7 @@ internal sealed class ValkeyClusterProcesses(
                     break;
 
                 case ValkeyClusterKind.Active:
-                    // миграция TLS — ПЕРВЫМ шагом Active-ветки (arch/21 §5):
+                    // миграция TLS — ПЕРВЫМ шагом Active-ветки (arch/valkeyworker/README.md):
                     // InProgress ⇒ надзор/converge/ротация в этом тике не идут
                     // (миграция доиграет тиками; узкое окно plain→TLS).
                     await RunClusterOpAsync(cluster, "active", async () =>
@@ -121,7 +121,7 @@ internal sealed class ValkeyClusterProcesses(
                         if (migration.Value == TlsMigrator.MigrationOutcome.InProgress)
                             return Result.Success();
 
-                        // ротация CA — ВТОРОЙ шаг Active-ветки (arch/21 §5 K):
+                        // ротация CA — ВТОРОЙ шаг Active-ветки (arch/valkeyworker/04-security.md §6 K):
                         // окно открыто (InProgress) ⇒ надзор/converge/ротация в
                         // этом тике не идут (узкое окно двойного доверия);
                         // Waiting/NotNeeded — ветка продолжается (ждущие исходы
@@ -132,7 +132,7 @@ internal sealed class ValkeyClusterProcesses(
                         if (rotation.Value == CaRotator.RotationOutcome.InProgress)
                             return Result.Success();
 
-                        // Валю-туннель Active-ветки (arch/21 §5): надзор (C) →
+                        // Валю-туннель Active-ветки (arch/valkeyworker/README.md): надзор (C) →
                         // converge (D) → ротация (E). Конвергер требует
                         // endpoints+admin-кред — Active без дискавери пропускает D.
                         var supervised = await supervisor.TickAsync(snap, tick);
@@ -160,7 +160,7 @@ internal sealed class ValkeyClusterProcesses(
         }
         catch (OperationCanceledException oce) when (lease?.IsCancellationRequested == true)
         {
-            // Потеря клэйма прервала операцию кластера (гвард arch/17 S5):
+            // Потеря клэйма прервала операцию кластера (гвард arch/synchronization/02-predicates-and-mutations.md §S5):
             // внятная фаза в журнале; кластер подхватит следующий тик/инстанс.
             logger.LogWarning("cluster {Cluster}: lease lost — tick aborted ({Message})",
                 snap.Cluster, oce.Message);
@@ -182,7 +182,7 @@ internal sealed class ValkeyClusterProcesses(
     // Вызов процесса под catch-all: исключение процесса → лог + журнал
     // (phase=crashed, last_error), штатный Result — в обычный лог цикла.
     // host — токен остановки хоста (дискриминатор: OCE по нему = остановка,
-    // OCE по ct = потеря клэйма — гварда arch/17 S5).
+    // OCE по ct = потеря клэйма — гварда arch/synchronization/02-predicates-and-mutations.md §S5).
     private async Task RunClusterOpAsync(
         string cluster, string op, Func<Task<Result>> call, CancellationToken host, CancellationToken ct)
     {
@@ -200,7 +200,7 @@ internal sealed class ValkeyClusterProcesses(
         }
         catch (OperationCanceledException)
         {
-            await WriteLeaseLostAsync(cluster, op); // потеря клэйма — гвард arch/17 S5
+            await WriteLeaseLostAsync(cluster, op); // потеря клэйма — гвард arch/synchronization/02-predicates-and-mutations.md §S5
         }
         catch (Exception ex)
         {
@@ -218,7 +218,7 @@ internal sealed class ValkeyClusterProcesses(
         }
     }
 
-    // Фаза lease-lost в журнале воркера (arch/17 S5); CancellationToken.None —
+    // Фаза lease-lost в журнале воркера (arch/synchronization/02-predicates-and-mutations.md §S5); CancellationToken.None —
     // токен тика отменён, запись обязана доехать.
     private async Task WriteLeaseLostAsync(string cluster, string op)
     {

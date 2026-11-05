@@ -11,7 +11,7 @@ using Xunit;
 namespace KafkaWorker.UnitTests.App;
 
 // ReconcileLoop на моках, чтение состояния из слепка опросного кэша
-// (arch/17 S10, реестр E10): тик работает КАЖДЫЙ раз (self-healing ждёт
+// (arch/synchronization/05-delta-application.md §S10, реестр E10): тик работает КАЖДЫЙ раз (self-healing ждёт
 // не-etcd события — гейтов по дельте нет), etcd в тике не читается;
 // обработки идут по текущему слепку кэша.
 public class ReconcileLoopTests
@@ -46,7 +46,7 @@ public class ReconcileLoopTests
         _etcd.Seed($"/kafka/clusters/{name}/brokers/broker1/state", "RUNNING");
     }
 
-    // AAA (arch/17 S10): тик работает КАЖДЫЙ раз — между тиками состояния не
+    // AAA (arch/synchronization/05-delta-application.md §S10): тик работает КАЖДЫЙ раз — между тиками состояния не
     // менялось, но self-healing не гейтится: processes зовутся каждым тиком.
     [Fact]
     public async Task Tick_ProcessesEveryTick()
@@ -66,7 +66,7 @@ public class ReconcileLoopTests
         processes.Active.Should().Equal("events", "events");
     }
 
-    // AAA (arch/17 S10, реестр E10): etcd-чтений в тике ноль — Range делают
+    // AAA (arch/synchronization/05-delta-application.md §S10, реестр E10): etcd-чтений в тике ноль — Range делают
     // только старт кэша и его фоновый опрос; тик читает слепок кэша, не etcd.
     [Fact]
     public async Task Tick_ReadsSnapshotFromCache_NoEtcdRangeInTick()
@@ -114,7 +114,7 @@ public class ReconcileLoopTests
         return last;
     }
 
-    // AAA (arch/17 S10): изменение домена доезжает до тика через слепок кэша —
+    // AAA (arch/synchronization/05-delta-application.md §S10): изменение домена доезжает до тика через слепок кэша —
     // обработка по НОВОМУ состоянию (заявка provisioning вместо Active).
     [Fact]
     public async Task Tick_DomainChange_ProcessesNewStateFromSnapshot()
@@ -168,7 +168,7 @@ public class ReconcileLoopTests
     }
 
     // Управляемый источник контроль-плейна тика (замена EtcdPrefixSources на
-    // фейках, arch/17 S10): слепок правит тест — «опрос принёс изменение»
+    // фейках, arch/synchronization/05-delta-application.md §S10): слепок правит тест — «опрос принёс изменение»
     // эмулируется перечитыванием Store (реальный кэш обновляет слепок своим
     // фоновым опросом); «сбой опроса» — слепок остаётся прежним.
     private sealed class FakeSources : IPrefixPollSources

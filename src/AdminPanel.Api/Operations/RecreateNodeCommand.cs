@@ -14,7 +14,7 @@ public sealed record NodeRecreatedDto(string Scope, string Node, string State, s
 // Тело POST /api/ha/{scope}/nodes/{node}/recreate (mode опционален: soft).
 public sealed record RecreateNodeRequest(string? Mode);
 
-// Прокси: панель не пишет в etcd — команда уходит в API PgWorker (arch/14 §1.1);
+// Прокси: панель не пишет в etcd — команда уходит в API PgWorker (arch/pgworker/07-api.md §1);
 // у recreate нет оператора (requested_by не участвует) — requestedBy: null.
 [InjectAsScoped]
 public sealed class RecreateNodeCommandHandler(IWorkerApiGateway api)

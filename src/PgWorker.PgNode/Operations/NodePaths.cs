@@ -1,9 +1,9 @@
 namespace PgWorker.PgNode.Operations;
 
-/// <summary>Пути операций внутри контейнера ноды (arch/19 §3.5/§3.6/§5):
+/// <summary>Пути операций внутри контейнера ноды (arch/backups/03-restore.md/§3.6/§5):
 /// приёмник живёт в контейнере ноды, все операции пишут на data-volume ноды.
 /// Pgdata — Spilo-layout PGDATA ноды (volume монтируется в
-/// /home/postgres/pgdata, данные — pgroot/data, arch/14 §2.1) — цель
+/// /home/postgres/pgdata, данные — pgroot/data, arch/pgworker/01-placement.md §1) — цель
 /// restore-операции (шард демонтирован, volume пуст, §3.5). DrillRoot —
 /// scratch-каталог дрилов (НЕ PGDATA ноды — прод-данные недостижимы,
 /// §3.6). Staging — дефолт staging полного/verify (env PGW_BACKUP_STAGING_DIR

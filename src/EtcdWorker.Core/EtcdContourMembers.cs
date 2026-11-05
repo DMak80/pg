@@ -5,7 +5,7 @@ namespace EtcdWorker.Core;
 /// <summary>Managed-член контура: номер узла из peer-URL-паттерна + исходный член.</summary>
 public sealed record ManagedMember(int K, EtcdMember Member);
 
-/// <summary>Разбор member list (arch/25 §2/§3.1): каноническая форма peer-URL
+/// <summary>Разбор member list (arch/etcdworker/01-placement.md/§3.1): каноническая форма peer-URL
 /// managed-узла — константа http://etcdw-node-<k>:2380 (по ней панель
 /// классифицирует managed/external); чек стенда матчит по host-префиксу
 /// "http://etcdw-node-" — намеренно шире канона (ловит managed-looking URL

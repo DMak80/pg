@@ -71,7 +71,7 @@ public class BackupsPolicyGarbageTests
 
 // Панельная валидация policy-тела (400-ветка модуля, u16/arch/02 §9.12):
 // границы гварда панели — дубль для UX (истина — воркер). Имя кластера —
-// канон; garbageMinAgeSec < 600 — 400 (A1: граница канона arch/19 §4). AAA.
+// канон; garbageMinAgeSec < 600 — 400 (A1: граница канона arch/backups/05-etcd-contract.md). AAA.
 public class PolicyBodyValidationTests
 {
     private static UpdateBackupsPolicyRequest ValidBody(long? garbage = 600)

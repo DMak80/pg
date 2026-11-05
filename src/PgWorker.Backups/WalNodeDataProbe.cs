@@ -2,10 +2,10 @@ using PgWorker.Provisioning.Probes;
 
 namespace PgWorker.Backups;
 
-/// <summary>Проба данных ноды (arch/14 Д3) — адаптер GET /api/node/pgdata
-/// приёмника (канал arch/25 №22) под шов провижининга INodeDataProbe:
+/// <summary>Проба данных ноды (arch/pgworker/README.md Д3) — адаптер GET /api/node/pgdata
+/// приёмника (канал arch/communications/02-channel-registry.md №22) под шов провижининга INodeDataProbe:
 /// резолв адреса приёмника — по имени docker-контейнера ноды
-/// (WalReceiverAddress, arch/19 §2).</summary>
+/// (WalReceiverAddress, arch/backups/01-full-backup.md).</summary>
 public sealed class WalNodeDataProbe(IWalReceiverApiClient receiver) : INodeDataProbe
 {
     public async Task<NodeDataProbeReply> ProbeAsync(

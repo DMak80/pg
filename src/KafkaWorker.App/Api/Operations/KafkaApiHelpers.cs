@@ -69,7 +69,7 @@ internal static class KafkaApiHelpers
     internal static string TopicKey(string cluster, string topic)
         => $"/kafka/clusters/{cluster}/topics/{topic}";
 
-    // Leaf-ключ lifecycle-заявки (arch/15 §3.1): тот же формат, что у воркера.
+    // Leaf-ключ lifecycle-заявки (arch/kafka-clusters/03-topics.md §2): тот же формат, что у воркера.
     internal static string LifecycleKey(string cluster, string topic, string op)
         => $"/kafka/clusters/{cluster}/topics/{topic}/desired.{op}";
 

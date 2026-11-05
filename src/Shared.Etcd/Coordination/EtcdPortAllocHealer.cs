@@ -3,7 +3,7 @@ using Shared.Etcd.Client;
 
 namespace Shared.Etcd.Coordination;
 
-// Лестница E9 самолечения portalloc (arch/17): нода без записи portalloc —
+// Лестница E9 самолечения portalloc (arch/synchronization/README.md): нода без записи portalloc —
 // ДО любых деструктивных действий — реконструкция из inspect живого контейнера
 // (published-порт + host), put-if-absent под locks/portalloc; проигрыш txn →
 // re-read (первый записавший — истина, S5). Контейнера нет / inspect
@@ -12,7 +12,7 @@ namespace Shared.Etcd.Coordination;
 // Доменные воркеры используют общий класс через тонкий фасад: инспекция ноды,
 // ключ portalloc, индекс чужих портов и доменный формат значения передаются
 // делегатами (PortAllocHealerDeps) — поле порта канона своего домена
-// (arch/15 §4 / arch/20 §3 «client», arch/23 §8 «s3») знает только фасад.
+// (arch/kafka-clusters/04-coordination.md §1 / arch/valkey-clusters/03-coordination.md §1 «client», arch/s3-clusters/08-coordination.md «s3») знает только фасад.
 public sealed record PortAllocNodeAddress(string Host, int Port);
 
 public sealed record PortAllocHealerDeps

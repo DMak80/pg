@@ -98,7 +98,7 @@ public sealed class MemberApiBehaviorTests(EtcdWorkerEnvironment env)
     }
 
     // AAA: peer-URL управляемого члена содержит паттерн /etcdw-node-<k>: —
-    // инвариант детекта managed-состава (arch/25 §2)
+    // инвариант детекта managed-состава (arch/etcdworker/01-placement.md)
     [Fact]
     public async Task MemberList_ManagedPatternParse()
     {

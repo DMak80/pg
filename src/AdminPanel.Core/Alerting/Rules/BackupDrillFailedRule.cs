@@ -4,9 +4,9 @@ using Shared.Core.DI;
 
 namespace AdminPanel.Core.Alerting.Rules;
 
-// backup-drill-failed (critical, reliability, arch/19 §3.6): последний
+// backup-drill-failed (critical, reliability, arch/backups/04-drill.md): последний
 // дрилл FAILED живого шарда Active-кластера — восстановимость из бэкапа не
-// доказана; разбор по runbook (docs/backup-restore.md §Дрилл) и повторный
+// доказана; разбор по runbook (arch/backups/10-runbook-restore.md §Дрилл) и повторный
 // дрилл после лечения. RUNNING/фазы/SUCCEEDED без алерта — прогресс виден
 // в статусе ключа.
 [InjectAsSingleton(typeof(IAlertRule))]
@@ -47,7 +47,7 @@ public sealed class BackupDrillFailedRule : IAlertRule
                 null,
                 "restore drill failed — recoverability from backup is not proven",
                 AlertRemedy.OperatorRunbook,
-                "investigate per docs/backup-restore.md §Дрилл; recoverability is proven by a repeat drill after remediation");
+                "investigate per arch/backups/10-runbook-restore.md §Дрилл; recoverability is proven by a repeat drill after remediation");
         }
     }
 }

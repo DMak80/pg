@@ -90,7 +90,7 @@ echo "  no AccessKey/SecretKey secrets in the DTO"
 # DTO без ключей.
 api /api/backups/s3-pools | jq -e 'any(.[]; .name == "backups" and (.nodes | length) >= 1)' >/dev/null \
   || { echo "❌ /api/backups/s3-pools: no backups pool (create it via the panel)"; exit 1; }
-# Состав кредов пула (rootUser + accessKeys name/policy, arch/23 §2) в DTO
+# Состав кредов пула (rootUser + accessKeys name/policy, arch/s3-clusters/02-keys.md §1) в DTO
 # легален — это имена; секреты — только значения ключей:
 # AccessKey/SecretKey/ACCESS_KEY/SECRET_KEY.
 api /api/backups/s3-pools | jq -e '((tostring) | test("AccessKey|SecretKey|ACCESS_KEY|SECRET_KEY")) | not' >/dev/null \

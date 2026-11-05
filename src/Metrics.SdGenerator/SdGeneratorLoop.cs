@@ -3,9 +3,9 @@ using Shared.Etcd.Client;
 
 namespace Metrics.SdGenerator;
 
-// Тик генератора (arch/18 §5.4): failover-Range префикса portalloc → маппинг →
+// Тик генератора (arch/metrics/05-storage.md §4): failover-Range префикса portalloc → маппинг →
 // атомарная запись при diff → отметка успеха. Два file_sd-файла ОДНИМ проходом
-// (arch/18 §5.4/§8): patroni-nodes.json (порт 8008) + pgnode-nodes.json
+// (arch/metrics/05-storage.md §4/§8): patroni-nodes.json (порт 8008) + pgnode-nodes.json
 // (порт 8080, те же группы). Консервативная свежесть: ошибка чтения etcd не
 // трогает ни файлы таргетов, ни метрику last_success.
 public sealed class SdGeneratorLoop(

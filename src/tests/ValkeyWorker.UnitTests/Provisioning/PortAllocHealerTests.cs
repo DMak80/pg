@@ -5,7 +5,7 @@ using Xunit;
 
 namespace ValkeyWorker.UnitTests.Provisioning;
 
-// Лестница E9 (arch/21 §5 C): реконструкция portalloc из inspect живого
+// Лестница E9 (arch/valkeyworker/02-cluster-lifecycle.md §4 C): реконструкция portalloc из inspect живого
 // контейнера (put-if-absent под locks/portalloc, проигрыш → re-read);
 // контейнера нет / inspect недоступен → Failed (E9 не выдумывает порт).
 public class PortAllocHealerTests

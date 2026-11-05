@@ -1,14 +1,14 @@
 
-# Образ узла кластера pgworker-node (Д4, spec §5.1, arch/14 §2.1):
+# Образ узла кластера pgworker-node (Д4, spec §5.1, arch/pgworker/01-placement.md §1):
 # Spilo (PG18+Patroni; R1/Д11 закрыт: failover-слоты поддерживаются с PG17)
-# + pg_doorman (P13–P17, ОБЯЗАТЕЛЕН: клиентский вход :6432, arch/14 §8 —
+# + pg_doorman (P13–P17, ОБЯЗАТЕЛЕН: клиентский вход :6432, arch/pgworker/08-operability.md §5 —
 # узлов без пулера не существует) + supervisord + pgwnodetool master-lease (P11).
 # Сборка: docker build -f docker/node/Dockerfile -t pgworker-node:dev .
 #   --build-arg DOORMAN_IMAGE=<мульти-арх образ pg_doorman> — ОБЯЗАТЕЛЕН
-#   (пин: ghcr.io/ozontech/pg_doorman:v3.11.0, arch/14 §2.1 R1); без него
+#   (пин: ghcr.io/ozontech/pg_doorman:v3.11.0, arch/pgworker/01-placement.md §1 R1); без него
 #   сборка падает fail-fast.
 
-# Пулер обязателен (arch/14 §2.1 R1): бинарник — COPY --from мульти-арх
+# Пулер обязателен (arch/pgworker/01-placement.md §1 R1): бинарник — COPY --from мульти-арх
 # контейнер-образа pg_doorman (docker выбирает архитектуру под платформу
 # сборки автоматически); отсутствие build-arg — отказ сборки с диагностикой
 # (guard-RUN в главной стадии). BuildKit не раскрывает ARG в COPY --from —
@@ -19,7 +19,7 @@ FROM ${DOORMAN_IMAGE:-alpine:3.20} AS doorman
 
 FROM ghcr.io/zalando/spilo-18:4.1-p2
 ARG DOORMAN_IMAGE
-RUN test -n "$DOORMAN_IMAGE" || { echo "DOORMAN_IMAGE build-arg is required (pg_doorman is mandatory, arch/14 §2.1 R1)"; exit 1; }
+RUN test -n "$DOORMAN_IMAGE" || { echo "DOORMAN_IMAGE build-arg is required (pg_doorman is mandatory, arch/pgworker/01-placement.md §1 R1)"; exit 1; }
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends haproxy supervisor openssl \
@@ -28,7 +28,7 @@ RUN apt-get update \
 # Бинарник пулера из официального образа (путь внутри него — /usr/bin/pg_doorman).
 COPY --from=doorman /usr/bin/pg_doorman /usr/local/bin/pg_doorman
 
-# Агент PgNode (t25/t05, arch/19 §3 + arch/14 §2.1) и служебная CLI pgwnodetool:
+# Агент PgNode (t25/t05, arch/backups/02-wal-archive.md §1 + arch/pgworker/01-placement.md §1) и служебная CLI pgwnodetool:
 # self-contained publish НА ХОСТЕ (RID хоста сборки, без trimming — рефлексия
 # Npgsql/AWSSDK/OTel), в образ — ТОЛЬКО publish-вывод (канон «publish на
 # хосте, в контейнер — артефакты»):

@@ -11,11 +11,11 @@ namespace S3Worker.App.Loops;
 
 // Агрегатор процессов для ReconcileLoop (порт ClusterProcesses PgWorker/Kafka/
 // Valkey): цикл не знает конкретных машин состояний — только эту грань
-// (мокабельно в unit-тестах цикла). Active-ветка (arch/24 §5): надзор (C) →
+// (мокабельно в unit-тестах цикла). Active-ветка (arch/s3worker/README.md): надзор (C) →
 // add-node (D) → remove-node (E); живая заявка ротации — эксклюзивная ветка.
 
-/// <summary>Один reconcile-тик над всеми кластерами (процессы arch/24 §5).
-/// Слепок /s3/ читает ReconcileLoop из опросного кэша (arch/17 S10) и
+/// <summary>Один reconcile-тик над всеми кластерами (процессы arch/s3worker/README.md).
+/// Слепок /s3/ читает ReconcileLoop из опросного кэша (arch/synchronization/05-delta-application.md §S10) и
 /// передаёт сюда.</summary>
 public interface IS3ClusterProcesses
 {
@@ -25,7 +25,7 @@ public interface IS3ClusterProcesses
 
 /// <summary>
 /// Реализация поверх координации (синглтоны DI): слепок опросного кэша /s3/
-/// (arch/17 S10 — читает ReconcileLoop) → парсер → клэйм → классификация →
+/// (arch/synchronization/05-delta-application.md §S10 — читает ReconcileLoop) → парсер → клэйм → классификация →
 /// процесс. Ошибки кластера не роняют тик; параллелизм — SemaphoreSlim
 /// MaxClusters (внутри кластера — последовательно).
 /// </summary>
@@ -47,7 +47,7 @@ internal sealed class S3ClusterProcesses(
     ILogger<S3ClusterProcesses> logger) : IS3ClusterProcesses
 {
     // Счётчик unknownKeys (spec §9): домен развивается — читатель не падает
-    // (arch/23 §2); инкремент — размер списка за тик.
+    // (arch/s3-clusters/02-keys.md §1); инкремент — размер списка за тик.
     private readonly Counter<long> _unknownKeys = meter.CreateCounter<long>("s3worker_unknown_keys_total");
 
     public async Task<int> TickAsync(IReadOnlyList<Kv> clustersKvs, CancellationToken ct)
@@ -96,7 +96,7 @@ internal sealed class S3ClusterProcesses(
             var cluster = snap.Cluster;
             var kind = S3ClusterClassifier.Classify(snap);
 
-            // Клэйм ДО процесса (S5, arch/17): exclusivity; занят другим — не ошибка.
+            // Клэйм ДО процесса (S5, arch/synchronization/README.md): exclusivity; занят другим — не ошибка.
             var claimed = await claims.TryClaimClusterAsync(cluster, ct);
             if (!claimed.IsSuccess)
             {
@@ -107,7 +107,7 @@ internal sealed class S3ClusterProcesses(
             if (!claimed.Value)
                 return; // обрабатывает другой инстанс
 
-            // Cancellation-гвард клэйма (arch/17 S5): потеря lease прерывает
+            // Cancellation-гвард клэйма (arch/synchronization/02-predicates-and-mutations.md §S5): потеря lease прерывает
             // исполняющийся тик кластера — linked-токен течёт во все операции.
             lease = CancellationTokenSource.CreateLinkedTokenSource(ct, claims.LeaseToken(cluster));
             var tick = lease.Token;
@@ -125,7 +125,7 @@ internal sealed class S3ClusterProcesses(
                     break;
 
                 case S3ClusterKind.Active:
-                    // Active-ветка (arch/24 §5, C → D → E → G → F): живая заявка
+                    // Active-ветка (arch/s3worker/README.md, C → D → E → G → F): живая заявка
                     // ротации — ЭКСКЛЮЗИВНАЯ ветка тика (надзор/D/E не идут —
                     // дисциплина «одно пересоздание за тик»); иначе надзор (C) →
                     // add-node (D) → remove-node (E).
@@ -154,15 +154,15 @@ internal sealed class S3ClusterProcesses(
                         var removed = await removeNode.TickAsync(snap, tick);
                         if (!removed.IsSuccess)
                             return removed;
-                        // Доводка состава (arch/24 §5 G) — до F: зонд видит
+                        // Доводка состава (arch/s3worker/05-mesh-governance.md G) — до F: зонд видит
                         // состав mesh доведённым тика; ошибка G прерывает
                         // ветку до F (ранний return — заявка зонда живёт).
                         progress.Mark();
                         var meshed = await mesh.TickAsync(snap, tick);
                         if (!meshed.IsSuccess)
                             return meshed;
-                        // Зонд F — последний в Active-ветке (arch/24 §5):
-                        // пишет connectivity/sync (arch/23 §3); долгие фазы
+                        // Зонд F — последний в Active-ветке (arch/s3worker/README.md):
+                        // пишет connectivity/sync (arch/s3-clusters/03-observation-statuses.md); долгие фазы
                         // отмечает сам (перед каждым вызовом грани).
                         progress.Mark();
                         return await syncProbe.TickAsync(snap, tick);
@@ -180,7 +180,7 @@ internal sealed class S3ClusterProcesses(
         }
         catch (OperationCanceledException oce) when (lease?.IsCancellationRequested == true)
         {
-            // Потеря клэйма прервала операцию кластера (гвард arch/17 S5):
+            // Потеря клэйма прервала операцию кластера (гвард arch/synchronization/02-predicates-and-mutations.md §S5):
             // внятная фаза в журнале; кластер подхватит следующий тик/инстанс.
             logger.LogWarning("cluster {Cluster}: lease lost — tick aborted ({Message})",
                 snap.Cluster, oce.Message);
@@ -202,7 +202,7 @@ internal sealed class S3ClusterProcesses(
     // Вызов процесса под catch-all: исключение процесса → лог + журнал
     // (phase=crashed, last_error), штатный Result — в обычный лог цикла.
     // host — токен остановки хоста (дискриминатор: OCE по нему = остановка,
-    // OCE по ct = потеря клэйма — гварда arch/17 S5).
+    // OCE по ct = потеря клэйма — гварда arch/synchronization/02-predicates-and-mutations.md §S5).
     internal async Task RunClusterOpAsync(
         string cluster, string op, Func<Task<Result>> call, CancellationToken host, CancellationToken ct)
     {
@@ -220,7 +220,7 @@ internal sealed class S3ClusterProcesses(
         }
         catch (OperationCanceledException)
         {
-            await WriteLeaseLostAsync(cluster, op); // потеря клэйма — гвард arch/17 S5
+            await WriteLeaseLostAsync(cluster, op); // потеря клэйма — гвард arch/synchronization/02-predicates-and-mutations.md §S5
         }
         catch (Exception ex)
         {
@@ -238,7 +238,7 @@ internal sealed class S3ClusterProcesses(
         }
     }
 
-    // Фаза lease-lost в журнале воркера (arch/17 S5); CancellationToken.None —
+    // Фаза lease-lost в журнале воркера (arch/synchronization/02-predicates-and-mutations.md §S5); CancellationToken.None —
     // токен тика отменён, запись обязана доехать.
     private async Task WriteLeaseLostAsync(string cluster, string op)
     {

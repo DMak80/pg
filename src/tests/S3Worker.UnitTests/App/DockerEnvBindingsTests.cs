@@ -3,7 +3,7 @@ using S3Worker.App;
 
 namespace S3Worker.UnitTests.App;
 
-// env-секреты docker-транспорта (arch/24 §2): S3W_DOCKER_TLS_*/S3W_DOCKER_* →
+// env-секреты docker-транспорта (arch/s3worker/01-placement.md): S3W_DOCKER_TLS_*/S3W_DOCKER_* →
 // конфиг-дерево S3Worker:Docker:{Tls,Ssh}; таблицы биндингов — единственный
 // источник соответствий (Program + тест).
 public class DockerEnvBindingsTests

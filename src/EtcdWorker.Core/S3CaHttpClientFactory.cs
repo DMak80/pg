@@ -9,7 +9,7 @@ namespace EtcdWorker.Core;
 /// (доказано E2E t42 — сборка строку не содержит, соединение даёт PartialChain) —
 /// доверие CA https S3-endpoint программное: RemoteCertificateValidationCallback
 /// сверяет корень цепочки с CA из S3CaBundlePath (механизм тот же CA
-/// kfw-install-ca, контракт arch/19 §7 не меняется). null-чек клиента,
+/// kfw-install-ca, контракт arch/backups/08-secrets.md не меняется). null-чек клиента,
 /// лежащего на http-endpoint, не нужен: фабрика ставится ТОЛЬКО при заданном
 /// S3CaBundlePath — поведение без пути прежнее (BackupS3).</summary>
 public sealed class S3CaHttpClientFactory : HttpClientFactory

@@ -6,7 +6,7 @@ using Xunit;
 
 namespace S3Worker.UnitTests.Provisioning;
 
-// Deprovisioning X0–X3 (arch/24 §5 B): маркеры REMOVING, порядок «docker →
+// Deprovisioning X0–X3 (arch/s3worker/02-cluster-lifecycle.md §3 B): маркеры REMOVING, порядок «docker →
 // etcd» (сбой docker оставляет etcd нетронутым), del координации, явное
 // снятие клэйма.
 public class DeprovisioningProcessTests

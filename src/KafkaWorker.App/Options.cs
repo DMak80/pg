@@ -1,8 +1,8 @@
 namespace KafkaWorker.App;
 
-// Конфигурация KafkaWorker (arch/16 §8): секция "KafkaWorker" в appsettings.json +
+// Конфигурация KafkaWorker (arch/kafkaworker/08-operability.md §6): секция "KafkaWorker" в appsettings.json +
 // env-оверрайды (KafkaWorker__Etcd__Endpoints__0=http://…). Per-install env-секреты —
-// только TLS HTTP API (KFW_API_TLS_*, arch/16 §4); per-cluster секреты (app/admin/CA) —
+// только TLS HTTP API (KFW_API_TLS_*, arch/kafkaworker/04-security.md §3); per-cluster секреты (app/admin/CA) —
 // в etcd.
 
 /// <summary>Корневые настройки сервиса.</summary>
@@ -21,28 +21,28 @@ public sealed class KafkaWorkerOptions
     public SnapshotOptions Snapshots { get; set; } = new();
 
     /// <summary>
-    /// Advertised-хост CLIENT-listener (arch/16 §2.1): null → имя docker-хоста
+    /// Advertised-хост CLIENT-listener (arch/kafkaworker/01-placement.md §1): null → имя docker-хоста
     /// ноды (placement). Значение обязано резолвиться клиентами (попадает в
     /// endpoints → bootstrap). Локальные стенды: host.docker.internal.
     /// </summary>
     public string? AdvertisedClientHost { get; set; }
 
-    /// <summary>HTTP API воркера (arch/16 §1.1): advertise-URL + стендовый сид.</summary>
+    /// <summary>HTTP API воркера (arch/kafkaworker/07-api.md §1): advertise-URL + стендовый сид.</summary>
     public ApiOptions Api { get; set; } = new();
 
-    /// <summary>Метрики воркера (arch/18 §3–§4): экспозиция + тик коллектора лагов.</summary>
+    /// <summary>Метрики воркера (arch/metrics/03-exposure.md–§4): экспозиция + тик коллектора лагов.</summary>
     public KafkaWorkerMetricsOptions Metrics { get; set; } = new();
 }
 
-/// <summary>Метрики KafkaWorker (arch/18 §3–§4): базовая экспозиция + интервал
+/// <summary>Метрики KafkaWorker (arch/metrics/03-exposure.md–§4): базовая экспозиция + интервал
 /// тика коллектора лагов/USR.</summary>
 public sealed class KafkaWorkerMetricsOptions : Shared.Metrics.MetricsOptions
 {
-    /// <summary>Тик коллектора лагов/USR, сек (default 30; arch/18 §4).</summary>
+    /// <summary>Тик коллектора лагов/USR, сек (default 30; arch/metrics/04-collectors.md).</summary>
     public int CollectIntervalSec { get; set; } = 30;
 }
 
-/// <summary>HTTP API воркера (arch/16 §1.1): advertise-URL в /kafkaworker/api/&lt;id&gt;
+/// <summary>HTTP API воркера (arch/kafkaworker/07-api.md §1): advertise-URL в /kafkaworker/api/&lt;id&gt;
 /// + стендовый сид-эндпоинт.</summary>
 public sealed class ApiOptions
 {
@@ -50,7 +50,7 @@ public sealed class ApiOptions
     /// обязан начинаться с https:// (HTTPS-грань; mTLS — только /api).</summary>
     public string AdvertiseUrl { get; set; } = "";
 
-    /// <summary>TLS-конфигурация HTTP API (arch/16 §1.1; mTLS — только /api).</summary>
+    /// <summary>TLS-конфигурация HTTP API (arch/kafkaworker/07-api.md §1; mTLS — только /api).</summary>
     public TlsOptions Tls { get; set; } = new();
 
     /// <summary>Демо-сид-эндпоинт POST /api/seed/demo (стенд; default false).</summary>
@@ -58,7 +58,7 @@ public sealed class ApiOptions
 }
 
 /// <summary>
-/// HTTPS HTTP API воркера (arch/16 §1.1): серверный серт+ключ и CA клиентских
+/// HTTPS HTTP API воркера (arch/kafkaworker/07-api.md §1): серверный серт+ключ и CA клиентских
 /// сертов per-install API-PKI (mTLS — только /api); env
 /// KFW_API_TLS_{CERT,KEY,CLIENT_CA}[_PATH] (таблица TlsEndpoints.EnvBindings).
 /// AllowInsecureHttp — ТОЛЬКО WAF-тесты.
@@ -80,7 +80,7 @@ public sealed class TlsOptions
 
     public string? ClientCaPath { get; set; }
 
-    /// <summary>true — HTTP без TLS; ТОЛЬКО WAF-фикстуры тестов (arch/16 §1.1).</summary>
+    /// <summary>true — HTTP без TLS; ТОЛЬКО WAF-фикстуры тестов (arch/kafkaworker/07-api.md §1).</summary>
     public bool AllowInsecureHttp { get; set; }
 }
 
@@ -115,7 +115,7 @@ public sealed class DockerHostOptions
     public string Endpoint { get; set; } = "";
 }
 
-/// <summary>Диапазон клиентских портов брокеров [From, To): 16000–16999 (arch/16 §2.1).</summary>
+/// <summary>Диапазон клиентских портов брокеров [From, To): 16000–16999 (arch/kafkaworker/01-placement.md §1).</summary>
 public sealed class PortRangeOptions
 {
     public int From { get; set; } = 16000;
@@ -129,17 +129,17 @@ public sealed class DockerImagesOptions
     public string Node { get; set; } = "apache/kafka:4.0.0";
 }
 
-/// <summary>Интервалы циклов и задержка после ошибки тика (arch/16 §8).</summary>
+/// <summary>Интервалы циклов и задержка после ошибки тика (arch/kafkaworker/08-operability.md §6).</summary>
 public sealed class LoopsOptions
 {
     public int ScanIntervalSec { get; set; } = 5;
 
     public int KeepaliveSec { get; set; } = 5;
 
-    /// <summary>Тик автосинка топиков (волна C, arch/16 §5 D).</summary>
+    /// <summary>Тик автосинка топиков (волна C, arch/kafkaworker/05-topics.md D).</summary>
     public int TopicSyncIntervalSec { get; set; } = 15;
 
-    /// <summary>Тик reassignment партиций (arch/16 §5 I: drain/balance).</summary>
+    /// <summary>Тик reassignment партиций (arch/kafkaworker/06-rebalancing.md §2 I: drain/balance).</summary>
     public int ReassignIntervalSec { get; set; } = 15;
 
     /// <summary>Максимум партиций в одной подаче reassignment (батчи).</summary>
@@ -149,14 +149,14 @@ public sealed class LoopsOptions
 
     public int ErrorDelayMs { get; set; } = 2000;
 
-    /// <summary>Watchdog зависших циклов (arch/16 §6/§8 — у PgWorker/Valkey свои
-    /// arch/14 §6/§8 / arch/21 §6/§8): Enabled=false — компонент не регистрируется;
+    /// <summary>Watchdog зависших циклов (arch/kafkaworker/08-operability.md §4/§8 — у PgWorker/Valkey свои
+    /// arch/pgworker/08-operability.md §3/§8 / arch/valkeyworker/06-operability.md §3/§8): Enabled=false — компонент не регистрируется;
     /// порог сноса = Multiplier × CheckIntervalSec (30 c при дефолтах, единый для
     /// всех циклов; порог healthz loops-alive в формуле не участвует).</summary>
     public Shared.Core.Hosting.WatchdogOptions Watchdog { get; set; } = new();
 }
 
-/// <summary>Пороги процессов (arch/16 §8).</summary>
+/// <summary>Пороги процессов (arch/kafkaworker/08-operability.md §6).</summary>
 public sealed class ThresholdsOptions
 {
     /// <summary>Бюджет ожидания сборки кластера при provisioning (K4).</summary>
@@ -165,7 +165,7 @@ public sealed class ThresholdsOptions
     /// <summary>Молчание брокера дольше порога → UNREACHABLE + пересоздание (C).</summary>
     public int NodeDeadSec { get; set; } = 90;
 
-    /// <summary>Бюджет reassign-подачи батча (arch/16 §2.4): connect+TLS+SASL+
+    /// <summary>Бюджет reassign-подачи батча (arch/kafkaworker/06-rebalancing.md §1): connect+TLS+SASL+
     /// AlterReassignments round-trip по всем endpoint-попыткам.</summary>
     public int ReassignSubmitSec { get; set; } = 60;
 
@@ -173,7 +173,7 @@ public sealed class ThresholdsOptions
     public int ReassignRetrySubmitSec { get; set; } = 120;
 
     /// <summary>Возраст не-начатой заявки (ротации app/admin/CA, ребалансировка),
-    /// после которого воркер снимает её в waiting-точке (arch/16 §5).</summary>
+    /// после которого воркер снимает её в waiting-точке (arch/kafkaworker/README.md).</summary>
     public int RotationTicketTimeoutSec { get; set; } = 3600;
 }
 

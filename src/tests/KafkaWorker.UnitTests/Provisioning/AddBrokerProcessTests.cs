@@ -9,7 +9,7 @@ using KafkaWorker.Core.Templates;
 
 namespace KafkaWorker.UnitTests.Provisioning;
 
-// AddBrokerProcess (arch/16 §5 F): заявка NOT_INITIALIZED у Active-кластера →
+// AddBrokerProcess (arch/kafkaworker/03-broker-scaling.md §1 F): заявка NOT_INITIALIZED у Active-кластера →
 // broker-only контейнер с неизменным кворумом → DescribeCluster → RMW endpoints →
 // RUNNING; идемпотентность.
 

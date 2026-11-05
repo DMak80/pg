@@ -104,7 +104,7 @@ public sealed class WalLifeStore(IEtcdGateway etcd, string[] endpoints)
     }
 
     /// <summary>Свежий факт гварда «чужая цепочка» в статус-ключе приёмника
-    /// (arch/19 §3): state failed_permanent с причиной foreign WAL chain — триггер
+    /// (arch/backups/02-wal-archive.md §1): state failed_permanent с причиной foreign WAL chain — триггер
     /// инкремента жизни (только PgWorker пишет счётчик). Предикат над полями
     /// факта: WalReceiverAgentFacts живёт в слое воркера (Backups).</summary>
     public static bool IsForeignChainFact(string? state, string? error)

@@ -33,7 +33,7 @@ HostMap не нужен.
 | quick (по умолчанию) | etcd + панель | цикл бэкенд-разработки: сиды — через `checks/05-seed.sh` (поднимает воркеров); Patroni/SQL-пробы закономерно падают (нод нет) |
 | full | + as-minio (переходный архив, :9000/:9001) — поднимается вручную, в подъём `00-up.sh` НЕ входит | live-пробы, failover, e2e |
 | kafka | + kafkaworker | живой воркер: управление кафкой; входит в `00-up.sh` всегда; e2e — чек `55-kafka-e2e.sh` (волна C) |
-| metrics | + prometheus (:9090), grafana (:3000, admin/admin), alertmanager (:9093) | мониторинг полной системы: дашборды, алерты §3.7; входит в 00-up.sh (arch/18 §5) |
+| metrics | + prometheus (:9090), grafana (:3000, admin/admin), alertmanager (:9093) | мониторинг полной системы: дашборды, алерты §3.7; входит в 00-up.sh (arch/metrics/05-storage.md) |
 
 ## Мониторинг (профиль metrics)
 
@@ -48,12 +48,12 @@ HostMap не нужен.
   (`pgworker:8080`, `kafkaworker:8080`, `adminpanel:8080`; patroni-ноды —
   по alias portalloc-скрейпа, отдельной сети мониторинга на стенде нет).
 - Проверка: `checks/65-metrics.sh` — /metrics трёх сервисов, все scrape-джобы
-  up, серии словаря arch/18 §2 в TSDB, rules, дашборды Grafana, живость
+  up, серии словаря arch/metrics/02-dictionary.md в TSDB, rules, дашборды Grafana, живость
   Alertmanager и симуляция алерта ServiceDown (stop/start kafkaworker). Чек
   запускается и после серии чеков — сам поднимает остановленного kafkaworker'а.
-- Канон мониторинга — `../../arch/18-metrics.md` §5.
+- Канон мониторинга — `../../arch/metrics/05-storage.md`.
 
-## Хранилище бэкапов (arch/19 + arch/24)
+## Хранилище бэкапов (arch/backups/README.md + arch/s3worker/README.md)
 
 Хранилище бэкапов стенда — S3-пул (кластер `/s3/`), который провижинит
 S3Worker по заявке оператора через панель (контейнеры `s3w-<C>-<I>`,
@@ -98,7 +98,7 @@ Pg-демо-контур сидом НЕ наливается — кластер
 - `05-seed.sh` — НЕ часть штатного подъёма: его зовут чеки `50`/`51` и
   ручные прогоны.
 - Совместимость kafka-сида с живым воркером: у сида нет контейнеров брокеров →
-  пробы воркера слепые (arch/16 §5 C: слепая проба = бездействие) → сидовые
+  пробы воркера слепые (arch/kafkaworker/02-cluster-lifecycle.md §4 C: слепая проба = бездействие) → сидовые
   заявки (lifecycle/rotate/rebalance) не исполняются, данные сида стабильны.
   End-state полного прогона — «kafkaworker остановлен после сида»: чек 50
   сам останавливает его финальным шагом; изолированный `05-seed.sh kafka`
@@ -123,7 +123,7 @@ Pg-демо-контур сидом НЕ наливается — кластер
 ## Valkey-чеки
 
 - `checks/52-valkey-contour.sh` — ручная приёмка контурного режима сетей
-  ValkeyWorker (arch/21 §2): создание valkey-кластера (уникальное имя) через
+  ValkeyWorker (arch/valkeyworker/01-placement.md): создание valkey-кластера (уникальное имя) через
   панель → wait Active/нода RUNNING → контейнер `vwk-<C>-node1` в сети
   `adminpanel-stand-net`, endpoints — advertised `host:port` (portalloc) →
   удаление через панель → чистота (ни контейнера, ни ключей
@@ -174,9 +174,9 @@ Quick-режим: `checks/90-down.sh -v && checks/05-seed.sh` → зелёные
 ## TLS API воркеров (pgworker + kafkaworker)
 
 HTTP API воркеров — HTTPS-грань ЕДИНОЙ per-install API-PKI
-`kfw-install-ca` (arch/14 §1.1 / arch/16 §1.1): mTLS (клиентский серт)
+`kfw-install-ca` (arch/pgworker/07-api.md §1 / arch/kafkaworker/07-api.md §1): mTLS (клиентский серт)
 обязателен только на `/api`; `/healthz` и `/metrics` — открытая грань
-без клиентского серта (arch/18 §3/§5.2). Ключевая аутентификация
+без клиентского серта (arch/metrics/03-exposure.md/§5.2). Ключевая аутентификация
 X-Api-Key удалена у обоих воркеров.
 
 - **Генерация пакета**: `bash deploy/tls/gen.sh` — создаёт в `deploy/tls/`
@@ -191,7 +191,7 @@ X-Api-Key удалена у обоих воркеров.
   `ADMINPANEL__WORKERS__WORKERTLS__*_PATH` (единый клиентский серт panel
   на оба API и доверие ca.pem).
 - **Prometheus**: mount `../../deploy/tls:/tls:ro` + `tls_config`
-  (канон arch/18 §5.2 — только `ca_file`, без клиентского серта).
+  (канон arch/metrics/05-storage.md §2 — только `ca_file`, без клиентского серта).
 - **Чеки**: прямые пробы `/healthz` и `/metrics` — `https` + `--cacert`
   без клиентского серта; `/api`-вызовы чеков — клиентский серт `seed.crt`;
   остальные — через панель, чей `IWorkerApiGateway` сам подписывает запросы

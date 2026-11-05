@@ -4,7 +4,7 @@ using Shared.Etcd.Client;
 
 namespace PgWorker.Provisioning.Processes;
 
-/// <summary>Итог ensure кластерных кредов (arch/14 §4 / arch/19 §7): app
+/// <summary>Итог ensure кластерных кредов (arch/pgworker/04-security.md / arch/backups/08-secrets.md): app
 /// (приложения), mover (роль bucket_mover переездов), bucket_admin (DSN-точка
 /// входа), backup (роль backup_exec полных бэкапов t02-backups), rest
 /// (basic-auth Patroni REST :8008; username — константа patroni).
@@ -14,9 +14,9 @@ public sealed record ClusterCredentials(
     string RestPassword);
 
 /// <summary>
-/// Ensure per-cluster кредов (arch/14 §4 / arch/19 §7): чтение семи ключей
+/// Ensure per-cluster кредов (arch/pgworker/04-security.md / arch/backups/08-secrets.md): чтение семи ключей
 /// /clusters/&lt;C&gt;/{app_user,app_password,mover_password,bucket_admin_user,bucket_admin_password,backup_password,rest_password}
-/// — из опросного кэша префикса /clusters/ (arch/17 S10, реестр E10: 7 GET на
+/// — из опросного кэша префикса /clusters/ (arch/synchronization/05-delta-application.md §S10, реестр E10: 7 GET на
 /// кластер каждый тик запрещены); живое чтение (с failover по endpoints) —
 /// только re-read после txn добора. Отсутствующие ключи генерируются
 /// (bucket_admin — из config кластера или генерация) и кладутся ОДНОЙ txn
@@ -100,7 +100,7 @@ public sealed class ClusterSecretEnsurer(
         AddIfAbsent(BackupKey(cluster), desiredBackupPassword, current.BackupPassword);
         AddIfAbsent(RestKey(cluster), desiredRestPassword, current.RestPassword);
 
-        // Txn через единую точку failover (arch/17 S7: sticky + per-attempt бюджет
+        // Txn через единую точку failover (arch/synchronization/03-fault-tolerance.md §S7: sticky + per-attempt бюджет
         // + негативный кэш; дубликат цикла обхода удалён). Замечание:
         // txn.IsSuccess=false — транспортный сбой вызова; проигрыш compare
         // (txn.Value.Succeeded=false) — НЕ сбой: законный исход put-if-absent,
@@ -169,7 +169,7 @@ public sealed class ClusterSecretEnsurer(
 
     private static string RestKey(string cluster) => $"/clusters/{cluster}/rest_password";
 
-    // Чтение семи ключей из слепка кэша /clusters/ (arch/17 S10): отсутствующий
+    // Чтение семи ключей из слепка кэша /clusters/ (arch/synchronization/05-delta-application.md §S10): отсутствующий
     // в слепке ключ — null (добирается txn-ом по живому etcd).
     private RawSecrets ReadFromCache(string cluster)
     {
@@ -185,7 +185,7 @@ public sealed class ClusterSecretEnsurer(
             Of(BackupKey(cluster)), Of(RestKey(cluster)));
     }
 
-    // Чтение семи ключей с failover по endpoints (единая точка, arch/17 S7):
+    // Чтение семи ключей с failover по endpoints (единая точка, arch/synchronization/03-fault-tolerance.md §S7):
     // упавший endpoint → следующий; на живом — все семь Get подряд. Частичный
     // отказ чтения на живом endpoint — транспортный сбой этого endpoint
     // (результат Failed → перебор продолжит единой точкой).

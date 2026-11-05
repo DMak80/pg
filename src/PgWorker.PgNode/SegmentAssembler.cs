@@ -5,7 +5,7 @@ namespace PgWorker.PgNode;
 
 /// <summary>Кусок XLogData потока физической репликации: LSN начала куска,
 /// serverWalEnd — позиция записи сервера в момент посылки сообщения (база
-/// backlog-гейджа, arch/18 §2.8), байты (→ wal-агент, arch/19 §3). WalStart
+/// backlog-гейджа, arch/metrics/02-dictionary.md §8), байты (→ wal-агент, arch/backups/02-wal-archive.md §1). WalStart
 /// обязан продолжать поток без разрывов.</summary>
 public readonly record struct XLogChunk(ulong WalStart, ulong WalEnd, ReadOnlyMemory<byte> Data);
 
@@ -39,7 +39,7 @@ public static class SegmentBufferPool
     public static void Return(byte[] buffer) => Free.Enqueue(buffer);
 }
 
-/// <summary>Сборка WAL-сегментов от LSN (→ wal-агент, arch/19 §3, спека §3.1 п.3):
+/// <summary>Сборка WAL-сегментов от LSN (→ wal-агент, arch/backups/02-wal-archive.md §1, спека §3.1 п.3):
 /// накопление байтов чанков напрямую в сегментном буфере пула (байт копируется
 /// один раз: чанк → сегмент; закрытый сегмент отдаёт буфер без копии — в
 /// hot-path нет List/ToArray/memmove-сдвигов и LOH-аллокаций на каждый
@@ -61,7 +61,7 @@ public sealed class SegmentAssembler(ulong startLsn)
     public ulong LastAppendedLsn => _lastAppended;
 
     /// <summary>serverWalEnd последнего принятого куска — позиция записи
-    /// сервера (arch/18 §2.8: база backlog-гейджа live-стрима).</summary>
+    /// сервера (arch/metrics/02-dictionary.md §8: база backlog-гейджа live-стрима).</summary>
     public ulong ServerWalEnd => _serverWalEnd;
 
     private ulong _serverWalEnd;
@@ -148,7 +148,7 @@ public sealed class SegmentAssembler(ulong startLsn)
         }
     }
 
-    /// <summary>Снимок валидного префикса незакрытого сегмента (arch/19 §3):
+    /// <summary>Снимок валидного префикса незакрытого сегмента (arch/backups/02-wal-archive.md §1):
     /// имя — математика Close (TLI из long page header буфера с валидацией
     /// xlp_pageaddr, иначе наследование _currentTli), КОПИЯ префикса (буфер —
     /// исключительное владение hot-path пула, отдаётся копия — WalPrefixScanner

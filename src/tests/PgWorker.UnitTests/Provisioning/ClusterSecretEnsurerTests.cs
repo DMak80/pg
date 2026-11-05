@@ -6,7 +6,7 @@ using Xunit;
 
 namespace PgWorker.UnitTests.Provisioning;
 
-// Ensure per-cluster тройки кредов app/mover/bucket_admin (§3.1, arch/14 §4):
+// Ensure per-cluster тройки кредов app/mover/bucket_admin (§3.1, arch/pgworker/04-security.md):
 // put-if-absent пяти ключей, идемпотентность, частичные состояния, failover txn.
 public class ClusterSecretEnsurerTests
 {
@@ -27,7 +27,7 @@ public class ClusterSecretEnsurerTests
         return new string(bytes.Select(b => alphabet[b % alphabet.Length]).ToArray());
     }
 
-    // Sut со слепком кэша /clusters/ (arch/17 S10): первичное чтение — из кэша,
+    // Sut со слепком кэша /clusters/ (arch/synchronization/05-delta-application.md §S10): первичное чтение — из кэша,
     // живой etcd — только txn добора и re-read после него.
     private static ClusterSecretEnsurer Sut(Fakes.FakeEtcd etcd) => new(etcd, [Ep], new FakeClustersCache(etcd));
 
@@ -197,7 +197,7 @@ public class ClusterSecretEnsurerTests
         etcd.Txns.Should().BeEmpty("existing keys are not rewritten by a txn");
     }
 
-    // AAA (arch/17 S10, реестр E10): полный набор в кэше /clusters/ — ensure
+    // AAA (arch/synchronization/05-delta-application.md §S10, реестр E10): полный набор в кэше /clusters/ — ensure
     // БЕЗ txn и БЕЗ etcd-GET (7 GET на кластер каждый тик запрещены). Инверсия
     // S7: шлюз падает на ЛЮБОМ GetAsync — если бы ensure пошёл в живой etcd,
     // вызов бы упал; успех доказывает кэш-путь.
@@ -242,7 +242,7 @@ public class ClusterSecretEnsurerTests
     [Fact]
     public async Task Ensure_BackupPasswordAbsent_GeneratedPutIfAbsent()
     {
-        // Arrange — пятёрка есть, backup_password отсутствует (секрет, arch/19 §7).
+        // Arrange — пятёрка есть, backup_password отсутствует (секрет, arch/backups/08-secrets.md).
         var etcd = new Fakes.FakeEtcd();
         etcd.Seed("/clusters/shop/app_user", "app");
         etcd.Seed("/clusters/shop/app_password", "pa0000000000000000000000000000A");

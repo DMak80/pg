@@ -3,7 +3,7 @@ using Shared.Core.DI;
 
 namespace AdminPanel.Core.Alerting.Rules;
 
-// wal-stream-stopped (warning, arch/19 §3/§8): STOPPED при живом шарде
+// wal-stream-stopped (warning, arch/backups/02-wal-archive.md §1/§8): STOPPED при живом шарде
 // Active-кластера — операционная остановка (Enabled=false/QUARANTINED) пишется
 // этим же статусом; алерт информирует, что поток бэкапов не идёт.
 [InjectAsSingleton(typeof(IAlertRule))]
@@ -42,7 +42,7 @@ public sealed class WalStreamStoppedRule : IAlertRule
                 null,
                 "if the stop is not operational (Enabled=false/QUARANTINED) — restart the subsystem / inspect logs at /pgworker/work/<C>",
                 AlertRemedy.WorkerAuto,
-                "last key touch — worker stop semantics; cluster/shard teardown removes the key (arch/19 §4)");
+                "last key touch — worker stop semantics; cluster/shard teardown removes the key (arch/backups/05-etcd-contract.md)");
         }
     }
 }

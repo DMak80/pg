@@ -1,4 +1,4 @@
-// arch/24 §1.1, порт ValkeyWorker.App/Api/WorkerApiCertReader.cs (осознанное
+// arch/s3worker/07-api.md §1, порт ValkeyWorker.App/Api/WorkerApiCertReader.cs (осознанное
 // дублирование по паттерну TlsEndpoints).
 using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
@@ -6,7 +6,7 @@ using Shared.Etcd.Client;
 
 namespace S3Worker.App.Api;
 
-// Статус чтения ключа /workers/api_tls/<worker> при старте (arch/24 §1.1):
+// Статус чтения ключа /workers/api_tls/<worker> при старте (arch/s3worker/07-api.md §1):
 // Found — ключ есть и PEM-пара валидна; Missing — ключа нет (env-фоллбек);
 // Unreachable — etcd недоступен (env-фоллбек с warning или fail-fast);
 // Broken — ключ есть, но JSON/PEM битые (fail-fast: ключ — явное намерение
@@ -16,7 +16,7 @@ public enum ManagedCertStatus { Found, Missing, Unreachable, Broken }
 // Результат чтения managed-серверного серта: PEM-пара при Found, Error — при Broken/Unreachable.
 public sealed record ManagedCertRead(ManagedCertStatus Status, string? CertPem, string? KeyPem, string? Error);
 
-// Ридер ключа /workers/api_tls/<worker> ДО поднятия Kestrel (arch/24 §1.1):
+// Ридер ключа /workers/api_tls/<worker> ДО поднятия Kestrel (arch/s3worker/07-api.md §1):
 // одиночный /v3/kv/range к первому живому endpoint (формат gateway — EtcdGateway).
 // Панель — единственный писатель ключа; воркер его только читает.
 public static class WorkerApiCertReader

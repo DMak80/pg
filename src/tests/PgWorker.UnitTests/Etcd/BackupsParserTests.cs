@@ -3,7 +3,7 @@ using PgWorker.Etcd.Parsing;
 
 namespace PgWorker.UnitTests.Etcd;
 
-// Парсер /pgworker/backups/* (arch/19 §4): полный набор ключей,
+// Парсер /pgworker/backups/* (arch/backups/05-etcd-contract.md): полный набор ключей,
 // битые значения — parseErrors + пропуск записи, неизвестные ключи и чужие
 // префиксы — игнор (толерантность снапшот-парсеров).
 public class BackupsParserTests
@@ -120,7 +120,7 @@ public class BackupsParserTests
             .Which.State.Should().Be(FullBackupStatus.Planned);
     }
 
-    // AAA (arch/19 §4 — прогон 2026-09-13): WAL_CHAIN_ERROR обязан читаться
+    // AAA (arch/backups/05-etcd-contract.md — прогон 2026-09-13): WAL_CHAIN_ERROR обязан читаться
     // СНАПШОТНЫМ парсером: неизвестное state давало Wal=null → контроль шёл от
     // min COMPLETED (ниже границы разрыва), ключ замерал в WAL_CHAIN_ERROR, планировщик
     // штормовал пересъёмами (walKeyExists=false при живом ключе).
@@ -176,7 +176,7 @@ public class BackupsParserTests
     public void Parse_FullWithoutWalStart_ParsedWithNull()
     {
         // Arrange — записи до фазы UPLOADING не знают wal_start_segment
-        // (arch/19 §4: заполняется с UPLOADING, у рано упавших может отсутствовать).
+        // (arch/backups/05-etcd-contract.md: заполняется с UPLOADING, у рано упавших может отсутствовать).
         var kvs = EtcdFixtures.LoadKv("backups-full.json");
 
         // Act
@@ -266,11 +266,11 @@ public class BackupsParserTests
         result.Value.Should().Contain(c => c.Cluster == "s1").Which.Policy.Should().BeNull();
     }
 
-    // restore/<id> (arch/19 §4): полный статус разбирается во все поля.
+    // restore/<id> (arch/backups/05-etcd-contract.md): полный статус разбирается во все поля.
     [Fact]
     public void Parse_RestoreKey_FullStatusParsed()
     {
-        // Arrange — KV полного restore-статуса канона arch/19 §4.
+        // Arrange — KV полного restore-статуса канона arch/backups/README.md §4.
         var kv = new Kv("/pgworker/backups/shop/shard1/restore/20260911120000Z", """
             {"state":"RUNNING","backup_id":"20260911090000Z","source":"shop/shard1",
              "target":"latest","node":"shard1a","requested_unix":1760000000,
@@ -374,7 +374,7 @@ public class BackupsParserTests
         shard.Restores.Should().ContainSingle().Which.State.Should().Be(RestoreStatus.Planned);
     }
 
-    // AAA: gap wal-ключа (tli-зазор, arch/19 §4) доезжает в СНАПШОТ —
+    // AAA: gap wal-ключа (tli-зазор, arch/backups/05-etcd-contract.md) доезжает в СНАПШОТ —
     // планировщик переснимает полный по walGapUncovered из снапшотного
     // чтения (: снапшотный парсер Gap терял — живой непокрытый зазор
     // для планировщика не существовал, пересъём не планировался).
@@ -584,7 +584,7 @@ public class BackupsParserTests
     }
 }
 
-//  (arch/19 §4): секция s3 policy — пул + списки write_master/write_replica.
+//  (arch/backups/05-etcd-contract.md): секция s3 policy — пул + списки write_master/write_replica.
 public class BackupsParserS3Tests
 {
     // AAA: policy с секцией s3 — пул и списки читаются в порядке JSON.

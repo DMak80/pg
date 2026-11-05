@@ -38,7 +38,7 @@ internal sealed record ClusterBackoffState(
 /// <summary>
 /// Фоновый тик kafka-пробы (план B6): per-кластерный DescribeCluster по
 /// endpoints из etcd (через HostMap) с admin-кредами/CA из internal-стора
-/// (: SASL_SSL/PLAIN, arch/15 §5); пароль в результаты не попадает.
+/// (: SASL_SSL/PLAIN, arch/kafka-clusters/05-client-discovery.md §1); пароль в результаты не попадает.
 /// Ошибка пробы не роняет etcd-часть панели.
 /// </summary>
 public sealed class KafkaProbeLoop(

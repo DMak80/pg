@@ -13,7 +13,7 @@ namespace PgWorker.Backups;
 /// <summary>Тело POST /api/backup/full (запуск операции полного).</summary>
 public sealed record StartFullRequest([property: JsonPropertyName("id")] string Id);
 
-/// <summary>S3-контекст tool-операций (секреты — ТОЛЬКО в POST-теле, arch/19 §7).</summary>
+/// <summary>S3-контекст tool-операций (секреты — ТОЛЬКО в POST-теле, arch/backups/08-secrets.md).</summary>
 public sealed record S3Context(
     [property: JsonPropertyName("endpoints")] string[] Endpoints,
     [property: JsonPropertyName("access_key")] string AccessKey,
@@ -28,7 +28,7 @@ public sealed record StartVerifyRequest(
 
 public sealed record StartRestoreRequest(
     [property: JsonPropertyName("backup_id")] string BackupId,
-    // id ЛИШЬ у drill-запуска (arch/19 §3.6): scratch-каталог на ноде
+    // id ЛИШЬ у drill-запуска (arch/backups/04-drill.md): scratch-каталог на ноде
     // backup-drill/<id>/pgdata; restore (null) пишет в PGDATA ноды.
     [property: JsonPropertyName("id")] string? Id,
     [property: JsonPropertyName("target_time")] string? TargetTime,
@@ -38,11 +38,11 @@ public sealed record StartRestoreRequest(
     // фильтрует куски по нему; null — DR-orphan (фильтр не активен).
     [property: JsonPropertyName("chain_life")] uint? ChainLife = null);
 
-/// <summary>Снимок статуса из GET (поля spec §3.2 / arch/19 §2/§5); id —
+/// <summary>Снимок статуса из GET (поля spec §3.2 / arch/backups/01-full-backup.md/§5); id —
 /// активная операция (тело 409 на POST тоже несёт её снимок) — сверка «своя/
 /// чужая» в 409-ветке запуска: чужой id трактуется как не-наша операция;
 /// started_unix — время TryBegin операции приёмника (возрастной бюджет
-/// verify воркера, arch/19 §6 — docker-инспектов больше нет).</summary>
+/// verify воркера, arch/backups/09-operability.md — docker-инспектов больше нет).</summary>
 public sealed record ReceiverStatus(
     [property: JsonPropertyName("state")] string State,
     [property: JsonPropertyName("phase")] string Phase,
@@ -54,7 +54,7 @@ public sealed record ReceiverStatus(
     [property: JsonPropertyName("started_unix")] long? StartedUnix = null,
     [property: JsonPropertyName("error")] string? Error = null);
 
-/// <summary>Тело POST /api/node/pgdump (pg_dump схемы — arch/14 §Move M1).</summary>
+/// <summary>Тело POST /api/node/pgdump (pg_dump схемы — arch/pgworker/processes/f-move.md M1).</summary>
 public sealed record StartPgDumpRequest(
     [property: JsonPropertyName("schema")] string Schema,
     [property: JsonPropertyName("dbname")] string DbName);
@@ -68,7 +68,7 @@ public sealed record HbaEnsureResponse(
     [property: JsonPropertyName("applied")] bool Applied,
     [property: JsonPropertyName("bootstrap")] bool Bootstrap);
 
-/// <summary>Ответ 200 GET /api/node/pgdata — проба данных ноды (arch/14 Д3).</summary>
+/// <summary>Ответ 200 GET /api/node/pgdata — проба данных ноды (arch/pgworker/README.md Д3).</summary>
 public sealed record PgDataResponse([property: JsonPropertyName("pg_version")] string PgVersion);
 
 /// <summary>Исход node-операции (синхронный контракт): StatusCode 0 —
@@ -149,13 +149,13 @@ public sealed class WalReceiverApiClient(HttpClient http) : IWalReceiverApiClien
     public async Task<ReceiverReply> GetRestoreAsync(string baseUrl, CancellationToken ct)
         => await GetAsync($"{baseUrl}/api/ops/restore", ct);
 
-    // Внешний канал операторской отмены ops-операций приёмника (arch/19 §5):
+    // Внешний канал операторской отмены ops-операций приёмника (arch/backups/06-s3-layout.md):
     // воркером используется и как best-effort stop при таймауте verify/drill
-    // (arch/19 §6); restore-таймаут сносит первую ноду (операция уходит с ней).
+    // (arch/backups/09-operability.md); restore-таймаут сносит первую ноду (операция уходит с ней).
     public async Task<ReceiverReply> CancelOpsAsync(string baseUrl, CancellationToken ct)
         => await PostAsync<object?>($"{baseUrl}/api/ops/cancel", null, ct);
 
-    // Node-операции (arch/25 №22): синхронный контракт — 200 несёт тело
+    // Node-операции (arch/communications/02-channel-registry.md №22): синхронный контракт — 200 несёт тело
     // итога, 5xx/0 — transient-исход (причина — поле Error).
     public Task<NodeReply<HbaEnsureResponse>> EnsureHbaAsync(string baseUrl, CancellationToken ct)
         => PostNodeAsync<object?, HbaEnsureResponse>($"{baseUrl}/api/node/hba-ensure", null, ct);
@@ -275,7 +275,7 @@ public sealed class WalReceiverApiClient(HttpClient http) : IWalReceiverApiClien
     }
 }
 
-/// <summary>Резолв адреса API приёмника (arch/19 §2/§3.5, arch/14 §2.4):
+/// <summary>Резолв адреса API приёмника (arch/backups/01-full-backup.md/§3.5, arch/pgworker/01-placement.md §5):
 /// нода — имя docker-контейнера :8080 в общей сети воркера и нод (канонические
 /// pgw-&lt;C&gt;-&lt;X&gt;-&lt;n&gt;, object — имя её контейнера); ВСЕ операции
 /// бэкапов (полный/verify/restore/drill) — команды на приёмники нод.</summary>

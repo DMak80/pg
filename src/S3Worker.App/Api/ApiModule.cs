@@ -7,7 +7,7 @@ using S3Worker.App.Api.Operations;
 
 namespace S3Worker.App.Api;
 
-// HTTP API воркера S3-домена (arch/24 §1.1, spec §6 — таблица кодов 1:1):
+// HTTP API воркера S3-домена (arch/s3worker/07-api.md §1, spec §6 — таблица кодов 1:1):
 // мутации декларативного контракта /s3/ принимает исполнитель. Каждый
 // эндпоинт в финале инкрементирует s3worker_api_operations_total фактическим
 // кодом (S3ApiMetrics.Track — успех и ошибки).
@@ -221,7 +221,7 @@ public static class ApiModule
         });
 
         // PUT /api/s3/clusters/{cluster}/links — 202 / 400 / 404 / 503 (409 не
-        // производится: гварды состояния кластера нет — spec §3.7/arch/24 §1.1).
+        // производится: гварды состояния кластера нет — spec §3.7/arch/s3worker/07-api.md §1).
         endpoints.MapPut("/api/s3/clusters/{cluster}/links", async (
             string cluster, PutLinksRequest request, PutLinksHandler handler, CancellationToken ct) =>
         {
@@ -306,7 +306,7 @@ public static class ApiModule
             return response;
         });
 
-        // GET /api/config — эффективный конфиг установки (arch/24 §1.1, u15):
+        // GET /api/config — эффективный конфиг установки (arch/s3worker/07-api.md §1, u15):
         // read-only, mTLS-зона /api, без снапшота и etcd.
         endpoints.MapGet("/api/config", (IOptions<S3WorkerOptions> options)
             => Results.Ok(S3WorkerEffectiveConfig.From(options.Value)));

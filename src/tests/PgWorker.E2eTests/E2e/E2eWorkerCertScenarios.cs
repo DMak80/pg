@@ -13,7 +13,7 @@ namespace PgWorker.IntegrationTests.E2e;
 // повторный подъём на новом серте → DELETE ключа → рестарт → env-фоллбек
 // (unmanaged). Отдельный сценарий: битый ключ — fail-fast старта.
 // Изоляция: per-сценарный E2eEnvironment (своя сеть/etcd, guid-имена, полный
-// teardown при любом исходе — docs/e2e-isolation.md). Прод-«политика docker
+// teardown при любом исходе — arch/testing/02-e2e-isolation.md). Прод-«политика docker
 // restart: unless-stopped» имитируется повторным StartHostAsync того же
 // extraEnv — E2E-хосты не контейнеры, перезапускает их сам сценарий.
 [Collection("e2e-serial")]
@@ -137,7 +137,7 @@ public sealed class E2eWorkerCertScenarios(E2eWorkerCertScenariosFx Ctx) : IClas
         }
         catch (Exception)
         {
-            // Телеметрия E2E (docs/e2e-launch.md): упавший сценарий оставляет
+            // Телеметрия E2E (arch/testing/01-e2e-launch.md): упавший сценарий оставляет
             // окружение для разбора (teardown остановит, но не удалит).
             fx.MarkFailed();
             throw;
@@ -316,7 +316,7 @@ public sealed class E2eWorkerCertScenarios(E2eWorkerCertScenariosFx Ctx) : IClas
 }
 
 /// <summary>Компаньон-фикстура окружения класса (полный контур на класс:
-/// сеть/etcd/CA/окно портов; docs/e2e-isolation.md §1).</summary>
+/// сеть/etcd/CA/окно портов; arch/testing/02-e2e-isolation.md §1).</summary>
 public sealed class E2eWorkerCertScenariosFx : E2eContourFixture
 {
     protected override string Slug => "worker-cert";

@@ -8,7 +8,7 @@ namespace PgWorker.IntegrationTests.E2e;
 // Docker-E2E второго инстанса (t07 spec §4.5): инстансы PgWorker — КОНТЕЙНЕРЫ
 // образа pgworker:e2e-<tag> (деплой-слой), docker kill первого посреди A3
 // add-shard — выживший контейнер доносит шард (takeover по lease-клэймам,
-// БЕЗ правок кода воркера). Каноны docs/e2e-isolation.md / docs/e2e-launch.md:
+// БЕЗ правок кода воркера). Каноны arch/testing/02-e2e-isolation.md / arch/testing/01-e2e-launch.md:
 // окружение E2eEnvironment (свой etcd/сеть на прогон), guid-имена всех
 // объектов, полный teardown при любом исходе + ассерт чистоты; телеметрия в
 // /tmp/pgw-e2e-artifacts-<guid>/ (MarkFailed — стоп без удаления).
@@ -83,7 +83,7 @@ public sealed class E2eSecondInstanceScenarios(E2eSecondInstanceScenariosFx Ctx)
 
             // ---------- Act: docker kill ПЕРВОГО контейнера воркера ----------
             // Сценарий моделирует ОТКЛЮЧЕНИЕ МАШИНЫ (мульти-хост: рестартера
-            // нет): рестарт-политики у контуров E2E нет (docs/e2e-isolation.md
+            // нет): рестарт-политики у контуров E2E нет (arch/testing/02-e2e-isolation.md
             // §3) — убитый docker kill воркер сам не воскреснет, доносит
             // ТОЛЬКО выживший.
             await Fx.RunDockerAsync(["kill", w1], ct);
@@ -151,7 +151,7 @@ public sealed class E2eSecondInstanceScenarios(E2eSecondInstanceScenariosFx Ctx)
             ["PgWorker__Docker__Hosts__0__Name"] = "host.docker.internal",
             ["PgWorker__Docker__Hosts__0__Endpoint"] = "unix:///var/run/docker.sock",
             // PortRange — окно контура (публикации троек нод — канон продукта);
-            // аллокаторы двух воркеров согласованы общим etcd (arch/14 §2.4).
+            // аллокаторы двух воркеров согласованы общим etcd (arch/pgworker/01-placement.md §5).
             ["PgWorker__Docker__PortRange__From"] = Fx.RemainingPortRange.From.ToString(),
             ["PgWorker__Docker__PortRange__To"] = Fx.RemainingPortRange.To.ToString(),
             ["PgWorker__Docker__Images__Node"] = E2eEnvironment.NodeImage,
@@ -197,7 +197,7 @@ public sealed class E2eSecondInstanceScenarios(E2eSecondInstanceScenariosFx Ctx)
 
         var args = new List<string>
         {
-            // Без рестарт-политики — дефолт контуров E2E (docs/e2e-isolation.md §3):
+            // Без рестарт-политики — дефолт контуров E2E (arch/testing/02-e2e-isolation.md §3):
             // убитый воркер демоном не поднимается, takeover делает выживший.
             "run", "-d", "--name", name,
             "--network", Fx.NetName,
@@ -308,7 +308,7 @@ public sealed class E2eSecondInstanceScenarios(E2eSecondInstanceScenariosFx Ctx)
 }
 
 /// <summary>Компаньон-фикстура окружения класса (полный контур на класс:
-/// сеть/etcd/CA/окно портов; docs/e2e-isolation.md §1).</summary>
+/// сеть/etcd/CA/окно портов; arch/testing/02-e2e-isolation.md §1).</summary>
 public sealed class E2eSecondInstanceScenariosFx : E2eContourFixture
 {
     protected override string Slug => "second-instance";

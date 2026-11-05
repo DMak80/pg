@@ -6,14 +6,14 @@ using ValkeyWorker.Core.Valkey;
 namespace ValkeyWorker.Provisioning.Processes;
 
 /// <summary>
-/// Per-cluster креды + CA (arch/21 §4): пароли ролей admin/app и PKI-пара
+/// Per-cluster креды + CA (arch/valkeyworker/04-security.md §3): пароли ролей admin/app и PKI-пара
 /// CA (ca_pem/ca_key, PEM одной строкой).
 /// </summary>
 public sealed record ValkeyCredentials(
     string AdminPassword, string AppPassword, string CaPem, string CaKey);
 
 /// <summary>
-/// Ensure per-cluster кредов и CA (arch/21 §4): чтение
+/// Ensure per-cluster кредов и CA (arch/valkeyworker/04-security.md §3): чтение
 /// /valkey/clusters/&lt;C&gt;/{app_user,app_password,admin_user,admin_password,ca_pem,ca_key};
 /// отсутствующие ключи генерируются и кладутся ОДНОЙ txn put-if-absent
 /// (compare NotExists только на отсутствующие). Проигрыш txn (гонка/re-run)
@@ -86,8 +86,8 @@ public sealed class ClusterSecretEnsurer(IEtcdGateway etcd, string[] endpoints) 
             && v.CaKey is { Length: > 0 };
 
     // Ключи/значения отсутствующих: пароли — генератор 32 симв [A-Za-z0-9],
-    // CA — per-cluster self-signed (arch/21 §2), пользователи — канон
-    // arch/20 §2 ("app"/"admin").
+    // CA — per-cluster self-signed (arch/valkeyworker/01-placement.md), пользователи — канон
+    // arch/valkey-clusters/02-keys.md §1 ("app"/"admin").
     private static IReadOnlyList<(string Key, string Value)> MissingKeys(string cluster, RawSecrets? current)
     {
         var missing = new List<(string Key, string Value)>(6);

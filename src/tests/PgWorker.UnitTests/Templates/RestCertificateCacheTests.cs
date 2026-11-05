@@ -3,7 +3,7 @@ using PgWorker.Core.Templates;
 
 namespace PgWorker.UnitTests.Templates;
 
-// Кеш сертов REST-эндпоинтов (arch/14 §2.1): один серт на
+// Кеш сертов REST-эндпоинтов (arch/pgworker/01-placement.md §1): один серт на
 // (кластер, шард, нода, CA) в рамках жизни процесса — повторные сборки env
 // (надзор/ensure/rebuild) дают тот же PEM; серт — не etcd-состояние.
 public class RestCertificateCacheTests

@@ -5,7 +5,7 @@ using System.Text;
 
 namespace KafkaWorker.Provisioning.Kafka;
 
-// Протокольный миниклиент AlterPartitionReassignments (arch/16 §2.4; spec 
+// Протокольный миниклиент AlterPartitionReassignments (arch/kafkaworker/06-rebalancing.md §1; spec 
 // §4.2): одна подача = одно короткоживущее TCP+TLS-соединение (паттерн
 // ValkeyConnection.ExecuteAsync), диалог ApiVersions v0 → SaslHandshake v1 →
 // SaslAuthenticate v0 (PLAIN) → AlterPartitionReassignments v0 (KIP-455).
@@ -119,7 +119,7 @@ internal sealed class KafkaProtocolClient
             await tcp.ConnectAsync(host, port, token);
 
             // TLS: доверие — ВСЕ CERTIFICATE-блоки caPem (bundle OLD+NEW окна
-            // ротации) + SAN хоста endpoint (SAN-правило arch/16 §2.3); caPem
+            // ротации) + SAN хоста endpoint (SAN-правило arch/kafkaworker/04-security.md); caPem
             // null отсечён guard'ом выше — валидация всегда включена.
             bool Validate(object sender, X509Certificate? certificate, X509Chain? chain, SslPolicyErrors errors)
                 => certificate is not null
@@ -400,7 +400,7 @@ internal sealed class KafkaProtocolClient
         return anchors;
     }
 
-    // SAN-хост (arch/16 §2.3): advertised DNS либо IP; сверяем весь список SAN.
+    // SAN-хост (arch/kafkaworker/04-security.md): advertised DNS либо IP; сверяем весь список SAN.
     // Владение: сертификат SslStream — чужой (диспозится SslStream, повторный
     // dispose чужого недопустим) — using только для заново созданной копии.
     private static bool SanMatchesHost(X509Certificate certificate, string host)

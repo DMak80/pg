@@ -151,7 +151,7 @@ public class TopicSyncTests(KafkaClusterFixture fixture)
             "topic disappeared without a ticket — key removed");
 
         // Act 5: missing-ветка: валидная заявка ДО удаления → missing=true;
-        // отмена заявки → ключ удалён (arch/15 §3).
+        // отмена заявки → ключ удалён (arch/kafka-clusters/03-topics.md §1).
         using (var creator = builder.Build())
         {
             await creator.CreateTopicsAsync([new TopicSpecification

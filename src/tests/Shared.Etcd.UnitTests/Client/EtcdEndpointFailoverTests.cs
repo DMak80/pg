@@ -3,7 +3,7 @@ using Xunit;
 
 namespace Shared.Etcd.UnitTests.Client;
 
-// Негативный кэш мёртвых endpoint'ов (arch/17 S7): штраф за мёртвый узел
+// Негативный кэш мёртвых endpoint'ов (arch/synchronization/03-fault-tolerance.md §S7): штраф за мёртвый узел
 // платится ОДИН раз на смерть, не один раз на список — sticky пер-список,
 // а списков у процесса несколько (клэйм/журнал/instance-ключ/health), и без
 // общей карты каждый платил свой «разовый» штраф (факт прогона ha-etcd:

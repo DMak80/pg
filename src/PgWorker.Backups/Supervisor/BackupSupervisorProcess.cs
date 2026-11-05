@@ -8,7 +8,7 @@ using PgWorker.Provisioning.Processes;
 
 namespace PgWorker.Backups.Supervisor;
 
-/// <summary>BackupSupervisorProcess — per-cluster сверка S3↔etcd (arch/19
+/// <summary>BackupSupervisorProcess — per-cluster сверка S3↔etcd (arch/backups/README.md
 /// §4) под клэймом &lt;C&gt; по расписанию Supervisor:IntervalSec: префиксы
 /// full/&lt;id&gt;/ живого шарда БЕЗ etcd-ключа — мусор (выбора кандидатов
 /// restore нет) — немедленный batch-delete с list-подтверждением и journal-фактом
@@ -45,7 +45,7 @@ public sealed class BackupSupervisorProcess(
 
         var cluster = snap.Config.Cluster;
 
-        // Мутации S3/etcd — только держатель клэйма (инвариант arch/14 §4.3).
+        // Мутации S3/etcd — только держатель клэйма (инвариант arch/pgworker/00-etcd-contract.md §6).
         if (!claims.IsMine(cluster))
             return Result<ProcessOutcome>.Failed(new ApplicationException(
                 $"{Op} {cluster}: claim is not ours (or lost) — mutations are forbidden"));
@@ -64,7 +64,7 @@ public sealed class BackupSupervisorProcess(
             return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
         _lastPassUnix[cluster] = nowUnix;
 
-        //  (arch/19 §5): пул-клиент кластера (удаления сирот full/<id>/ —
+        //  (arch/backups/06-s3-layout.md): пул-клиент кластера (удаления сирот full/<id>/ —
         // первая доступная нода: put/delete-семантика пула). null (пул не
         // выбран) → проход молчит; Failed → journal, ретраи проходом.
         var poolRead = await s3Factory.ResolveAsync(cluster, ct);
@@ -94,7 +94,7 @@ public sealed class BackupSupervisorProcess(
                         is RestoreStatus.Planned or RestoreStatus.Running or RestoreStatus.Rejoining) == true)
                     continue;
 
-                // Возрастной гейт мусора (arch/19 §4 «Гейты мусора»):
+                // Возрастной гейт мусора (arch/backups/05-etcd-contract.md «Гейты мусора»):
                 // policy-ключ кластера перекрывает дефолт конфига.
                 var garbageMinAgeSec = backups?.Policy?.GarbageMinAgeSec ?? options.GarbageMinAgeSec;
                 await SweepShardAsync(cluster, shard.Name, shardBackups, garbageMinAgeSec, s3, ct);
@@ -116,7 +116,7 @@ public sealed class BackupSupervisorProcess(
     }
 
     // Сверка одного шарда: list full/-префиксов → отбор без etcd-ключа →
-    // гейты мусора (arch/19 §4): свежее чтение ключа + возрастной гейт →
+    // гейты мусора (arch/backups/05-etcd-contract.md): свежее чтение ключа + возрастной гейт →
     // batch-delete каждого с list-подтверждением пустоты (иначе журнал-ошибка —
     // следующий проход повторит, идемпотентно).
     private async Task SweepShardAsync(
@@ -199,7 +199,7 @@ public sealed class BackupSupervisorProcess(
     /// <summary>S3-вызовы сверки — с пульсом прогресса (S3Pulse, канон):
     /// прямой вызов на недоступном endpoint висит до HttpClient-таймаута без
     /// отметок — watchdog (порт сноса 30 c) гасил reconcile посреди сверки
-    /// (bad-S3 — штатный прод-контур, arch/19 §4 «transient — следующий проход»).</summary>
+    /// (bad-S3 — штатный прод-контур, arch/backups/05-etcd-contract.md «transient — следующий проход»).</summary>
     private async Task<Result<T>> S3PulseAsync<T>(
         Func<CancellationToken, Task<Result<T>>> call, CancellationToken ct)
         => await S3Pulse.CallAsync(progress, call, ct);

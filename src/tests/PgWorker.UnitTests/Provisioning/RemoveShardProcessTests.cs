@@ -4,7 +4,7 @@ using PgWorker.Provisioning.Processes;
 
 namespace PgWorker.UnitTests.Provisioning;
 
-// RemoveShardProcess S0–S4 (spec §5.3; arch/14 §5 H): таблица guard'ов
+// RemoveShardProcess S0–S4 (spec §5.3; arch/pgworker/processes/h-remove-shard.md H): таблица guard'ов
 // G1–G7, «сначала docker, потом etcd», чистка ключей/portalloc/журнала эвакуации.
 public class RemoveShardProcessTests
 {

@@ -2,7 +2,7 @@ using System.Globalization;
 
 namespace Shared.TestInfra;
 
-/// <summary>Авто-уборка per-branch e2e-тегов старше 24 ч (docs/e2e-isolation.md
+/// <summary>Авто-уборка per-branch e2e-тегов старше 24 ч (arch/testing/02-e2e-isolation.md
 /// §9). Отбор — чистая функция (юнит-тестируема без docker); удаление —
 /// `docker rmi` по одному, ЛЮБОЙ отказ (в т.ч. «image is being used by running
 /// container») игнорируется. NEVER-список (owns3:dev, minio/mc, etcd, *:dev и

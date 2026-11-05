@@ -2,7 +2,7 @@ using Shared.Metrics;
 
 namespace Metrics.SdGenerator;
 
-// [Config]-опции file_sd-генератора (arch/18 §5.4, §8): секция "SdGenerator".
+// [Config]-опции file_sd-генератора (arch/metrics/05-storage.md §4, §8): секция "SdGenerator".
 // Read-only потребитель /pgworker/portalloc/ — ни новых ключей, ни записей в etcd.
 public sealed class SdGeneratorOptions
 {
@@ -19,10 +19,10 @@ public sealed class SdGeneratorOptions
     public string OutputPath { get; set; } = "/sd/patroni-nodes.json";
 
     /// <summary>Путь второго file_sd-файла — file_sd агенты PgNode в нодах (
-    /// arch/18 §5.4/§8): те же записи per-node, порт 8080 (http).</summary>
+    /// arch/metrics/05-storage.md §4/§8): те же записи per-node, порт 8080 (http).</summary>
     public string PgNodeOutputPath { get; set; } = "/sd/pgnode-nodes.json";
 
-    /// <summary>Самонаблюдение: секция "SdGenerator:Metrics" (паттерн arch/18 §7).</summary>
+    /// <summary>Самонаблюдение: секция "SdGenerator:Metrics" (паттерн arch/metrics/01-framework.md §2).</summary>
     public MetricsOptions Metrics { get; set; } = new();
 
     /// <summary>Endpoints etcd: перебор по порядку до первого успеха (failover).</summary>

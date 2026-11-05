@@ -36,11 +36,11 @@ public sealed record AddKafkaBrokerRequest(
 // Границы kafka-мутаций — arch/02 §10.3 (константы кода, не конфиг).
 public static partial class KafkaLimits
 {
-    // Как pg-имена: без дефиса (arch/15).
+    // Как pg-имена: без дефиса (arch/kafka-clusters/README.md).
     [GeneratedRegex("^[a-z][a-z0-9_]{0,62}$")]
     public static partial Regex ClusterPattern();
 
-    // Топик: Kafka-паттерн без __-префикса (arch/15; internal-топики вне реестра).
+    // Топик: Kafka-паттерн без __-префикса (arch/kafka-clusters/README.md; internal-топики вне реестра).
     [GeneratedRegex("^[a-zA-Z0-9._-]{1,249}$")]
     public static partial Regex TopicPattern();
 
@@ -66,7 +66,7 @@ public static partial class KafkaLimits
     public const int DefMemGi = 2;
     public const int DefDiskGi = 20;
 
-    // Internal-топики Kafka в реестр не попадают (arch/15).
+    // Internal-топики Kafka в реестр не попадают (arch/kafka-clusters/README.md).
     public static bool IsInternalTopic(string topic)
         => topic.StartsWith("__", StringComparison.Ordinal);
 }
@@ -171,7 +171,7 @@ public sealed record KafkaClusterCreatePlan(
         var mem = $"{request.MemGi ?? KafkaLimits.DefMemGi}Gi";
         var disk = $"{request.DiskGi ?? KafkaLimits.DefDiskGi}Gi";
 
-        // config-JSON: канон snake_case arch/15 §2.1, state только у заявки.
+        // config-JSON: канон snake_case arch/kafka-clusters/02-keys.md §2, state только у заявки.
         var config = JsonSerializer.Serialize(new KafkaConfigJson(
             brokers,
             request.ReplicationFactor ?? KafkaLimits.DefRf,
@@ -201,7 +201,7 @@ public sealed record KafkaClusterCreatePlan(
         => value.ToString("0.#########", CultureInfo.InvariantCulture);
 }
 
-// Канонический JSON config-ключа (arch/15 §2): поля snake_case; state — только у заявок.
+// Канонический JSON config-ключа (arch/kafka-clusters/02-keys.md §1): поля snake_case; state — только у заявок.
 public sealed record KafkaConfigJson(
     [property: JsonPropertyName("brokers")] int Brokers,
     [property: JsonPropertyName("replication_factor")] int ReplicationFactor,
@@ -245,13 +245,13 @@ public sealed record KafkaConfigJson(
     public KafkaConfigJson WithState(string state) => this with { State = state };
 }
 
-// JSON заявки ресурсов брокера: {"cpu":"2","mem":"4Gi","disk":"40Gi"} (arch/15 §2).
+// JSON заявки ресурсов брокера: {"cpu":"2","mem":"4Gi","disk":"40Gi"} (arch/kafka-clusters/02-keys.md §1).
 public sealed record ResourcesJson(
     [property: JsonPropertyName("cpu")] string Cpu,
     [property: JsonPropertyName("mem")] string Mem,
     [property: JsonPropertyName("disk")] string Disk);
 
-// JSON заявки ротации /kafkaworker/rotations/<C> (arch/15 §4).
+// JSON заявки ротации /kafkaworker/rotations/<C> (arch/kafka-clusters/04-coordination.md §1).
 public sealed record KafkaRotationTicketJson(
     [property: JsonPropertyName("requested_unix")] long RequestedUnix,
     [property: JsonPropertyName("requested_by")] string RequestedBy)
@@ -268,7 +268,7 @@ public sealed record KafkaRotationTicketJson(
 public sealed record KafkaResourcesUpdateRequest(decimal? Cpu, int? MemGi, int? DiskGi);
 
 // Эффективные ресурсы после применения частичного обновления + канонический
-// JSON ключа brokers/<b>/resources (формат 1:1 — arch/15 §2). Канонизация —
+// JSON ключа brokers/<b>/resources (формат 1:1 — arch/kafka-clusters/02-keys.md §1). Канонизация —
 // существующий KafkaClusterCreatePlan.Canonical (decimal → "0.#########").
 public sealed record KafkaResourcesUpdatePlan(decimal Cpu, int MemGi, int DiskGi)
 {

@@ -60,7 +60,7 @@ export function CreateValkeyClusterModal({ opened, onClose }: { opened: boolean;
     if (!Number.isInteger(form.maxmemoryMib) || form.maxmemoryMib < 1)
       return 'maxmemory: integer ≥ 1 MiB';
     if (!(VALKEY_POLICIES as readonly string[]).includes(form.policy))
-      return 'maxmemoryPolicy: выберите значение из списка (8 значений канона arch/20 §2)';
+      return 'maxmemoryPolicy: выберите значение из списка (8 значений канона arch/valkey-clusters/02-keys.md §1)';
     // Границы — validation.ts (u02, arch/02 §11.3).
     const cpuError = validateCpu(form.cpu);
     if (cpuError !== null) return cpuError;

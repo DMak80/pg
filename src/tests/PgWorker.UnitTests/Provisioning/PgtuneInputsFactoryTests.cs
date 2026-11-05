@@ -14,7 +14,7 @@ namespace PgWorker.UnitTests.Provisioning;
 public class PgtuneInputsFactoryTests
 {
     // Дефолтные настройки PGTune (эквивалент секции PgWorker:Pgtune appsettings);
-    // память/CPU — только заявки, в настройках их НЕТ (arch/14 §2.1 п.4).
+    // память/CPU — только заявки, в настройках их НЕТ (arch/pgworker/01-placement.md §2).
     private static PgtuneSettings DefaultSettings() => new(
         DbVersion: 18,
         DbType: "oltp",
@@ -50,7 +50,7 @@ public class PgtuneInputsFactoryTests
         var noMem = () => factory.Create(new NodeResources(4, null));
 
         // Assert: обязательная информация — фейл расчёта с внятной ошибкой,
-        // никаких дефолтов и выдуманных размеров ноды (arch/14 §2.1 п.4).
+        // никаких дефолтов и выдуманных размеров ноды (arch/pgworker/01-placement.md §2).
         noResources.Should().Throw<InvalidOperationException>()
             .Where(e => e.Message.Contains("request_mem", StringComparison.Ordinal));
         emptyResources.Should().Throw<InvalidOperationException>()
@@ -137,7 +137,7 @@ public class PgtuneInputsFactoryTests
     public void Create_SameInput_LogsWarningsOnce()
     {
         // Arrange: фабрика с перехватывающим логгером; тик надзора повторяет
-        // расчёт ~1/с с теми же заявками (конвергенция DCS, arch/14 §5 C).
+        // расчёт ~1/с с теми же заявками (конвергенция DCS, arch/pgworker/processes/c-node-supervisor.md C).
         var logger = new CapturingLogger();
         var factory = new PgtuneInputsFactory(DefaultSettings(), logger);
         var resources = new NodeResources(2, 104857600);

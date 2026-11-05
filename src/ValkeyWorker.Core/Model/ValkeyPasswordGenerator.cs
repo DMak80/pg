@@ -2,7 +2,7 @@ using System.Security.Cryptography;
 
 namespace ValkeyWorker.Core.Model;
 
-// Генератор per-cluster ACL-паролей (arch/21 §4): 32 символа [A-Za-z0-9],
+// Генератор per-cluster ACL-паролей (arch/valkeyworker/04-security.md §3): 32 символа [A-Za-z0-9],
 // CSPRNG (RandomNumberGenerator).
 public static class ValkeyPasswordGenerator
 {

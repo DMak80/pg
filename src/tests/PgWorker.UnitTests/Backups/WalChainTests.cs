@@ -4,7 +4,7 @@ using Xunit;
 
 namespace PgWorker.UnitTests.Backups;
 
-// Gap-детектор непрерывности WAL-цепочки (arch/19 §3): последовательность Next()
+// Gap-детектор непрерывности WAL-цепочки (arch/backups/02-wal-archive.md §1): последовательность Next()
 // без пропусков; TLI-переход валиден при history + первом сегменте нового TLI
 // ∈ {последний старого, Next(последний)}; .partial игнорируется.
 public class WalChainTests
@@ -161,7 +161,7 @@ public class WalChainTests
         result.IsContinuous.Should().BeFalse();
     }
 
-    // ── CheckRange (arch/19 §3): непрерывность [start..end] ──
+    // ── CheckRange (arch/backups/02-wal-archive.md §1): непрерывность [start..end] ──
 
     // AAA: сплошной диапазон [1..3] с end=3 — непрерывен, LastSegment == end
     [Fact]
@@ -486,7 +486,7 @@ public class WalChainTests
         neither.Should().BeNull();
     }
 
-    // ---: TailOf — хвост потока финал/лучший .partial (arch/19 §3) ----
+    // ---: TailOf — хвост потока финал/лучший .partial (arch/backups/02-wal-archive.md §1) ----
 
     // AAA (хвост потока): объектов нет — хвоста нет.
     [Fact]

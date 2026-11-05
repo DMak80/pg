@@ -7,7 +7,7 @@ using KafkaWorker.Etcd.Parsing;
 
 namespace KafkaWorker.UnitTests.Etcd;
 
-// Тесты парсера контроль-плейна /kafka/clusters/ (arch/15 §2–3): фикстуры —
+// Тесты парсера контроль-плейна /kafka/clusters/ (arch/kafka-clusters/02-keys.md §1–3): фикстуры —
 // канонические примеры значений из arch-канона; толерантность к битому JSON
 // и неизвестным ключам обязательна (parseError-запись, не исключение).
 
@@ -35,7 +35,7 @@ public class KafkaSnapshotParserTests
     [Fact]
     public void Parse_FullPrefix_TwoClustersWithConfigBrokersTopics()
     {
-        // Arrange: полный префикс — Active-кластер events + заявка pending (arch/15 §2.1).
+        // Arrange: полный префикс — Active-кластер events + заявка pending (arch/kafka-clusters/02-keys.md §2).
         var kvs = LoadFixture("kafka-full.json");
 
         // Act: разбор префикса /kafka/clusters/.
@@ -75,7 +75,7 @@ public class KafkaSnapshotParserTests
     [Fact]
     public void Parse_OrdersTopic_DesiredPresent()
     {
-        // Arrange: топик orders с живой desired-заявкой (arch/15 §3).
+        // Arrange: топик orders с живой desired-заявкой (arch/kafka-clusters/03-topics.md §1).
         var kvs = LoadFixture("kafka-full.json");
 
         // Act: разбор и выбор топика.
@@ -119,7 +119,7 @@ public class KafkaSnapshotParserTests
     [Fact]
     public void Parse_BrokenConfig_ParseErrorWithoutException()
     {
-        // Arrange: битый JSON config + битый topic + неизвестный ключ (arch/15 §6).
+        // Arrange: битый JSON config + битый topic + неизвестный ключ (arch/kafka-clusters/06-fault-tolerance.md).
         var kvs = LoadFixture("kafka-degenerate.json");
 
         // Act: разбор вырожденного префикса.
@@ -139,7 +139,7 @@ public class KafkaSnapshotParserTests
     [Fact]
     public void Parse_ToRemoveState_ReadAsString()
     {
-        // Arrange: кластер dying с state=TO_REMOVE (arch/15 §2.1).
+        // Arrange: кластер dying с state=TO_REMOVE (arch/kafka-clusters/02-keys.md §2).
         var kvs = LoadFixture("kafka-degenerate.json");
 
         // Act: разбор.
@@ -152,7 +152,7 @@ public class KafkaSnapshotParserTests
     [Fact]
     public void Parse_UnknownBrokerState_KeptAsRawString()
     {
-        // Arrange: брокер с незнакомым state (система развивается, arch/15 §6).
+        // Arrange: брокер с незнакомым state (система развивается, arch/kafka-clusters/06-fault-tolerance.md).
         var kvs = LoadFixture("kafka-degenerate.json");
 
         // Act: разбор.

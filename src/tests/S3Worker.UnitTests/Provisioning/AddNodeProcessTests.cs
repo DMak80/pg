@@ -8,7 +8,7 @@ using Xunit;
 
 namespace S3Worker.UnitTests.Provisioning;
 
-// AddNode D (arch/24 §5 D): mini-A для NOT_INITIALIZED-ноды (placement +
+// AddNode D (arch/s3worker/03-node-scaling.md §1 D): mini-A для NOT_INITIALIZED-ноды (placement +
 // portalloc + контейнер + bucket + RUNNING) + завершающее окно RMW endpoints
 // + актуализация config.nodes (txn mod_revision; актуален — no-op).
 public class AddNodeProcessTests
@@ -18,7 +18,7 @@ public class AddNodeProcessTests
     // getenv-профиль store'а: спец-ключ etcd-backup (тестами не используется).
     private static readonly Dictionary<string, string?> Env = [];
 
-    // Валидный secrets-ключ кластера (канон arch/23 §6): root-пара +
+    // Валидный secrets-ключ кластера (канон arch/s3-clusters/06-secrets.md): root-пара +
     // backups(read-write) и panel(read-only); значения — фиксированные
     // несекретные литералы.
     private static string SecretsJson(string cluster) => ClusterSecretsStore.Serialize(new ClusterSecrets(

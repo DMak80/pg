@@ -3,14 +3,14 @@ using System.Diagnostics.Metrics;
 
 namespace Shared.Metrics.Worker;
 
-// Типизированные инструменты воркер-паттерна (arch/18 §2.2). Метрики — пассивные
+// Типизированные инструменты воркер-паттерна (arch/metrics/02-dictionary.md §2). Метрики — пассивные
 // наблюдатели: марк-методы никогда не бросают исключений, не влияют на циклы.
 // Единственный источник серий §2.2 — эти марк-методы (вызовы циклов рядом с
 // health.Mark* + подписка на фазовые записи журнала); HealthState — источник
-// только /healthz (arch/18 §1).
+// только /healthz (arch/metrics/01-framework.md §1).
 public sealed class WorkerMetricsInstrumentation : IDisposable
 {
-    // Терминальные фазы — фактический словарь журналов обоих воркеров (arch/18 §2.2).
+    // Терминальные фазы — фактический словарь журналов обоих воркеров (arch/metrics/02-dictionary.md §2).
     // expired — возрастное снятие не-начатой заявки.
     public static readonly IReadOnlySet<string> FinalPhases =
         new HashSet<string> { "done", "failed", "crashed", "rejected", "cancelled", "expired" };
@@ -18,12 +18,12 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
     // Ops без терминальной фазы: supervise (стационарные записи, часть через
     // WriteSupervisionAsync мимо события), evacuate (только waiting-*/blocked-moving),
     // backup-orphan-sweeper (журнал домена сирот — свой ключ
-    // /pgworker/backups/orphan-journal, arch/19 §4, в work-фазовые метрики
+    // /pgworker/backups/orphan-journal, arch/backups/05-etcd-contract.md, в work-фазовые метрики
     // не входит) и healing-portalloc (вспомогательная точечная реконструкция
-    // portalloc внутри клэйм-тика надзора, arch/21 §5 C / arch/23 §7).
+    // portalloc внутри клэйм-тика надзора, arch/valkeyworker/02-cluster-lifecycle.md §4 C / arch/s3-clusters/07-client-pool.md).
     // Живость: supervise/evacuate/healing-portalloc — клэйм-циклы
     // (алерт WorkerLoopStalled), backup-orphan-sweeper — цикл orphan-sweep
-    // (алерт OrphanSweepStalled, arch/18 §2.2).
+    // (алерт OrphanSweepStalled, arch/metrics/02-dictionary.md §2).
     public static readonly IReadOnlySet<string> SuppressedOps =
         new HashSet<string> { "supervise", "evacuate", "backup-orphan-sweeper", "healing-portalloc" };
 
@@ -38,7 +38,7 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
     private readonly Dictionary<(string Operation, string Result), long> _operations = new();
     private DateTimeOffset? _lastSnapshotTaken;
     private readonly Dictionary<(string Cluster, string Shard), long> _walLag = new();
-    // Свежесть per-shard прохода wal-sweeper (arch/18 §2.2, arch/19 §4).
+    // Свежесть per-shard прохода wal-sweeper (arch/metrics/02-dictionary.md §2, arch/backups/05-etcd-contract.md).
     private readonly Dictionary<(string Cluster, string Shard), long> _walSweepShardUnix = [];
     private readonly Dictionary<(string Cluster, string Shard), long> _fullAgeFinishedUnix = new();
     private readonly Dictionary<(string Cluster, string Shard), long> _fullMaxAge = new();
@@ -60,23 +60,23 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
 
         // Counter-инструменты: пишутся марк-методами напрямую.
         var loopTicks = meter.CreateCounter<long>(
-            "worker.loop.ticks", description: "Worker loop ticks (arch/18 §2.2)");
+            "worker.loop.ticks", description: "Worker loop ticks (arch/metrics/02-dictionary.md §2)");
         var operations = meter.CreateCounter<long>(
             "worker.operation.total", description: "Completed operations (result: ok/error/expired)");
         var backupVerify = meter.CreateCounter<long>(
-            "pgworker_backup_verify_total", description: "Full backup verify results (arch/19 §5)");
+            "pgworker_backup_verify_total", description: "Full backup verify results (arch/backups/06-s3-layout.md)");
         var backupRestore = meter.CreateCounter<long>(
             "pgworker_backup_restore_total",
-            description: "Terminal outcomes of restore jobs (arch/18 §2.7)");
+            description: "Terminal outcomes of restore jobs (arch/metrics/02-dictionary.md §7)");
         var backupDrill = meter.CreateCounter<long>(
             "pgworker_backup_drill_total",
-            description: "Terminal outcomes of restore drills (arch/18 §2.7)");
+            description: "Terminal outcomes of restore drills (arch/metrics/02-dictionary.md §7)");
         var watchdogRestarts = meter.CreateCounter<long>(
             "worker_watchdog_restarts_total",
-            description: "Watchdog-initiated stops on staleness (arch/18 §2.2)");
+            description: "Watchdog-initiated stops on staleness (arch/metrics/02-dictionary.md §2)");
         var orphanSkippedPools = meter.CreateCounter<long>(
             "pgworker_backup_orphan_skipped_pools_total",
-            description: "Orphan sweeper pass excluded an S3 pool — incomplete orphan union (arch/19 §5)");
+            description: "Orphan sweeper pass excluded an S3 pool — incomplete orphan union (arch/backups/06-s3-layout.md)");
 
         // Gauge-серии: по одному ObservableGauge на серию; колбэки читают стейт;
         // длительность фазы вычисляется в колбэке как clock.GetUtcNow() - startedAt.
@@ -103,7 +103,7 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
                 new Measurement<long>(kv.Value,
                     new KeyValuePair<string, object?>("cluster", kv.Key.Cluster),
                     new KeyValuePair<string, object?>("shard", kv.Key.Shard)))),
-            unit: "{segment}", description: "Backup WAL stream lag, segments (arch/19 §3)");
+            unit: "{segment}", description: "Backup WAL stream lag, segments (arch/backups/02-wal-archive.md §1)");
 
         meter.CreateObservableGauge(
             "worker.wal_sweep.shard_last_success_timestamp_seconds",
@@ -112,9 +112,9 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
                     new KeyValuePair<string, object?>("cluster", kv.Key.Cluster),
                     new KeyValuePair<string, object?>("shard", kv.Key.Shard)))),
             unit: "s",
-            description: "Unix timestamp of the last successful wal-sweeper pass per shard (arch/19 §4)");
+            description: "Unix timestamp of the last successful wal-sweeper pass per shard (arch/backups/05-etcd-contract.md)");
 
-        //  (arch/18 §2.7): возрастные серии хранят unix-факт, колбэк пересчитывает
+        //  (arch/metrics/02-dictionary.md §7): возрастные серии хранят unix-факт, колбэк пересчитывает
         // now − unix на КАЖДОМ scrape — между тиками процессов значение не замирает
         // (паттерн worker_snapshot_age_seconds).
         meter.CreateObservableGauge(
@@ -124,7 +124,7 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
                     Math.Max(0, _clock.GetUtcNow().ToUnixTimeSeconds() - kv.Value),
                     new KeyValuePair<string, object?>("cluster", kv.Key.Cluster),
                     new KeyValuePair<string, object?>("shard", kv.Key.Shard)))),
-            unit: "s", description: "Age of the last valid full backup, s (arch/18 §2.7)");
+            unit: "s", description: "Age of the last valid full backup, s (arch/metrics/02-dictionary.md §7)");
 
         meter.CreateObservableGauge(
             "pgworker_backup_full_max_age_seconds",
@@ -132,7 +132,7 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
                 new Measurement<long>(kv.Value,
                     new KeyValuePair<string, object?>("cluster", kv.Key.Cluster),
                     new KeyValuePair<string, object?>("shard", kv.Key.Shard)))),
-            unit: "s", description: "full_max_age_sec threshold of the effective cluster policy (arch/18 §2.7)");
+            unit: "s", description: "full_max_age_sec threshold of the effective cluster policy (arch/metrics/02-dictionary.md §7)");
 
         meter.CreateObservableGauge(
             "pgworker_backup_wal_last_uploaded_age_seconds",
@@ -141,10 +141,10 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
                     Math.Max(0, _clock.GetUtcNow().ToUnixTimeSeconds() - kv.Value),
                     new KeyValuePair<string, object?>("cluster", kv.Key.Cluster),
                     new KeyValuePair<string, object?>("shard", kv.Key.Shard)))),
-            unit: "s", description: "Age of the last WAL segment upload to S3, s (arch/18 §2.7)");
+            unit: "s", description: "Age of the last WAL segment upload to S3, s (arch/metrics/02-dictionary.md §7)");
 
-        //  (arch/18 §2.7): RTO-длительности — только ЗАВЕРШЁННЫЕ факты надзора
-        // (resolved − detected, arch/14 §3.3); открытого события/факта нет — серия
+        //  (arch/metrics/02-dictionary.md §7): RTO-длительности — только ЗАВЕРШЁННЫЕ факты надзора
+        // (resolved − detected, arch/pgworker/00-etcd-contract.md §4); открытого события/факта нет — серия
         // не эмитится. Источник — тик NodeSupervisor (наблюдатель haDurations).
         meter.CreateObservableGauge(
             "pgworker_ha_failover_duration_seconds",
@@ -152,7 +152,7 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
                 new Measurement<long>(kv.Value,
                     new KeyValuePair<string, object?>("cluster", kv.Key.Cluster),
                     new KeyValuePair<string, object?>("shard", kv.Key.Shard)))),
-            unit: "s", description: "Duration of the last completed failover, s (arch/14 §3.3)");
+            unit: "s", description: "Duration of the last completed failover, s (arch/pgworker/00-etcd-contract.md §4)");
 
         meter.CreateObservableGauge(
             "pgworker_ha_rebuild_duration_seconds",
@@ -160,7 +160,7 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
                 new Measurement<long>(kv.Value,
                     new KeyValuePair<string, object?>("cluster", kv.Key.Cluster),
                     new KeyValuePair<string, object?>("shard", kv.Key.Shard)))),
-            unit: "s", description: "Duration of the last completed rebuild, s (arch/14 §3.3)");
+            unit: "s", description: "Duration of the last completed rebuild, s (arch/pgworker/00-etcd-contract.md §4)");
 
         meter.CreateObservableGauge(
             "worker.process.phase.duration_seconds",
@@ -352,7 +352,7 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
     }
 
     // Gauge worker.wal_sweep.shard_last_success_timestamp_seconds{cluster,shard}:
-    // свежесть per-shard прохода wal-sweeper (arch/19 §4); unix=null — серия
+    // свежесть per-shard прохода wal-sweeper (arch/backups/05-etcd-contract.md); unix=null — серия
     // исчезает (образец BackupWalLag).
     public void WalSweepShardUnix(string cluster, string shard, long? unix)
     {
@@ -390,7 +390,7 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
         }
     }
 
-    // Gauge pgworker_backup_full_age_seconds/full_max_age_seconds (arch/18
+    // Gauge pgworker_backup_full_age_seconds/full_max_age_seconds (arch/metrics/README.md
     // §2.7): ЕДИНЫЙ марк-метод на тик кластера — набор шардов тика замещает
     // стейт кластера ЦЕЛИКОМ (паттерн UpdateCluster §4.2: шард, не пришедший в
     // наборе, серии больше не эмитит). Элемент набора: LastValidUnix — источник
@@ -427,7 +427,7 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
         }
     }
 
-    // Gauge pgworker_ha_{failover,rebuild}_duration_seconds (arch/18 §2.7):
+    // Gauge pgworker_ha_{failover,rebuild}_duration_seconds (arch/metrics/02-dictionary.md §7):
     // ЕДИНЫЙ марк-метод на тик надзора — набор шардов тика замещает стейт
     // кластера ЦЕЛИКОМ (ушедшие шарды серии не копят; null-факт — серия шарда
     // исчезает до появления завершённого факта).
@@ -464,7 +464,7 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
         }
     }
 
-    // Gauge pgworker_backup_wal_last_uploaded_age_seconds (arch/18 §2.7):
+    // Gauge pgworker_backup_wal_last_uploaded_age_seconds (arch/metrics/02-dictionary.md §7):
     // возраст последней доставки закрытого сегмента — наблюдение контрольного
     // прохода WalStreamProcess; null — серия исчезает (симметрия BackupWalLag).
     // Хранится unix-факт (now − age наблюдения), колбэк гейджа пересчитывает
@@ -507,7 +507,7 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
     }
 
     /// <summary>Counter pgworker_backup_restore_total{cluster,shard,result}: терминальный
-    /// исход restore-заявки (RestoreProcess), result ∈ ok|failed (arch/18 §2.7).</summary>
+    /// исход restore-заявки (RestoreProcess), result ∈ ok|failed (arch/metrics/02-dictionary.md §7).</summary>
     public void BackupRestore(string cluster, string shard, string result)
     {
         try
@@ -526,7 +526,7 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
     }
 
     /// <summary>Counter pgworker_backup_drill_total{cluster,shard,result}: чистый терминальный
-    /// итог дрилла (RestoreDrillProcess), result ∈ ok|failed (arch/18 §2.7).</summary>
+    /// итог дрилла (RestoreDrillProcess), result ∈ ok|failed (arch/metrics/02-dictionary.md §7).</summary>
     public void BackupDrill(string cluster, string shard, string result)
     {
         try
@@ -565,7 +565,7 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
 
     /// <summary>Counter pgworker_backup_orphan_skipped_pools_total{pool}: проход свипера
     /// сирот исключил пул из union (недоступен/без кредов, листинг не удался) —
-    /// реестр сирот неполный до следующего прохода (BackupOrphanSweeper, arch/19 §5).</summary>
+    /// реестр сирот неполный до следующего прохода (BackupOrphanSweeper, arch/backups/06-s3-layout.md).</summary>
     public void BackupOrphanSkippedPool(string pool)
     {
         try
@@ -599,7 +599,7 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
     // Вход кластера в фазу процесса: gauge worker_process_phase_duration_seconds
     // {cluster, process, phase}; value = now - startedAt при observe; повторная
     // запись той же фазы НЕ сбрасывает startedAt (first-seen); ProcessFinished
-    // сбрасывает серию (кардинальность, arch/18 §9 M1).
+    // сбрасывает серию (кардинальность, arch/metrics/07-risks.md M1).
     public void ProcessPhase(string cluster, string process, string phase, DateTimeOffset startedAt)
     {
         try

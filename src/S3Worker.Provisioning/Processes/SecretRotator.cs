@@ -7,7 +7,7 @@ using Shared.Etcd.Client;
 namespace S3Worker.Provisioning.Processes;
 
 /// <summary>
-/// Rolling-ротация клиентских кредов кластера (arch/23 §6/§8, arch/24 §4):
+/// Rolling-ротация клиентских кредов кластера (arch/s3-clusters/06-secrets.md/§8, arch/s3worker/04-security.md):
 /// заявка /s3worker/rotations/&lt;C&gt; — ЭКСКЛЮЗИВНАЯ ветка тика (надзор/D/E этим
 /// тиком не идут — дисциплина «одно пересоздание за тик»). Перевыпуск
 /// root+ключей — ОДНОКРАТНО на заявку: journal-маркер «reissued» (далее
@@ -49,12 +49,12 @@ public sealed class SecretRotator(
         if (ticket.Value is null)
             return Result.Success();
 
-        // Мутации — только держателем живого клэйма (arch/17 S5).
+        // Мутации — только держателем живого клэйма (arch/synchronization/02-predicates-and-mutations.md §S5).
         var claimed = S3ProcessCommon.EnsureClaimed(claims, cluster, Op);
         if (!claimed.IsSuccess)
             return claimed;
 
-        // Secrets кластера (arch/23 §6): отсутствие/битость — journal-отказ,
+        // Secrets кластера (arch/s3-clusters/06-secrets.md): отсутствие/битость — journal-отказ,
         // заявка жива (ретраи тиком; значения в диагностики не попадают).
         var secretsRead = await secrets.TryReadAsync(cluster, ct);
         if (!secretsRead.IsSuccess || secretsRead.Value is null)
@@ -143,7 +143,7 @@ public sealed class SecretRotator(
                 return address.Error!;
 
             // PKI-материал переиспользуется из etcd (ключи переживают
-            // пересоздание, arch/24 §4); отказ — отложенный тик (диагностика).
+            // пересоздание, arch/s3worker/04-security.md); отказ — отложенный тик (диагностика).
             var clusterPki = await pki.EnsureClusterPkiAsync(cluster, ct);
             if (!clusterPki.IsSuccess)
                 return await journal.WritePhaseAsync(

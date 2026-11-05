@@ -8,7 +8,7 @@ using Xunit;
 
 namespace PgWorker.UnitTests.PgNode;
 
-// Операция verify приёмника ноды (arch/19 §5) на фейках:
+// Операция verify приёмника ноды (arch/backups/06-s3-layout.md) на фейках:
 // счастливый путь — скачивание всех объектов листинга в staging →
 // pg_verifybackup → succeeded; отказ скачивания → failed + phase=downloading
 // (МАРКЕР ТРАНЗИЕНТА — ретраи воркера); pg_verifybackup ≠ 0 → failed +
@@ -226,7 +226,7 @@ public class VerifyOperationTests
     }
 
     // AAA: операторская отмена (cancel API — внешний канал мимо воркера) —
-    // снимок state=cancelled, НЕ failed (отмена не суждение о данных, arch/19
+    // снимок state=cancelled, НЕ failed (отмена не суждение о данных, arch/backups/README.md
     // §5; воркер-супервиз отличает её от vanished и вернёт кандидата в PENDING);
     // staging очищен при любом исходе; терминальный снимок персистентен и не
     // активен — гвард пропускает, новая операция на контейнере возможна.

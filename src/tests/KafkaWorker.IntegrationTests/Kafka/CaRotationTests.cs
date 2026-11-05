@@ -8,7 +8,7 @@ using Xunit;
 
 namespace KafkaWorker.IntegrationTests.Kafka;
 
-// Интеграция ротации CA (arch/16 §2.3/§5 K): заявка → CaRotator доводит
+// Интеграция ротации CA (arch/kafkaworker/04-security.md/§5 K): заявка → CaRotator доводит
 // окно двойного доверия на живом docker-кластере; после коммита ca_pem = NEW,
 // staging удалён, клиенты с NEW работают, клиенты со старым CA-кэшем отвергаются.
 // Per-class коллекция (/AGENTS.base §13; spec §6.3.2): свой инстанс

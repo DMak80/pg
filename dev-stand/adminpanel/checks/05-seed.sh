@@ -15,7 +15,7 @@ ROOT="$(cd ../.. && pwd)"
 
 seed_kafka() {
   docker compose --profile kafka up -d kafkaworker >/dev/null 2>&1
-  # Открытая грань (arch/16 §1.1): /healthz — https без клиентского серта;
+  # Открытая грань (arch/kafkaworker/07-api.md §1): /healthz — https без клиентского серта;
   # мутации /api — клиентская пара сида seed (конвенция «чек = стендовый сид»).
   HEALTH="curl -fsS -m 3 --cacert $ROOT/deploy/tls/ca.pem"
   API="curl -fsS -m 3 --cacert $ROOT/deploy/tls/ca.pem --cert $ROOT/deploy/tls/seed.crt --key $ROOT/deploy/tls/seed.key"
@@ -24,7 +24,7 @@ seed_kafka() {
   echo "  kafka seed: $($API -X POST https://localhost:8082/api/seed/demo)"
   # живой ключ доступа — его ждут и панель (WorkerEndpoints), и последующие
   # мутации чека 50; воркер остаётся Поднятым (безопасно: контейнеров брокеров
-  # нет → пробы слепые → сидовые заявки не исполняются, arch/16 §5 C).
+  # нет → пробы слепые → сидовые заявки не исполняются, arch/kafkaworker/02-cluster-lifecycle.md §4 C).
   for i in $(seq 1 30); do
     docker compose exec -T etcd1 etcdctl get /kafkaworker/api/ --prefix --keys-only 2>/dev/null | grep -q . && break
     sleep 1

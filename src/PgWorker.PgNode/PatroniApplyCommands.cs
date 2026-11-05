@@ -7,7 +7,7 @@ using PgWorker.PgNode.Operations;
 
 namespace PgWorker.PgNode;
 
-/// <summary>Команды применения ротаций на живом Patroni (arch/14 §5 I, spec
+/// <summary>Команды применения ротаций на живом Patroni (arch/pgworker/processes/i-secret-rotator.md I, spec
 /// §8-29, решение 29): rest-ПАРОЛЬ — reload Patroni (перегенерация
 /// /run/postgres.yml через configure_spilo --force + REST POST /reload;
 /// postmaster PID/start_time неизменны — PG не останавливается; рестарт
@@ -110,7 +110,7 @@ public sealed class PatroniApplyCommands(
                 // ловила OLD). Применение ПОДТВЕРЖДАЕТСЯ зондом PATCH /config
                 // NEW-парой до auth-ok (400) — converged агента (и закрытие
                 // окна ротатора) наступают только по факту применения
-                // (arch/14 §5 I: applied_revision — ПРИМЕНЁННОГО ключа).
+                // (arch/pgworker/processes/i-secret-rotator.md I: applied_revision — ПРИМЕНЁННОГО ключа).
                 await WaitPasswordAppliedAsync(restPasswordNew, ct);
                 return;
             }

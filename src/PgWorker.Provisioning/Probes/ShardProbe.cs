@@ -11,7 +11,7 @@ namespace PgWorker.Provisioning.Probes;
 /// Член Patroni-кластера из GET /cluster: role — master|replica, state —
 /// running|streaming|stopped|creating (P2.2 ожидание поднятия, надзор C);
 /// Sync — sync-статус члена (: выбор реплики-источника полного бэкапа,
-/// arch/19 §2): true/false от Patroni 3.x+, null — поле отсутствует.
+/// arch/backups/01-full-backup.md): true/false от Patroni 3.x+, null — поле отсутствует.
 /// </summary>
 public sealed record PatroniMember(string Name, string Role, string State, bool? Sync = null);
 
@@ -21,7 +21,7 @@ public sealed record PatroniMember(string Name, string Role, string State, bool?
 public sealed record NodeIdentity(string Name, string Scope);
 
 /// <summary>
-/// Пробы Patroni REST нод шарда (arch/14 §5 A/C): GET /cluster по
+/// Пробы Patroni REST нод шарда (arch/pgworker/processes/c-node-supervisor.md): GET /cluster по
 /// patroni-порту ноды с таймаутом 3 с. Ошибки сети/5xx/таймаут — Result.Failed
 /// (транзиент-толерантность: процессы ждут, надзор считает ноду недоступной).
 /// </summary>
@@ -113,7 +113,7 @@ public sealed class ShardProbe(HttpClient http)
     }
 
     // Является ли нода текущим primary шарда: GET /primary → 200 (P11-сверка
-    // мастер-ключа; HAProxy использует тот же эндпоинт, arch/14 §2.1).
+    // мастер-ключа; HAProxy использует тот же эндпоинт, arch/pgworker/01-placement.md §1).
     public async Task<bool> IsPrimaryAsync(NodeAddress node, CancellationToken ct)
     {
         try
@@ -129,7 +129,7 @@ public sealed class ShardProbe(HttpClient http)
         }
     }
 
-    // Динамический DCS-конфиг кластера (GET /config, arch/14 §5 C конвергенция,
+    // Динамический DCS-конфиг кластера (GET /config, arch/pgworker/processes/c-node-supervisor.md C конвергенция,
     //: сырой JSON-документ. Транспорт/не-2xx → Failed (вызывающий код
     // treat'ит как транзиент — конвергенция повторится следующим тиком).
     public async Task<Result<string?>> GetConfigAsync(NodeAddress node, CancellationToken ct)
@@ -152,7 +152,7 @@ public sealed class ShardProbe(HttpClient http)
         }
     }
 
-    // Частичный патч динамического DCS-конфига (PATCH /config, arch/14 §5 C,
+    // Частичный патч динамического DCS-конфига (PATCH /config, arch/pgworker/processes/c-node-supervisor.md C,
     //: Patroni мержит документ в DCS-конфиг и раздаёт нодам в пределах
     // loop_wait. Мутационный эндпоинт — basic-auth per-cluster (§5.4
     // спеки: GET-методы заголовок не несут). Не-2xx/транспорт → Failed
@@ -215,12 +215,12 @@ public sealed class ShardProbe(HttpClient http)
     }
 
     // Authorization: Basic base64(patroni:<rest_password>) — мутационные
-    // эндпоинты REST (arch/14 §5 C); GET-эндпоинты заголовок не несут.
+    // эндпоинты REST (arch/pgworker/processes/c-node-supervisor.md C); GET-эндпоинты заголовок не несут.
     private static void SetBasicAuth(HttpRequestMessage request, string restPassword)
         => request.Headers.Authorization = new AuthenticationHeaderValue(
             "Basic", Convert.ToBase64String(Encoding.UTF8.GetBytes($"{RestRotation.RestUsername}:{restPassword}")));
 
-    // REST :8008 — только https (arch/13 §4): верификация цепочки к
+    // REST :8008 — только https (arch/pg-clusters/13-network-security.md §4): верификация цепочки к
     // per-install CA выполняется HttpClient «patroni» (hostname не сверяется —
     // адрес из реплицированного portalloc, канон P17).
     private static Uri BuildUri(NodeAddress node, string path)

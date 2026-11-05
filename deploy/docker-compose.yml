@@ -1,11 +1,11 @@
-# Вторые инстансы воркеров (t07, arch/14 §2): SPOF надзора устранён дефолтом —
+# Вторые инстансы воркеров (t07, arch/pgworker/01-placement.md): SPOF надзора устранён дефолтом —
 # по два контейнера каждого воркера, координацию разбирает etcd (клэймы
 # мигрируют ≤ TTL 15 c). Отличие второго сервиса ТОЛЬКО в публикации порта и
 # AdvertiseUrl: env/volumes/build — общие анкоры (merge keys). Тома снапшотов
 # и TLS — ОБЩИЕ на оба инстанса (лидерство снапшотов мигрирует между ними).
 # Запуск PgWorker (spec §5.4, §10): docker.sock (plain на одном хосте /
 # swarm manager), том снапшотов P12, секреты per-install из env (Д7).
-# etcd запускается отдельно: HA-контур — deploy/etcd/ на 3 хостах (arch/04 §8);
+# etcd запускается отдельно: HA-контур — deploy/etcd/ на 3 хостах (arch/etcdworker/06-operability.md §7);
 # не-HA прогон — один endpoint.
 x-pgworker-env: &pgworker-env
   # Обязательные секреты установки (Д7): не в git, не в etcd.
@@ -14,21 +14,21 @@ x-pgworker-env: &pgworker-env
   PGW_BUCKET_ADMIN_PASSWORD: ${PGW_BUCKET_ADMIN_PASSWORD:?set the secret}
   PGW_BUCKET_MOVER_PASSWORD: ${PGW_BUCKET_MOVER_PASSWORD:?set the secret}
   # Конфигурация — env-оверрайды appsettings (пример: endpoints etcd).
-  # HA-контур контроль-плейна (t09, arch/04 §8): список ВСЕХ клиентских URL;
+  # HA-контур контроль-плейна (t09, arch/etcdworker/06-operability.md §7): список ВСЕХ клиентских URL;
   # дефолты — стендовые публикации (as-etcd-1/2/3), прод переопределяет в
   # deploy/.env на адреса узлов deploy/etcd. Узла 2/3 может не быть (не-HA
   # прогон) — failover переберёт список, недоступный endpoint пропускается.
   PgWorker__Etcd__Endpoints__0: ${PGW_ETCD_ENDPOINT_0:-http://host.docker.internal:2379}
   PgWorker__Etcd__Endpoints__1: ${PGW_ETCD_ENDPOINT_1:-http://host.docker.internal:2381}
   PgWorker__Etcd__Endpoints__2: ${PGW_ETCD_ENDPOINT_2:-http://host.docker.internal:2383}
-  # Advertised-имя docker-хоста в portalloc/dsn (advertised-правило arch/16,
+  # Advertised-имя docker-хоста в portalloc/dsn (advertised-правило arch/kafkaworker/README.md,
   # симметрия KafkaWorker:AdvertisedClientHost): адреса нод в etcd обязаны
   # быть резолвимы клиентами — панель пробирует host.docker.internal:15xxx/
   # 18xxx; внутреннее имя "local" резолвится только контейнерами воркеров
   # (extra_hosts), панель видела DNS-таймауты проб. Пусто (прод/мульти-хост)
   # → имя docker-хоста как есть.
   PgWorker__Docker__AdvertisedHost: ${PGW_ADVERTISED_HOST:-host.docker.internal}
-  # HTTP API воркера (arch/14 §1.1, t03): HTTPS-грань, mTLS только на /api —
+  # HTTP API воркера (arch/pgworker/07-api.md §1, t03): HTTPS-грань, mTLS только на /api —
   # advertise https://, ключи-серты из /tls (per-install пакет kfw-install-ca);
   # демо-сид POST /api/seed/demo за флагом (стенд; прод — false).
   # X-Api-Key удалён (t03) — аутентификация транспортная (mTLS).
@@ -36,20 +36,20 @@ x-pgworker-env: &pgworker-env
   PGW_API_TLS_CERT_PATH: /tls/pgserver.crt
   PGW_API_TLS_KEY_PATH: /tls/pgserver.key
   PGW_API_TLS_CLIENT_CA_PATH: /tls/ca.pem
-  # REST-TLS нод (t22, arch/14 §8): per-install CA + ключ выпуска сертов
+  # REST-TLS нод (t22, arch/pgworker/08-operability.md §5): per-install CA + ключ выпуска сертов
   PGW_REST_TLS_CA_PATH: /tls/ca.pem
   PGW_REST_TLS_CA_KEY_PATH: /tls/ca.key
   PgWorker__Api__EnableSeedEndpoint: ${PGW_API_ENABLE_SEED:-false}
-  # Подсистема бэкапов (arch/19): пул S3 per-cluster — policy кластера
+  # Подсистема бэкапов (arch/backups/README.md): пул S3 per-cluster — policy кластера
   # ссылается пул /s3/clusters/ (выбор — панель, «Пул бэкапов»); креды пула
   # воркер читает из per-cluster secrets-ключа etcd (/s3/clusters/<C>/secrets).
   # Пустой Bucket валиден при Enabled=false (валидация старта воркера).
   PgWorker__Backups__Enabled: ${PGW_BACKUPS_ENABLED:-false}
   PgWorker__Backups__S3__Bucket: ${PGW_BACKUP_S3_BUCKET:-}
-  # Доверие CA https S3-целей (arch/19 §7): путь ca.pem в контейнере
+  # Доверие CA https S3-целей (arch/backups/08-secrets.md): путь ca.pem в контейнере
   # (ro-монтирование TLS-пакета, прод); единый на все цели. Пусто — http.
   PgWorker__Backups__S3__CaBundlePath: ${PGW_BACKUP_S3_CA_BUNDLE_PATH:-}
-  # PGTune-параметры PG-нод (arch/14 §2.1/§8): postgresql.conf ноды
+  # PGTune-параметры PG-нод (arch/pgworker/01-placement.md §1/§8): postgresql.conf ноды
   # рассчитывается при СОЗДАНИИ контейнера; память/CPU — из etcd-заявок
   # request_{cpu,mem} ноды (НЕ env), остальное — эти константы; канон P3
   # (wal_level=logical, walsenders) перекрывает расчёт; doorman =
@@ -63,14 +63,14 @@ x-pgworker-env: &pgworker-env
   # io_method/io_workers выключены, пока Spilo-18 не проверен на liburing.
   PgWorker__Pgtune__ExcludeParams__0: ${PGW_PGTUNE_EXCLUDE_0:-io_method}
   PgWorker__Pgtune__ExcludeParams__1: ${PGW_PGTUNE_EXCLUDE_1:-io_workers}
-  # Сеть контура скрейпа (t15, arch/18 §5.4): имя сети, к которой движок
+  # Сеть контура скрейпа (t15, arch/metrics/05-storage.md §4): имя сети, к которой движок
   # Ensure-attach'ит создаваемые ноды; portalloc несёт alias/net,
-  # sd-generator строит таргеты <alias>:8008 (arch/14 §2.4). Пусто —
+  # sd-generator строит таргеты <alias>:8008 (arch/pgworker/01-placement.md §5). Пусто —
   # деградационный контур без сетевой идентичности (advertised-таргеты).
   PgWorker__Docker__ScrapeNetwork: ${PGW_SCRAPE_NETWORK:-pgw-metrics}
-  # Сеть контура поставки (t41, arch/14 §2.1): задана → ноды/ephemeral-джобы
+  # Сеть контура поставки (t41, arch/pgworker/01-placement.md §1): задана → ноды/ephemeral-джобы
   # бэкапов создаются в ней одной (pgw-net-<C> не создаётся,
-  # extra_hosts спек не применяются); пусто — прод-режим (канон arch/14).
+  # extra_hosts спек не применяются); пусто — прод-режим (канон arch/pgworker/README.md).
   PgWorker__Docker__ContourNetwork: ${PGW_CONTOUR_NETWORK:-}
 
 x-pgworker-base: &pgworker-base
@@ -82,10 +82,10 @@ x-pgworker-base: &pgworker-base
   volumes:
     - /var/run/docker.sock:/var/run/docker.sock
     - pgw-snapshots:/snapshots
-    # mTLS HTTP API (t03, arch/14 §1.1): per-install пакет kfw-install-ca
+    # mTLS HTTP API (t03, arch/pgworker/07-api.md §1): per-install пакет kfw-install-ca
     # (bash deploy/tls/gen.sh; наполнение volume — dev-stand 00-up.sh).
     - pgw-api-tls:/tls:ro
-    # RBAC вместо сокета наружу (arch/14 §2.2.1, НЕ включено: текущие стенды
+    # RBAC вместо сокета наружу (arch/pgworker/01-placement.md §4, НЕ включено: текущие стенды
     # работают root'ом контейнера): выделенный пользователь + группа docker
     # host-машины — раскомментировать и указать gid (getent group docker):
     #   user: "10001:10001"
@@ -100,20 +100,20 @@ x-pgworker-base: &pgworker-base
     # Docker Desktop резолвит сам, extra_hosts безвреден).
     - "host.docker.internal:host-gateway"
 
-# KafkaWorker (arch/16 §2.1/§8): docker.sock, том снапшотов P12.
+# KafkaWorker (arch/kafkaworker/01-placement.md §1/§8): docker.sock, том снапшотов P12.
 # Env-секретов per-install нет (единственный секрет — per-cluster
 # app_password в etcd). AdvertiseUrl — в сервисах (уникален per инстанс).
 x-kafkaworker-env: &kafkaworker-env
-  # HA-контур (t09, arch/04 §8): список ВСЕХ клиентских URL (дефолты — стендовые
+  # HA-контур (t09, arch/etcdworker/06-operability.md §7): список ВСЕХ клиентских URL (дефолты — стендовые
   # публикации as-etcd-1/2/3; узла 2/3 может не быть — failover переберёт список).
   KafkaWorker__Etcd__Endpoints__0: ${KFW_ETCD_ENDPOINT_0:-http://host.docker.internal:2379}
   KafkaWorker__Etcd__Endpoints__1: ${KFW_ETCD_ENDPOINT_1:-http://host.docker.internal:2381}
   KafkaWorker__Etcd__Endpoints__2: ${KFW_ETCD_ENDPOINT_2:-http://host.docker.internal:2383}
   # Advertised-хост CLIENT-listener → endpoints в etcd резолвимы клиентами
-  # (arch/16 advertised-правило; null допустим только когда имя docker-хоста
+  # (arch/kafkaworker/README.md advertised-правило; null допустим только когда имя docker-хоста
   # резолвимо клиентами само по себе).
   KafkaWorker__AdvertisedClientHost: ${KFW_ADVERTISED_CLIENT_HOST:-host.docker.internal}
-  # HTTP API воркера (arch/16 §1.1): advertise-URL https:// в /kafkaworker/api/<id>,
+  # HTTP API воркера (arch/kafkaworker/07-api.md §1): advertise-URL https:// в /kafkaworker/api/<id>,
   # mTLS-серты из /tls, демо-сид за флагом (стенд; прод — false). KFW_API_KEY
   # удалён (t03) — грань HTTPS, mTLS только на /api.
   KFW_API_TLS_CERT_PATH: /tls/server.crt
@@ -130,7 +130,7 @@ x-kafkaworker-base: &kafkaworker-base
   volumes:
     - /var/run/docker.sock:/var/run/docker.sock
     - kfw-snapshots:/snapshots
-    # mTLS HTTP API (t03, arch/16 §1.1): per-install TLS-пакет из deploy/tls
+    # mTLS HTTP API (t03, arch/kafkaworker/07-api.md §1): per-install TLS-пакет из deploy/tls
     # (генерация — bash deploy/tls/gen.sh; наполнение volume — 00-up.sh стенда).
     - kfw-api-tls:/tls:ro
   extra_hosts:
@@ -138,23 +138,23 @@ x-kafkaworker-base: &kafkaworker-base
     # резолвим его в шлюз docker-хоста (прецедент pgworker выше).
     - "local:host-gateway"
 
-# ValkeyWorker (arch/21 §2/§8): docker.sock, том снапшотов P12. Хост-порт API
+# ValkeyWorker (arch/valkeyworker/01-placement.md/§8): docker.sock, том снапшотов P12. Хост-порт API
 # 8082 — продолжение ряда pg 8080 / kfw 8081. Томов данных нод НЕТ
 # (persistence off — томов у домена не бывает). AdvertiseUrl — в сервисах.
 x-valkeyworker-env: &valkeyworker-env
-  # HA-контур (t09, arch/04 §8): список ВСЕХ клиентских URL (дефолты — стендовые
+  # HA-контур (t09, arch/etcdworker/06-operability.md §7): список ВСЕХ клиентских URL (дефолты — стендовые
   # публикации as-etcd-1/2/3; узла 2/3 может не быть — failover переберёт список).
   ValkeyWorker__Etcd__Endpoints__0: ${VWK_ETCD_ENDPOINT_0:-http://host.docker.internal:2379}
   ValkeyWorker__Etcd__Endpoints__1: ${VWK_ETCD_ENDPOINT_1:-http://host.docker.internal:2381}
   ValkeyWorker__Etcd__Endpoints__2: ${VWK_ETCD_ENDPOINT_2:-http://host.docker.internal:2383}
   # Advertised-хост клиентского порта нод → endpoints в etcd резолвимы
-  # клиентами (arch/21 §2 advertised-правило).
+  # клиентами (arch/valkeyworker/01-placement.md advertised-правило).
   ValkeyWorker__AdvertisedClientHost: ${VWK_ADVERTISED_CLIENT_HOST:-host.docker.internal}
-  # Сеть контура (симметрия PgWorker/S3Worker, arch/21 §2): задана → контейнеры
+  # Сеть контура (симметрия PgWorker/S3Worker, arch/valkeyworker/01-placement.md): задана → контейнеры
   # vwk-нод создаются в ней одной (стенд — adminpanel-stand-net); пусто —
   # прод-режим (default bridge docker-хоста запуска).
   ValkeyWorker__Docker__ContourNetwork: ${PGW_CONTOUR_NETWORK:-}
-  # HTTP API воркера (arch/21 §1.1): advertise-URL https:// в /valkeyworker/api/<id>,
+  # HTTP API воркера (arch/valkeyworker/05-api.md §1): advertise-URL https:// в /valkeyworker/api/<id>,
   # mTLS-серты из /tls, демо-сид за флагом (стенд; прод — false).
   VWK_API_TLS_CERT_PATH: /tls/server.crt
   VWK_API_TLS_KEY_PATH: /tls/server.key
@@ -170,7 +170,7 @@ x-valkeyworker-base: &valkeyworker-base
   volumes:
     - /var/run/docker.sock:/var/run/docker.sock
     - vw-snapshots:/snapshots
-    # mTLS HTTP API (arch/21 §1.1): per-install TLS-пакет из deploy/tls
+    # mTLS HTTP API (arch/valkeyworker/05-api.md §1): per-install TLS-пакет из deploy/tls
     # (генерация — bash deploy/tls/gen.sh; наполнение volume — 00-up.sh стенда).
     - vw-api-tls:/tls:ro
   extra_hosts:
@@ -180,27 +180,27 @@ x-valkeyworker-base: &valkeyworker-base
     - "host.docker.internal:host-gateway"
 
 x-s3worker-env: &s3worker-env
-  # HA-контур (arch/23 §8): список ВСЕХ клиентских URL (дефолты — стендовые
+  # HA-контур (arch/s3-clusters/08-coordination.md): список ВСЕХ клиентских URL (дефолты — стендовые
   # публикации as-etcd-1/2/3; узла 2/3 может не быть — failover переберёт).
   S3Worker__Etcd__Endpoints__0: ${S3W_ETCD_ENDPOINT_0:-http://host.docker.internal:2379}
   S3Worker__Etcd__Endpoints__1: ${S3W_ETCD_ENDPOINT_1:-http://host.docker.internal:2381}
   S3Worker__Etcd__Endpoints__2: ${S3W_ETCD_ENDPOINT_2:-http://host.docker.internal:2383}
   # Advertised-хост S3-порта нод → endpoints в etcd резолвимы клиентами
-  # (arch/23 §2.1 advertised-правило).
+  # (arch/s3-clusters/02-keys.md §2 advertised-правило).
   S3Worker__Docker__AdvertisedHost: ${S3W_ADVERTISED_HOST:-host.docker.internal}
   # Сеть контура (t41-симметрия PgWorker): задана → ноды пулов /s3/ создаются
   # в ней одной (стенд — adminpanel-stand-net: панель/pgworker/jobs достают
   # ноды и по имени сети); пусто — прод-режим (de-facto-сеть docker-хоста).
   S3Worker__Docker__ContourNetwork: ${PGW_CONTOUR_NETWORK:-}
-  # per-install bucket (arch/19 §5; env S3W_BUCKET — fail-fast старта).
+  # per-install bucket (arch/backups/06-s3-layout.md; env S3W_BUCKET — fail-fast старта).
   S3Worker__Bucket: ${S3W_BUCKET:?set a per-install bucket}
-  # HTTP API воркера (arch/24 §1.1): mTLS-серты из /tls (env-фоллбек до
+  # HTTP API воркера (arch/s3worker/07-api.md §1): mTLS-серты из /tls (env-фоллбек до
   # ключа /workers/api_tls/s3worker от панели t34), демо-сид за флагом.
   S3W_API_TLS_CERT_PATH: /tls/server.crt
   S3W_API_TLS_KEY_PATH: /tls/server.key
   S3W_API_TLS_CLIENT_CA_PATH: /tls/ca.pem
   S3Worker__Api__EnableSeedEndpoint: ${S3W_API_ENABLE_SEED:-false}
-  # Спец-ключ бэкапа etcd (arch/23 §6): per-install env-пара, обязательна
+  # Спец-ключ бэкапа etcd (arch/s3-clusters/06-secrets.md): per-install env-пара, обязательна
   # только при создании etcd-backup кластера (пусто — пара не задана).
   S3W_ETCD_BACKUP_ACCESSKEY: ${S3W_ETCD_BACKUP_ACCESSKEY:-}
   S3W_ETCD_BACKUP_SECRETKEY: ${S3W_ETCD_BACKUP_SECRETKEY:-}
@@ -216,7 +216,7 @@ x-s3worker-base: &s3worker-base
   volumes:
     - /var/run/docker.sock:/var/run/docker.sock
     - s3w-snapshots:/snapshots
-    # mTLS HTTP API (arch/24 §1.1): общий TLS-volume pgw-api-tls (server-серт
+    # mTLS HTTP API (arch/s3worker/07-api.md §1): общий TLS-volume pgw-api-tls (server-серт
     # kfw/vwk-ряда с SAN s3worker*, deploy/tls/gen.sh); наполнение — 00-up.sh.
     - pgw-api-tls:/tls:ro
   extra_hosts:
@@ -226,22 +226,22 @@ x-s3worker-base: &s3worker-base
     - "host.docker.internal:host-gateway"
 
 x-etcdworker-env: &etcdworker-env
-  # HA-контур (arch/25 §1): клиентские endpoints (дефолты — стендовые
+  # HA-контур (arch/etcdworker/README.md): клиентские endpoints (дефолты — стендовые
   # публикации as-etcd-1/2/3; узла 2/3 может не быть — failover переберёт).
   EtcdWorker__Etcd__Endpoints__0: ${ETCDW_ETCD_ENDPOINT_0:-http://host.docker.internal:2379}
   EtcdWorker__Etcd__Endpoints__1: ${ETCDW_ETCD_ENDPOINT_1:-http://host.docker.internal:2381}
   EtcdWorker__Etcd__Endpoints__2: ${ETCDW_ETCD_ENDPOINT_2:-http://host.docker.internal:2383}
-  # Состав контура (arch/25 §2): адресация ТОЛЬКО именами узлов в etcdw-net.
+  # Состав контура (arch/etcdworker/01-placement.md): адресация ТОЛЬКО именами узлов в etcdw-net.
   EtcdWorker__Docker__Network: ${ETCDW_DOCKER_NETWORK:-etcdw-net}
   EtcdWorker__Docker__Mode: ${ETCDW_DOCKER_MODE:-Plain}
   EtcdWorker__Docker__Hosts__0__Name: ${ETCDW_DOCKER_HOST_NAME:-local}
   EtcdWorker__Docker__Hosts__0__Endpoint: ${ETCDW_DOCKER_HOST_ENDPOINT:-unix:///var/run/docker.sock}
-  # Образ etcd-узла — внешний, зеркалирован в registry (docs/runbook.md).
+  # Образ etcd-узла — внешний, зеркалирован в registry (arch/operations/02-registry-images.md).
   EtcdWorker__Docker__Images__Etcd: ${ETCDW_ETCD_IMAGE:-192.168.0.1:5000/quay.io/coreos/etcd:v3.5.21}
   # Advertised-хост клиентской грани managed-узлов → endpoints в etcd
-  # резолвимы клиентами (arch/25 §2 advertised-правило).
+  # резолвимы клиентами (arch/etcdworker/01-placement.md advertised-правило).
   EtcdWorker__Docker__AdvertisedHost: ${ETCDW_ADVERTISED_HOST:-host.docker.internal}
-  # HTTP API воркера (arch/25 §1.1): mTLS-серты из /tls (env-фоллбек до
+  # HTTP API воркера (arch/etcdworker/05-api.md §1): mTLS-серты из /tls (env-фоллбек до
   # ключа /workers/api_tls/etcdworker от панели).
   ETCDW_API_TLS_CERT_PATH: /tls/server.crt
   ETCDW_API_TLS_KEY_PATH: /tls/server.key
@@ -260,7 +260,7 @@ x-etcdworker-base: &etcdworker-base
     # без него Plain-драйвер не создаёт контейнеры managed-узлов).
     - /var/run/docker.sock:/var/run/docker.sock
     - etcdw-snapshots:/snapshots
-    # mTLS HTTP API (arch/25 §1.1): общий TLS-volume pgw-api-tls (серты
+    # mTLS HTTP API (arch/etcdworker/05-api.md §1): общий TLS-volume pgw-api-tls (серты
     # kfw/vwk/s3w-ряда с SAN etcdworker* — добавить SAN в deploy/tls/gen.sh,
     # наполнение 00-up.sh); симметрично s3worker.
     - pgw-api-tls:/tls:ro
@@ -280,7 +280,7 @@ services:
     networks:
       # default сохраняется явно: compose не подключает default при указанном networks.
       default: {}
-      # Единая сеть контура мониторинга (t15, arch/18 §5.4): Prometheus
+      # Единая сеть контура мониторинга (t15, arch/metrics/05-storage.md §4): Prometheus
       # (external-attach стендового компоуза) скрейпит воркеров по alias.
       pgw-metrics:
         aliases: [pgworker]
@@ -288,7 +288,7 @@ services:
       <<: *pgworker-env
       PgWorker__Api__AdvertiseUrl: ${PGW_API_ADVERTISE_URL:-https://host.docker.internal:${PGW_API_HOST_PORT:-8080}}
 
-  # Второй инстанс PgWorker (t07, arch/14 §2): тот же образ/секреты/тома;
+  # Второй инстанс PgWorker (t07, arch/pgworker/01-placement.md): тот же образ/секреты/тома;
   # отличается ТОЛЬКО порт публикации (ряд 8080→8083) и AdvertiseUrl —
   # advertise следует за портом автоматически (compose-дефолт, отдельная
   # env не нужна). container_name НЕ задаём (compose: deploy-pgworker-2-1).
@@ -314,7 +314,7 @@ services:
       <<: *kafkaworker-env
       KafkaWorker__Api__AdvertiseUrl: ${KFW_API_ADVERTISE_URL:-https://host.docker.internal:8081}
 
-  # Второй инстанс KafkaWorker (t07, arch/16 §2.1): ряд 8081→8084; advertise
+  # Второй инстанс KafkaWorker (t07, arch/kafkaworker/01-placement.md §1): ряд 8081→8084; advertise
   # следует за портом (compose-дефолт). Тома kfw-snapshots/kfw-api-tls — общие.
   kafkaworker-2:
     <<: *kafkaworker-base
@@ -332,7 +332,7 @@ services:
       <<: *valkeyworker-env
       ValkeyWorker__Api__AdvertiseUrl: ${VWK_API_ADVERTISE_URL:-https://host.docker.internal:8082}
 
-  # Второй инстанс ValkeyWorker (t07, arch/21 §2): ряд 8082→8085; advertise
+  # Второй инстанс ValkeyWorker (t07, arch/valkeyworker/01-placement.md): ряд 8082→8085; advertise
   # следует за портом (compose-дефолт). Тома vw-snapshots/vw-api-tls — общие.
   valkeyworker-2:
     <<: *valkeyworker-base
@@ -342,7 +342,7 @@ services:
       <<: *valkeyworker-env
       ValkeyWorker__Api__AdvertiseUrl: https://host.docker.internal:${VWK_API_HOST_PORT2:-8085}
 
-  # S3Worker (arch/24): оркестратор кластеров S3-хранилища бэкапов (префикс
+  # S3Worker (arch/s3worker/README.md): оркестратор кластеров S3-хранилища бэкапов (префикс
   # /s3/ + координация /s3worker/); портовой ряд 8086 (после pg 8080-8083 /
   # kfw 8081-8084 / vwk 8082-8085); ноды кластеров он поднимает сам.
   s3worker:
@@ -353,7 +353,7 @@ services:
       <<: *s3worker-env
       S3Worker__Api__AdvertiseUrl: ${S3W_API_ADVERTISE_URL:-https://host.docker.internal:${S3W_API_HOST_PORT:-8086}}
 
-  # Второй инстанс S3Worker (arch/24 §2): ряд 8086→8089; advertise следует
+  # Второй инстанс S3Worker (arch/s3worker/01-placement.md): ряд 8086→8089; advertise следует
   # за портом (compose-дефолт). Том s3w-snapshots — общий.
   s3worker-2:
     <<: *s3worker-base
@@ -363,7 +363,7 @@ services:
       <<: *s3worker-env
       S3Worker__Api__AdvertiseUrl: https://host.docker.internal:${S3W_API_HOST_PORT2:-8089}
 
-  # EtcdWorker (arch/25): хозяин etcd-контура — состав managed-узлов + DR-слепки
+  # EtcdWorker (arch/etcdworker/README.md): хозяин etcd-контура — состав managed-узлов + DR-слепки
   # в фиксированный bucket etcd-backups; портовой ряд 8087 (после pg 8080-8083 /
   # kfw 8081-8084 / vwk 8082-8085 / s3w 8086-8089); узлы контура он поднимает сам.
   etcdworker:
@@ -400,7 +400,7 @@ services:
       OWNS3_ROOT_USER: ${OWNS3_ROOT_USER:?set the secret}
       OWNS3_ROOT_PASSWORD: ${OWNS3_ROOT_PASSWORD:?set the secret}
       # Статические ключи (../OwnS3/arch/owns3/05 §2): writer подсистемы бэкапов
-      # (= PGW_BACKUP_S3_* — один комплект, arch/19 §7) + read-only панель.
+      # (= PGW_BACKUP_S3_* — один комплект, arch/backups/08-secrets.md) + read-only панель.
       # Пустые значения безопасны: сервис читает их напрямую и стоп на
       # первом пустом индексе (только root).
       OWNS3_ACCESS_KEYS__0__ACCESSKEY: ${OWNS3_ACCESS_KEYS__0__ACCESSKEY:-}
@@ -496,7 +496,7 @@ services:
     volumes:
       - owns3-m2-data:/data
 
-# Единая сеть контура мониторинга (t15, arch/18 §5.4): deploy-проект ВЛАДЕЕТ
+# Единая сеть контура мониторинга (t15, arch/metrics/05-storage.md §4): deploy-проект ВЛАДЕЕТ
 # сетью — в ней deploy-воркеры PgWorker (aliases), Prometheus (external-attach
 # стендового компоуза) и кластерные ноды (attach движком,
 # PgWorker:Docker:ScrapeNetwork). Предсказуемое имя — для внешних потребителей

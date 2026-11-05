@@ -807,7 +807,7 @@ public class RetentionPlannerTests
         start!.Value.Name.Should().Be("000000010000000000000005");
     }
 
-    // ---: SelectPartialForDeletion — гигиена .partial (arch/19 §4 п.5) ----
+    // ---: SelectPartialForDeletion — гигиена .partial (arch/backups/05-etcd-contract.md) ----
 
     private static WalFileName Segment(uint log, uint seg) => new(1, log, seg);
 

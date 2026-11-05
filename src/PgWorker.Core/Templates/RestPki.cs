@@ -6,7 +6,7 @@ using System.Linq;
 namespace PgWorker.Core.Templates;
 
 /// <summary>
-/// PKI REST-эндпоинтов нод (arch/14 §2.1/§2.4): выпуск серверных сертов
+/// PKI REST-эндпоинтов нод (arch/pgworker/01-placement.md §1/§2.4): выпуск серверных сертов
 /// REST `:8008` из per-install API-CA воркером. SAN = DNS &lt;n&gt; (короткий
 /// alias в pgw-net-&lt;C&gt;) + DNS pgw-&lt;C&gt;-&lt;X&gt;-&lt;n&gt; (полное docker-имя) +
 /// IP 127.0.0.1 (loopback lease-скрипта P11); advertised-хост в SAN не
@@ -20,7 +20,7 @@ public static class RestPki
     private static readonly Oid ClientAuthOid = new("1.3.6.1.5.5.7.3.2");
 
     /// <summary>Выпуск клиентского серта воркера для mTLS-канала доставки
-    /// (arch/14 §4, arch/25 №23): CN по роли инициатора канала (pgworker),
+    /// (arch/pgworker/04-security.md, arch/communications/02-channel-registry.md №23): CN по роли инициатора канала (pgworker),
     /// EKU — только ClientAuth; RSA-2048/SHA256, срок и границы — как у
     /// серверного серта ноды (зажим в NotAfter CA).</summary>
     public static (string CertPem, string KeyPem) IssueWorkerClientCertificate(

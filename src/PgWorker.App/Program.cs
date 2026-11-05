@@ -37,7 +37,7 @@ var builder = WebApplication.CreateBuilder(args);
 ApiTlsEndpoints.ApplyEnvOverrides(builder.Configuration);
 DockerEnvBindings.ApplyTlsEnvOverrides(builder.Configuration);
 DockerEnvBindings.ApplySshEnvOverrides(builder.Configuration);
-// REST-TLS нод (arch/14 §4 гр.3): PGW_REST_TLS_* — до всего остального.
+// REST-TLS нод (arch/pgworker/04-security.md гр.3): PGW_REST_TLS_* — до всего остального.
 DockerEnvBindings.ApplyRestTlsEnvOverrides(builder.Configuration);
 
 // Доверие CA https S3-endpoint (spec §5 fallback): PgWorker:Backups:S3:CaBundlePath
@@ -48,13 +48,13 @@ DockerEnvBindings.ApplyRestTlsEnvOverrides(builder.Configuration);
 
 // Конфигурация: appsettings.json + env-оверрайды PgWorker__* (пример — в корне проекта).
 builder.Services.Configure<PgWorkerOptions>(builder.Configuration.GetSection("PgWorker"));
-// Fail-fast: advertise без URL бессмысленен; http-advertise запрещён (HTTPS-грань, arch/14 §1.1).
+// Fail-fast: advertise без URL бессмысленен; http-advertise запрещён (HTTPS-грань, arch/pgworker/07-api.md §1).
 builder.Services.AddOptions<PgWorkerOptions>()
     .Validate(o => !string.IsNullOrWhiteSpace(o.Api.AdvertiseUrl),
         "PgWorker:Api:AdvertiseUrl is not set (API URL reachable by the panel; env PGW_API_ADVERTISE_URL)")
     .Validate(o => o.Api.Tls.AllowInsecureHttp
         || o.Api.AdvertiseUrl.StartsWith("https://", StringComparison.Ordinal),
-        "PgWorker:Api:AdvertiseUrl must be https:// (mTLS-only API, arch/14 §1.1)")
+        "PgWorker:Api:AdvertiseUrl must be https:// (mTLS-only API, arch/pgworker/07-api.md §1)")
     // Расчёт PGTune (spec.md §4.2): мусорный конфиг виден на старте, а не на
     // первом provision'е. desktop запрещён — его wal_level=minimal/max_wal_senders=0
     // несовместимы с P3 (логическое декодирование, переезды бакетов).
@@ -62,7 +62,7 @@ builder.Services.AddOptions<PgWorkerOptions>()
         "PgWorker:Pgtune: DbVersion 10..18; DbType web|oltp|dw|mixed (desktop is forbidden — incompatible with P3); " +
         "HdType ssd|san|hdd|nvme; DbSize less_ram|mid_ram|greater_ram; Connections 20..999999; " +
         "ExcludeParams — only PGTune output names (§5.2). Memory/CPU are not set here: etcd requests use request_{cpu,mem}")
-    // REST-TLS нод (arch/14 §8): поставка без TLS-пакета считается битой —
+    // REST-TLS нод (arch/pgworker/08-operability.md §5): поставка без TLS-пакета считается битой —
     // HTTP-режим провижининга не существует (симметрия запрета Pgtune:DbType=desktop).
     .Validate(o => o.Docker.RestTls.IsComplete(),
         "PgWorker:Docker:RestTls is required: both PGW_REST_TLS_{CA,CA_KEY}[_PATH] " +
@@ -74,7 +74,7 @@ builder.Services.AddOptions<PgWorkerOptions>()
 var etcdEndpoints = builder.Configuration.GetSection("PgWorker:Etcd:Endpoints").Get<string[]>() ?? [];
 var managedCert = await WorkerApiCertReader.ReadAsync(etcdEndpoints, "pgworker", CancellationToken.None);
 
-// HTTPS HTTP API (arch/14 §1.1): Kestrel с серверным сертом; клиентский серт
+// HTTPS HTTP API (arch/pgworker/07-api.md §1): Kestrel с серверным сертом; клиентский серт
 // опционален, mTLS (401) — только /api (порт — из ASPNETCORE_URLS/urls, иначе 8080).
 var apiTls = ApiTlsEndpoints.ConfigureMtls(builder, managedCert);
 
@@ -89,7 +89,7 @@ builder.Services.AddSingleton<HealthState>();
 // Прогресс-отметки долгих фаз reconcile в глубину процессов (Provisioning/Moves).
 builder.Services.AddSingleton<Shared.Core.Hosting.ILoopProgress>(sp => sp.GetRequiredService<HealthState>());
 
-// Метрики (arch/18 §3): /metrics на том же HTTPS-Kestrel-порту, что /healthz.
+// Метрики (arch/metrics/03-exposure.md): /metrics на том же HTTPS-Kestrel-порту, что /healthz.
 builder.Services.AddAppMetrics("PgWorker", builder.Configuration.GetSection("PgWorker:Metrics"));
 builder.Services.AddSingleton(sp =>
 {
@@ -98,7 +98,7 @@ builder.Services.AddSingleton(sp =>
         sp.GetRequiredService<TimeProvider>());
     // Единый seam фаз/операций (S2): метрики — наблюдатель журнала, точки вызова
     // процессов не трогаем. Терминальные фазы/first-seen/подавление supervise и
-    // evacuate — внутри OnJournalPhase (arch/18 §2.2).
+    // evacuate — внутри OnJournalPhase (arch/metrics/02-dictionary.md §2).
     sp.GetRequiredService<WorkJournal>().PhaseWritten += e => m.OnJournalPhase(e.Cluster, e.Op, e.Phase);
     return m;
 });
@@ -106,7 +106,7 @@ builder.Services.AddSingleton(sp =>
 // Секреты per-install (Д7, spec §10): не в git, не в etcd — только env процесса.
 builder.Services.AddSingleton(_ => SecretsFromEnv());
 
-// REST-TLS нод (arch/14 §8): per-install CA + ключ выпуска сертов;
+// REST-TLS нод (arch/pgworker/08-operability.md §5): per-install CA + ключ выпуска сертов;
 // резолв PEM|PATH и разбор на старте — битый/неполный пакет fail-fast.
 builder.Services.AddSingleton(sp =>
 {
@@ -121,7 +121,7 @@ builder.Services.AddSingleton(sp =>
     return new RestTlsMaterial(caPem!, caKeyPem!, ca);
 });
 
-// Поллинг-инвариант (arch/14 §6): одиночный HTTP-вызов к etcd не молчит дольше
+// Поллинг-инвариант (arch/pgworker/08-operability.md §3): одиночный HTTP-вызов к etcd не молчит дольше
 // окна проверки watchdog — таймаут = половина окна (7.5 c при дефолтах); зависший
 // запрос (протухшее соединение) → исключение → transient-фейл тика, а не молчание
 // до дефолтных 100 c HttpClient (разбор E2E-маркера: reconcile молчал 37 c).
@@ -131,7 +131,7 @@ builder.Services.AddHttpClient("etcd", c => c.Timeout = TimeSpan.FromSeconds(7.5
 builder.Services.AddHttpClient("walreceiver", c => c.Timeout = TimeSpan.FromSeconds(10));
 builder.Services.AddSingleton<IWalReceiverApiClient>(sp =>
     new WalReceiverApiClient(sp.GetRequiredService<IHttpClientFactory>().CreateClient("walreceiver")));
-// mTLS-клиент канала доставки секретов (arch/14 §4, arch/25 №23): клиентский
+// mTLS-клиент канала доставки секретов (arch/pgworker/04-security.md, arch/communications/02-channel-registry.md №23): клиентский
 // серт воркера + верификация серверного серта агента по per-install CA и SAN
 // полного имени ноды. Таймаут — существующий HttpClient-уровень 10 с.
 builder.Services.AddHttpClient("pgnode-channel", c => c.Timeout = TimeSpan.FromSeconds(10))
@@ -153,7 +153,7 @@ builder.Services.AddHttpClient("pgnode-channel", c => c.Timeout = TimeSpan.FromS
 builder.Services.AddSingleton<PgWorker.Provisioning.Probes.INodeChannelClient>(sp =>
     new PgWorker.Provisioning.Probes.NodeChannelClient(
         sp.GetRequiredService<IHttpClientFactory>().CreateClient("pgnode-channel")));
-// Доставка bootstrap-данных нодам (arch/14 §4, spec §3.7.2): put ключа +
+// Доставка bootstrap-данных нодам (arch/pgworker/04-security.md, spec §3.7.2): put ключа +
 // хендшейк по статусу, Ensure-хвост всех процессов и конвергенция надзора.
 builder.Services.AddSingleton<PgWorker.Provisioning.Processes.INodeBootstrapDelivery>(sp =>
     new PgWorker.Provisioning.Processes.NodeBootstrapDelivery(
@@ -163,7 +163,7 @@ builder.Services.AddSingleton<PgWorker.Provisioning.Processes.INodeBootstrapDeli
         sp.GetRequiredService<RestCertificateCache>()));
 builder.Services.AddSingleton<PgWorker.Provisioning.Probes.INodeDataProbe>(sp =>
     new WalNodeDataProbe(sp.GetRequiredService<IWalReceiverApiClient>()));
-// Клиент Patroni REST (arch/14 §5 C): https к host:patroni-port portalloc;
+// Клиент Patroni REST (arch/pgworker/processes/c-node-supervisor.md C): https к host:patroni-port portalloc;
 // верификация цепочки к per-install CA без hostname-проверки (канон P17
 // «require, не verify-full»: адрес ноды — из реплицированного portalloc;
 // образец — CustomRootTrust панели). Таймауты не меняются (7.5 c клиент).
@@ -203,7 +203,7 @@ builder.Services.AddSingleton(sp => new EvacuationJournalStore(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints));
 
-// HTTP API воркера (arch/14 §1.1): мутации декларативного контракта — хендлеры-синглтоны.
+// HTTP API воркера (arch/pgworker/07-api.md §1): мутации декларативного контракта — хендлеры-синглтоны.
 builder.Services.AddSingleton(sp => new CreateClusterHandler(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
@@ -248,7 +248,7 @@ builder.Services.AddSingleton(sp => new RotateClusterSecretsHandler(
 builder.Services.AddSingleton(sp => new BackupsPolicyHandler(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints));
-// Сироты бэкапов: hold/unhold/delete-заявки (reliability, arch/19 §4) —
+// Сироты бэкапов: hold/unhold/delete-заявки (reliability, arch/backups/05-etcd-contract.md) —
 // пер-префиксные ключи orphan-holds/orphan-deletes, пишет только API;
 // runtime-функция — как у sweeper (Enabled=false → гвард 503).
 builder.Services.AddSingleton(sp => new OrphanHoldHandler(
@@ -268,7 +268,7 @@ builder.Services.AddSingleton(sp => new OrphanDeleteHandler(
 builder.Services.AddSingleton(sp => new RecreateNodeHandler(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints));
-// Демо-сид (arch/14 §1.1.1): стендовый эндпоинт за флагом EnableSeedEndpoint.
+// Демо-сид (arch/pgworker/07-api.md §5): стендовый эндпоинт за флагом EnableSeedEndpoint.
 builder.Services.AddSingleton(sp => new SeedDemoHandler(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
@@ -280,7 +280,7 @@ builder.Services.AddSingleton(sp => new RestartHandler(
     sp.GetRequiredService<IHostApplicationLifetime>(),
     sp.GetRequiredService<ILoggerFactory>().CreateLogger<RestartHandler>()));
 
-// Кеш серверных сертов REST-эндпоинтов нод (arch/14 §2.1): из per-install
+// Кеш серверных сертов REST-эндпоинтов нод (arch/pgworker/01-placement.md §1): из per-install
 // CA (RestTlsMaterial) — один на процесс воркера, обе реализации драйвера.
 builder.Services.AddSingleton(sp =>
 {
@@ -288,7 +288,7 @@ builder.Services.AddSingleton(sp =>
     return new RestCertificateCache(material.CaPem, material.CaKeyPem);
 });
 
-// Клиентский серт mTLS-канала доставки (arch/14 §4): выпуск из той же пары
+// Клиентский серт mTLS-канала доставки (arch/pgworker/04-security.md): выпуск из той же пары
 // PGW_REST_TLS_{CA,CA_KEY} при старте, кеш процесса; новых env-секретов нет.
 builder.Services.AddSingleton(sp =>
 {
@@ -299,7 +299,7 @@ builder.Services.AddSingleton(sp =>
 });
 
 // docker: драйвер по режиму (Plain: таблица Hosts; Swarm: manager endpoint).
-// AdvertisedHost (advertised-правило arch/16): только Plain + ровно один хост —
+// AdvertisedHost (advertised-правило arch/kafkaworker/README.md): только Plain + ровно один хост —
 // advertised-имя одно на таблицу, при мульти-хосте порты разных хостов склеились
 // бы в один namespace адресов (fail-fast, а не молчаные коллизии).
 builder.Services.AddSingleton(sp =>
@@ -330,7 +330,7 @@ builder.Services.AddSingleton<IClusterDriver>(sp =>
                 "PgWorker:Docker:AdvertisedHost requires exactly one host in PgWorker:Docker:Hosts (single-host/tunnel)");
     }
 
-    // ScrapeNetwork (arch/18 §5.4): сетевой attach нод реализован для
+    // ScrapeNetwork (arch/metrics/05-storage.md §4): сетевой attach нод реализован для
     // plain-контейнеров; swarm-Ensure — сервисы, второй сети у сервиса нет в
     // MVP — молчаливое игнорирование ключа недопустимо (fail-fast, прецедент
     // AdvertisedHost).
@@ -339,7 +339,7 @@ builder.Services.AddSingleton<IClusterDriver>(sp =>
         throw new ApplicationException(
             "PgWorker:Docker:ScrapeNetwork is not supported in Mode=Swarm — node network attach is implemented for plain containers");
 
-    // ContourNetwork (arch/14 §2.1): контур-режим сетей движка — ноды/
+    // ContourNetwork (arch/pgworker/01-placement.md §1): контур-режим сетей движка — ноды/
     // wal-агенты/джобы бэкапов в одной внешней сети поставки; для swarm-сервисов
     // режима нет (fail-fast, прецедент ScrapeNetwork).
     if (!string.IsNullOrWhiteSpace(docker.ContourNetwork)
@@ -347,7 +347,7 @@ builder.Services.AddSingleton<IClusterDriver>(sp =>
         throw new ApplicationException(
             "PgWorker:Docker:ContourNetwork is not supported in Mode=Swarm — contour network mode is implemented for plain containers");
 
-    // Бэкап-цели приёмника WAL (arch/19 §7): per-install bucket/CA — env
+    // Бэкап-цели приёмника WAL (arch/backups/08-secrets.md): per-install bucket/CA — env
     // ноды (NodeBackupEnv). Нечитаемый CA-файл при заданном пути — исключение
     // при старте воркера = fail-fast (прецедент TLS-материалов, BackupCaPem).
     // Осознанно НЕ зависит от Backups:Enabled: путь задан конфигом установки —
@@ -424,7 +424,7 @@ builder.Services.AddSingleton(sp => new PortAllocIndex(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints.ToArray(),
     sp.GetRequiredService<ILogger<PortAllocIndex>>()));
-// Глобальный portalloc-клэйм (arch/14 §2.4/§3.3): взаимоисключение секции
+// Глобальный portalloc-клэйм (arch/pgworker/01-placement.md §5/§3.3): взаимоисключение секции
 // довыделения портов между кластерами/инстансами; instance = InstanceId ClaimStore.
 builder.Services.AddSingleton(sp => new PortAllocLock(
     KeyPrefix,
@@ -494,7 +494,7 @@ builder.Services.AddSingleton(sp => new NodeSupervisor(
         sp.GetRequiredService<Shared.Core.Hosting.ILoopProgress>()),
     sp.GetRequiredService<EtcdEndpoints>(),
     sp.GetRequiredService<Shared.Metrics.Worker.WorkerMetricsInstrumentation>().HaDurations,
-    // Прогресс-отметки итераций надзора в healthz/watchdog (arch/14 §6, поллинг-инвариант).
+    // Прогресс-отметки итераций надзора в healthz/watchdog (arch/pgworker/08-operability.md §3, поллинг-инвариант).
     sp.GetRequiredService<Shared.Core.Hosting.ILoopProgress>()));
 // Адресация шардов : master-ключ/portalloc + DSN-билдеры —
 // общий сервис эвакуатора и процессов переезда (MoveProcess — задача 17).
@@ -530,14 +530,14 @@ builder.Services.AddSingleton(sp =>
         opts.Docker.ScrapeNetwork);
 });
 
-// Опросные кэши контроль-плейна тика (arch/17 S10): четыре префикса
+// Опросные кэши контроль-плейна тика (arch/synchronization/05-delta-application.md §S10): четыре префикса
 // (/clusters/, /service/, /pgworker/backups/, /pgworker/claims/) — источник
 // тика ReconcileLoop и слепок /clusters/ для читателей (ClusterSecretEnsurer).
 builder.Services.AddSingleton<EtcdPrefixSources>();
 builder.Services.AddSingleton<IClustersCacheSnapshot>(sp => sp.GetRequiredService<EtcdPrefixSources>());
 
 // Ensure per-cluster app-секрета (spec §4.1): чтение — из кэша /clusters/
-// (arch/17 S10), txn put-if-absent — общий для Provisioning/AddShard.
+// (arch/synchronization/05-delta-application.md §S10), txn put-if-absent — общий для Provisioning/AddShard.
 builder.Services.AddSingleton<IClusterSecretEnsurer>(sp => new ClusterSecretEnsurer(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
@@ -596,7 +596,7 @@ builder.Services.AddSingleton(sp => new RemoveShardProcess(
     SnapshotDelegate(sp.GetRequiredService<SnapshotJob>())));
 
 // Переезды бакетов : SQL-слой Npgsql+Polly, DDL — pgdump-операцией
-// приёмника источника (канал arch/25 №22),
+// приёмника источника (канал arch/communications/02-channel-registry.md №22),
 // машина состояний MoveProcess (M0–M6/rollback/finalize/abort); runtime-опции —
 // склейка секций Moves + Thresholds; TimeProvider/System — источник unix-времени
 // статусов; снапшот-делегат — точки «до/после» P12.
@@ -635,7 +635,7 @@ builder.Services.AddSingleton(sp => new MoveRepairProcess(
     sp.GetRequiredService<TimeProvider>(),
     sp.GetRequiredService<ILoggerFactory>().CreateLogger<MoveRepairProcess>()));
 
-// Ротация per-cluster секретов (arch/14 §5 I): заявка /pgworker/rotations/<C>;
+// Ротация per-cluster секретов (arch/pgworker/processes/i-secret-rotator.md I): заявка /pgworker/rotations/<C>;
 // Active-ветка цикла зовёт через ClusterProcesses (scale → rotate → evacuate → moves).
 builder.Services.AddSingleton(sp => new ClusterSecretRotator(
     sp.GetRequiredService<IEtcdGateway>(),
@@ -650,7 +650,7 @@ builder.Services.AddSingleton(sp => new ClusterSecretRotator(
     sp.GetRequiredService<PgtuneInputsFactory>(),
     SnapshotDelegate(sp.GetRequiredService<SnapshotJob>())));
 
-// Полные бэкапы шардов (/, arch/19 §2): планировщик + супервизия через
+// Полные бэкапы шардов (/, arch/backups/01-full-backup.md): планировщик + супервизия через
 // HTTP API приёмника; runtime-опции — склейка секции PgWorker:Backups; процесс —
 // no-op при Enabled=false.
 builder.Services.AddSingleton(sp => new PgWorker.Backups.BackupProcess(
@@ -670,7 +670,7 @@ builder.Services.AddSingleton(sp => new PgWorker.Backups.BackupProcess(
     SnapshotDelegate(sp.GetRequiredService<SnapshotJob>()),
     fullAgeObserver: sp.GetRequiredService<Shared.Metrics.Worker.WorkerMetricsInstrumentation>().BackupFullAge));
 
-// Восстановление шарда из бэкапа (arch/19 §3.5): PLANNED→RUNNING→
+// Восстановление шарда из бэкапа (arch/backups/03-restore.md): PLANNED→RUNNING→
 // REJOINING→COMPLETED; plain-only, операция — POST/GET на приёмник первой ноды.
 // Runtime-опции — статичный срез (врезка цикла и процесс гвардят Enabled).
 builder.Services.AddSingleton(sp => new PgWorker.Backups.Process.RestoreProcess(
@@ -707,7 +707,7 @@ builder.Services.AddSingleton(sp => new PgWorker.App.Api.Operations.RestoreShard
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
     sp.GetRequiredService<TimeProvider>()));
 
-// WAL-архивация (arch/19 §3): слот/агент/контроль цепочки; runtime()==null
+// WAL-архивация (arch/backups/02-wal-archive.md §1): слот/агент/контроль цепочки; runtime()==null
 // (Backups:Enabled=false) — процесс выполняет стоп-семантику и не активен.
 builder.Services.AddSingleton(sp =>
 {
@@ -749,9 +749,9 @@ builder.Services.AddSingleton(sp => new BackupS3Factory(
     sp.GetRequiredService<IS3PoolStore>(),
     () => sp.GetRequiredService<IOptionsMonitor<PgWorkerOptions>>().CurrentValue.BackupsRuntime().S3Bucket,
     () => sp.GetRequiredService<IOptionsMonitor<PgWorkerOptions>>().CurrentValue.BackupsRuntime().S3CaBundlePath,
-    // Пер-попыточный таймаут S3-запроса (arch/19 §5): половина окна watchdog.
+    // Пер-попыточный таймаут S3-запроса (arch/backups/06-s3-layout.md): половина окна watchdog.
     TimeSpan.FromSeconds(sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Loops.Watchdog.CheckIntervalSec / 2.0)));
-// Ретенция (arch/19 §4): GFS/WAL-чистка/гигиена + монитор хранилища;
+// Ретенция (arch/backups/05-etcd-contract.md): GFS/WAL-чистка/гигиена + монитор хранилища;
 // Enabled=false — no-op (гвард в процессе дублирует guard цикла).
 builder.Services.AddSingleton(sp => new PgWorker.Backups.RetentionProcess(
     sp.GetRequiredService<IEtcdGateway>(),
@@ -765,7 +765,7 @@ builder.Services.AddSingleton(sp => new PgWorker.Backups.RetentionProcess(
     sp.GetRequiredService<ILoggerFactory>().CreateLogger<PgWorker.Backups.RetentionProcess>(),
     sp.GetRequiredService<Shared.Core.Hosting.ILoopProgress>()));
 
-// Проверки полных бэкапов (/, arch/19 §5): цепочка + checksums —
+// Проверки полных бэкапов (/, arch/backups/06-s3-layout.md): цепочка + checksums —
 // verify-операция WalReceiver ноды-источника по её API; verifyObserver —
 // counter pgworker_backup_verify_total{result}.
 builder.Services.AddSingleton(sp => new PgWorker.Backups.BackupVerifyProcess(
@@ -783,7 +783,7 @@ builder.Services.AddSingleton(sp => new PgWorker.Backups.BackupVerifyProcess(
     TimeSpan.FromSeconds(sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Loops.Watchdog.CheckIntervalSec),
     sp.GetRequiredService<Shared.Core.Hosting.ILoopProgress>()));
 
-// Дрилл восстановимости (arch/19 §3.6): супервиз drill-операции WalReceiver
+// Дрилл восстановимости (arch/backups/04-drill.md): супервиз drill-операции WalReceiver
 // первой ноды шарда, отбор/валидация/запуск; runtime — как у verify.
 builder.Services.AddSingleton(sp => new PgWorker.Backups.Process.RestoreDrillProcess(
     sp.GetRequiredService<IEtcdGateway>(),
@@ -801,7 +801,7 @@ builder.Services.AddSingleton(sp => new PgWorker.Backups.Process.RestoreDrillPro
         sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Loops.Watchdog.CheckIntervalSec),
     sp.GetRequiredService<Shared.Core.Hosting.ILoopProgress>()));
 
-// Сверка S3↔etcd (arch/19 §4): per-cluster чистка мусора full/<id>/ без
+// Сверка S3↔etcd (arch/backups/05-etcd-contract.md): per-cluster чистка мусора full/<id>/ без
 // etcd-ключа; runtime-функция через IOptionsMonitor — Enabled=false → no-op
 // (образец WalStreamProcess).
 builder.Services.AddSingleton(sp => new PgWorker.Backups.Supervisor.BackupSupervisorProcess(
@@ -817,7 +817,7 @@ builder.Services.AddSingleton(sp => new PgWorker.Backups.Supervisor.BackupSuperv
     sp.GetRequiredService<Shared.Core.Hosting.ILoopProgress>(),
     sp.GetRequiredService<ILoggerFactory>().CreateLogger<PgWorker.Backups.Supervisor.BackupSupervisorProcess>()));
 
-// Глобальный проход сирот S3 (arch/19 §4): реестр /pgworker/backups/orphans
+// Глобальный проход сирот S3 (arch/backups/05-etcd-contract.md): реестр /pgworker/backups/orphans
 // + TTL-удаление; пишет только лидер /pgworker/leader (BackupOrphanSweeperLoop).
 builder.Services.AddSingleton(sp => new PgWorker.Backups.Supervisor.BackupOrphanSweeper(
     sp.GetRequiredService<IEtcdGateway>(),
@@ -842,7 +842,7 @@ builder.Services.AddSingleton(sp => new PgWorker.App.Loops.BackupOrphanSweeperLo
     etcdEndpoints));
 builder.Services.AddHostedService(sp => sp.GetRequiredService<PgWorker.App.Loops.BackupOrphanSweeperLoop>());
 
-// Чистка мусора wal/ (arch/19 §4 «wal-sweeper»): per-shard .partial-гигиена и
+// Чистка мусора wal/ (arch/backups/05-etcd-contract.md «wal-sweeper»): per-shard .partial-гигиена и
 // срез финалов ниже cutoff — только глобальный лидер, отдельным циклом 60 с
 // (Supervisor:IntervalSec=600 нарушал бы «не реже раза в минуту»).
 builder.Services.AddSingleton(sp => new PgWorker.Backups.Supervisor.WalSweeperProcess(
@@ -877,7 +877,7 @@ builder.Services.AddSingleton(sp => new SnapshotLoop(
     sp.GetRequiredService<HealthState>(),
     sp.GetRequiredService<TimeProvider>(),
     sp.GetRequiredService<Shared.Metrics.Worker.WorkerMetricsInstrumentation>()));
-// Опросные кэши тика (arch/17 S10): слепки наблюдаемых префиксов + счётчик
+// Опросные кэши тика (arch/synchronization/05-delta-application.md §S10): слепки наблюдаемых префиксов + счётчик
 // дельт; старт/ретрай — в самом ReconcileLoop (transient etcd не роняет хост).
 // ОДИН экземпляр на все интерфейсы: регистрация «тип-реализацией» создаёт
 // второй EtcdPrefixSources (свой, не стартованный) — читатели получают пустой
@@ -905,7 +905,7 @@ builder.Services.AddHealthChecks()
     .AddCheck<HealthCheckAbstract<KeepaliveLoop>>("keepalive-loop")
     .AddCheck<HealthCheckAbstract<SnapshotLoop>>("snapshot-loop");
 
-// Watchdog зависших циклов (arch/14 §6): staleness активности (тик или
+// Watchdog зависших циклов (arch/pgworker/08-operability.md §3): staleness активности (тик или
 // прогресс-отметка) всех циклов → журнал +
 // метрика + graceful self-stop (путь POST /api/restart); Enabled=false (секция
 // PgWorker:Loops:Watchdog) — компонент не регистрируется.
@@ -918,7 +918,7 @@ builder.Services.AddLoopWatchdog(
     loopsWatchdog,
     (sp, loop) => sp.GetRequiredService<Shared.Metrics.Worker.WorkerMetricsInstrumentation>()
         .WatchdogRestart(loop));
-// fail-fast инварианта живости (arch/14 §8): тики быстрых циклов чаще порога
+// fail-fast инварианта живости (arch/pgworker/08-operability.md §5): тики быстрых циклов чаще порога
 // сноса (Multiplier × CheckIntervalSec); конфиг watchdog не меняется
 var loopsCfg = builder.Configuration.GetSection("PgWorker:Loops").Get<LoopsOptions>() ?? new LoopsOptions();
 if (loopsWatchdog.Enabled)
@@ -928,12 +928,12 @@ if (loopsWatchdog.Enabled)
 var app = builder.Build();
 if (app.Services.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Api.Tls.AllowInsecureHttp)
     app.Logger.LogWarning(
-        "PgWorker:Api:Tls:AllowInsecureHttp=true — HTTP without TLS (WAF tests ONLY, arch/14 §1.1)");
+        "PgWorker:Api:Tls:AllowInsecureHttp=true — HTTP without TLS (WAF tests ONLY, arch/pgworker/07-api.md §1)");
 if (apiTls.Source is { } certSource)
     app.Logger.LogInformation("PgWorker:Api:Tls: API server certificate — source {Source}", certSource);
 if (apiTls.Warning is { } certWarning)
     app.Logger.LogWarning("PgWorker:Api:Tls: {Warning}", certWarning);
-// Открытая грань (arch/14 §1.1): клиентский серт опционален на хендшейке;
+// Открытая грань (arch/pgworker/07-api.md §1): клиентский серт опционален на хендшейке;
 // 401 без валидного серта — только на /api; /healthz и /metrics — без серта.
 app.UseMiddleware<Shared.Tls.ClientCertAuthMiddleware>();
 app.MapAppMetrics();

@@ -9,7 +9,7 @@ using Xunit;
 
 namespace ValkeyWorker.UnitTests.App;
 
-// Catch-all проб и чека ( arch/21 §7): сетевое исключение шлюза → Result.Failed
+// Catch-all проб и чека ( arch/valkeyworker/06-operability.md §4): сетевое исключение шлюза → Result.Failed
 // (Degraded с секциями), чек никогда не падает исключением.
 public class HealthTests
 {

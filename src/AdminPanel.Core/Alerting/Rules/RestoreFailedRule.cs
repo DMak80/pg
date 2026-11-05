@@ -3,9 +3,9 @@ using Shared.Core.DI;
 
 namespace AdminPanel.Core.Alerting.Rules;
 
-// restore-failed (critical, arch/19 §3.5/§8): FAILED restore-заявки живого
+// restore-failed (critical, arch/backups/03-restore.md/§8): FAILED restore-заявки живого
 // шарда Active-кластера — восстановление не удалось, разбор по runbook
-// (docs/backup-restore.md) и повтор заявки. Активные фазы
+// (arch/backups/10-runbook-restore.md) и повтор заявки. Активные фазы
 // (PLANNED/RUNNING/REJOINING) без алерта — прогресс виден в статусе ключа.
 [InjectAsSingleton(typeof(IAlertRule))]
 public sealed class RestoreFailedRule : IAlertRule
@@ -40,7 +40,7 @@ public sealed class RestoreFailedRule : IAlertRule
                     ["error"] = restore.Error ?? string.Empty,
                 },
                 null,
-                "troubleshoot per docs/backup-restore.md (FAILED diagnostics) and re-submit the restore job",
+                "troubleshoot per arch/backups/10-runbook-restore.md (FAILED diagnostics) and re-submit the restore job",
                 AlertRemedy.OperatorRunbook,
                 "active restore (PLANNED/RUNNING/REJOINING) raises no alert — phases are visible in the status");
         }

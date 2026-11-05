@@ -4,7 +4,7 @@ using Shared.Etcd.Client;
 
 namespace S3Worker.App.Api.Operations;
 
-// Замена графа репликации целиком (arch/24 §1.1, spec §3.3): кластер существует
+// Замена графа репликации целиком (arch/s3worker/07-api.md §1, spec §3.3): кластер существует
 // (404) — единственная гварда состояния (запись links в NOT_INITIALIZED кластер
 // штатна — P4 применит граф при provisioning); валидация имён по фактическому
 // составу → put ключа links каноническим JSON (замена целиком) → 202.
@@ -164,7 +164,7 @@ public static class S3LinksValidator
         return errors;
     }
 
-    // Канонические JSON — одна точка с процессами (S3ProcessCommon, arch/23 §2.1).
+    // Канонические JSON — одна точка с процессами (S3ProcessCommon, arch/s3-clusters/02-keys.md §2).
     public static string CanonicalJson(IReadOnlyList<S3LinkDto> links)
         => S3ProcessCommon.LinksJson(links.Select(l => (l.A!, l.B!)).ToList());
 

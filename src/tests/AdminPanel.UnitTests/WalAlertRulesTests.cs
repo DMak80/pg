@@ -10,7 +10,7 @@ using Shared.Etcd.Client;
 namespace AdminPanel.UnitTests;
 
 // Юниты : панельный парсер /pgworker/backups/ + правила алертов
-// wal-chain-broken / wal-stream-lag / wal-stream-stopped (arch/19 §3/§8).
+// wal-chain-broken / wal-stream-lag / wal-stream-stopped (arch/backups/02-wal-archive.md §1/§8).
 public class WalAlertRulesTests
 {
     private static readonly DateTimeOffset Now = new(2026, 9, 10, 12, 0, 0, TimeSpan.Zero);

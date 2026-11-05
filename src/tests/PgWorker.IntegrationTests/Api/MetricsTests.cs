@@ -5,10 +5,10 @@ using Xunit;
 
 namespace PgWorker.IntegrationTests.Api;
 
-// Интеграционные тесты /metrics PgWorker (arch/18 §3): scrape-грань на том же
+// Интеграционные тесты /metrics PgWorker (arch/metrics/03-exposure.md): scrape-грань на том же
 // HTTPS-Kestrel-порту, что /healthz; защита API — транспортная (mTLS: 401 без
 // валидного серта на /api покрывает MtlsApiTests); /metrics — открытая грань
-// (arch/18 §3). Здесь проверяем экспозицию Prometheus-формата и живые серии.
+// (arch/metrics/03-exposure.md). Здесь проверяем экспозицию Prometheus-формата и живые серии.
 [Collection(NonE2eCollection.Name)]
 public sealed class MetricsTests(PgMetricsFixture fx)
 {
@@ -50,7 +50,7 @@ public sealed class MetricsTests(PgMetricsFixture fx)
         body.Should().Contain("worker_claims_held");
     }
 
-    // Канон-тест словаря §2.7 (arch/18 §6): все 7 бэкапных серий экспортируются
+    // Канон-тест словаря §2.7 (arch/metrics/06-testing.md): все 7 бэкапных серий экспортируются
     // с каноническими именами и лейблами cluster/shard/result. Серии процессов
     // живут под клэймом живого кластера — instrumentation пинается напрямую:
     // тест фиксирует экспозицию имён/лейблов (маппинг марк-методов в серии).

@@ -17,7 +17,7 @@ using Xunit;
 
 namespace PgWorker.IntegrationTests.Docker;
 
-// R2-rest ротации rest_password БЕЗ пересоздания (arch/14 §5 I, spec §3.7.4):
+// R2-rest ротации rest_password БЕЗ пересоздания (arch/pgworker/processes/i-secret-rotator.md I, spec §3.7.4):
 // заявка → тик ротатора открывает окно (rest_window_open) и начинает доставку
 // каналом (bootstrap-перерендер ключа ОДНОЙ ноды + apply) — реплики вперёд,
 // лидер последним, ≤1 нода/тик; fake-агент по факту «применения» публикует
@@ -38,7 +38,7 @@ public class RestRotationTests(Etcd.EtcdFixture fixture)
     private const string StatusA = $"/pgworker/nodes/{Cluster}/{Shard}/shard1a/status";
     private const string StatusB = $"/pgworker/nodes/{Cluster}/{Shard}/shard1b/status";
 
-    // ETCD-FIRST (arch/14 §5 I, t05 рев. 8): R2 txn-коммит NEW-четвёрки В
+    // ETCD-FIRST (arch/pgworker/processes/i-secret-rotator.md I, t05 рев. 8): R2 txn-коммит NEW-четвёрки В
     // НАЧАЛЕ окна (флаг rest_window_open:true), R3 rolling rest-пары каналом
     // (реплика раньше лидера, ≤1 нода/тик), R4 финальные ALTER по NEW из etcd
     // (закрытие окна). В окне app-креды etcd (NEW) против pg_authid (OLD) —
@@ -53,7 +53,7 @@ public class RestRotationTests(Etcd.EtcdFixture fixture)
 
         // Arrange: сид контроль-плейна (живой etcd) — dsn-шард из двух нод
         // (shard1a — лидер по master-ключу), заявки ресурсов обязательны
-        // (arch/14 §2.1 п.4 — fail-fast без них).
+        // (arch/pgworker/01-placement.md §2 — fail-fast без них).
         const string oldPassword = "old0Rest0000000000000000000000A";
         await SeedAsync(gateway, endpoint, oldPassword, ct);
         var claims = new ClaimStore("/pgworker", [endpoint], gateway,
@@ -203,7 +203,7 @@ public class RestRotationTests(Etcd.EtcdFixture fixture)
         await gateway.PutAsync(endpoint, $"/pgworker/portalloc/{Cluster}",
             """{"shard1/shard1a":{"host":"h1","ports":{"pg":15432,"patroni":18008,"doorman":16432}},"shard1/shard1b":{"host":"h1","ports":{"pg":15433,"patroni":18009,"doorman":16433}}}""",
             null, ct);
-        // Заявки ресурсов ОБЯЗАТЕЛЬНЫ (arch/14 §2.1 п.4) — fail-fast без них.
+        // Заявки ресурсов ОБЯЗАТЕЛЬНЫ (arch/pgworker/01-placement.md §2) — fail-fast без них.
         await gateway.PutAsync(endpoint, $"/service/{Scope}/request_cpu", "2", null, ct);
         await gateway.PutAsync(endpoint, $"/service/{Scope}/request_mem", "4Gi", null, ct);
         // per-cluster креды приложения (R1 ensure прочтёт/дополнит).

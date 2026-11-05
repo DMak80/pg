@@ -30,6 +30,6 @@ public sealed class EtcdUnreachableRule : IAlertRule
             SinceUnix: null, // проставляет AlertEngine (spec §3.4)
             Hint: "all etcd endpoints are unreachable: the panel keeps serving stale data (BuiltAtUtc does not advance) and cannot see contract changes; etcd is the single source of truth and must be reachable",
             Remedy: AlertRemedy.OperatorRunbook,
-            RemedyText: "check the network/containers of the etcd stand contour (as-etcd) per arch/09; after recovery the tick will pick up the data on its own");
+            RemedyText: "check the network/containers of the etcd stand contour (as-etcd) per arch/pg-clusters/09-troubleshooting.md; after recovery the tick will pick up the data on its own");
     }
 }

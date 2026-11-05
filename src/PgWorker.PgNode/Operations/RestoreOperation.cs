@@ -5,7 +5,7 @@ using PgWorker.Etcd.S3;
 
 namespace PgWorker.PgNode.Operations;
 
-/// <summary>Restore/drill-операция процесса приёмника ноды (arch/19
+/// <summary>Restore/drill-операция процесса приёмника ноды (arch/backups/README.md
 /// §3.5/§3.6 — механика 1:1 из bash-механики restore, Р15): скачивание
 /// full/&lt;id&gt;/ 1:1 в целевой PGDATA (restore — PGDATA ноды, volume пуст
 /// после демонтажа; drill — scratch-каталог backup-drill/&lt;id&gt;/pgdata,
@@ -21,7 +21,7 @@ namespace PgWorker.PgNode.Operations;
 /// (id в запросе): чистка scratch — при любом исходе, вкл. отмену. Резюмов
 /// нет — FAILED → новая заявка.
 /// Операторская отмена (cancel API) — снимок state=cancelled (НЕ failed —
-/// «операции не было», arch/19 §3.5; воркер удаляет запись заявки / ключ
+/// «операции не было», arch/backups/03-restore.md; воркер удаляет запись заявки / ключ
 /// дрилла; scratch дрилла чистится при этом здесь).</summary>
 public sealed class RestoreOperation : IReceiverOperation
 {
@@ -73,7 +73,7 @@ public sealed class RestoreOperation : IReceiverOperation
         var shard = slash > 0 ? prefix[(slash + 1)..] : string.Empty;
         var s3Base = $"{prefix}/full/{_request.BackupId}/";
 
-        // Patroni ноды — ВНИЗ на время RESTORE (arch/19 §3.5): живой Patroni
+        // Patroni ноды — ВНИЗ на время RESTORE (arch/backups/03-restore.md): живой Patroni
         // вмешивается в заполняемую PGDATA (стартует постгрес как secondary на
         // полуданных, воссоздаёт standby.signal, убивает restore-постгрес).
         // ТОЛЬКО restore: дрилл идёт на ЖИВОЙ ноде — stop spilo там гасит
@@ -240,7 +240,7 @@ public sealed class RestoreOperation : IReceiverOperation
             //    pg_ctl -t = бюджет восстановления: до консистентной точки
             //    postgres качает сегменты fetch-wal-ом — под нагрузкой это
             //    минуты, короткий литерал рвал операцию до поллинга
-            //    (arch/19 §3.5). standby.signal снимается повторно ПЕРЕД
+            //    (arch/backups/03-restore.md). standby.signal снимается повторно ПЕРЕД
             //    стартом: живой Patroni ноды может воссоздать файл в окне
             //    между правками и стартом — postgres уйдёт в standby-ожидание
             //    WAL вместо recovery и промоута (факт прогона).
@@ -273,7 +273,7 @@ public sealed class RestoreOperation : IReceiverOperation
                 // restore_command'ом (гонка добивки/доступности сегментов S3-пула
                 // против старта recovery; факт прогона PitR: последний коммит
                 // архива отставал от target на секунды). Повторный старт
-                // продолжает recovery с места — arch/19 §3.5: моргания
+                // продолжает recovery с места — arch/backups/03-restore.md: моргания
                 // покрываются повторами; ограничение — 3 попытки, пауза 5 с
                 // (интервал анти-дребезга, не бюджет фаз). Иные причины старта-
                 // провала — фейл как раньше.
@@ -369,7 +369,7 @@ public sealed class RestoreOperation : IReceiverOperation
         {
             // Операторская отмена (cancel API, внешний канал): kill дерева уже
             // сделан runner'ом; pg_ctl stop best-effort; снимок state=cancelled —
-            // НЕ failed (отмена = «операции не было», arch/19 §3.5; воркер
+            // НЕ failed (отмена = «операции не было», arch/backups/03-restore.md; воркер
             // отличает её от vanished: запись заявки/ключ дрилла удаляются).
             await StopBestEffortAsync(_pgdata);
             Update(OperationStates.Cancelled, phase, error: "cancelled by operator");
@@ -391,7 +391,7 @@ public sealed class RestoreOperation : IReceiverOperation
                 }
                 catch { /* best-effort */ }
             }
-            // Scratch дрилла чистится при ЛЮБОМ исходе (arch/19 §3.6) —
+            // Scratch дрилла чистится при ЛЮБОМ исходе (arch/backups/04-drill.md) —
             // терминальный ключ дрилла сразу чистый; PGDATA restore НЕ трогаем
             // (там восстановленные данные до REJOINING).
             if (_isDrill)

@@ -42,12 +42,17 @@ HAProxy ── 5432 → master, 5433 → replicas
 ## Структура репозитория
 
 ```
-arch/                  ← вся документация (рецепты деплоя и операций)
-├── README.md          ← подробная точка входа (TL;DR, быстрый старт, структура)
-├── 01..09*.md         ← архитектура, топология, деплой, операции, troubleshooting
-├── 10-four-nodes.md   ← опционально: схема на 4 ноды
-├── 11-bucket-sharding.md / 12-bucket-pitfalls.md  ← бакетный шардинг и его риски
-│                          (жизненный цикл: init-cluster / add-shard / remove-shard)
+arch/                  ← вся документация — канон системы (иерархия доменов)
+├── README.md          ← навигация по иерархии (уровни, компоненты и домены)
+├── 00-system.md / 00-components.md / 00-technologies.md  ← уровень 1: система, каталог, сквозные технологии
+├── pg-clusters/       ← PG-шарды: HA-архитектура, топология, деплой, операции,
+│                         диагностика, бакеты (11-buckets.md) и реестр рисков (12-bucket-pitfalls.md)
+├── pgworker/ pgnode/ kafkaworker/ valkeyworker/ s3worker/ etcdworker/ adminpanel/
+│                         ← компоненты-воркеры и панель (README + разделы + processes/)
+├── kafka-clusters/ valkey-clusters/ s3-clusters/   ← домены под управлением воркеров
+├── backups/           ← полные, WAL, restore/PITR, drill
+├── testing/ operations/ communications/ metrics/ synchronization/ stand/
+│                         ← сквозные каноны: E2E, эксплуатация, каналы, телеметрия
 ├── configs/           ← готовые docker-compose, env, конфиги (etcd/postgres/patroni/haproxy/buckets)
 └── scripts/           ← рабочие скрипты (find-leader, switchover, rebuild-node,
                            init-cluster, add/remove-shard, move-bucket и др.)

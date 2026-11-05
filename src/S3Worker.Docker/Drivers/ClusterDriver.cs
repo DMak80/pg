@@ -5,8 +5,8 @@ public sealed record HostEndpoint(string Name, string Endpoint);
 
 /// <summary>
 /// Спецификация ноды для docker-драйвера: env — секреты/конфиг ownS3
-/// (OWNS3_*, arch/23 §6); драйвер только размещает (хост, host-порт
-/// публикации 9000, том данных, лимиты; per-cluster сетей нет — arch/24 §2).
+/// (OWNS3_*, arch/s3-clusters/06-secrets.md); драйвер только размещает (хост, host-порт
+/// публикации 9000, том данных, лимиты; per-cluster сетей нет — arch/s3worker/01-placement.md).
 /// </summary>
 public sealed record S3NodeSpec(
     string Cluster,
@@ -24,21 +24,21 @@ public sealed record S3NodeSpec(
 // не слепота воркера).
 public sealed record S3NodeInspection(string Host, int S3HostPort, bool Running = true);
 
-// Атрибуты хоста для PlacementResolver (arch/23 §4): plain — Name из Hosts[],
+// Атрибуты хоста для PlacementResolver (arch/s3-clusters/04-placement.md): plain — Name из Hosts[],
 // Labels пуст (plain-селекторы — только docker_host); swarm — Name=hostname,
 // Labels=node.labels.*, UsedSlots=running tasks.
 public sealed record S3HostAttributes(string Name, int UsedSlots, IReadOnlyDictionary<string, string> Labels);
 
 // Унифицированное управление нодой в обоих режимах (порт драйверов valkey с
-// упрощениями домена — arch/23 §2/§7): объекты — контейнер/сервис
+// упрощениями домена — arch/s3-clusters/02-keys.md §1/§7): объекты — контейнер/сервис
 // s3w-<C>-<I> с томом данных s3w-<C>-<I>-data (/data), имя инстанса <I> —
-// произвольное из декларации (arch/23 §2); пер-кластерных сетей нет
-// (arch/24 §2). Идемпотентность: существующий объект сверяется по имени
+// произвольное из декларации (arch/s3-clusters/02-keys.md §1); пер-кластерных сетей нет
+// (arch/s3worker/01-placement.md). Идемпотентность: существующий объект сверяется по имени
 // и не пересоздаётся (решение о сверке/замене — у процессов);
 // 404 на удалении / 409 на создании — успех (движок).
 public interface IS3ClusterDriver
 {
-    // Контейнерный порт S3-грани ownS3 (arch/23 §2.1: published 9000).
+    // Контейнерный порт S3-грани ownS3 (arch/s3-clusters/02-keys.md §2: published 9000).
     int S3ContainerPort { get; }
 
     // Живые хосты для PlacementResolver: plain — конфиг (UsedSlots по числу
@@ -80,10 +80,10 @@ public sealed class PlainClusterDriver(
     IReadOnlyList<HostEndpoint> hosts,
     DockerEngineFactory factory) : IS3ClusterDriver
 {
-    // Контейнерный порт S3-грани ownS3 → выделенный host-порт (arch/23 §2.1).
+    // Контейнерный порт S3-грани ownS3 → выделенный host-порт (arch/s3-clusters/02-keys.md §2).
     public const int S3ContainerPortConst = 9000;
 
-    // Label-ключ контейнеров s3w-домена (arch/23 §2: label "s3worker").
+    // Label-ключ контейнеров s3w-домена (arch/s3-clusters/02-keys.md §1: label "s3worker").
     internal const string LabelKey = "s3worker";
 
     public int S3ContainerPort => S3ContainerPortConst;
@@ -138,7 +138,7 @@ public sealed class PlainClusterDriver(
             var name = NodeName(spec.Cluster, spec.NodeName);
             var volumeName = VolumeName(spec.Cluster, spec.NodeName);
 
-            // Идемпотентность по ФАКТУ (arch/24 §5 A «перепроверяет факт»):
+            // Идемпотентность по ФАКТУ (arch/s3worker/02-cluster-lifecycle.md §2 A «перепроверяет факт»):
             // существующий контейнер не пересоздаётся (надзор C / ротация R сверяют
             // env/лимиты отдельно и меняют через remove+ensure); существующий,
             // но НЕ запущенный (гонка create/start при takeover-якоре, останов) —
@@ -161,7 +161,7 @@ public sealed class PlainClusterDriver(
 
             // Том данных: данные объектов bucket'а переживают пересоздание ноды;
             // label s3worker=<C> — атрибуция листинга сирот (имена инстансов
-            // произвольные — arch/24 §2).
+            // произвольные — arch/s3worker/01-placement.md).
             var volume = await engine.EnsureVolumeAsync(volumeName, LabelKey, spec.Cluster, ct);
             if (!volume.IsSuccess)
                 throw volume.Error!;
@@ -276,7 +276,7 @@ public sealed class PlainClusterDriver(
                 var containers = await engine.ListContainersAsync(prefix, all: true, ct);
                 if (!containers.IsSuccess)
                     throw containers.Error!;
-                // Точность перечисления (arch/24 §2): префикс + label s3worker=<C> —
+                // Точность перечисления (arch/s3worker/01-placement.md): префикс + label s3worker=<C> —
                 // посторонний объект с подходящим именем не попадает в снос X2.
                 names.AddRange(containers.Value
                     .Where(c => HasClusterLabel(c.Labels, cluster))
@@ -285,7 +285,7 @@ public sealed class PlainClusterDriver(
             }
 
             // Тома данных: листинг по префиксу (имена инстансов произвольные —
-            // перебор детерминированных имён невозможен, arch/24 §2); том
+            // перебор детерминированных имён невозможен, arch/s3worker/01-placement.md); том
             // нод-локален, сирота-том может остаться на ЛЮБОМ хосте —
             // объединение листингов всех движков.
             foreach (var engine in _engines.Values)
@@ -300,7 +300,7 @@ public sealed class PlainClusterDriver(
         });
     }
 
-    // Label-факт кластера (arch/24 §2): label s3worker=<C> присутствует и равен.
+    // Label-факт кластера (arch/s3worker/01-placement.md): label s3worker=<C> присутствует и равен.
     internal static bool HasClusterLabel(IReadOnlyDictionary<string, string>? labels, string cluster)
         => labels is not null
            && labels.TryGetValue(LabelKey, out var value)
@@ -439,7 +439,7 @@ public sealed class SwarmClusterDriver(
         string cluster, string node, CancellationToken ct)
         => _engine.InspectServiceEnvAsync(PlainClusterDriver.NodeName(cluster, node), ct);
 
-    // Объекты кластера в swarm — СЕРВИСЫ + тома данных (arch/24 §2: префикс +
+    // Объекты кластера в swarm — СЕРВИСЫ + тома данных (arch/s3worker/01-placement.md: префикс +
     // label s3worker=<C>; имена инстансов произвольные — перебор невозможен).
     public async Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, CancellationToken ct)
     {
@@ -451,7 +451,7 @@ public sealed class SwarmClusterDriver(
             .Where(svc => PlainClusterDriver.HasClusterLabel(svc.Labels, cluster))
             .Select(svc => svc.Name));
         // Тома данных: листинг по префиксу на всех движках (имена инстансов
-        // произвольные — arch/24 §2; сирота-том может остаться на любой ноде).
+        // произвольные — arch/s3worker/01-placement.md; сирота-том может остаться на любой ноде).
         foreach (var engine in _nodeEngines.Values.Append(_engine))
         {
             var volumes = await engine.ListVolumesAsync($"s3w-{cluster}-", ct);

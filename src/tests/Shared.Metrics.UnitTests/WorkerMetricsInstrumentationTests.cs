@@ -4,7 +4,7 @@ using Shared.Metrics.Worker;
 
 namespace Shared.Metrics.UnitTests;
 
-// Юнит-тесты семантики инструментов воркер-паттерна (arch/18 §2.2): тики по ok,
+// Юнит-тесты семантики инструментов воркер-паттерна (arch/metrics/02-dictionary.md §2): тики по ok,
 // фазы (first-seen/сброс), терминальные/подавленные ops, возраст снапшота, клэймы.
 public sealed class WorkerMetricsInstrumentationTests
 {
@@ -166,7 +166,7 @@ public sealed class WorkerMetricsInstrumentationTests
         // backup-orphan-sweeper — журнал домена сирот (свой ключ
         // /pgworker/backups/orphan-journal): его фазы подавлены тоже.
         // healing-portalloc — точечная реконструкция portalloc внутри клэйм-тика
-        // надзора (arch/21 §5 C / arch/23 §7): фазы started/reconstructed не
+        // надзора (arch/valkeyworker/02-cluster-lifecycle.md §4 C / arch/s3-clusters/07-client-pool.md): фазы started/reconstructed не
         // терминальные — без подавления серия не сбрасывалась бы никогда.
         using var meter = new Meter("TestWorker");
         using var sut = new WorkerMetricsInstrumentation(meter, TimeProvider.System);
@@ -214,7 +214,7 @@ public sealed class WorkerMetricsInstrumentationTests
     }
 
     // AAA: counter pgworker_backup_verify_total{cluster,shard,result} — лейблы
-    // cluster/shard добавлены (миграция серии, arch/18 §2.7): инкременты по тройке
+    // cluster/shard добавлены (миграция серии, arch/metrics/02-dictionary.md §7): инкременты по тройке
     [Fact]
     public void BackupVerify_IncrementsPerClusterShardResult()
     {
@@ -355,7 +355,7 @@ public sealed class WorkerMetricsInstrumentationTests
     }
 
     // AAA: — единый марк-метод HaDurations: набор шардов тика замещает стейт
-    // кластера целиком; null-факт — серия шарда исчезает (arch/18 §2.7)
+    // кластера целиком; null-факт — серия шарда исчезает (arch/metrics/02-dictionary.md §7)
     [Fact]
     public void HaDurations_SetReplacesState_nullRemoves_ShardSeriesDisappears()
     {
@@ -433,7 +433,7 @@ public sealed class WorkerMetricsInstrumentationTests
         sut.DebugSnapshot().OrphanSkippedPools["p2"].Should().Be(1);
     }
 
-    // AAA (arch/18 §2.2, arch/19 §4): per-shard свежесть wal-sweeper —
+    // AAA (arch/metrics/02-dictionary.md §2, arch/backups/05-etcd-contract.md): per-shard свежесть wal-sweeper —
     // set/retain/null снимает серию.
     [Fact]
     public void WalSweepShard_UnixAndRetain()

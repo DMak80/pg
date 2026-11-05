@@ -6,7 +6,7 @@ using Xunit;
 
 namespace Shared.Docker.UnitTests.Engine;
 
-// PullImageAsync — поллинг идемпотентных итераций (arch/14 §6, образец
+// PullImageAsync — поллинг идемпотентных итераций (arch/pgworker/08-operability.md §3, образец
 // StopContainerAsync): пер-попыточный клиентский таймаут итерации меньше
 // длительности загрузки — клиентский обрыв НЕ неудача (демон продолжает,
 // слои кэшированы), повтор POST /images/create в бюджете порога сноса;
@@ -118,7 +118,7 @@ public class DockerEnginePullTests
         ex.Body.Should().Contain("pull access denied");
     }
 
-    // AAA: канонный бюджет цикла — порог сноса (arch/14 §6); защита от
+    // AAA: канонный бюджет цикла — порог сноса (arch/pgworker/08-operability.md §3); защита от
     //      невнимательной правки (образец DockerEngineFactoryCallTimeoutTests)
     [Fact]
     public void PullBudget_CanonValue_30Seconds()

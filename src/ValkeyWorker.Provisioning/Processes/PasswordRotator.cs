@@ -8,7 +8,7 @@ using ValkeyWorker.Core.Valkey;
 namespace ValkeyWorker.Provisioning.Processes;
 
 /// <summary>
-/// PasswordRotator (arch/21 §5 E): заявка /valkeyworker/rotations/&lt;C&gt;
+/// PasswordRotator (arch/valkeyworker/04-security.md §4 E): заявка /valkeyworker/rotations/&lt;C&gt;
 /// ({"role":"app"|"admin",…}) — окно двух паролей без рестартов:
 /// E1 ACL SETUSER &lt;role&gt; &gt;NEW (оба пароля валидны);
 /// E2 txn [compare value(&lt;role&gt;_password)==OLD][put NEW]; del заявки —
@@ -21,7 +21,7 @@ namespace ValkeyWorker.Provisioning.Processes;
 /// доигрывается ТЕМ ЖЕ NEW — свежая генерация оставила бы на ноде валидный
 /// «осиротевший» пароль; срыв compare E2 (пароль уже NEW: прошлый тик
 /// закоммитил txn и упал до записи стейта) — не тупик: перечитываем пароль,
-/// == NEW из стейта → промоция e2-committed и доигрывание (arch/21 §5 E);
+/// == NEW из стейта → промоция e2-committed и доигрывание (arch/valkeyworker/04-security.md §4 E);
 /// журнал work/&lt;C&gt; надзор перезаписывает каждый тик; E3 доигрывается по
 /// фазе e2-committed даже без заявки (краш между E2 и E3 — без стейта OLD
 /// остался бы валидным навсегда). Ротация admin не трогает app и наоборот.
@@ -62,7 +62,7 @@ public sealed class PasswordRotator(
     public static bool StateMutationLive(string? statePhase)
         => statePhase is PhaseE1Pending or PhaseE1 or PhaseE2;
 
-    // Значение поля "phase" стейта доигрывания (camelCase-канон arch/20 §3);
+    // Значение поля "phase" стейта доигрывания (camelCase-канон arch/valkey-clusters/03-coordination.md §1);
     // битое/непустое не-JSON — null (гвард не блокирует отмену по мусору).
     public static string? StatePhaseOf(string stateJson)
     {
@@ -85,7 +85,7 @@ public sealed class PasswordRotator(
     private readonly TicketExpirator _tickets = new(gateway, endpoints);
     private readonly int _timeoutSec = rotationTicketTimeoutSec;
 
-    // Payload стейта доигрывания (ключ work/<C>/rotation, arch/20 §3 — camelCase).
+    // Payload стейта доигрывания (ключ work/<C>/rotation, arch/valkey-clusters/03-coordination.md §1 — camelCase).
     // Request — исходный payload заявки rotations/<C>: compare условного del
     // в E2 — чужая/снятая панелью заявка не трогается; null (стейт без
     // маркера) — заявка наша не считается, del не выполняется.
@@ -128,7 +128,7 @@ public sealed class PasswordRotator(
             // T доведёт кластер, ротация исполнится после; стейт жив — ротация
             // НАЧАТА, доигрывание ниже). Тройной гвард §3.1 по построению точки:
             // заявка жива (предикат 1); окно CA закрыто — при открытом окне
-            // вентиль Active-ветки E не вызывает (arch/21 §5 K, предикат 2);
+            // вентиль Active-ветки E не вызывает (arch/valkeyworker/04-security.md §6 K, предикат 2);
             // стейт отсутствует — ветка state-is-null (предикат 3).
             if (snap.Endpoints is null || snap.AdminUser is null || snap.AdminPassword is null || snap.CaPem is null)
             {
@@ -170,7 +170,7 @@ public sealed class PasswordRotator(
     // E1: OLD (failover) → NEW → стейт e1-pending ДО SETUSER → SETUSER >NEW →
     // стейт e1-added. Стейт раньше E1: SETUSER >NEW идемпотентен, поэтому
     // отказ/краш в любой точке после записи доигрывается ТЕМ ЖЕ NEW —
-    // «осиротевший» NEW невозможен (arch/21 §5 E).
+    // «осиротевший» NEW невозможен (arch/valkeyworker/04-security.md §4 E).
     private async Task<Result<RotationState>> StartRotationAsync(
         ValkeyClusterSnapshot snap, string cluster, string role, string? requestedBy,
         string requestPayload, CancellationToken ct)
@@ -219,7 +219,7 @@ public sealed class PasswordRotator(
 
         // Доигрыванию нужен полный Active-факт: без endpoints/admin-креда —
         // Result.Failed при живом стейте (ретрай следующим тиком со свежим
-        // снапшотом), не NRE (arch/21 §5 E).
+        // снапшотом), не NRE (arch/valkeyworker/04-security.md §4 E).
         if (snap.Endpoints is null || snap.AdminUser is null || snap.AdminPassword is null)
             return Result.Failed(new ApplicationException(
                 $"rotate {cluster}: no endpoints/admin credentials — rotation cannot be resumed"));
@@ -242,7 +242,7 @@ public sealed class PasswordRotator(
         {
             // E2: txn [compare value==OLD][put NEW]. Del заявки — ОТДЕЛЬНОЙ
             // условной txn ниже: compare в одной txn заглушил бы и put NEW,
-            // а доигрывание не зависит от судьбы заявки (arch/21 §5 E).
+            // а доигрывание не зависит от судьбы заявки (arch/valkeyworker/04-security.md §4 E).
             var e2 = await TxnWithFailoverAsync(TxnRequest.Of(
             [
                 TxnCompare.ValueEqual(oldPasswordKey, state.Old),

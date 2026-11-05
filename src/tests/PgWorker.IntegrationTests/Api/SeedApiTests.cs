@@ -66,7 +66,7 @@ public class SeedApiTests(PgApiFixture fixture)
             .Value!.Value.Should().Be("172.28.0.11");
         (await Etcd.Gateway.GetAsync(Etcd.Endpoint, "/service/demo-s1/leader", ct))
             .Value!.Value.Should().Contain("\"name\":\"s1a\"");
-        // заявки ресурсов ОБЯЗАТЕЛЬНЫ для EnsureNode-путей (arch/14 §2.1
+        // заявки ресурсов ОБЯЗАТЕЛЬНЫ для EnsureNode-путей (arch/pgworker/01-placement.md §1
         // п.4) — значения каноничны панели (ClusterCreatePlan: «2»/«2Gi»);
         // без них adopt-репарация на свежем etcd фейлит каждый тик.
         (await Etcd.Gateway.GetAsync(Etcd.Endpoint, "/service/demo-s1/request_cpu", ct))

@@ -157,7 +157,7 @@ public class ShardProbeTests
         b.Value.Should().BeNull();
         c.Value.Should().BeNull();
     }
-    // ── : https-транспорт + basic-auth мутаций (arch/14 §5 C) ──
+    // ── : https-транспорт + basic-auth мутаций (arch/pgworker/processes/c-node-supervisor.md C) ──
 
     // AAA: все URI — https (REST :8008 — TLS-only; HttpClient сам не строит схему)
     [Fact]

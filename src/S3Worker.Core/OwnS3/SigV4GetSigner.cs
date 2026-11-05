@@ -5,8 +5,8 @@ namespace S3Worker.Core.OwnS3;
 
 /// <summary>
 /// Клиентская SigV4-подпись запроса без payload (админ-грань ownS3
-/// /admin/storage — owns3/05 §7; админ-грань репликации arch/24 §5 G/зонд
-/// arch/24 §5 F; то же ядро, что OwnS3.Protocol SigV4Core,
+/// /admin/storage — owns3/05 §7; админ-грань репликации arch/s3worker/05-mesh-governance.md G/зонд
+/// arch/s3worker/06-sync-probes.md F; то же ядро, что OwnS3.Protocol SigV4Core,
 /// но сторона клиента — без ссылки воркера на серверный протокол).
 /// Canonical request: METHOD / canonical URI / canonical query (пустая,
 /// либо CanonicalQuery для GET с query — sync-report) /
@@ -36,7 +36,7 @@ public static class SigV4GetSigner
         => SignRequest("GET", uriPath, hostHeader, accessKey, secretKey, region, now);
 
     /// <summary>Подпись произвольного метода (POST/DELETE/PUT — админ-грань
-    /// репликации arch/24 §5 G, spec §5.1): canonical request строится с фактическим
+    /// репликации arch/s3worker/05-mesh-governance.md G, spec §5.1): canonical request строится с фактическим
     /// методом; payload — UNSIGNED-PAYLOAD (эталонный клиент ownS3, owns3/05 §7).
     /// Отдельное имя (не перегрузка Sign) — устранение неоднозначности с GET-версией.
     /// canonicalQuery — уже канонизованная query-строка (без ведущего '?';

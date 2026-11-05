@@ -3,7 +3,7 @@ using Microsoft.Extensions.Options;
 
 namespace EtcdWorker.UnitTests.App;
 
-/// <summary>Витальность циклов для watchdog (arch/25 §6): цикл в законном
+/// <summary>Витальность циклов для watchdog (arch/etcdworker/06-operability.md §3): цикл в законном
 /// длинном ожидании обязан считаться живым по пульсу/прогресс-отметке —
 /// снапшот-цикл при отстающей выгрузке спит RetryIntervalSec пульсирующим
 /// сном (PulsingDelay + MarkSnapshotActivity); reconcile в долгом
@@ -32,7 +32,7 @@ public class EtcdWorkerLoopsVitalityTests
     public void Snapshot_Heartbeat_SeesPulseActivityAfterTick()
     {
         // Arrange: тик снапшот-цикла в T0; пульс Retry-сна — строго позже тика
-        // (сон RetryIntervalSec при отстающем статусе выгрузки, arch/25 §5).
+        // (сон RetryIntervalSec при отстающем статусе выгрузки, arch/etcdworker/00-etcd-contract.md).
         var health = new HealthState(TimeProvider.System);
         var vitality = Vitality(health);
         health.MarkSnapshotTick();

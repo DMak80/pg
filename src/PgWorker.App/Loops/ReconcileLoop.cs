@@ -12,12 +12,12 @@ using PgWorker.Provisioning.Processes;
 namespace PgWorker.App.Loops;
 
 /// <summary>
-/// Главный цикл (задача 23; spec §6.2, arch/14 §4; чтение состояния —
-/// arch/17 S10): контроль-плейн читается опросными кэшами (IPrefixPollSources),
+/// Главный цикл (задача 23; spec §6.2, arch/pgworker/04-security.md; чтение состояния —
+/// arch/synchronization/05-delta-application.md §S10): контроль-плейн читается опросными кэшами (IPrefixPollSources),
 /// тик применяется ТОЛЬКО при факте изменения etcd-состояния — гейт по дельте:
 /// с последнего обработанного состояния изменений не было → тик НЕ работает
 /// (processes не зовутся, клэймов/проб/docker-вызовов нет); heartbeat и
-/// healthz loops-alive отмечаются всегда (watchdog жив, arch/14 §6). Сбой
+/// healthz loops-alive отмечаются всегда (watchdog жив, arch/pgworker/08-operability.md §3). Сбой
 /// опроса кэша дельту не поднимает — тик пропускается; при появлении
 /// изменения дельта будет — тик обработает. Кластеры обрабатываются
 /// параллельно (SemaphoreSlim MaxClusters), внутри кластера — строго
@@ -143,16 +143,16 @@ internal sealed class ReconcileLoop(
         // Patroni, docker-состояние) не порождают etcd-дельт, гейт навсегда
         // заморозил бы недоведённую работу. E10 закрыт объёмом чтения:
         // etcd-чтений в тике НОЛЬ (слепки опросных кэшей); применения внутри
-        // процессов — по факту изменения (put-if-absent, G2-проверка arch/19 §7).
+        // процессов — по факту изменения (put-if-absent, G2-проверка arch/backups/08-secrets.md).
         health.MarkReconcileActivity();
 
         // Парсинг контроль-плейна — из слепков кэшей (не etcd; P9 выполняется
-        // опросным циклом кэша, единая точка failover — arch/17 S7).
+        // опросным циклом кэша, единая точка failover — arch/synchronization/03-fault-tolerance.md §S7).
         var parsed = ClusterSnapshotParser.ParseClusters(ToKvs(sources.ClustersSnapshot), out var parseErrors);
         foreach (var error in parseErrors)
             logger.LogWarning("skipped broken key: {Error}", error);
 
-        // Бэкапы (arch/19 §4): потребители фильтруются по Enabled сами (процесс).
+        // Бэкапы (arch/backups/05-etcd-contract.md): потребители фильтруются по Enabled сами (процесс).
         var backupsParsed = BackupsParser.Parse(ToKvs(sources.BackupsSnapshot), out var backupsErrors);
         foreach (var error in backupsErrors)
             logger.LogWarning("skipped broken backups key: {Error}", error);
@@ -160,7 +160,7 @@ internal sealed class ReconcileLoop(
 
         // Параллельная обработка кластеров с лимитом; ошибка кластера не роняет тик
         // (journal процесса уже несёт last_error — дельта следующего изменения
-        // продолжит доводку: процессы идемпотентны, arch/17 S10).
+        // продолжит доводку: процессы идемпотентны, arch/synchronization/05-delta-application.md §S10).
         var gate = new SemaphoreSlim(Math.Max(1, options.CurrentValue.Parallelism.MaxClusters));
         try
         {
@@ -199,7 +199,7 @@ internal sealed class ReconcileLoop(
             var cluster = snap.Config.Cluster;
             var work = ClusterClassifier.Classify(snap.Config);
 
-            // Прогресс-отметки вокруг клэйма (arch/14 §6, слепая зона watchdog):
+            // Прогресс-отметки вокруг клэйма (arch/pgworker/08-operability.md §3, слепая зона watchdog):
             // клэйм — бюджетные etcd-вызовы (grant+txn), вход/выход отмечаются —
             // фаза деградировавшего etcd не выглядит тишиной цикла.
             health.MarkReconcileActivity();
@@ -217,7 +217,7 @@ internal sealed class ReconcileLoop(
 
             health.MarkReconcileActivity();
 
-            // Cancellation-гвард клэйма (arch/17 S5): потеря lease прерывает
+            // Cancellation-гвард клэйма (arch/synchronization/02-predicates-and-mutations.md §S5): потеря lease прерывает
             // исполняющийся тик кластера — linked-токен течёт во все операции.
             lease = CancellationTokenSource.CreateLinkedTokenSource(ct, claims.LeaseToken(cluster));
             var tick = lease.Token;
@@ -235,7 +235,7 @@ internal sealed class ReconcileLoop(
                     break;
 
                 default:
-                    // Прогресс-отметка входа в надзор (arch/14 §6): RunSuperviseAsync
+                    // Прогресс-отметка входа в надзор (arch/pgworker/08-operability.md §3): RunSuperviseAsync
                     // идёт мимо RunClusterOpAsync (нужен SuperviseOutcome инлайн) —
                     // без отметки её бюджетные вызовы слились бы с клэймом в одну
                     // «тишину» между отметками.
@@ -244,7 +244,7 @@ internal sealed class ReconcileLoop(
                     if (supervised is null)
                         break;
 
-                    // Усыновление (spec §3.2, arch/14 §5 J): адреса dsn-шард без
+                    // Усыновление (spec §3.2, arch/pgworker/processes/j-adoption.md J): адреса dsn-шард без
                     // portalloc — до scale (add смотрит pinned portalloc) и до
                     // repair/moves (SQL нужен адрес).
                     await RunClusterOpAsync(cluster, "adopt",
@@ -255,33 +255,33 @@ internal sealed class ReconcileLoop(
                     await RunClusterOpAsync(cluster, "scale-shards",
                         () => processes.ScaleShardsAsync(snap, tick), ct, tick);
 
-                    // Ротация app-пароля (spec §4.3, arch/14 §5 I): короткая плановая
+                    // Ротация app-пароля (spec §4.3, arch/pgworker/processes/i-secret-rotator.md I): короткая плановая
                     // операция — до эвакуаций/переездов, не ждёт длинных moves.
                     await RunClusterOpAsync(cluster, "rotate-app-password",
                         () => processes.RotateAppPasswordAsync(snap, tick), ct, tick);
 
-                    // Полные бэкапы (arch/19 §2): после коротких плановых
+                    // Полные бэкапы (arch/backups/01-full-backup.md): после коротких плановых
                     // операций, до репарации; тик запускает/поллит джобы, не ждёт их.
                     // Выключенная подсистема не зовётся вовсе (поведение без).
                     if (options.CurrentValue.Backups.Enabled)
                         await RunClusterOpAsync(cluster, "backups",
                             () => processes.BackupsAsync(snap, backups, tick), ct, tick);
 
-                    // WAL-архивация (arch/19 §3): после ротации (креды агента —
+                    // WAL-архивация (arch/backups/02-wal-archive.md §1): после ротации (креды агента —
                     // свежий пароль в пересоздании) и до repair/moves (короткая).
                     // Зовётся ВСЕГДА: при Enabled=false это стоп-семантика
                     // (агенты вниз + финальный STOPPED в живых ключах).
                     await RunClusterOpAsync(cluster, "backup-wal",
                         () => processes.WalStreamAsync(snap, backups, tick), ct, tick);
 
-                    // Проверки полных бэкапов (arch/19 §5): после WAL-потока,
+                    // Проверки полных бэкапов (arch/backups/06-s3-layout.md): после WAL-потока,
                     // до ретенции и repair; тик запускает/поллит verify-джобы, не ждёт
                     // их (non-blocking). Выключенная подсистема не зовётся вовсе.
                     if (options.CurrentValue.Backups.Enabled)
                         await RunClusterOpAsync(cluster, "backup-verify",
                             () => processes.VerifyBackupsAsync(snap, backups, tick), ct, tick);
 
-                    // Ретенция (arch/19 §4): после backup-wal/verify (чистит только
+                    // Ретенция (arch/backups/05-etcd-contract.md): после backup-wal/verify (чистит только
                     // то, что не нужно оставляемым полным; порядок verify→retention канон
                     // не фиксирует — проверяем до удаления), до repair; тик короткий
                     // (один кандидат/проход, batch-чанки). Выключенная подсистема
@@ -290,7 +290,7 @@ internal sealed class ReconcileLoop(
                         await RunClusterOpAsync(cluster, "backups-retention",
                             () => processes.RetentionAsync(snap, backups, tick), ct, tick);
 
-                    // Сверка S3↔etcd (arch/19 §4): мусор full/<id>/ живого шарда
+                    // Сверка S3↔etcd (arch/backups/05-etcd-contract.md): мусор full/<id>/ живого шарда
                     // без etcd-ключа; после ретенции (гигиена FAILED может оставить
                     // объекты), до restore (гвард владельца). Выключенная подсистема
                     // не зовётся.
@@ -298,7 +298,7 @@ internal sealed class ReconcileLoop(
                         await RunClusterOpAsync(cluster, "backup-supervisor",
                             () => processes.SuperviseBackupsAsync(snap, backups, tick), ct, tick);
 
-                    // Restore шардов из бэкапов (arch/19 §3.5): после wal-потока
+                    // Restore шардов из бэкапов (arch/backups/03-restore.md): после wal-потока
                     // (агент снесён демонтажём — процесс сам стопает), до repair/moves.
                     // Выключенная подсистема не зовётся; одна активная заявка за тик —
                     // машина состояний процесса (старейшая по Id).
@@ -306,14 +306,14 @@ internal sealed class ReconcileLoop(
                         await RunClusterOpAsync(cluster, "backup-restore",
                             () => processes.RestoreAsync(snap, backups, tick), ct, tick);
 
-                    // Дрилл восстановимости (reliability, arch/19 §3.6): после backup-restore
+                    // Дрилл восстановимости (reliability, arch/backups/04-drill.md): после backup-restore
                     // (гвард restore-владения отработал в отборе), до repair. Зовётся ВСЕГДА:
                     // Backups:Enabled=false / интервал 0 — стоп-семантика в процессе (доводка
                     // активного дрилла и сноса контура, новых запусков нет).
                     await RunClusterOpAsync(cluster, "backup-drill",
                         () => processes.DrillAsync(snap, backups, tick), ct, tick);
 
-                    // Репарация брошенных переездов (spec §3.5, arch/14 §5 K): синтетические
+                    // Репарация брошенных переездов (spec §3.5, arch/pgworker/processes/k-move-repair.md K): синтетические
                     // заявки до moves — этот же тик начнёт их обработку (старейшая заявка).
                     await RunClusterOpAsync(cluster, "repair",
                         () => processes.RepairAsync(snap, tick), ct, tick);
@@ -336,7 +336,7 @@ internal sealed class ReconcileLoop(
         }
         catch (OperationCanceledException oce) when (lease?.IsCancellationRequested == true)
         {
-            // Потеря клэйма прервала операцию кластера вне обёрток (arch/17 S5):
+            // Потеря клэйма прервала операцию кластера вне обёрток (arch/synchronization/02-predicates-and-mutations.md §S5):
             // внятная фаза в журнале; кластер подхватит следующий тик/инстанс.
             logger.LogWarning("cluster {Cluster}: lease lost — tick aborted ({Message})",
                 snap.Config.Cluster, oce.Message);
@@ -359,7 +359,7 @@ internal sealed class ReconcileLoop(
     // Вызов процесса под catch-all: исключение процесса → лог + журнал
     // (phase=crashed, last_error), штатный Result — в обычный лог цикла.
     // host — токен остановки хоста (дискриминатор: OCE по нему = остановка,
-    // OCE по ct = потеря клэйма — гварда arch/17 S5).
+    // OCE по ct = потеря клэйма — гварда arch/synchronization/02-predicates-and-mutations.md §S5).
     private async Task RunClusterOpAsync(
         string cluster, string op, Func<Task<Result<ProcessOutcome>>> call, CancellationToken host, CancellationToken ct)
     {
@@ -378,7 +378,7 @@ internal sealed class ReconcileLoop(
         }
         catch (OperationCanceledException)
         {
-            await WriteLeaseLostAsync(cluster, op); // потеря клэйма — гвард arch/17 S5
+            await WriteLeaseLostAsync(cluster, op); // потеря клэйма — гвард arch/synchronization/02-predicates-and-mutations.md §S5
         }
         catch (Exception ex)
         {
@@ -410,7 +410,7 @@ internal sealed class ReconcileLoop(
         }
         catch (OperationCanceledException)
         {
-            await WriteLeaseLostAsync(cluster, "supervise"); // потеря клэйма — гвард arch/17 S5
+            await WriteLeaseLostAsync(cluster, "supervise"); // потеря клэйма — гвард arch/synchronization/02-predicates-and-mutations.md §S5
             return null;
         }
         catch (Exception ex)
@@ -420,7 +420,7 @@ internal sealed class ReconcileLoop(
         }
     }
 
-    // Фаза lease-lost в журнале воркера (arch/17 S5): потери клэйма видно из etcd,
+    // Фаза lease-lost в журнале воркера (arch/synchronization/02-predicates-and-mutations.md §S5): потери клэйма видно из etcd,
     // без логов воркера. CancellationToken.None — токен тика отменён, запись
     // обязана доехать (как в LogCrashAsync).
     private async Task WriteLeaseLostAsync(string cluster, string op)

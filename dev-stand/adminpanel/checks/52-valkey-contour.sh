@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 52-valkey-contour.sh (t31, arch/21 §2 / arch/adminpanel/04 §3; РУЧНАЯ приёмка
+# 52-valkey-contour.sh (t31, arch/valkeyworker/01-placement.md / arch/adminpanel/04 §3; РУЧНАЯ приёмка
 # контурного режима сетей ValkeyWorker на стенде): гварды живости ядра →
 # логин в панель → создание valkey-кластера с уникальным именем ЧЕРЕЗ панель →
 # wait Active/нода RUNNING → ассерты контурного режима (контейнер ноды в
@@ -72,7 +72,7 @@ api "/api/valkey/clusters/$TAG" | jq -e '.state == "ACTIVE" and .nodesList[0].st
   || { echo "❌ $TAG did not reach ACTIVE/RUNNING within 300 s (docker compose logs valkeyworker valkeyworker-2)"; exit 1; }
 echo "  $TAG: ACTIVE, node RUNNING"
 
-# 5) Ассерты контурного режима (arch/21 §2): контейнер ноды — в стендовой
+# 5) Ассерты контурного режима (arch/valkeyworker/01-placement.md): контейнер ноды — в стендовой
 #    сети контура; endpoints — advertised host:port (portalloc; без хардкода
 #    порта — только формат).
 nets="$(docker inspect "vwk-$TAG-node1" --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{end}}' 2>/dev/null || true)"
@@ -81,7 +81,7 @@ echo "$nets" | grep -q 'adminpanel-stand-net' \
 endpoints="$(etcd_key "/valkey/clusters/$TAG/endpoints")"
 [ -n "$endpoints" ] || { echo "❌ /valkey/clusters/$TAG/endpoints is empty"; exit 1; }
 echo "$endpoints" | grep -Eq '^[^:]+:[0-9]+$' \
-  || { echo "❌ endpoints '$endpoints' is not host:port (advertised format, arch/21 §2)"; exit 1; }
+  || { echo "❌ endpoints '$endpoints' is not host:port (advertised format, arch/valkeyworker/01-placement.md)"; exit 1; }
 echo "  contour: node in adminpanel-stand-net; endpoints=$endpoints"
 
 # 6) Teardown: DELETE через панель → wait исчезновения контейнеров vwk-$TAG-*

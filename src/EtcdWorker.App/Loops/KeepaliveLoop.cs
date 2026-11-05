@@ -7,7 +7,7 @@ using EtcdWorker.App;
 namespace EtcdWorker.App.Loops;
 
 /// <summary>
-/// Цикл продления координации (arch/24 §6): запускает фоновый keepalive-контур
+/// Цикл продления координации (arch/s3worker/08-operability.md §3): запускает фоновый keepalive-контур
 /// ClaimStore (все удерживаемые lease + instance-ключ /etcdworker/instances/&lt;id&gt;
 /// + дискавери /etcdworker/api/&lt;id&gt;) и живёт heartbeat-тиками для
 /// наблюдаемости. Смерть процесса гасит lease'ы ≤15 с (takeover другим инстансом).

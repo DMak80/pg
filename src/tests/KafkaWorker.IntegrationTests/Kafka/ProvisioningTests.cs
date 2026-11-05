@@ -75,7 +75,7 @@ public class ProvisioningTests(KafkaClusterFixture fixture)
         clientPorts.Should().OnlyContain(p => p >= fixture.PortFrom && p <= fixture.PortTo);
         var password = await fixture.GetAsync($"/kafka/clusters/{cluster}/app_password");
         password.Should().HaveLength(32).And.MatchRegex("^[A-Za-z0-9]{32}$");
-        // admin-креды + per-cluster PKI (arch/15 §2).
+        // admin-креды + per-cluster PKI (arch/kafka-clusters/02-keys.md §1).
         (await fixture.GetAsync($"/kafka/clusters/{cluster}/admin_user")).Should().Be("admin");
         (await fixture.GetAsync($"/kafka/clusters/{cluster}/admin_password"))
             .Should().HaveLength(32).And.MatchRegex("^[A-Za-z0-9]{32}$");

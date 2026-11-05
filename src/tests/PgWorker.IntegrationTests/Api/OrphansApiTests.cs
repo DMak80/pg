@@ -17,10 +17,10 @@ using Xunit;
 namespace PgWorker.IntegrationTests.Api;
 
 // POST/DELETE /api/backups/orphans/{c}/{x}/hold, POST.../delete (
-// arch/19 §4): hold/unhold/заявка явного удаления сирот. Гварды 400
+// arch/backups/05-etcd-contract.md): hold/unhold/заявка явного удаления сирот. Гварды 400
 // (confirm-мисматч/нет тела), 404 (не сирота/мусорные имена), 409 (DELETING),
 // 503 (etcd-сбой/подсистема выключена); повторные hold/заявки идемпотентны.
-// Целевая архитектура E2E (docs/e2e-isolation.md §1): единица изоляции —
+// Целевая архитектура E2E (arch/testing/02-e2e-isolation.md §1): единица изоляции —
 // класс; окружение — СВОЙ etcd в СВОЙ docker-сети (OwnedEtcdFixture) —
 // никто вне класса не может писать в его etcd.
 [Collection(NonE2eCollection.Name)]
@@ -51,7 +51,7 @@ public class OrphansApiTests(OwnedEtcdFixture etcdFixture)
                 ["PgWorker:Etcd:Endpoints:0"] = etcdEndpoint,
                 ["PgWorker:Docker:Hosts:0:Name"] = "local",
                 ["PgWorker:Docker:Hosts:0:Endpoint"] = "unix:///var/run/does-not-exist.sock",
-                // WAF-хост без сертов: mTLS выключен (прод-канон — false, arch/14 §1.1).
+                // WAF-хост без сертов: mTLS выключен (прод-канон — false, arch/pgworker/07-api.md §1).
                 ["PgWorker:Api:Tls:AllowInsecureHttp"] = "true",
                 ["PgWorker:Api:AdvertiseUrl"] = "https://localhost:9999",
                 ["PgWorker:Api:EnableSeedEndpoint"] = "true",

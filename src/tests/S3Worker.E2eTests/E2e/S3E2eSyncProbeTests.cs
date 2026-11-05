@@ -8,9 +8,9 @@ using Xunit;
 
 namespace S3Worker.IntegrationTests.E2e;
 
-// Docker-E2E зонда F (spec §8.3, arch/24 §5 F): штатная синхронность,
+// Docker-E2E зонда F (spec §8.3, arch/s3worker/06-sync-probes.md F): штатная синхронность,
 // прогон по команде (заявка put-if-absent → 202), недоступная нода (матрица
-// по канону arch/23 §3: строк нет у неответивших; одиночный offline-линк без
+// по канону arch/s3-clusters/03-observation-statuses.md: строк нет у неответивших; одиночный offline-линк без
 // живых → DOWN), отставание → догон (lag_objects → SYNCED), deny-инстанс
 // (пустая матрица = OK). Все ожидания — поллинг WaitPhaseAsync ([PHASE]);
 // изоляция/телеметрия/teardown — в S3E2eEnvironment.
@@ -224,7 +224,7 @@ public class S3E2eSyncProbeTests
 
             // Assert 1 (до UNREACHABLE): у east1 линк offline (пинг соседа мёртв);
             // строки east2 нет (probe-вызов не отвечает); единственный линк без
-            // живых → DOWN по канону arch/23 §3; probe_error называет east2.
+            // живых → DOWN по канону arch/s3-clusters/03-observation-statuses.md; probe_error называет east2.
             await fx.WaitPhaseAsync("degraded", async () =>
             {
                 var connectivity = await S3E2eScaleTests.GetOrNullAsync(fx, $"/s3/clusters/{cluster}/connectivity", ct);
@@ -254,7 +254,7 @@ public class S3E2eSyncProbeTests
             // (targets east1 не меняются от stop, строка east1→east2 offline →
             // DOWN); пара {east1,east2} остаётся (объединение targets), но сверка
             // невозможна — sync-report east2 недоступен → пар в pairs нет,
-            // last_error, агрегат LAGGING (канон arch/23 §3: пара существует при
+            // last_error, агрегат LAGGING (канон arch/s3-clusters/03-observation-statuses.md: пара существует при
             // записи хотя бы у одной опрошенной стороны).
             await fx.WaitPhaseAsync("uncovered", async () =>
             {
@@ -479,7 +479,7 @@ public class S3E2eSyncProbeTests
     // ── Хелперы сценария ──
 
     // S3-клиент по хост-порту из portalloc (паттерн MeshTests — приватная копия);
-    // креды — per-cluster secrets-ключ etcd (arch/23 §2), без печати.
+    // креды — per-cluster secrets-ключ etcd (arch/s3-clusters/02-keys.md §1), без печати.
     private static async Task<IAmazonS3> S3ClientAsync(
         S3E2eEnvironment fx, string cluster, int port, CancellationToken ct)
     {

@@ -165,7 +165,7 @@ public sealed class FakeKafkaAdminClient : IKafkaAdminClient
         return Task.FromResult(Result<TopicDeleteOutcome>.Success(TopicDeleteOutcome.NotFound));
     }
 
-    // Коллектор лагов (arch/18 §4): процессы seam-методы не используют —
+    // Коллектор лагов (arch/metrics/04-collectors.md): процессы seam-методы не используют —
     // заглушки-провалы по умолчанию; настраиваемые данные добавит фейк коллектора.
     public Task<Result<IReadOnlyList<KafkaGroupView>>> ListGroupsAsync(CancellationToken ct)
         => Task.FromResult(Result<IReadOnlyList<KafkaGroupView>>.Failed(

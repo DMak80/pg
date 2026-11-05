@@ -4,7 +4,7 @@ using Xunit;
 
 namespace PgWorker.UnitTests.Backups;
 
-// Ключ .partial-версии живого сегмента (arch/19 §3): <segment>.<endLsn:x16>.partial;
+// Ключ .partial-версии живого сегмента (arch/backups/02-wal-archive.md §1): <segment>.<endLsn:x16>.partial;
 // фиксированная ширина суффикса = числовому порядку (лексикографический max).
 public class WalPartialNameTests
 {

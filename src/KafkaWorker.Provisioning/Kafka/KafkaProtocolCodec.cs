@@ -3,7 +3,7 @@ using System.Text;
 
 namespace KafkaWorker.Provisioning.Kafka;
 
-// Писатель примитивов Kafka-протокола (arch/16 §2.4, spec §4.1): всё
+// Писатель примитивов Kafka-протокола (arch/kafkaworker/06-rebalancing.md §1, spec §4.1): всё
 // big-endian; compact-примитивы (uvarint) — flexible-тела, old-style (int16/
 // int32 длины) — заголовки и не-flexible тела. Пишет в память; ToFrame()
 // отдаёт кадр «int32 длина + payload».
@@ -107,7 +107,7 @@ internal sealed class KafkaProtocolWriter
     private void WriteRaw(byte[] bytes) => _buffer.Write(bytes, 0, bytes.Length);
 }
 
-// Читатель примитивов Kafka-протокола (arch/16 §2.4, spec §4.1): поверх
+// Читатель примитивов Kafka-протокола (arch/kafkaworker/06-rebalancing.md §1, spec §4.1): поверх
 // payload-байтов (после кадра-длины); любое повреждение (нехватка данных,
 // чрезмерная длина) — ApplicationException, не зависание.
 internal sealed class KafkaProtocolReader(byte[] payload)

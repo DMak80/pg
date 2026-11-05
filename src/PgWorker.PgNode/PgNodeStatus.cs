@@ -4,7 +4,7 @@ using System.Text.Json.Serialization;
 namespace PgWorker.PgNode;
 
 /// <summary>Значение статусного ключа /pgworker/nodes/&lt;C&gt;/&lt;X&gt;/&lt;N&gt;/status
-/// (arch/14 §3.3, spec §3.6): машина агента — not_initialized → initializing
+/// (arch/pgworker/00-etcd-contract.md §4, spec §3.6): машина агента — not_initialized → initializing
 /// → ready | start_failed; applied_revision — mod_revision применённого
 /// bootstrap-ключа (null до применения); components pg/doorman:
 /// starting|ready|failed|stopped (+prepared — tool-путь). Пишет ТОЛЬКО агент

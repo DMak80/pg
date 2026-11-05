@@ -199,14 +199,14 @@ public sealed class E2eRetentionScenarios(E2eRetentionScenariosFx Ctx) : IClassF
     }
 
     // Воркер с включённой подсистемой: S3 на ownS3-ноду, образ джобов
-    // операции — в приёмниках нод (arch/19 §5), ускоренный бэкофф, ретенция раз в 60 c (минимум
+    // операции — в приёмниках нод (arch/backups/06-s3-layout.md), ускоренный бэкофф, ретенция раз в 60 c (минимум
     // валидации IntervalSec ≥ 60; первый проход — сразу, далее по расписанию).
     private Task<HostInstance> StartRetentionHostAsync(string name, CancellationToken ct)
         => Fx.StartHostAsync(name, extraEnv: new Dictionary<string, string>
         {
             ["PgWorker__Backups__Enabled"] = "true",
             ["PgWorker__Backups__S3__Bucket"] = Bucket,
-            // креды пула — env-профиль (arch/19 §7); пул — policy.s3, адреса
+            // креды пула — env-профиль (arch/backups/08-secrets.md); пул — policy.s3, адреса
             // резолвит воркер из /s3/ (advertised host.docker.internal, extra_hosts).
             ["PgWorker__Backups__Retry__BaseSec"] = "2",
             ["PgWorker__Backups__Retry__MaxSec"] = "4",
@@ -352,7 +352,7 @@ public sealed class E2eRetentionScenarios(E2eRetentionScenariosFx Ctx) : IClassF
 }
 
 /// <summary>Компаньон-фикстура окружения класса (полный контур на класс:
-/// сеть/etcd/CA/окно портов; docs/e2e-isolation.md §1).</summary>
+/// сеть/etcd/CA/окно портов; arch/testing/02-e2e-isolation.md §1).</summary>
 public sealed class E2eRetentionScenariosFx : E2eContourFixture
 {
     protected override string Slug => "bk-ret";

@@ -22,7 +22,7 @@ export const LIMITS = {
   s3Instances: { min: 0, max: 9 },
 } as const;
 
-// 8 значений policy valkey — канон arch/02 §11.3 (arch/20 §2).
+// 8 значений policy valkey — канон arch/02 §11.3 (arch/valkey-clusters/02-keys.md §1).
 export const VALKEY_POLICIES = [
   'noeviction',
   'allkeys-lru',

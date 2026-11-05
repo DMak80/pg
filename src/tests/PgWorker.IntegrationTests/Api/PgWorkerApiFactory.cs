@@ -23,7 +23,7 @@ public class PgWorkerApiFactory(Etcd.EtcdFixture etcd) : WebApplicationFactory<P
             ["PgWorker:Etcd:Endpoints:0"] = etcd.Endpoint,
             ["PgWorker:Docker:Hosts:0:Name"] = "local",
             ["PgWorker:Docker:Hosts:0:Endpoint"] = "unix:///var/run/does-not-exist.sock",
-            // WAF-хост без сертов: mTLS выключен (прод-канон — false, arch/14 §1.1).
+            // WAF-хост без сертов: mTLS выключен (прод-канон — false, arch/pgworker/07-api.md §1).
             ["PgWorker:Api:Tls:AllowInsecureHttp"] = "true",
             ["PgWorker:Api:AdvertiseUrl"] = "https://localhost:9999",
             // Seed-эндпоинт включён для кейсов наливки (SeedApiTests); выключенный
@@ -44,7 +44,7 @@ public sealed class PgApiFixture : IAsyncLifetime
 
     public PgWorkerApiFactory Factory { get; }
 
-    // Статический тестовый REST-CA (arch/14 §4 гр.3): один RSA-2048 CA
+    // Статический тестовый REST-CA (arch/pgworker/04-security.md гр.3): один RSA-2048 CA
     // на фикстуру — WAF-хосты получают его через те же env PGW_REST_TLS_*,
     // что и прод (двойной семантики нет; fail-fast не роняет серии).
     public static (string CaPem, string CaKeyPem) RestTestCa => RestCa.Value;

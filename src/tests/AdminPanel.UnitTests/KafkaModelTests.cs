@@ -8,7 +8,7 @@ using KafkaMappers = AdminPanel.Api.Inspection.KafkaMappers;
 namespace AdminPanel.UnitTests;
 
 // Модель домен-снапшота Kafka (arch/02 §10.1; план B2): value-equality записей
-// и маппинг config.state → KafkaClusterState (arch/15 §2/§6).
+// и маппинг config.state → KafkaClusterState (arch/kafka-clusters/02-keys.md §1/§6).
 public class KafkaModelTests
 {
     [Fact]
@@ -46,11 +46,11 @@ public class KafkaModelTests
     }
 
     [Theory]
-    [InlineData(null, KafkaClusterState.Active)]       // отсутствие state = Active (arch/15 §2)
+    [InlineData(null, KafkaClusterState.Active)]       // отсутствие state = Active (arch/kafka-clusters/02-keys.md §1)
     [InlineData("", KafkaClusterState.Active)]
     [InlineData("NOT_INITIALIZED", KafkaClusterState.NotInitialized)]
     [InlineData("TO_REMOVE", KafkaClusterState.ToRemove)]
-    [InlineData("SOMETHING_NEW", KafkaClusterState.Active)] // незнакомое — толерантно, Active (arch/15 §6)
+    [InlineData("SOMETHING_NEW", KafkaClusterState.Active)] // незнакомое — толерантно, Active (arch/kafka-clusters/06-fault-tolerance.md)
     public void ClusterStateMap_ParsesConfigState(string? raw, KafkaClusterState expected)
     {
         // Arrange / Act
@@ -168,9 +168,9 @@ public class KafkaMappersLifecycleTests
     [Fact]
     public void MapDetails_CollidingCreateAndDeleteTickets_NoThrowDeleteBadgeWins()
     {
-        // Arrange: обе заявки живы на один топик (etcd-мусор, arch/15 §3.1 —
+        // Arrange: обе заявки живы на один топик (etcd-мусор, arch/kafka-clusters/03-topics.md §2 —
         // панельные клэймы txn на РАЗНЫЕ ключи, гонка двух API-запросов) при
-        // живом факт-ключе: читатель обязан терпеть (arch/15 §6).
+        // живом факт-ключе: читатель обязан терпеть (arch/kafka-clusters/06-fault-tolerance.md).
         var cluster = new KafkaClusterInfo(
             "events", KafkaClusterState.Active, 1, 1, 1, 12, 604800000, 1756500000,
             "host.docker.internal:16001",
@@ -189,7 +189,7 @@ public class KafkaMappersLifecycleTests
         // Act: не бросает (ToDictionary на дубликате ронял GET в 500).
         var dto = KafkaMappers.MapDetails(cluster, [], [], []);
 
-        // Assert: один бейдж; delete авторитетен (arch/15 §3.1 — delete
+        // Assert: один бейдж; delete авторитетен (arch/kafka-clusters/03-topics.md §2 — delete
         // доминирует, create чистится воркером) — оператор видит/отменяет его.
         dto.Topics.Should().ContainSingle().Which.Name.Should().Be("orders");
         dto.Topics.Single().Lifecycle!.Op.Should().Be("delete");

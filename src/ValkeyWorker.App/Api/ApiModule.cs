@@ -6,7 +6,7 @@ using ValkeyWorker.App.Api.Operations;
 
 namespace ValkeyWorker.App.Api;
 
-// HTTP API воркера valkey-домена (arch/21 §1.1): мутации декларативного
+// HTTP API воркера valkey-домена (arch/valkeyworker/05-api.md §1): мутации декларативного
 // контракта /valkey/ принимает исполнитель. Маппинг исключений — порт
 // ApiModule kfw (коды/тексты ProblemDetails 1:1); успешные POST/PUT отвечают
 // 201/200 без Location (панель строит Location сама).
@@ -227,7 +227,7 @@ public static class ApiModule
             return MapCancelRotationError(result.Error!.Message, result.Error);
         });
 
-        // GET /api/config — эффективный конфиг установки (arch/21 §1.1, u15):
+        // GET /api/config — эффективный конфиг установки (arch/valkeyworker/05-api.md §1, u15):
         // read-only, mTLS-зона /api, без снапшота и etcd.
         endpoints.MapGet("/api/config", (IOptions<ValkeyWorkerOptions> options)
             => Results.Ok(ValkeyWorkerEffectiveConfig.From(options.Value)));

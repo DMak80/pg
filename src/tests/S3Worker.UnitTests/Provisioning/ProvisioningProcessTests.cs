@@ -10,7 +10,7 @@ using Xunit;
 
 namespace S3Worker.UnitTests.Provisioning;
 
-// ProvisioningProcess P0–P5 (arch/24 §5 A): клэйм/journal, перечитка config
+// ProvisioningProcess P0–P5 (arch/s3worker/02-cluster-lifecycle.md §2 A): клэйм/journal, перечитка config
 // (гонка TO_REMOVE), placement+portalloc, ensure/health/bucket/endpoints/config.
 public class ProvisioningProcessTests
 {
@@ -21,7 +21,7 @@ public class ProvisioningProcessTests
     // getenv-профиль store'а: спец-ключ etcd-backup (тестами не используется).
     private static readonly Dictionary<string, string?> Env = [];
 
-    // Валидный secrets-ключ кластера (канон arch/23 §6): root-пара +
+    // Валидный secrets-ключ кластера (канон arch/s3-clusters/06-secrets.md): root-пара +
     // backups(read-write) и panel(read-only); значения — фиксированные
     // несекретные литералы.
     private static string SecretsJson(string cluster) => ClusterSecretsStore.Serialize(new ClusterSecrets(
@@ -151,7 +151,7 @@ public class ProvisioningProcessTests
     }
 
     // AAA: 0-инстансовый provisioning — P1–P4 без docker-мутаций, endpoints НЕ
-    // пишется, config nodes=0 без state (arch/23 §2, arch/24 §5 A).
+    // пишется, config nodes=0 без state (arch/s3-clusters/02-keys.md §1, arch/s3worker/02-cluster-lifecycle.md §2 A).
     [Fact]
     public async Task ProvisioningZeroInstances_EndpointsNotWritten()
     {

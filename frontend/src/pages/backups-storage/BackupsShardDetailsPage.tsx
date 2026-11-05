@@ -94,7 +94,7 @@ export function BackupsShardDetailsPage() {
         <Anchor component={Link} to="/backups-storage" size="sm">← Backup Storage</Anchor>
         <Group gap="sm" mt={4}>
           <Title order={2} ff="monospace">{data.cluster}/{data.shard}</Title>
-          {/* Бейдж активного restore: только статус, кнопок нет (arch/19 §3.5). */}
+          {/* Бейдж активного restore: только статус, кнопок нет (arch/backups/03-restore.md). */}
           {data.activeRestore === null ? null : (
             <Group gap="xs">
               <Badge color="orange" variant="light">
@@ -114,7 +114,7 @@ export function BackupsShardDetailsPage() {
       <RestoreBlock cluster={data.cluster} shard={data.shard} />
       <FullsTable fulls={data.fulls} />
       <WalCard wal={data.wal} />
-      {/* u11: приёмники WAL per-node (arch/19 §4) */}
+      {/* u11: приёмники WAL per-node (arch/backups/05-etcd-contract.md) */}
       <AgentsBlock agents={data.agents ?? null} />
       <DrillCard drill={data.drill} cluster={data.cluster} />
       <ObjectsBlock cluster={data.cluster} shard={data.shard} />
@@ -241,12 +241,12 @@ function WalCard({ wal }: { wal: BackupWalDto | null }) {
   );
 }
 
-// Цвет бейджа дрилла по состоянию ключа (arch/19 §3.6).
+// Цвет бейджа дрилла по состоянию ключа (arch/backups/04-drill.md).
 function drillColor(state: string): string {
   return state === 'SUCCEEDED' ? 'green' : state === 'FAILED' ? 'red' : 'blue';
 }
 
-// Блок «Дрилл восстановимости» (reliability t02, arch/19 §3.6): статус
+// Блок «Дрилл восстановимости» (reliability t02, arch/backups/04-drill.md): статус
 // последнего/текущего дрилла (state/фаза/возраст/LSN/error) + форма «Дрилл
 // каждые N суток» (0 = выкл) — PUT ПОЛНОЙ policy через панельную команду-прокси
 // (канон замещения целиком; панель в etcd не пишет).
@@ -260,7 +260,7 @@ function DrillCard({ drill, cluster }: { drill: BackupDrillBadgeDto | null; clus
   });
   const policy = storage.data?.clusters.find((c) => c.cluster === cluster)?.policy ?? null;
 
-  // Дефолты фронта при null-полях policy (7/4/6/86400/true/1 — канон arch/19 §9).
+  // Дефолты фронта при null-полях policy (7/4/6/86400/true/1 — канон arch/backups/09-operability.md §1).
   const [drillDays, setDrillDays] = useState<number | ''>(1);
   const initialized = useRef(false);
   useEffect(() => {
@@ -475,7 +475,7 @@ function RestoreBlock({ cluster, shard }: { cluster: string; shard: string }) {
           <Stack gap="sm">
             <Text size="sm" c="orange">
               Операция разрушающая и долгая: шард восстанавливается из бэкапа
-              (PITR latest или target_time; arch/19 §3.5).
+              (PITR latest или target_time; arch/backups/03-restore.md).
             </Text>
             <Text size="sm" c="dimmed">
               Подтвердите вводом имени шарда <Text span ff="monospace">{shard}</Text>:

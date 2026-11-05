@@ -1,7 +1,7 @@
 // Форма создания s3-кластера (arch/03 §12.3; валидации 02 §12.3): имя,
 // etcdBackup (переключатель), платформа read-only «owns3», динамический список
 // инстансов 0..9 (имя + placement + ресурсы) с fallback на общие ресурсы.
-// Клиентская валидация — зеркало серверной (arch/24 §1.1), сервер — истина.
+// Клиентская валидация — зеркало серверной (arch/s3worker/07-api.md §1), сервер — истина.
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   Alert,
@@ -22,11 +22,11 @@ import { createS3Cluster, s3QueryKeys } from '../../api/queries';
 import type { CreateS3ClusterRequestDto, S3PlacementDto, S3ResourcesDto } from '../../api/dto';
 import { validateCpu, validateDiskGi, validateMemGi, validateS3Instances } from '../../utils/validation';
 
-// Границы — зеркало валидаций воркера (arch/24 §1.1; 02 §12.3).
+// Границы — зеркало валидаций воркера (arch/s3worker/07-api.md §1; 02 §12.3).
 const NAME_RE = /^[a-z][a-z0-9_]{0,62}$/;
 const RESERVED_NAME = 'orchestrator';
 
-// Placement-форма инстанса:.radio-режимы канона arch/23 §4 (конъюнкция указанных,
+// Placement-форма инстанса:.radio-режимы канона arch/s3-clusters/04-placement.md (конъюнкция указанных,
 // в UI — один выбранный атрибут; минимум один обязателен). swarm_labels —
 // key-value-редактор строк («+ метка»/«−»; минимум одна метка — канон §4).
 type PlacementMode = 'dockerHost' | 'swarmNode' | 'swarmLabels';

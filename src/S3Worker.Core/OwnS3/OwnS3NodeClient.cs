@@ -50,7 +50,7 @@ public sealed record OwnS3ListEntry(string Key, long ModTimeUnixMs, long Size);
 /// <summary>Страница ListObjectsV2: nextContinuationToken null/пусто — конец листинга.</summary>
 public sealed record OwnS3ListPage(IReadOnlyList<OwnS3ListEntry> Entries, string? NextContinuationToken);
 
-/// <summary>Исходы admin-join (arch/24 §5 G): Joined — готово (имя пира из ответа);
+/// <summary>Исходы admin-join (arch/s3worker/05-mesh-governance.md G): Joined — готово (имя пира из ответа);
 /// Conflict — имя числится с другим ключом (409); Refused — отказ (403, в т.ч.
 /// deny); Transient — прочие HTTP/транспорт/таймаут (ретрай тиком).</summary>
 public enum OwnS3JoinKind
@@ -64,10 +64,10 @@ public enum OwnS3JoinKind
 public sealed record OwnS3JoinOutcome(OwnS3JoinKind Kind, string? PeerName = null);
 
 /// <summary>
-/// Грань ownS3-ноды для процессов S3Worker (arch/23 §5): health-проба
+/// Грань ownS3-ноды для процессов S3Worker (arch/s3-clusters/05-platform.md): health-проба
 /// (без подписи), существование/создание bucket'а (AWSSDK, root-креды
 /// профиля), занятость диска (SigV4 GET /admin/storage); mesh-управление
-/// (arch/24 §5 G, spec §5.1): status/join/delete-target (SigV4 root-креды
+/// (arch/s3worker/05-mesh-governance.md G, spec §5.1): status/join/delete-target (SigV4 root-креды
 /// админ-грани) и deny-перезапись (до-join контур OWNS3-PEER сертификатом
 /// оркестратора — owns3/07 §6). Все таймауты — 7.5 с (поллинг-инвариант:
 /// половина окна watchdog); ретраи — дело тика.

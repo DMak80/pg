@@ -10,7 +10,7 @@ namespace PgWorker.App.Api.Operations;
 // camelCase-биндинг Minimal API: SynchronousModeStrict → "synchronousModeStrict".
 public sealed record UpdateClusterConfigRequest(bool? SynchronousModeStrict);
 
-// Мутация synchronous_mode_strict через API воркера (arch/14 §1.1):
+// Мутация synchronous_mode_strict через API воркера (arch/pgworker/07-api.md §1):
 // RMW-txn по mod_revision прочитанного config (образец — KafkaWorker §10.2).
 // Гварды: кластер Active; включение strict требует replicas ≥ 2 на всех шардах.
 // Успех — 204 (без тела); применение к Patroni — конвергенция DCS воркера.

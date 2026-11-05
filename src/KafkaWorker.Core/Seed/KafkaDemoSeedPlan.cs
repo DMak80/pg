@@ -1,7 +1,7 @@
 
 namespace KafkaWorker.Core.Seed;
 
-// Демо-сид kafka-домена (arch/16 §1.1.1, task etcd-via-worker-api): перенос
+// Демо-сид kafka-домена (arch/kafkaworker/07-api.md §1, task etcd-via-worker-api): перенос
 // dev-stand/adminpanel/kafka-seed.sh 1:1. РОВНО 2 кластера: events — Active
 // (3 брокера RUNNING controller + endpoints + app-креды + topics-архетипы +
 // lifecycle-заявки + живые ротация/ребалансировка/reassignment-прогресс);
@@ -17,7 +17,7 @@ public sealed record KafkaDemoSeedPlan(long NowUnix)
     {
         List<PlanPut> puts =
         [
-            // --- events: Active (state снят — семантика arch/15 §2.1) ---
+            // --- events: Active (state снят — семантика arch/kafka-clusters/02-keys.md §2) ---
             new PlanPut("/kafka/clusters/events/config",
                 """{"brokers":3,"replication_factor":3,"min_insync_replicas":2,"default_partitions":12,"default_retention_ms":604800000,"created_unix":1756500000}"""),
             new PlanPut("/kafka/clusters/events/endpoints",
@@ -25,7 +25,7 @@ public sealed record KafkaDemoSeedPlan(long NowUnix)
             new PlanPut("/kafka/clusters/events/app_user", "app"),
             new PlanPut("/kafka/clusters/events/app_password", "SeEdPaSsWoRd0123456789AbCdEf"),
 
-            // topics: факт без заявки / desired / missing (архетипы arch/15 §3).
+            // topics: факт без заявки / desired / missing (архетипы arch/kafka-clusters/03-topics.md §1).
             new PlanPut("/kafka/clusters/events/topics/orders",
                 """{"partitions":12,"replication_factor":3,"configs":{"retention.ms":"604800000","min.insync.replicas":"2"},"synced_unix":1750000100,"missing":false}"""),
             new PlanPut("/kafka/clusters/events/topics/payments",
@@ -33,7 +33,7 @@ public sealed record KafkaDemoSeedPlan(long NowUnix)
             new PlanPut("/kafka/clusters/events/topics/ghost",
                 """{"partitions":3,"replication_factor":1,"configs":{"retention.ms":"604800000"},"desired":{"configs":{"retention.ms":"86400000"}},"desired_unix":1750000200,"desired_by":"admin","synced_unix":1750000300,"missing":true}"""),
 
-            // lifecycle-заявки (arch/15 §3.1): create без факт-ключа +
+            // lifecycle-заявки (arch/kafka-clusters/03-topics.md §2): create без факт-ключа +
             // delete на живой orders.
             new PlanPut("/kafka/clusters/events/topics/audit/desired.create",
                 """{"partitions":12,"replication_factor":3,"configs":{"retention.ms":"86400000"},"requested_unix":1756501200,"requested_by":"seed"}"""),

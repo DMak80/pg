@@ -1,4 +1,4 @@
-// Порт Puzzle-модуля Infrastructure.App.Metrics (arch/18 §1; паттерн
+// Порт Puzzle-модуля Infrastructure.App.Metrics (arch/metrics/01-framework.md §1; паттерн
 // Shared.Core — порт с паттерна Puzzle, бывший AdminPanel.Infrastructure, унифицирован).
 using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.Configuration;
@@ -8,9 +8,9 @@ using System.Diagnostics.Metrics;
 
 namespace Shared.Metrics;
 
-// Модуль метрик (arch/18 §1): DI-регистрация OTel-MeterProvider и scrape-эндпоинт.
+// Модуль метрик (arch/metrics/01-framework.md §1): DI-регистрация OTel-MeterProvider и scrape-эндпоинт.
 // Конвенции: имя Meter = имя системы (dot-нотация инструментов, единицы
-// секунды/штуки; финальные имена после экспорта — словарь arch/18 §2).
+// секунды/штуки; финальные имена после экспорта — словарь arch/metrics/02-dictionary.md).
 public static class MetricsModuleExtensions
 {
     // Регистрация OTel-MeterProvider: сервисный Meter(serviceName) + System.Runtime
@@ -33,8 +33,8 @@ public static class MetricsModuleExtensions
         services.AddOpenTelemetry()
             .WithMetrics(b => b
                 .AddMeter(serviceName)              // сервисные инструменты
-                .AddRuntimeInstrumentation()        // dotnet_* (arch/18 §2.1)
-                .AddAspNetCoreInstrumentation()     // http_server_* (arch/18 §2.1)
+                .AddRuntimeInstrumentation()        // dotnet_* (arch/metrics/02-dictionary.md §1)
+                .AddAspNetCoreInstrumentation()     // http_server_* (arch/metrics/02-dictionary.md §1)
                 .AddPrometheusExporter(o => o.ScrapeEndpointPath = options.Path));
         return services;
     }

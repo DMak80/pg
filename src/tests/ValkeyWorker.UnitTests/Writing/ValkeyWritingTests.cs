@@ -4,14 +4,14 @@ using Xunit;
 
 namespace ValkeyWorker.UnitTests.Writing;
 
-// Каноническая запись домена (arch/20 §2.1; pg §9.3): единое место сборки
+// Каноническая запись домена (arch/valkey-clusters/02-keys.md §2; pg §9.3): единое место сборки
 // значений ключей — тесты фиксируют дословные строки.
 public class ValkeyWritingTests
 {
     [Fact]
     public void ConfigJson_VerbatimCanonicalActiveNoState()
     {
-        // Arrange: канонический Active-вид (arch/20 §2.1).
+        // Arrange: канонический Active-вид (arch/valkey-clusters/02-keys.md §2).
         // Act
         var json = ValkeyWriting.ConfigJson(1, 536870912, "allkeys-lru", 1756500000);
 
@@ -73,7 +73,7 @@ public class ValkeyWritingTests
         // Arrange/Act: набор политик канона.
         var policies = ValkeyWriting.KnownPolicies;
 
-        // Assert: ровно 8 значений arch/20 §2.
+        // Assert: ровно 8 значений arch/valkey-clusters/README.md §2.
         policies.Should().HaveCount(8);
         policies.Should().Contain(["allkeys-lru", "allkeys-lfu", "volatile-lru", "volatile-lfu",
             "allkeys-random", "volatile-random", "volatile-ttl", "noeviction"]);

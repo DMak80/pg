@@ -14,7 +14,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 BASE="${ADMINPANEL_URL:-http://localhost:5050}"
-# /healthz воркера — открытая https-грань без клиентского серта (arch/16 §1.1).
+# /healthz воркера — открытая https-грань без клиентского серта (arch/kafkaworker/07-api.md §1).
 ROOT="$(cd ../.. && pwd)"
 TLS_DIR="$ROOT/deploy/tls"
 WORKER_HEALTHZ="${KAFKAWORKER_HEALTHZ:-https://localhost:8082/healthz}"
@@ -49,7 +49,7 @@ ect() { docker compose exec -T etcd1 etcdctl --endpoints=http://localhost:2379 "
 [ -n "$(ect get /kafkaworker/api/ --prefix --keys-only </dev/null 2>/dev/null)" ] \
   || { echo "❌ no live /kafkaworker/api/ — bring up the stand (00-up.sh, full+kafka)"; exit 1; }
 curl -fsS -o /dev/null --cacert "$TLS_DIR/ca.pem" "$WORKER_HEALTHZ" || { echo "❌ worker /healthz not 200 before the stimulus"; exit 1; }
-# /api без клиентского серта — ровно 401 (mTLS-политика /api, arch/16 §1.1;
+# /api без клиентского серта — ровно 401 (mTLS-политика /api, arch/kafkaworker/07-api.md §1;
 # /healthz выше — открытая грань). Без -f: 401 для curl — не ошибка транспорта.
 api_no_cert_code="$(curl -s -m 3 -o /dev/null -w '%{http_code}' --cacert "$TLS_DIR/ca.pem" "$WORKER_API")"
 [ "$api_no_cert_code" = 401 ] || { echo "❌ worker /api without a client cert = $api_no_cert_code (expected 401)"; exit 1; }

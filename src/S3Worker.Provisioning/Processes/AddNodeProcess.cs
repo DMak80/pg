@@ -7,8 +7,8 @@ using Shared.Etcd.Client;
 namespace S3Worker.Provisioning.Processes;
 
 /// <summary>
-/// AddNode (arch/24 §5 D): заявка nodes/&lt;I&gt;/state=NOT_INITIALIZED у
-/// Active-кластера (имя инстанса &lt;I&gt; — из тела запроса, arch/24 §1.1) →
+/// AddNode (arch/s3worker/03-node-scaling.md §1 D): заявка nodes/&lt;I&gt;/state=NOT_INITIALIZED у
+/// Active-кластера (имя инстанса &lt;I&gt; — из тела запроса, arch/s3worker/07-api.md §1) →
 /// mini-A (placement + portalloc довыделение под locks —
 /// та же механика P1; volume + контейнер + state=PROVISIONING; health →
 /// RUNNING; bucket) + завершающее окно: RMW endpoints + актуализация
@@ -37,7 +37,7 @@ public sealed class AddNodeProcess(
     {
         var cluster = snap.Cluster;
 
-        // Мутации — только держателем живого клэйма (arch/17 S5).
+        // Мутации — только держателем живого клэйма (arch/synchronization/02-predicates-and-mutations.md §S5).
         var claimed = S3ProcessCommon.EnsureClaimed(claims, cluster, Op);
         if (!claimed.IsSuccess)
             return claimed;
@@ -48,7 +48,7 @@ public sealed class AddNodeProcess(
         // ТОЖЕ: надзор (C) идёт в тике раньше D и переводит живой контейнер
         // PROVISIONING → RUNNING — заявка исчезает из вида, а финал D
         // (RMW endpoints + config.nodes) остаётся невыполненным. Resume
-        // идемпотентен по факту (arch/24 §5): PlanNode вернёт закреплённый
+        // идемпотентен по факту (arch/s3worker/README.md): PlanNode вернёт закреплённый
         // portalloc-адрес, EnsureNode/health/bucket — no-op/повтор.
         var pending = snap.Nodes
             .Where(n => n.State is S3NodeStates.NotInitialized or S3NodeStates.Provisioning)
@@ -59,7 +59,7 @@ public sealed class AddNodeProcess(
 
         var node = pending[0];
 
-        // Гварды Active-кластера: предел 1..9 (arch/23 §2) по фактическому составу.
+        // Гварды Active-кластера: предел 1..9 (arch/s3-clusters/02-keys.md §1) по фактическому составу.
         if (snap.Nodes.Count >= 9)
             return Fail(cluster, node.Node, new ApplicationException(
                 $"add-node {cluster}/{node.Node}: actual nodes {snap.Nodes.Count} — limit 9"), "guard-limit");
@@ -74,7 +74,7 @@ public sealed class AddNodeProcess(
                 return Fail(cluster, node.Node, before.Error!, "snapshot-before");
         }
 
-        // Креды — per-cluster secrets из etcd (arch/23 §6): без них нода не
+        // Креды — per-cluster secrets из etcd (arch/s3-clusters/06-secrets.md): без них нода не
         // создаётся; отсутствие/битость — диагностический отказ (ретраи
         // тиком; значения секретов в диагностики не попадают).
         var secretsRead = await secrets.TryReadAsync(cluster, ct);
@@ -95,7 +95,7 @@ public sealed class AddNodeProcess(
         }
         var address = planned.Value!;
 
-        // Mini-A фаза 2: volume + контейнер + state=PROVISIONING (arch/23 §6 env).
+        // Mini-A фаза 2: volume + контейнер + state=PROVISIONING (arch/s3-clusters/06-secrets.md env).
         var marked = await S3ProcessCommon.WriteNodeStateAsync(
             gateway, endpoints, cluster, node.Node, S3NodeStates.Provisioning, ct);
         if (!marked.IsSuccess)
@@ -104,7 +104,7 @@ public sealed class AddNodeProcess(
         if (!placedOn.IsSuccess)
             return Fail(cluster, node.Node, placedOn.Error!, "placed-on");
 
-        // PKI (arch/23 §6): CA кластера уже есть у живого кластера —
+        // PKI (arch/s3-clusters/06-secrets.md): CA кластера уже есть у живого кластера —
         // EnsureClusterPkiAsync идемпотентен; материал инстанса — put-if-absent
         // (повторное создание с тем же именем — новый выпуск, §3.2).
         var clusterPki = await pki.EnsureClusterPkiAsync(cluster, ct);
@@ -115,7 +115,7 @@ public sealed class AddNodeProcess(
             return Fail(cluster, node.Node, nodePki.Error!, "pki");
 
         // env инстанса — единая точка сборки (§3.6); включение в mesh — G по
-        // links (вызова в D нет — Active-G подхватит, arch/24 §5 D).
+        // links (вызова в D нет — Active-G подхватит, arch/s3worker/03-node-scaling.md §1 D).
         var env = envComposer.Compose(
             nodeSecrets!, nodePki.Value, clusterPki.Value.Ca.Ca,
             $"http://{options.AdvertisedHost ?? address.Host}:{address.S3Port}",
@@ -130,7 +130,7 @@ public sealed class AddNodeProcess(
 
         // Mini-A фаза 3: health → RUNNING (не ожила — InProgress, тик повторит);
         // bucket per-install (P3). Пробы — по advertised-хосту (канон P,
-        // arch/23 §2.1 advertised-правило; размещение — portalloc-хост).
+        // arch/s3-clusters/02-keys.md §2 advertised-правило; размещение — portalloc-хост).
         var probeHost = options.AdvertisedHost ?? address.Host;
         var health = await nodeClient.HealthAsync(probeHost, address.S3Port, ct);
         if (!health.IsSuccess || !health.Value)
@@ -139,7 +139,7 @@ public sealed class AddNodeProcess(
             gateway, endpoints, cluster, node.Node, S3NodeStates.Running, ct);
         if (!running.IsSuccess)
             return Fail(cluster, node.Node, running.Error!, "running");
-        // arch/23 §5: per-install + (etcd_backup кластер) фиксированный
+        // arch/s3-clusters/05-platform.md: per-install + (etcd_backup кластер) фиксированный
         // etcd-слепковый bucket — новый инстанс получает оба (идемпотентно).
         var bucketNames = S3ProcessCommon.BucketsForInstance(
             options.Bucket, snap.Config?.EtcdBackup ?? false);

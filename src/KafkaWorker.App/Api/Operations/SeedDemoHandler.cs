@@ -4,7 +4,7 @@ using Shared.Etcd.Client;
 
 namespace KafkaWorker.App.Api.Operations;
 
-// Ответ 200 POST /api/seed/demo (arch/16 §1.1.1; дубль PgWorker-зеркала осознан).
+// Ответ 200 POST /api/seed/demo (arch/kafkaworker/07-api.md §1; дубль PgWorker-зеркала осознан).
 public sealed record SeedDemoDto(bool Seeded);
 
 // Демо-сид kafka-домена через API воркера (task etcd-via-worker-api): перенос

@@ -3,10 +3,10 @@ using System.Text.Json.Serialization;
 
 namespace PgWorker.PgNode;
 
-/// <summary>Роль источника приёмника (REST-проба своей ноды, arch/19 §3).</summary>
+/// <summary>Роль источника приёмника (REST-проба своей ноды, arch/backups/02-wal-archive.md §1).</summary>
 public enum WalReceiverRole { Master, Sync, None }
 
-/// <summary>Состояние приёмника (arch/19 §4): waiting_* — ожидание условий,
+/// <summary>Состояние приёмника (arch/backups/05-etcd-contract.md): waiting_* — ожидание условий,
 /// paused — стоп-семантика, failed_permanent — несъёмное условие (причина в Error).</summary>
 public enum WalReceiverState
 {
@@ -36,7 +36,7 @@ public static class PgNodeAgentStatusJson
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
     };
 
-    /// <summary>Значение статус-ключа: {"node","role","state",...} — arch/19 §4.</summary>
+    /// <summary>Значение статус-ключа: {"node","role","state",...} — arch/backups/README.md §4.</summary>
     public static string ToJson(string node, PgNodeAgentStatus status) => JsonSerializer.Serialize(new
     {
         node,

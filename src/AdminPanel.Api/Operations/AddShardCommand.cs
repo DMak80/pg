@@ -16,7 +16,7 @@ public sealed record ShardAddedDto(
     string Cluster, string Name, int Replicas,
     string RequestCpu, string RequestMem, string RequestDisk, string State);
 
-// Прокси: панель не пишет в etcd — команда уходит в API PgWorker (arch/14 §1.1);
+// Прокси: панель не пишет в etcd — команда уходит в API PgWorker (arch/pgworker/07-api.md §1);
 // у add-shard нет оператора — requestedBy: null.
 [InjectAsScoped]
 public sealed class AddShardCommandHandler(IWorkerApiGateway api)

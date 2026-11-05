@@ -33,7 +33,7 @@ public sealed class UpdateTopicDesiredHandler(IEtcdGateway gateway, string[] end
     public async Task<Result<KafkaTopicDesiredDto>> HandleAsync(
         string cluster, string topic, TopicDesiredRequest request, string requestedBy, CancellationToken ct)
     {
-        // Имя топика каноническое и не internal (arch/15 §3) — иначе 404.
+        // Имя топика каноническое и не internal (arch/kafka-clusters/03-topics.md §1) — иначе 404.
         if (!KafkaLimits.TopicPattern().IsMatch(topic) || KafkaLimits.IsInternalTopic(topic))
             return Result<KafkaTopicDesiredDto>.Failed(new KafkaTopicNotFoundException(cluster, topic));
 

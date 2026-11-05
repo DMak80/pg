@@ -5,7 +5,7 @@ using System.Text.Json.Serialization;
 namespace PgWorker.PgNode;
 
 /// <summary>Значение bootstrap-ключа etcd /clusters/&lt;C&gt;/shards/&lt;X&gt;/nodes/&lt;n&gt;/bootstrap
-/// (arch/14 §3.2/§4): полный SPILO_CONFIGURATION (rest_password внутри) и
+/// (arch/pgworker/00-etcd-contract.md §3/§4): полный SPILO_CONFIGURATION (rest_password внутри) и
 /// серверный серт ноды. Контракт — дубль PgWorker.Core NodeBootstrapBuilder
 /// (запрет цикла ссылок, прецедент ApiContracts).</summary>
 public sealed record NodeBootstrapData(

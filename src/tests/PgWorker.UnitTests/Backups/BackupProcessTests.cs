@@ -18,7 +18,7 @@ using Xunit;
 
 namespace PgWorker.UnitTests.Backups;
 
-// Планировщик полных бэкапов (/, arch/19 §2): G0 выключен → no-op; G1
+// Планировщик полных бэкапов (/, arch/backups/01-full-backup.md): G0 выключен → no-op; G1
 // ensure backup_password; G2 гвард роли backup_exec — КАЖДЫЙ тик (до
 // due-гвардов); G3 при due+бэкоффе: PLANNED → StartFullAsync приёмнику ноды
 // (alias:8080) → RUNNING (journal-before-manipulations). Супервизия —
@@ -264,7 +264,7 @@ public class BackupProcessTests
         public Task<ReceiverReply> CancelOpsAsync(string baseUrl, CancellationToken ct)
             => throw new NotSupportedException();
 
-        // hba-гвард (arch/19 §7): ответ программируется, вызовы — в журнал URL.
+        // hba-гвард (arch/backups/08-secrets.md): ответ программируется, вызовы — в журнал URL.
         public NodeReply<HbaEnsureResponse> HbaReply { get; set; }
             = new(200, new HbaEnsureResponse(true, false), null);
         public readonly List<string> HbaUrls = [];
@@ -401,7 +401,7 @@ public class BackupProcessTests
         rig.Receiver.StartFullIds.Should().ContainSingle().Which.Should().Be(id);
 
         // pg_hba-гвард прошёл по обеим нодам шарда (G2 каждый тик) — команды
-        // приёмникам нод по alias:8080 (канал arch/25 №22)
+        // приёмникам нод по alias:8080 (канал arch/communications/02-channel-registry.md №22)
         rig.Receiver.HbaUrls.Select(u => u.Split("//")[^1].TrimEnd('/')).Should().BeEquivalentTo(
             ["pgw-shop-shard1-shard1a:8080", "pgw-shop-shard1-shard1b:8080"]);
 
@@ -889,7 +889,7 @@ public class BackupProcessTests
         ];
     }
 
-    // AAA (arch/19 §2): самый свежий COMPLETED с ролью master при избранной
+    // AAA (arch/backups/01-full-backup.md): самый свежий COMPLETED с ролью master при избранной
     // sync-standby — due для пересъёма с реплики (канон «источник полного —
     // синхрон-реплика»; дельта-гейт тика сдвинул первый полный в окно до
     // избрания sync — правило делает канон исполнимым).
@@ -920,7 +920,7 @@ public class BackupProcessTests
         rig.Receiver.StartFullUrls.Should().ContainSingle();
     }
 
-    // AAA (arch/19 §2): sync не избран → force-пересъёма НЕТ (иначе вечный
+    // AAA (arch/backups/01-full-backup.md): sync не избран → force-пересъёма НЕТ (иначе вечный
     // цикл master-полных); действует обычный due.
     [Fact]
     public async Task FreshMasterSourcedFull_NoSync_NoRetake()
@@ -1072,7 +1072,7 @@ public class BackupProcessTests
     [Fact]
     public async Task AdoptedNodes_HbaGuard_AddressesObjectContainer()
     {
-        // Arrange — portalloc с object-именами (усвоенные ноды, arch/14 §5 J);
+        // Arrange — portalloc с object-именами (усвоенные ноды, arch/pgworker/processes/j-adoption.md J);
         // сид поверх NewRig (иначе SeedCluster перезапишет portalloc/master)
         var etcd = new Fakes.FakeEtcd();
         var rig = await NewRig(etcdOverride: etcd);
@@ -1083,7 +1083,7 @@ public class BackupProcessTests
         };
         etcd.Seed("/pgworker/portalloc/shop", Portalloc.Serialize(alloc));
         // master-ключ усвоенного стенда: <имя ноды>:<порт> (doorman=0 — ключ
-        // резолвится byName; E2eScenarios, arch/14 §2.4 п.5)
+        // резолвится byName; E2eScenarios, arch/pgworker/01-placement.md §5 п.5)
         etcd.Seed("/clusters/shop/shards/shard1/master", "shard1a:0");
 
         // Act

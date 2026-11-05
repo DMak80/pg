@@ -4,7 +4,7 @@ using Shared.Etcd.Client;
 namespace PgWorker.PgNode;
 
 /// <summary>Lease-сессия статус-ключа приёмника /pgworker/backups/&lt;C&gt;/&lt;X&gt;/agent/&lt;N&gt;
-/// (arch/19 §4): lease TTL 15 c → первичный put → фоновый цикл каждые 5 c —
+/// (arch/backups/05-etcd-contract.md): lease TTL 15 c → первичный put → фоновый цикл каждые 5 c —
 /// LeaseKeepalive + put актуального значения (свежесть статуса «не реже раза
 /// в 5 c» — spec §3.1 п.7; ключ жив = приёмник жив, значение не застаивается).
 /// Все переходы lease (перевыпуск при потере) и put'ы значения — под ОДНИМ
@@ -18,10 +18,10 @@ namespace PgWorker.PgNode;
 /// EtcdEndpointFailover (ротация старта + лог переключений).</summary>
 public sealed class WalReceiverStatusSession : IAsyncDisposable
 {
-    /// <summary>TTL lease статус-ключа (arch/19 §4): 15 c.</summary>
+    /// <summary>TTL lease статус-ключа (arch/backups/05-etcd-contract.md): 15 c.</summary>
     public const int LeaseTtlSec = 15;
 
-    /// <summary>Период keepalive + put статуса по умолчанию (arch/19 §4): 5 c.</summary>
+    /// <summary>Период keepalive + put статуса по умолчанию (arch/backups/05-etcd-contract.md): 5 c.</summary>
     public static readonly TimeSpan DefaultKeepalivePeriod = TimeSpan.FromSeconds(5);
 
     private readonly string _key;
@@ -113,7 +113,7 @@ public sealed class WalReceiverStatusSession : IAsyncDisposable
     }
 
     /// <summary>Немедленный put выставленного статуса (смена состояния/фактов,
-    /// arch/19 §4); отказ — false (keepalive продолжается). Сериализовано с
+    /// arch/backups/05-etcd-contract.md); отказ — false (keepalive продолжается). Сериализовано с
     /// keepalive-циклом (общий _ops — гонки put↔re-grant исключены). Сессия ещё
     /// не запущена (StartAsync не удался) — no-op true.</summary>
     public async Task<bool> FlushAsync(CancellationToken ct)

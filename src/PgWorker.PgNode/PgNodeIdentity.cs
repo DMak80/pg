@@ -1,6 +1,6 @@
 namespace PgWorker.PgNode;
 
-/// <summary>Идентичность приёмника WAL (env контейнера ноды, arch/19 §3):
+/// <summary>Идентичность приёмника WAL (env контейнера ноды, arch/backups/02-wal-archive.md §1):
 /// env ставит EnsureNode воркера; невалидный набор — старт-отказ процесса
 /// (выход с ненулевым кодом, supervisord с exitcodes=0 его не перезапускает).</summary>
 public sealed record PgNodeIdentity(
@@ -31,7 +31,7 @@ public sealed record PgNodeIdentity(
         var shard = Require("PGW_BACKUP_SHARD");
         var node = Require("PGW_BACKUP_NODE");
         var etcd = Require("PGW_ETCD");
-        // bucket/CA per-install (arch/19 §7): необязательны — приёмник гейтится
+        // bucket/CA per-install (arch/backups/08-secrets.md): необязательны — приёмник гейтится
         // etcd-ключами, их отсутствие не старт-отказ.
         var bucket = env("PGW_BACKUP_S3_BUCKET");
         var caPem = env("PGW_BACKUP_S3_CA_PEM");

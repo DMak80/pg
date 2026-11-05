@@ -14,7 +14,7 @@ namespace PgWorker.IntegrationTests.Backups;
 
 // Интеграции BackupVerifyProcess (spec Ф3): у КАЖДОГО Fact своё etcd-
 // окружение OwnEtcd (guid-имя pgw-ee-*, динамический порт, own-only teardown
-// с ассертом чистоты — docs/e2e-isolation.md §1/§3; ключи умирают с контейнером)
+// с ассертом чистоты — arch/testing/02-e2e-isolation.md §1/§3; ключи умирают с контейнером)
 // + фейки S3 и API приёмника нод (verify-операции исполняет WalReceiver ноды-
 // источника полного — docker-движка в verify-процессе больше нет).
 [Collection(NonE2eCollection.Name)]
@@ -29,7 +29,7 @@ public class BackupVerifyProcessTests
 
     private ClaimStore Claims => _claimsStore ??= new("/pgworker", [Fx.Endpoint], Fx.Gateway, TimeProvider.System);
 
-    // ── (arch/19 §2 «Наблюдаемость итога verify»): spy-логгер — снимает
+    // ── (arch/backups/01-full-backup.md «Наблюдаемость итога verify»): spy-логгер — снимает
     //    форматированные строки (итог verify наблюдаем из host-лога воркера) ──
     internal sealed class SpyLogger : Microsoft.Extensions.Logging.ILogger<BackupVerifyProcess>
     {
@@ -548,7 +548,7 @@ public class BackupVerifyProcessTests
             .Should().Be(before, "the vanish is a transient — PENDING is not failed");
     }
 
-    // AAA (arch/19 §5): GET транспортно-отказал (приёмник ноды недостижим) —
+    // AAA (arch/backups/06-s3-layout.md): GET транспортно-отказал (приёмник ноды недостижим) —
     // transient: статус PENDING не тронут, повторного POST нет (тик повторит GET)
     [Fact]
     public async Task SupervisorTransportRefusedTransientWaits()
@@ -670,7 +670,7 @@ public class BackupVerifyProcessTests
             "cancelled is not vanished — no immediate restart, the policy schedule rules");
     }
 
-    // AAA (arch/19 §6): running-снимок с started_unix старше бюджета
+    // AAA (arch/backups/09-operability.md): running-снимок с started_unix старше бюджета
     // JobVerifyTimeoutSec → cancel best-effort + кандидат PENDING с
     // checked_unix=now (квота попытки); лив-лок исключён — следующий due только
     // через interval
@@ -863,7 +863,7 @@ public class BackupVerifyProcessTests
         afterB.Should().Be(beforeB, "the due-candidate status is untouched while the operation of A is running");
     }
 
-    // AAA (arch/19 §5): нода-источник исчезла из portalloc (шард менялся) —
+    // AAA (arch/backups/06-s3-layout.md): нода-источник исчезла из portalloc (шард менялся) —
     // приёмника нет: journal-факт node-missing + observe transient, статус
     // кандидата не тронут (кандидат останется PENDING до переснятия полного)
     [Fact]
@@ -958,7 +958,7 @@ public class BackupVerifyProcessTests
         outcomes3.Should().ContainSingle().Which.Should().Be((cluster3, "shard1", "ok"));
     }
 
-    // --- (arch/19 §2 «Наблюдаемость итога verify»): итог — строка host-лога ----
+    // --- (arch/backups/01-full-backup.md «Наблюдаемость итога verify»): итог — строка host-лога ----
 
     // AAA: итог OK от приёмника (GET succeeded) — строка host-лога воркера с
     // кластером/шардом и id полного (журнал остаётся летописью после

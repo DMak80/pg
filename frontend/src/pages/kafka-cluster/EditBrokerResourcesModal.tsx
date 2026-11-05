@@ -1,7 +1,7 @@
 // Модалка «Изменить ресурсы брокера» (t06, arch/02 §10.2-15) — обёртка над
 // общим ResourcesForm (u02): валидация границ — validation.ts (единый модуль);
 // мутация/нотификация — здесь. Предупреждение при уменьшении CPU/памяти —
-// риск OOM на операторе (arch/16 R7); применяется NodeRegenerator rolling-ит.
+// риск OOM на операторе (arch/kafkaworker/README.md R7); применяется NodeRegenerator rolling-ит.
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { notifications } from '@mantine/notifications';
 import { kafkaQueryKeys, updateKafkaBrokerResources } from '../../api/queries';
@@ -38,7 +38,7 @@ export function EditBrokerResourcesModal({
     },
   });
 
-  // Предупреждение об уменьшении CPU/памяти (arch/16 R7) — в подписи формы.
+  // Предупреждение об уменьшении CPU/памяти (arch/kafkaworker/README.md R7) — в подписи формы.
   const applyNote = 'Применяется автоматически: rolling-пересоздание брокера, по одному за тик; '
     + 'данные сохраняются. Disk — информационное поле (без квот).'
     + (initial.cpu !== undefined && initial.memGi !== undefined

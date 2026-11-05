@@ -9,7 +9,7 @@ using KafkaWorker.Provisioning.Kafka;
 namespace KafkaWorker.Provisioning.Processes;
 
 /// <summary>
-/// TopicSyncProcess (arch/16 §5 D, протокол arch/15 §3): автосинк реестра
+/// TopicSyncProcess (arch/kafkaworker/05-topics.md D, протокол arch/kafka-clusters/03-topics.md §1): автосинк реестра
 /// topics/&lt;T&gt; с фактом Kafka + исполнение desired-заявок. Тик — только под
 /// клэймом &lt;C&gt; и не чаще TopicSyncIntervalSec; describe→decide→act (decide —
 /// чистые функции <see cref="TopicSyncDecision"/>). Запись — RMW txn по
@@ -47,7 +47,7 @@ public sealed class TopicSyncProcess(
     {
         var cluster = snap.Cluster;
 
-        // Мутации — только держателем живого клэйма (arch/16 §5).
+        // Мутации — только держателем живого клэйма (arch/kafkaworker/README.md).
         if (!claims.IsMine(cluster))
             return Result.Failed(new ApplicationException(
                 $"topicsync {cluster}: claim is not ours (or lost) — mutations are forbidden"));
@@ -122,7 +122,7 @@ public sealed class TopicSyncProcess(
         return Result<IReadOnlyList<TopicFact>>.Success(facts);
     }
 
-    // Исполнение lifecycle-действий (arch/15 §3.1): journal → Kafka-мутация →
+    // Исполнение lifecycle-действий (arch/kafka-clusters/03-topics.md §2): journal → Kafka-мутация →
     // txn-чистка (del заявки по mod_revision; при delete — вместе с факт-ключом).
     private async Task<Result> ActLifecycleAsync(KafkaClusterSnapshot snap, TopicSyncAction action, CancellationToken ct)
     {
@@ -289,7 +289,7 @@ public sealed class TopicSyncProcess(
             {
                 var key = TopicKey(cluster, reject.Topic);
 
-                // Перманентный отказ — журнал оператору (arch/16 §5 D), затем
+                // Перманентный отказ — журнал оператору (arch/kafkaworker/05-topics.md D), затем
                 // факт без заявки (converge не буксует, заявка не висит вечно).
                 var logged = await journal.WritePhaseAsync(
                     cluster, Op, "rejected", claims.InstanceId, reject.Reason, ct);
@@ -326,7 +326,7 @@ public sealed class TopicSyncProcess(
     }
 
     // missing=true: топик исчез при живой заявке (заявка не исполнима,
-    // arch/15 §3); отмена заявки на месте превращается в удаление ключа.
+    // arch/kafka-clusters/03-topics.md §1); отмена заявки на месте превращается в удаление ключа.
     private async Task<Result> MarkMissingAsync(string cluster, string topic, CancellationToken ct)
     {
         var key = TopicKey(cluster, topic);
@@ -444,7 +444,7 @@ public sealed class TopicSyncProcess(
         return Result.Success();
     }
 
-    // Свежее состояние ключа topics/<T> (толерантный разбор, arch/15 §3).
+    // Свежее состояние ключа topics/<T> (толерантный разбор, arch/kafka-clusters/03-topics.md §1).
     private sealed record TopicKeyState(
         int Partitions,
         short? ReplicationFactor,
@@ -497,7 +497,7 @@ public sealed class TopicSyncProcess(
         return lc.Count == rc.Count && lc.All(p => rc.TryGetValue(p.Key, out var v) && v == p.Value);
     }
 
-    // Только управляемые конфиги попадают в факт реестра (arch/15 §3).
+    // Только управляемые конфиги попадают в факт реестра (arch/kafka-clusters/03-topics.md §1).
     private static IReadOnlyDictionary<string, string>? ManagedOnly(IReadOnlyDictionary<string, string> configs)
     {
         var managed = configs
@@ -608,7 +608,7 @@ public sealed class TopicSyncProcess(
         return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 
-    // Канонический JSON значения ключа topics/<T> (arch/15 §3): факт +
+    // Канонический JSON значения ключа topics/<T> (arch/kafka-clusters/03-topics.md §1): факт +
     // опциональная заявка desired + synced_unix/missing.
     private sealed record CanonicalTopic(
         [property: JsonPropertyName("partitions")] int Partitions,

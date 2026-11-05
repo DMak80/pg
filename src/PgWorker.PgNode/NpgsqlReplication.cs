@@ -101,7 +101,7 @@ internal sealed class NpgsqlPhysicalReplicationConnection(string connectionStrin
     public ValueTask DisposeAsync() => _inner.DisposeAsync();
 }
 
-/// <summary>Транспорт физической репликации Npgsql 10 (arch/19 §3.1):
+/// <summary>Транспорт физической репликации Npgsql 10 (arch/pgnode/03-wal-receiver.md):
 /// SQL-коннект — сверка wal_segment_size (permanent при расхождении с
 /// WalFileName.SegmentBytes — математика имён не должна молча врать);
 /// PhysicalReplicationConnection — START_REPLICATION SLOT ... PHYSICAL <lsn>
@@ -327,7 +327,7 @@ public sealed class NpgsqlXLogSource : IXLogReplicationSource
         catch (Exception e)
         {
             // Рантайм не смог отдать историю (нет файла/ошибка протокола) — валидное
-            // «нет»: fallback-контроль воркера (arch/19 §3). Причина — в stderr
+            // «нет»: fallback-контроль воркера (arch/backups/02-wal-archive.md §1). Причина — в stderr
             // контейнера (диагностика без перезапуска).
             Console.Error.WriteLine($"history_error tli={tli}: {e.GetType().Name}: {e.Message}");
             return Result<byte[]?>.Success(null);

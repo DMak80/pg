@@ -6,7 +6,7 @@ using Xunit;
 
 namespace Shared.Docker.UnitTests.Engine;
 
-// StopContainerAsync — поллинг до exited-факта (arch/14 §6): блокирующий
+// StopContainerAsync — поллинг до exited-факта (arch/pgworker/08-operability.md §3): блокирующий
 // POST /stop?t=N живого контейнера (graceful-shutdown) длится дольше
 // пер-попыточного клиентского таймаута — клиентский обрыв НЕ неудача;
 // итерации (GET-статус / повтор идемпотентного POST) в бюджете

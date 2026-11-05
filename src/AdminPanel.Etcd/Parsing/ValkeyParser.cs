@@ -12,7 +12,7 @@ public sealed record ValkeyClustersParseResult(
     IReadOnlyList<KeyParseError> Errors,
     int UnknownKeyCount);
 
-// Результат разбора очереди ротаций /valkeyworker/rotations/ (arch/20 §3).
+// Результат разбора очереди ротаций /valkeyworker/rotations/ (arch/valkey-clusters/03-coordination.md §1).
 public sealed record ValkeyRotationsParseResult(
     IReadOnlyList<ValkeyRotationTicket> Tickets,
     IReadOnlyList<KeyParseError> Errors);
@@ -28,7 +28,7 @@ public sealed record ValkeyTicketOutcomesParseResult(
     IReadOnlyList<KeyParseError> Errors);
 
 // Парсер valkey-домена: чистые функции Kv[] → модель, битые значения не бросают
-// исключений — порождают KeyParseError (порт KafkaParser; arch/20 §5).
+// исключений — порождают KeyParseError (порт KafkaParser; arch/valkey-clusters/05-fault-tolerance.md).
 public static class ValkeyParser
 {
     private sealed class NodeAcc(string name)
@@ -72,7 +72,7 @@ public static class ValkeyParser
                     break;
 
                 case "endpoints" when segments.Length == 5:
-                    // Пустой/пробельный → отсутствует (arch/20 §5).
+                    // Пустой/пробельный → отсутствует (arch/valkey-clusters/05-fault-tolerance.md).
                     acc.Endpoints = string.IsNullOrWhiteSpace(kv.Value) ? null : kv.Value.Trim();
                     break;
 
@@ -100,7 +100,7 @@ public static class ValkeyParser
                 }
 
                 default:
-                    // система развивается — неизвестный ключ не ошибка, только счётчик (arch/20 §5)
+                    // система развивается — неизвестный ключ не ошибка, только счётчик (arch/valkey-clusters/05-fault-tolerance.md)
                     unknown++;
                     break;
             }
@@ -198,7 +198,7 @@ public static class ValkeyParser
         return new(tickets, errors);
     }
 
-    // Исходы заявок /valkeyworker/ticket_outcomes/<C> (arch/20 §3):
+    // Исходы заявок /valkeyworker/ticket_outcomes/<C> (arch/valkey-clusters/03-coordination.md §1):
     // обязательны kind/outcome/requested_unix/finished_unix (outcome —
     // толерантно-строковый); reason/requested_by опциональны; битый JSON /
     // нет поля → parseError-запись (порт kafka-парсера исходов).

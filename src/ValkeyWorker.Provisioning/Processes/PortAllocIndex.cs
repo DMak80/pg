@@ -6,7 +6,7 @@ using Shared.Etcd.Client;
 namespace ValkeyWorker.Provisioning.Processes;
 
 /// <summary>
-/// Индекс занятости портов из etcd (arch/21 §2): busy = docker-публикации
+/// Индекс занятости портов из etcd (arch/valkeyworker/01-placement.md): busy = docker-публикации
 /// (добавляет вызывающий) ∪ записи portalloc ВСЕХ чужих кластеров. Свои записи
 /// исключает вызывающий (exceptCluster). Чужой мусор любой формы — битый JSON
 /// ИЛИ валидный JSON без обязательных полей host/client — Warning-лог + skip
@@ -32,7 +32,7 @@ public sealed class PortAllocIndex(
             if (cluster == exceptCluster)
                 continue;
 
-            // Формат arch/20 §3: {"node<k>":{"host":"h","client":17001}}.
+            // Формат arch/valkey-clusters/03-coordination.md §1: {"node<k>":{"host":"h","client":17001}}.
             // Фильтр catch — все формы чужого мусора: JsonException (битый JSON),
             // KeyNotFoundException (нет обязательного поля), InvalidOperationException
             // (поле не того типа).

@@ -14,7 +14,7 @@ using Xunit;
 
 namespace ValkeyWorker.IntegrationTests.Api;
 
-// Live-фикстура фактических имён словаря arch/18 §2.6 (риск M3, spec §9): WAF-хост
+// Live-фикстура фактических имён словаря arch/metrics/02-dictionary.md §6 (риск M3, spec §9): WAF-хост
 // ValkeyWorker с ЖИВЫМИ hosted-циклами, реальным docker-сокетом и собственным etcd.
 // Сид заявки → ReconcileLoop поднимает ноду → коллектор собирает INFO → /metrics
 // содержит все 15 канонических имён. Полный teardown при любом исходе + ассерт

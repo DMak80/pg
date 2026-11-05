@@ -13,13 +13,13 @@ namespace PgWorker.IntegrationTests.E2e;
 // доставка, санитарный снос legacy-контейнера, двойное архивирование.
 // E2E полных бэкапов (t02, spec §7.1–7.4): изолированное окружение E2eEnvironment
 // (своя docker-сеть, свой etcd, СВОЯ ownS3-нода — withS3Node:true; порт динамический)
-// + операции бэкапов в приёмниках WalReceiver нод (arch/19 §5) + живой кластер воркером с Backups:Enabled=true.
+// + операции бэкапов в приёмниках WalReceiver нод (arch/backups/06-s3-layout.md) + живой кластер воркером с Backups:Enabled=true.
 // COMPLETED с полными полями и объектами в S3; FAILED по недоступному S3 с
 // переснятием новым id; deprovisioning чистит джобы и префикс; ротация
 // backup_password включает backup_exec. Каждый Fact — своё окружение: методы
 // оставляют после себя Active-кластеры, и без per-method изоляции воркер
 // следующего Fact'а подхватывал бы чужие джобы (инцидент Release). Имя кластера сценария —
-// {slug}{Fx.ClusterTag} (уникально на прогон, docs/e2e-isolation.md §1):
+// {slug}{Fx.ClusterTag} (уникально на прогон, arch/testing/02-e2e-isolation.md §1):
 // движковые контейнеры/тома pgw-*-<C>-* опознаются teardown'ом окружения.
 public sealed class E2eWalStreamScenarios(E2eWalStreamScenariosFx Ctx) : IClassFixture<E2eWalStreamScenariosFx>
 {
@@ -102,7 +102,7 @@ public sealed class E2eWalStreamScenarios(E2eWalStreamScenariosFx Ctx) : IClassF
                 $"receivers=[{factsDump}]");
         }
         uploaded.Should().BeTrue("segments must appear on the ownS3 node within the budget (AC1)");
-        // t14 (arch/19 §3): `.partial`-версии незакрытого сегмента — штатные
+        // t14 (arch/backups/02-wal-archive.md §1): `.partial`-версии незакрытого сегмента — штатные
         // объекты wal/ (поглощаются финалом/чистятся sweeper'ом); AC1 — не менее
         // двух ФИНАЛЬНЫХ сегментов доставлено.
         listed.Where(n => !n.Name.EndsWith(".partial", StringComparison.Ordinal)
@@ -126,7 +126,7 @@ public sealed class E2eWalStreamScenarios(E2eWalStreamScenariosFx Ctx) : IClassF
             if (!list.IsSuccess)
                 return false;
             listed = [.. list.Value];
-            // last_uploaded_segment — имя СЕГМЕНТА без суффикса (arch/19 §3):
+            // last_uploaded_segment — имя СЕГМЕНТА без суффикса (arch/backups/02-wal-archive.md §1):
             // в листинге ему соответствует финал или лучшая `.partial`-версия.
             return listed.Any(o => (PgWorker.Backups.WalPartialName.TryParse(o.Name) is { } p
                     ? p.Segment.Name : o.Name) == wal.LastUploadedSegment);
@@ -509,7 +509,7 @@ public sealed class E2eWalStreamScenarios(E2eWalStreamScenariosFx Ctx) : IClassF
         }
     }
 
-    // AAA (t25-ревью 9.3, arch/19 §3): 3-репликовый шард — двойная архивация
+    // AAA (t25-ревью 9.3, arch/backups/02-wal-archive.md §1): 3-репликовый шард — двойная архивация
     // стримит ТОЛЬКО ноды-источники (мастер + sync-standby); async-реплика с
     // живым приёмником стоит в waiting_role (REST-проба роли — none, доставки
     // с неё нет); agents wal-ключа наблюдают ВСЕ три ноды (широкий состав, §4).
@@ -600,7 +600,7 @@ public sealed class E2eWalStreamScenarios(E2eWalStreamScenariosFx Ctx) : IClassF
             $"{{\"full_max_age_sec\":3600,{E2eEnvironment.PoolS3(Pool)}}}", null, ct);
     }
 
-    // AAA (t25, spec §6 п.3/arch/19 §4): стоп-семантика Enabled=false — глобальный
+    // AAA (t25, spec §6 п.3/arch/backups/05-etcd-contract.md): стоп-семантика Enabled=false — глобальный
     // ключ /pgworker/backups-disabled жив (put ЛИДЕРА BackupOrphanSweeperLoop на
     // каждом тике), приёмники замирают в waiting_disabled БЕЗ docker-операций;
     // enable — ключ снят (del при старте инстанса с Enabled=true), стрим
@@ -1044,7 +1044,7 @@ public sealed class E2eWalStreamScenarios(E2eWalStreamScenariosFx Ctx) : IClassF
         return (Fx, app, cluster, adminDsn, masterNode);
     }
 
-    // Гигиена между фактами класса (один контур на класс — docs/e2e-isolation.md):
+    // Гигиена между фактами класса (один контур на класс — arch/testing/02-e2e-isolation.md):
     // кластеры прежних фактов снимаются ДО старта нового. Иначе 6 Active-кластеров
     // × 4 PG-ноды живут одновременно, и provisioning следующего факта выходит за
     // бюджет 90 с (факт полной серии: bootstrap 90,3 с = FAIL).
@@ -1106,7 +1106,7 @@ public sealed class E2eWalStreamScenarios(E2eWalStreamScenariosFx Ctx) : IClassF
         {
             ["PgWorker__Backups__Enabled"] = "true",
             ["PgWorker__Backups__S3__Bucket"] = Bucket,
-            // t36: креды пула — env-профиль (arch/19 §7); пул — policy.s3, адреса
+            // t36: креды пула — env-профиль (arch/backups/08-secrets.md); пул — policy.s3, адреса
             // резолвит воркер из /s3/ (advertised host.docker.internal, extra_hosts).
             ["PgWorker__Backups__Retry__BaseSec"] = "2",
             ["PgWorker__Backups__Retry__MaxSec"] = "4",
@@ -1278,7 +1278,7 @@ public sealed class E2eWalStreamScenarios(E2eWalStreamScenariosFx Ctx) : IClassF
 }
 
 /// <summary>Компаньон-фикстура окружения класса (полный контур на класс:
-/// сеть/etcd/CA/окно портов; docs/e2e-isolation.md §1).</summary>
+/// сеть/etcd/CA/окно портов; arch/testing/02-e2e-isolation.md §1).</summary>
 public sealed class E2eWalStreamScenariosFx : E2eContourFixture
 {
     protected override string Slug => "wal-stream";

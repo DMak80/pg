@@ -7,7 +7,7 @@ using ValkeyWorker.App;
 namespace ValkeyWorker.App.Loops;
 
 /// <summary>
-/// Цикл продления координации (arch/21 §6): запускает фоновый keepalive-контур
+/// Цикл продления координации (arch/valkeyworker/06-operability.md §3): запускает фоновый keepalive-контур
 /// ClaimStore (все удерживаемые lease + instance-ключ /valkeyworker/instances/&lt;id&gt;
 /// + дискавери /valkeyworker/api/&lt;id&gt;) и живёт heartbeat-тиками для
 /// наблюдаемости. Смерть процесса гасит lease'ы ≤15 с (takeover другим инстансом).

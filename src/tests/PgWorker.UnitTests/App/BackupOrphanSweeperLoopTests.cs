@@ -179,7 +179,7 @@ public sealed class BackupOrphanSweeperLoopTests
     }
 
     // AAA: лидерский проход с Backups:Enabled=true и живым S3 — по итогам SweepAsync
-    // инструментация пишет тик цикла orphan-sweep с ok=true (arch/18 §2.2; ок
+    // инструментация пишет тик цикла orphan-sweep с ok=true (arch/metrics/02-dictionary.md §2; ок
     // последнего успешного тика двигает last_success — серия появляется).
     [Fact]
     public async Task ExecuteAsync_LeaderSweep_TicksOrphanSweepOkTrue()
@@ -329,7 +329,7 @@ public sealed class BackupOrphanSweeperLoopTests
     private static async Task<string?> DisabledKeyRaw(Fakes.FakeEtcd etcd)
         => etcd.Store.TryGetValue(BackupsDisabledGate.Key, out var e) ? e.Value : null;
 
-    // AAA (arch/19 §4): лидер при Backups:Enabled=false поддерживает
+    // AAA (arch/backups/05-etcd-contract.md): лидер при Backups:Enabled=false поддерживает
     // /pgworker/backups-disabled на КАЖДОМ тике лидера — updated_unix ключа
     // растёт между тиками (не разовая запись).
     [Fact]
@@ -362,7 +362,7 @@ public sealed class BackupOrphanSweeperLoopTests
         second.Should().NotBeNull().And.NotBe(first, "each leader tick refreshes updated_unix");
     }
 
-    // AAA (arch/19 §4): лидер при Backups:Enabled=true стирает
+    // AAA (arch/backups/05-etcd-contract.md): лидер при Backups:Enabled=true стирает
     // /pgworker/backups-disabled идемпотентно в каждом тике — stale-ключ от
     // прежнего лидера/режима не выживает takeover/reload.
     [Fact]
@@ -382,7 +382,7 @@ public sealed class BackupOrphanSweeperLoopTests
             "the leader with Enabled=true must idempotently delete the stale disabled key");
     }
 
-    // AAA (arch/19 §4): не-лидер стоп-ключ НЕ пишет и НЕ стирает —
+    // AAA (arch/backups/05-etcd-contract.md): не-лидер стоп-ключ НЕ пишет и НЕ стирает —
     // единственный писатель/стирающий глобального ключа — держатель лидера.
     [Fact]
     public async Task NonLeader_DoesNotTouchBackupsDisabled()

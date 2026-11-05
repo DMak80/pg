@@ -9,11 +9,11 @@ namespace PgWorker.IntegrationTests.E2e;
 /// UTC-меткой; пересечение 60 с — немедленный сбор docker-диагностики;
 /// провал окна (ok=False) — сбор failed-phase-* ДО возврата сценарию.
 /// Копии WaitPhaseAsync в не-классах не мигрируются (объём); канон для
-/// новых сценариев — docs/e2e-launch.md.
+/// новых сценариев — arch/testing/01-e2e-launch.md.
 /// </summary>
 internal static class E2ePhase
 {
-    /// <summary>Порог автосбора диагностики (docs/e2e-launch.md §2).</summary>
+    /// <summary>Порог автосбора диагностики (arch/testing/01-e2e-launch.md §2).</summary>
     private static readonly TimeSpan SlowPhaseThreshold = TimeSpan.FromSeconds(60);
 
     /// <summary>Интервал прогресс-тиков: короткие окна 10–15 с дают 2–3 строки
@@ -53,7 +53,7 @@ internal static class E2ePhase
                 break;
 
             // Немедленный slow-phase-сбор: фаза > 60 с — картина живого окружения
-            // ДО исчерпания бюджета (docs/e2e-launch.md §2), однократно.
+            // ДО исчерпания бюджета (arch/testing/01-e2e-launch.md §2), однократно.
             if (!slowCollected && sw.Elapsed >= SlowPhaseThreshold)
             {
                 slowCollected = true;

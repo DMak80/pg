@@ -8,7 +8,7 @@ using Shared.Etcd.Client;
 namespace S3Worker.Provisioning.Processes;
 
 /// <summary>
-/// Процесс G — MeshGovernance (arch/24 §5 G, spec §3.5): приведение фактического
+/// Процесс G — MeshGovernance (arch/s3worker/05-mesh-governance.md G, spec §3.5): приведение фактического
 /// mesh инстансов к декларациям links + denylist. Шаги тика (порядок фиксирован):
 /// 1) deny-доведение — полная перезапись PUT /replication/denylist всем RUNNING
 /// (дешёвая, идемпотентная — не «одна за тик»); 2) сверка состава — желаемые
@@ -19,7 +19,7 @@ namespace S3Worker.Provisioning.Processes;
 /// (parseError снапшота) — диагностика в journal, битая часть не применяется;
 /// отсутствующий links — пустой граф (полный разрыв — валидная декларация).
 /// 0 RUNNING — no-op (idle). Все операции под клэймом &lt;C&gt;.
-/// Та же логика — фаза P4 provisioning'а (arch/24 §5: P4 — та же механика, что G).
+/// Та же логика — фаза P4 provisioning'а (arch/s3worker/README.md: P4 — та же механика, что G).
 /// </summary>
 public sealed class MeshGovernanceProcess(
     IEtcdGateway gateway,
@@ -42,12 +42,12 @@ public sealed class MeshGovernanceProcess(
     {
         var cluster = snap.Cluster;
 
-        // Мутации — только держателем живого клэйма (arch/17 S5).
+        // Мутации — только держателем живого клэйма (arch/synchronization/02-predicates-and-mutations.md §S5).
         var claimed = S3ProcessCommon.EnsureClaimed(claims, cluster, Op);
         if (!claimed.IsSuccess)
             return claimed;
 
-        // Креды — per-cluster secrets из etcd (arch/23 §6): без них админ-грань
+        // Креды — per-cluster secrets из etcd (arch/s3-clusters/06-secrets.md): без них админ-грань
         // недостижима — диагностический skip (ретраи тиком; значения секретов
         // в диагностики не попадают).
         var secretsRead = await secrets.TryReadAsync(cluster, ct);
@@ -63,7 +63,7 @@ public sealed class MeshGovernanceProcess(
         }
         var nodeSecrets = secretsRead.Value.ToNodeSecrets();
 
-        // Адреса инстансов (portalloc, формат arch/23 §8 — словарь по именам).
+        // Адреса инстансов (portalloc, формат arch/s3-clusters/08-coordination.md — словарь по именам).
         var addresses = await ReadPortAllocAsync(cluster, ct);
         if (!addresses.IsSuccess)
             return Fail(cluster, addresses.Error!, "portalloc");
@@ -84,7 +84,7 @@ public sealed class MeshGovernanceProcess(
         if (denyError)
             warnings.Add("denylist: invalid JSON — revocations not applied");
 
-        // DenyList-декларация (битая — пустая: не применяется, arch/23 §9) —
+        // DenyList-декларация (битая — пустая: не применяется, arch/s3-clusters/09-panel.md) —
         // общая для deny-доведения и сверки состава.
         var denySet = denyError ? [] : snap.DenyList ?? [];
 
@@ -158,7 +158,7 @@ public sealed class MeshGovernanceProcess(
         return written.IsSuccess ? Result.Success() : written;
     }
 
-    // Желаемые target-записи X (arch/24 §5 G п.2): соседи по links минус denylist
+    // Желаемые target-записи X (arch/s3worker/05-mesh-governance.md G п.2): соседи по links минус denylist
     // минус несуществующие/не-RUNNING; deny-инстанс — полная изоляция (∅).
     internal static HashSet<string> DesiredNeighbors(
         string x, IReadOnlyList<S3ReplicationLink> links, IReadOnlyList<string> denyList,
@@ -206,7 +206,7 @@ public sealed class MeshGovernanceProcess(
         var pushedAny = false;
         foreach (var x in running.OrderBy(n => n, StringComparer.Ordinal))
         {
-            // DenyList-имя — перезапись не шлётся (arch/24 §5 G п.1): собственный
+            // DenyList-имя — перезапись не шлётся (arch/s3worker/05-mesh-governance.md G п.1): собственный
             // список отзывов отозванному не нужен, изоляция — записи у соседей.
             if (denyList.Contains(x, StringComparer.Ordinal))
                 continue;
@@ -240,7 +240,7 @@ public sealed class MeshGovernanceProcess(
         return Result<bool>.Success(pushedAny);
     }
 
-    // Одна структурная операция mesh (arch/24 §5 G п.2).
+    // Одна структурная операция mesh (arch/s3worker/05-mesh-governance.md G п.2).
     private async Task<Result<string>> ApplyAsync(
         string cluster, MeshMismatch mismatch, HashSet<string> running,
         IReadOnlyDictionary<string, NodeAddress> addresses, OwnS3NodeSecrets nodeSecrets,

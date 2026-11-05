@@ -13,13 +13,13 @@ namespace PgWorker.IntegrationTests.E2e;
 // (mTLS, тело {"synchronousModeStrict":bool}) — 204; конвергенция DCS тиком
 // надзора приводит живой Patroni к false БЕЗ рестартов нод; включение strict
 // кластеру с однорепликным шардом — 400 (errors.syncStrict). Изоляция —
-// docs/e2e-isolation.md: guid-окружение на Fact, полный teardown при любом
+// arch/testing/02-e2e-isolation.md: guid-окружение на Fact, полный teardown при любом
 // исходе, телеметрия /tmp/pgw-e2e-artifacts-<guid>/ (E2eEnvironment).
 public sealed class E2eStrictScenarios(E2eStrictScenariosFx Ctx) : IClassFixture<E2eStrictScenariosFx>
 {
     private E2eEnvironment Fx => Ctx.Fx;
 
-    // Уникальное имя кластера на прогон ({slug}{тег прогона}, docs/e2e-isolation.md
+    // Уникальное имя кластера на прогон ({slug}{тег прогона}, arch/testing/02-e2e-isolation.md
     // §1): факты делят окружение класса — литеральный суффикс различает кластеры.
     private string _clusterSuffix = "stricta";
     private string Cluster => $"{_clusterSuffix}{Fx.ClusterTag}";
@@ -53,7 +53,7 @@ public sealed class E2eStrictScenarios(E2eStrictScenariosFx Ctx) : IClassFixture
             provisioned.Should().BeTrue("the cluster came up");
 
             // Ожидание Active: P4 provisioning переписывает config каноническим
-            // JSON БЕЗ поля state (arch/14 §5 A, Д1) — мутация разрешена только
+            // JSON БЕЗ поля state (arch/pgworker/processes/a-provisioning.md A, Д1) — мутация разрешена только
             // Active-кластерам (PUT до этого перехода = 409). Прогресс-тик —
             // какой state висит (t29 §3.10).
             var active = await E2ePhase.WaitAsync(Fx, "strict-active", async () =>
@@ -177,7 +177,7 @@ public sealed class E2eStrictScenarios(E2eStrictScenariosFx Ctx) : IClassFixture
             provisioned.Should().BeTrue("the cluster came up (incl. the single-replica shard2)");
 
             // Ожидание Active: PUT разрешён только Active-кластерам (config без
-            // state — P4 provisioning, arch/14 §5 A), иначе 409; прогресс-тик —
+            // state — P4 provisioning, arch/pgworker/processes/a-provisioning.md A), иначе 409; прогресс-тик —
             // какой state висит (t29 §3.10).
             var active = await E2ePhase.WaitAsync(Fx, "strict-active", async () =>
                 await ConfigStateFieldAsync(Cluster) is null, TimeSpan.FromSeconds(60), ct,
@@ -229,7 +229,7 @@ public sealed class E2eStrictScenarios(E2eStrictScenariosFx Ctx) : IClassFixture
                 await G.PutAsync(Endpoint,
                     $"/clusters/{cluster}/shards/{shard}/nodes/{shard}{(char)('a' + r)}/state",
                     "NOT_INITIALIZED", null, ct);
-            // Заявки ресурсов панель-создания (arch/14 §2.1 п.4): pgtune-фаза
+            // Заявки ресурсов панель-создания (arch/pgworker/01-placement.md §2): pgtune-фаза
             // provisioning требует их обязательно.
             await G.PutAsync(Endpoint, $"/service/{cluster}-{shard}/request_cpu", "2", null, ct);
             await G.PutAsync(Endpoint, $"/service/{cluster}-{shard}/request_mem", "2Gi", null, ct);
@@ -247,7 +247,7 @@ public sealed class E2eStrictScenarios(E2eStrictScenariosFx Ctx) : IClassFixture
         => (await G.GetAsync(Endpoint, key, TestContext.Current.CancellationToken)).Value;
 
     // Поле state из config кластера (null — Active: P4 provisioning пишет
-    // канонический JSON без state, arch/14 §5 A Д1).
+    // канонический JSON без state, arch/pgworker/processes/a-provisioning.md A Д1).
     private async Task<string?> ConfigStateFieldAsync(string cluster)
     {
         var kv = await GetOrNullAsync($"/clusters/{cluster}/config");
@@ -411,7 +411,7 @@ public sealed class E2eStrictScenarios(E2eStrictScenariosFx Ctx) : IClassFixture
 }
 
 /// <summary>Компаньон-фикстура окружения класса (полный контур на класс:
-/// сеть/etcd/CA/окно портов; docs/e2e-isolation.md §1).</summary>
+/// сеть/etcd/CA/окно портов; arch/testing/02-e2e-isolation.md §1).</summary>
 public sealed class E2eStrictScenariosFx : E2eContourFixture
 {
     protected override string Slug => "strict-sync";

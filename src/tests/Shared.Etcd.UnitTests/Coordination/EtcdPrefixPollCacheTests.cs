@@ -2,7 +2,7 @@ using Shared.Etcd.Coordination;
 
 namespace Shared.Etcd.UnitTests;
 
-// Опросный кэш etcd-префикса (arch/17 S10): первичная загрузка → периодический
+// Опросный кэш etcd-префикса (arch/synchronization/05-delta-application.md §S10): первичная загрузка → периодический
 // Range → diff с кэшем → Changed только при различиях (add/change/delete;
 // различий нет — события нет; сбой опроса — кэш сохраняется, ретрай).
 public class EtcdPrefixPollCacheTests

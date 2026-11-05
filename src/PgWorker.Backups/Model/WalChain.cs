@@ -4,7 +4,7 @@ namespace PgWorker.Backups;
 /// последний валидный сегмент (для last_uploaded).</summary>
 public sealed record ChainResult(bool IsContinuous, string? GapError, WalFileName? LastSegment);
 
-/// <summary>Gap-детектор непрерывности WAL-цепочки от chain_start (arch/19 §3,
+/// <summary>Gap-детектор непрерывности WAL-цепочки от chain_start (arch/backups/02-wal-archive.md §1,
 /// правила spec §3.1): последовательность Next() без пропусков; TLI-переход
 /// валиден при наличии загруженного `&lt;newTLI&gt;.history` и первом сегменте нового
 /// TLI ∈ {последний сегмент старого TLI, Next(последний)}; `.partial` игнорируется.
@@ -14,7 +14,7 @@ public static class WalChain
     public static ChainResult Check(WalFileName chainStart, IEnumerable<string> objectNames)
         => Walk(chainStart, null, objectNames, null);
 
-    /// <summary>Стартовая точка контроля цепочки с ratchet (arch/19 §3):
+    /// <summary>Стартовая точка контроля цепочки с ratchet (arch/backups/02-wal-archive.md §1):
     /// кандидат — wal_start новейшего verify-OK полного
     /// (RetentionPlanner.LatestVerifiedWalStart); ratchet — точка НИКОГДА не
     /// понижается ниже записанной границы разрыва (кандидаты ниже игнорируются:
@@ -27,10 +27,10 @@ public static class WalChain
             ? start
             : recorded;
 
-    /// <summary>Хвост потока (arch/19 §3 «Истина прогресса»).</summary>
+    /// <summary>Хвост потока (arch/backups/02-wal-archive.md §1 «Истина прогресса»).</summary>
     public sealed record WalTailFact(string SegmentName, string ObjectName);
 
-    /// <summary>Хвост потока — максимальный валидный префикс (arch/19 §3, arch/
+    /// <summary>Хвост потока — максимальный валидный префикс (arch/backups/02-wal-archive.md §1, arch/
     /// backups/processes/b-wal-control.md §1): финальный объект цепочки
     /// (chainLastFinal — результат Check/CheckWithRestart) ЛИБО покрытие
     /// дельта-кусков ТЕКУЩЕГО номера жизни по сегментам (покрытие по именам:
@@ -153,7 +153,7 @@ public static class WalChain
         return retried.IsContinuous ? retried : first;
     }
 
-    /// <summary>Проверка диапазона [chainStart..end] (arch/19 §3): end —
+    /// <summary>Проверка диапазона [chainStart..end] (arch/backups/02-wal-archive.md §1): end —
     /// последний сегмент набора full/&lt;id&gt;/pg_wal/ (точка бэкапа); сегмент end
     /// ОБЯЗАН присутствовать среди объектов wal/ (дублирование). TLI-переходы
     /// в диапазоне: при наличии содержимого history (TLI → текст) — строго по

@@ -5,7 +5,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 # Воркеры: /healthz и /metrics — открытая https-грань без клиентского серта
-# (arch/18 §5.2); панель — http.
+# (arch/metrics/05-storage.md §2); панель — http.
 ROOT="$(cd ../.. && pwd)"
 # Хост-порт публикации pgworker: env-оверрайд → .env (пишет 00-up.sh) → 8080.
 PGW_API_HOST_PORT="${PGW_API_HOST_PORT:-$(awk -F= '$1=="PGW_API_HOST_PORT"{print $2}' "$ROOT/deploy/.env" 2>/dev/null)}"
@@ -62,7 +62,7 @@ done
 echo "  /metrics of the three services: 200 text-format"
 
 # 2) все scrape-джобы up, КРОМЕ patroni-nodes: down-таргеты этой джобы —
-#    легитимное состояние (rebuild ноды ~90с — arch/18 §2.5; устаревший file_sd
+#    легитимное состояние (rebuild ноды ~90с — arch/metrics/02-dictionary.md §5; устаревший file_sd
 #    при лежачем etcd) — её проверка условная, шаг 2.1; остальные джобы
 #    (включая sd-generator) — строго все up.
 up_count=""
@@ -108,14 +108,14 @@ elif [ "$pn_net" -gt 0 ]; then
   echo "  patroni-nodes: $net_up/$pn_net alias targets up (network :8008)${adv_down:+; advertised down: $adv_down — degradation zone (spec §6 p.5)}"
 fi
 
-# 3) серии словаря у живых таргетов (канонические имена arch/18 §2).
+# 3) серии словаря у живых таргетов (канонические имена arch/metrics/02-dictionary.md).
 #    worker/pg — воркеровые серии дают живые циклы воркера; pg-грань —
-#    нативные patroni_* серии скрейпа patroni-nodes (канон-минимум arch/18
+#    нативные patroni_* серии скрейпа patroni-nodes (канон-минимум arch/metrics/README.md
 #    §2.5; эмуляторная pg_replica_lag_seconds демонтирована с hc-эмуляторами).
 #    kafka-серия — ТОЛЬКО при живых брокерах: сидовой кластер стенда «слепой»
 #    (endpoints слушает только в e2e 55-го), сбор коллектора консервативно
 #    неуспешен и kafka_collector_last_success честно НЕ обновляется
-#    (алерт KafkaCollectorStalled в этот период горит — это корректно, arch/18 §4).
+#    (алерт KafkaCollectorStalled в этот период горит — это корректно, arch/metrics/04-collectors.md).
 for s in worker_loop_ticks_total patroni_postgres_running patroni_xlog_replayed_timestamp; do
   curl -fsS --data-urlencode "query=$s" "$PROM/api/v1/query" | jq -e '.data.result | length > 0' >/dev/null \
     || { echo "  ❌ series $s not found in TSDB"; exit 1; }
@@ -142,9 +142,9 @@ if timeout 2 bash -c '</dev/tcp/localhost/16001' 2>/dev/null; then
   curl -fsS --data-urlencode "query=kafka_collector_last_success_timestamp_seconds" "$PROM/api/v1/query" \
     | jq -e '.data.result | length > 0' >/dev/null \
     || { echo "  ❌ series kafka_collector_last_success_timestamp_seconds not found in TSDB"; exit 1; }
-  echo "  arch/18 §2 dictionary series in TSDB (including kafka: brokers alive)"
+  echo "  arch/metrics/02-dictionary.md dictionary series in TSDB (including kafka: brokers alive)"
 else
-  echo "  arch/18 §2 dictionary series in TSDB (kafka series skipped: no brokers — conservative freshness, arch/18 §4)"
+  echo "  arch/metrics/02-dictionary.md dictionary series in TSDB (kafka series skipped: no brokers — conservative freshness, arch/metrics/04-collectors.md)"
 fi
 
 # 4) rules зарегистрированы (22 алерта: 12 + 7 группы backups §2.7 + 3 t15 patroni-nodes)

@@ -3,13 +3,13 @@ using Shared.Core;
 namespace PgWorker.Backups;
 
 /// <summary>
-/// Пул-клиент IBackupS3 (arch/19 §5): write-цели (список роли источника),
+/// Пул-клиент IBackupS3 (arch/backups/06-s3-layout.md): write-цели (список роли источника),
 /// read-цели (все ноды пула, порядок endpoints); цель — существующий BackupS3
 /// (endpoint+креды одного адреса), кэш per-цели. Перебор всегда С ПЕРВОЙ цели
 /// («первый доступный по списку»); каждая попытка несёт per-попыточный таймаут
-/// S3-клиента цели — «быстрый отказ/успех, не молчание» (R3, arch/23 §7).
+/// S3-клиента цели — «быстрый отказ/успех, не молчание» (R3, arch/s3-clusters/07-client-pool.md).
 /// Транспортный отказ цели открывает circuit-breaker: цель исключается из
-/// перебора на окно восстановления (arch/19 §5 «Исключение отказавшей цели»),
+/// перебора на окно восстановления (arch/backups/06-s3-layout.md «Исключение отказавшей цели»),
 /// истечение окна или успешный ответ возвращают её в перебор.
 /// Семантика: put/delete — write-список с перебором (исчерпание → маркер);
 /// точечные GET — read-список до найденного (NotFound → следующая, исходная
@@ -20,7 +20,7 @@ namespace PgWorker.Backups;
 /// </summary>
 public sealed class PoolBackupS3 : IBackupS3, IWalSegmentGuard, IAsyncDisposable
 {
-    // Окно исключения отказавшей цели (arch/19 §5): закрывает тыл
+    // Окно исключения отказавшей цели (arch/backups/06-s3-layout.md): закрывает тыл
     // ретрай-циклам источников (приёмник WAL — 30-35 с) — мёртвая цель не
     // зондируется чаще её собственного цикла; полокна (≈22 с) + следующий
     // тик укладывают возвращение поднявшейся ноды в минуту.
@@ -63,14 +63,14 @@ public sealed class PoolBackupS3 : IBackupS3, IWalSegmentGuard, IAsyncDisposable
         _clock = clock ?? TimeProvider.System;
     }
 
-    // ── Circuit-breaker цели (arch/19 §5): транспортный отказ исключает цель
+    // ── Circuit-breaker цели (arch/backups/06-s3-layout.md): транспортный отказ исключает цель
     // из перебора на окно; NotFound — не отказ (сервер отвечает — цель жива
     // для union-семантики чтения); успех возвращает цель сразу.
 
     // Попытка цели под breaker-семантикой: цель в окне → сохранённая причина
     // (участвует в маркере исчерпания как исходная ошибка); после вызова —
     // успех закрывает окно, транспортный отказ открывает. Отмена/исчерпание
-    // бюджета источника — не транспортный отказ цели (arch/19 §5): попытка,
+    // бюджета источника — не транспортный отказ цели (arch/backups/06-s3-layout.md): попытка,
     // прерванная отменой токена источника (linked-CTS общего бюджета),
     // breaker цели НЕ открывает — цель остаётся в переборе.
     private async Task<Result<T>> AttemptAsync<T>(
@@ -165,7 +165,7 @@ public sealed class PoolBackupS3 : IBackupS3, IWalSegmentGuard, IAsyncDisposable
             uri => Target(uri).ListWalAsync(cluster, shard, maxKeysPerTest, ct),
             ct, "list-wal");
 
-    /// <summary>Union-листинг wal/ по ВСЕМ read-целям (arch/19 §5 «где
+    /// <summary>Union-листинг wal/ по ВСЕМ read-целям (arch/backups/06-s3-layout.md «где
     /// данные есть»): дедуп по имени объекта. Для сверки цепочки контроля:
     /// первая доступная нода может отставать (лаг mesh) — её соло-листинг даёт
     /// ЛОЖНУЮ дыру и переводит шард в WAL_CHAIN_ERROR (прецедент AC4: n1 после рестарта
@@ -181,16 +181,16 @@ public sealed class PoolBackupS3 : IBackupS3, IWalSegmentGuard, IAsyncDisposable
     }
 
     /// <summary>Результат union-листинга wal/ с фактом полноты наблюдения
-    /// (arch/19 §5): FailedTargets — не ответившие транспортом read-цели
+    /// (arch/backups/06-s3-layout.md): FailedTargets — не ответившие транспортом read-цели
     /// (включая исключённых breaker-окном). Непустой FailedTargets — набор
     /// НЕПОЛОН: сегмент может лежать на недоступной ноде; контроль дыры
-    /// обязан учитывать это (arch/19 §3 — разрыв не доказан, transient-
+    /// обязан учитывать это (arch/backups/02-wal-archive.md §1 — разрыв не доказан, transient-
     /// DEGRADED вместо WAL_CHAIN_ERROR).</summary>
     public sealed record WalUnionListing(
         IReadOnlyList<WalObject> Objects, IReadOnlyList<string> FailedTargets);
 
     /// <summary>Union-листинг wal/ по всем read-целям с перечнем не ответивших
-    /// целей (arch/19 §5): успех — если ответил хотя бы один узел; исчерпание
+    /// целей (arch/backups/06-s3-layout.md): успех — если ответил хотя бы один узел; исчерпание
     /// всего списка — маркер.</summary>
     public async Task<Result<WalUnionListing>> ListWalUnionDetailedAsync(
         string cluster, string shard, int? maxKeysPerTest = null, CancellationToken ct = default)
@@ -221,7 +221,7 @@ public sealed class PoolBackupS3 : IBackupS3, IWalSegmentGuard, IAsyncDisposable
     }
 
     /// <summary>Union-листинг ПРОИЗВОЛЬНОГО префикса по ВСЕМ read-целям (
-    /// arch/19 §5 «где данные есть»): полный бэкап заливается на первую живую
+    /// arch/backups/06-s3-layout.md «где данные есть»): полный бэкап заливается на первую живую
     /// ноду момента заливки — набор full/&lt;id&gt;/pg_wal/ и wal/-дубли
     /// размещены по нодам; соло-листинг первой живой цели даёт ложное «пусто»
     /// (verify FAILED «set contains no pg_wal WAL segments») и ложный gap
@@ -307,7 +307,7 @@ public sealed class PoolBackupS3 : IBackupS3, IWalSegmentGuard, IAsyncDisposable
             $"{S3PoolMarkers.Exhausted}: put {key} — all list nodes are unavailable: {last.Error!.Message}"));
     }
 
-    // WAL-сегмент с гвардом чужой цепочки (arch/19 §3): конфликт содержимого —
+    // WAL-сегмент с гвардом чужой цепочки (arch/backups/02-wal-archive.md §1): конфликт содержимого —
     // permanent и относится к САМОЙ цепочке, а не к цели: перебор write-списка
     // не продолжается (иначе тот же чужой сегмент затёрли бы на другой ноде
     // пула, а mesh разнёс бы подмену). Цель без гварда (тестовый шов) —
@@ -334,7 +334,7 @@ public sealed class PoolBackupS3 : IBackupS3, IWalSegmentGuard, IAsyncDisposable
     }
 
     // Удаление — write-семантика put (первая доступная нода, mesh разносит
-    // tombstone — arch/19 §5); исчерпание → маркер.
+    // tombstone — arch/backups/06-s3-layout.md); исчерпание → маркер.
     public async Task<Result> DeleteKeysAsync(IReadOnlyList<string> keys, CancellationToken ct = default)
     {
         Result last = default;

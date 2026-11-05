@@ -12,7 +12,7 @@ using ValkeyWorker.Docker.Drivers;
 namespace ValkeyWorker.Provisioning.Processes;
 
 /// <summary>
-/// Provisioning valkey-кластера (arch/21 §5 A, фазы V0–V5): от заявки
+/// Provisioning valkey-кластера (arch/valkeyworker/02-cluster-lifecycle.md §2 A, фазы V0–V5): от заявки
 /// NOT_INITIALIZED до рабочего кластера. Все фазы идемпотентны и перепроверяют
 /// факт; перед V3 и V5 — перечитывание config (гонка TO_REMOVE посреди работы
 /// безопасно прекращает процесс). Снапшоты P12 «до» (после claim) и «после»
@@ -43,7 +43,7 @@ public sealed class ProvisioningProcess(
     {
         var cluster = snap.Cluster;
 
-        // Мутации — только держателем живого клэйма (arch/21 §6).
+        // Мутации — только держателем живого клэйма (arch/valkeyworker/06-operability.md §3).
         var claimed = ProcessCommon.EnsureClaimed(claims, cluster, Op);
         if (!claimed.IsSuccess)
             return claimed;
@@ -155,7 +155,7 @@ public sealed class ProvisioningProcess(
 
     private sealed record Plan(IReadOnlyDictionary<string, NodeAddress> Addresses);
 
-    // arch/20 §3: под глобальным portalloc-клэймом — ВСЯ секция «чтение
+    // arch/valkey-clusters/03-coordination.md §1: под глобальным portalloc-клэймом — ВСЯ секция «чтение
     // занятости → выбор портов → запись portalloc»: без него два параллельных
     // кластера читают пустую занятость до первой записи соседа и выбирают
     // одни и те же порты (docker create второго падает, portalloc закреплён
@@ -191,7 +191,7 @@ public sealed class ProvisioningProcess(
             return Result<Plan>.Failed(new PortLockBusyException(portLock.Key));
         try
         {
-            // Занятость читается ВНУТРИ клэйма (буква arch/20 §3).
+            // Занятость читается ВНУТРИ клэйма (буква arch/valkey-clusters/03-coordination.md §1).
             var hosts = await driver.GetHostsAsync(ct);
             if (!hosts.IsSuccess)
                 return Result<Plan>.Failed(hosts.Error!);
@@ -276,7 +276,7 @@ public sealed class ProvisioningProcess(
                 snap.Config?.MaxmemoryBytes ?? 0, snap.Config?.MaxmemoryPolicy ?? "allkeys-lru",
                 creds.AdminPassword, creds.AppPassword);
 
-            // V3 TLS (env-TLS, arch/21 §2): env со свежим сертом ноды входит в
+            // V3 TLS (env-TLS, arch/valkeyworker/01-placement.md): env со свежим сертом ноды входит в
             // spec создания; Cmd — детерминированная обёртка раскатки+exec.
             // Env собирается ЛЕНИВО (ниже, при решении пересоздавать): keygen
             // RSA-2048 не тратится на валидную ноду в каждом re-run тике.
@@ -400,7 +400,7 @@ public sealed class ProvisioningProcess(
         foreach (var node in NodeNames(snap))
         {
             var address = addresses[node];
-            // Проба по advertised-адресу (правило arch/21 §2) — тот же хост,
+            // Проба по advertised-адресу (правило arch/valkeyworker/01-placement.md) — тот же хост,
             // что попадёт в endpoints (V5); placement-имя клиентам не видно.
             // PING — по TLS с CA из ensure (V4).
             var endpoint = new ValkeyEndpoint(

@@ -668,7 +668,7 @@ internal sealed class NoDelivery : PgWorker.Provisioning.Processes.INodeBootstra
         => Task.FromResult(false);
 }
 
-// Слепок /clusters/ из Store фейка etcd НА МОМЕНТ ВЫЗОВА (arch/17 S10): для
+// Слепок /clusters/ из Store фейка etcd НА МОМЕНТ ВЫЗОВА (arch/synchronization/05-delta-application.md §S10): для
 // юнит-ригов ClusterSecretEnsurer — честное «последнее прочитанное состояние»
 // без ручной синхронизации с сидом. Live-вью: ключи, добавленные после
 // создания, видны (кэш-опрос эмулируется вызовом).

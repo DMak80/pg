@@ -15,7 +15,7 @@ namespace PgWorker.Provisioning.Processes;
 
 /// <summary>
 /// BucketEvacuator — аварийная эвакуация полностью мёртвого шарда (задача 22;
-/// spec §6.4 E, arch/14 §5 D, решение Д6): перевод владения бакетами на живые
+/// spec §6.4 E, arch/pgworker/processes/d-bucket-evacuator.md D, решение Д6): перевод владения бакетами на живые
 /// шарды ПУСТЫМИ схемами (источник недоступен — копировать нечего; данные
 /// шарда остаются на его дисках и вернутся вместе с ним). Guard'ы:
 /// незавершённый переезд блокирует эвакуацию; живых нет — ждём. Журнал
@@ -74,7 +74,7 @@ public sealed class BucketEvacuator(
             return await HandleReturnedShardAsync(snap, deadShard, done, backups, ct);
 
         // Guard: незавершённый переезд любого бакета кластера — блокируем
-        // эвакуацию (alert в work-журнале, разбор оператором; arch/14 §5 D).
+        // эвакуацию (alert в work-журнале, разбор оператором; arch/pgworker/processes/d-bucket-evacuator.md D).
         var moving = snap.Routing.FirstOrDefault(r => r.Status is BucketMoveState.Syncing
             or BucketMoveState.Frozen or BucketMoveState.Aborting);
         if (moving is not null)
@@ -230,7 +230,7 @@ public sealed class BucketEvacuator(
             return Result<ProcessOutcome>.Success(ProcessOutcome.Done); // ещё мёртв — держим карантин
 
         // Шард «ожил» после эвакуации: факт возврата — в журнал ДО docker-стопов
-        // (P7 journal-before-manipulations, arch/14 §5 D/E3): сбой стопа не
+        // (P7 journal-before-manipulations, arch/pgworker/processes/d-bucket-evacuator.md D/E3): сбой стопа не
         // отменяет возврат — Failed-тик, retry следующим тиком.
         if (journalState.State != "QUARANTINED" || journalState.ReturnedUnix is null)
         {
@@ -295,7 +295,7 @@ public sealed class BucketEvacuator(
         return Result<ProcessOutcome>.Failed(new ApplicationException(message));
     }
 
-    // Failover-обёртки — единая точка (arch/17 S7: sticky + per-attempt бюджет +
+    // Failover-обёртки — единая точка (arch/synchronization/03-fault-tolerance.md §S7: sticky + per-attempt бюджет +
     // негативный кэш; дубликаты цикла обхода удалены).
     private Task<Result<Kv?>> GetAsync(string key, CancellationToken ct)
         => EtcdEndpointFailover.CallAsync(endpoints, endpoint => etcd.GetAsync(endpoint, key, ct));

@@ -7,13 +7,13 @@
 #
 # ⚠️ Только ВНЕШНИЕ образы (images.txt). Локально собираемые (pgworker*:dev,
 # adminpanel:dev, pgworker-node:* и т.п.) зеркалить КАТЕГОРИЧЕСКИ запрещено —
-# см. docs/runbook.md.
+# см. arch/operations/02-registry-images.md.
 #
 # Технически: pull по digest'ам из апстрим-манифест-листа (устойчиво к локальному
 # состоянию тегов) → per-arch push ($DST-amd64 / $DST-arm64) → сборка манифест-листа
 # `docker manifest create` из апстрим-digest'ов → push списка (--insecure: самоподписанный
 # TLS registry Go-1.24-клиенты отвергают как «not standards compliant», daemon при этом
-# работает — подробности в docs/runbook.md).
+# работает — подробности в arch/operations/02-registry-images.md).
 set -euo pipefail
 
 REG="${PGW_REGISTRY:-192.168.0.1:5000}"

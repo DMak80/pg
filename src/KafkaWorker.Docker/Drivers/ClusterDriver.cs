@@ -27,7 +27,7 @@ public sealed record KafkaNodeSpec(
 // (контрольная сверка; null — источник недоступен, swarm).
 public sealed record NodeEndpointInspection(string Host, int ClientHostPort, string? AdvertisedClient);
 
-// Унифицированное управление брокером в обоих режимах (arch/16 §2.3). Порт
+// Унифицированное управление брокером в обоих режимах (arch/kafkaworker/04-security.md). Порт
 // драйверов PgWorker с заменой pgw-→kfw- и выносом env-генерации в NodeEnvBuilder:
 // объекты — контейнер/сервис kfw-<C>-<b>, volume kfw-<C>-<b>-data, сеть
 // kfw-net-<C> (per-cluster, фикс).
@@ -51,7 +51,7 @@ public interface IClusterDriver
     Task<Result> RemoveNodeAsync(string cluster, string nodeName, bool removeVolume, CancellationToken ct);
 
     // Существует ли том данных брокера (kfw-<C>-<b>-data). Консервативная
-    // семантика надзора (arch/16 §5 C): «неизвестно/не управляем» = true —
+    // семантика надзора (arch/kafkaworker/02-cluster-lifecycle.md §4 C): «неизвестно/не управляем» = true —
     // чистый том допускается только при доказанной утрате (потери данных
     // недопустимы).
     Task<Result<bool>> NodeVolumeExistsAsync(string cluster, string nodeName, CancellationToken ct);
@@ -61,7 +61,7 @@ public interface IClusterDriver
     Task<Result<NodeLimits?>> NodeResourcesAsync(string cluster, string nodeName, CancellationToken ct);
 
     // Инспекция размещения брокера для E9-реконструкции portalloc :
-    // null = docker-объекта нет — положительное свидетельство смерти, arch/17 S7;
+    // null = docker-объекта нет — положительное свидетельство смерти, arch/synchronization/03-fault-tolerance.md §S7;
     // ошибка инспекта → Failed — надзор не решает вслепую.
     Task<Result<NodeEndpointInspection?>> InspectNodeEndpointAsync(
         string cluster, string nodeName, CancellationToken ct);
@@ -80,7 +80,7 @@ public sealed class PlainClusterDriver(
     DockerEngineFactory factory) : IClusterDriver
 {
     // Сеть брокеров кластера: KRaft-кворум и межброкерный трафик по
-    // внутренним адресам (alias = имя ноды). Per-cluster (фикс, arch/16
+    // внутренним адресам (alias = имя ноды). Per-cluster (фикс, arch/kafkaworker/README.md
     // §2.1): короткие алиасы broker<N> уникальны в своей сети — единая сеть
     // с общими алиасами ломала Raft-голоса через docker-DNS round-robin
     // (INCONSISTENT_CLUSTER_ID), на docker-хосте собирался максимум один
@@ -96,7 +96,7 @@ public sealed class PlainClusterDriver(
     // движка LabelKey; читателей label в коде нет, docker-inspect-косметика).
     internal const string LabelKey = "kafkaworker";
 
-    // Точка монтирования тома данных kafka (arch/16 §2.1).
+    // Точка монтирования тома данных kafka (arch/kafkaworker/01-placement.md §1).
     public const string DataDir = "/var/lib/kafka/data";
 
     private readonly Dictionary<string, IDockerEngine> _engines = hosts.ToDictionary(
@@ -148,7 +148,7 @@ public sealed class PlainClusterDriver(
         {
             var name = NodeName(spec.Cluster, spec.NodeName);
 
-            // Сеть брокеров кластера — per-cluster (фикс, arch/16 §2.1);
+            // Сеть брокеров кластера — per-cluster (фикс, arch/kafkaworker/01-placement.md §1);
             // идемпотентно; 409 already exists = успех.
             var network = await engine.EnsureNetworkAsync(NetworkName(spec.Cluster), ct);
             if (!network.IsSuccess)
@@ -220,10 +220,10 @@ public sealed class PlainClusterDriver(
             }
 
             // Последний брокер кластера демонтирован — удаляем per-cluster
-            // сеть (фикс, arch/16 §2.5) на КАЖДОМ хосте таблицы:
+            // сеть (фикс, arch/kafkaworker/01-placement.md §4) на КАЖДОМ хосте таблицы:
             // EnsureNodeAsync создаёт её на каждом хосте размещения нод —
             // чистка не зависит от того, где был последний демонтируемый
-            // брокер (multi-host plain, анти-аффинити arch/16 §2.1); 404 =
+            // брокер (multi-host plain, анти-аффинити arch/kafkaworker/01-placement.md §1); 404 =
             // сети уже нет = успех. Пул subnet'ов хоста конечен — сирот не
             // копим. Ретрай per-host: docker API доли секунды держит endpoint
             // после force-remove («has active endpoints» — транзиентно).

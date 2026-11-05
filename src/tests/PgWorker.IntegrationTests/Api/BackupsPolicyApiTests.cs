@@ -69,7 +69,7 @@ public class BackupsPolicyApiTests(PgApiFixture fixture)
             new StringContent("{}", System.Text.Encoding.UTF8, "application/json"), ct);
 
         // Assert — 200, ключ с дефолтами 1/1/1/86400/true (: целевая схема,
-        // хендлер зеркалит дефолт канона arch/19 §9)
+        // хендлер зеркалит дефолт канона arch/backups/09-operability.md §1)
         resp.StatusCode.Should().Be(HttpStatusCode.OK);
         var stored = await Etcd.Gateway.GetAsync(Etcd.Endpoint, "/pgworker/backups/bpd/policy", ct);
         stored.Value!.Value.Should().Contain("\"days\":1")
@@ -261,7 +261,7 @@ public class BackupsPolicyApiTests(PgApiFixture fixture)
         stored.Value.Should().BeNull();
     }
 
-// ---: секция s3 policy (arch/14 §1.1) ----
+// ---: секция s3 policy (arch/pgworker/07-api.md §1) ----
 
 // Сид пула /s3/clusters/backups/: config + заявка двух нод (placement/state)
 // + portalloc ТОЛЬКО на node1 (кейс «заявлена, не провижинена — валидна»).

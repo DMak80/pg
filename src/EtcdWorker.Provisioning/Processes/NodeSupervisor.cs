@@ -5,7 +5,7 @@ using Shared.Etcd.Client;
 
 namespace EtcdWorker.Provisioning.Processes;
 
-/// <summary>Надзор managed-узлов (arch/25 §3.2): health-пробы
+/// <summary>Надзор managed-узлов (arch/etcdworker/03-node-supervision.md): health-пробы
 /// клиентской грани (интервал HealthIntervalSec), трек ПЕРВОГО наблюдения
 /// проблемы члена (unstarted ИЛИ health-молчание — метка для
 /// DetectDeadReplacement; восстановление — сброс), state=UNREACHABLE при
@@ -32,7 +32,7 @@ public sealed class NodeSupervisor(
     /// state-листов (RUNNING/UNREACHABLE). Пробы — не чаще HealthIntervalSec.
     /// Проба — исполненная итерация наблюдения: progress?.Mark() между узлами
     /// (серия drop-таймаутящихся проб не должна выглядеть зависанием цикла —
-    /// инвариант поллинга долгих фаз, arch/14 §6).</summary>
+    /// инвариант поллинга долгих фаз, arch/pgworker/08-operability.md §3).</summary>
     public async Task<Result<IReadOnlyList<ManagedDeadFact>>> ObserveAsync(
         IReadOnlyList<ManagedMember> managed,
         IReadOnlyList<EtcdNodesParser.ManagedNodeState> nodes,
@@ -55,7 +55,7 @@ public sealed class NodeSupervisor(
                     // Гейт пробы закрыт (проба была недавно): данных нет — нет
                     // факта, наблюдение узла пропускается (ProblemSince не
                     // фиксируется: «молчит дольше NodeDeadSec» честнее без
-                    // фантомных проблем, arch/25 §3.2).
+                    // фантомных проблем, arch/etcdworker/03-node-supervision.md).
                     continue;
                 }
 
@@ -107,7 +107,7 @@ public sealed class NodeSupervisor(
         // снимок начала тика устаревает, если доводка ЭТОГО же тика вывела
         // члена (перебор/замена) — repair по старому списку «воскрешал» узел
         // (state-ключ + контейнер выведенного члена). Узел без члена не
-        // трогаем — мусорщик снесёт (идемпотентность по факту, arch/25 §6).
+        // трогаем — мусорщик снесёт (идемпотентность по факту, arch/etcdworker/06-operability.md §3).
         var members = await MemberListFailoverAsync(ct);
         if (!members.IsSuccess)
             return Result.Failed(members.Error!);
@@ -207,7 +207,7 @@ public sealed class NodeSupervisor(
             last.Error ?? new EtcdUnreachableException("etcd endpoints are not set"));
     }
 
-    // Хост пробы клиентской грани — host размещения из portalloc (arch/25 §3.2;
+    // Хост пробы клиентской грани — host размещения из portalloc (arch/etcdworker/03-node-supervision.md;
     // мультихост-канон: проба адресует хост размещения узла, а не окружение
     // самого воркера). NodePort.Host пишет AllocateAsync при закреплении порта
     // (Plain — имя хоста таблицы, Swarm — swarm-нода); пустой хост и

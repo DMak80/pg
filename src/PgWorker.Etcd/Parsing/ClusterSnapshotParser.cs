@@ -7,7 +7,7 @@ using Shared.Etcd.Client;
 namespace PgWorker.Etcd.Parsing;
 
 // Парсер контроль-плейна /clusters/ + Patroni DCS /service/ в доменную модель PgWorker
-// (адаптация AdminPanel ClustersParser/ServiceParser, arch/14 §3). Чистые функции
+// (адаптация AdminPanel ClustersParser/ServiceParser, arch/pgworker/00-etcd-contract.md). Чистые функции
 // Kv[] → модель: битые значения не бросают исключений, а попадают в parseErrors.
 public static class ClusterSnapshotParser
 {
@@ -30,11 +30,11 @@ public static class ClusterSnapshotParser
         public string? ConfigRaw;
         public string? AppUser;
         public string? AppPassword;
-        // Per-cluster креды mover/bucket_admin (arch/14 §3.3)
+        // Per-cluster креды mover/bucket_admin (arch/pgworker/00-etcd-contract.md §4)
         public string? MoverPassword;
         public string? BucketAdminUser;
         public string? BucketAdminPassword;
-        // rest_password (arch/14 §4 гр.1): basic-auth Patroni REST :8008
+        // rest_password (arch/pgworker/04-security.md гр.1): basic-auth Patroni REST :8008
         public string? RestPassword;
         public readonly Dictionary<string, ShardAcc> Shards = [];
         public readonly Dictionary<int, string> Routing = [];
@@ -255,7 +255,7 @@ public static class ClusterSnapshotParser
                 },
                 ReadString(root, "bucket_admin_user"),
                 ReadString(root, "bucket_admin_password"),
-                // отсутствие поля или не-bool = true (durability-first, arch/14 §3).
+                // отсутствие поля или не-bool = true (durability-first, arch/pgworker/00-etcd-contract.md).
                 SyncStrict: root.TryGetProperty("synchronous_mode_strict", out var strict)
                     && strict.ValueKind is JsonValueKind.True or JsonValueKind.False
                         ? strict.GetBoolean()

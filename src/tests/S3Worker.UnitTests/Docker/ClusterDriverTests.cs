@@ -4,9 +4,9 @@ using Xunit;
 
 namespace S3Worker.UnitTests.Docker;
 
-// Docker-слой домена S3 (arch/23 §2/§7, spec §7): ensure/remove ноды
+// Docker-слой домена S3 (arch/s3-clusters/02-keys.md §1/§7, spec §7): ensure/remove ноды
 // s3w-<C>-node<k> с volume данных, инспекции S7/E9, env-сверка ротации,
-// сироты X2, placement-атрибуты хостов (arch/23 §4).
+// сироты X2, placement-атрибуты хостов (arch/s3-clusters/04-placement.md).
 public class ClusterDriverTests
 {
     // Тестовый кред env-образца (литералы — только в константах).
@@ -48,7 +48,7 @@ public class ClusterDriverTests
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 
-        // Листинг по префиксу (сироты X2 — arch/24 §2); label-атрибут запоминается.
+        // Листинг по префиксу (сироты X2 — arch/s3worker/01-placement.md); label-атрибут запоминается.
         public string? LastVolumeLabelKey { get; private set; }
         public string? LastVolumeLabel { get; private set; }
 
@@ -208,7 +208,7 @@ public class ClusterDriverTests
     private static S3NodeSpec Spec(string cluster = "c1", string node = "node1", int port = 18001)
         => new(cluster, node, "h1", port, "owns3:dev", SampleEnv, 1m, 1024L);
 
-    // Контейнер с label s3worker=<C> (EnsureNode ставит всегда — arch/24 §2).
+    // Контейнер с label s3worker=<C> (EnsureNode ставит всегда — arch/s3worker/01-placement.md).
     private static DockerContainer Container(string name, string cluster = "c1", string state = "running")
         => new(Guid.NewGuid().ToString("N"), [name], state, "owns3:dev",
             new Dictionary<string, string> { ["s3worker"] = cluster });
@@ -225,7 +225,7 @@ public class ClusterDriverTests
         // Act
         var result = await driver.EnsureNodeAsync(Spec(), contourNetwork: null, CancellationToken.None);
 
-        // Assert — спека контейнера один в один arch/23 §2 (имена/порт/том/политики).
+        // Assert — спека контейнера один в один arch/s3-clusters/02-keys.md §1 (имена/порт/том/политики).
         result.IsSuccess.Should().BeTrue();
         engine.CreatedName.Should().Be("s3w-c1-node1");
         engine.CreatedSpec!.Ports.Should().Equal([new PortMap(9000, 18001)]);
@@ -275,7 +275,7 @@ public class ClusterDriverTests
         engine.CreatedSpec.Should().BeNull();
     }
 
-    // AAA: Plain — идемпотентность по ФАКТУ (arch/24 §5 A): существующий,
+    // AAA: Plain — идемпотентность по ФАКТУ (arch/s3worker/02-cluster-lifecycle.md §2 A): существующий,
     // но НЕ запущенный контейнер (гонка create/start, takeover-якорь) —
     // доводится стартом, не пересоздаётся.
     [Fact]
@@ -417,7 +417,7 @@ public class ClusterDriverTests
         result.Value.Should().BeEquivalentTo(["s3w-c1-east1", "s3w-c1-east1-data", "s3w-c1-east2-data"]);
     }
 
-    // AAA: Plain — label-точность перечисления (arch/24 §2): объект с подходящим
+    // AAA: Plain — label-точность перечисления (arch/s3worker/01-placement.md): объект с подходящим
     // префиксом, но без label / с чужим label — НЕ попадает в снос X2.
     [Fact]
     public async Task Plain_ListNodeObjects_LabelFilter_ExcludesForeign()
@@ -437,7 +437,7 @@ public class ClusterDriverTests
         // Act
         var result = await driver.ListNodeObjectsAsync("c1", CancellationToken.None);
 
-        // Assert: только свой (ghost/alien — посторонние, arch/24 §2).
+        // Assert: только свой (ghost/alien — посторонние, arch/s3worker/01-placement.md).
         result.IsSuccess.Should().BeTrue();
         result.Value.Should().BeEquivalentTo(["s3w-c1-east1"]);
     }
@@ -464,7 +464,7 @@ public class ClusterDriverTests
         result.Value.Should().BeEquivalentTo(["s3w-c1-node2-data"]);
     }
 
-    // AAA: Swarm — сироты: сервисы по префиксу + label (arch/24 §2) + сирота-том
+    // AAA: Swarm — сироты: сервисы по префиксу + label (arch/s3worker/01-placement.md) + сирота-том
     // на другой swarm-ноде — объединение инспекций всех движков (как в сносе).
     [Fact]
     public async Task Swarm_ListNodeObjects_OrphanVolumeOnOtherNode()
@@ -487,7 +487,7 @@ public class ClusterDriverTests
         result.Value.Should().BeEquivalentTo(["s3w-c1-west1-data"]);
     }
 
-    // AAA: Swarm — label-точность перечня сервисов (arch/24 §2).
+    // AAA: Swarm — label-точность перечня сервисов (arch/s3worker/01-placement.md).
     [Fact]
     public async Task Swarm_ListNodeObjects_LabelFilter()
     {
@@ -510,7 +510,7 @@ public class ClusterDriverTests
         result.Value.Should().BeEquivalentTo(["s3w-c1-east1"]);
     }
 
-    // AAA: Plain — placement-атрибуты (arch/23 §4): Name из Hosts, UsedSlots по
+    // AAA: Plain — placement-атрибуты (arch/s3-clusters/04-placement.md): Name из Hosts, UsedSlots по
     // числу контейнеров s3w-*, Labels пуст (plain-селекторы — только docker_host).
     [Fact]
     public async Task Plain_GetHosts_NamesFromTable_SlotsByContainers()

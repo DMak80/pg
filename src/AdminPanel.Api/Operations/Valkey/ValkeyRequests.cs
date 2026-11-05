@@ -1,6 +1,6 @@
 namespace AdminPanel.Api.Operations.Valkey;
 
-// Тела запросов — зеркало DTO ValkeyWorker (arch/21 §1.1; панель НЕ валидирует —
+// Тела запросов — зеркало DTO ValkeyWorker (arch/valkeyworker/05-api.md §1; панель НЕ валидирует —
 // сервер источник истины, фронт дублирует для UX; spec §4.9).
 public sealed record CreateValkeyClusterRequest(
     string? Name,

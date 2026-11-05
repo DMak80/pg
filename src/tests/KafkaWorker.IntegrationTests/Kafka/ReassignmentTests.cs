@@ -153,7 +153,7 @@ public class ReassignmentTests(KafkaClusterFixture fixture)
     }
 
     // Produce коротких сообщений (ключи → разные партиции). Канон клиента
-    // SASL_SSL + доверие per-cluster CA (ca_pem из etcd, arch/15 §5).
+    // SASL_SSL + доверие per-cluster CA (ca_pem из etcd, arch/kafka-clusters/05-client-discovery.md §1).
     private static async Task ProduceAsync(Creds creds, string topic, int count)
     {
         var config = new ProducerConfig

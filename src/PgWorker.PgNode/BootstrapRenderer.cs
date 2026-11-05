@@ -2,7 +2,7 @@ using System.IO;
 
 namespace PgWorker.PgNode;
 
-/// <summary>Рендер tmpfs /run/pgw (arch/14 §4, spec §3.5): все файлы 0600,
+/// <summary>Рендер tmpfs /run/pgw (arch/pgworker/04-security.md, spec §3.5): все файлы 0600,
 /// процесс агента работает под postgres (владелец верен по построению).
 /// Кэша на диске нет — tmpfs память контейнера; повторный рендер перезаписывает
 /// файлы идемпотентно.</summary>

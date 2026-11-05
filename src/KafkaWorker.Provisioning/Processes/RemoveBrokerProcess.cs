@@ -9,7 +9,7 @@ using KafkaWorker.Provisioning.Kafka;
 namespace KafkaWorker.Provisioning.Processes;
 
 /// <summary>
-/// RemoveBrokerProcess (arch/16 §5 G): маркер brokers/&lt;b&gt;/state=TO_REMOVE →
+/// RemoveBrokerProcess (arch/kafkaworker/03-broker-scaling.md §2 G): маркер brokers/&lt;b&gt;/state=TO_REMOVE →
 /// guards (кластер Active; не controller; не последний; на брокере нет реплик
 /// партиций — по DescribeTopics включая __-топики, иначе journal-ожидание —
 /// drain идёт процессом I (reassign), демонтаж продолжится сам) →
@@ -46,7 +46,7 @@ public sealed class RemoveBrokerProcess(
 
         foreach (var broker in candidates)
         {
-            // Guard: контроллерные ноды не демонтируются (роль навсегда, arch/15 §2).
+            // Guard: контроллерные ноды не демонтируются (роль навсегда, arch/kafka-clusters/02-keys.md §1).
             if (broker.Role == "controller")
                 return Fail(cluster,
                     new ApplicationException(
@@ -109,7 +109,7 @@ public sealed class RemoveBrokerProcess(
         await using var admin = adminFactory.Create(snap.Endpoints, snap.AdminUser ?? "admin", snap.AdminPassword!, snap.CaPem);
         // Describe-all: guard видит и internal-реплики (__consumer_offsets) —
         // раньше фильтр __ прятал их и «пустой» брокер демонтировался с
-        // потерей этих реплик (§1, arch/16 §5 I/G).
+        // потерей этих реплик (§1, arch/kafkaworker/06-rebalancing.md §2 I/G).
         var topics = await admin.DescribeTopicsAsync(includeInternal: true, ct);
         if (!topics.IsSuccess)
             return true; // факт неизвестен — консервативно ждём
@@ -148,7 +148,7 @@ public sealed class RemoveBrokerProcess(
         return Result.Success();
     }
 
-    // Адрес брокера из portalloc (advertised-правило arch/16 §2.1); null — не закреплён.
+    // Адрес брокера из portalloc (advertised-правило arch/kafkaworker/01-placement.md §1); null — не закреплён.
     private async Task<string?> AddressOfBrokerAsync(
         KafkaClusterSnapshot snap, string broker, CancellationToken ct)
     {

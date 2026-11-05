@@ -33,7 +33,7 @@ curl -fsS -c "$JAR" -o /dev/null -X POST "$BASE/api/auth/login" \
 api()  { curl -fsS -b "$JAR" "$BASE$1"; }
 code() { curl -s -o /dev/null -w '%{http_code}' -b "$JAR" "$@"; }
 
-# 1) Создание через панель: 201 (instances[] — новый формат arch/24 §1.1;
+# 1) Создание через панель: 201 (instances[] — новый формат arch/s3worker/07-api.md §1;
 #    platform панель подставляет сама).
 body="{\"name\":\"$TAG\",\"instances\":[{\"name\":\"node1\",\"placement\":{\"dockerHost\":\"local\"},\"resources\":{\"cpu\":0.5,\"memGi\":1,\"diskGi\":5}}]}"
 c="$(code -X POST "$BASE/api/s3/clusters" -H 'Content-Type: application/json' -d "$body")"
@@ -136,7 +136,7 @@ api "/api/s3/clusters/$TAG" | jq -e '.rotation != null' >/dev/null \
 echo "  rotation: $c/$c2 (201/200 — idempotent); rotation in the details"
 
 # 8) Снос через панель: 202 → демонтаж воркером → чистота (ассерт чистоты —
-#    канон docs/e2e-isolation.md): префикс etcd пуст, контейнеров/томов нет.
+#    канон arch/testing/02-e2e-isolation.md): префикс etcd пуст, контейнеров/томов нет.
 c="$(code -X DELETE "$BASE/api/s3/clusters/$TAG")"
 [ "$c" = 202 ] || [ "$c" = 204 ] || { echo "❌ delete = $c, expected 202/204"; exit 1; }
 clean=0

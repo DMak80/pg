@@ -87,7 +87,7 @@ public sealed record TxnCompare(string Key, TxnTarget Target, TxnPredicate Pred,
     public static TxnCompare Exists(string key)
         => new(key, TxnTarget.Version, TxnPredicate.Greater, string.Empty, 0);
 
-    // Значение ключа равно ожидаемому — примитив конкурентного flip routing (arch/11 §5).
+    // Значение ключа равно ожидаемому — примитив конкурентного flip routing (arch/pg-clusters/11-buckets.md §5).
     public static TxnCompare ValueEqual(string key, string expected)
         => new(key, TxnTarget.Value, TxnPredicate.Equal, expected, 0);
 

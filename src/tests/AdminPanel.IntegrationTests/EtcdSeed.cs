@@ -77,7 +77,7 @@ public static class EtcdSeed
             await PutAsync(endpoint, key, value, ct);
     }
 
-    // Ключи грани «Хранилище бэкапов» (arch/19 §4; план Task 9 Step 2):
+    // Ключи грани «Хранилище бэкапов» (arch/backups/05-etcd-contract.md; план Task 9 Step 2):
     // ОТДЕЛЬНЫЙ список, Demo НЕ расширяется (Решение 6 плана: существующие серии
     // с ассертами по снапшоту не должны видеть бэкап-ключи). Времена
     // now-относительные — параметр now (сек. Unix). Владельца /clusters/demo
@@ -119,7 +119,7 @@ public static class EtcdSeed
 
     // Сид S3-пула «backups» в /s3/clusters/ — источник целей грани «Хранилище
     // бэкапов» (arch/adminpanel/02 §12.4): Active-config (без state — парсер
-    // даёт Active), endpoints и per-cluster secrets-ключ канона (arch/23 §2).
+    // даёт Active), endpoints и per-cluster secrets-ключ канона (arch/s3-clusters/02-keys.md §1).
     // Ключ «panel» (read-only) несёт root-пару ownS3-ноды фикстуры — нода
     // других кредов не знает; «backups» — произвольные значения фикстуры
     // (панелью не читаются). Значения — тестовые, не прод-секреты.

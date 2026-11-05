@@ -356,13 +356,13 @@ export interface ClusterDto {
   standNodes: StandNodeDto[];
   // Журнал последнего процесса воркера (t07, arch/03 §2); null — журнала нет.
   work?: ClusterWorkDto | null;
-  // u12: журналы эвакуаций кластера (arch/14 §3.2); null — не тикали.
+  // u12: журналы эвакуаций кластера (arch/pgworker/00-etcd-contract.md §3); null — не тикали.
   evacuations?: EvacuationDto[] | null;
   // u07-бейдж: живая заявка ротации per-cluster секретов /pgworker/rotations/<C>.
   secretsRotationPending?: boolean;
 }
 
-// Журнал эвакуации шарда (u12, arch/14 §3.2): buckets — старый → новый.
+// Журнал эвакуации шарда (u12, arch/pgworker/00-etcd-contract.md §3): buckets — старый → новый.
 export interface EvacuationDto {
   shard: string;
   evacuatedUnix: number;
@@ -518,7 +518,7 @@ export interface ClusterSecretsRotatedDto {
 
 // ===== Kafka-домен (arch/03 §7.2; C#-DTO B5/B6) =====
 
-// Канон состояния kafka-кластера: config.state (arch/15 §2); отсутствие = ACTIVE.
+// Канон состояния kafka-кластера: config.state (arch/kafka-clusters/02-keys.md §1); отсутствие = ACTIVE.
 export type KafkaClusterStateName = 'ACTIVE' | 'NOT_INITIALIZED' | 'TO_REMOVE';
 
 // GET /api/kafka/clusters — сводный список.
@@ -611,7 +611,7 @@ export interface KafkaTopicDesiredDto {
   requestedBy: string | null;
 }
 
-// Lifecycle-заявка топика topics/<T>/desired.{create,delete} (t01, arch/15 §3.1).
+// Lifecycle-заявка топика topics/<T>/desired.{create,delete} (t01, arch/kafka-clusters/03-topics.md §2).
 export interface KafkaTopicLifecycleDto {
   op: 'create' | 'delete';
   partitions: number | null;
@@ -675,7 +675,7 @@ export interface KafkaReassignmentDto {
   updatedUnix: number;
 }
 
-// Прогресс rolling-регенерации брокеров (t06, arch/15 §4); null = операции нет.
+// Прогресс rolling-регенерации брокеров (t06, arch/kafka-clusters/04-coordination.md §1); null = операции нет.
 export interface KafkaRegenDto {
   brokersTotal: number;
   brokersRemaining: number;
@@ -797,7 +797,7 @@ export interface KafkaRebalanceRequestedDto {
 
 // ===== Valkey-домен (arch/03 §8.2; зеркало C#-DTO ValkeyQuery.cs/ValkeyCommands.cs) =====
 
-// Канон состояния valkey-кластера: config.state (arch/20 §2); отсутствие = ACTIVE.
+// Канон состояния valkey-кластера: config.state (arch/valkey-clusters/02-keys.md §1); отсутствие = ACTIVE.
 export type ValkeyClusterStateName = 'ACTIVE' | 'NOT_INITIALIZED' | 'TO_REMOVE';
 
 // GET /api/valkey/clusters — сводный список (arch/03 §8.2).
@@ -959,7 +959,7 @@ export interface BackupClusterStorageDto {
   policy: BackupPolicyDto | null;
 }
 
-// Полная policy кластера (reliability t02, arch/19 §4): null-поля = отсутствуют
+// Полная policy кластера (reliability t02, arch/backups/05-etcd-contract.md): null-поля = отсутствуют
 // в policy-ключе — форма фронта читает и дефолтирует.
 export interface BackupPolicyDto {
   retentionDays: number | null;
@@ -968,9 +968,9 @@ export interface BackupPolicyDto {
   fullMaxAgeSec: number | null;
   verifyOnCreate: boolean | null;
   drillIntervalDays: number | null;
-  // u16: возрастной гейт мусора (arch/19 §4); null — дефолт воркера 600 с.
+  // u16: возрастной гейт мусора (arch/backups/05-etcd-contract.md); null — дефолт воркера 600 с.
   garbageMinAgeSec: number | null;
-  // t36: секция s3 policy (arch/19 §4); null — пул не выбран.
+  // t36: секция s3 policy (arch/backups/05-etcd-contract.md); null — пул не выбран.
   s3: { pool: string; writeMaster: string[]; writeReplica: string[] } | null;
 }
 
@@ -994,7 +994,7 @@ export interface BackupOrphanDto {
   registryState: string | null;
   firstSeenUnix: number | null;
   ttlLeftSec: number | null; // null у защищённых/заявленных (reliability t04)
-  // Защита сироты (reliability t04, arch/19 §4):
+  // Защита сироты (reliability t04, arch/backups/05-etcd-contract.md):
   hasValidFull: boolean; // автозащита: в префиксе есть валидный полный
   held: boolean; // hold-флаг оператора
   heldUnix: number | null;
@@ -1078,13 +1078,13 @@ export interface BackupShardStorageDto {
   wal: BackupWalDto | null;
   activeRestore: BackupRestoreBadgeDto | null;
   reconcileNote: string | null;
-  // Последний/текущий дрилл шарда (reliability t02, arch/19 §3.6); null — ключа нет.
+  // Последний/текущий дрилл шарда (reliability t02, arch/backups/04-drill.md); null — ключа нет.
   drill: BackupDrillBadgeDto | null;
-  // u11: приёмники WAL per-node (arch/19 §4); null — не тикали.
+  // u11: приёмники WAL per-node (arch/backups/05-etcd-contract.md); null — не тикали.
   agents?: WalAgentDto[] | null;
 }
 
-// Приёмник WAL ноды (u11, arch/19 §4): lease-ключ жив = приёмник жив.
+// Приёмник WAL ноды (u11, arch/backups/05-etcd-contract.md): lease-ключ жив = приёмник жив.
 export interface WalAgentDto {
   node: string;
   role: string | null;

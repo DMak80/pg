@@ -7,7 +7,7 @@ using Xunit;
 
 namespace S3Worker.IntegrationTests.E2e;
 
-// Надзор E2E S3Worker (spec §11 сценарий 6, arch/24 §5 C): пересоздание
+// Надзор E2E S3Worker (spec §11 сценарий 6, arch/s3worker/02-cluster-lifecycle.md §4 C): пересоздание
 // убитой ноды на том же placed_on (volume жив — тест-объект читается),
 // UNREACHABLE по молчащему health (NodeDeadSec=15, деструктива нет),
 // usage-ключ кормится тиками надзора, восстановление после unpause.
@@ -46,7 +46,7 @@ public class S3E2eSupervisionTests
             // (PROVISIONING → RUNNING), volume сохранён — тест-объект читается.
             // Гвард устаревшего чтения: etcd-значение state==RUNNING обязан
             // подкреплять СВЕЖИЙ usage-ключ (updated_unix позже сноса) — usage
-            // пишет ТОЛЬКО health-ok тик надзора живой ноды (arch/24 §5 C).
+            // пишет ТОЛЬКО health-ok тик надзора живой ноды (arch/s3worker/02-cluster-lifecycle.md §4 C).
             // Без гварда поллинг ловит RUNNING до сноса, пока пересозданный
             // контейнер ещё в PROVISIONING: пауза такой ноды клинит сценарий —
             // трек PROVISIONING заморожен (чужой процесс), add-node ловит
@@ -114,7 +114,7 @@ public class S3E2eSupervisionTests
         }
         catch
         {
-            // docs/e2e-launch.md §3: упавший сценарий — teardown остановит
+            // arch/testing/01-e2e-launch.md §3: упавший сценарий — teardown остановит
             // контейнеры, но не удалит (разбор по артефактам).
             fx.MarkFailed();
             throw;
@@ -125,7 +125,7 @@ public class S3E2eSupervisionTests
     private static async Task<AmazonS3Client> NewS3ClientAsync(
         S3E2eEnvironment fx, string cluster, int port, CancellationToken ct)
     {
-        // Креды — per-cluster secrets-ключ etcd (arch/23 §2); без печати.
+        // Креды — per-cluster secrets-ключ etcd (arch/s3-clusters/02-keys.md §1); без печати.
         var (rootUser, rootPassword) = await fx.RootPairOfAsync(cluster, ct);
         return new AmazonS3Client(
             new Amazon.Runtime.BasicAWSCredentials(rootUser, rootPassword),

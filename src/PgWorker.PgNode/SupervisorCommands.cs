@@ -3,7 +3,7 @@ using PgWorker.PgNode.Operations;
 
 namespace PgWorker.PgNode;
 
-/// <summary>Управление сервисами ноды через supervisorctl (arch/14 §2.1/§4;
+/// <summary>Управление сервисами ноды через supervisorctl (arch/pgworker/01-placement.md §1/§4;
 /// прецедент RestoreOperation): start блокирует до startsecs и рапортует
 /// провал старта ненулевым кодом — попытка старта = один вызов; «already
 /// started» — успех (идемпотентность). restart безопасен на остановленной

@@ -2,7 +2,7 @@ using System.Diagnostics;
 
 namespace PgWorker.PgNode.Operations;
 
-/// <summary>Прод-реализация IProcessRunner (arch/19 §3.4 «все child-процессы —
+/// <summary>Прод-реализация IProcessRunner (arch/pgnode/08-operability.md «все child-процессы —
 /// Process.Start»): полный слив stdout/stderr в память — ОБА потока читаются
 /// параллельно (дочерний пишет stderr одновременно с stdout: последовательное
 /// чтение при многострочном stderr упирается в заполненный пайп-буфер и

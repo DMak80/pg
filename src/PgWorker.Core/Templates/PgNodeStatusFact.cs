@@ -4,7 +4,7 @@ using System.Text.Json.Serialization;
 namespace PgWorker.Core.Templates;
 
 /// <summary>Факт статусного ключа агента PgNode + StatusKey-формат
-/// (arch/14 §3.3; дубль контракта агента — запрет цикла ссылок, прецедент
+/// (arch/pgworker/00-etcd-contract.md §4; дубль контракта агента — запрет цикла ссылок, прецедент
 /// ApiContracts): воркер мониторит poll-тиком, панелью не разбирается.</summary>
 public sealed record PgNodeStatusFact(
     string State,

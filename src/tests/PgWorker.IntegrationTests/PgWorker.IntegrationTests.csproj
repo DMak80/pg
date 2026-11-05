@@ -8,7 +8,7 @@
          параллельная конкуренция для них не норма (эмпирика, журнал задачи).
          Бывшие CollectionBehavior-атрибут (задавал N=1 всей сборке) и
          Xunit*-свойства csproj (xunit.v3 не поддерживает) удалены. Канон и
-         правила соседней нагрузки — docs/e2e-launch.md §5. -->
+         правила соседней нагрузки — arch/testing/01-e2e-launch.md §5. -->
     <ItemGroup>
         <None Update="xunit.runner.json" CopyToOutputDirectory="PreserveNewest"/>
     </ItemGroup>

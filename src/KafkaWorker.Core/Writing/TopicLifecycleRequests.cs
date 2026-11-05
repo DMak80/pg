@@ -17,12 +17,12 @@ public sealed record TopicDesiredRequest(
     long? RetentionMs = null,
     int? MinInSyncReplicas = null);
 
-// desired-часть ключа topics/<T> (arch/15 §3).
+// desired-часть ключа topics/<T> (arch/kafka-clusters/03-topics.md §1).
 public sealed record KafkaTopicDesiredJson(
     [property: JsonPropertyName("partitions")] int? Partitions,
     [property: JsonPropertyName("configs")] Dictionary<string, string>? Configs);
 
-// Значение заявки topics/<T>/desired.create (arch/15 §3.1).
+// Значение заявки topics/<T>/desired.create (arch/kafka-clusters/03-topics.md §2).
 public sealed record TopicLifecycleCreateJson(
     [property: JsonPropertyName("partitions")] int Partitions,
     [property: JsonPropertyName("replication_factor")] int ReplicationFactor,
@@ -34,7 +34,7 @@ public sealed record TopicLifecycleCreateJson(
     { DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull });
 }
 
-// Значение заявки topics/<T>/desired.delete (arch/15 §3.1).
+// Значение заявки topics/<T>/desired.delete (arch/kafka-clusters/03-topics.md §2).
 public sealed record TopicLifecycleDeleteJson(
     [property: JsonPropertyName("requested_unix")] long RequestedUnix,
     [property: JsonPropertyName("requested_by")] string RequestedBy)
@@ -103,7 +103,7 @@ public static class KafkaTopicCreatePlan
     }
 }
 
-// Значение ключа topics/<T> (arch/15 §3): факт (partitions/RF/configs/
+// Значение ключа topics/<T> (arch/kafka-clusters/03-topics.md §1): факт (partitions/RF/configs/
 // synced_unix) + заявка desired + missing. Толерантный разбор/каноническая
 // запись — API воркера меняет ТОЛЬКО desired-поля (RMW), факт — территория
 // процессов воркера.

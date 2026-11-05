@@ -8,7 +8,7 @@ namespace KafkaWorker.App.Loops;// Агрегатор процессов для 
 // в unit-тестах цикла).
 
 /// <summary>
-/// Точка входа цикла к процессам-машинам состояний (arch/16 §5).
+/// Точка входа цикла к процессам-машинам состояний (arch/kafkaworker/README.md).
 /// </summary>
 internal interface IKafkaClusterProcesses
 {
@@ -17,7 +17,7 @@ internal interface IKafkaClusterProcesses
     Task<Result> DeprovisionAsync(KafkaClusterSnapshot snap, CancellationToken ct);
 
     /// <summary>
-    /// Active-ветка (порядок — arch/16 §5): надзор (C) → converge (E) →
+    /// Active-ветка (порядок — arch/kafkaworker/README.md): надзор (C) → converge (E) →
     /// reassignment (I: drain TO_REMOVE + заявки balance) → scale-проход
     /// remove (G) → add (F) → ротация (H) → регенерация (J: автоконверге
     /// лимитов) → автосинк топиков (D, тик TopicSyncIntervalSec —
@@ -53,7 +53,7 @@ internal sealed class KafkaClusterProcesses(
     public async Task<Result> ActiveAsync(KafkaClusterSnapshot snap, CancellationToken ct)
     {
         // Премиграционный кластер (SASL_PLAINTEXT) — SecurityMigrator ДО всего
-        // Active (arch/16 §5 M): converge/пробы старого кластера бессмысленны.
+        // Active (arch/kafkaworker/06-rebalancing.md §3 M): converge/пробы старого кластера бессмысленны.
         var migrated = await migrator.RunAsync(snap, ct);
         if (!migrated.IsSuccess)
             return migrated;
@@ -73,7 +73,7 @@ internal sealed class KafkaClusterProcesses(
             return Result.Success();
 
         // Converge (E) — только для канонического кластера (endpoints + admin/CA
-        // есть; премиграционный кластер мигрирует M, arch/16 §5 классификация).
+        // есть; премиграционный кластер мигрирует M, arch/kafkaworker/README.md классификация).
         if (snap.Endpoints is not null && snap.AdminUser is not null
             && snap.AdminPassword is not null && snap.CaPem is not null)
         {
@@ -84,7 +84,7 @@ internal sealed class KafkaClusterProcesses(
         }
 
         // Reassignment (I) перед remove: к моменту G дренируемый брокер пуст
-        // (drain TO_REMOVE-кандидатов + заявка balance; arch/16 §5 классификация).
+        // (drain TO_REMOVE-кандидатов + заявка balance; arch/kafkaworker/README.md классификация).
         var reassigned = await reassigner.RunAsync(snap, ct);
         if (!reassigned.IsSuccess)
             return reassigned;
@@ -105,7 +105,7 @@ internal sealed class KafkaClusterProcesses(
             return rotated;
 
         // Ротация CA/сертов (K) — по заявке /kafkaworker/ca_rotations/<C>;
-        // после H и до J (rolling-ы не смешиваются, arch/16 §5).
+        // после H и до J (rolling-ы не смешиваются, arch/kafkaworker/README.md).
         var caRotated = await caRotator.RunAsync(snap, ct);
         if (!caRotated.IsSuccess)
             return caRotated;

@@ -128,7 +128,7 @@ public sealed class S3AlertEngine(IOptions<S3AlertsOptions> options) : IS3AlertE
                     ["requestedUnix"] = rotation.RequestedUnix.ToString(),
                 },
                 null,
-                "rotation request is alive (key /s3worker/rotations/<C>): the worker will reissue the env profile by rolling re-creation of instances and remove the key; no cancellation from the panel (arch/23 §8)",
+                "rotation request is alive (key /s3worker/rotations/<C>): the worker will reissue the env profile by rolling re-creation of instances and remove the key; no cancellation from the panel (arch/s3-clusters/08-coordination.md)",
                 AlertRemedy.WorkerAuto,
                 "rotation is executed by the worker, the key will disappear; if it stalls, the worker is lagging — check /s3worker/work/<C>");
 
@@ -151,7 +151,7 @@ public sealed class S3AlertEngine(IOptions<S3AlertsOptions> options) : IS3AlertE
                     "check /s3worker/work/<C> and S3 node availability; the request will be cleared by execution or by the worker age timeout");
         }
 
-        // 17. s3-key-malformed (warning): parseError-записи (arch/23 §2).
+        // 17. s3-key-malformed (warning): parseError-записи (arch/s3-clusters/02-keys.md §1).
         foreach (var error in next.ParseErrors)
             yield return new Alert(
                 $"s3-key-malformed:{error.Key}",
@@ -161,9 +161,9 @@ public sealed class S3AlertEngine(IOptions<S3AlertsOptions> options) : IS3AlertE
                 $"s3 key not parsed: {error.Key}",
                 new Dictionary<string, string> { ["reason"] = error.Reason },
                 null,
-                "s3 key not parsed by the panel parser: the malformed value does not reach the model — the UI is blind to the key; the s3 domain value format canon is arch/23",
+                "s3 key not parsed by the panel parser: the malformed value does not reach the model — the UI is blind to the key; the s3 domain value format canon is arch/s3-clusters/README.md",
                 AlertRemedy.OperatorRunbook,
-                "eliminate the source of the malformed record (external writer) and bring the value to the arch/23 canon; the next tick will parse the key");
+                "eliminate the source of the malformed record (external writer) and bring the value to the arch/s3-clusters/README.md canon; the next tick will parse the key");
     }
 
     // 5–14. Алерты Active-кластера.
@@ -194,7 +194,7 @@ public sealed class S3AlertEngine(IOptions<S3AlertsOptions> options) : IS3AlertE
                 cluster.Name,
                 $"connectivity of cluster {cluster.Name} DEGRADED — some configured links fail",
                 null, null,
-                "the connectivity probe saw offline links while nodes are alive: replication over these pairs is not happening (arch/23 §3)",
+                "the connectivity probe saw offline links while nodes are alive: replication over these pairs is not happening (arch/s3-clusters/03-observation-statuses.md)",
                 AlertRemedy.WorkerAuto,
                 "the worker probe will re-transfer the matrix; persistently DEGRADED — check the link nodes and the docker host network");
 
@@ -206,7 +206,7 @@ public sealed class S3AlertEngine(IOptions<S3AlertsOptions> options) : IS3AlertE
                 cluster.Name,
                 $"connectivity of cluster {cluster.Name} DOWN — nodes cannot hear each other",
                 null, null,
-                "the connectivity probe failed on every link: graph replication is not happening, backup data diverges (arch/23 §3)",
+                "the connectivity probe failed on every link: graph replication is not happening, backup data diverges (arch/s3-clusters/03-observation-statuses.md)",
                 AlertRemedy.OperatorRunbook,
                 "check the s3w-<C>-<I> node containers and the docker host network; the probe will re-transfer the matrix after recovery");
 
@@ -219,7 +219,7 @@ public sealed class S3AlertEngine(IOptions<S3AlertsOptions> options) : IS3AlertE
                 cluster.Name,
                 $"cluster {cluster.Name} sync LAGGING — pairs are compared with discrepancies",
                 null, null,
-                "the probe compared destination/source listings: missing/extra found — replication has not caught up (arch/23 §3)",
+                "the probe compared destination/source listings: missing/extra found — replication has not caught up (arch/s3-clusters/03-observation-statuses.md)",
                 AlertRemedy.WorkerAuto,
                 "the worker probe will re-transfer; persistent lag — check the node replication queues");
 
@@ -231,7 +231,7 @@ public sealed class S3AlertEngine(IOptions<S3AlertsOptions> options) : IS3AlertE
                 cluster.Name,
                 $"cluster {cluster.Name} sync DIVERGED — pair data diverges",
                 null, null,
-                "the probe saw missing/extra after catch-up runs: some backups are not replicated across pairs (arch/23 §3)",
+                "the probe saw missing/extra after catch-up runs: some backups are not replicated across pairs (arch/s3-clusters/03-observation-statuses.md)",
                 AlertRemedy.OperatorRunbook,
                 "check the pair link and the s3w-<C>-<I> node logs; after the fix the probe will re-transfer and the verdict will improve");
 
@@ -323,9 +323,9 @@ public sealed class S3AlertEngine(IOptions<S3AlertsOptions> options) : IS3AlertE
                     ["nodes"] = names,
                 },
                 null,
-                "several cluster nodes are placed on the same docker host: losing the host loses a share of the data; geo-spread is the operator's duty (arch/23 §4)",
+                "several cluster nodes are placed on the same docker host: losing the host loses a share of the data; geo-spread is the operator's duty (arch/s3-clusters/04-placement.md)",
                 AlertRemedy.OperatorRunbook,
-                "geo-spread is the operator's duty, arch/23 §4; drain or move the instance");
+                "geo-spread is the operator's duty, arch/s3-clusters/04-placement.md; drain or move the instance");
         }
 
         // 14. s3-node-not-in-mesh (warning): нода без единой связи в links.

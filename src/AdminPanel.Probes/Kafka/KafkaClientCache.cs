@@ -130,7 +130,7 @@ public sealed class KafkaClientCache(ILogger<KafkaClientCache>? logger = null) :
         var config = new AdminClientConfig
         {
             BootstrapServers = bootstrap,
-            SecurityProtocol = SecurityProtocol.SaslSsl, // дискавери-канон arch/15 §5
+            SecurityProtocol = SecurityProtocol.SaslSsl, // дискавери-канон arch/kafka-clusters/05-client-discovery.md §1
             SaslMechanism = SaslMechanism.Plain,
             SaslUsername = user,
             SaslPassword = password,

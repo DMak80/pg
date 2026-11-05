@@ -9,7 +9,7 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.Configure<SdGeneratorOptions>(builder.Configuration.GetSection("SdGenerator"));
 // Плоский инстанс опций — hosted service/цикл принимают SdGeneratorOptions напрямую.
 builder.Services.AddSingleton(sp => sp.GetRequiredService<IOptions<SdGeneratorOptions>>().Value);
-// Самонаблюдение (arch/18 §5.2 job sd-generator): AddAppMetrics при Enabled=true
+// Самонаблюдение (arch/metrics/05-storage.md §2 job sd-generator): AddAppMetrics при Enabled=true
 // регистрирует OTel-провайдер и DI-Meter с именем SdGenerator; инструментарий
 // берёт этот Meter из DI (канон KafkaWorker.App). Enabled=false —
 // провайдера/Meter в DI нет, SdGeneratorMetrics создаст свой (пишем «в никуда»).
@@ -19,7 +19,7 @@ builder.Services.AddHttpClient("etcd");
 builder.Services.AddSingleton<IEtcdGateway>(sp =>
     new EtcdGateway(sp.GetRequiredService<IHttpClientFactory>().CreateClient("etcd")));
 
-// file_sd-контур: ДВА writer (patroni-nodes + pgnode-nodes, arch/18 §5.4)
+// file_sd-контур: ДВА writer (patroni-nodes + pgnode-nodes, arch/metrics/05-storage.md §4)
 // → метрики → цикл → hosted service.
 builder.Services.AddSingleton(sp => new SdGeneratorMetrics(
     sp.GetService<Meter>() ?? new Meter(SdGeneratorMetrics.MeterName), TimeProvider.System));

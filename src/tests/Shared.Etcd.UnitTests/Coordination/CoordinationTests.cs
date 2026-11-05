@@ -108,7 +108,7 @@ public class CoordinationTests
         store.IsMine("shop").Should().BeFalse();
     }
 
-    // Cancellation-гвард клэйма (arch/17 S5): держатель несёт cancel-токен,
+    // Cancellation-гвард клэйма (arch/synchronization/02-predicates-and-mutations.md §S5): держатель несёт cancel-токен,
     // потеря lease keepalive-тиком отменяет его — исполняющийся тик прерывается.
     [Fact]
     public async Task ClaimStore_KeepaliveFailure_CancelsLeaseToken()

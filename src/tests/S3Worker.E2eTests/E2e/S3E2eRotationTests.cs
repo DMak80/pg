@@ -10,7 +10,7 @@ namespace S3Worker.IntegrationTests.E2e;
 
 // Ротация и sync-probe E2E S3Worker (spec §11 сценарии 8–9):
 // 8 — ротация = перевыпуск per-cluster кредов в secrets-ключе etcd
-// (arch/23 §8): root_user сохраняется, root_password/ключи перевыпускаются,
+// (arch/s3-clusters/08-coordination.md): root_user сохраняется, root_password/ключи перевыпускаются,
 // ноды rolling-пересоздаются с новым env; НОВАЯ root-пара допущена нодами
 // (200), СТАРАЯ — отклонена (403); docker-env нод несёт нового root_user
 // (сравнение в коде БЕЗ печати);
@@ -46,7 +46,7 @@ public class S3E2eRotationTests
                 .Should().Be(rootUser, "nodes carry the per-cluster secrets env");
 
             // Act: заявка ротации → 201 → воркер перевыпускает креды в
-            // secrets-ключе и rolling-пересоздаёт ноды (arch/23 §8).
+            // secrets-ключе и rolling-пересоздаёт ноды (arch/s3-clusters/08-coordination.md).
             using var rotated = await api.PostAsync(
                 $"/api/s3/clusters/{cluster}/rotations", content: null, ct);
             var rotatedBody = await rotated.Content.ReadAsStringAsync(ct);
@@ -93,14 +93,14 @@ public class S3E2eRotationTests
         }
         catch
         {
-            // docs/e2e-launch.md §3: упавший сценарий — teardown остановит
+            // arch/testing/01-e2e-launch.md §3: упавший сценарий — teardown остановит
             // контейнеры, но не удалит (разбор по артефактам).
             fx.MarkFailed();
             throw;
         }
     }
 
-    // Сценарий 9 sync-probe (arch/24 §1.1): POST → 202 + заявка
+    // Сценарий 9 sync-probe (arch/s3worker/07-api.md §1): POST → 202 + заявка
     // /s3worker/probes/&lt;C&gt;; тик зонда исполняет её (для кластера без линков —
     // пустая матрица OK / SYNCED без пар) и сносит заявку.
     [Fact]

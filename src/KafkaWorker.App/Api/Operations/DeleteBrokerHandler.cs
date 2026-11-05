@@ -8,7 +8,7 @@ namespace KafkaWorker.App.Api.Operations;
 // (one-way, идемпотентен). Серверные пред-проверки по прямым чтениям etcd:
 // не controller (role-ключ), не последний; live-проверку размещения реплик
 // панель НЕ делает (в etcd фактических реплик нет) — guard «на брокере есть
-// партиции» авторитетно исполняет воркер (drain процессом I arch/16 §5).
+// партиции» авторитетно исполняет воркер (drain процессом I arch/kafkaworker/README.md).
 // Порт панельного RemoveKafkaBrokerCommandHandler.
 public sealed partial class DeleteBrokerHandler(IEtcdGateway gateway, string[] endpoints)
 {

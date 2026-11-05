@@ -3,7 +3,7 @@ using PgWorker.Core.Model;
 
 namespace PgWorker.Provisioning.Processes;
 
-/// <summary>Исход такта процесса (arch/14 §5): ожидание / цель достигнута / недостижимо без вмешательства.</summary>
+/// <summary>Исход такта процесса (arch/pgworker/README.md): ожидание / цель достигнута / недостижимо без вмешательства.</summary>
 public enum ProcessOutcome
 {
     /// <summary>Продолжить следующими тиками (ждём Patroni, ключей панели, мастера).</summary>
@@ -37,8 +37,8 @@ public interface IClusterProcess
 
 /// <summary>
 /// Параметры размещения/бюджетов процессов (appsettings → задача 23):
-/// диапазон портов нод (arch/14 §2.4), бюджет ожидания Patroni (P2.2, сек) и
-/// бэкофф ретраев provision (arch/14 §5 A: Base·2^(n−1) с капом Max).
+/// диапазон портов нод (arch/pgworker/01-placement.md §5), бюджет ожидания Patroni (P2.2, сек) и
+/// бэкофф ретраев provision (arch/pgworker/processes/a-provisioning.md A: Base·2^(n−1) с капом Max).
 /// </summary>
 public sealed record PlacementOptions(
     int PortFrom, int PortTo, int PatroniBootSec,
@@ -47,7 +47,7 @@ public sealed record PlacementOptions(
 /// <summary>
 /// Пороги надзора (spec §10 Thresholds → задача 23): нода мертва дольше
 /// NodeDeadSec → rebuild (при кворуме и не-лидере); шард целиком мертв дольше
-/// ShardDeadSec → эвакуация (arch/14 §5 C); PatroniBootSec — бюджет ожидания
+/// ShardDeadSec → эвакуация (arch/pgworker/processes/c-node-supervisor.md C); PatroniBootSec — бюджет ожидания
 /// Patroni после ensure нод (P2.2) и после restore-rejoin (§3.5).
 /// </summary>
 public sealed record ThresholdsOptions(int NodeDeadSec, int ShardDeadSec, int PatroniBootSec = 300);

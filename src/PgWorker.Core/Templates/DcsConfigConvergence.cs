@@ -13,7 +13,7 @@ public sealed record ConvergenceDivergence(
     string? Patch, int Updated, int Added, int Removed, bool PostmasterTouched);
 
 /// <summary>
-/// Патч-билдер конвергенции DCS-конфига (arch/14 §5 C; поглощает
+/// Патч-билдер конвергенции DCS-конфига (arch/pgworker/processes/c-node-supervisor.md C; поглощает
 /// PatroniTimings.DivergencePatch — тайминги по-прежнему из PatroniTimings):
 /// расхождение фактического динамического конфига (GET /config, JSON) с каноном
 /// → минимальный патч-документ для PATCH /config. Конвергентно → null —
@@ -44,7 +44,7 @@ public static class DcsConfigConvergence
 
     /// <summary>Минимальный патч-документ для PATCH /config; null — конвергентно.
     /// syncStrict — per-cluster ожидание synchronous_mode_strict из config
-    /// кластера (arch/14 §5 C).</summary>
+    /// кластера (arch/pgworker/processes/c-node-supervisor.md C).</summary>
     public static string? DivergencePatch(
         string? configJson, bool syncStrict,
         IReadOnlyList<(string Name, string RawValue)>? desiredParameters)
@@ -70,7 +70,7 @@ public static class DcsConfigConvergence
         AddIfDivergent(timingPatch, root, "loop_wait", PatroniTimings.LoopWait);
         AddIfDivergent(timingPatch, root, "retry_timeout", PatroniTimings.RetryTimeout);
         AddIfDivergent(timingPatch, root, "synchronous_mode", PatroniTimings.SynchronousMode);
-        // strict — per-cluster ожидание из config кластера (arch/14 §5 C).
+        // strict — per-cluster ожидание из config кластера (arch/pgworker/processes/c-node-supervisor.md C).
         AddIfDivergent(timingPatch, root, "synchronous_mode_strict", syncStrict);
 
         var updated = 0;

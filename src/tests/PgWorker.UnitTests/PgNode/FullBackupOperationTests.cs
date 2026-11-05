@@ -10,7 +10,7 @@ using Xunit;
 
 namespace PgWorker.UnitTests.PgNode;
 
-// Операция полного бэкапа приёмника (arch/19 §2, spec §3.4) на фейках
+// Операция полного бэкапа приёмника (arch/backups/01-full-backup.md, spec §3.4) на фейках
 // IProcessRunner/IBackupS3: порядок фаз running/basebackup → uploading (+
 // wal_start_segment из backup_label) → succeeded; put-ключи 1:1 full/<id>/…
 // + wal/<seg> без *.partial/*.history; пароль — ТОЛЬКО env PGPASSWORD (не
@@ -234,14 +234,14 @@ public class FullBackupOperationTests
             _ => (IBackupS3)s3!,
             sourceFactory: _ => identify ?? new FakeIdentifySource());
 
-    /// <summary>Фейк replication-источника для IDENTIFY_SYSTEM дубля (arch/19 §2):
+    /// <summary>Фейк replication-источника для IDENTIFY_SYSTEM дубля (arch/backups/01-full-backup.md):
     /// только Open+Identify; Stream/Start не вызываются операцией дубля.</summary>
     private sealed class FakeIdentifySource : IXLogReplicationSource
     {
         public Result Open = Result.Success();
 
         // Дефолт: активный сегмент 0xAD=173 — сегменты набора 2 и 0xAB=171
-        // строго ниже активного и дублируются финалами (arch/19 §2).
+        // строго ниже активного и дублируются финалами (arch/backups/01-full-backup.md).
         public Result<ServerIdentity> Identify =
             Result<ServerIdentity>.Success(new(1, 0xADUL << 24));
 
@@ -294,7 +294,7 @@ public class FullBackupOperationTests
         s3.PutKeys.Should().Contain($"{prefix}/wal/000000010000000000000002");
         s3.PutKeys.Should().Contain($"{prefix}/wal/0000000100000000000000ab");
         // Assert: локальные .partial-файлы набора и .history НЕ дублируются
-        // (фильтр «строго ниже активного сегмента источника», arch/19 §2).
+        // (фильтр «строго ниже активного сегмента источника», arch/backups/01-full-backup.md).
         s3.PutKeys.Should().NotContain($"{prefix}/wal/000000010000000000000003.partial");
         s3.PutKeys.Should().NotContain(k => k.StartsWith($"{prefix}/wal/") && k.EndsWith(".history"));
         // Assert: пароль — ТОЛЬКО в env PGPASSWORD (не argv/DSN).
@@ -314,7 +314,7 @@ public class FullBackupOperationTests
     // AAA: wal-дубли набора заливаются в общий префикс wal/ ПОД НОРМАЛИЗОВАННЫМ
     // (СТРОЧНЫМ) именем — pg_basebackup кладёт сегменты ВЕРХНИМ hex, канон
     // ключей wal/ — строчные (симметрия стриму приёмников и fetch-wal): дубль
-    // сливается со стримом, мёртвого груза в верхнем регистре нет (arch/19 §2,
+    // сливается со стримом, мёртвого груза в верхнем регистре нет (arch/backups/01-full-backup.md,
     // spec §3.4). Файл 1:1 в full/<id>/pg_wal/ остаётся ВЕРХНИМ (набор 1:1).
     [Fact]
     public async Task WalDuplicates_UploadedLowercased_MergeWithStream()
@@ -435,7 +435,7 @@ public class FullBackupOperationTests
         Directory.Delete(staging, recursive: true);
     }
 
-    // AAA (t14, arch/19 §2): сегмент, живой в источнике на момент заливки, НЕ
+    // AAA (t14, arch/backups/01-full-backup.md): сегмент, живой в источнике на момент заливки, НЕ
     // дублируется в wal/ — его финал доставит стрим; набор 1:1 не тронут.
     [Fact]
     public async Task WalDuplicate_LiveSegmentInSource_Skipped()
@@ -459,7 +459,7 @@ public class FullBackupOperationTests
         registry.Current!.State.Should().Be("succeeded");
         s3.PutKeys.Should().Contain($"{prefix}/wal/000000010000000000000002");
         s3.PutKeys.Should().NotContain($"{prefix}/wal/0000000100000000000000ab",
-            "the live source segment must not be duplicated into wal/ (arch/19 §2)");
+            "the live source segment must not be duplicated into wal/ (arch/backups/01-full-backup.md)");
         s3.PutKeys.Should().Contain($"{prefix}/full/{Id}/pg_wal/0000000100000000000000AB");
 
         // Cleanup
@@ -467,7 +467,7 @@ public class FullBackupOperationTests
     }
 
     // AAA: отказ IDENTIFY_SYSTEM — операция FAILED однострочной причиной (резюмов
-    // нет — переснятие новым id, arch/19 §2).
+    // нет — переснятие новым id, arch/backups/01-full-backup.md).
     [Fact]
     public async Task IdentifyFailed_FailedWithOneLineError()
     {

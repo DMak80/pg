@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Per-install API TLS-пакет (t03, arch/14 §1.1 / arch/16 §1.1 / arch/21 §1.1):
+# Per-install API TLS-пакет (t03, arch/pgworker/07-api.md §1 / arch/kafkaworker/07-api.md §1 / arch/valkeyworker/05-api.md §1):
 # ЕДИНАЯ CA kfw-install-ca на воркеров. Серверные серты: server (kafkaworker +
 # valkeyworker + s3worker + etcdworker — один серт, SAN покрывает всех),
 # pgserver (pgworker); клиентские:
@@ -41,13 +41,13 @@ if [ ! -f server.crt ] || ! openssl x509 -in server.crt -noout -text 2>/dev/null
   issue server kafkaworker serverAuth "$SERVER_SAN"
 fi
 
-# Сетевые таргеты s3worker/s3worker-2 (arch/24, стендовые инстансы) —
+# Сетевые таргеты s3worker/s3worker-2 (arch/s3worker/README.md, стендовые инстансы) —
 # серт без DNS:s3worker-2 перегенерируем (CA жив).
 if [ ! -f server.crt ] || ! openssl x509 -in server.crt -noout -text 2>/dev/null | grep -q 'DNS:s3worker-2'; then
   issue server kafkaworker serverAuth "$SERVER_SAN"
 fi
 
-# Сетевые таргеты etcdworker/etcdworker-2 (arch/25 §1.1) — серт без
+# Сетевые таргеты etcdworker/etcdworker-2 (arch/etcdworker/05-api.md §1) — серт без
 # DNS:etcdworker-2 перегенерируем (CA жив).
 if [ ! -f server.crt ] || ! openssl x509 -in server.crt -noout -text 2>/dev/null | grep -q 'DNS:etcdworker-2'; then
   issue server kafkaworker serverAuth "$SERVER_SAN"
@@ -75,7 +75,7 @@ fi
 [ -f panel.crt ]      || issue panel      panel      clientAuth ""
 [ -f seed.crt ]       || issue seed       seed       clientAuth ""
 # Клиентские серты prometheus/healthcheck упразднены каноном открытой грани
-# /healthz и /metrics (arch/14 §1.1 / arch/18 §5.2): скрейп и HEALTHCHECK
+# /healthz и /metrics (arch/pgworker/07-api.md §1 / arch/metrics/05-storage.md §2): скрейп и HEALTHCHECK
 # ходят без клиентского серта. Удаляются и наследие живых стендов — gen.sh
 # идемпотентен и вызывается каждым 00-up.sh.
 rm -f prometheus.crt prometheus.key healthcheck.crt healthcheck.key

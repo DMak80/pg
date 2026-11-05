@@ -1,9 +1,9 @@
 namespace EtcdWorker.App;
 
-// Конфигурация EtcdWorker (arch/25 §8): секция "EtcdWorker" в appsettings.json +
+// Конфигурация EtcdWorker (arch/etcdworker/06-operability.md §5): секция "EtcdWorker" в appsettings.json +
 // env-оверрайды (EtcdWorker__Etcd__Endpoints__0=http://…). Per-install env-секреты —
 // TLS HTTP API (ETCDW_API_TLS_*) и docker-транспорт (ETCDW_DOCKER_*); per-install
-// S3-пар НЕТ — цель DR-слепков резолвится из /s3/clusters/ (arch/25 §4), значимое
+// S3-пар НЕТ — цель DR-слепков резолвится из /s3/clusters/ (arch/etcdworker/04-snapshots.md), значимое
 // состояние — в etcd.
 
 /// <summary>Корневые настройки сервиса.</summary>
@@ -17,18 +17,18 @@ public sealed class EtcdWorkerOptions
     public ApiOptions Api { get; set; } = new();
 }
 
-/// <summary>HTTP API воркера (arch/25 §1.1): advertise-URL в /etcdworker/api/&lt;id&gt;.</summary>
+/// <summary>HTTP API воркера (arch/etcdworker/05-api.md §1): advertise-URL в /etcdworker/api/&lt;id&gt;.</summary>
 public sealed class ApiOptions
 {
     /// <summary>URL API, достижимый клиентами (панелью); пусто → fail-fast старта.</summary>
     public string AdvertiseUrl { get; set; } = "";
 
-    /// <summary>mTLS-конфигурация HTTP API (arch/25 §1.1).</summary>
+    /// <summary>mTLS-конфигурация HTTP API (arch/etcdworker/05-api.md §1).</summary>
     public TlsOptions Tls { get; set; } = new();
 }
 
 /// <summary>
-/// mTLS HTTP API воркера (arch/25 §1.1): серверный серт+ключ и CA клиентских
+/// mTLS HTTP API воркера (arch/etcdworker/05-api.md §1): серверный серт+ключ и CA клиентских
 /// сертов per-install API-CA; env ETCDW_API_TLS_{CERT,KEY,CLIENT_CA}[_PATH]
 /// (таблица TlsEndpoints.EnvBindings). AllowInsecureHttp — ТОЛЬКО WAF-тесты.
 /// </summary>
@@ -49,7 +49,7 @@ public sealed class TlsOptions
 
     public string? ClientCaPath { get; set; }
 
-    /// <summary>true — HTTP без TLS; ТОЛЬКО WAF-фикстуры тестов (arch/25 §1.1).</summary>
+    /// <summary>true — HTTP без TLS; ТОЛЬКО WAF-фикстуры тестов (arch/etcdworker/05-api.md §1).</summary>
     public bool AllowInsecureHttp { get; set; }
 }
 
@@ -59,20 +59,20 @@ public sealed class EtcdOptions
     public string[] Endpoints { get; set; } = [];
 }
 
-/// <summary>docker: режим (Plain|Swarm), сеть контура, порты, образы (arch/25 §2/§8).</summary>
+/// <summary>docker: режим (Plain|Swarm), сеть контура, порты, образы (arch/etcdworker/01-placement.md/§8).</summary>
 public sealed class DockerOptions
 {
     /// <summary>Plain | Swarm (регистронезависимо).</summary>
     public string Mode { get; set; } = "Plain";
 
     /// <summary>Таблица хостов plain-режима: Plain — РОВНО ОДИН хост (fail-fast
-    /// иначе, arch/25 §2: мультихост — Swarm).</summary>
+    /// иначе, arch/etcdworker/01-placement.md: мультихост — Swarm).</summary>
     public DockerHostOptions[] Hosts { get; set; } = [];
 
     /// <summary>Endpoint manager-узла swarm.</summary>
     public string? SwarmManager { get; set; }
 
-    /// <summary>Общая сеть контура etcd (arch/25 §2): Plain — ensure-bridge
+    /// <summary>Общая сеть контура etcd (arch/etcdworker/01-placement.md): Plain — ensure-bridge
     /// воркером; Swarm — overlay воркера; стенд/E2E — сеть контура/сценария.</summary>
     public string Network { get; set; } = "etcdw-net";
 
@@ -88,7 +88,7 @@ public sealed class DockerOptions
     public Shared.Docker.SshTunnelOptions? Ssh { get; set; }
 
     /// <summary>Advertised-хост КЛИЕНТСКОЙ грани (только client-advertise,
-    /// arch/25 §2): null → имя docker-хоста размещения.</summary>
+    /// arch/etcdworker/01-placement.md): null → имя docker-хоста размещения.</summary>
     public string? AdvertisedHost { get; set; }
 }
 
@@ -108,13 +108,13 @@ public sealed class PortRangeOptions
     public int To { get; set; } = 18999;
 }
 
-/// <summary>Образ etcd-узла (arch/25 §2).</summary>
+/// <summary>Образ etcd-узла (arch/etcdworker/01-placement.md).</summary>
 public sealed class DockerImagesOptions
 {
     public string Etcd { get; set; } = "quay.io/coreos/etcd:v3.5.21";
 }
 
-/// <summary>Интервалы циклов и задержка после ошибки тика (arch/25 §8).</summary>
+/// <summary>Интервалы циклов и задержка после ошибки тика (arch/etcdworker/06-operability.md §5).</summary>
 public sealed class LoopsOptions
 {
     public int ScanIntervalSec { get; set; } = 5;
@@ -123,27 +123,27 @@ public sealed class LoopsOptions
 
     public int ErrorDelayMs { get; set; } = 2000;
 
-    /// <summary>Watchdog зависших циклов (arch/25 §6): Enabled=false — компонент
+    /// <summary>Watchdog зависших циклов (arch/etcdworker/06-operability.md §3): Enabled=false — компонент
     /// не регистрируется; порог сноса = Multiplier × CheckIntervalSec.</summary>
     public Shared.Core.Hosting.WatchdogOptions Watchdog { get; set; } = new();
 }
 
-/// <summary>Пороги процессов (arch/25 §8).</summary>
+/// <summary>Пороги процессов (arch/etcdworker/06-operability.md §5).</summary>
 public sealed class ThresholdsOptions
 {
     /// <summary>Бюджет готовности ноды (health-проба) при provisioning — ≤100 с
-    /// (arch/25 §3.1/§8).</summary>
+    /// (arch/etcdworker/02-membership.md/§8).</summary>
     public int NodeBootSec { get; set; } = 100;
 
     /// <summary>Молчание ноды дольше порога → UNREACHABLE, деструктива нет
-    /// (S7, arch/25 §3.2).</summary>
+    /// (S7, arch/etcdworker/03-node-supervision.md).</summary>
     public int NodeDeadSec { get; set; } = 300;
 
-    /// <summary>Период health-проб managed-узлов (/v3/maintenance/status, arch/25 §3.2).</summary>
+    /// <summary>Период health-проб managed-узлов (/v3/maintenance/status, arch/etcdworker/03-node-supervision.md).</summary>
     public int HealthIntervalSec { get; set; } = 15;
 }
 
-/// <summary>DR-слепки (arch/25 §4/§8): расписание, ретенция, выгрузка;
+/// <summary>DR-слепки (arch/etcdworker/04-snapshots.md/§8): расписание, ретенция, выгрузка;
 /// креды/endpoint'ы/bucket НЕ здесь — цель резолвится из /s3/clusters/.</summary>
 public sealed class SnapshotOptions
 {

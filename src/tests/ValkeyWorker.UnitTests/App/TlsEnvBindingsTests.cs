@@ -4,7 +4,7 @@ using Microsoft.Extensions.Configuration;
 
 namespace ValkeyWorker.UnitTests.App;
 
-// Options-биндинг TLS (arch/21 §8): VWK_API_TLS_* → конфиг-дерево; таблица
+// Options-биндинг TLS (arch/valkeyworker/06-operability.md §5): VWK_API_TLS_* → конфиг-дерево; таблица
 // EnvBindings — единственный источник соответствий (Program + тест).
 public class TlsEnvBindingsTests
 {
@@ -27,7 +27,7 @@ public class TlsEnvBindingsTests
         config["ValkeyWorker:Api:Tls:ClientCaPath"].Should().Be("/tls/ca.pem");
         config["ValkeyWorker:Api:Tls:ServerKeyPem"].Should().BeNull();
 
-        // Таблица покрывает все 6 секретов (arch/21 §8).
+        // Таблица покрывает все 6 секретов (arch/valkeyworker/06-operability.md §5).
         TlsEndpoints.EnvBindings.Should().HaveCount(6);
     }
 }

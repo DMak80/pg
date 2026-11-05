@@ -2,10 +2,10 @@ using ValkeyWorker.Core.Model;
 
 namespace ValkeyWorker.App.Loops;
 
-// Классификация тика (arch/21 §5): тип работы над кластером по config.state.
+// Классификация тика (arch/valkeyworker/README.md): тип работы над кластером по config.state.
 
 /// <summary>NOT_INITIALIZED → Provision; TO_REMOVE → Deprovision; отсутствие state → Active;
-/// битый config → Skip; незнакомое state → Active (raw, arch/20 §5).</summary>
+/// битый config → Skip; незнакомое state → Active (raw, arch/valkey-clusters/05-fault-tolerance.md).</summary>
 public enum ValkeyClusterKind
 {
     /// <summary>config.state=NOT_INITIALIZED — ProvisioningProcess (V0–V5).</summary>
@@ -22,10 +22,10 @@ public enum ValkeyClusterKind
 }
 
 /// <summary>
-/// Чистая функция классификации кластера по config.state (arch/21 §5):
+/// Чистая функция классификации кластера по config.state (arch/valkeyworker/README.md):
 /// NOT_INITIALIZED → Provision; TO_REMOVE → Deprovision; отсутствие state →
 /// Active; Config == null (нет ключа/битый) → Skip; незнакомое state →
-/// Active с raw-строкой (толерантность arch/20 §5 — система развивается).
+/// Active с raw-строкой (толерантность arch/valkey-clusters/05-fault-tolerance.md — система развивается).
 /// </summary>
 public static class ValkeyClusterClassifier
 {

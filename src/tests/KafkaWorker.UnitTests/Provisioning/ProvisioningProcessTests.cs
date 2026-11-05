@@ -9,7 +9,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace KafkaWorker.UnitTests.Provisioning;
 
-// ProvisioningProcess K0–K6 (arch/16 §5 A): полный прогон на fake'ах,
+// ProvisioningProcess K0–K6 (arch/kafkaworker/02-cluster-lifecycle.md §2 A): полный прогон на fake'ах,
 // снапшоты «до/после», неготовность кластера, идемпотентность re-run,
 // TO_REMOVE посреди работы (R6).
 
@@ -342,7 +342,7 @@ public class ProvisioningProcessTests
             .Should().Be("h1:16000,h1:16001,h1:16002");
     }
 
-    // AAA (arch/16 §5 A K1): частичный ЗАКРЕПЛЁННЫЙ portalloc (hold-владелец
+    // AAA (arch/kafkaworker/02-cluster-lifecycle.md §2 A K1): частичный ЗАКРЕПЛЁННЫЙ portalloc (hold-владелец
     //      убит после фиксации, до аллокации остальных) — тик ДОСТРАИВАЕТ
     //      недостающих RMW-путём под клэймом и проходит K3 (до K1-достроения
     //      NotExists проигрывал на существующем ключе — вечный waiting)
@@ -367,7 +367,7 @@ public class ProvisioningProcessTests
             "the K1 completion adds the missing address and K3 creates the broker");
     }
 
-    // AAA (arch/16 §5 A K1): после достроения частичного портплана следующий
+    // AAA (arch/kafkaworker/02-cluster-lifecycle.md §2 A K1): после достроения частичного портплана следующий
     //      тик доводит takeover-кластер до done (survivor завершает provisioning)
     [Fact]
     public async Task Run_PartialPinnedPortAlloc_IsCompletedByNextTick()
@@ -392,7 +392,7 @@ public class ProvisioningProcessTests
             "the K1 completion adds the missing address and K3 creates the broker");
     }
 
-    // AAA (arch/16 §5 A K3): проигрыш RMW-достроения частичного портплана
+    // AAA (arch/kafkaworker/02-cluster-lifecycle.md §2 A K3): проигрыш RMW-достроения частичного портплана
     //      (конкурент переписал ключ до сравнения → ModRevisionEqual ложно →
     //      reread возвращает всё ещё частичный план) — transient-фаза
     //      waiting-portalloc/<broker>: тик успешен (InProgress, не исключение),

@@ -3,7 +3,7 @@ using PgWorker.Core.Model;
 namespace PgWorker.Core.Planning;
 
 /// <summary>
-/// Сходимость плана портов с фактом занятости (spec §3.7 Д1, arch/14 §5 A P1):
+/// Сходимость плана портов с фактом занятости (spec §3.7 Д1, arch/pgworker/processes/a-provisioning.md A P1):
 /// закрепление, не подтверждённое фактом СВОЕГО живого контейнера и занятое
 /// любой фактической публикацией (docker-биндинг соседа — в т.ч. ноды СВОЕГО
 /// кластера: дубликат внутри кластера — такой же конфликт — ∪ portalloc-записи
@@ -30,7 +30,7 @@ public static class PortPlanConvergence
             if (addr.Ports.Doorman <= 0)
             {
                 // Каноническая запись с нулевым doorman невозможна (пулер
-                // обязателен, arch/14 §8 — тот же канон, что в MatchesFact):
+                // обязателен, arch/pgworker/08-operability.md §5 — тот же канон, что в MatchesFact):
                 // снимается ВСЕГДА, независимо от занятости — recreate даст
                 // запись с полной тройкой портов.
                 colliding.Add(key);
@@ -66,7 +66,7 @@ public static class PortPlanConvergence
     /// их снять не может — object-записи не трогаются (R9), прочие подтверждены
     /// фактом своего живого контейнера (MatchesFact). Чтение busy под глобальным
     /// portalloc-клэймом ничего бы не изменило — лок можно не брать (тики
-    /// waiting-patroni не соперничают за клэйм, arch/14 §2.4).</summary>
+    /// waiting-patroni не соперничают за клэйм, arch/pgworker/01-placement.md §5).</summary>
     public static bool AllConfirmed(
         IReadOnlyDictionary<string, NodeAddress> existing,
         IReadOnlyDictionary<string, IReadOnlySet<(string Host, int Port)>> selfFactByNode,
@@ -78,10 +78,10 @@ public static class PortPlanConvergence
 
     // Запись подтверждена фактом: ВСЕ три её порта публикует контейнер самой
     // ноды. Нулевой doorman канонической записи невозможен (пулер обязателен,
-    // arch/14 §8): устаревшая запись с doorman=0 (или живой контейнер старого
+    // arch/pgworker/08-operability.md §5): устаревшая запись с doorman=0 (или живой контейнер старого
     // образа без 6432) — расхождение → detach → recreate (штатная конвергенция;
     // volume переживает). object-записи в MatchesFact не попадают (у них нет
-    // self-fact) — doorman=0 у усыновлённых легален (arch/14 §2.4 п.5).
+    // self-fact) — doorman=0 у усыновлённых легален (arch/pgworker/01-placement.md §5 п.5).
     private static bool MatchesFact(NodeAddress addr, IReadOnlySet<(string Host, int Port)> own)
         => Ports(addr).All(p => own.Contains((addr.Host, p)));
 

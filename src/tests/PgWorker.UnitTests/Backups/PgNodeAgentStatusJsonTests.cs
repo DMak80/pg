@@ -5,7 +5,7 @@ using Xunit;
 namespace PgWorker.UnitTests.Backups;
 
 // JSON-контракт статус-ключа агента /pgworker/backups/<C>/<X>/agent/<N>
-// (arch/19 §4): ToJson — формат значения (имена полей snake_case, node
+// (arch/backups/05-etcd-contract.md): ToJson — формат значения (имена полей snake_case, node
 // по факту identity); Parse — полный round-trip всех полей + толерантность
 // к чужому/битому JSON (null, не исключение).
 public class PgNodeAgentStatusJsonTests
@@ -24,7 +24,7 @@ public class PgNodeAgentStatusJsonTests
         // Act
         var json = PgNodeAgentStatusJson.ToJson("s1a", status);
 
-        // Assert — канон arch/19 §4: node/role/state/факты; enum'ы — строками
+        // Assert — канон arch/backups/05-etcd-contract.md: node/role/state/факты; enum'ы — строками
         json.Should().Contain("\"node\":\"s1a\"");
         json.Should().Contain("\"role\":\"master\"");
         json.Should().Contain("\"state\":\"streaming\"");

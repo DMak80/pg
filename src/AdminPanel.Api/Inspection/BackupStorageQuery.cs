@@ -113,7 +113,7 @@ public sealed record BackupShardSummaryDto(
     // диффов ленты событий; null = факта нет.
     string? RestoreState = null, string? DrillState = null);
 
-// Сирота грани «Хранилище бэкапов» ( защита — reliability, arch/19 §4):
+// Сирота грани «Хранилище бэкапов» ( защита — reliability, arch/backups/05-etcd-contract.md):
 // HasValidFull — автозащита (валидный полный), Held — hold-флаг, DeleteRequested
 // — заявка явного удаления; TtlLeftSec — только у незащищённых (защищённым/
 // заявленным TTL-строка не нужна — spec §3.5).
@@ -127,19 +127,19 @@ public sealed record BackupShardStorageDto(
     string Cluster, string Shard,
     IReadOnlyList<BackupFullDto> Fulls,
     BackupWalDto? Wal,
-    BackupRestoreBadgeDto? ActiveRestore, // state/phase/error (без кнопок — arch/19 §3.5)
+    BackupRestoreBadgeDto? ActiveRestore, // state/phase/error (без кнопок — arch/backups/03-restore.md)
     string? ReconcileNote,                // сводная пометка (напр. «объекты без ключа: 2»)
     BackupDrillBadgeDto? Drill = null,    // последний/текущий дрилл (reliability)
     IReadOnlyList<WalAgentDto>? Agents = null); // u11: приёмники WAL per-node
 
-// Приёмник WAL ноды (u11, arch/19 §4): lease-ключ agent/<N> жив = приёмник жив;
+// Приёмник WAL ноды (u11, arch/backups/05-etcd-contract.md): lease-ключ agent/<N> жив = приёмник жив;
 // state-бейджи UI: streaming=green, waiting_*=yellow, failed_permanent=red.
 public sealed record WalAgentDto(
     string Node, string? Role, string State,
     long? LastDeliveredSegment, long? LastDeliveredUnix,
     bool PoolExhausted, long? TliJump, string? Error, long UpdatedUnix);
 
-// Статус дрилла шарда (reliability, arch/19 §3.6): state/фаза/времена/LSN/error.
+// Статус дрилла шарда (reliability, arch/backups/04-drill.md): state/фаза/времена/LSN/error.
 public sealed record BackupDrillBadgeDto(
     string State, string? Phase, long StartedUnix, long? FinishedUnix,
     string? RestoredToLsn, string? Error);
@@ -187,7 +187,7 @@ public sealed class BackupsS3UnavailableException(string message)
 public static class BackupStorageMappers
 {
 
-// Канонические имена состояний wal-ключа (arch/19 §4): enum → значение etcd
+// Канонические имена состояний wal-ключа (arch/backups/05-etcd-contract.md): enum → значение etcd
 // (ToUpperInvariant съедает подчёркивание: WalChainError → «WALCHAINERROR»,
 // бейдж панели и правила алертов не совпадали с каноном).
 private static string WalStateName(WalStreamInfoState state) => state switch

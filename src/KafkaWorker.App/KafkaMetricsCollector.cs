@@ -6,7 +6,7 @@ using Microsoft.Extensions.Logging;
 
 namespace KafkaWorker.App;
 
-// Коллектор kafka-метрик (arch/18 §4): hosted-сервис с тиком
+// Коллектор kafka-метрик (arch/metrics/04-collectors.md): hosted-сервис с тиком
 // KafkaWorker:Metrics:CollectIntervalSec; по Active-кластерам (снапшот etcd)
 // через IKafkaAdminClientFactory — группы/committed/watermarks → consumer-lag,
 // describe топиков → USR. Сбор read-only вне клэймов, без ретраев; ошибка
@@ -67,7 +67,7 @@ public sealed class KafkaMetricsCollector(
         foreach (var snap in snapshots.Value)
         {
             // Только Active: Config.State == null (невыполненные заявки не трогаем,
-            // arch/15 §2.1, ревью Ф4-6); дискавери-поля обязательны (не поднят).
+            // arch/kafka-clusters/02-keys.md §2, ревью Ф4-6); дискавери-поля обязательны (не поднят).
             if (snap.Config.State is not null || snap.Endpoints is null || snap.AppUser is null || snap.AppPassword is null)
                 continue;
 

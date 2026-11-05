@@ -17,7 +17,7 @@ namespace PgWorker.Provisioning.Processes;
 
 /// <summary>
 /// AddShardProcess — подъём ОТДЕЛЬНОГО пустого шарда в Active-кластере
-/// (spec §5.2; arch/14 §5 G). Панель заявила декларацию (replicas +
+/// (spec §5.2; arch/pgworker/processes/g-add-shard.md G). Панель заявила декларацию (replicas +
 /// nodes/NOT_INITIALIZED + request_*); процесс доводит шард до dsn/RUNNING,
 /// НЕ трогая routing/status/схемы бакетов (граница §2.1). Механика —
 /// ProvisioningProcess в scoped-to-shard виде; идемпотентность каждого шага,
@@ -163,7 +163,7 @@ public sealed partial class AddShardProcess(
             return await FailAsync(cluster, creds.Error!, "ensure-app-secret", ct);
 
         // A3: EnsureNode каждой ноды + state=PROVISIONING (идемпотентно); тюнинг
-        // per-shard — ОДИН расчёт до цикла нод от заявки request_* (arch/14 §5 G).
+        // per-shard — ОДИН расчёт до цикла нод от заявки request_* (arch/pgworker/processes/g-add-shard.md G).
         var resources = await ReadShardResourcesAsync(cluster, shardName, ct);
         var tuning = pgtune.Create(resources);
         var clusterSecrets = secrets with
@@ -194,7 +194,7 @@ public sealed partial class AddShardProcess(
 
         // A5: БД/роли на мастере НОВОГО шарда; СХЕМЫ БАКЕТОВ НЕ СОЗДАЮТСЯ (§2.1);
         // dsn multi-host (порты portalloc, без пароля).
-        // Поллинг SQL-фазы (arch/14 §6 инвариант поллинга; разбор E2E-маркера:
+        // Поллинг SQL-фазы (arch/pgworker/08-operability.md §3 инвариант поллинга; разбор E2E-маркера:
         // фаза молчала десятки секунд на Npgsql-вызовах): последовательность
         // идемпотентна — итерация с таймаутом короче окна повторяет её
         // с начала; каждая итерация — Mark по факту + лог elapsed.
@@ -256,7 +256,7 @@ public sealed partial class AddShardProcess(
             return Result<IReadOnlyDictionary<string, NodeAddress>>.Success(existing);
 
         // глобальный portalloc-клэйм — секция «hosts → busy → allocate →
-        // put» взаимоисключающа между кластерами/инстансами (arch/14 §2.4).
+        // put» взаимоисключающа между кластерами/инстансами (arch/pgworker/01-placement.md §5).
         var acquired = await portLock.TryAcquireAsync(ct);
         if (!acquired.IsSuccess)
             return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(acquired.Error!);
@@ -291,7 +291,7 @@ public sealed partial class AddShardProcess(
             foreach (var (merged, addr) in allocated.Value)
                 existing[merged] = addr;
 
-            //  (arch/14 §2.4): decorate сетевой идентичности канонических
+            //  (arch/pgworker/01-placement.md §5): decorate сетевой идентичности канонических
             // записей при заданном ключе ScrapeNetwork (alias/net в portalloc).
             var put = await PutAsync(PortAllocKey(cluster),
                 Portalloc.Serialize(PortallocIdentity.Decorate(existing, cluster, scrapeNetwork)), ct);
@@ -340,7 +340,7 @@ public sealed partial class AddShardProcess(
                     return marked;
             }
 
-            // Поллинг create/start (arch/14 §5 A P2.1): одиночный вызов таймаутом
+            // Поллинг create/start (arch/pgworker/processes/a-provisioning.md A P2.1): одиночный вызов таймаутом
             // короче окна проверки (половина — 7.5 c при дефолтах), идемпотентный
             // повтор; каждая итерация — Mark по факту + лог elapsed (внутри
             // LongCallPolling). Бюджет — существующий порог PatroniBootSec.
@@ -437,12 +437,12 @@ public sealed partial class AddShardProcess(
     }
 
     // Адрес master-ноды шарда для SQL-фаз. Ключ master дискриминирует ноду
-    // только ОДНОЗНАЧНЫМ матчем: advertised-режим (arch/16) несёт ОДИН host у
+    // только ОДНОЗНАЧНЫМ матчем: advertised-режим (arch/kafkaworker/README.md) несёт ОДИН host у
     // всех нод шарда (E2E: host.docker.internal) — host-матч выбирал
     // произвольную ноду, на практике реплику (25006 «cannot execute CREATE
     // DATABASE in a read-only transaction», add-shard застревал). Порядок:
     // имя ноды → doorman-порт (канон формата ключа <host>:<doormanPort>,
-    // arch/14 §5) → host при единственном совпадении; иначе истина за
+    // arch/pgworker/README.md) → host при единственном совпадении; иначе истина за
     // Patroni-пробами.
     private async Task<NodeAddress?> ResolveMasterAsync(ShardSpec shard, ShardTopology topology, CancellationToken ct)
     {
@@ -602,7 +602,7 @@ public sealed partial class AddShardProcess(
     private static string NodeStateKey(string cluster, string shard, string node)
         => $"/clusters/{cluster}/shards/{shard}/nodes/{node}/state";
 
-    // Failover-обёртки — единая точка (arch/17 S7: sticky + per-attempt бюджет +
+    // Failover-обёртки — единая точка (arch/synchronization/03-fault-tolerance.md §S7: sticky + per-attempt бюджет +
     // негативный кэш; дубликаты цикла обхода удалены).
     private Task<Result<Kv?>> GetAsync(string key, CancellationToken ct)
         => EtcdEndpointFailover.CallAsync(endpoints, endpoint => etcd.GetAsync(endpoint, key, ct));

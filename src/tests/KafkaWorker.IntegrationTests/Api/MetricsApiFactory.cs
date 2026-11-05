@@ -24,7 +24,7 @@ public class MetricsApiFactory(Etcd.EtcdFixture etcd) : WebApplicationFactory<Pr
             ["KafkaWorker:Docker:Hosts:0:Endpoint"] = "unix:///var/run/does-not-exist.sock",
             ["KafkaWorker:Api:AdvertiseUrl"] = "http://localhost:9996",
             ["KafkaWorker:Api:EnableSeedEndpoint"] = "false",
-            // WAF-транспорт in-memory — только без TLS (arch/16 §1.1); явный
+            // WAF-транспорт in-memory — только без TLS (arch/kafkaworker/07-api.md §1); явный
             // ключ вместо зависимости от env-переменной чужих фабрик.
             ["KafkaWorker:Api:Tls:AllowInsecureHttp"] = "true",
         }));
@@ -54,7 +54,7 @@ public sealed class KafkaMetricsCollection : ICollectionFixture<KafkaMetricsFixt
     public const string Name = "kafka-metrics";
 }
 
-// Гарантированный env WAF-хостов сборки (arch/16 §1.1): in-memory конфиг из
+// Гарантированный env WAF-хостов сборки (arch/kafkaworker/07-api.md §1): in-memory конфиг из
 // ConfigureWebHost применяется при Build(), а fail-fast ConfigureMtls в
 // Program.Main исполняется раньше — env процесса должен быть выставлен до
 // первого CreateClient. ModuleInitializer исполняется до любого кода сборки.

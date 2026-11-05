@@ -26,7 +26,7 @@ internal static class Fakes
         public Action<string>? OnPut { get; set; }
 
         // Журнал операций в порядке вызова (тесты порядка секций: «клэйм
-        // portalloc до чтения занятости» — arch/20 §3). SharedOps — общий
+        // portalloc до чтения занятости» — arch/valkey-clusters/03-coordination.md §1). SharedOps — общий
         // журнал с другими фейками (единый порядок для теста).
         public List<string> Ops { get; } = [];
 

@@ -8,7 +8,7 @@ namespace KafkaWorker.Provisioning.Kafka;
 
 // Адаптер над Confluent.Kafka IAdminClient — единственное место воркера с
 // Confluent-типами (seam-паттерн Puzzle §7.2). SASL_SSL/PLAIN + доверие
-// per-cluster CA по контракту дискавери arch/15 §5 ; RequestTimeout — из
+// per-cluster CA по контракту дискавери arch/kafka-clusters/05-client-discovery.md §1 ; RequestTimeout — из
 // опций воркера (на вызов); любые исключения Kafka-клиента → Result.Failed
 // (процессы решают, транзиент или нет).
 
@@ -25,7 +25,7 @@ namespace KafkaWorker.Provisioning.Kafka;
 /// счётчику с бюджетом; бюджет не превращается в dispose под операцией;
 /// вход операции и dispose-решение атомарны (один замок): dispose под
 /// начатой операцией исключён, опоздавшая операция получает транзиентный
-/// отказ «клиент в dispose» (arch/16 §6); неактивные
+/// отказ «клиент в dispose» (arch/kafkaworker/08-operability.md §4); неактивные
 /// &gt; IdleEvictAfter вытесняются при Create; остановка host'а —
 /// детерминированный Dispose всех (IDisposable через DI).
 /// </summary>
@@ -78,7 +78,7 @@ public sealed class KafkaAdminClientFactory(
             if (_entries.Remove(key, out var replaced))
             {
                 // Замена немедленна (запись удалена из кеша); dispose
-                // заменяемого — фоном ПОСЛЕ его висящих операций (arch/16 §6,
+                // заменяемого — фоном ПОСЛЕ его висящих операций (arch/kafkaworker/08-operability.md §4,
                 // ERR__DESTROYED под операцией запрещён; бюджет не принуждает).
                 Task.Run(() => replaced.Client.DisposeWhenIdleAsync(
                     KafkaAdminClient.DrainGrace(requestTimeout), CancellationToken.None,
@@ -114,7 +114,7 @@ public sealed class KafkaAdminClientFactory(
     }
 
     // Остановка host'а — детерминированно: тот же дрейн с бюджетом по
-    // каждому клиенту (arch/16 §6) — без операций немедленно, с операциями
+    // каждому клиенту (arch/kafkaworker/08-operability.md §4) — без операций немедленно, с операциями
     // не дольше бюджета (записей немного — параллельно, WaitAll).
     public void Dispose()
         => Dispose(KafkaAdminClient.DrainGrace(requestTimeout));
@@ -134,7 +134,7 @@ public sealed class KafkaAdminClientFactory(
     }
 
     // Профиль конфига всех клиентов фабрики (internal — юнит-проверки пинов):
-    //  дискавери-канон arch/15 §5 — SASL_SSL/PLAIN + доверие per-cluster CA
+    //  дискавери-канон arch/kafka-clusters/05-client-discovery.md §1 — SASL_SSL/PLAIN + доверие per-cluster CA
     // (caPem null — без ssl.ca.pem, системное доверие: тесты/fake).
     internal static AdminClientConfig BaseAdminConfig(string bootstrap, string user, string password, string? caPem)
     {
@@ -193,7 +193,7 @@ public sealed class KafkaAdminClient(
     // до финализатора; Dispose кэша при shutdown vs параллельный первый вызов.
     private readonly object _clientGate = new();
 
-    // Счётчик активных операций и дрейн-dispose (arch/16 §6): dispose нативного
+    // Счётчик активных операций и дрейн-dispose (arch/kafkaworker/08-operability.md §4): dispose нативного
     // клиента под висящей операцией запрещён (ERR__DESTROYED) — заменяемый
     // клиент диспозится фоном по нулю операций (continuation последней).
     private int _activeOperations;
@@ -304,7 +304,7 @@ public sealed class KafkaAdminClient(
         }
     }
 
-    // Dispose после завершения висящих операций (arch/16 §6): операций нет —
+    // Dispose после завершения висящих операций (arch/kafkaworker/08-operability.md §4): операций нет —
     // немедленно (TryDisposeNative); есть — фоном ждём нуля (continuation
     // последней) с бюджетом. В режиме замены/вытеснения исчерпание бюджета —
     // warning и продолжение ожидания: нативный хендл не уничтожается под
@@ -360,7 +360,7 @@ public sealed class KafkaAdminClient(
         }
     }
 
-    // Бюджет дрейна dispose (arch/16 §6): операции сами ограничены
+    // Бюджет дрейна dispose (arch/kafkaworker/08-operability.md §4): операции сами ограничены
     // requestTimeout (передаётся в каждый Options.RequestTimeout), хвост —
     // на завершение continuation'ов/выход poll-потоков.
     internal static TimeSpan DrainGrace(TimeSpan requestTimeout)
@@ -509,7 +509,7 @@ public sealed class KafkaAdminClient(
 
     // Полный список топиков + реплики/ISR партиций — через метаданные
     // (DescribeTopicsAsync требует имена заранее). Internal-топики __* — только
-    // при includeInternal (drain/guard G по describe-all, arch/16 §5 I/G);
+    // при includeInternal (drain/guard G по describe-all, arch/kafkaworker/06-rebalancing.md §2 I/G);
     // TopicSync ведёт реестр юзер-топиков — ему false. ISR — рядом с Replicas
     // (PartitionMetadata Confluent-клиента), адаптер заполняет всегда.
     private IReadOnlyList<KafkaTopicView> DescribeTopicsViaMetadata(IAdminClient client, bool includeInternal)
@@ -527,7 +527,7 @@ public sealed class KafkaAdminClient(
 
     // Общий каркас: клиент создаётся один раз; исключения → Result.Failed
     // (+ unhealthy-пометка записи кэша, кроме отмены host'а). Операция
-    // стоит на счётчике всё время выполнения (arch/16 §6): дрейн-dispose
+    // стоит на счётчике всё время выполнения (arch/kafkaworker/08-operability.md §4): дрейн-dispose
     // заменяемого ждёт нуля — dispose под висящей операцией исключён.
     // Клиент в dispose (замена/вытеснение/остановка) операцию не принимает:
     // транзиентный отказ без unhealthy-пометки — следующий Create раздаст
@@ -664,7 +664,7 @@ public sealed class KafkaAdminClient(
         }
     }
 
-    // ===== ACL (arch/16 §2.3/E): Describe/Create/Delete через seam-типы =====
+    // ===== ACL (arch/kafkaworker/04-security.md/E): Describe/Create/Delete через seam-типы =====
 
     public Task<Result<IReadOnlyList<KafkaAclBinding>>> DescribeAclsAsync(CancellationToken ct)
         => RunAsync<IReadOnlyList<KafkaAclBinding>>(async client =>
@@ -695,7 +695,7 @@ public sealed class KafkaAdminClient(
             return Result.Success();
         }, ct);
 
-    // ===== Reassignment (arch/16 §2.4): подача AlterReassignments =====
+    // ===== Reassignment (arch/kafkaworker/06-rebalancing.md §1): подача AlterReassignments =====
 
     // Per-endpoint бюджет подач (connect+TLS+SASL+round-trip): подача
     // регистрируется контроллером и отвечает быстро — это НЕ ожидание

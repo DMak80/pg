@@ -9,7 +9,7 @@ using Xunit;
 
 namespace ValkeyWorker.UnitTests.Provisioning;
 
-// CaRotator (arch/21 §5 K): диспетчеризация K0 (окно/заявка/ждущие),
+// CaRotator (arch/valkeyworker/04-security.md §6 K): диспетчеризация K0 (окно/заявка/ждущие),
 // фазы P (staging put-if-absent) и D (bundle OLD+NEW, compare по OLD).
 // ВАЖНО: против реализации Task 2 цикл останавливается после D, поэтому
 // кейсы «окна» ассертят ПРОМЕЖУТОЧНОЕ состояние (staging/bundle) — Task 3

@@ -6,7 +6,7 @@ using ValkeyWorker.Core.Model;
 
 namespace ValkeyWorker.Provisioning.Processes;
 
-/// <summary>Исход процесса (arch/21 §5): для цикла ReconcileLoop.</summary>
+/// <summary>Исход процесса (arch/valkeyworker/README.md): для цикла ReconcileLoop.</summary>
 public enum ProcessOutcome
 {
     /// <summary>Продолжить следующими тиками (ждём заявок панели, подъёма ноды).</summary>
@@ -19,7 +19,7 @@ public enum ProcessOutcome
 /// <summary>
 /// Параметры процессов (appsettings ValkeyWorker:Docker/Thresholds): диапазон
 /// клиентских портов, бюджет готовности ноды (V4), порог смерти ноды,
-/// advertised-хост (null → имя docker-хоста размещения, arch/21 §2), образ ноды.
+/// advertised-хост (null → имя docker-хоста размещения, arch/valkeyworker/01-placement.md), образ ноды.
 /// </summary>
 public sealed record ValkeyProvisioningOptions(
     int PortRangeFrom,
@@ -36,7 +36,7 @@ public sealed record ValkeyProvisioningOptions(
 }
 
 /// <summary>
-/// Общие хелперы процессов (arch/21 §5): чтение/запись state ноды, claimed-check,
+/// Общие хелперы процессов (arch/valkeyworker/README.md): чтение/запись state ноды, claimed-check,
 /// парсер строк ресурсов канона pg §9.3.
 /// </summary>
 public static class ProcessCommon
@@ -52,7 +52,7 @@ public static class ProcessCommon
 
     public static string RotationKey(string cluster) => $"/valkeyworker/rotations/{cluster}";
 
-    // Стейт доигрывания ротации E (arch/21 §5 E): вложенный под work/<C> —
+    // Стейт доигрывания ротации E (arch/valkeyworker/04-security.md §4 E): вложенный под work/<C> —
     // ключ журнала надзор перезаписывает каждый тик, фаза ротации в нём
     // не переживает тик.
     public static string RotationStateKey(string cluster)
@@ -107,7 +107,7 @@ public static class ProcessCommon
         return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 
-    // Claimed-check: мутации — только держателем живого клэйма (arch/21 §6).
+    // Claimed-check: мутации — только держателем живого клэйма (arch/valkeyworker/06-operability.md §3).
     public static Result EnsureClaimed(ClaimStore claims, string cluster, string op)
         => claims.IsMine(cluster)
             ? Result.Success()
@@ -119,7 +119,7 @@ public static class ProcessCommon
     /// cpu — decimal-строка инвариантной культуры ("2", "0.5"; БЕЗ суффиксов);
     /// mem — "&lt;n&gt;Gi" → n × 2^30; незнакомый формат → null (процесс не ставит
     /// лимит — валидация API гарантирует канон на входе, толерантность чтения
-    /// сохраняется, arch/20 §5).
+    /// сохраняется, arch/valkey-clusters/05-fault-tolerance.md).
     /// </summary>
     public static (decimal? Cpu, long? MemBytes)? ParseResources(ValkeyResources? r)
     {
@@ -139,7 +139,7 @@ public static class ProcessCommon
         return (cpu, mem);
     }
 
-    // Формат portalloc (arch/20 §3): {"node<k>":{"host":"h","client":17001}}.
+    // Формат portalloc (arch/valkey-clusters/03-coordination.md §1): {"node<k>":{"host":"h","client":17001}}.
     public static Dictionary<string, NodeAddress> ParsePortAlloc(string json)
     {
         var addresses = new Dictionary<string, NodeAddress>();

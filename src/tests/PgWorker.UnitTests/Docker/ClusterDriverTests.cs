@@ -62,7 +62,7 @@ public class ClusterDriverTests
                 : Result.Success());
         }
 
-        //  (arch/14 §2.1): подключение контейнера к сети кластера —
+        //  (arch/pgworker/01-placement.md §1): подключение контейнера к сети кластера —
         // ensure-инвариант; записываем для юнит-проверок лечения ноды.
         // scrape-сеть — единственный потребитель с отказом «сети нет»
         // (fail-fast провижининга) — override результата по сетям.
@@ -228,7 +228,7 @@ public class ClusterDriverTests
             advertisedHost: advertisedHost, scrapeNetwork: scrapeNetwork, contourNetwork: contourNetwork,
             restCertificates: RestCache, nodeBackupEnv: nodeBackupEnv);
 
-    // Бэкап-цели приёмника WAL (arch/19 §7): NodeBackupEnv задан — env
+    // Бэкап-цели приёмника WAL (arch/backups/08-secrets.md): NodeBackupEnv задан — env
     // ноды несёт PGW_BACKUP_S3_BUCKET/PGW_BACKUP_S3_CA_PEM (per-install).
     [Fact]
     public void BuildSpec_NodeBackupEnv_CarriesBucketAndCa()
@@ -390,7 +390,7 @@ public class ClusterDriverTests
         node.Pg.Should().Be(15432);
     }
 
-    // AAA: advertised-режим (arch/16 advertised-правило, прецедент KafkaWorker):
+    // AAA: advertised-режим (arch/kafkaworker/README.md advertised-правило, прецедент KafkaWorker):
     // факт КАНОНИЧЕСКОЙ ноды (pgw-<C>-*) несёт advertised-имя docker-хоста —
     // записи portalloc/dsn резолвимы КЛИЕНТАМИ (панель), внутреннее имя хоста
     // резолвится только контейнерами воркеров (extra_hosts) — пробы панели
@@ -676,7 +676,7 @@ public class ClusterDriverTests
         var result = await driver.RemoveNodeAsync("shop", "shard1", "shard1a", CancellationToken.None);
 
         // Assert: kill → rm(force) → volume rm; далее демонтажный контроль
-        // (объектов кластера нет → delete-network per-cluster сети, arch/14 §2.1)
+        // (объектов кластера нет → delete-network per-cluster сети, arch/pgworker/01-placement.md §1)
         result.IsSuccess.Should().BeTrue();
         var calls = engine.Calls.Select(c => c.Call).ToList();
         calls.Take(3).Should().Equal("kill", "rm-container", "rm-volume");
@@ -686,7 +686,7 @@ public class ClusterDriverTests
         engine.Calls.Should().Contain(c => c.Call == "delete-network" && c.Arg!.Equals("pgw-net-shop"));
     }
 
-    // AAA (arch/14 §2.1): имя сети нод — PER-CLUSTER (kfw-паттерн):
+    // AAA (arch/pgworker/01-placement.md §1): имя сети нод — PER-CLUSTER (kfw-паттерн):
     // префикс + имя кластера; единая сеть делала DNS-зону общей для всех
     // кластеров docker-хоста (перекрёстная видимость чужих алиасов).
     [Fact]
@@ -698,7 +698,7 @@ public class ClusterDriverTests
         PlainClusterDriver.NodesNetworkPrefix.Should().Be("pgw-net-");
     }
 
-    // AAA (arch/14 §2.1): ensure ноды создаёт и держит СЕТЬ КЛАСТЕРА
+    // AAA (arch/pgworker/01-placement.md §1): ensure ноды создаёт и держит СЕТЬ КЛАСТЕРА
     // pgw-net-<C>, спека контейнера несёт её же — «нода в сети кластера».
     [Fact]
     public async Task EnsureNode_Network_AndSpec_PerCluster()
@@ -717,7 +717,7 @@ public class ClusterDriverTests
         engine.CreatedSpec!.Network.Should().Be("pgw-net-shop");
     }
 
-    // AAA (arch/14 §2.1): ensure-инвариант — существующая нода с планом
+    // AAA (arch/pgworker/01-placement.md §1): ensure-инвариант — существующая нода с планом
     // портов, но в ЧУЖОЙ сети (наследие единой pgw-net) подключается к сети
     // кластера docker network connect; пересоздание недопустимо (нода с данными).
     [Fact]
@@ -747,7 +747,7 @@ public class ClusterDriverTests
         engine.Calls.Should().NotContain(c => c.Call == "create");
     }
 
-    // AAA (arch/14 §2.1): нода уже в сети кластера — идемпотентность,
+    // AAA (arch/pgworker/01-placement.md §1): нода уже в сети кластера — идемпотентность,
     // никаких connect/create.
     [Fact]
     public async Task EnsureNode_NodeInClusterNetwork_IsIdempotent()
@@ -775,7 +775,7 @@ public class ClusterDriverTests
         engine.Calls.Should().NotContain(c => c.Call == "create");
     }
 
-    // AAA (ревизия 3, arch/14 §2.1): ключ ScrapeNetwork задан — существующая
+    // AAA (ревизия 3, arch/pgworker/01-placement.md §1): ключ ScrapeNetwork задан — существующая
     // нода с планом портов Ensure-attach'ится к сети контура мониторинга
     // (поверх pgw-net-<C>, идемпотентно по inspect).
     [Fact]
@@ -869,7 +869,7 @@ public class ClusterDriverTests
         engine.Calls.Should().NotContain(c => c.Call == "network-connect");
     }
 
-    // AAA (ревизия 3, arch/14 §2.1): scrape-сети нет на docker-хосте —
+    // AAA (ревизия 3, arch/pgworker/01-placement.md §1): scrape-сети нет на docker-хосте —
     // fail-fast с diagnose (имя сети в ошибке), не молчаливый пропуск.
     [Fact]
     public async Task EnsureNode_ScrapeNetworkMissing_FailsFast()
@@ -942,7 +942,7 @@ public class ClusterDriverTests
         engine2.Calls.Should().NotContain(c => c.Call == "rm-container", "empty listing is a no-op");
     }
 
-    // AAA (arch/14 §2.1): демонтаж сети кластера — только когда объектов
+    // AAA (arch/pgworker/01-placement.md §1): демонтаж сети кластера — только когда объектов
     // кластера не осталось; чужие контейнеры кластера держат сеть живой.
     [Fact]
     public async Task RemoveNode_LiveClusterObjects_KeepNetwork()

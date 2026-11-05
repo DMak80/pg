@@ -228,7 +228,7 @@ public class DatabaseProvisionerTests
         DatabaseProvisioner.Redact(dsn).Should().Be(dsn);
     }
 
-    // AAA (arch/19 §7): ensure роли backup_exec = CREATE-if-absent И
+    // AAA (arch/backups/08-secrets.md): ensure роли backup_exec = CREATE-if-absent И
     // безусловный ALTER-выравниватель — pg_authid могут перезаписать с чужим
     // значением (второй писатель); CREATE-only гвард молчал вечно, инвентарь
     // приёмника падал 28P01 при живой сессии стрима (факт стенда).
@@ -250,7 +250,7 @@ public class DatabaseProvisionerTests
         sql.Should().Contain("END $$;");
     }
 
-    // AAA (arch/19 §7): проверка соответствия пароля — пересчёт verifier'а от
+    // AAA (arch/backups/08-secrets.md): проверка соответствия пароля — пересчёт verifier'а от
     // etcd-значения по СОЛЬ СОХРАНЁННОГО; md5-формат.
     [Fact]
     public void BackupExecPasswordMatches_Md5Format_VerifiesPlaintext()
@@ -266,7 +266,7 @@ public class DatabaseProvisionerTests
         DatabaseProvisioner.BackupExecPasswordMatches(stored, "other-pw").Should().BeFalse();
     }
 
-    // AAA (arch/19 §7): SCRAM-SHA-256 формат — SaltedPassword=PBKDF2,
+    // AAA (arch/backups/08-secrets.md): SCRAM-SHA-256 формат — SaltedPassword=PBKDF2,
     // ClientKey=HMAC("Client Key"), StoredKey=SHA256(ClientKey).
     [Fact]
     public void BackupExecPasswordMatches_ScramFormat_VerifiesPlaintext()

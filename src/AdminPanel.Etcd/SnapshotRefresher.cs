@@ -14,7 +14,7 @@ using Microsoft.Extensions.Options;
 namespace AdminPanel.Etcd;
 
 // Единственный писатель снапшота (arch/01 §1): тик RefreshIntervalSeconds по arch/02 §4,
-// применение только изменений — arch/02 §5 (arch/17 S10): чтение совпало с кэшем →
+// применение только изменений — arch/02 §5 (arch/synchronization/05-delta-application.md §S10): чтение совпало с кэшем →
 // пересборки и алертного пересчёта нет, обновляются только штампы свежести.
 // Отказ тика = обновление только Etcd-части: данные и BuiltAtUtc прежние, возраст растёт (spec §3.9).
 [InjectAsSingleton(typeof(IHostedService))]
@@ -37,7 +37,7 @@ public sealed class SnapshotRefresher(
     private Result _statusError = Result.Success();
     private bool _endpointsWarned;
 
-    // Кэш последнего применённого тика (arch/02 §5, arch/17 S10): тик сравнивает
+    // Кэш последнего применённого тика (arch/02 §5, arch/synchronization/05-delta-application.md §S10): тик сравнивает
     // прочитанное с ним и пересобирает снапшот только при фактическом изменении.
     // Members — проекцией: record несёт списки URL (reference-equality).
     private Dictionary<string, IReadOnlyList<Kv>>? _lastRead;
@@ -218,7 +218,7 @@ public sealed class SnapshotRefresher(
             now,
             0);
 
-        // arch/02 §5 (arch/17 S10): прочитанное идентично кэшу (последнему
+        // arch/02 §5 (arch/synchronization/05-delta-application.md §S10): прочитанное идентично кэшу (последнему
         // успешно прочитанному состоянию из etcd) — тик без изменений: данные не
         // пересобираются, парсеры/AlertEngine/потребители не вызываются;
         // обновляются свежая Etcd-часть (телеметрия доступности не замерзает)
@@ -247,7 +247,7 @@ public sealed class SnapshotRefresher(
         // Префикс-запрос точечный: ровно один ключ /workers/api_tls/pgworker.
         var pgCertParsed = WorkerCertParser.Parse(Prefixes.WorkerApiCert, pgCertKv.Value.FirstOrDefault());
         // Префикс-запрос точечный: ровно один ключ /etcdworker/snapshots
-        // (паттерн WorkerApiCert; arch/25 §5).
+        // (паттерн WorkerApiCert; arch/etcdworker/00-etcd-contract.md).
         var etcdSnapshotsParsed = EtcdSnapshotsParser.Parse(etcdSnapshotsKv.Value.FirstOrDefault());
         // Домен EtcdWorker (adminpanel/02 §2.3.5): декларация + managed-узлы,
         // живые ключи /etcdworker/api/, целевой серт /workers/api_tls/etcdworker.
@@ -467,7 +467,7 @@ public sealed class SnapshotRefresher(
         public const string PgWorkerApi = "/pgworker/api/";
         public const string PgWorkerWork = "/pgworker/work/";
         public const string WorkerApiCert = "/workers/api_tls/pgworker";
-        public const string EtcdSnapshots = "/etcdworker/snapshots"; // статус DR-слепков EtcdWorker (arch/25 §5)
+        public const string EtcdSnapshots = "/etcdworker/snapshots"; // статус DR-слепков EtcdWorker (arch/etcdworker/00-etcd-contract.md)
         public const string EtcdConfig = "/etcd/config";             // декларация состава контура (02 §2.3.5)
         public const string EtcdNodes = "/etcd/nodes/";              // managed-узлы контура (02 §2.3.5)
         public const string EtcdWorkerApi = "/etcdworker/api/";      // живые ключи EtcdWorker (02 §2.3.5)

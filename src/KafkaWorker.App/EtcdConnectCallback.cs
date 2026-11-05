@@ -3,7 +3,7 @@ using System.Net.Sockets;
 
 namespace KafkaWorker.App;
 
-// Резолв/коннект etcd-клиента против Docker embedded DNS ( arch/16 §7):
+// Резолв/коннект etcd-клиента против Docker embedded DNS ( arch/kafkaworker/08-operability.md §5):
 // 1) PooledConnectionLifetime — пул пере-резолвит DNS (застарелые адреса после
 //    пересоздания etcd-контейнера; прецедент DockerEngineFactory);
 // 2) последовательный IPv4-first резолв — параллельные A/AAAA-запросы .NET

@@ -1,4 +1,4 @@
-// arch/16 §1.1, копия PgWorker.App/Api/WorkerApiCertReader.cs (осознанное
+// arch/kafkaworker/07-api.md §1, копия PgWorker.App/Api/WorkerApiCertReader.cs (осознанное
 // дублирование по паттерну TlsEndpoints).
 using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;

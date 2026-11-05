@@ -6,7 +6,7 @@ using ValkeyWorker.Core.Writing;
 
 namespace ValkeyWorker.App.Api.Operations;
 
-// Ответ 201 POST /api/valkey/clusters (arch/21 §1.1; сигнатуры — порт kfw).
+// Ответ 201 POST /api/valkey/clusters (arch/valkeyworker/05-api.md §1; сигнатуры — порт kfw).
 public sealed record ValkeyClusterCreatedDto(
     string Name,
     string State,
@@ -40,7 +40,7 @@ public sealed class CreateClusterHandler(IEtcdGateway gateway, string[] endpoint
         var diskGi = request.Resources?.DiskGi ?? ValkeyLimits.DefDiskGi;
 
         // 2) Клэйм имени: compare NotExists + put config NOT_INITIALIZED
-        //    (канон arch/20 §2.1 — заявка несёт state).
+        //    (канон arch/valkey-clusters/02-keys.md §2 — заявка несёт state).
         var configValue = new ValkeyConfigJson(
             nodes, maxmemoryBytes, policy, time.GetUtcNow().ToUnixTimeSeconds(),
             "NOT_INITIALIZED").Serialize();

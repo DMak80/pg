@@ -10,24 +10,24 @@ public sealed record KafkaSnapshot(
     bool EtcdReachable,
     int ConsecutiveFailures,
     IReadOnlyList<KafkaClusterInfo> Clusters,
-    IReadOnlyList<KafkaRotationTicket> Rotations,   // /kafkaworker/rotations/ (arch/15 §4)
-    IReadOnlyList<KafkaRebalanceTicket> Rebalances, // /kafkaworker/rebalances/ (arch/15 §4)
+    IReadOnlyList<KafkaRotationTicket> Rotations,   // /kafkaworker/rotations/ (arch/kafka-clusters/04-coordination.md §1)
+    IReadOnlyList<KafkaRebalanceTicket> Rebalances, // /kafkaworker/rebalances/ (arch/kafka-clusters/04-coordination.md §1)
     IReadOnlyList<KafkaReassignmentProgress> Reassignments, // /kafkaworker/reassignments/ 
-    IReadOnlyList<KafkaRegenProgress> Regens,        // /kafkaworker/regens/ (arch/15 §4)
+    IReadOnlyList<KafkaRegenProgress> Regens,        // /kafkaworker/regens/ (arch/kafka-clusters/04-coordination.md §1)
     IReadOnlyList<WorkerEndpoint> WorkerEndpoints,  // живые ключи /kafkaworker/api/ (arch/02 §2.3.2)
     IReadOnlyList<WorkerHealth> WorkerHealth,        // опрос /healthz живых инстансов (arch/02 §2.3.2)
     IReadOnlyList<ProbeResult> Probes,              // live-проба DescribeCluster (B6+)
     IReadOnlyList<Alert> Alerts,                    // KafkaAlertEngine (arch/03 §7.4)
-    IReadOnlyList<KeyParseError> ParseErrors,       // битые JSON kafka-ключей (arch/15 §6)
+    IReadOnlyList<KeyParseError> ParseErrors,       // битые JSON kafka-ключей (arch/kafka-clusters/06-fault-tolerance.md)
     int UnknownKeyCount,
-    IReadOnlyList<KafkaRotationTicket>? AdminRotations = null, // /kafkaworker/admin_rotations/ (arch/15 §4)
-    IReadOnlyList<KafkaCaRotationTicket>? CaRotations = null,  // /kafkaworker/ca_rotations/ (arch/15 §4)
-    IReadOnlyList<KafkaTicketOutcome>? TicketOutcomes = null,  // /kafkaworker/ticket_outcomes/ (arch/15 §4)
+    IReadOnlyList<KafkaRotationTicket>? AdminRotations = null, // /kafkaworker/admin_rotations/ (arch/kafka-clusters/04-coordination.md §1)
+    IReadOnlyList<KafkaCaRotationTicket>? CaRotations = null,  // /kafkaworker/ca_rotations/ (arch/kafka-clusters/04-coordination.md §1)
+    IReadOnlyList<KafkaTicketOutcome>? TicketOutcomes = null,  // /kafkaworker/ticket_outcomes/ (arch/kafka-clusters/04-coordination.md §1)
     WorkerApiCert? WorkerApiCert = null,        // целевой серт API KafkaWorker (adminpanel/02 §9.9)
-    IReadOnlyList<WorkJournalInfo>? WorkJournals = null, // /kafkaworker/work/ (u13, arch/15 §4)
+    IReadOnlyList<WorkJournalInfo>? WorkJournals = null, // /kafkaworker/work/ (u13, arch/kafka-clusters/04-coordination.md §1)
     WorkerCoordination? Coordination = null);  // leader/claims/instances (u14, adminpanel/02 §2.3.2)
 
-// Кластер /kafka/clusters/<C>/ (arch/15 §2): config + state + факт (brokers/topics/endpoints).
+// Кластер /kafka/clusters/<C>/ (arch/kafka-clusters/02-keys.md §1): config + state + факт (brokers/topics/endpoints).
 public sealed record KafkaClusterInfo(
     string Name,
     KafkaClusterState State,
@@ -40,13 +40,13 @@ public sealed record KafkaClusterInfo(
     string? Endpoints,           // null/пусто — воркер не дописал (алерт у Active)
     IReadOnlyList<KafkaBrokerInfo> BrokersList,
     IReadOnlyList<KafkaTopicInfo> Topics,
-    // Lifecycle-заявки топиков (arch/15 §3.1): create без факт-ключа —
+    // Lifecycle-заявки топиков (arch/kafka-clusters/03-topics.md §2): create без факт-ключа —
     // «виртуальная» строка в DTO, delete — бейдж у живого топика.
     IReadOnlyList<KafkaTopicLifecycleTicket>? LifecycleTickets = null,
     // Live-группы из пробы (волна C): пусто — проба не знает кластер.
     IReadOnlyList<KafkaGroupInfo>? Groups = null);
 
-// Состояние кластера: config.state (arch/15 §2); отсутствие = Active.
+// Состояние кластера: config.state (arch/kafka-clusters/02-keys.md §1); отсутствие = Active.
 public enum KafkaClusterState
 {
     Active,
@@ -54,7 +54,7 @@ public enum KafkaClusterState
     ToRemove,
 }
 
-// Маппинг config.state → enum (arch/15 §6: незнакомое значение — толерантно, Active).
+// Маппинг config.state → enum (arch/kafka-clusters/06-fault-tolerance.md: незнакомое значение — толерантно, Active).
 public static class KafkaClusterStates
 {
     public static KafkaClusterState Parse(string? raw) => raw switch
@@ -76,7 +76,7 @@ public sealed record KafkaBrokerInfo(
     int? MemGi,
     int? DiskGi);
 
-// Топик topics/<T> (arch/15 §3): факт (partitions/RF/configs) + desired-заявка панели.
+// Топик topics/<T> (arch/kafka-clusters/03-topics.md §1): факт (partitions/RF/configs) + desired-заявка панели.
 public sealed record KafkaTopicInfo(
     string Name,
     int Partitions,
@@ -101,10 +101,10 @@ public sealed record TopicDesiredDto(
 // totalLag (сумма end − committed по партициям назначения).
 public sealed record KafkaGroupInfo(string Group, string? State, int Members, long TotalLag);
 
-// Заявка ротации app-пароля /kafkaworker/rotations/<C> (arch/15 §4).
+// Заявка ротации app-пароля /kafkaworker/rotations/<C> (arch/kafka-clusters/04-coordination.md §1).
 public sealed record KafkaRotationTicket(string Cluster, long RequestedUnix, string? RequestedBy);
 
-// Lifecycle-заявка топика topics/<T>/desired.{create,delete} (arch/15 §3.1):
+// Lifecycle-заявка топика topics/<T>/desired.{create,delete} (arch/kafka-clusters/03-topics.md §2):
 // create — параметры (configs развёрнуты в типизированные поля), delete — аудит.
 public sealed record KafkaTopicLifecycleTicket(
     string Topic,
@@ -116,11 +116,11 @@ public sealed record KafkaTopicLifecycleTicket(
     long RequestedUnix,
     string? RequestedBy);
 
-/// <summary>Заявка ребалансировки /kafkaworker/rebalances/&lt;C&gt; (arch/15 §4).</summary>
+/// <summary>Заявка ребалансировки /kafkaworker/rebalances/&lt;C&gt; (arch/kafka-clusters/04-coordination.md §1).</summary>
 public sealed record KafkaRebalanceTicket(string Cluster, long RequestedUnix, string? RequestedBy);
 
 /// <summary>
-/// Прогресс reassignment /kafkaworker/reassignments/&lt;C&gt; (arch/15 §4);
+/// Прогресс reassignment /kafkaworker/reassignments/&lt;C&gt; (arch/kafka-clusters/04-coordination.md §1);
 /// отсутствие ключа = операции нет.
 /// </summary>
 public sealed record KafkaReassignmentProgress(
@@ -134,7 +134,7 @@ public sealed record KafkaReassignmentProgress(
 
 /// <summary>
 /// Live-прогресс rolling-регенерации брокеров /kafkaworker/regens/&lt;C&gt;
-/// (arch/15 §4); отсутствие ключа = операции нет.
+/// (arch/kafka-clusters/04-coordination.md §1); отсутствие ключа = операции нет.
 /// </summary>
 public sealed record KafkaRegenProgress(
     string Cluster,
@@ -144,11 +144,11 @@ public sealed record KafkaRegenProgress(
     long UpdatedUnix,
     string? LastError);
 
-// Заявка CA-ротации /kafkaworker/ca_rotations/<C> (arch/15 §4):
+// Заявка CA-ротации /kafkaworker/ca_rotations/<C> (arch/kafka-clusters/04-coordination.md §1):
 // payload {"requested_unix","requested_by"} — без role (формат ротаций).
 public sealed record KafkaCaRotationTicket(string Cluster, long RequestedUnix, string? RequestedBy);
 
-// Исход заявки /kafkaworker/ticket_outcomes/<C> (arch/15 §4): последний
+// Исход заявки /kafkaworker/ticket_outcomes/<C> (arch/kafka-clusters/04-coordination.md §1): последний
 // исход заявки кластера (expired|done), перезаписывается каждым новым исходом.
 public sealed record KafkaTicketOutcome(
     string Cluster, string Kind, string Outcome, string? Reason,

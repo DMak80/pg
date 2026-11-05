@@ -32,7 +32,7 @@ public static class MovePhases
 
 /// <summary>
 /// MoveProcess — тиковая машина состояний планового переезда бакета M0–M6 по заявкам
-/// /pgworker/moves/&lt;C&gt;/bucket_&lt;i&gt; (spec §6.1, arch/14 §5 F): тик
+/// /pgworker/moves/&lt;C&gt;/bucket_&lt;i&gt; (spec §6.1, arch/pgworker/processes/f-move.md F): тик
 /// идемпотентен (каждый шаг перепроверяет факт), мутации — только под живым клэймом
 /// кластера; одновременно обрабатывается старейшая заявка (Д2). Отказы M0:
 /// permanent (del заявки + журнал rejected) — дефект заявки/факт-несоответствие;
@@ -347,7 +347,7 @@ public sealed class MoveProcess(
     {
         var cluster = snap.Config.Cluster;
 
-        // Живая сверка клэйма перед мутациями фаз M1+ (arch/17 S5).
+        // Живая сверка клэйма перед мутациями фаз M1+ (arch/synchronization/02-predicates-and-mutations.md §S5).
         if (!await ClaimAliveAsync(cluster, $"move/{bucket}", ct))
             return Result<ProcessOutcome>.Failed(new ApplicationException(
                 $"moves {cluster}: claim lost before phases of {bucket}"));
@@ -362,7 +362,7 @@ public sealed class MoveProcess(
         if (!subOnDst && !schemaOnDst)
         {
             // Имя ноды мастера для адреса приёмника pg_dump-операции (канал
-            // arch/25 №22): формат master-ключа —
+            // arch/communications/02-channel-registry.md №22): формат master-ключа —
             // <host>:<doormanPort> (писатели — Patroni-callback/reconciler),
             // поэтому резолвим адрес через ShardEndpoints и ищем ноду шарда по
             // её PG-порту (уникален) — Split(':')[0] давал бы host, не имя (e2e).
@@ -380,7 +380,7 @@ public sealed class MoveProcess(
             if (masterEntry.Key is not { Length: > 0 } entry)
                 return await FailTransientAsync(cluster, new ApplicationException(
                     $"master '{owner}' (pg:{master.Ports.Pg}) not found among shard nodes in portalloc"), ct);
-            // pg_dump — операция приёмника ноды-источника (канал arch/25 №22);
+            // pg_dump — операция приёмника ноды-источника (канал arch/communications/02-channel-registry.md №22);
             // приёмник снимает дамп локально в контейнере ноды.
             var dump = await ddl.DumpAsync(cluster, owner, entry.Split('/')[1], snap.Config.DbName, bucket, ct);
             if (!dump.IsSuccess)
@@ -476,7 +476,7 @@ public sealed class MoveProcess(
         var cluster = snap.Config.Cluster;
 
         // Живая сверка клэйма перед cutover — переключением routing (самая
-        // критическая мутация переезда, arch/17 S5).
+        // критическая мутация переезда, arch/synchronization/02-predicates-and-mutations.md §S5).
         if (!await ClaimAliveAsync(cluster, $"cutover/{bucket}", ct))
             return Result<ProcessOutcome>.Failed(new ApplicationException(
                 $"moves {cluster}: claim lost before cutover of {bucket}"));
@@ -607,7 +607,7 @@ public sealed class MoveProcess(
         const string op = "rollback";
         var cluster = snap.Config.Cluster;
 
-        // Живая сверка клэйма перед мутациями rollback (arch/17 S5).
+        // Живая сверка клэйма перед мутациями rollback (arch/synchronization/02-predicates-and-mutations.md §S5).
         if (!await ClaimAliveAsync(cluster, $"rollback/{bucket}", ct))
             return Result<ProcessOutcome>.Failed(new ApplicationException(
                 $"moves {cluster}: claim lost before rollback of {bucket}"));
@@ -775,7 +775,7 @@ public sealed class MoveProcess(
         const string op = "finalize";
         var cluster = snap.Config.Cluster;
 
-        // Живая сверка клэйма перед мутациями finalize (arch/17 S5).
+        // Живая сверка клэйма перед мутациями finalize (arch/synchronization/02-predicates-and-mutations.md §S5).
         if (!await ClaimAliveAsync(cluster, $"finalize/{bucket}", ct))
             return Result<ProcessOutcome>.Failed(new ApplicationException(
                 $"moves {cluster}: claim lost before finalize of {bucket}"));
@@ -967,7 +967,7 @@ public sealed class MoveProcess(
     private async Task<Result<ProcessOutcome>> RunAbortAsync(
         ClusterSnapshot snap, string bucket, MoveRequest request, CancellationToken ct)
     {
-        // Живая сверка клэйма перед мутациями abort (arch/17 S5).
+        // Живая сверка клэйма перед мутациями abort (arch/synchronization/02-predicates-and-mutations.md §S5).
         if (!await ClaimAliveAsync(snap.Config.Cluster, $"abort/{bucket}", ct))
             return Result<ProcessOutcome>.Failed(new ApplicationException(
                 $"moves {snap.Config.Cluster}: claim lost before abort of {bucket}"));
@@ -976,7 +976,7 @@ public sealed class MoveProcess(
         return await abort.RunAsync(snap, bucket, request, claims, clock, options, ct, snapshot);
     }
 
-    // Живая сверка клэйма перед мутациями фаз переезда (arch/17 S5): IsMine на
+    // Живая сверка клэйма перед мутациями фаз переезда (arch/synchronization/02-predicates-and-mutations.md §S5): IsMine на
     // входе тика не защищает длинную фазу от takeover. false — ключа нет/чужой/
     // etcd недоступен: мутации не начинаются (P9), журнал несёт claim-lost/<фазу>.
     private async Task<bool> ClaimAliveAsync(string cluster, string phase, CancellationToken ct)
@@ -1052,7 +1052,7 @@ public sealed class MoveProcess(
     }
 
     // Mover-DSN префлайта (spec §3.3, усыновлённые кластеры): multi-host
-    // Per-cluster mover-пароль (arch/14 §4): ключ etcd; env — fallback до
+    // Per-cluster mover-пароль (arch/pgworker/04-security.md): ключ etcd; env — fallback до
     // первого ensure (переезд на кластере до t02-ensure). Свежий снапшот на тик —
     // ротация mover не ломает следующий тик переезда.
     private string MoverPassword(ClusterSnapshot snap)

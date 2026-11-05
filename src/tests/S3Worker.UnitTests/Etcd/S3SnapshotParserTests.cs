@@ -4,9 +4,9 @@ using Shared.Etcd.Client;
 
 namespace S3Worker.UnitTests.Etcd;
 
-// S3SnapshotParser — канонические примеры значений arch/23 §2.1 (критерий
+// S3SnapshotParser — канонические примеры значений arch/s3-clusters/02-keys.md §2 (критерий
 // приёмки парсеров), unknownKeys-толерантность, битый JSON → parseError без
-// падения тика, state-семантика «отсутствие = Active» (arch/23 §2/§9).
+// падения тика, state-семантика «отсутствие = Active» (arch/s3-clusters/02-keys.md §1/§9).
 public class S3SnapshotParserTests
 {
     private static Kv Kv(string key, string value) => new(key, value, 1);
@@ -14,7 +14,7 @@ public class S3SnapshotParserTests
     [Fact]
     public void Parse_ConfigRequest_CanonicalValues()
     {
-        // Arrange — канонический пример заявки arch/23 §2.1 (один в один)
+        // Arrange — канонический пример заявки arch/s3-clusters/02-keys.md §2 (один в один)
         var kvs = new[] { Kv("/s3/clusters/backups/config",
             """{"platform":"owns3","nodes":3,"created_unix":1760156800,"state":"NOT_INITIALIZED"}""") };
 
@@ -31,7 +31,7 @@ public class S3SnapshotParserTests
     [Fact]
     public void Parse_ConfigActive_NoStateMeansActive()
     {
-        // Arrange — Active-пример arch/23 §2.1: то же без state
+        // Arrange — Active-пример arch/s3-clusters/02-keys.md §2: то же без state
         var kvs = new[] { Kv("/s3/clusters/backups/config",
             """{"platform":"owns3","nodes":3,"created_unix":1760156800}""") };
 
@@ -77,7 +77,7 @@ public class S3SnapshotParserTests
     [Fact]
     public void Parse_PlacementVariants_Canonical()
     {
-        // Arrange — канонические селекторы arch/23 §2.1: plain / swarm_node / swarm_labels
+        // Arrange — канонические селекторы arch/s3-clusters/02-keys.md §2: plain / swarm_node / swarm_labels
         var kvs = new[]
         {
             Kv("/s3/clusters/c/nodes/node1/placement", """{"docker_host":"h1"}"""),
@@ -103,7 +103,7 @@ public class S3SnapshotParserTests
     [Fact]
     public void Parse_NodeKeys_Canonical()
     {
-        // Arrange — resources/state/placed_on/usage/endpoints по arch/23 §2.1
+        // Arrange — resources/state/placed_on/usage/endpoints по arch/s3-clusters/02-keys.md §2
         var kvs = new[]
         {
             Kv("/s3/clusters/c/nodes/node1/resources", """{"cpu":"2","mem":"4Gi","disk":"200Gi"}"""),
@@ -130,7 +130,7 @@ public class S3SnapshotParserTests
     [Fact]
     public void Parse_ConnectivitySync_NotUnknown_ClusterIntact()
     {
-        // Arrange — ключи наблюдения зонда (arch/23 §3) и вовсе неизвестный
+        // Arrange — ключи наблюдения зонда (arch/s3-clusters/03-observation-statuses.md) и вовсе неизвестный
         var kvs = new[]
         {
             Kv("/s3/clusters/c/config", """{"platform":"owns3","nodes":1,"created_unix":1}"""),
@@ -264,7 +264,7 @@ public class S3SnapshotParserTests
     [Fact]
     public void Parse_LinksDenyListPki_CanonicalValues()
     {
-        // Arrange — канонические примеры arch/23 §2.1: частичный граф links,
+        // Arrange — канонические примеры arch/s3-clusters/02-keys.md §2: частичный граф links,
         // denylist ["west1"], pki-ключи (сертификат — экранированная JSON-строка).
         var nodePki = """{"certificate":"{\"name\":\"east1\",\"publicKeyPem\":\"-----BEGIN PUBLIC KEY-----…\",\"issuedAtUnixMs\":1760156800000,\"expiresAtUnixMs\":0,\"caName\":\"backups\",\"signature\":\"…\"}","private_key_pem":"-----BEGIN PRIVATE KEY-----…"}""";
         var kvs = new[]
@@ -319,7 +319,7 @@ public class S3SnapshotParserTests
     [Fact]
     public void Parse_BrokenLinksAndDenyList_ParseError_NullValues_NoThrow()
     {
-        // Arrange — битые значения (ручная правка etcd, arch/23 §9)
+        // Arrange — битые значения (ручная правка etcd, arch/s3-clusters/09-panel.md)
         var kvs = new[]
         {
             Kv("/s3/clusters/c/config", """{"platform":"owns3","nodes":1,"created_unix":1}"""),

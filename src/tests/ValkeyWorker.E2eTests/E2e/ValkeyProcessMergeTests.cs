@@ -3,7 +3,7 @@ using Xunit;
 
 namespace ValkeyWorker.IntegrationTests.E2e;
 
-// Механика объединённого съёма stdout+stderr (канон docs/e2e-launch.md §1):
+// Механика объединённого съёма stdout+stderr (канон arch/testing/01-e2e-launch.md §1):
 // лёгкий факт без docker — /bin/sh пишет в оба потока, merge-хелпер обязан
 // вернуть оба блока (stdout раньше stderr).
 public sealed class ValkeyProcessMergeTests

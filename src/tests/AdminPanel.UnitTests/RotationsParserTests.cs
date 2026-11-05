@@ -6,7 +6,7 @@ using Xunit;
 
 namespace AdminPanel.UnitTests;
 
-// RotationsParser (u07 — разбор /pgworker/rotations/<C>, arch/14 §3.3): свои
+// RotationsParser (u07 — разбор /pgworker/rotations/<C>, arch/pgworker/00-etcd-contract.md §4): свои
 // тесты (раньше — только happy-path внутри рефрешер-теста): валидная заявка
 // (requested_by есть/нет), битый JSON, не-объект, нет requested_unix, пустой
 // лист ключа; сортировка по кластеру. AAA.

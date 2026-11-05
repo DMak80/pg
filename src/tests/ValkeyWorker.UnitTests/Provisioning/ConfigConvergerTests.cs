@@ -7,7 +7,7 @@ using Xunit;
 
 namespace ValkeyWorker.UnitTests.Provisioning;
 
-// ConfigConverger (arch/21 §5 D): CONFIG SET при расхождении, ACL-восстановление,
+// ConfigConverger (arch/valkeyworker/03-configuration.md D): CONFIG SET при расхождении, ACL-восстановление,
 // R3-warning, слепая нода → Failed.
 public class ConfigConvergerTests
 {
@@ -103,7 +103,7 @@ public class ConfigConvergerTests
     [Fact]
     public async Task EnabledDefault_ConvergerDisables()
     {
-        // Arrange: default включён (дрейф от канона «default off», arch/21 §5 D).
+        // Arrange: default включён (дрейф от канона «default off», arch/valkeyworker/03-configuration.md D).
         const string cluster = "defon";
         var rig = new Rig();
         rig.SeedActive(cluster);

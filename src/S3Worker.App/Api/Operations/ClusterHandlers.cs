@@ -35,7 +35,7 @@ public sealed class DeleteClusterHandler(IEtcdGateway gateway, string[] endpoint
         return Result<bool>.Success(true); // 202
     }
 
-    // config → канонический JSON arch/23 §2.1 с "state"=state; `etcd_backup` — признак бэкапного кластера etcd.
+    // config → канонический JSON arch/s3-clusters/02-keys.md §2 с "state"=state; `etcd_backup` — признак бэкапного кластера etcd.
     private static string ParseAndUpdate(string json, string cluster, string state)
     {
         string? platform = S3Limits.Platform;
@@ -68,7 +68,7 @@ public sealed class DeleteClusterHandler(IEtcdGateway gateway, string[] endpoint
 public sealed class InvalidS3ConfigException(string cluster)
     : Exception($"config of S3 cluster {cluster} is unreadable (malformed JSON)");
 
-// POST /api/s3/clusters/{c}/nodes: имя инстанса из тела (arch/24 §1.1) —
+// POST /api/s3/clusters/{c}/nodes: имя инстанса из тела (arch/s3worker/07-api.md §1) —
 // гварды (Active; паттерн/резерв; <9) → txn NotExists(nodes/<I>/state) + пакет
 // placement/resources/state → 201; проигрыш txn → 409 (коллизия имени).
 public sealed class AddNodeHandler(IEtcdGateway gateway, string[] endpoints)
@@ -100,7 +100,7 @@ public sealed class AddNodeHandler(IEtcdGateway gateway, string[] endpoints)
             return Result<string>.Failed(names.Error!);
         if (names.Value.Count >= S3Limits.MaxNodes)
             return Result<string>.Failed(new S3LastNodeException(
-                $"S3 cluster {cluster}: already {names.Value.Count} instances — limit {S3Limits.MaxNodes} (arch/23 §2)"));
+                $"S3 cluster {cluster}: already {names.Value.Count} instances — limit {S3Limits.MaxNodes} (arch/s3-clusters/02-keys.md §1)"));
 
         var node = request.Name!;
         var ops = new List<TxnOp>
@@ -252,9 +252,9 @@ public sealed class PostRotationHandler(IEtcdGateway gateway, string[] endpoints
 }
 
 // POST /api/s3/clusters/{c}/sync-probe: 202-заявка /s3worker/probes/<C>
-// put-if-absent (arch/24 §1.1, arch/23 §8); already → 202 идемпотентно
+// put-if-absent (arch/s3worker/07-api.md §1, arch/s3-clusters/08-coordination.md); already → 202 идемпотентно
 // (заявка первого заявителя не перезаписывается); кластера нет → 404;
-// state=NOT_INITIALIZED/TO_REMOVE → 409; результат — ключи arch/23 §3
+// state=NOT_INITIALIZED/TO_REMOVE → 409; результат — ключи arch/s3-clusters/03-observation-statuses.md
 // (исполняет зонд F ближайшим тиком держателя клэйма).
 public sealed class SyncProbeHandler(IEtcdGateway gateway, string[] endpoints, TimeProvider time)
 {

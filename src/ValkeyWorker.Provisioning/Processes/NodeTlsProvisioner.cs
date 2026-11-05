@@ -4,7 +4,7 @@ using ValkeyWorker.Core.Valkey;
 namespace ValkeyWorker.Provisioning.Processes;
 
 /// <summary>
-/// TLS-материал ноды (env-TLS, arch/21 §2/V3): PEM серта/ключа/CA доставляется
+/// TLS-материал ноды (env-TLS, arch/valkeyworker/01-placement.md/V3): PEM серта/ключа/CA доставляется
 /// env контейнера VALKEY_TLS_{CERT,KEY,CA} (значения — многострочный PEM);
 /// cmd-обёртка NodeArgsBuilder.BuildCmd раскатывает их в /tls при старте.
 /// Валидность факта = CA == ожидаемому (Trim-сравнение), цепочка валидна,
@@ -12,7 +12,7 @@ namespace ValkeyWorker.Provisioning.Processes;
 /// иначе — пересоздание со свежим env (свежий серт случаен — сверка по
 /// валидности IsValidNodeEnv, не побайтовая). Нормализация \n → переносы —
 /// единый хелпер NormalizePem на границах сборки И сверки (etcd-канон
-/// «одной строкой с \n» — arch/20 §2.1 — не меняется).
+/// «одной строкой с \n» — arch/valkey-clusters/02-keys.md §2 — не меняется).
 /// </summary>
 public static class NodeTlsProvisioner
 {
@@ -35,7 +35,7 @@ public static class NodeTlsProvisioner
         };
     }
 
-    // Валидность факта по env (идемпотентность по факту, arch/21 §2): CA ==
+    // Валидность факта по env (идемпотентность по факту, arch/valkeyworker/01-placement.md): CA ==
     // ожидаемому, серт подписан им, key↔cert, SAN покрывает advertised,
     // срок жив. env==null/нет ключей — false (объекта/материала нет).
     internal static bool IsValidNodeEnv(

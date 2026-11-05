@@ -3,7 +3,7 @@ using System.Security.Cryptography;
 namespace S3Worker.Core.OwnS3;
 
 /// <summary>
-/// Генератор значений per-cluster клиентских кредов S3 (arch/23 §6):
+/// Генератор значений per-cluster клиентских кредов S3 (arch/s3-clusters/06-secrets.md):
 /// криптостойкий источник, 32 символа, алфавит [A-Za-z0-9] — без
 /// спецсимволов, чтобы значение было безопасно для env контейнера,
 /// JSON-значения etcd и SigV4 без экранирования.

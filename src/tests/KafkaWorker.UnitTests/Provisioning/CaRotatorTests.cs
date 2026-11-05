@@ -8,7 +8,7 @@ using static KafkaWorker.UnitTests.Provisioning.Fakes;
 
 namespace KafkaWorker.UnitTests.Provisioning;
 
-// CaRotator (arch/16 §5 K): фазы P→D→R→C окна двойного доверия — staging
+// CaRotator (arch/kafkaworker/04-security.md §4 K): фазы P→D→R→C окна двойного доверия — staging
 // стабилен, bundle до замены сертов, rolling по одному брокеру, атомарный коммит.
 public class CaRotatorTests
 {

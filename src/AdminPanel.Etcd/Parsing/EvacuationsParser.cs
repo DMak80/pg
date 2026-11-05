@@ -10,7 +10,7 @@ public sealed record EvacuationsParseResult(
     IReadOnlyList<EvacuationInfo> Items,
     IReadOnlyList<KeyParseError> Errors);
 
-// Разбор range /pgworker/evacuations/ (u12; канон arch/14 §3.2/§5 D): ключ
+// Разбор range /pgworker/evacuations/ (u12; канон arch/pgworker/00-etcd-contract.md §3/§5 D): ключ
 // /pgworker/evacuations/<C>/<X>, значение
 // {"evacuated_unix","reason","buckets":{старый→новый},"state":"DONE|QUARANTINED",
 // "returned_unix"?}. Толерантный парс: битый JSON / не объект / нет

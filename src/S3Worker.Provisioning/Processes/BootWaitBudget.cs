@@ -3,7 +3,7 @@ using System.Collections.Concurrent;
 namespace S3Worker.Provisioning.Processes;
 
 /// <summary>
-/// Бюджет boot-ожидания provisioning (arch/24 §5 A, фаза P2.5): время первого
+/// Бюджет boot-ожидания provisioning (arch/s3worker/02-cluster-lifecycle.md §2 A, фаза P2.5): время первого
 /// наблюдения «health ноды молчит» по кластеру (диагностический бюджет
 /// NodeBootSec, не клэйм). DI-синглтон, общий для процессов-соседей:
 /// deprovisioning сбрасывает бюджет при завершении демонтажа, provisioning —

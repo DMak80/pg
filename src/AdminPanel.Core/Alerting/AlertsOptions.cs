@@ -30,20 +30,20 @@ public class AlertsOptions
     public int ProvisionStuckSec { get; set; } = 300;
 
     // wal-stream-lag : порог лага в сегментах и порог тишины загрузок
-    // (arch/19 §3; синхронизированы с воркерными Wal:LagMaxSegments/StaleSec).
+    // (arch/backups/02-wal-archive.md §1; синхронизированы с воркерными Wal:LagMaxSegments/StaleSec).
     public int WalLagMaxSegments { get; set; } = 1024;
 
     public int WalStaleSec { get; set; } = 300;
 
     // backup-full-stale : панельный дефолт окна суточного алерта при
-    // отсутствии policy-ключа кластера (arch/19 §4). <= 0 — дефолт каталога 86400.
+    // отсутствии policy-ключа кластера (arch/backups/05-etcd-contract.md). <= 0 — дефолт каталога 86400.
     public long BackupFullMaxAgeSec { get; set; } = 86400;
 
     // backup-deleting-stuck : возраст DELETING-полного без завершения
     // (ретенция не может довести удаление — S3-отказ и т.п.).
     public BackupsAlertsOptions Backups { get; set; } = new();
 
-    /// <summary>Пороги алертов бэкапов (arch/19 §4).</summary>
+    /// <summary>Пороги алертов бэкапов (arch/backups/05-etcd-contract.md).</summary>
     public sealed class BackupsAlertsOptions
     {
         public int DeletingStaleSec { get; set; } = 21600; // 6 ч

@@ -6,7 +6,7 @@ namespace PgWorker.App.Api.Operations;
 // (src/AdminPanel.Api/Operations/CreateClusterCommand.cs/DeleteClusterCommand.cs),
 // тексты 1:1 — фронт-контракт панели не меняется.
 
-// Валидация policy бэкапов не прошла: 400 с errors по полям (arch/19 §4).
+// Валидация policy бэкапов не прошла: 400 с errors по полям (arch/backups/05-etcd-contract.md).
 public sealed class BackupsPolicyValidationException(
     IReadOnlyList<ValidationError> errors)
     : Exception("backup policy is invalid")
@@ -195,10 +195,10 @@ public sealed class AllOthersRecreatingException(string scope, string node)
 }
 
 // Ресурс/эндпоинт воркера не найден или выключен — 404 (напр., seed-эндпоинт
-// за флагом EnableSeedEndpoint, arch/14 §1.1.1).
+// за флагом EnableSeedEndpoint, arch/pgworker/07-api.md §5).
 public sealed class WorkerApiNotFoundException(string message) : Exception(message);
 
-// ── Restore (arch/19 §3.5) ──
+// ── Restore (arch/backups/03-restore.md) ──
 
 // confirm != имя шарда — 400 (необратимая операция: защита от ошибки оператора).
 public sealed class ConfirmMismatchException(string expected, string got)
@@ -220,7 +220,7 @@ public sealed class RestoreValidationException(IReadOnlyList<ValidationError> er
     public IReadOnlyList<ValidationError> Errors { get; } = errors;
 }
 
-// ── Сироты бэкапов (reliability, arch/19 §4) ──
+// ── Сироты бэкапов (reliability, arch/backups/05-etcd-contract.md) ──
 
 // Префикса нет в реестре сирот / имена неканонические — 404.
 public sealed class OrphanNotFoundException(string prefix)

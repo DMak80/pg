@@ -30,6 +30,6 @@ public sealed class BackupVerifyFailedRule : IAlertRule
                 null,
                 "full backup verification failed (pg_verifybackup/WAL chain): recoverability at risk",
                 AlertRemedy.OperatorRunbook,
-                "worker re-takes the full backup automatically (verify FAILED is not counted as freshness); for analysis see the arch/19 runbook");
+                "worker re-takes the full backup automatically (verify FAILED is not counted as freshness); for analysis see the arch/backups/README.md runbook");
     }
 }

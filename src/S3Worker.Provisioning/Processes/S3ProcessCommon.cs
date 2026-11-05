@@ -5,7 +5,7 @@ using Shared.Etcd.Client;
 
 namespace S3Worker.Provisioning.Processes;
 
-/// <summary>Исход процесса (arch/24 §5; порт ProcessOutcome valkey): для цикла
+/// <summary>Исход процесса (arch/s3worker/README.md; порт ProcessOutcome valkey): для цикла
 /// ReconcileLoop.</summary>
 public enum ProcessOutcome
 {
@@ -17,7 +17,7 @@ public enum ProcessOutcome
 }
 
 /// <summary>Опции процессов S3Worker (плоский срез S3WorkerOptions, порт
-/// ValkeyProvisioningOptions; arch/23 §2/§4, arch/24 §8).</summary>
+/// ValkeyProvisioningOptions; arch/s3-clusters/02-keys.md §1/§4, arch/s3worker/08-operability.md §5).</summary>
 public sealed record S3ProvisioningOptions(
     int PortRangeFrom,
     int PortRangeTo,
@@ -29,13 +29,13 @@ public sealed record S3ProvisioningOptions(
     string Bucket,
     string? ContourNetwork = null,
 
-    /// <summary>Период зонда F (arch/24 §8): гейт по checked_unix ключа connectivity.</summary>
+    /// <summary>Период зонда F (arch/s3worker/08-operability.md §5): гейт по checked_unix ключа connectivity.</summary>
     int SyncIntervalSec = 60,
 
     /// <summary>Бюджет страниц сверки на сторону пары (spec §3.3; 20 = 20 000 объектов).</summary>
     int SyncMaxPages = 20,
 
-    /// <summary>Период reconcile mesh-репликации инстансов (arch/24 §8):
+    /// <summary>Период reconcile mesh-репликации инстансов (arch/s3worker/08-operability.md §5):
     /// 0 — env OWNS3_REPLICATION_RECONCILE_INTERVAL_SECONDS не ставится.</summary>
     int OwnS3ReplicationReconcileIntervalSec = 0)
 {
@@ -46,7 +46,7 @@ public sealed record S3ProvisioningOptions(
 
 /// <summary>
 /// Общие хелперы процессов S3Worker (порт ProcessCommon valkey): ключи etcd
-/// домена /s3/ и координации /s3worker/ (arch/23 §8), сериализация portalloc,
+/// домена /s3/ и координации /s3worker/ (arch/s3-clusters/08-coordination.md), сериализация portalloc,
 /// чтение/запись state ноды (failover). Дополняется задачами 10–13
 /// (ParseResources и др. — Task 9).
 /// </summary>
@@ -73,14 +73,14 @@ public static class S3ProcessCommon
     public static string NodeUsageKey(string cluster, string node)
         => $"/s3/clusters/{cluster}/nodes/{node}/usage";
 
-    // Декларации mesh (arch/23 §2): граф репликации и отзыв ключей кластера.
+    // Декларации mesh (arch/s3-clusters/02-keys.md §1): граф репликации и отзыв ключей кластера.
     public static string LinksKey(string cluster)
         => $"/s3/clusters/{cluster}/links";
 
     public static string DenyListKey(string cluster)
         => $"/s3/clusters/{cluster}/denylist";
 
-    // PKI репликации per-cluster (arch/23 §2/§6): CA, сертификат оркестратора,
+    // PKI репликации per-cluster (arch/s3-clusters/02-keys.md §1/§6): CA, сертификат оркестратора,
     // материал инстанса (ленивый выпуск, txn put-if-absent).
     public static string ClusterPkiCaKey(string cluster)
         => $"/s3/clusters/{cluster}/pki/ca";
@@ -91,7 +91,7 @@ public static class S3ProcessCommon
     public static string NodePkiKey(string cluster, string node)
         => $"/s3/clusters/{cluster}/nodes/{node}/pki";
 
-    /// <summary>Клиентские креды кластера (arch/23 §2/§6): ленивая генерация
+    /// <summary>Клиентские креды кластера (arch/s3-clusters/02-keys.md §1/§6): ленивая генерация
     /// при provisioning (txn put-if-absent), ротация — замена целиком; читатели
     /// — S3Worker/PgWorker/панель/etcdworker.</summary>
     public static string ClusterSecretsKey(string cluster)
@@ -103,16 +103,16 @@ public static class S3ProcessCommon
     public static string RotationKey(string cluster)
         => $"/s3worker/rotations/{cluster}";
 
-    /// <summary>Заявка внепланового зонда (arch/23 §8): put-if-absent API,
+    /// <summary>Заявка внепланового зонда (arch/s3-clusters/08-coordination.md): put-if-absent API,
     /// del зонда по исполнении прогона.</summary>
     public static string ProbeRequestKey(string cluster)
         => $"/s3worker/probes/{cluster}";
 
-    /// <summary>Ключ наблюдения связности (arch/23 §3): ping-матрица настроенных линков.</summary>
+    /// <summary>Ключ наблюдения связности (arch/s3-clusters/03-observation-statuses.md): ping-матрица настроенных линков.</summary>
     public static string ConnectivityKey(string cluster)
         => $"/s3/clusters/{cluster}/connectivity";
 
-    /// <summary>Ключ наблюдения синхронности (arch/23 §3): сверка пар/лаги/вердикты.</summary>
+    /// <summary>Ключ наблюдения синхронности (arch/s3-clusters/03-observation-statuses.md): сверка пар/лаги/вердикты.</summary>
     public static string SyncKey(string cluster)
         => $"/s3/clusters/{cluster}/sync";
 
@@ -171,7 +171,7 @@ public static class S3ProcessCommon
         return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 
-    // Claimed-check: мутации — только держателем живого клэйма (arch/17 S5).
+    // Claimed-check: мутации — только держателем живого клэйма (arch/synchronization/02-predicates-and-mutations.md §S5).
     public static Result EnsureClaimed(ClaimStore claims, string cluster, string op)
         => claims.IsMine(cluster)
             ? Result.Success()
@@ -179,7 +179,7 @@ public static class S3ProcessCommon
                 $"{op} {cluster}: claim is not ours (or lost) — mutations forbidden"));
 
     /// <summary>
-    /// Завершающее окно D/E (spec §2.2, arch/23 §2 после правки): RMW
+    /// Завершающее окно D/E (spec §2.2, arch/s3-clusters/02-keys.md §1 после правки): RMW
     /// endpoints (txn по mod_revision) + актуализация config.nodes до
     /// фактического состава (txn по mod_revision, канонический JSON без
     /// state). Идемпотентность: endpoints уже канон и nodes уже равен
@@ -195,7 +195,7 @@ public static class S3ProcessCommon
         IReadOnlyDictionary<string, NodeAddress> addresses,
         CancellationToken ct)
     {
-        // endpoints: advertised host:port Ordinal-списком (arch/23 §2.1).
+        // endpoints: advertised host:port Ordinal-списком (arch/s3-clusters/02-keys.md §2).
         var endpointsValue = string.Join(",", addresses
             .OrderBy(p => p.Key, StringComparer.Ordinal)
             .Select(p => $"{p.Value.Host}:{p.Value.S3Port}"));
@@ -233,7 +233,7 @@ public static class S3ProcessCommon
         return await RmwKeyAsync(gateway, endpoints, configKey, canonical, ct);
     }
 
-    /// <summary>Канонический JSON config (arch/23 §2.1, порядок полей канона;
+    /// <summary>Канонический JSON config (arch/s3-clusters/02-keys.md §2, порядок полей канона;
     /// state — опционально для заявочных форм).</summary>
     public static string SerializeCanonicalConfig(
         string platform, int nodes, bool etcdBackup, long? createdUnix, string? state = null)
@@ -244,7 +244,7 @@ public static class S3ProcessCommon
             writer.WriteStartObject();
             writer.WriteString("platform", platform);
             writer.WriteNumber("nodes", nodes);
-            // etcd_backup пишется только при true (опциональное поле канона arch/23 §2.1).
+            // etcd_backup пишется только при true (опциональное поле канона arch/s3-clusters/02-keys.md §2).
             if (etcdBackup)
                 writer.WriteBoolean("etcd_backup", true);
             if (createdUnix is { } created)
@@ -308,7 +308,7 @@ public static class S3ProcessCommon
 
     /// <summary>
     /// Ресурсы декларации → лимиты контейнера (cpu/mem; disk — декларация, не
-    /// парсится — канон arch/23 §2). cpu — decimal-строка инвариантной культуры
+    /// парсится — канон arch/s3-clusters/02-keys.md §1). cpu — decimal-строка инвариантной культуры
     /// ("2", "0.5"; БЕЗ суффиксов); mem — "&lt;n&gt;Gi" → n × 2^30; незнакомый
     /// формат → null (валидация API гарантирует канон на входе, толерантность
     /// чтения сохраняется).
@@ -331,8 +331,8 @@ public static class S3ProcessCommon
         return (cpu, mem);
     }
 
-    // Формат arch/23 §8: {"<I>":{"host":"h","s3":18001}} — имена инстансов
-    // произвольные (arch/23 §2).
+    // Формат arch/s3-clusters/08-coordination.md: {"<I>":{"host":"h","s3":18001}} — имена инстансов
+    // произвольные (arch/s3-clusters/02-keys.md §1).
     public static Dictionary<string, NodeAddress> ParsePortAlloc(string json)
     {
         var addresses = new Dictionary<string, NodeAddress>();
@@ -344,7 +344,7 @@ public static class S3ProcessCommon
         return addresses;
     }
 
-    // Канонический JSON links (arch/23 §2.1): [{"a":…,"b":…},…] в порядке запроса.
+    // Канонический JSON links (arch/s3-clusters/02-keys.md §2): [{"a":…,"b":…},…] в порядке запроса.
     public static string LinksJson(IReadOnlyList<(string A, string B)> links)
     {
         using var buffer = new MemoryStream();
@@ -365,7 +365,7 @@ public static class S3ProcessCommon
         return System.Text.Encoding.UTF8.GetString(buffer.ToArray());
     }
 
-    // Канонический JSON denylist (arch/23 §2.1): ["<I>",…] в Ordinal-порядке.
+    // Канонический JSON denylist (arch/s3-clusters/02-keys.md §2): ["<I>",…] в Ordinal-порядке.
     public static string DenyListJson(IReadOnlyCollection<string> names)
     {
         using var buffer = new MemoryStream();
@@ -401,18 +401,18 @@ public static class S3ProcessCommon
         return System.Text.Encoding.UTF8.GetString(buffer.ToArray());
     }
 
-    /// <summary>Пара сверки зонда (arch/23 §3): from/to — Ordinal-нормализованные
+    /// <summary>Пара сверки зонда (arch/s3-clusters/03-observation-statuses.md): from/to — Ordinal-нормализованные
     /// стороны неориентированной пары; lag_bytes — объём недоставленного (missing&gt;0),
     /// lag_objects — fetch-очередь приёмника (&gt;0); null — поле не пишется.</summary>
     public sealed record SyncPairValue(string From, string To, long Missing, long Extra, long? LagBytes, long? LagObjects);
 
     // Опции записи канонических JSON: кириллица диагностики остаётся читаемой
-    // (канон arch/23 §3 — «probe_error":"…таймаут"; экранирование \u043B
+    // (канон arch/s3-clusters/03-observation-statuses.md — «probe_error":"…таймаут"; экранирование \u043B
     // взломало бы строгий канон; значения — etcd, не HTML-контекст).
     private static readonly System.Text.Encodings.Web.JavaScriptEncoder CanonicalEncoder =
         System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping;
 
-    /// <summary>Канонический JSON connectivity (arch/23 §3): порядок полей канона;
+    /// <summary>Канонический JSON connectivity (arch/s3-clusters/03-observation-statuses.md): порядок полей канона;
     /// узлы и targets — Ordinal; probe_error — только при непустом.</summary>
     public static string SerializeConnectivity(string state, long checkedUnix,
         IReadOnlyDictionary<string, IReadOnlyDictionary<string, string>> links, string? probeError = null)
@@ -442,7 +442,7 @@ public static class S3ProcessCommon
         return System.Text.Encoding.UTF8.GetString(buffer.ToArray());
     }
 
-    /// <summary>Канонический JSON sync (arch/23 §3): порядок полей канона; пары —
+    /// <summary>Канонический JSON sync (arch/s3-clusters/03-observation-statuses.md): порядок полей канона; пары —
     /// (From,To) Ordinal; lag_bytes пишется при missing&gt;0, lag_objects — при &gt;0;
     /// last_error — только при непустом.</summary>
     public static string SerializeSync(string state, long checkedUnix,
@@ -570,7 +570,7 @@ public static class S3ProcessCommon
         return false;
     }
 
-    /// <summary>Отбор bucket'ов для инстанса (arch/23 §5): per-install — всегда;
+    /// <summary>Отбор bucket'ов для инстанса (arch/s3-clusters/05-platform.md): per-install — всегда;
     /// фиксированный etcd-слепковый — только у etcd-backup кластера
     /// (EtcdWorker выгружает в него DR-слепки etcd).</summary>
     public static IReadOnlyList<string> BucketsForInstance(string perInstallBucket, bool etcdBackup)

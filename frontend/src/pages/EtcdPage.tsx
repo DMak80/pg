@@ -266,7 +266,7 @@ function MaintainNodesModal({
 }
 
 // Члены кластера etcd: id, имена, URL; лидер — меткой; managed/external —
-// по peer-URL-паттерну http://etcdw-node-<k>:2380 (arch/25 §3.1; бейдж
+// по peer-URL-паттерну http://etcdw-node-<k>:2380 (arch/etcdworker/02-membership.md; бейдж
 // показывается всем членам, включая unstarted-learner'а без имени).
 function MembersCard({ data }: { data: EtcdStatusDto }) {
   return (

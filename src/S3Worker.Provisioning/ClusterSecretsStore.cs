@@ -7,7 +7,7 @@ using Shared.Etcd.Client;
 namespace S3Worker.Provisioning;
 
 /// <summary>
-/// Per-cluster клиентские креды S3 в etcd (arch/23 §6): ленивая генерация
+/// Per-cluster клиентские креды S3 в etcd (arch/s3-clusters/06-secrets.md): ленивая генерация
 /// (txn put-if-absent, проигрыш → re-read — первый записавший — истина),
 /// чтение с проверкой полноты канона, ротация (txn по mod_revision).
 /// Состав канона: root-пара + ключи <c>backups</c> (read-write) и

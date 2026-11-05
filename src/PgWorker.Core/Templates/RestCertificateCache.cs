@@ -5,7 +5,7 @@ using System.Text;
 namespace PgWorker.Core.Templates;
 
 /// <summary>
-/// Кеш серверных сертов REST-эндпоинтов нод (arch/14 §2.1): серт
+/// Кеш серверных сертов REST-эндпоинтов нод (arch/pgworker/01-placement.md §1): серт
 /// генерируется один раз на (кластер, шард, нода, CA) в рамках жизни
 /// процесса — повторные сборки env (надзор/ensure/rebuild) дают тот же PEM.
 /// Смена CA (hash ключа) — новый серт. Серт ноды — не etcd-состояние
@@ -28,7 +28,7 @@ public sealed class RestCertificateCache(string caCertPem, string caKeyPem)
                 caCertPem, caKeyPem, nodeName, NodeFullName(cluster, shard, nodeName)));
     }
 
-    // Канон полного имени ноды (arch/14 §2.1): pgw-<C>-<X>-<n> — alias в
+    // Канон полного имени ноды (arch/pgworker/01-placement.md §1): pgw-<C>-<X>-<n> — alias в
     // per-cluster сети, имя контейнера в pgw-metrics, connect_address REST.
     public static string NodeFullName(string cluster, string shard, string nodeName)
         => $"pgw-{cluster}-{shard}-{nodeName}";

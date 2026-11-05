@@ -2,12 +2,12 @@ using System.Globalization;
 
 namespace PgWorker.Backups;
 
-/// <summary>Имя WAL-сегмента — 24 hex-символа TLI(8)+log(8)+seg(8) (arch/19 §3).
+/// <summary>Имя WAL-сегмента — 24 hex-символа TLI(8)+log(8)+seg(8) (arch/backups/02-wal-archive.md §1).
 /// `.partial` — незакрытый сегмент (в цепочку не входит); `NNNNNNNN.history` —
 /// timeline-история (загружается обязательно). Чистые функции, без состояния.</summary>
 public readonly record struct WalFileName(uint Tli, uint Log, uint Seg)
 {
-    /// <summary>Стандартный размер WAL-сегмента (16 MiB) — ноды Spilo канона arch/14.</summary>
+    /// <summary>Стандартный размер WAL-сегмента (16 MiB) — ноды Spilo канона arch/pgworker/01-placement.md.</summary>
     public const long SegmentBytes = 16L * 1024 * 1024;
 
     /// <summary>Сегментов в одном log-файле (seg 0x00..0xFF).</summary>
@@ -44,7 +44,7 @@ public readonly record struct WalFileName(uint Tli, uint Log, uint Seg)
             : null;
 
     /// <summary>LSN 'X/Y' (pg_current_wal_lsn) → имя сегмента позиции записи мастера
-    /// (lag-зонд arch/19 §3): segId = lsn / 16MB; log = segId / 256; seg = segId % 256.</summary>
+    /// (lag-зонд arch/backups/02-wal-archive.md §1): segId = lsn / 16MB; log = segId / 256; seg = segId % 256.</summary>
     public static WalFileName FromLsn(uint tli, string lsn)
     {
         var parts = lsn.Split('/');
@@ -54,7 +54,7 @@ public readonly record struct WalFileName(uint Tli, uint Log, uint Seg)
         return new WalFileName(tli, (uint)(segId / SegsPerLog), (uint)(segId % SegsPerLog));
     }
 
-    /// <summary>Следующий сегмент: seg+1; при seg=0xFF → log+1, seg=0 (arch/19 §3).</summary>
+    /// <summary>Следующий сегмент: seg+1; при seg=0xFF → log+1, seg=0 (arch/backups/02-wal-archive.md §1).</summary>
     public WalFileName Next()
         => Seg < 0xFF
             ? this with { Seg = Seg + 1 }

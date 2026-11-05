@@ -6,11 +6,11 @@ using System.Linq;
 namespace KafkaWorker.Core.Templates;
 
 /// <summary>
-/// Per-cluster PKI (arch/16 §2.3): self-signed CA (RSA-2048,
+/// Per-cluster PKI (arch/kafkaworker/04-security.md): self-signed CA (RSA-2048,
 /// CN=kfw-&lt;C&gt;-ca-&lt;отпечаток&gt; — subject уникален на генерацию, 10 лет)
 /// и серверные серты нод (CN=broker&lt;k&gt;, SAN docker-DNS + advertised,
 /// EKU ServerAuth, 10 лет) — CertificateRequest .NET, без внешних инструментов.
-/// PEM — одной строкой с \n (канон значений etcd, arch/15 §2.1).
+/// PEM — одной строкой с \n (канон значений etcd, arch/kafka-clusters/02-keys.md §2).
 /// </summary>
 public static class ClusterPki
 {
@@ -66,7 +66,7 @@ public static class ClusterPki
         return (certificate.ExportCertificatePem(), rsa.ExportPkcs8PrivateKeyPem());
     }
 
-    // Bundle-валидация (arch/15 §4): ca_pem в окне ротации — конкатенация
+    // Bundle-валидация (arch/kafka-clusters/04-coordination.md §1): ca_pem в окне ротации — конкатенация
     // PEM-сертов (OLD+NEW); валидно, если КАЖДЫй кусок — валидный сертификат.
     public static bool TryParseCertificateBundle(string pem)
     {

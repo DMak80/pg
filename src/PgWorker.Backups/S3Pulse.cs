@@ -3,7 +3,7 @@ using Shared.Core.Hosting;
 
 namespace PgWorker.Backups;
 
-/// <summary>«Пульс конечного внешнего вызова» (arch/14 §6, arch/19 §5):
+/// <summary>«Пульс конечного внешнего вызова» (arch/pgworker/08-operability.md §3, arch/backups/06-s3-layout.md):
 /// одиночный S3-вызов не поллингуется (идемпотентный повтор внутри фазы
 /// бессмысленен) — его конечность гарантирует пер-попыточный таймаут клиента
 /// (BackupS3: AmazonS3Config.Timeout, полокна watchdog), а на время вызова

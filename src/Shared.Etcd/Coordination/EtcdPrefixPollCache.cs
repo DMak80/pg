@@ -3,7 +3,7 @@ using Shared.Etcd.Client;
 
 namespace Shared.Etcd.Coordination;
 
-// Дельта различий опроса (arch/17 S10): добавленные/изменённые ключи
+// Дельта различий опроса (arch/synchronization/05-delta-application.md §S10): добавленные/изменённые ключи
 // (ChangedKeys), удалённые (RemovedKeys — видны только сравнением с кэшем,
 // range-дельта существующие ключи не отдаёт) и revision опроса
 // (max mod_revision прочитанного, 0 — префикс пуст).
@@ -12,7 +12,7 @@ public sealed record EtcdPrefixPollChange(
     IReadOnlyList<string> RemovedKeys,
     long Revision);
 
-// Опросный кэш etcd-префикса (arch/17 S10): периодический Range префикса
+// Опросный кэш etcd-префикса (arch/synchronization/05-delta-application.md §S10): периодический Range префикса
 // (единая точка failover S7 — EtcdEndpointFailover) + локальный кэш последнего
 // прочитанного состояния (ключ → значение + mod_revision) + сравнение
 // прочитанного с кэшем. Различия → кэш обновляется и поднимается Changed
@@ -102,7 +102,7 @@ public sealed class EtcdPrefixPollCache
         cts.Dispose();
     }
 
-    // Полный Range префикса через единую точку failover (arch/17 S7).
+    // Полный Range префикса через единую точку failover (arch/synchronization/03-fault-tolerance.md §S7).
     private Task<Result<IReadOnlyList<Kv>>> PollRangeAsync(CancellationToken ct)
         => EtcdEndpointFailover.CallAsync(
             _endpoints,

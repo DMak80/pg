@@ -6,7 +6,7 @@ using Microsoft.Extensions.Logging;
 namespace KafkaWorker.Provisioning.Processes;
 
 /// <summary>
-/// Индекс занятости портов из etcd (arch/16 §2.1): busy = docker-публикации
+/// Индекс занятости портов из etcd (arch/kafkaworker/01-placement.md §1): busy = docker-публикации
 /// (добавляет вызывающий) ∪ записи portalloc ВСЕХ чужих кластеров. Свои записи
 /// исключает вызывающий (exceptCluster) — свой portalloc переиспользуется
 /// аллокатором как закрепление, а не занятость. Чужой мусор любой формы — битый
@@ -34,7 +34,7 @@ public sealed class PortAllocIndex(
             if (cluster == exceptCluster)
                 continue;
 
-            // Формат arch/15 §4: {"broker<k>":{"host":"h","client":16001}}.
+            // Формат arch/kafka-clusters/04-coordination.md §1: {"broker<k>":{"host":"h","client":16001}}.
             // Фильтр catch — все формы чужого мусора: JsonException (битый JSON),
             // KeyNotFoundException (нет обязательного поля), InvalidOperationException
             // (поле не того типа — GetString/GetInt32 на несоответствующем узле).

@@ -7,7 +7,7 @@ using Xunit;
 
 namespace KafkaWorker.UnitTests.Provisioning;
 
-// PortAllocIndex (arch/16 §2.1): busy = клиентские порты записей
+// PortAllocIndex (arch/kafkaworker/01-placement.md §1): busy = клиентские порты записей
 // /kafkaworker/portalloc/* ЧУЖИХ кластеров; свой — исключается (закрепление,
 // не занятость); чужой мусор любой формы (битый JSON, JSON без обязательных
 // полей) — skip без ошибки (порт PgWorker-индекса, spec §3.2/§6).

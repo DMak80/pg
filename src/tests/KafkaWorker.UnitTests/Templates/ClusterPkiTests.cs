@@ -5,7 +5,7 @@ using KafkaWorker.Core.Templates;
 
 namespace KafkaWorker.UnitTests.Templates;
 
-// PKI кластера (arch/16 §2.3): self-signed CA + серверные серты нод, PEM one-line.
+// PKI кластера (arch/kafkaworker/04-security.md): self-signed CA + серверные серты нод, PEM one-line.
 public class ClusterPkiTests
 {
     [Fact]

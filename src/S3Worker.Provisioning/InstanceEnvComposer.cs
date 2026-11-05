@@ -5,7 +5,7 @@ using OwnS3.Protocol.PeerAuth;
 namespace S3Worker.Provisioning;
 
 /// <summary>
-/// Единая точка сборки env инстанса ownS3 (arch/24 §4, spec §3.6): клиентская
+/// Единая точка сборки env инстанса ownS3 (arch/s3worker/04-security.md, spec §3.6): клиентская
 /// грань кластера — per-cluster secrets (OWNS3_ROOT_*/OWNS3_ACCESS_KEYS__*)
 /// + репликационный материал
 /// PKI (значения, не пути — прецедент owns3/07 §11). Чистый класс без etcd —

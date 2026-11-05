@@ -7,7 +7,7 @@ using Xunit;
 
 namespace AdminPanel.UnitTests;
 
-// Парсер valkey-домена: канон arch/20 §2.1 (приёмочные) + толерантность §5.
+// Парсер valkey-домена: канон arch/valkey-clusters/02-keys.md §2 (приёмочные) + толерантность §5.
 public sealed class ValkeyParserTests
 {
     // Arrange: канонические фикстуры §2.1. Act: ParseClusters. Assert: поля дословно.
@@ -90,7 +90,7 @@ public sealed class ValkeyParserTests
     }
 
     // ca_pem — факт TLS-канона: HasCaPem=true; отсутствие ключа — false;
-    // в unknownKeys ca_pem НЕ попадает (известный ключ, arch/20 §2).
+    // в unknownKeys ca_pem НЕ попадает (известный ключ, arch/valkey-clusters/02-keys.md §1).
     [Fact]
     public void ParseClusters_CaPem_HasCaPemFlag()
     {

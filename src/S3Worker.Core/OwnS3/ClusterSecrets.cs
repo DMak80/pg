@@ -1,6 +1,6 @@
 namespace S3Worker.Core.OwnS3;
 
-/// <summary>Имена статических access keys per-cluster secrets (arch/23 §6):
+/// <summary>Имена статических access keys per-cluster secrets (arch/s3-clusters/06-secrets.md):
 /// backups — read-write (джобы/агенты бэкапов PgWorker), panel — read-only
 /// (грань «Хранилище бэкапов» панели).</summary>
 public static class ClusterAccessKeyNames
@@ -9,14 +9,14 @@ public static class ClusterAccessKeyNames
     public const string Panel = "panel";
 }
 
-/// <summary>Access key с именем (модель JSON secrets-ключа arch/23 §2.1).
+/// <summary>Access key с именем (модель JSON secrets-ключа arch/s3-clusters/02-keys.md §2).
 /// Name — не секрет (диагностика, сверка состава); Policy ∈
 /// read-write|read-only.</summary>
 public sealed record ClusterAccessKey(
     string Name, string AccessKey, string SecretKey, string Policy);
 
 /// <summary>Клиентские креды кластера — значение ключа
-/// /s3/clusters/&lt;C&gt;/secrets (arch/23 §2/§6): root-пара админ-грани +
+/// /s3/clusters/&lt;C&gt;/secrets (arch/s3-clusters/02-keys.md §1/§6): root-пара админ-грани +
 /// статические access keys. Значения передаются ТОЛЬКО в env контейнеров
 /// инстансов и в S3-клиенты процессов; в журнал/логи/API — никогда.</summary>
 public sealed record ClusterSecrets(

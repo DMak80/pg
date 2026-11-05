@@ -4,7 +4,7 @@ using KafkaWorker.Core.Model;
 
 namespace KafkaWorker.UnitTests.App;
 
-// Классификация кластеров тика (arch/16 §5): config.state → Provision/
+// Классификация кластеров тика (arch/kafkaworker/README.md): config.state → Provision/
 // Deprovision/Active + кандидаты scale-прохода волны B по стейтам брокеров.
 
 public class KafkaClusterClassifierTests

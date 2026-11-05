@@ -11,10 +11,10 @@ public sealed record BackupsParseResult(
     BackupStorageInfo? Storage = null,
     // глобальный ключ /pgworker/backups/orphans (null — ключа нет/битый).
     BackupOrphansInfo? Orphans = null,
-    // приёмники WAL per-node /pgworker/backups/<C>/<X>/agent/<N> (u11, arch/19 §4).
+    // приёмники WAL per-node /pgworker/backups/<C>/<X>/agent/<N> (u11, arch/backups/05-etcd-contract.md).
     IReadOnlyList<WalAgentInfo>? Agents = null);
 
-// Чистая функция: KV префикса /pgworker/backups/ (arch/19 §4, +):
+// Чистая функция: KV префикса /pgworker/backups/ (arch/backups/05-etcd-contract.md, +):
 // policy full_max_age_sec + per-shard последний COMPLETED finished_unix
 // (правило backup-full-stale) + WAL-статусы шардов (правила
 // wal-chain-broken/wal-stream-lag/wal-stream-stopped). Битые значения —
@@ -44,7 +44,7 @@ public static class BackupsParser
         var fulls = new Dictionary<string, Dictionary<string, List<BackupFullInfo>>>();
         BackupStorageInfo? storage = null;
         BackupOrphansInfo? orphans = null;
-        // hold/заявки сирот (arch/19 §4) — per-префиксные ключи; собираем
+        // hold/заявки сирот (arch/backups/05-etcd-contract.md) — per-префиксные ключи; собираем
         // ВСЕГДА, в модель кладём только при валидном orphans-ключе (без реестра
         // не информативны); сборка BackupOrphansInfo — ПОСЛЕ цикла: ключи в
         // списке не упорядочены (hold может идти раньше/позже orphans).
@@ -61,7 +61,7 @@ public static class BackupsParser
         {
             var segments = kv.Key.Split('/');
 
-            // Hold/заявки сирот (arch/19 §4): 6 сегментов — ДО гварда длины
+            // Hold/заявки сирот (arch/backups/05-etcd-contract.md): 6 сегментов — ДО гварда длины
             // (гвард "< 5 → continue" их не пропускает, но ветка orphans-ключа —
             // раньше; единый ранний разбор глобальных ключей). Формат
             // {"set_unix":T,"set_by":"…"} / {"requested_unix":T,"requested_by":"…"};
@@ -127,7 +127,7 @@ public static class BackupsParser
             }
 
             // Глобальный ключ /pgworker/backups/orphans : реестр сирот S3 —
-            // 4 сегмента; формат arch/19 §4 (записи prefix/kind/size_bytes/
+            // 4 сегмента; формат arch/backups/05-etcd-contract.md (записи prefix/kind/size_bytes/
             // first_seen_unix/state OBSERVED|DELETING). Битая запись → KeyParseError
             // на весь ключ (частичный реестр — ложные алерты).
             if (segments.Length == 4 && segments[3] == "orphans")
@@ -333,7 +333,7 @@ public static class BackupsParser
             if (segments.Length == 6 && segments[5] == "wal" && segments[4].Length > 0)
             {
                 // WAL-статус шарда — state/slot/master_node/last_uploaded_unix
-                // обязательны (формат воркера arch/19 §4), lag_segments/error опциональны;
+                // обязательны (формат воркера arch/backups/05-etcd-contract.md), lag_segments/error опциональны;
                 // незнакомое state / нет обязательных — KeyParseError + пропуск.
                 try
                 {
@@ -354,7 +354,7 @@ public static class BackupsParser
                     }
 
                     // gap — опциональное поле (толерантно: отсутствует/битое → null,
-                    // parseError не пишется — backwards-compat правила канона arch/19 §4).
+                    // parseError не пишется — backwards-compat правила канона arch/backups/05-etcd-contract.md).
                     WalGapInfo? gap = null;
                     if (root.TryGetProperty("gap", out var gapEl) && gapEl.ValueKind == JsonValueKind.Object)
                     {
@@ -385,7 +385,7 @@ public static class BackupsParser
                 continue;
             }
 
-            // agent/<N> — приёмник WAL ноды (u11, arch/19 §4): 7 сегментов;
+            // agent/<N> — приёмник WAL ноды (u11, arch/backups/05-etcd-contract.md): 7 сегментов;
             // node/state/updated_unix обязательны, role/last_delivered_* /
             // pool_exhausted/tli_jump/history_missing_tli/error — по факту;
             // незнакомое state / нет обязательных — KeyParseError + пропуск.

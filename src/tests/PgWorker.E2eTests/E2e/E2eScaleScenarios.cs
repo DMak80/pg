@@ -188,7 +188,7 @@ public sealed class E2eScaleScenarios(E2eScaleScenariosFx Ctx) : IClassFixture<E
         }
         catch
         {
-            // docs/e2e-launch.md §3: упавший сценарий — окружение ОСТАНОВИТЬ, не
+            // arch/testing/01-e2e-launch.md §3: упавший сценарий — окружение ОСТАНОВИТЬ, не
             // удалить (телеметрия в артефактах + живые объекты для разбора).
             Fx.MarkFailed();
             throw;
@@ -238,7 +238,7 @@ public sealed class E2eScaleScenarios(E2eScaleScenariosFx Ctx) : IClassFixture<E
         }
         catch
         {
-            // docs/e2e-launch.md §3: упавший сценарий — окружение ОСТАНОВИТЬ, не
+            // arch/testing/01-e2e-launch.md §3: упавший сценарий — окружение ОСТАНОВИТЬ, не
             // удалить (телеметрия в артефактах + живые объекты для разбора).
             Fx.MarkFailed();
             throw;
@@ -701,7 +701,7 @@ public sealed class E2eScaleScenarios(E2eScaleScenariosFx Ctx) : IClassFixture<E
 }
 
 /// <summary>Компаньон-фикстура окружения класса (полный контур на класс:
-/// сеть/etcd/CA/окно портов; docs/e2e-isolation.md §1).</summary>
+/// сеть/etcd/CA/окно портов; arch/testing/02-e2e-isolation.md §1).</summary>
 public sealed class E2eScaleScenariosFx : E2eContourFixture
 {
     protected override string Slug => "scale-add";

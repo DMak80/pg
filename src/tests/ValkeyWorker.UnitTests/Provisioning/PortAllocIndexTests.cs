@@ -5,7 +5,7 @@ using Xunit;
 
 namespace ValkeyWorker.UnitTests.Provisioning;
 
-// Индекс занятости portalloc (arch/21 §2): union чужих записей; битый JSON
+// Индекс занятости portalloc (arch/valkeyworker/01-placement.md): union чужих записей; битый JSON
 // соседа — игнор с логом, не ошибка тика.
 public class PortAllocIndexTests
 {

@@ -7,7 +7,7 @@ using Microsoft.AspNetCore.Routing;
 
 namespace AdminPanel.Api.Operations.Valkey;
 
-// Модуль valkey-мутаций (arch/03 §8.1) — ПРОКСИ в API ValkeyWorker (arch/21 §1.1):
+// Модуль valkey-мутаций (arch/03 §8.1) — ПРОКСИ в API ValkeyWorker (arch/valkeyworker/05-api.md §1):
 // панель не пишет в etcd; успех — DTO воркера, ошибки — ProblemDetails как есть,
 // недоступность API — собственный 503. Успех не дёргает refresher: следующий
 // тик (3 c) подхватывает новые ключи (arch/02 §4).

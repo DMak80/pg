@@ -5,10 +5,10 @@ using Shared.Etcd.Client;
 
 namespace S3Worker.Etcd.Parsing;
 
-// Парсер контроль-плейна /s3/clusters/ в доменную модель S3Worker (arch/23 §2;
+// Парсер контроль-плейна /s3/clusters/ в доменную модель S3Worker (arch/s3-clusters/02-keys.md §1;
 // порт стиля ValkeySnapshotParser). Чистая функция Kv[] → модель: битые значения
 // не бросают исключений, а попадают в parseError-поля; неизвестные ключи —
-// в unknownKeys (arch/23 §2/§9).
+// в unknownKeys (arch/s3-clusters/02-keys.md §1/§9).
 public static class S3SnapshotParser
 {
     private sealed class NodeAcc(string name)
@@ -47,7 +47,7 @@ public static class S3SnapshotParser
                 continue; // чужой префикс (в т.ч. /s3worker/, /pgworker/) — не домен /s3/
             }
 
-            // Ключи домена /s3/ вне схемы кластеров (arch/23 §2: unknownKeys —
+            // Ключи домена /s3/ вне схемы кластеров (arch/s3-clusters/02-keys.md §1: unknownKeys —
             // не ошибка): /s3/whatever, /s3/clusters/<C>/unknown, ключи.
             if (segments.Length < 4 || segments[2] != "clusters" || segments[3].Length == 0)
             {
@@ -66,14 +66,14 @@ public static class S3SnapshotParser
                     acc.Endpoints = string.IsNullOrWhiteSpace(kv.Value) ? null : kv.Value.Trim();
                     break;
 
-                // Ключи наблюдения зонда F (arch/23 §3): известные листы — не
+                // Ключи наблюдения зонда F (arch/s3-clusters/03-observation-statuses.md): известные листы — не
                 // unknownKeys, в снапшот тика не входят (зонд читает их напрямую
                 // при гейте/прогрессе).
                 case "connectivity" when segments.Length == 5:
                 case "sync" when segments.Length == 5:
                     break;
 
-                // Граф репликации / отзыв ключей (arch/23 §2): декларации в модель;
+                // Граф репликации / отзыв ключей (arch/s3-clusters/02-keys.md §1): декларации в модель;
                 // битые значения — parseError кластера (BuildCluster).
                 case "links" when segments.Length == 5:
                     acc.LinksRaw = kv.Value;
@@ -83,13 +83,13 @@ public static class S3SnapshotParser
                     acc.DenyListRaw = kv.Value;
                     break;
 
-                // pki-материал кластера (arch/23 §2/§6): ключ известный (не
+                // pki-материал кластера (arch/s3-clusters/02-keys.md §1/§6): ключ известный (не
                 // unknownKeys), значение в модель не разбирается — PkiStore читает
                 // его отдельным GET по месту (spec §5.1: pki не в снапшоте тика).
                 case "pki" when segments.Length == 6 && segments[5] is "ca" or "orchestrator":
                     break;
 
-                // Клиентские креды кластера (arch/23 §2/§6): ключ известный (не
+                // Клиентские креды кластера (arch/s3-clusters/02-keys.md §1/§6): ключ известный (не
                 // unknownKeys), значение в снапшот не разбирается — ClusterSecretsStore
                 // читает его отдельным GET по месту (как pki-материал).
                 case "secrets" when segments.Length == 5:
@@ -125,7 +125,7 @@ public static class S3SnapshotParser
                 }
 
                 default:
-                    // система развивается — неизвестный ключ не ошибка (arch/23 §2):
+                    // система развивается — неизвестный ключ не ошибка (arch/s3-clusters/02-keys.md §1):
                     // имя в unknownKeys (счётчик).
                     acc.UnknownKeys.Add(kv.Key);
                     unknown.Add(kv.Key);
@@ -144,7 +144,7 @@ public static class S3SnapshotParser
     private static S3ClusterSnapshot BuildCluster(ClusterAcc acc)
     {
         // Битые ключи кластера (config/links/denylist) — parseError кластера
-        // (значение → null: тик не падает, битая часть не применяется — arch/23 §9).
+        // (значение → null: тик не падает, битая часть не применяется — arch/s3-clusters/09-panel.md).
         var errors = new List<string>();
         var config = ParseConfig(acc.ConfigRaw);
         if (acc.ConfigRaw is not null && config is null)
@@ -301,11 +301,11 @@ public static class S3SnapshotParser
             root.TryGetProperty("etcd_backup", out var eb) && eb.ValueKind == JsonValueKind.True
                 ? true : null,
             ReadLong(root, "created_unix"),
-            ReadString(root, "state"))); // отсутствие state = Active (arch/23 §2)
+            ReadString(root, "state"))); // отсутствие state = Active (arch/s3-clusters/02-keys.md §1)
     }
 
     // Разбор JSON-значения с проекцией root → T; JsonException/не-объект → null
-    // (parseError без падения тика — arch/23 §9).
+    // (parseError без падения тика — arch/s3-clusters/09-panel.md).
     private static T? ParseJson<T>(string? raw, Func<JsonElement, List<string>, T> project) where T : class
     {
         if (raw is null)

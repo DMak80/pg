@@ -7,8 +7,8 @@ using Xunit;
 
 namespace AdminPanel.UnitTests;
 
-// Парсер префиксов /kafka/clusters/ и /kafkaworker/rotations/ (arch/15 §2–§4,
-// arch/02 §10.1): толерантный разбор на фикстурах-примерах arch/15 §2.1.
+// Парсер префиксов /kafka/clusters/ и /kafkaworker/rotations/ (arch/kafka-clusters/02-keys.md §1–§4,
+// arch/02 §10.1): толерантный разбор на фикстурах-примерах arch/kafka-clusters/02-keys.md §2.
 public class KafkaParserTests
 {
     [Fact]
@@ -74,7 +74,7 @@ public class KafkaParserTests
     [Fact]
     public void BrokenValues_ProduceParseErrorsWithoutException()
     {
-        // Arrange: битые config/resources/topics + частичный факт-топик (arch/15 §6).
+        // Arrange: битые config/resources/topics + частичный факт-топик (arch/kafka-clusters/06-fault-tolerance.md).
         var kvs = EtcdFixtures.LoadKv("Kafka/kafka-clusters-broken.json");
 
         // Act
@@ -106,7 +106,7 @@ public class KafkaParserTests
     [Fact]
     public void StateTolerant_UnknownStateMeansActive()
     {
-        // Arrange: незнакомое state-значение (arch/15 §6 — система развивается).
+        // Arrange: незнакомое state-значение (arch/kafka-clusters/06-fault-tolerance.md — система развивается).
         var kvs = new List<Kv>
         {
             new("/kafka/clusters/odd/config",
@@ -146,7 +146,7 @@ public class KafkaParserTests
     [Fact]
     public void Rotations_ValidAndBroken()
     {
-        // Arrange: две валидные заявки + битый JSON (arch/15 §4).
+        // Arrange: две валидные заявки + битый JSON (arch/kafka-clusters/04-coordination.md §1).
         var kvs = EtcdFixtures.LoadKv("Kafka/kafka-rotations.json");
 
         // Act
@@ -178,7 +178,7 @@ public class KafkaParserTests
     [Fact]
     public void LifecycleCreateTicket_ParsedWithConfigsUnwrapped()
     {
-        // Arrange: leaf-ключ заявки создания рядом с факт-ключом (arch/15 §3.1);
+        // Arrange: leaf-ключ заявки создания рядом с факт-ключом (arch/kafka-clusters/03-topics.md §2);
         // configs развёрнуты в типизированные поля.
         var kvs = new List<Kv>
         {
@@ -206,7 +206,7 @@ public class KafkaParserTests
     [Fact]
     public void LifecycleDeleteTicket_ParsedAsAuditOnly()
     {
-        // Arrange: заявка удаления — только аудит (arch/15 §2.1).
+        // Arrange: заявка удаления — только аудит (arch/kafka-clusters/02-keys.md §2).
         var kvs = new List<Kv>
         {
             new("/kafka/clusters/events/config",
@@ -254,7 +254,7 @@ public class KafkaParserTests
     [Fact]
     public void LifecycleTicket_UnknownTopicsLeaf_CountsUnknownKey()
     {
-        // Arrange: неизвестный leaf под topics/<T>/ — счётчик, не ошибка (arch/15 §6).
+        // Arrange: неизвестный leaf под topics/<T>/ — счётчик, не ошибка (arch/kafka-clusters/06-fault-tolerance.md).
         var kvs = new List<Kv>
         {
             new("/kafka/clusters/events/config",
@@ -370,7 +370,7 @@ public class KafkaParserTests
         // Act
         var result = KafkaParser.ParseRegens(kvs);
 
-        // Assert — толерантность arch/15 §6: parseError, не исключение
+        // Assert — толерантность arch/kafka-clusters/06-fault-tolerance.md: parseError, не исключение
         result.Progress.Should().BeEmpty();
         result.Errors.Should().ContainSingle();
     }
@@ -389,7 +389,7 @@ public class KafkaParserTests
         result.Errors.Should().ContainSingle();
     }
 
-    // ===== : ca_rotations + ticket_outcomes (arch/15 §4) =====
+    // ===== : ca_rotations + ticket_outcomes (arch/kafka-clusters/04-coordination.md §1) =====
 
     [Fact]
     public void CaRotations_ValidAndBroken()

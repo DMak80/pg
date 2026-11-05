@@ -36,7 +36,7 @@ public class AdoptionProcessTests
             etcd.Seed($"/clusters/demo/shards/{shard}/dsn",
                 $"host=local port=5433 dbname=demo user=bucket_admin");
             etcd.Seed($"/clusters/demo/shards/{shard}/master", $"{shard}a:5433");
-            // Заявки ресурсов ОБЯЗАТЕЛЬНЫ (arch/14 §2.1 п.4): репарация нод —
+            // Заявки ресурсов ОБЯЗАТЕЛЬНЫ (arch/pgworker/01-placement.md §2): репарация нод —
             // EnsureNode-путь, PGTune-тюнинг считается от заявок; сидим как панель.
             etcd.Seed($"/service/demo-{shard}/request_cpu", "2");
             etcd.Seed($"/service/demo-{shard}/request_mem", "8Gi");
@@ -374,7 +374,7 @@ public class AdoptionProcessTests
         journal.Entries.Should().Contain(e => e.Phase == "recreated-node");
     }
 
-    // AAA (arch/14 §5 D граница ensure-инварианта): шард, в котором НЕ жив
+    // AAA (arch/pgworker/processes/d-bucket-evacuator.md D граница ensure-инварианта): шард, в котором НЕ жив
     // ни один контейнер (обе ноды стопнуты оператором/эмуляция смерти шарда),
     // — сценарий всего-шарда-мёртв: домен BucketEvacuator (E0–E4 после
     // NodeDeadSec+ShardDeadSec). Черепок-EnsureNode обязан МОЛЧАТЬ: мгновенный

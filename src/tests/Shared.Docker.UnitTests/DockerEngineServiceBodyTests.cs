@@ -3,7 +3,7 @@ using FluentAssertions;
 using Shared.Docker;
 using Xunit;
 
-// BuildServiceBody — тело POST /services/create (arch/24 §2): label-пара
+// BuildServiceBody — тело POST /services/create (arch/s3worker/01-placement.md): label-пара
 // s3worker=<C> обязана жить на ОБОИХ уровнях — top-level Labels сервиса
 // (перечисление объектов кластера ListServiceRecordsAsync читает Spec.Labels)
 // и TaskTemplate.ContainerSpec.Labels (контейнеры тасков).

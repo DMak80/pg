@@ -1,6 +1,6 @@
 namespace PgWorker.Core.Model;
 
-// Слепок префикса /clusters/ из опросного кэша (arch/17 S10): ReconcileLoop
+// Слепок префикса /clusters/ из опросного кэша (arch/synchronization/05-delta-application.md §S10): ReconcileLoop
 // держит EtcdPrefixPollCache префикса, читатели тика (ClusterSecretEnsurer и
 // др.) берут ключи отсюда — БЕЗ etcd-GET на каждый тик. Значение — пара
 // (значение, mod_revision); отсутствующий ключ = пара отсутствует в словаре.

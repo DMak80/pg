@@ -12,8 +12,8 @@ namespace PgWorker.IntegrationTests.E2e;
 // статусной машине агента PgNode (spec §6.2/§6.2a/§6.2b/§6.5/§9.5/§9.6).
 // Каркас — по образцу E2eScaleScenarios: guid-кластер, Fx.StartHostAsync,
 // SeedClusterAsync, бюджеты через E2eFixture.WaitForAsync, полный teardown
-// фикстуры, динамические порты, свои etcd-префиксы (docs/e2e-isolation.md);
-// телеметрия — docs/e2e-launch.md.
+// фикстуры, динамические порты, свои etcd-префиксы (arch/testing/02-e2e-isolation.md);
+// телеметрия — arch/testing/01-e2e-launch.md.
 public sealed class E2eNodeSecretsScenarios(E2eNodeSecretsFx Ctx) : IClassFixture<E2eNodeSecretsFx>
 {
     // Окружение контура (сеть/etcd/CA/порты) — из компаньон-фикстуры.
@@ -81,7 +81,7 @@ public sealed class E2eNodeSecretsScenarios(E2eNodeSecretsFx Ctx) : IClassFixtur
         }
         catch
         {
-            // docs/e2e-launch.md §3: упавший сценарий — окружение ОСТАНОВИТЬ, не
+            // arch/testing/01-e2e-launch.md §3: упавший сценарий — окружение ОСТАНОВИТЬ, не
             // удалить (телеметрия в артефактах + живые объекты для разбора).
             Fx.MarkFailed();
             throw;
@@ -176,7 +176,7 @@ public sealed class E2eNodeSecretsScenarios(E2eNodeSecretsFx Ctx) : IClassFixtur
         }
         catch
         {
-            // docs/e2e-launch.md §3: упавший сценарий — окружение ОСТАНОВИТЬ, не
+            // arch/testing/01-e2e-launch.md §3: упавший сценарий — окружение ОСТАНОВИТЬ, не
             // удалить (телеметрия в артефактах + живые объекты для разбора).
             Fx.MarkFailed();
             throw;
@@ -239,7 +239,7 @@ public sealed class E2eNodeSecretsScenarios(E2eNodeSecretsFx Ctx) : IClassFixtur
             progress: () => NodeStatusSnapshotAsync(cluster));
             caughtUp.Should().BeTrue("the sync replica is streaming before the restart");
 
-            // Act: СМЕРТЬ АГЕНТА (arch/14 §4: «рестарт контейнера/смерть агента:
+            // Act: СМЕРТЬ АГЕНТА (arch/pgworker/04-security.md: «рестарт контейнера/смерть агента:
             // lease истёк → ключ исчез → новый процесс публикует not_initialized —
             // хендшейк повторяется»): kill -9 pgnode → supervisord перезапускает
             // ПРОЦЕСС (unexpected-выход; контейнер и tmpfs живы — pg_doorman/spilo
@@ -329,7 +329,7 @@ public sealed class E2eNodeSecretsScenarios(E2eNodeSecretsFx Ctx) : IClassFixtur
         }
         catch
         {
-            // docs/e2e-launch.md §3: упавший сценарий — окружение ОСТАНОВИТЬ, не
+            // arch/testing/01-e2e-launch.md §3: упавший сценарий — окружение ОСТАНОВИТЬ, не
             // удалить (телеметрия в артефактах + живые объекты для разбора).
             Fx.MarkFailed();
             throw;
@@ -531,7 +531,7 @@ public sealed class E2eNodeSecretsScenarios(E2eNodeSecretsFx Ctx) : IClassFixtur
         }
         catch
         {
-            // docs/e2e-launch.md §3: упавший сценарий — окружение ОСТАНОВИТЬ, не
+            // arch/testing/01-e2e-launch.md §3: упавший сценарий — окружение ОСТАНОВИТЬ, не
             // удалить (телеметрия в артефактах + живые объекты для разбора).
             Fx.MarkFailed();
             throw;

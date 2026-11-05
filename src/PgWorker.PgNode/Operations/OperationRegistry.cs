@@ -34,5 +34,5 @@ public class OperationRegistry
 
 /// <summary>Отдельный DI-тип ops-реестра (verify/restore/drill): один инстанс
 /// на процесс приёмника, НЕ делится с операцией полного — на ноде возможен
-/// полный (full-реестр) и одна ops-операция одновременно (arch/19 §5).</summary>
+/// полный (full-реестр) и одна ops-операция одновременно (arch/backups/06-s3-layout.md).</summary>
 public sealed class OpsOperationRegistry : OperationRegistry;

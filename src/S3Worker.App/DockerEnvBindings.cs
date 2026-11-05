@@ -2,7 +2,7 @@ using Microsoft.Extensions.Configuration;
 
 namespace S3Worker.App;
 
-// env-секреты docker-транспорта S3Worker (arch/24 §2: транспорт — общий
+// env-секреты docker-транспорта S3Worker (arch/s3worker/01-placement.md: транспорт — общий
 // Shared.Docker; env-имена S3W_DOCKER_* — s3-специфика, модели в общей сборке
 // их не знают; REST-TLS-блока нет — он pg-специфичен). PEM-дуализм env-секретов —
 // значение или _PATH-файл; перенос env → конфиг-дерево — до всего остального

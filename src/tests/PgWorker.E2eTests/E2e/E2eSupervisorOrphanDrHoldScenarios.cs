@@ -13,7 +13,7 @@ namespace PgWorker.IntegrationTests.E2e;
 // E2E DR-hold сирот (t24/ревизия 8 — разбиение E2eSupervisorScenarios;
 // хелперы — копии): OrphanDrHold (~4-5 мин).
 // E2eEnvironment (своя сеть/etcd/ownS3, динамические порты, полный teardown
-// в DisposeAsync — docs/e2e-isolation.md; телеметрия — docs/e2e-launch.md).
+// в DisposeAsync — arch/testing/02-e2e-isolation.md; телеметрия — arch/testing/01-e2e-launch.md).
 // Два сценария AC10: (1) ChainBroken_SelfHeals — дыра ВНУТРИ цепочки живого
 // кластера → wal=WAL_CHAIN_ERROR → планировщик переснимает полный → цепь непрерывна от
 // нового wal_start → ACTIVE, агент жив; (2) OrphanRegistry_TtlDelete —
@@ -52,7 +52,7 @@ public sealed class E2eSupervisorOrphanDrHoldScenarios(E2eSupervisorOrphanDrHold
         await using var app = await StartOrphanHostAsync(cluster, ct);
 
         // Arrange 2 — provisioning DONE; посев СИРОТЫ С ВАЛИДНЫМ ПОЛНЫМ:
-        //   manifest — критерий DR-выбора (arch/19 §3.5/§5)
+        //   manifest — критерий DR-выбора (arch/backups/03-restore.md/§5)
         var provisioned = await WaitPhaseAsync("provisioning",
             E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(90), ct);
         provisioned.Should().BeTrue("provisioning must reach DONE");
@@ -120,7 +120,7 @@ public sealed class E2eSupervisorOrphanDrHoldScenarios(E2eSupervisorOrphanDrHold
     // ===== Хелперы (копии образца E2eRetentionScenarios — файлы сценариев
     // независимы, паттерн репо) =====
 
-    // Политика телеметрии (docs/e2e-launch.md, образец E2eRestoreScenarios):
+    // Политика телеметрии (arch/testing/01-e2e-launch.md, образец E2eRestoreScenarios):
     // упавший тест помечает окружение MarkFailed — teardown ОСТАНАВЛИВАЕТ
     // контейнеры, но не удаляет (host.log/тома остаются для разбора «что
     // произошло»); перезапуск ради логов запрещён; зачистка — вручную.
@@ -149,7 +149,7 @@ public sealed class E2eSupervisorOrphanDrHoldScenarios(E2eSupervisorOrphanDrHold
         return done.Key.Split('/').Last();
     }
 
-    // Ожидание фазы с телеметрией (docs/e2e-launch.md): длительность в журнал
+    // Ожидание фазы с телеметрией (arch/testing/01-e2e-launch.md): длительность в журнал
     // теста всегда; фаза дольше 60 с — docker-логи окружения снимаются в
     // артефакты немедленно (отчёт «почему так долго» собирается по логам,
     // без перезапуска), независимо от исхода фазы.
@@ -173,7 +173,7 @@ public sealed class E2eSupervisorOrphanDrHoldScenarios(E2eSupervisorOrphanDrHold
         {
             ["PgWorker__Backups__Enabled"] = "true",
             ["PgWorker__Backups__S3__Bucket"] = Bucket,
-            // t36: креды пула — env-профиль (arch/19 §7); пул — policy.s3, адреса
+            // t36: креды пула — env-профиль (arch/backups/08-secrets.md); пул — policy.s3, адреса
             // резолвит воркер из /s3/ (advertised host.docker.internal, extra_hosts).
             ["PgWorker__Backups__Retry__BaseSec"] = "2",
             ["PgWorker__Backups__Retry__MaxSec"] = "4",
@@ -192,7 +192,7 @@ public sealed class E2eSupervisorOrphanDrHoldScenarios(E2eSupervisorOrphanDrHold
         {
             ["PgWorker__Backups__Enabled"] = "true",
             ["PgWorker__Backups__S3__Bucket"] = Bucket,
-            // t36: креды пула — env-профиль (arch/19 §7); пул — policy.s3, адреса
+            // t36: креды пула — env-профиль (arch/backups/08-secrets.md); пул — policy.s3, адреса
             // резолвит воркер из /s3/ (внутрисетевые alias'ы, сеть одна).
             ["PgWorker__Backups__Policy__VerifyOnCreate"] = "false",
             ["PgWorker__Backups__Supervisor__IntervalSec"] = "10",
@@ -375,7 +375,7 @@ public sealed class E2eSupervisorOrphanDrHoldScenarios(E2eSupervisorOrphanDrHold
 }
 
 /// <summary>Компаньон-фикстура окружения класса (полный контур на класс:
-/// сеть/etcd/CA/окно портов; docs/e2e-isolation.md §1).</summary>
+/// сеть/etcd/CA/окно портов; arch/testing/02-e2e-isolation.md §1).</summary>
 public sealed class E2eSupervisorOrphanDrHoldScenariosFx : E2eContourFixture
 {
     protected override string Slug => "bk-drh";

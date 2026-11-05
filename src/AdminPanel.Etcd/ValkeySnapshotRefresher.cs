@@ -14,7 +14,7 @@ namespace AdminPanel.Etcd;
 // точечный ключ /workers/api_tls/valkeyworker на активном endpoint (sticky +
 // failover, опции общие с pg-циклом EtcdOptions). Транспортный провал любого
 // чтения роняет тик: прежние данные, EtcdReachable=false, счётчик отказов.
-// Применение только изменений — arch/02 §11/§5 (arch/17 S10): прочитанное
+// Применение только изменений — arch/02 §11/§5 (arch/synchronization/05-delta-application.md §S10): прочитанное
 // идентично кэшу последнего успешно прочитанного состояния → тик без изменений:
 // пересборки и алертного пересчёта нет, обновляются свежая доступностная
 // часть и штамп свежести; тики не классифицируются (E11) — гейт только по
@@ -34,7 +34,7 @@ public sealed class ValkeySnapshotRefresher(
     private string? _activeEndpoint;
     private bool _endpointsWarned;
 
-    // Кэш последнего успешно прочитанного состояния (arch/02 §11, arch/17 S10):
+    // Кэш последнего успешно прочитанного состояния (arch/02 §11, arch/synchronization/05-delta-application.md §S10):
     // тик сравнивает прочитанное с ним и пересобирает снапшот только при
     // фактическом изменении. Обновляется только на пересборке — отказной и
     // тик без изменений кэш не меняют (по построению кэш хранит успешно прочитанное).
@@ -94,7 +94,7 @@ public sealed class ValkeySnapshotRefresher(
         var ticketOutcomesTask = RangeWithFailoverAsync(endpoints, active, Prefixes.TicketOutcomes, ct);
         var workerApiTask = RangeWithFailoverAsync(endpoints, active, Prefixes.WorkerApi, ct);
         var certTask = RangeWithFailoverAsync(endpoints, active, Prefixes.WorkerApiCert, ct);
-        // u13/u14: work-журналы и координация valkey-домена (arch/20 §3).
+        // u13/u14: work-журналы и координация valkey-домена (arch/valkey-clusters/03-coordination.md §1).
         var workTask = RangeWithFailoverAsync(endpoints, active, Prefixes.Work, ct);
         var leaderTask = RangeWithFailoverAsync(endpoints, active, Prefixes.Leader, ct);
         var claimsTask = RangeWithFailoverAsync(endpoints, active, Prefixes.Claims, ct);
@@ -116,7 +116,7 @@ public sealed class ValkeySnapshotRefresher(
 
         _activeEndpoint = active;
 
-        // Прочитанное тика — вход сравнения с кэшем (arch/02 §11, arch/17 S10):
+        // Прочитанное тика — вход сравнения с кэшем (arch/02 §11, arch/synchronization/05-delta-application.md §S10):
         // списки KV всех наблюдаемых префиксов (Kv — record: ключ/значение/
         // mod_revision); member list/alarm/статусы endpoints домен не читает.
         (string Prefix, IReadOnlyList<Kv> Items)[] reads =
@@ -133,7 +133,7 @@ public sealed class ValkeySnapshotRefresher(
             (Prefixes.Instances, instancesKv.Value),
         ];
 
-        // arch/02 §11/§5 (arch/17 S10): прочитанное идентично кэшу (последнему
+        // arch/02 §11/§5 (arch/synchronization/05-delta-application.md §S10): прочитанное идентично кэшу (последнему
         // успешно прочитанному состоянию из etcd) — тик без изменений: снапшот не
         // пересобирается, алертный пересчёт и перепись кредов проб не
         // выполняются; обновляются свежая доступностная часть (телеметрия
@@ -206,11 +206,11 @@ public sealed class ValkeySnapshotRefresher(
     }
 
     // Кэш последнего успешно прочитанного состояния: обновляется только на
-    // пересборке — отказной и тик без изменений кэш не меняют (arch/02 §11, arch/17 S10).
+    // пересборке — отказной и тик без изменений кэш не меняют (arch/02 §11, arch/synchronization/05-delta-application.md §S10).
     private void RememberTick((string Prefix, IReadOnlyList<Kv> Items)[] reads)
         => _lastRead = reads;
 
-    // Сравнение прочитанного тика с кэшем (arch/02 §11, arch/17 S10): списки
+    // Сравнение прочитанного тика с кэшем (arch/02 §11, arch/synchronization/05-delta-application.md §S10): списки
     // KV наблюдаемых префиксов по значению. Кэш хранит последнее успешно
     // прочитанное состояние: обновляется только на пересборке, отказной тик
     // его не меняет по построению; тики не классифицируются (E11) — ветвление
@@ -336,7 +336,7 @@ public sealed class ValkeySnapshotRefresher(
         public const string TicketOutcomes = "/valkeyworker/ticket_outcomes/"; 
         public const string WorkerApi = "/valkeyworker/api/";
         public const string WorkerApiCert = "/workers/api_tls/valkeyworker";
-        // u13/u14 (arch/20 §3, adminpanel/02 §2.3.3).
+        // u13/u14 (arch/valkey-clusters/03-coordination.md §1, adminpanel/02 §2.3.3).
         public const string Work = "/valkeyworker/work/";
         public const string Leader = "/valkeyworker/leader";
         public const string Claims = "/valkeyworker/claims/";

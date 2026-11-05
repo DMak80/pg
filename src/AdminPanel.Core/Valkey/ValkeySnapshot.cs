@@ -10,20 +10,20 @@ public sealed record ValkeySnapshot(
     bool EtcdReachable,
     int ConsecutiveFailures,
     IReadOnlyList<ValkeyClusterInfo> Clusters,
-    IReadOnlyList<ValkeyRotationTicket> Rotations,     // /valkeyworker/rotations/ (arch/20 §3)
+    IReadOnlyList<ValkeyRotationTicket> Rotations,     // /valkeyworker/rotations/ (arch/valkey-clusters/03-coordination.md §1)
     IReadOnlyList<WorkerEndpoint> WorkerEndpoints,     // живые ключи /valkeyworker/api/ (arch/02 §2.3.3)
     IReadOnlyList<WorkerHealth> WorkerHealth,          // опрос /healthz живых инстансов
     IReadOnlyList<ValkeyProbeResult> Probes,           // live-PING пробы (§4.6 spec)
     IReadOnlyList<Alert> Alerts,                       // ValkeyAlertEngine (arch/03 §8.4)
-    IReadOnlyList<KeyParseError> ParseErrors,          // битые JSON valkey-ключей (arch/20 §5)
+    IReadOnlyList<KeyParseError> ParseErrors,          // битые JSON valkey-ключей (arch/valkey-clusters/05-fault-tolerance.md)
     int UnknownKeyCount,
     IReadOnlyList<ValkeyCaRotationTicket>? CaRotations = null, // /valkeyworker/ca_rotations/ (02 §11.1)
-    IReadOnlyList<ValkeyTicketOutcome>? TicketOutcomes = null, // /valkeyworker/ticket_outcomes/ (arch/20 §3)
+    IReadOnlyList<ValkeyTicketOutcome>? TicketOutcomes = null, // /valkeyworker/ticket_outcomes/ (arch/valkey-clusters/03-coordination.md §1)
     WorkerApiCert? WorkerApiCert = null,              // целевой серт /workers/api_tls/valkeyworker (arch/02 §9.9)
-    IReadOnlyList<WorkJournalInfo>? WorkJournals = null, // /valkeyworker/work/ (u13, arch/20 §3)
+    IReadOnlyList<WorkJournalInfo>? WorkJournals = null, // /valkeyworker/work/ (u13, arch/valkey-clusters/03-coordination.md §1)
     WorkerCoordination? Coordination = null);  // leader/claims/instances (u14, adminpanel/02 §2.3.3)
 
-// Кластер /valkey/clusters/<C>/ (arch/20 §2): config + state + факт (nodes/endpoints).
+// Кластер /valkey/clusters/<C>/ (arch/valkey-clusters/02-keys.md §1): config + state + факт (nodes/endpoints).
 public sealed record ValkeyClusterInfo(
     string Name,
     ValkeyClusterState State,                // Active|NotInitialized|ToRemove; отсутствие state = Active
@@ -48,16 +48,16 @@ public sealed record ValkeyNodeInfo(
     bool? Live = null,
     string? ProbeError = null);
 
-// Заявка ротации /valkeyworker/rotations/<C> (arch/20 §3): role app|admin + аудит.
+// Заявка ротации /valkeyworker/rotations/<C> (arch/valkey-clusters/03-coordination.md §1): role app|admin + аудит.
 public sealed record ValkeyRotationTicket(
     string Cluster, string Role, long RequestedUnix, string? RequestedBy);
 
-// Заявка ротации CA /valkeyworker/ca_rotations/<C> (arch/20 §3):
+// Заявка ротации CA /valkeyworker/ca_rotations/<C> (arch/valkey-clusters/03-coordination.md §1):
 // payload {"requested_unix","requested_by"} — без role.
 public sealed record ValkeyCaRotationTicket(
     string Cluster, long RequestedUnix, string? RequestedBy);
 
-// Исход заявки /valkeyworker/ticket_outcomes/<C> (arch/20 §3): последний
+// Исход заявки /valkeyworker/ticket_outcomes/<C> (arch/valkey-clusters/03-coordination.md §1): последний
 // исход заявки кластера (expired|done), перезаписывается каждым новым исходом.
 public sealed record ValkeyTicketOutcome(
     string Cluster, string Kind, string Outcome, string? Reason,
@@ -67,7 +67,7 @@ public sealed record ValkeyTicketOutcome(
 public sealed record ValkeyProbeResult(
     string Cluster, string Node, bool Live, long CheckedUnix, string? Error);
 
-// Состояние кластера: config.state (arch/20 §2); отсутствие = Active.
+// Состояние кластера: config.state (arch/valkey-clusters/02-keys.md §1); отсутствие = Active.
 public enum ValkeyClusterState
 {
     Active,
@@ -75,7 +75,7 @@ public enum ValkeyClusterState
     ToRemove,
 }
 
-// Маппинг config.state → enum (arch/20 §5: незнакомое значение — толерантно, Active).
+// Маппинг config.state → enum (arch/valkey-clusters/05-fault-tolerance.md: незнакомое значение — толерантно, Active).
 public static class ValkeyClusterStates
 {
     public static ValkeyClusterState Parse(string? raw) => raw switch

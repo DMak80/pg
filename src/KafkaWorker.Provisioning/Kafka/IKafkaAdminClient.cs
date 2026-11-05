@@ -8,7 +8,7 @@ public sealed record KafkaClusterView(IReadOnlyList<KafkaBrokerView> Brokers, in
 public sealed record KafkaBrokerView(int Id, string Host);
 
 // Исход lifecycle-операции: адаптер классифицирует отчёты Confluent,
-// процессы не парсят строки ошибок (arch/15 §3.1).
+// процессы не парсят строки ошибок (arch/kafka-clusters/03-topics.md §2).
 public enum TopicCreateOutcome
 {
     Created,
@@ -22,8 +22,8 @@ public enum TopicDeleteOutcome
 }
 
 // Факт топика из DescribeTopics: партиции и реплики каждой партиции — данные
-// для guard'а RemoveBroker «на брокере нет реплик» (arch/16 §5 G) и планов
-// reassigner'а (arch/16 §5 I). IsrPerPartition — ISR каждой партиции
+// для guard'а RemoveBroker «на брокере нет реплик» (arch/kafkaworker/03-broker-scaling.md §2 G) и планов
+// reassigner'а (arch/kafkaworker/06-rebalancing.md §2 I). IsrPerPartition — ISR каждой партиции
 // (USR-критерий завершения drain, spec §5.2 D4); опционален (= null —
 // «ISR не задан», фейк без ISR): реальный адаптер заполняет всегда.
 public sealed record KafkaTopicView(
@@ -32,7 +32,7 @@ public sealed record KafkaTopicView(
     IReadOnlyList<IReadOnlyList<int>> ReplicasPerPartition,
     IReadOnlyList<IReadOnlyList<int>>? IsrPerPartition = null);
 
-// Группа консьюмеров (ListGroups): id + состояние (коллектор лагов, arch/18 §4).
+// Группа консьюмеров (ListGroups): id + состояние (коллектор лагов, arch/metrics/04-collectors.md).
 public sealed record KafkaGroupView(string Group, string State);
 
 // Оффсет на партиции: committed группы либо watermark (Latest).
@@ -53,7 +53,7 @@ public interface IKafkaAdminClient : IAsyncDisposable
     // DescribeTopics: топики с партициями, репликами и ISR. includeInternal:
     // false — без __-топиков (TopicSync D: реестр ведёт только юзер-топики);
     // true — все топики, включая __ (reassigner I: drain internal-реплик и
-    // guard G по describe-all, arch/16 §5 I/G).
+    // guard G по describe-all, arch/kafkaworker/06-rebalancing.md §2 I/G).
     Task<Result<IReadOnlyList<KafkaTopicView>>> DescribeTopicsAsync(bool includeInternal, CancellationToken ct);
 
     // Dynamic broker configs конкретного брокера: name → value (только заданные).
@@ -62,7 +62,7 @@ public interface IKafkaAdminClient : IAsyncDisposable
     // IncrementalAlterConfigs (Set) на брокере — converge без рестартов (E).
     Task<Result> AlterBrokerConfigsAsync(int brokerId, IReadOnlyDictionary<string, string> configs, CancellationToken ct);
 
-    // Факт-конфиги топика (name → значение; TopicSync волны C, arch/16 §5 D).
+    // Факт-конфиги топика (name → значение; TopicSync волны C, arch/kafkaworker/05-topics.md D).
     Task<Result<IReadOnlyDictionary<string, string>>> DescribeTopicConfigsAsync(string topic, CancellationToken ct);
 
     // IncrementalAlterConfigs (Set) на топике — исполнение desired-заявок (D).
@@ -72,16 +72,16 @@ public interface IKafkaAdminClient : IAsyncDisposable
     Task<Result> CreatePartitionsAsync(string topic, int totalPartitions, CancellationToken ct);
 
     // Создание топика с начальными управляемыми конфигами (lifecycle create):
-    // AlreadyExists = исполнено ранее (идемпотентность, arch/15 §3.1).
+    // AlreadyExists = исполнено ранее (идемпотентность, arch/kafka-clusters/03-topics.md §2).
     Task<Result<TopicCreateOutcome>> CreateTopicAsync(
         string topic, int partitions, short replicationFactor,
         IReadOnlyDictionary<string, string>? configs, CancellationToken ct);
 
     // Удаление топика (lifecycle delete): NotFound = исполнено ранее
-    // (идемпотентность, arch/15 §3.1).
+    // (идемпотентность, arch/kafka-clusters/03-topics.md §2).
     Task<Result<TopicDeleteOutcome>> DeleteTopicAsync(string topic, CancellationToken ct);
 
-    // Группы консьюмеров кластера (коллектор лагов, arch/18 §4).
+    // Группы консьюмеров кластера (коллектор лагов, arch/metrics/04-collectors.md).
     Task<Result<IReadOnlyList<KafkaGroupView>>> ListGroupsAsync(CancellationToken ct);
 
     // Committed-оффсеты группы по партициям.
@@ -101,12 +101,12 @@ public interface IKafkaAdminClient : IAsyncDisposable
     // Удаление лишних ACL роли app (DeleteAcls exact-match).
     Task<Result> DeleteAclsAsync(IReadOnlyList<KafkaAclBinding> acls, CancellationToken ct);
 
-    // Подача reassignment-батча (KIP-455, arch/16 §2.4): план принят либо
+    // Подача reassignment-батча (KIP-455, arch/kafkaworker/06-rebalancing.md §1): план принят либо
     // Result.Failed (top-level/per-partition ошибки Kafka). Идемпотентна.
     Task<Result> AlterReassignmentsAsync(IReadOnlyList<ReassignMove> moves, CancellationToken ct);
 }
 
-// Свои ACL-типы (seam: без Confluent-типов в сигнатурах, arch/16 §2.3/E).
+// Свои ACL-типы (seam: без Confluent-типов в сигнатурах, arch/kafkaworker/04-security.md/E).
 public enum KafkaAclResourceType { Unknown, Any, Topic, Group, Cluster, TransactionalId, DelegationToken, User }
 
 public enum KafkaAclPatternType { Unknown, Any, Match, Literal, Prefixed }
@@ -125,7 +125,7 @@ public sealed record KafkaAclBinding(
 
 /// <summary>
 /// Фабрика клиентов по bootstrap+кредам кластера (: SASL_SSL/PLAIN + доверие
-/// per-cluster CA arch/15 §5; caPem null — без TLS-доверия, тесты/fake).
+/// per-cluster CA arch/kafka-clusters/05-client-discovery.md §1; caPem null — без TLS-доверия, тесты/fake).
 /// ШАРЕНАЯ — возвращает кэшированный адаптер per
 /// (bootstrap, user, password, caPem); Create — не «новый клиент», а «получить
 /// клиент ключа». DisposeAsync возвращённого адаптера — no-op (владение у

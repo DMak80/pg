@@ -6,7 +6,7 @@ using Xunit;
 
 namespace S3Worker.IntegrationTests.S3;
 
-// Фиксированный etcd-слепковый bucket (arch/23 §5): кластер с
+// Фиксированный etcd-слепковый bucket (arch/s3-clusters/05-platform.md): кластер с
 // признаком etcd_backup=true — на КАЖДОМ инстансе оба bucket'а (per-install +
 // etcd-backups), идемпотентно на повторном тике; новый инстанс (AddNode)
 // получает оба. Креды/спец-ключ — per-cluster secrets + env-пара рига.
@@ -45,7 +45,7 @@ public class EtcdBackupBucketTests(S3ClusterFixture fx)
         await AssertBothBucketsAsync(cluster, "node1");
 
         // Act-3: добавление второго инстанса (сид node2 → тики AddNodeProcess
-        // до RUNNING — одну docker-мутацию за тик, arch/24 §5 D).
+        // до RUNNING — одну docker-мутацию за тик, arch/s3worker/03-node-scaling.md §1 D).
         await fx.Gateway.PutAsync(fx.Endpoint, $"/s3/clusters/{cluster}/nodes/node2/state",
             "NOT_INITIALIZED", lease: null, ct);
         await fx.Gateway.PutAsync(fx.Endpoint, $"/s3/clusters/{cluster}/nodes/node2/placement",

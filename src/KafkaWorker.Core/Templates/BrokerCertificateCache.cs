@@ -6,7 +6,7 @@ using System.Text;
 namespace KafkaWorker.Core.Templates;
 
 /// <summary>
-/// Кеш серверных сертов нод (R3, arch/16 §2.3): серт генерируется один раз
+/// Кеш серверных сертов нод (R3, arch/kafkaworker/04-security.md): серт генерируется один раз
 /// на (кластер, нода, CA) в рамках жизни процесса — повторные сборки env
 /// (надзор/ротация/регенерация) дают тот же PEM. Смена CA (hash ключа) —
 /// новый серт. DI-синглтон.
@@ -24,7 +24,7 @@ public sealed class BrokerCertificateCache
             _ => Issue(caCertPem, caKeyPem, brokerName, advertisedClientHost));
     }
 
-    // SAN-правило arch/16 §2.3: DNS broker<k> (INTERNAL advertised) +
+    // SAN-правило arch/kafkaworker/04-security.md: DNS broker<k> (INTERNAL advertised) +
     // advertised-хост CLIENT (DNS либо IP — как резолвят клиенты по endpoints).
     private static (string CertPem, string KeyPem) Issue(
         string caCertPem, string caKeyPem, string brokerName, string advertisedClientHost)

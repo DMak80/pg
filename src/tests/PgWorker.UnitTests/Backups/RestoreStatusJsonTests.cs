@@ -4,7 +4,7 @@ using PgWorker.Etcd.Parsing;
 
 namespace PgWorker.UnitTests.Backups;
 
-// Сериализация статуса restore : JSON канона arch/19 §4 — writer/reader
+// Сериализация статуса restore : JSON канона arch/backups/05-etcd-contract.md — writer/reader
 // согласованы (roundtrip через BackupsParser), опциональные null-поля не пишутся.
 public class RestoreStatusJsonTests
 {

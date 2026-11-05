@@ -50,7 +50,7 @@ public sealed class S3EtcdFixture : IAsyncLifetime
 
     public async ValueTask DisposeAsync()
     {
-        // Teardown-очистка СВОИХ ключей (изоляция серий — docs/e2e-isolation.md).
+        // Teardown-очистка СВОИХ ключей (изоляция серий — arch/testing/02-e2e-isolation.md).
         if (Endpoint.Length > 0)
             await Gateway.DeleteAsync(Endpoint, TestPrefix, prefix: true, CancellationToken.None);
         _http.Dispose();

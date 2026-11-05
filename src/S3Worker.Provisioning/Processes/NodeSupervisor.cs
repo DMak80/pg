@@ -8,7 +8,7 @@ using Shared.Etcd.Client;
 namespace S3Worker.Provisioning.Processes;
 
 /// <summary>
-/// Надзор (arch/24 §5 C): health-проба каждой ноды по host:port из portalloc;
+/// Надзор (arch/s3worker/02-cluster-lifecycle.md §4 C): health-проба каждой ноды по host:port из portalloc;
 /// снесённый или остановленный контейнер (положительное свидетельство
 /// docker-инспекции, S7: не-running объект unless-stopped сам не поднимет) и
 /// расхождение лимитов (автоконверге) → пересоздание на том же placed_on
@@ -16,7 +16,7 @@ namespace S3Worker.Provisioning.Processes;
 /// тик по health; молчание дольше NodeDeadSec → UNREACHABLE, БЕЗ деструктива
 /// (S7: флап ≠ смерть; трек first_seen в work/&lt;C&gt; — WriteSupervisionAsync,
 /// S6: фазовые записи трек не затирают); периодический сбор usage
-/// (HealthIntervalSec) → nodes/node&lt;k&gt;/usage (snake_case, arch/23 §2.1);
+/// (HealthIntervalSec) → nodes/node&lt;k&gt;/usage (snake_case, arch/s3-clusters/02-keys.md §2);
 /// слепой inspect — ошибка тика, пересозданий вслепую нет. Одно пересоздание
 /// за тик; ноды NOT_INITIALIZED/TO_REMOVE/REMOVING чужих процессов не трогаются.
 /// </summary>
@@ -46,7 +46,7 @@ public sealed class NodeSupervisor(
         if (!claimed.IsSuccess)
             return claimed;
 
-        // Креды — per-cluster secrets из etcd (arch/23 §6): без них env
+        // Креды — per-cluster secrets из etcd (arch/s3-clusters/06-secrets.md): без них env
         // пересозданной ноды не собрать — пересоздания невозможны. Отсутствие
         // или битость — диагностический отказ в supervision-треке (ретраи
         // тиком; значения секретов в диагностики не попадают).
@@ -79,7 +79,7 @@ public sealed class NodeSupervisor(
             // Ноды демонтажа и незапущенные заявки — не трогаем никогда.
             // PROVISIONING чужого процесса (provisioning A) не пересоздаётся и
             // лимитами не сверяется, но надзор переводит её в RUNNING по зрячей
-            // пробе (arch/24 §5 C).
+            // пробе (arch/s3worker/02-cluster-lifecycle.md §4 C).
             if (stateValue is S3NodeStates.ToRemove or S3NodeStates.Removing or S3NodeStates.NotInitialized)
                 continue;
             var isForeignProvisioning = stateValue == S3NodeStates.Provisioning;
@@ -114,7 +114,7 @@ public sealed class NodeSupervisor(
             }
 
             // Автоконверге лимитов: docker-факт (cpu/mem) vs декларация; disk —
-            // декларация, не сверяется (arch/23 §2). Одно пересоздание за тик.
+            // декларация, не сверяется (arch/s3-clusters/02-keys.md §1). Одно пересоздание за тик.
             if (supervisable)
             {
                 var liveLimits = await driver.NodeResourcesAsync(cluster, node, ct);
@@ -139,7 +139,7 @@ public sealed class NodeSupervisor(
                 }
             }
 
-            // Health-проба платформенной health-грани (arch/23 §5) — по advertised-адресу
+            // Health-проба платформенной health-грани (arch/s3-clusters/05-platform.md) — по advertised-адресу
             // (как endpoints; нода публикуется на advertised host:port).
             var health = await nodeClient.HealthAsync(
                 options.AdvertisedHost ?? address.Value.Host, address.Value.S3Port, ct);
@@ -181,7 +181,7 @@ public sealed class NodeSupervisor(
             unreachable[node] = firstSeen;
             if (_clock.GetUtcNow().ToUnixTimeSeconds() - firstSeen > options.NodeDeadSec)
             {
-                // UNREACHABLE — маркировка БЕЗ деструктива (arch/24 §5 C: флап ≠ смерть);
+                // UNREACHABLE — маркировка БЕЗ деструктива (arch/s3worker/02-cluster-lifecycle.md §4 C: флап ≠ смерть);
                 // восстановит проба следующего тика либо пересоздание по docker-факту.
                 var dead = await S3ProcessCommon.WriteNodeStateAsync(
                     gateway, endpoints, cluster, node, S3NodeStates.Unreachable, ct);
@@ -272,8 +272,8 @@ public sealed class NodeSupervisor(
         }
     }
 
-    // Usage-сбор (arch/24 §5 C): ключа нет или updated_unix старше
-    // HealthIntervalSec → проба грани → put snake_case (arch/23 §2.1).
+    // Usage-сбор (arch/s3worker/02-cluster-lifecycle.md §4 C): ключа нет или updated_unix старше
+    // HealthIntervalSec → проба грани → put snake_case (arch/s3-clusters/02-keys.md §2).
     // Ошибка грани — Failed (тик только warning-ит; не фейлит).
     private async Task<Result> CollectUsageAsync(
         string cluster, string node, NodeAddress address,
@@ -369,7 +369,7 @@ public sealed class NodeSupervisor(
     private Task<Result> PutAsync(string key, string value, CancellationToken ct)
         => EtcdEndpointFailover.CallAsync(endpoints, (endpoint, token) => gateway.PutAsync(endpoint, key, value, null, token), ct);
 
-    // usage-ключ (arch/23 §2.1 — snake_case).
+    // usage-ключ (arch/s3-clusters/02-keys.md §2 — snake_case).
     private sealed record UsagePayload(
         [property: JsonPropertyName("used_bytes")] long UsedBytes,
         [property: JsonPropertyName("total_bytes")] long TotalBytes,

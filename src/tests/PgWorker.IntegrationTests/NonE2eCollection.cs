@@ -19,7 +19,7 @@ namespace PgWorker.IntegrationTests;
 ///
 /// Инвариант непересечения ключей (унаследован от прежней EtcdCollection)
 /// держат сами классы: имена кластеров ОБЯЗАНЫ нести per-class guid-тег
-/// (канон docs/e2e-isolation.md §1), клэймящие тесты чистят
+/// (канон arch/testing/02-e2e-isolation.md §1), клэймящие тесты чистят
 /// /pgworker/claims/&lt;C&gt; перед TryClaim и отпускают клэйм в teardown
 /// (await using / IAsyncLifetime) — литеральная коллизия имён
 /// (sc3 BackupSupervisor × ShardScale) даёт флейк полной сборки из-за

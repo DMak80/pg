@@ -10,7 +10,7 @@ using PgWorker.Provisioning.Sql;
 namespace PgWorker.Provisioning.Processes;
 
 /// <summary>
-/// Усыновление кластера (spec §3.2, arch/14 §5 J AD0–AD4): Active-кластер с
+/// Усыновление кластера (spec §3.2, arch/pgworker/processes/j-adoption.md J AD0–AD4): Active-кластер с
 /// dsn-шардами без записей portalloc получает адреса из HA-контура + docker
 /// (InspectNodesAsync) и переходит в обычный домен воркера. «Не наших»
 /// объектов не существует; 0 docker-находок — тихий skip (кластер вне
@@ -42,7 +42,7 @@ public sealed class AdoptionProcess(
     {
         var cluster = snap.Config.Cluster;
 
-        // Мутации — только держателем живого клэйма (инвариант arch/14 §3.3).
+        // Мутации — только держателем живого клэйма (инвариант arch/pgworker/00-etcd-contract.md §4).
         if (!claims.IsMine(cluster))
             return Result<ProcessOutcome>.Failed(new ApplicationException(
                 $"{Op} {cluster}: claim is not ours (or lost) — mutations forbidden"));
@@ -60,7 +60,7 @@ public sealed class AdoptionProcess(
         if (!creds.IsSuccess)
             return await FailAsync(cluster, creds.Error!, ct);
 
-        // AD2' (Д2, arch/14 §5 J): инвариант адресов Active — portalloc/dsn = факт
+        // AD2' (Д2, arch/pgworker/processes/j-adoption.md J): инвариант адресов Active — portalloc/dsn = факт
         // живых канонических контейнеров; расхождение репарируется под клэймом с
         // журналом. Transport-провал инспекции — transient: тик продолжается
         // без репарации (следующий тик повторит).
@@ -87,7 +87,7 @@ public sealed class AdoptionProcess(
                 missingByShard[shard.Name] = missing;
         }
 
-        // Инвариант «воркер — хозяин» (arch/14 §3): ensure кредов (выше, до
+        // Инвариант «воркер — хозяин» (arch/pgworker/00-etcd-contract.md): ensure кредов (выше, до
         // репарации dsn) и гварды БД/ролей выполняются КАЖДЫЙ тик для всех
         // dsn-шардов, а не только при усыновлении нод. Иначе падение ensure
         // ПОСЛЕ записи portalloc (AD2) терялось навсегда: missingByShard пуст →
@@ -141,7 +141,7 @@ public sealed class AdoptionProcess(
             merged[$"{shard}/{name}"] = node.ToAddress();
         }
 
-        //  (arch/14 §2.4): decorate сетевой идентичности при заданном ключе —
+        //  (arch/pgworker/01-placement.md §5): decorate сетевой идентичности при заданном ключе —
         // merge-записи здесь object-факты усыновления, Decorate их пропускает
         // (единообразие всех точек записи portalloc).
         var put = await PutAsync($"/pgworker/portalloc/{cluster}",
@@ -277,7 +277,7 @@ public sealed class AdoptionProcess(
         // записи с фактом (changed=true) — тоже. Все подтверждено → detach пуст,
         // allocate не сработает, changed останется false — секция была бы no-op,
         // лок не берём (симметрия пред-выхода P1: тики здорового Active-кластера
-        // не соперничают за глобальный клэйм, arch/14 §2.4).
+        // не соперничают за глобальный клэйм, arch/pgworker/01-placement.md §5).
         var allWanted = candidatesByShard
             .SelectMany(kv => kv.Value.Select(name => $"{kv.Key}/{name}"))
             .ToList();
@@ -285,7 +285,7 @@ public sealed class AdoptionProcess(
         {
             // глобальный portalloc-клэйм — чтение кросс-картины занятости,
             // пере-allocate и ЗАПИСЬ portalloc взаимоисключающи между кластерами/
-            // инстансами (инвариант arch/14 §2.4: порты выбираются под локом —
+            // инстансами (инвариант arch/pgworker/01-placement.md §5: порты выбираются под локом —
             // публикация до release, иначе конкурент успевает выбрать те же порты).
             // Сбой захвата — обычный фейл (бэкофф); занят — PortLockBusyException
             // → waiting-portalloc-lock, следующий тик повторяет.
@@ -382,7 +382,7 @@ public sealed class AdoptionProcess(
         // расхождение Created-контейнера (или контейнер отсутствует) → stop+rm+
         // create по плану (план уже без дубликатов — detach выше). «Воркер —
         // хозяин»: сломали контейнер/план → тик сам чинит, без оператора.
-        // Граница с эвакуацией (arch/14 §5 D): шард, в котором НЕ жив ни
+        // Граница с эвакуацией (arch/pgworker/processes/d-bucket-evacuator.md D): шард, в котором НЕ жив ни
         // один контейнер, — сценарий всего-шарда-мёртв: его судьба — BucketEvacuator
         // (E0–E4 после NodeDeadSec+ShardDeadSec), а не recreate-гонка: мгновенное
         // пересоздание стопнутых нод не давало supervise досчитать до порога и
@@ -404,7 +404,7 @@ public sealed class AdoptionProcess(
             if (names.All(n => !discovered.Value.ContainsKey(n)))
                 continue; // весь шард без живых контейнеров — домен эвакуатора
             // Тюнинг репарации — от ОБЯЗАТЕЛЬНЫХ заявок ресурсов шарда, как и в
-            // остальных EnsureNode-путях (arch/14 §5 J, §2.1 п.4): дефолтов нет,
+            // остальных EnsureNode-путях (arch/pgworker/processes/j-adoption.md J, §2.1 п.4): дефолтов нет,
             // заявки нет → исключение = фейл тика (транзиент-ретрай).
             var resources = await ReadShardResourcesAsync(cluster, shardName, ct);
             var tuning = pgtune.Create(resources);
@@ -525,7 +525,7 @@ public sealed class AdoptionProcess(
         return Result<ProcessOutcome>.Failed(error);
     }
 
-    // Failover-обёртки — единая точка (arch/17 S7: sticky + per-attempt бюджет +
+    // Failover-обёртки — единая точка (arch/synchronization/03-fault-tolerance.md §S7: sticky + per-attempt бюджет +
     // негативный кэш; дубликаты цикла обхода удалены — под деградировавшим etcd
     // каждый вызов усыновления платил полным HTTP-бюджетом за мёртвый endpoint).
     private Task<Result> PutAsync(string key, string value, CancellationToken ct)
@@ -541,7 +541,7 @@ public sealed class AdoptionProcess(
         return txn.IsSuccess ? Result.Success() : Result.Failed(txn.Error!);
     }
 
-    // Заявки ресурсов шарда (arch/14 §2.1 п.4): ОБЯЗАТЕЛЬНЫ — и лимиты ноды,
+    // Заявки ресурсов шарда (arch/pgworker/01-placement.md §2): ОБЯЗАТЕЛЬНЫ — и лимиты ноды,
     // и вход PGTune-расчёта; чтение не удалось → null (фабрика честно фейлит
     // фазу с внятной ошибкой — транзиент-ретрай).
     private async Task<NodeResources?> ReadShardResourcesAsync(

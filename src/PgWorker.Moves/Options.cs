@@ -2,7 +2,7 @@ namespace PgWorker.Moves;
 
 /// <summary>
 /// Runtime-опции процессов переезда ( appsettings-секции
-/// PgWorker:Moves + PgWorker:Thresholds, arch/14 §8; дефолты — из скриптов):
+/// PgWorker:Moves + PgWorker:Thresholds, arch/pgworker/08-operability.md §5; дефолты — из скриптов):
 /// поллинг ожиданий, параметры заморозки, защита abort, failover-слоты и пороги
 /// cutover/недоступности + пороги репарации брошенных статусов (adopt-repair §3.5).
 /// Маппер из конфига — интеграция (задача 17).

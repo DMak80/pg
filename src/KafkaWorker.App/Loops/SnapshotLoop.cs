@@ -48,7 +48,7 @@ internal sealed class SnapshotLoop(
                 {
                     try
                     {
-                        // Cancellation-гвард лидерства (arch/17 S5): потеря leader-lease
+                        // Cancellation-гвард лидерства (arch/synchronization/02-predicates-and-mutations.md §S5): потеря leader-lease
                         // прерывает тик лидера; цикл продолжит как не-лидер.
                         using var leaderLease = CancellationTokenSource.CreateLinkedTokenSource(
                             stoppingToken, claims.LeaderToken);
@@ -87,7 +87,7 @@ internal sealed class SnapshotLoop(
                     }
                     catch (OperationCanceledException) when (!stoppingToken.IsCancellationRequested)
                     {
-                        // Потеря leader-lease прервала тик (гвард arch/17 S5): не ошибка —
+                        // Потеря leader-lease прервала тик (гвард arch/synchronization/02-predicates-and-mutations.md §S5): не ошибка —
                         // цикл продолжит как не-лидер и пере-захватит ≤ TTL + тик скана.
                         logger.LogWarning("snapshot leadership lost mid-tick");
                     }

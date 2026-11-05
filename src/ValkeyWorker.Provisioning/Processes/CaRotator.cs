@@ -10,7 +10,7 @@ using ValkeyWorker.Docker.Drivers;
 namespace ValkeyWorker.Provisioning.Processes;
 
 /// <summary>
-/// CaRotator (arch/21 §5 K): ротация per-cluster CA и серверного серта
+/// CaRotator (arch/valkeyworker/04-security.md §6 K): ротация per-cluster CA и серверного серта
 /// по заявке /valkeyworker/ca_rotations/&lt;C&gt; — окно двойного доверия без
 /// остановки обслуживания. Фазы: P (staging ca_next_* put-if-absent) →
 /// D (ca_pem = bundle OLD+NEW — перечитавшие дискавери доверяют обоим) →

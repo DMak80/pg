@@ -2,7 +2,7 @@ using System.Security.Cryptography;
 
 namespace Shared.Docker;
 
-// SSH-туннель к Engine API (arch/14 §2.2.1): worker-managed
+// SSH-туннель к Engine API (arch/pgworker/01-placement.md §4): worker-managed
 // ForwardedPortLocal → RemoteDaemonHost:RemoteDaemonPort. key-аутентификация
 // (пароли вне канона); fingerprint-pin опционален (без него TOFU+warning, R14).
 // env-биндинги PGW_DOCKER_SSH_* — pg-специфика, живут в PgWorker.App.
@@ -35,7 +35,7 @@ public sealed class SshTunnelOptions
     {
         if (string.IsNullOrWhiteSpace(RemoteDaemonHost) || RemoteDaemonPort is < 1 or > 65535)
             throw new ApplicationException(
-                $"PgWorker:Docker:Ssh: invalid tunnel target {RemoteDaemonHost}:{RemoteDaemonPort} (arch/14 §2.2.1)");
+                $"PgWorker:Docker:Ssh: invalid tunnel target {RemoteDaemonHost}:{RemoteDaemonPort} (arch/pgworker/01-placement.md §4)");
         return (RemoteDaemonHost, RemoteDaemonPort);
     }
 

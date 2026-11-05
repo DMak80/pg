@@ -14,7 +14,7 @@
     </ItemGroup>
 
     <ItemGroup>
-        <!-- Клиент ownS3-ноды: bucket-операции (exists/ensure) — arch/23 §5. -->
+        <!-- Клиент ownS3-ноды: bucket-операции (exists/ensure) — arch/s3-clusters/README.md §5. -->
         <PackageReference Include="AWSSDK.S3"/>
     </ItemGroup>
 

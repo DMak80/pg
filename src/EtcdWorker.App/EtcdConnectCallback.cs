@@ -3,7 +3,7 @@ using System.Net.Sockets;
 
 namespace EtcdWorker.App;
 
-// Резолв/коннект etcd-клиента против Docker embedded DNS (t09; arch/21 §7):
+// Резолв/коннект etcd-клиента против Docker embedded DNS (t09; arch/valkeyworker/06-operability.md §4):
 // 1) PooledConnectionLifetime — пул пере-резолвит DNS (застарелые адреса после
 //    пересоздания etcd-контейнера; прецедент DockerEngineFactory);
 // 2) последовательный IPv4-first резолв — параллельные A/AAAA-запросы .NET

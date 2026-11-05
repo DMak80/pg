@@ -5,14 +5,14 @@ using Shared.Etcd.Coordination;
 
 namespace PgWorker.App;
 
-// Источник контроль-плейна тика ReconcileLoop (arch/17 S10, arch/14 §3):
+// Источник контроль-плейна тика ReconcileLoop (arch/synchronization/05-delta-application.md §S10, arch/pgworker/00-etcd-contract.md):
 // опросные кэши наблюдаемых префиксов вместо полных Range в каждом тике.
 // Тик читает слепки и счётчик изменений (Version — растёт на любой дельте
 // любого префикса); гейт тика сравнивает Version с baseline последнего
 // обработанного тика. Префиксы: /clusters/, /service/, /pgworker/backups/ —
 // контракта тика; /pgworker/claims/ — координация (смерть инстанса гасит
 // его клэймы-lease: исчезновение ключей = дельта = тик живёт = takeover
-// «≤ TTL 15 с + тик» без изменений, arch/14 §3). Журналы /pgworker/work/
+// «≤ TTL 15 с + тик» без изменений, arch/pgworker/00-etcd-contract.md). Журналы /pgworker/work/
 // НАМЕРЕННО не опрашиваются (надзор пишет фазу каждый тик — дельта была бы
 // вечной); самопоиск ошибок — трекинг фейлов в самом ReconcileLoop.
 internal interface IPrefixPollSources
@@ -69,7 +69,7 @@ internal sealed class EtcdPrefixSources(
     public IReadOnlyDictionary<string, (string Value, long ModRevision)> ClaimsSnapshot
         => _claims?.Snapshot ?? EmptySnapshot();
 
-    // Слепок /clusters/ для читателей тика (ClusterSecretEnsurer — arch/17 S10).
+    // Слепок /clusters/ для читателей тика (ClusterSecretEnsurer — arch/synchronization/05-delta-application.md §S10).
     IReadOnlyDictionary<string, (string Value, long ModRevision)> IClustersCacheSnapshot.Snapshot
         => ClustersSnapshot;
 

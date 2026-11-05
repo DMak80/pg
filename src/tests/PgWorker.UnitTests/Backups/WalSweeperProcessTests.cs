@@ -14,9 +14,9 @@ using Xunit;
 
 namespace PgWorker.UnitTests.Backups;
 
-// Фоновая чистка мусора wal/ (arch/19 §4): только глобальный лидер, per-shard
+// Фоновая чистка мусора wal/ (arch/backups/05-etcd-contract.md): только глобальный лидер, per-shard
 // cutoff по GFS-отбору, .partial-гигиена, ОДИН batch-delete на шард,
-// независимость шардов; Enabled=false — no-op (arch/18 §2.2).
+// независимость шардов; Enabled=false — no-op (arch/metrics/02-dictionary.md §2).
 public class WalSweeperProcessTests
 {
     private const string Ep = "http://etcd:2379";

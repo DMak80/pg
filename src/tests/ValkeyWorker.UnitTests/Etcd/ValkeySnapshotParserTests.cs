@@ -7,7 +7,7 @@ using Xunit;
 
 namespace ValkeyWorker.UnitTests.Etcd;
 
-// Парсер /valkey/clusters/ (arch/20 §2.1 канон + §5 толерантность): чистая
+// Парсер /valkey/clusters/ (arch/valkey-clusters/02-keys.md §2 канон + §5 толерантность): чистая
 // функция Kv[] → модель; битые значения — parseError, не исключение.
 public class ValkeySnapshotParserTests
 {
@@ -20,12 +20,12 @@ public class ValkeySnapshotParserTests
         return parsed.Value.Clusters.Should().ContainSingle().Subject;
     }
 
-    // ── Приёмочные: канонические примеры arch/20 §2.1 (дословно) ──
+    // ── Приёмочные: канонические примеры arch/valkey-clusters/02-keys.md §2 (дословно) ──
 
     [Fact]
     public void Config_NotInitialized_RequestParsedVerbatim()
     {
-        // Arrange: заявка создания (arch/20 §2.1).
+        // Arrange: заявка создания (arch/valkey-clusters/02-keys.md §2).
         var snap = ParseOne(Kv("/valkey/clusters/demo/config",
             """{"nodes":1,"maxmemory_bytes":536870912,"maxmemory_policy":"allkeys-lru","created_unix":1756500000,"state":"NOT_INITIALIZED"}"""));
 
@@ -41,7 +41,7 @@ public class ValkeySnapshotParserTests
     [Fact]
     public void Config_ActiveWithoutState_StateNull()
     {
-        // Arrange: Active-конфиг (state снят воркером, arch/20 §2.1).
+        // Arrange: Active-конфиг (state снят воркером, arch/valkey-clusters/02-keys.md §2).
         var snap = ParseOne(Kv("/valkey/clusters/demo/config",
             """{"nodes":1,"maxmemory_bytes":536870912,"maxmemory_policy":"allkeys-lru","created_unix":1756500000}"""));
 
@@ -53,7 +53,7 @@ public class ValkeySnapshotParserTests
     [Fact]
     public void Config_ToRemove_IsRead()
     {
-        // Arrange: заявка удаления (arch/20 §2.1).
+        // Arrange: заявка удаления (arch/valkey-clusters/02-keys.md §2).
         var snap = ParseOne(Kv("/valkey/clusters/demo/config",
             """{"nodes":1,"maxmemory_bytes":536870912,"maxmemory_policy":"allkeys-lru","created_unix":1756500000,"state":"TO_REMOVE"}"""));
 
@@ -64,7 +64,7 @@ public class ValkeySnapshotParserTests
     [Fact]
     public void Endpoints_ValueReadAsIs()
     {
-        // Arrange: дискавери-ключ (arch/20 §2.1).
+        // Arrange: дискавери-ключ (arch/valkey-clusters/02-keys.md §2).
         var snap = ParseOne(Kv("/valkey/clusters/demo/endpoints", "host.docker.internal:17001"));
 
         // Act/Assert: значение-строка целиком (парсер ничего не переиначивает).
@@ -74,7 +74,7 @@ public class ValkeySnapshotParserTests
     [Fact]
     public void Creds_AreRead()
     {
-        // Arrange: ensure-нутые креды (arch/20 §2.1: "app"/"admin", пароли 32 симв).
+        // Arrange: ensure-нутые креды (arch/valkey-clusters/02-keys.md §2: "app"/"admin", пароли 32 симв).
         var snap = ParseOne(
             Kv("/valkey/clusters/demo/app_user", "app"),
             Kv("/valkey/clusters/demo/app_password", "AppPassword0123456789abcdef12345678"),
@@ -107,7 +107,7 @@ public class ValkeySnapshotParserTests
     [Fact]
     public void BrokenCaPem_ParseErrorClusterAlive()
     {
-        // Arrange: битый PEM в обоих CA-ключах (arch/20 §5) — не роняет парсер.
+        // Arrange: битый PEM в обоих CA-ключах (arch/valkey-clusters/05-fault-tolerance.md) — не роняет парсер.
         var snap = ParseOne(
             Kv("/valkey/clusters/demo/config",
                 """{"nodes":1,"maxmemory_bytes":1,"maxmemory_policy":"allkeys-lru","created_unix":1}"""),
@@ -125,7 +125,7 @@ public class ValkeySnapshotParserTests
     [Fact]
     public void NodeState_NotInitialized_IsRead()
     {
-        // Arrange: заявка ноды (arch/20 §2.1).
+        // Arrange: заявка ноды (arch/valkey-clusters/02-keys.md §2).
         var snap = ParseOne(Kv("/valkey/clusters/demo/nodes/node1/state", "NOT_INITIALIZED"));
 
         // Act/Assert
@@ -136,7 +136,7 @@ public class ValkeySnapshotParserTests
     [Fact]
     public void NodeResources_CanonicalPg93_ReadRaw()
     {
-        // Arrange: заявка ресурсов (arch/20 §2.1, форматы pg §9.3).
+        // Arrange: заявка ресурсов (arch/valkey-clusters/02-keys.md §2, форматы pg §9.3).
         var snap = ParseOne(Kv("/valkey/clusters/demo/nodes/node1/resources",
             """{"cpu":"1","mem":"1Gi","disk":"10Gi"}"""));
 
@@ -147,7 +147,7 @@ public class ValkeySnapshotParserTests
         resources.Disk.Should().Be("10Gi");
     }
 
-    // ── Толерантность: все 6 строк таблицы arch/20 §5 ──
+    // ── Толерантность: все 6 строк таблицы arch/valkey-clusters/05-fault-tolerance.md ──
 
     [Fact]
     public void BrokenJsonConfig_ParseErrorNoException()
@@ -173,7 +173,7 @@ public class ValkeySnapshotParserTests
     [Fact]
     public void UnfamiliarState_ActiveBranchRawString()
     {
-        // Arrange: state вне канона (система развивается, arch/20 §5).
+        // Arrange: state вне канона (система развивается, arch/valkey-clusters/05-fault-tolerance.md).
         var snap = ParseOne(Kv("/valkey/clusters/demo/config",
             """{"nodes":1,"maxmemory_bytes":1,"maxmemory_policy":"allkeys-lru","created_unix":1,"state":"DRAFT"}"""));
 
@@ -208,7 +208,7 @@ public class ValkeySnapshotParserTests
     [Fact]
     public void Config_Nodes2_ParserPassesThrough()
     {
-        // Arrange: nodes=2 (валидация — API; парсер толерантен, arch/20 §5).
+        // Arrange: nodes=2 (валидация — API; парсер толерантен, arch/valkey-clusters/05-fault-tolerance.md).
         var snap = ParseOne(Kv("/valkey/clusters/demo/config",
             """{"nodes":2,"maxmemory_bytes":1,"maxmemory_policy":"noeviction","created_unix":1}"""));
 
@@ -233,7 +233,7 @@ public class ValkeySnapshotParserTests
     [Fact]
     public void BrokenJsonResources_ParseErrorResourcesNull()
     {
-        // Arrange: resources с битым JSON (arch/20 §5 строка 1).
+        // Arrange: resources с битым JSON (arch/valkey-clusters/05-fault-tolerance.md строка 1).
         var snap = ParseOne(Kv("/valkey/clusters/demo/nodes/node1/resources", "nonsense"));
 
         // Act/Assert: parseError, Resources=null (надзор не получит лимит).

@@ -14,7 +14,7 @@ namespace PgWorker.IntegrationTests.E2e;
 // Изолированное окружение E2eEnvironment (своя docker-сеть, свой etcd, СВОЯ
 // ownS3-нода — withS3Node:true; порт динамический) + живой кластер воркером
 // с Backups:Enabled=true. Имя кластера сценария — {slug}{Fx.ClusterTag}
-// (уникально на прогон, docs/e2e-isolation.md §1). Каждый Fact — своё
+// (уникально на прогон, arch/testing/02-e2e-isolation.md §1). Каждый Fact — своё
 // окружение: per-method изоляция (движковые контейнеры/тома pgw-*-<C>-*
 // опознаются teardown'ом окружения); полный teardown при любом исходе.
 public sealed class E2eWalStreamTliScenarios(E2eWalStreamTliScenariosFx Ctx) : IClassFixture<E2eWalStreamTliScenariosFx>
@@ -187,7 +187,7 @@ public sealed class E2eWalStreamTliScenarios(E2eWalStreamTliScenariosFx Ctx) : I
     // Промежуточные события (58P01, прыжок, stdout-маркеры, метка gap в моменте)
     // НЕ ассертируются — гоночные (пересоздание агентов надзором, §3.2);
     // маркеры — телеметрия артефактов. Несходимость в бюджет — расследование
-    // по артефактам (канон docs/e2e-launch.md).
+    // по артефактам (канон arch/testing/01-e2e-launch.md).
     [Fact]
     public async Task WalStream_TliJump_GapMarked_FullRetaken()
     {
@@ -405,7 +405,7 @@ public sealed class E2eWalStreamTliScenarios(E2eWalStreamTliScenariosFx Ctx) : I
                     "delivery caught up: last chain segment ≥ control-insert segment (§3.7 inv.5)");
 
             // 9.4 (ревью): факт tli-прыжка наблюдаем в статус-ключе живого
-            // приёмника (arch/19 §4): from — хвостовой сегмент старого TLI в S3,
+            // приёмника (arch/backups/05-etcd-contract.md): from — хвостовой сегмент старого TLI в S3,
             // to — сегмент прыжка, tli — новый таймлайн. Факт персистентен в
             // живом процессе до следующего прыжка, но нода-свидетель не
             // детерминирована: после failover/rebuild-гонки приёмники стартуют
@@ -684,7 +684,7 @@ public sealed class E2eWalStreamTliScenarios(E2eWalStreamTliScenariosFx Ctx) : I
         {
             ["PgWorker__Backups__Enabled"] = "true",
             ["PgWorker__Backups__S3__Bucket"] = Bucket,
-            // креды пула — env-профиль (arch/19 §7); пул — policy.s3, адреса
+            // креды пула — env-профиль (arch/backups/08-secrets.md); пул — policy.s3, адреса
             // резолвит воркер из /s3/ (advertised host.docker.internal, extra_hosts).
             ["PgWorker__Backups__Retry__BaseSec"] = "2",
             ["PgWorker__Backups__Retry__MaxSec"] = "4",
@@ -915,7 +915,7 @@ public sealed class E2eWalStreamTliScenarios(E2eWalStreamTliScenariosFx Ctx) : I
 }
 
 /// <summary>Компаньон-фикстура окружения класса (полный контур на класс:
-/// сеть/etcd/CA/окно портов; docs/e2e-isolation.md §1).</summary>
+/// сеть/etcd/CA/окно портов; arch/testing/02-e2e-isolation.md §1).</summary>
 public sealed class E2eWalStreamTliScenariosFx : E2eContourFixture
 {
     protected override string Slug => "wal-tli";

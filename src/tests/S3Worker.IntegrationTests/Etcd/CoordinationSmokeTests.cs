@@ -35,7 +35,7 @@ public class CoordinationSmokeTests(S3EtcdFixture fixture)
         var firstClaim = await first.TryClaimClusterAsync(cluster, ct);
         var secondClaim = await second.TryClaimClusterAsync(cluster, ct);
 
-        // Assert: exclusivity (S5, arch/17) — клэйм получает ровно один.
+        // Assert: exclusivity (S5, arch/synchronization/README.md) — клэйм получает ровно один.
         firstClaim.IsSuccess.Should().BeTrue();
         firstClaim.Value.Should().BeTrue();
         secondClaim.IsSuccess.Should().BeTrue();
@@ -131,7 +131,7 @@ public class CoordinationSmokeTests(S3EtcdFixture fixture)
     [Fact]
     public async Task WorkJournal_WritePhaseOverwrites_KeepsStructure()
     {
-        // Arrange: журнал фаз процесса /s3worker/work/<C> (arch/23 §8).
+        // Arrange: журнал фаз процесса /s3worker/work/<C> (arch/s3-clusters/08-coordination.md).
         var cluster = $"jrn{Guid.NewGuid().ToString("N")[..8]}";
         var ct = TestContext.Current.CancellationToken;
         var journal = new WorkJournal(Prefix, Gateway, [Endpoint]);
@@ -155,7 +155,7 @@ public class CoordinationSmokeTests(S3EtcdFixture fixture)
     [Fact]
     public async Task ApiKey_KeepaliveLoopWritesDiscovery()
     {
-        // Arrange: keepalive-контур ClaimStore с advertise-URL (arch/23 §8:
+        // Arrange: keepalive-контур ClaimStore с advertise-URL (arch/s3-clusters/08-coordination.md:
         // /s3worker/api/<id> — дискавери API, ставит сам инстанс).
         var ct = TestContext.Current.CancellationToken;
         var claims = NewClaimStore("https://localhost:8080");

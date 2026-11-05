@@ -6,9 +6,9 @@ using Shared.Etcd.Client;
 namespace Metrics.SdGenerator;
 
 // Группа file_sd: один таргет + фиксированные лейблы
-// cluster/shard/node (лейблы конечны — arch/18 §2, риск M1). Таргет — сетевой
+// cluster/shard/node (лейблы конечны — arch/metrics/02-dictionary.md, риск M1). Таргет — сетевой
 // <alias>:8008 (запись с alias, единая сеть контура) либо advertised
-// host:patroni по host-публикации (без alias — легаси/усыновлённые, arch/18 §2.5).
+// host:patroni по host-публикации (без alias — легаси/усыновлённые, arch/metrics/02-dictionary.md §5).
 public sealed record SdTargetGroup(string Target, string Cluster, string Shard, string Node);
 
 // Чистая функция маппинга /pgworker/portalloc/<C> → file_sd-группы (spec §3.2):
@@ -19,11 +19,11 @@ public static class TargetMapping
     public const string PortallocPrefix = "/pgworker/portalloc/";
 
     /// <summary>Контейнерный порт Patroni REST — константа контракта ноды
-    /// (arch/14 §2.1), не host-порт: сетевой таргет едины сети контура.</summary>
+    /// (arch/pgworker/01-placement.md §1), не host-порт: сетевой таргет едины сети контура.</summary>
     public const int PatroniRestPort = 8008;
 
-    /// <summary>Контейнерный порт /metrics приёмника WAL (arch/14 §2.1):
-    /// тот же per-node таргет вторым file_sd (arch/18 §5.4), http.</summary>
+    /// <summary>Контейнерный порт /metrics приёмника WAL (arch/pgworker/01-placement.md §1):
+    /// тот же per-node таргет вторым file_sd (arch/metrics/05-storage.md §4), http.</summary>
     public const int WalReceiverMetricsPort = 8080;
 
     // DTO записи portalloc (формат — PgWorker.Core PortallocEntry, без ссылки на Core:
@@ -69,10 +69,10 @@ public static class TargetMapping
             labels = new { cluster = g.Cluster, shard = g.Shard, node = g.Node },
         }));
 
-    // Второй file_sd (arch/18 §5.4): ТЕ ЖЕ записи per-node, таргет приёмника
+    // Второй file_sd (arch/metrics/05-storage.md §4): ТЕ ЖЕ записи per-node, таргет приёмника
     // WAL — <alias>:8080 (http; ScrapeNetwork приёмника), у записи без alias —
     // advertised <host>:8080 (скрейп без ScrapeNetwork недоступен — записи
-    // пишутся единообразно, arch/18 §5.4). Порт Target (Patroni 8008 / advertised)
+    // пишутся единообразно, arch/metrics/05-storage.md §4). Порт Target (Patroni 8008 / advertised)
     // заменяется контейнерным :8080 — сетевая идентичность (alias/host) та же.
     public static string SerializeWal(IReadOnlyList<SdTargetGroup> groups)
         => JsonSerializer.Serialize(groups.Select(g => new
@@ -116,12 +116,12 @@ public static class TargetMapping
                 continue;
             }
 
-            // patroni <= 0 — усыплённая нода (штатная семантика arch/14 §2.4):
+            // patroni <= 0 — усыплённая нода (штатная семантика arch/pgworker/01-placement.md §5):
             // без Patroni-REST не скрейпима, пропуск без warning — в обеих ветках.
             if (entry.Patroni <= 0)
                 continue;
 
-            // Per-node правило (arch/18 §2.5): alias есть → сетевой таргет
+            // Per-node правило (arch/metrics/02-dictionary.md §5): alias есть → сетевой таргет
             // <alias>:<контейнерный порт> (порты host-публикации не участвуют);
             // пустой alias — отсутствие (advertised-ветка, как без поля).
             var target = !string.IsNullOrWhiteSpace(entry.Alias)

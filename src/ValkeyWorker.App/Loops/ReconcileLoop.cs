@@ -9,13 +9,13 @@ using ValkeyWorker.App;
 namespace ValkeyWorker.App.Loops;
 
 /// <summary>
-/// Главный цикл воркера (arch/21 §5; порт ReconcileLoop KafkaWorker; чтение
-/// состояния — arch/17 S10): контроль-плейн читается из слепка опросного
+/// Главный цикл воркера (arch/valkeyworker/README.md; порт ReconcileLoop KafkaWorker; чтение
+/// состояния — arch/synchronization/05-delta-application.md §S10): контроль-плейн читается из слепка опросного
 /// кэша (IPrefixPollSources) — etcd-чтений в тике ноль (E10). Тик работает
 /// КАЖДЫЙ раз, без гейтов по дельте: self-healing ждёт не-etcd события
 /// (PING-готовность ноды, docker-факты) — применения etcd-значений
 /// процессами идут по факту изменения значения (S10). Heartbeat и healthz
-/// loops-alive отмечаются каждым тиком (arch/21 §6). Ошибка тика не роняет
+/// loops-alive отмечаются каждым тиком (arch/valkeyworker/06-operability.md §3). Ошибка тика не роняет
 /// цикл (лог + ErrorDelayMs, следующий тик — ретрай).
 /// </summary>
 internal sealed class ReconcileLoop(
@@ -128,7 +128,7 @@ internal sealed class ReconcileLoop(
         health.MarkReconcileActivity(); // heartbeat: старт итерации (долгие фазы отмечаются глубже)
 
         // Парсинг контроль-плейна — из слепка кэша (не etcd; P9 выполняется
-        // опросным циклом кэша, единая точка failover — arch/17 S7).
+        // опросным циклом кэша, единая точка failover — arch/synchronization/03-fault-tolerance.md §S7).
         var claimsHeld = await processes.TickAsync(ToKvs(sources.ClustersSnapshot), ct);
 
         // Секция health «claims»: фактическое число клэймов этого инстанса.

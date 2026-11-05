@@ -8,11 +8,11 @@ using Shared.Etcd.Client;
 
 namespace ValkeyWorker.App.Api.Operations;
 
-// Границы и правила валидации valkey-мутаций (arch/20 §2; pg §9.3 — форматы
+// Границы и правила валидации valkey-мутаций (arch/valkey-clusters/02-keys.md §1; pg §9.3 — форматы
 // ресурсов: cpu decimal 0.01–64 без суффикса; mem/disk — только целые GiB).
 public static partial class ValkeyLimits
 {
-    // Как pg/kafka-имена: без дефиса (arch/20 §2).
+    // Как pg/kafka-имена: без дефиса (arch/valkey-clusters/02-keys.md §1).
     [GeneratedRegex("^[a-z][a-z0-9_]{0,62}$")]
     public static partial Regex ClusterPattern();
 
@@ -63,7 +63,7 @@ public sealed record ValkeyConfigUpdateRequest(
 
 public sealed record RotateValkeyPasswordRequest(string? Role);
 
-// Типизированный config-JSON (канон arch/20 §2.1; сериализация — ValkeyWriting.ConfigJson).
+// Типизированный config-JSON (канон arch/valkey-clusters/02-keys.md §2; сериализация — ValkeyWriting.ConfigJson).
 public sealed record ValkeyConfigJson(
     [property: System.Text.Json.Serialization.JsonPropertyName("nodes")] int Nodes,
     [property: System.Text.Json.Serialization.JsonPropertyName("maxmemory_bytes")] long MaxmemoryBytes,
@@ -71,7 +71,7 @@ public sealed record ValkeyConfigJson(
     [property: System.Text.Json.Serialization.JsonPropertyName("created_unix")] long? CreatedUnix,
     [property: System.Text.Json.Serialization.JsonPropertyName("state")] string? State)
 {
-    // Канон arch/20 §2.1: опциональные поля (state у Active-кластера)
+    // Канон arch/valkey-clusters/02-keys.md §2: опциональные поля (state у Active-кластера)
     // ОТСУТСТВУЮТ в значении ключа — WhenWritingNull, не "state":null.
     private static readonly System.Text.Json.JsonSerializerOptions Canonical =
         new() { DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull };

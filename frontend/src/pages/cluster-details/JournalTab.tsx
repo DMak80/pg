@@ -1,5 +1,5 @@
 // Вкладка «Журнал» pg-кластера (u12/D5): work-журнал /pgworker/work/<C> +
-// heals (перенос прежней вкладки) + блок «Эвакуации» (u12, arch/14 §3.2).
+// heals (перенос прежней вкладки) + блок «Эвакуации» (u12, arch/pgworker/00-etcd-contract.md §3).
 // Журналы воркера перезаписываются — видна последняя фаза.
 import { Badge, Card, Group, Stack, Text } from '@mantine/core';
 import type { ClusterWorkDto, EvacuationDto, HealDto } from '../../api/dto';
@@ -25,7 +25,7 @@ export function JournalTab({ work, heals, evacuations }: {
       </Card>
 
       <Card withBorder padding="md" radius="md">
-        <Text fw={600} mb="xs">Эвакуации (BucketEvacuator, arch/14 §5 D)</Text>
+        <Text fw={600} mb="xs">Эвакуации (BucketEvacuator, arch/pgworker/processes/d-bucket-evacuator.md D)</Text>
         {evacuations === null || evacuations === undefined || evacuations.length === 0 ? (
           <Text c="dimmed" size="sm">Журналов эвакуаций нет (шарды не пропадали).</Text>
         ) : (

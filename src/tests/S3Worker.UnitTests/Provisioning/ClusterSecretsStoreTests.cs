@@ -6,7 +6,7 @@ using Xunit;
 
 namespace S3Worker.UnitTests.Provisioning;
 
-// ClusterSecretsStore — креды кластера per-cluster в etcd (spec §3.1, arch/23 §6):
+// ClusterSecretsStore — креды кластера per-cluster в etcd (spec §3.1, arch/s3-clusters/06-secrets.md):
 // генерация txn put-if-absent (повтор — те же значения), чтение с проверкой
 // полноты, спец-ключ etcd-backup из env-пары S3W_ETCD_BACKUP_{ACCESSKEY,SECRETKEY}
 // (полупара — диагностика БЕЗ значений), ротация — RMW-замена целиком.

@@ -4,7 +4,7 @@ namespace EtcdWorker.Docker.Drivers;
 /// (tcp://host:2375 | unix:///var/run/docker.sock).</summary>
 public sealed record HostEndpoint(string Name, string Endpoint);
 
-/// <summary>Спецификация managed-узла etcd (arch/25 §2): имя etcdw-node-&lt;k&gt;,
+/// <summary>Спецификация managed-узла etcd (arch/etcdworker/01-placement.md): имя etcdw-node-&lt;k&gt;,
 /// host-публикация ТОЛЬКО client-порта; peer — имена сети контура.</summary>
 public sealed record EtcdNodeSpec(
     int K,
@@ -18,7 +18,7 @@ public sealed record EtcdNodeSpec(
 /// <summary>Факт узла: размещение/живость/фактический client host-порт.</summary>
 public sealed record EtcdNodeInspection(string? PlacedOn, bool Running, int? ClientHostPort);
 
-// Управление managed-узлом etcd в обоих режимах (порт драйверов s3w — arch/25
+// Управление managed-узлом etcd в обоих режимах (порт драйверов s3w — arch/etcdworker/README.md
 // §2): объекты — контейнер/сервис etcdw-node-<k> с томом данных
 // etcdw-node-<k>-data (/etcd-data), label-пара etcdworker=member. Наружу
 // публикуется ТОЛЬКО client-порт 2379; peer-трафик — имена в сети контура.
@@ -58,10 +58,10 @@ public sealed class PlainEtcdNodeDriver(
     DockerEngineFactory factory,
     string network) : IEtcdNodeDriver
 {
-    // Контейнерный порт client-грани etcd → выделенный host-порт (arch/25 §2).
+    // Контейнерный порт client-грани etcd → выделенный host-порт (arch/etcdworker/01-placement.md).
     public const int ClientPortConst = 2379;
 
-    // Label-пара контейнеров etcdw-домена (arch/25 §2: label "etcdworker").
+    // Label-пара контейнеров etcdw-домена (arch/etcdworker/01-placement.md: label "etcdworker").
     internal const string LabelKey = "etcdworker";
     internal const string LabelValue = "member";
 

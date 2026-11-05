@@ -126,7 +126,7 @@ public class ValkeyValidationTests
         var active = new ValkeyConfigJson(1, 536870912, "allkeys-lru", 1756500000, null).Serialize();
         var requested = new ValkeyConfigJson(1, 536870912, "allkeys-lru", 1756500000, "NOT_INITIALIZED").Serialize();
 
-        // Assert: null-поля ОТСУТСТВУЮТ (не "state":null — arch/20 §2.1);
+        // Assert: null-поля ОТСУТСТВУЮТ (не "state":null — arch/valkey-clusters/02-keys.md §2);
         // заявка несёт state.
         active.Should().Be("""{"nodes":1,"maxmemory_bytes":536870912,"maxmemory_policy":"allkeys-lru","created_unix":1756500000}""");
         requested.Should().Contain("\"state\":\"NOT_INITIALIZED\"");

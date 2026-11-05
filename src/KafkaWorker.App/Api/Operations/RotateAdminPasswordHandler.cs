@@ -10,7 +10,7 @@ public sealed record KafkaAdminPasswordRotatedDto(string Cluster, long Requested
 
 // Заявка ротации admin-пароля через API воркера (мутация №16, adminpanel/02
 // §10.2): клэйм-txn /kafkaworker/admin_rotations/<C>; исполнение — PasswordRotator
-// (роль admin) воркера (фазы A/B/C, arch/16 §5 H). Порт RotateAppPasswordHandler.
+// (роль admin) воркера (фазы A/B/C, arch/kafkaworker/04-security.md §4 H). Порт RotateAppPasswordHandler.
 // requested_by — заголовок X-Requested-By (панель шлёт оператора), fallback
 // "api" (у панели ClaimsPrincipal; значения etcd не меняются, spec §3.7).
 public sealed class RotateAdminPasswordHandler(IEtcdGateway gateway, string[] endpoints, TimeProvider time)

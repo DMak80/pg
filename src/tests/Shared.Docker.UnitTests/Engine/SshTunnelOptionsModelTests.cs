@@ -6,7 +6,7 @@ using Xunit;
 
 namespace Shared.Docker.UnitTests.Engine;
 
-// SSH-туннель к Engine API (arch/14 §2.2.1): fingerprint-семантика
+// SSH-туннель к Engine API (arch/pgworker/01-placement.md §4): fingerprint-семантика
 // (pin задан — строгое сравнение; не задан — TOFU-accept c признаком warning, R14),
 // целевой адрес форварда — чистые функции без сети. env-биндинги PGW_DOCKER_SSH_* —
 // pg-специфика, их тесты — в PgWorker.UnitTests.

@@ -7,7 +7,7 @@ using Xunit;
 
 namespace Shared.Docker.UnitTests.Engine;
 
-// Пер-попыточный таймаут docker-транспорта (arch/14 §6, arch/15 §4): константа
+// Пер-попыточный таймаут docker-транспорта (arch/pgworker/08-operability.md §3, arch/kafka-clusters/04-coordination.md §1): константа
 // канона «полокна проверки watchdog» и проброс таймаута HttpClient в вызовы
 // движка — зависший docker-демон даёт transient-фейл, а не молчание до 100 с
 // (окно гонки довыделения против TTL 15 с глобального portalloc-лока).

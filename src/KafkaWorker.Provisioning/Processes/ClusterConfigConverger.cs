@@ -5,13 +5,13 @@ using KafkaWorker.Provisioning.Kafka;
 namespace KafkaWorker.Provisioning.Processes;
 
 /// <summary>
-/// Чистая decision-функция converge (arch/16 §5 E, порт describe→decide→act
+/// Чистая decision-функция converge (arch/kafkaworker/02-cluster-lifecycle.md §5 E, порт describe→decide→act
 /// Puzzle §7.2): маппинг полей заявки → Kafka-конфиги; возвращает только
 /// отличающиеся от фактических (пусто = no-op, идемпотентность).
 /// </summary>
 public static class ConvergeDecider
 {
-    // Маппинг полей заявки → dynamic broker configs (arch/16 §5 E).
+    // Маппинг полей заявки → dynamic broker configs (arch/kafkaworker/02-cluster-lifecycle.md §5 E).
     public static readonly IReadOnlyDictionary<string, string> RequestToBrokerConfig = new Dictionary<string, string>
     {
         ["default_retention_ms"] = "log.retention.ms",
@@ -46,7 +46,7 @@ public static class ConvergeDecider
 }
 
 /// <summary>
-/// Converge mutable-конфигов кластера как dynamic broker configs (arch/16 §5 E):
+/// Converge mutable-конфигов кластера как dynamic broker configs (arch/kafkaworker/02-cluster-lifecycle.md §5 E):
 /// describe по одному брокеру → decide → при отличии IncrementalAlterConfigs
 /// (Set) на ВСЕХ брокерах — применяется без рестартов. Совпадают → no-op.
 /// </summary>
@@ -83,7 +83,7 @@ public sealed class ClusterConfigConverger(IKafkaAdminClientFactory adminFactory
             }
         }
 
-        // ACL-converge (arch/16 §5 E): идемпотентная сходимость роли app.
+        // ACL-converge (arch/kafkaworker/02-cluster-lifecycle.md §5 E): идемпотентная сходимость роли app.
         var acls = await admin.DescribeAclsAsync(ct);
         if (!acls.IsSuccess)
             return Result.Failed(acls.Error!);

@@ -13,7 +13,7 @@ public sealed class PgWorkerLoopsVitality(
 {
     public IReadOnlyList<LoopHeartbeat> Snapshot()
     {
-        // Порог сноса — от собственных опций watchdog (arch/14 §6):
+        // Порог сноса — от собственных опций watchdog (arch/pgworker/08-operability.md §3):
         // Multiplier × CheckIntervalSec = 30 c при дефолтах, ЕДИНЫЙ для всех
         // циклов; healthz-порог (LoopStaleness) в формуле не участвует.
         var watchdog = options.CurrentValue.Loops.Watchdog;
@@ -23,12 +23,12 @@ public sealed class PgWorkerLoopsVitality(
 
         // snapshot: тик ИЛИ пульс — позднейший факт активности (сон длиннее
         // порога пульсирует MarkSnapshotActivity, B2; S3-вызовы выгрузки —
-        // MarkSnapshotActivity вокруг вызова, arch/14 §6)
+        // MarkSnapshotActivity вокруг вызова, arch/pgworker/08-operability.md §3)
         var snapshotActivity = snap.LastSnapshotTick is { } tick && snap.LastSnapshotActivity is { } pulse
             ? (tick > pulse ? tick : pulse)
             : snap.LastSnapshotTick ?? snap.LastSnapshotActivity;
         // orphan-sweep: тик ИЛИ пульс — зеркально snapshot (S3-проход сверки
-        // пульсирует MarkOrphanSweepActivity вокруг вызовов, arch/14 §6);
+        // пульсирует MarkOrphanSweepActivity вокруг вызовов, arch/pgworker/08-operability.md §3);
         // тики ≠ активность — healthz loops-alive читает только тики
         var orphanActivity = snap.LastOrphanSweepTick is { } oTick && snap.LastOrphanSweepActivity is { } oPulse
             ? (oTick > oPulse ? oTick : oPulse)

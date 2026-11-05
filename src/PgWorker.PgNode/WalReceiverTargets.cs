@@ -7,7 +7,7 @@ using Shared.Etcd.Client;
 
 namespace PgWorker.PgNode;
 
-/// <summary>Результат резолва «куда бэкапиться» (arch/19 §3, живой из etcd на
+/// <summary>Результат резолва «куда бэкапиться» (arch/backups/02-wal-archive.md §1, живой из etcd на
 /// каждом цикле приёмника): Password — /clusters/&lt;C&gt;/backup_password;
 /// Pool — контекст пула (write-списки по роли, ReadAll, креды); Slot — имя
 /// слота шарда (BackupNames.Slot). WaitingPassword — пароля нет/пуст;
@@ -28,7 +28,7 @@ public sealed record WalReceiverTargetsResult(
         => new(password, pool, slot, null, chainLife);
 }
 
-/// <summary>Резолв кредов/целей приёмника из etcd (arch/19 §3, решение spec §7
+/// <summary>Резолв кредов/целей приёмника из etcd (arch/backups/02-wal-archive.md §1, решение spec §7
 /// №10): пароль роли backup_exec, policy → секция s3 → пул — тот же резолв,
 /// что у воркера (BackupPoolResolver + S3PoolStore + BackupPolicyReader из
 /// PgWorker.Backups). Транспортный отказ etcd — WaitingPolicy с текстом
@@ -38,7 +38,7 @@ public sealed class WalReceiverTargets(IEtcdGateway etcd, string[] endpoints, IS
     public async Task<WalReceiverTargetsResult> ResolveAsync(
         string cluster, string shard, CancellationToken ct)
     {
-        // (1) Пароль роли backup_exec (arch/19 §7): ключ есть и непуст → ок;
+        // (1) Пароль роли backup_exec (arch/backups/08-secrets.md): ключ есть и непуст → ок;
         // отсутствует/пуст → waiting_password (ensure делает воркер — ожидание).
         var password = await ReadPasswordAsync(cluster, ct);
         if (!password.IsSuccess)

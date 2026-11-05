@@ -8,38 +8,38 @@ alerting:
         - targets: ["alertmanager:9093"]
 scrape_configs:
   # Таргеты — сетевые адреса deploy-воркеров (aliases pgworker/pgworker-2 в
-  # единой стендовой сети контура adminpanel-stand-net, arch/18 §5.2) — файл
+  # единой стендовой сети контура adminpanel-stand-net, arch/metrics/05-storage.md §2) — файл
   # file_sd пишет 00-up.sh; host-публикации API остаются для advertise/чеков/панели.
-  - job_name: pgworker            # deploy-compose (открытая https-грань без клиентского серта, arch/18 §5.2)
+  - job_name: pgworker            # deploy-compose (открытая https-грань без клиентского серта, arch/metrics/05-storage.md §2)
     scheme: https
     tls_config:
       ca_file: /tls/ca.pem
     file_sd_configs:
       - files: ["/etc/prometheus/pgworker-targets.json"]
-  - job_name: kafkaworker         # сеть стенда (профиль kafka; открытая https-грань без клиентского серта, arch/18 §5.2)
+  - job_name: kafkaworker         # сеть стенда (профиль kafka; открытая https-грань без клиентского серта, arch/metrics/05-storage.md §2)
     scheme: https
     tls_config:
       ca_file: /tls/ca.pem
     static_configs: [{targets: ["kafkaworker:8080", "kafkaworker-2:8080"]}]
-  - job_name: valkeyworker         # сеть стенда (профиль valkey; открытая https-грань без клиентского серта, arch/18 §5.2)
+  - job_name: valkeyworker         # сеть стенда (профиль valkey; открытая https-грань без клиентского серта, arch/metrics/05-storage.md §2)
     scheme: https
     tls_config:
       ca_file: /tls/ca.pem
     static_configs: [{targets: ["valkeyworker:8080", "valkeyworker-2:8080"]}]
   - job_name: adminpanel          # сеть стенда
     static_configs: [{targets: ["adminpanel:8080"]}]
-  - job_name: patroni-nodes       # реальные ноды PgWorker (arch/18 §2.5/§5.4)
+  - job_name: patroni-nodes       # реальные ноды PgWorker (arch/metrics/02-dictionary.md §5/§5.4)
     scheme: https
     tls_config:
       ca_file: /tls/ca.pem
     file_sd_configs:
       - files: ["/etc/prometheus/sd/patroni-nodes.json"]
         refresh_interval: 30s
-  - job_name: pgnode-nodes   # агенты PgNode в нодах PgWorker (t25/t05, arch/18 §2.8/§5.4)
+  - job_name: pgnode-nodes   # агенты PgNode в нодах PgWorker (t25/t05, arch/metrics/02-dictionary.md §8/§5.4)
     scheme: http
     file_sd_configs:
       - files: ["/etc/prometheus/sd/pgnode-nodes.json"]
         refresh_interval: 30s
 
-  - job_name: sd-generator        # самонаблюдение генератора (arch/18 §5.4)
+  - job_name: sd-generator        # самонаблюдение генератора (arch/metrics/05-storage.md §4)
     static_configs: [{targets: ["sd-generator:8080"]}]

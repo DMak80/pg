@@ -9,7 +9,7 @@ using Shared.Etcd.Client;
 
 namespace EtcdWorker.App.Loops;
 
-// Цикл доводки состава (arch/25 §3): лидер ClaimStore →
+// Цикл доводки состава (arch/etcdworker/02-membership.md): лидер ClaimStore →
 // кворум-гейт (StatusAsync → LeaderMemberId; без лидера — наблюдательный сон)
 // → надзор (факты проблем) → MembershipProcess (недобор/перебор/замена)
 // → repair → orphan-cleanup; короткий сон ScanIntervalSec (пульсирующий).
@@ -53,7 +53,7 @@ internal sealed class ReconcileLoop(
                 {
                     try
                     {
-                        // Cancellation-гвард лидерства (arch/17 S5): потеря leader-lease
+                        // Cancellation-гвард лидерства (arch/synchronization/02-predicates-and-mutations.md §S5): потеря leader-lease
                         // прерывает тик доводки состава; цикл продолжит как не-лидер.
                         using var leaderLease = CancellationTokenSource.CreateLinkedTokenSource(
                             stoppingToken, claims.LeaderToken);
@@ -66,7 +66,7 @@ internal sealed class ReconcileLoop(
                     }
                     catch (OperationCanceledException) when (!stoppingToken.IsCancellationRequested)
                     {
-                        // Потеря leader-lease прервала тик (гвард arch/17 S5): не ошибка —
+                        // Потеря leader-lease прервала тик (гвард arch/synchronization/02-predicates-and-mutations.md §S5): не ошибка —
                         // цикл продолжит как не-лидер и пере-захватит ≤ TTL + тик скана.
                         logger.LogWarning("membership leadership lost mid-tick");
                     }

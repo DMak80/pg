@@ -15,7 +15,7 @@ namespace PgWorker.IntegrationTests.Backups;
 [Collection(NonE2eCollection.Name)]
 public class BackupSupervisorProcessTests(EtcdFixture fixture) : IAsyncLifetime
 {
-    // Per-class guid-тег (канон docs/e2e-isolation.md §1): имена кластеров уникальны
+    // Per-class guid-тег (канон arch/testing/02-e2e-isolation.md §1): имена кластеров уникальны
     // per-class-запуск — пересечение с ShardScaleContractTests (sc1..sc6) и любым
     // будущим классом не-E2E-коллекции (NonE2eCollection) механически невозможно
     // (инцидент : клэйм sc3 этого класса жил 15с по TTL и ронял TryClaim жертвы).

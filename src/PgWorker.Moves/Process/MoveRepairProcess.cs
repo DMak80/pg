@@ -7,7 +7,7 @@ using PgWorker.Provisioning.Processes;
 namespace PgWorker.Moves;
 
 /// <summary>
-/// Репарация брошенных переездов (spec §3.5, arch/14 §5 K MR0–MR3): статус-ключ
+/// Репарация брошенных переездов (spec §3.5, arch/pgworker/processes/k-move-repair.md K MR0–MR3): статус-ключ
 /// без живого владельца (нет заявки, updated_unix постарел) закрывается
 /// синтетической заявкой put-if-absent в существующий MoveProcess — механика
 /// доведения/журналов/идемпотентности переиспользуется 1:1. Живой владелец

@@ -8,7 +8,7 @@ using Xunit;
 
 namespace Shared.Docker.UnitTests.Engine;
 
-// TLS к Engine API (arch/14 §2.2.1): сборка handler'а с клиентским сертом
+// TLS к Engine API (arch/pgworker/01-placement.md §4): сборка handler'а с клиентским сертом
 // и доверием docker-CA, fail-fast частичной конфигурации, unix:// игнорирует
 // TLS, plaintext tcp:// без TLS остаётся рабочим (R15).
 public class DockerEngineFactoryTlsTests
@@ -71,7 +71,7 @@ public class DockerEngineFactoryTlsTests
         // Act
         var handler = factory.CreateHandler("unix:///var/run/docker.sock") as SocketsHttpHandler;
 
-        // Assert: unix-транспорт — без TLS (сокет локальный, arch/14 §2.2).
+        // Assert: unix-транспорт — без TLS (сокет локальный, arch/pgworker/01-placement.md §3.1).
         handler!.SslOptions.ClientCertificates.Should().BeNull();
     }
 

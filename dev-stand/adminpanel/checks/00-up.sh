@@ -13,7 +13,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$(cd ../.. && pwd)"
-# Телеметрия прогона (канон docs/e2e-launch.md — «никакой тихой фазы»):
+# Телеметрия прогона (канон arch/testing/01-e2e-launch.md — «никакой тихой фазы»):
 # [PHASE]-строки дублируются в phases.log (append; разбор прогона — по хвосту).
 PHASES_LOG="${PGW_STAND_PHASES_LOG:-/tmp/pgw-stand-phases.log}"
 phase() {
@@ -43,7 +43,7 @@ export ETCDW_API_HOST_PORT2="${ETCDW_API_HOST_PORT2:-8088}"
 [ "${PGW_API_ADVERTISE_URL:-}" ] || export PGW_API_ADVERTISE_URL="https://host.docker.internal:${PGW_API_HOST_PORT}"
 # t15: таргеты джобы pgworker — сетевые адреса deploy-воркеров (aliases в
 # pgw-metrics); host-порты PGW_API_HOST_PORT* остаются — advertise/чеки/панель,
-# не скрейп (arch/18 §5.2).
+# не скрейп (arch/metrics/05-storage.md §2).
 printf '[{"targets": ["pgworker:8080", "pgworker-2:8080"]}]\n' \
   > metrics/prometheus/pgworker-targets.json
 
@@ -52,7 +52,7 @@ for bin in docker jq curl; do
   command -v "$bin" >/dev/null || { echo "❌ no $bin in PATH"; exit 1; }
 done
 
-# mTLS API воркеров (t03, arch/16 §1.1 / arch/21 §1.1): per-install TLS-пакет —
+# mTLS API воркеров (t03, arch/kafkaworker/07-api.md §1 / arch/valkeyworker/05-api.md §1): per-install TLS-пакет —
 # gen.sh идемпотентен ПОФАЙЛОВО (ca.pem жив — клиентские/pgserver не трогаются;
 # server-серт без DNS:valkeyworker перегенерируется, t03), поэтому зовём
 # безусловно: на свежем хосте создаёт пакет, на живом — только чинит старый
@@ -65,7 +65,7 @@ bash "$ROOT/deploy/tls/gen.sh"
 # имя volume — с префиксом compose-проекта deploy (как его создаёт compose).
 docker volume create deploy_pgw-api-tls >/dev/null
 # ca.key — выпуск REST-сертов нод (R16: бэкап пакета — runbook)
-# healthcheck.* упразднены (открытая грань /healthz, arch/14 §1.1): из volume
+# healthcheck.* упразднены (открытая грань /healthz, arch/pgworker/07-api.md §1): из volume
 # удаляются — наследие живых стендов чистится этим же прогоном (gen.sh чистит deploy/tls).
 docker run --rm \
   -v "$ROOT/deploy/tls:/src:ro" -v deploy_pgw-api-tls:/tls alpine:3.20 \
@@ -79,7 +79,7 @@ dotnet publish "$ROOT/src/Metrics.SdGenerator/Metrics.SdGenerator.csproj" \
   || { echo "❌ SdGenerator publish failed"; exit 1; }
 echo ">>> [PHASE] SdGenerator publish ready ($(date +%H:%M:%S))"
 
-# Образ PG-ноды с приёмником WAL и служебной CLI (t25, arch/19 §3 + arch/14 §2.1):
+# Образ PG-ноды с приёмником WAL и служебной CLI (t25, arch/backups/02-wal-archive.md §1 + arch/pgworker/01-placement.md §1):
 # publish НА ХОСТЕ self-contained (RID хоста сборки, без trimming) → docker
 # build пакует выводы (канон «publish на хосте, в контейнер — артефакты»;
 # сборка не «тихая» — [PHASE] и тайминг; оба процесса живут ВНУТРИ контейнера).
@@ -95,7 +95,7 @@ echo ">>> [PHASE] publish PgWorker.NodeTools self-contained $NODE_RID ($(date +%
 dotnet publish "$ROOT/src/PgWorker.NodeTools/PgWorker.NodeTools.csproj" \
   -c Release -r "$NODE_RID" --self-contained -o "$ROOT/artifacts/node-tools" --nologo \
   || { echo "❌ NodeTools publish failed"; exit 1; }
-# DOORMAN_IMAGE — пин мульти-арх образа pg_doorman (arch/14 §2.1 R1; пулер
+# DOORMAN_IMAGE — пин мульти-арх образа pg_doorman (arch/pgworker/01-placement.md §1 R1; пулер
 # обязателен); ретаг канонического имени делает pull-images.sh из registry.
 echo ">>> [PHASE] pgworker-node:dev build (PGNODE_PUBLISH_DIR=artifacts/node-wal, NODE_TOOLS_PUBLISH_DIR=artifacts/node-tools, DOORMAN_IMAGE=ghcr.io/ozontech/pg_doorman:v3.11.0) ($(date +%H:%M:%S))"
 docker build -q -f "$ROOT/docker/node/Dockerfile" \
@@ -105,7 +105,7 @@ docker build -q -f "$ROOT/docker/node/Dockerfile" \
   || { echo "❌ image pgworker-node:dev build failed"; exit 1; }
 echo "  image pgworker-node:dev ready (pgnode + pgwnodetool inside)"
 
-# S3Worker (arch/24): publish НА ХОСТЕ → образ publish-COPY (канон
+# S3Worker (arch/s3worker/README.md): publish НА ХОСТЕ → образ publish-COPY (канон
 # E2E-образов; сборка не «тихая» — [PHASE] и тайминг).
 echo ">>> [PHASE] publish S3Worker.App ($(date +%H:%M:%S))"
 dotnet publish "$ROOT/src/S3Worker.App/S3Worker.App.csproj" \
@@ -113,7 +113,7 @@ dotnet publish "$ROOT/src/S3Worker.App/S3Worker.App.csproj" \
   || { echo "❌ S3Worker publish failed"; exit 1; }
 echo ">>> [PHASE] S3Worker publish ready ($(date +%H:%M:%S))"
 
-# EtcdWorker (arch/25): publish НА ХОСТЕ → образ publish-COPY (канон
+# EtcdWorker (arch/etcdworker/README.md): publish НА ХОСТЕ → образ publish-COPY (канон
 # «сборка и запуск двумя отдельными командами»).
 echo ">>> [PHASE] publish EtcdWorker.App ($(date +%H:%M:%S))"
 dotnet publish "$ROOT/src/EtcdWorker.App/EtcdWorker.App.csproj" \
@@ -216,7 +216,7 @@ echo "  etcd contour ready (3/3 started)"
 #     собранный etcd-кворум выше).
 # Проба открытой грани: https без клиентского серта (healthz воркеров).
 HEALTH=(curl -fsS -m 3 --cacert "$ROOT/deploy/tls/ca.pem")
-# Проба mTLS-грани (healthz etcdworker, arch/25 §1.1): клиентская пара seed
+# Проба mTLS-грани (healthz etcdworker, arch/etcdworker/05-api.md §1): клиентская пара seed
 # (пакет kfw-install-ca; тот же паттерн, что 05-seed/75-s3worker).
 MTLS=(curl -fsS -m 3 --cacert "$ROOT/deploy/tls/ca.pem" --cert "$ROOT/deploy/tls/seed.crt" --key "$ROOT/deploy/tls/seed.key")
 for i in $(seq 1 60); do "${HEALTH[@]}" https://localhost:${PGW_API_HOST_PORT:-8080}/healthz >/dev/null 2>&1 && break; sleep 1; done
@@ -265,7 +265,7 @@ done
   || { echo "❌ /valkeyworker/instances/ has fewer than 2 keys"; exit 1; }
 echo "  valkeyworker alive ×2 (heartbeat /valkeyworker/{api,instances}/*: ${vwk_keys} each)"
 
-# 7c) s3worker жив ×2 (arch/24): healthz по https без клиентского серта
+# 7c) s3worker жив ×2 (arch/s3worker/README.md): healthz по https без клиентского серта
 #     (открытая грань; общий TLS-пакет pgw-api-tls, server-серт с SAN s3worker*) +
 #     дискавери /s3worker/api/ по ключам (по образцу pgworker/kafkaworker).
 for i in $(seq 1 60); do "${HEALTH[@]}" https://localhost:${S3W_API_HOST_PORT:-8086}/healthz >/dev/null 2>&1 && break; sleep 1; done
@@ -284,7 +284,7 @@ done
   || { echo "❌ /s3worker/api/ contains ${s3w_keys:-0} keys (<2; docker compose logs s3worker s3worker-2)"; exit 1; }
 echo "  s3worker alive ×2 (:${S3W_API_HOST_PORT:-8086} + :${S3W_API_HOST_PORT2:-8089}/healthz https; /s3worker/api/ keys: ${s3w_keys})"
 
-# 7d) etcdworker жив ×2 (arch/25): healthz по mTLS healthcheck-парой +
+# 7d) etcdworker жив ×2 (arch/etcdworker/README.md): healthz по mTLS healthcheck-парой +
 #     дискавери /etcdworker/api/ по ключам (по образцу s3worker 7c).
 for i in $(seq 1 60); do "${MTLS[@]}" https://localhost:${ETCDW_API_HOST_PORT:-8087}/healthz >/dev/null 2>&1 && break; sleep 1; done
 "${MTLS[@]}" https://localhost:${ETCDW_API_HOST_PORT:-8087}/healthz >/dev/null \

@@ -7,7 +7,7 @@ using Shared.Tls;
 
 namespace S3Worker.App.Api;
 
-// HTTPS HTTP-грань воркера (arch/24 §1.1): клиентский серт опционален на
+// HTTPS HTTP-грань воркера (arch/s3worker/07-api.md §1): клиентский серт опционален на
 // хендшейке, mTLS обязателен только на /api (401 без валидного серта —
 // Shared.Tls.ClientCertAuthMiddleware); /healthz и /metrics — открытая грань
 // доверенной docker-сети. Вызывается на WebApplicationBuilder ДО Build()
@@ -15,7 +15,7 @@ namespace S3Worker.App.Api;
 // Сертификаты живут всё приложение (без using).
 public static class TlsEndpoints
 {
-    // env-секреты → конфиг-дерево (arch/24 §8): PEM-значения и _PATH-файлы.
+    // env-секреты → конфиг-дерево (arch/s3worker/08-operability.md §5): PEM-значения и _PATH-файлы.
     public static readonly (string Env, string Key)[] EnvBindings =
     [
         ("S3W_API_TLS_CERT", "S3Worker:Api:Tls:ServerCertPem"),
@@ -41,7 +41,7 @@ public static class TlsEndpoints
             return new ApiTlsSetup(null, null, null); // без TLS — только WAF-тесты; warning логирует Program.cs
         }
 
-        // Управляемый серт: etcd-ключ > env (arch/24 §1.1). Битый ключ —
+        // Управляемый серт: etcd-ключ > env (arch/s3worker/07-api.md §1). Битый ключ —
         // fail-fast: ключ — явное намерение оператора.
         X509Certificate2? serverCert;
         string? source;
@@ -66,12 +66,12 @@ public static class TlsEndpoints
 
         if (serverCert is null)
             throw new ApplicationException(
-                "S3Worker:Api:Tls: server certificate/key not set (S3W_API_TLS_CERT/KEY or *_PATH; etcd key /workers/api_tls/s3worker; arch/24 §1.1)");
+                "S3Worker:Api:Tls: server certificate/key not set (S3W_API_TLS_CERT/KEY or *_PATH; etcd key /workers/api_tls/s3worker; arch/s3worker/07-api.md §1)");
 
         var clientCa = LoadClientCa(tls) ?? throw new ApplicationException(
             "S3Worker:Api:Tls: ClientCA not set (S3W_API_TLS_CLIENT_CA[_PATH])");
 
-        // 401-политика /api (arch/24 §1.1): опция middleware — DI-синглтон;
+        // 401-политика /api (arch/s3worker/07-api.md §1): опция middleware — DI-синглтон;
         // clientCa живёт всё приложение (уже загружен без using, как серверный).
         builder.Services.AddSingleton(new ClientCertAuthOptions(Enabled: true, ClientCa: clientCa));
 
@@ -92,7 +92,7 @@ public static class TlsEndpoints
         return new ApiTlsSetup(serverCert, source, warning);
     }
 
-    // Итог конфигурации серта (arch/24 §1.1): применённый серт + источник
+    // Итог конфигурации серта (arch/s3worker/07-api.md §1): применённый серт + источник
     // ("etcd:/workers/api_tls/s3worker" | "env") + warning (etcd недоступен,
     // старт на env). ServerCert=null — AllowInsecureHttp (WAF-тесты).
     public sealed record ApiTlsSetup(X509Certificate2? ServerCert, string? Source, string? Warning);

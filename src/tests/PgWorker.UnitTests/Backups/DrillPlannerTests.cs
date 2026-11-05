@@ -4,7 +4,7 @@ using PgWorker.Etcd.Parsing;
 
 namespace PgWorker.UnitTests.Backups;
 
-// Чистый отбор кандидата дрилла (reliability, arch/19 §3.6): один шард
+// Чистый отбор кандидата дрилла (reliability, arch/backups/04-drill.md): один шард
 // за проход — наименее свежий; гварды интервала/активного дрилла/cleaning/
 // restore/ToRemove; без I/O.
 public class DrillPlannerTests

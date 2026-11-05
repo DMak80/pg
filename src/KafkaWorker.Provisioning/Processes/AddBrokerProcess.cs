@@ -11,7 +11,7 @@ using KafkaWorker.Provisioning.Kafka;
 namespace KafkaWorker.Provisioning.Processes;
 
 /// <summary>
-/// AddBrokerProcess (arch/16 §5 F): заявка brokers/&lt;b&gt;/state=NOT_INITIALIZED у
+/// AddBrokerProcess (arch/kafkaworker/03-broker-scaling.md §1 F): заявка brokers/&lt;b&gt;/state=NOT_INITIALIZED у
 /// Active-кластера → план (порт; role=broker — кворум НЕ меняется) → контейнер
 /// broker-only → появление в DescribeCluster → RMW endpoints (добавить адрес) →
 /// state=RUNNING. Идемпотентен: RUNNING пропускается, контейнер сверяется по
@@ -113,7 +113,7 @@ public sealed class AddBrokerProcess(
         var missing = pending.Select(b => b.Name).Where(n => !addresses.ContainsKey(n)).ToList();
         if (missing.Count > 0)
         {
-            //  (arch/16 §2.1): добор портов — под глобальным клэймом
+            //  (arch/kafkaworker/01-placement.md §1): добор портов — под глобальным клэймом
             // /kafkaworker/locks/portalloc; сбой — обычный фейл, занят —
             // PortLockBusyException → тик-ретрай.
             var acquired = await portLock.TryAcquireAsync(ct);
@@ -172,7 +172,7 @@ public sealed class AddBrokerProcess(
             }
         }
 
-        // Роль новых брокеров: broker-only, фиксируется навсегда (arch/15 §2).
+        // Роль новых брокеров: broker-only, фиксируется навсегда (arch/kafka-clusters/02-keys.md §1).
         foreach (var broker in pending)
             if (broker.Role is null)
             {

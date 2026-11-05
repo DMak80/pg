@@ -4,7 +4,7 @@ using Xunit;
 
 namespace AdminPanel.IntegrationTests;
 
-// Интеграционные тесты /metrics панели (arch/18 §2.4/§3): scrape-грань
+// Интеграционные тесты /metrics панели (arch/metrics/02-dictionary.md §4/§3): scrape-грань
 // открыта без cookie-авторизации, guard /api/* не затронут подключением метрик.
 [Collection("api")]
 public class MetricsTests

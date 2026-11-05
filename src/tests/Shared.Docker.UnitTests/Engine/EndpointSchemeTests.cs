@@ -4,7 +4,7 @@ using Xunit;
 
 namespace Shared.Docker.UnitTests.Engine;
 
-// Парсинг endpoint-схем Engine API (arch/14 §2.2): unix-сокет, tcp с
+// Парсинг endpoint-схем Engine API (arch/pgworker/01-placement.md §3.1): unix-сокет, tcp с
 // дефолтом 2375, ssh c user@host и дефолтом 22; неизвестная схема — отказ.
 public class EndpointSchemeTests
 {

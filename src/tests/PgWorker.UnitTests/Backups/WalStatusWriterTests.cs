@@ -26,7 +26,7 @@ public class WalStatusWriterTests
         // Arrange / Act
         var json = WalStatusWriter.ToJson(Sample());
 
-        // Assert — поля ключа arch/19 §4, значения каноническими строками
+        // Assert — поля ключа arch/backups/05-etcd-contract.md, значения каноническими строками
         json.Should().Contain("\"state\":\"ACTIVE\"")
             .And.Contain("\"slot\":\"pgw_bkp_c1_shard1\"")
             .And.Contain("\"master_node\":\"shard1a\"")
@@ -53,7 +53,7 @@ public class WalStatusWriterTests
         degradedJson.Should().Contain("\"error\":\"WAL chain gap: expected X\"");
     }
 
-    // AAA: WAL_CHAIN_ERROR пишется как "WAL_CHAIN_ERROR" и читается обратно (контракт arch/19 §4)
+    // AAA: WAL_CHAIN_ERROR пишется как "WAL_CHAIN_ERROR" и читается обратно (контракт arch/backups/05-etcd-contract.md)
     [Fact]
     public void ToJson_StateWalChainError_WritesWalChainError()
     {
@@ -124,7 +124,7 @@ public class WalStatusWriterTests
         gateway.Store["/pgworker/backups/c1/shard1/wal"].Should().Be(WalStatusWriter.ToJson(Sample()));
     }
 
-    // ---: поле gap (RPO-зазор tli-прыжка, arch/19 §4) ----
+    // ---: поле gap (RPO-зазор tli-прыжка, arch/backups/05-etcd-contract.md) ----
 
     // AAA: writer с Gap → JSON содержит gap с границами и tli
     [Fact]
@@ -137,7 +137,7 @@ public class WalStatusWriterTests
         // Act
         var json = WalStatusWriter.ToJson(state);
 
-        // Assert — формат канона arch/19 §4
+        // Assert — формат канона arch/backups/05-etcd-contract.md
         json.Should().Contain(
             "\"gap\":{\"from\":\"000000010000000000000003\"," +
             "\"to\":\"000000020000000000000007\",\"tli\":2}");
@@ -192,7 +192,7 @@ public class WalStatusWriterTests
         read.Value.Gap.Should().BeEquivalentTo(state.Gap);
     }
 
-    // ---: поле agents (супервиз-факты per-node, arch/19 §4, AC7) ----
+    // ---: поле agents (супервиз-факты per-node, arch/backups/05-etcd-contract.md, AC7) ----
 
     // AAA: writer с Agents → JSON содержит agents в канонической форме
     [Fact]
@@ -207,7 +207,7 @@ public class WalStatusWriterTests
         // Act
         var json = WalStatusWriter.ToJson(state);
 
-        // Assert — формат канона arch/19 §4
+        // Assert — формат канона arch/backups/05-etcd-contract.md
         json.Should().Contain("\"agents\":[{\"node\":\"shard1a\",\"state\":\"running\"}," +
             "{\"node\":\"shard1b\",\"state\":\"exited\"}]");
     }

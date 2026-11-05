@@ -8,8 +8,8 @@ namespace PgWorker.Docker.Drivers;
 // Хост plain-режима: имя + endpoint Engine API (tcp://… | unix://…).
 public sealed record HostEndpoint(string Name, string Endpoint);
 
-/// <summary>Наличие данных PG у ноды (Д3, arch/14 R11): Present/Absent — факт
-/// PG_VERSION пробой приёмника ноды (arch/25 №22); Unknown — транспорт
+/// <summary>Наличие данных PG у ноды (Д3, arch/pgworker/README.md R11): Present/Absent — факт
+/// PG_VERSION пробой приёмника ноды (arch/communications/02-channel-registry.md №22); Unknown — транспорт
 /// недоступен (НЕ доказательство утраты).</summary>
 public enum DataPresence { Present, Absent, Unknown }
 
@@ -30,12 +30,12 @@ public interface IClusterDriver
     // mode=host). env/конфиги — из NodeConfigBuilders; существующий объект
     // сверяется по имени и не пересоздаётся. resources — заявка request_*
     // (лимиты NanoCPUs/Memory; request_disk лимита в docker не имеет — игнор).
-    // tuning — рассчитанный per-shard PGTune-вывод (PgtuneInputsFactory, arch/14
+    // tuning — рассчитанный per-shard PGTune-вывод (PgtuneInputsFactory, arch/pgworker/README.md
     // §2.1: пересчёт на каждый EnsureNode-путь, без фиксации в etcd); несётся в
     // SPILO_CONFIGURATION (merge(PGTune ∪ канон)) и doorman-бюджет; null →
     // прежний хардкод-набор (изолированные пути). syncStrict — per-cluster
-    // опция synchronous_mode_strict из config кластера (arch/14 §3).
-    // Секреты через драйвер НЕ проходят (t05, arch/14 §4): их несёт
+    // опция synchronous_mode_strict из config кластера (arch/pgworker/00-etcd-contract.md).
+    // Секреты через драйвер НЕ проходят (t05, arch/pgworker/04-security.md): их несёт
     // NodeBootstrapDelivery (bootstrap-ключ etcd + mTLS-push).
     Task<Result> EnsureNodeAsync(ShardTopology topology, string nodeName, NodeAddress addr,
         EtcdEndpoints etcd, NodeResources? resources,
@@ -49,9 +49,9 @@ public interface IClusterDriver
     // шарда — данные на месте, нода не удаляется). 404/304 = успех.
     Task<Result> StopNodeAsync(string cluster, string shard, string nodeName, CancellationToken ct);
 
-    // Данные ноды (Д3, spec §3.7) — пробой приёмника ноды (arch/25 №22),
+    // Данные ноды (Д3, spec §3.7) — пробой приёмника ноды (arch/communications/02-channel-registry.md №22),
     // шов INodeDataProbe: docker-exec в продукте не применяется.
-    // Docker-инспекция нод усыновления (spec §3.1, arch/14 §5 J AD1; live-Ф7
+    // Docker-инспекция нод усыновления (spec §3.1, arch/pgworker/processes/j-adoption.md J AD1; live-Ф7
     // 2026-09-01): по именам нод вернуть DiscoveredNode (host/object/порты).
     // Контейнеры ЧУЖИХ pgw-кластеров исключаются ДО матчинга — имена нод
     // неуникальны между кластерами одного docker-хоста (pgw-canon-*/pgw-canon10-*
@@ -65,14 +65,14 @@ public interface IClusterDriver
     // Имена объектов нод кластера (pgw-<C>-*): сверка декларации + сироты (D1).
     Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, CancellationToken ct);
 
-    // ── WAL-агенты бэкапов (arch/19 §3) ──
+    // ── WAL-агенты бэкапов (arch/backups/02-wal-archive.md §1) ──
 
     // Санитарный снос legacy wal-контейнеров pgw-backup-wal-<C>-* (+ их
     // -staging-тома): приёмник живёт в контейнере ноды, отдельных
     // контейнеров больше нет; вызов идемпотентен, 404 = успех.
     Task<Result> RemoveBackupAgentsAsync(string cluster, string? shard, CancellationToken ct);
 
-    // Честная running-инспекция нод (arch/14 §5 C): InspectNodesAsync отражает
+    // Честная running-инспекция нод (arch/pgworker/processes/c-node-supervisor.md C): InspectNodesAsync отражает
     // ФАКТ running-процесса, пустой результат = ноды нет. Plain — да; Swarm —
     // нет (инспект — заглушка): ветки надзора, трактующие «нет в инспекте» как
     // смерть процесса (ускорение failover), для таких драйверов выключены.
@@ -86,16 +86,16 @@ public interface IClusterDriver
 }
 
 // Plain-режим: контейнеры на перечисленных хостах, per-host Engine API.
-// advertisedHost (arch/16 advertised-правило): имя, под которым docker-хост
+// advertisedHost (arch/kafkaworker/README.md advertised-правило): имя, под которым docker-хост
 // виден КЛИЕНТАМ записей etcd (portalloc/dsn — панель). Всё, что драйвер
 // отдаёт НАРУЖУ (плановые хосты, busy-кортежи, факты инспекции канонических
 // нод), несёт advertised-имя — единый namespace адресов с записями portalloc;
 // внутренние имена остаются ключами движков. Внешние находки усыновления
 // (object) advertised не получают — их адресация операторская (R9-симметрия).
-// scrapeNetwork (arch/14 §2.1, arch/18 §5.4): имя сети контура мониторинга
+// scrapeNetwork (arch/pgworker/01-placement.md §1, arch/metrics/05-storage.md §4): имя сети контура мониторинга
 // поставки — задано → Ensure-attach канонических нод к ней поверх pgw-net-<C>
 // (скрейп Prometheus по alias:8008); пусто → поведение идентично базе.
-// restCertificates (arch/14 §2.1): кеш серверных сертов REST-эндпоинтов
+// restCertificates (arch/pgworker/01-placement.md §1): кеш серверных сертов REST-эндпоинтов
 // нод (DI-синглтон из per-install CA); null — только изолированные юнит-пути
 // драйвера без BuildSpec (HTTP-режима не существует — BuildSpec fail-fast).
 public sealed class PlainClusterDriver(
@@ -113,9 +113,9 @@ public sealed class PlainClusterDriver(
     // движка LabelKey; читателей label в коде нет, docker-inspect-косметика).
     internal const string LabelKey = "pgworker";
 
-    // Plain: инспект контейнера — факт running-процесса (arch/14 §5 C).
+    // Plain: инспект контейнера — факт running-процесса (arch/pgworker/processes/c-node-supervisor.md C).
     public bool SupportsRunningInspection => true;
-    // Сеть нод — PER-CLUSTER (arch/14 §2.1, как kfw-net-<C> у KafkaWorker):
+    // Сеть нод — PER-CLUSTER (arch/pgworker/01-placement.md §1, как kfw-net-<C> у KafkaWorker):
     // Patroni-репликация по внутренним адресам (alias = имя ноды), без
     // user-defined сети hostname-резолва нет. Единая сеть делала DNS-зону
     // общей для всех кластеров docker-хоста — перекрёстная видимость чужих
@@ -123,7 +123,7 @@ public sealed class PlainClusterDriver(
     // по построению (уникальное имя кластера ⇒ уникальная DNS-зона).
     public const string NodesNetworkPrefix = "pgw-net-";
 
-    // Сеть контура поставки (arch/14 §2.1): задана → ноды/агенты живут в
+    // Сеть контура поставки (arch/pgworker/01-placement.md §1): задана → ноды/агенты живут в
     // ней (pgw-net-<C> не создаётся и не удаляется движком; сеть — владелец
     // поставка).
     private readonly string? contourNetwork = contourNetwork;
@@ -131,7 +131,7 @@ public sealed class PlainClusterDriver(
     // Сеть нод/агентов кластера по режиму: контур или per-cluster pgw-net-<C>.
     private string NodesNet(string cluster) => contourNetwork ?? NetworkName(cluster);
 
-    // Ensure сети (идемпотентность, arch/14 §2.1): 409 already exists — успех
+    // Ensure сети (идемпотентность, arch/pgworker/01-placement.md §1): 409 already exists — успех
     // (сеть контура существует у поставки; реальный движок глотает 409 сам —
     // обёртка страхует контракт для любого движка/фейка).
     private static async Task<Result> EnsureNetAsync(IDockerEngine engine, string name, CancellationToken ct)
@@ -235,7 +235,7 @@ public sealed class PlainClusterDriver(
                     throw inspect.Error!;
                 if (PortsMatchPlan(inspect.Value.Ports, addr))
                 {
-                    // Ensure-инвариант кластерной сети (arch/14 §2.1): нода
+                    // Ensure-инвариант кластерной сети (arch/pgworker/01-placement.md §1): нода
                     // обязана жить в сети кластера (в контур-режиме — сеть
                     // контура, подключение идемпотентно) — контейнер из старой
                     // единой сети (наследие миграции) подключается к ней;
@@ -249,7 +249,7 @@ public sealed class PlainClusterDriver(
                     }
 
                     // Ensure-attach к scrape-сети контура мониторинга (
-                    // arch/14 §2.1/§2.4): идемпотентно по inspect; сети нет на
+                    // arch/pgworker/01-placement.md §1/§2.4): идемпотентно по inspect; сети нет на
                     // хосте — fail-fast с diagnose (владелец сети — поставка).
                     if (scrapeNetwork is { Length: > 0 } && (inspect.Value.Networks ?? []).All(n => n != scrapeNetwork))
                     {
@@ -277,7 +277,7 @@ public sealed class PlainClusterDriver(
             if (!started.IsSuccess)
                 throw started.Error!;
 
-            // Attach новой ноды к scrape-сети контура (arch/14 §2.1):
+            // Attach новой ноды к scrape-сети контура (arch/pgworker/01-placement.md §1):
             // повторный connect docker принимает как no-op (идемпотентность);
             // сети нет (404) — Result.Failed с diagnose, провижининг несёт
             // ошибку в journal/last_error (fail-fast, а не молчаливый пропуск).
@@ -320,7 +320,7 @@ public sealed class PlainClusterDriver(
                     throw volume.Error!;
             }
 
-            // Демонтаж сети кластера (arch/14 §2.1, kfw-паттерн): когда объектов
+            // Демонтаж сети кластера (arch/pgworker/01-placement.md §1, kfw-паттерн): когда объектов
             // кластера (ноды) не осталось, per-cluster сеть удаляется — пул
             // subnet'ов хоста конечен, сирот не копим. WAL-агентов в сети больше
             // нет по построению (: приёмник — внутри контейнера ноды); legacy
@@ -367,12 +367,12 @@ public sealed class PlainClusterDriver(
             {
                 var stopped = await engine.KillContainerAsync(name, ct);
                 if (!stopped.IsSuccess)
-                    throw stopped.Error!; // карантин E3: только kill (spilo, arch/14 §5 D E3), volume/данные на месте
+                    throw stopped.Error!; // карантин E3: только kill (spilo, arch/pgworker/processes/d-bucket-evacuator.md D E3), volume/данные на месте
             }
         });
     }
 
-    // ── WAL-агенты бэкапов (arch/19 §3): те же engine-инстансы, сеть нод ──
+    // ── WAL-агенты бэкапов (arch/backups/02-wal-archive.md §1): те же engine-инстансы, сеть нод ──
 
     // Санитарный снос legacy wal-контейнеров pgw-backup-wal-<C>-* (+ их
     // -staging-тома): приёмник живёт в контейнере ноды, отдельных
@@ -554,7 +554,7 @@ public sealed class PlainClusterDriver(
         if (restCertificates is null)
             throw new ApplicationException(
                 "BuildSpec: RestCertificateCache was not passed to the driver — node REST-TLS material " +
-                "is mandatory (HTTP provisioning mode does not exist, arch/14 §2.1)");
+                "is mandatory (HTTP provisioning mode does not exist, arch/pgworker/01-placement.md §1)");
         var (certPem, keyPem) = restCertificates.GetOrCreate(topology.Cluster, topology.Shard, nodeName);
         var env = new Dictionary<string, string>(
             SpiloEnvBuilder.Build(topology, etcd, syncStrict, nodeName,
@@ -565,7 +565,7 @@ public sealed class PlainClusterDriver(
             ["PGW_NODE_NAME"] = nodeName,
         };
 
-        // Бэкап-цели приёмника WAL (arch/19 §7): per-install константы
+        // Бэкап-цели приёмника WAL (arch/backups/08-secrets.md): per-install константы
         // (bucket/CA https S3), ставятся ДОКЕР-ДРАЙВЕРОМ из Backups-опций
         // воркера (NodeBackupEnv). Bucket пуст — env не ставится: приёмник
         // стоит в waiting_policy с диагностикой до появления env (рестарт
@@ -577,11 +577,11 @@ public sealed class PlainClusterDriver(
                 env["PGW_BACKUP_S3_BUCKET"] = backupEnv.Bucket;
             if (!string.IsNullOrWhiteSpace(backupEnv.CaPem))
                 env["PGW_BACKUP_S3_CA_PEM"] = backupEnv.CaPem;
-            // Staging полного (arch/19 §2/§9): каталог в data-volume
+            // Staging полного (arch/backups/01-full-backup.md/§9): каталог в data-volume
             // ноды; null/пусто → env не ставится — приёмник возьмёт дефолт.
             if (!string.IsNullOrWhiteSpace(backupEnv.StagingDir))
                 env["PGW_BACKUP_STAGING_DIR"] = backupEnv.StagingDir;
-            // Период .partial-доотправки приёмника (arch/19 §3/§9): env по образцу
+            // Период .partial-доотправки приёмника (arch/backups/02-wal-archive.md §1/§9): env по образцу
             // staging; null/≤1 → env не ставится — приёмник берёт дефолт 3 с.
             if (backupEnv.PartialIntervalSec is > 0)
                 env["PGW_WAL_PARTIAL_INTERVAL_SEC"] = backupEnv.PartialIntervalSec.Value.ToString();
@@ -599,10 +599,10 @@ public sealed class PlainClusterDriver(
         env["DOORMAN_CONFIG_TEMPLATE"] = DoormanConfigBuilder.Build(topology.Cluster, serverConnections);
         env["PGW_DOORMAN_PORT"] = addr.Ports.Doorman.ToString();
         // Публичный CA верификации клиентских сертов воркера на mTLS-канале
-        // агента :8081 (arch/13 §2, arch/25 №23) — тот же per-install REST-CA.
+        // агента :8081 (arch/pg-clusters/13-network-security.md §2, arch/communications/02-channel-registry.md №23) — тот же per-install REST-CA.
         env["PGW_AGENT_CLIENT_CA"] = restCertificates.CaPem;
 
-        // HAProxy в топологии нет (arch/14 §2.1): write-вход — прямой
+        // HAProxy в топологии нет (arch/pgworker/01-placement.md §1): write-вход — прямой
         // pg-порт ноды (portalloc, multi-host DSN, P2).
 
         var ports = new List<PortMap>
@@ -653,7 +653,7 @@ public sealed class SwarmClusterDriver(
 
     // Swarm: InspectNodesAsync — заглушка (пустой результат), «нет в инспекте»
     // НЕ свидетельство смерти → inspect-ускорение failover выключено
-    // (arch/14 §5 C, t09-review: иначе любой транспортный флап пробы лидера
+    // (arch/pgworker/processes/c-node-supervisor.md C, t09-review: иначе любой транспортный флап пробы лидера
     // давал ложный failover живого лидера).
     public bool SupportsRunningInspection => false;
 

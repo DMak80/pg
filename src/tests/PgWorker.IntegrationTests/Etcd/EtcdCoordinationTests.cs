@@ -13,7 +13,7 @@ public class EtcdCoordinationTests(EtcdFixture fixture)
 
     private ClaimStore NewClaimStore() => new("/pgworker", [Endpoint], Gateway, TimeProvider.System);
 
-    // Per-class guid-тег (канон docs/e2e-isolation.md §1, инвариант
+    // Per-class guid-тег (канон arch/testing/02-e2e-isolation.md §1, инвариант
     // NonE2eCollection): имена кластеров в клэймах и /clusters/ несут
     // уникальный суффикс — литеральная коллизия с соседними классами
     // коллекции (флейк TryClaim из-за lease-TTL 15с) механически невозможна.

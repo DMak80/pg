@@ -12,7 +12,7 @@ public sealed class EtcdWorkerLoopsVitality(
 {
     public IReadOnlyList<LoopHeartbeat> Snapshot()
     {
-        // Порог сноса — от собственных опций watchdog (arch/14 §6):
+        // Порог сноса — от собственных опций watchdog (arch/pgworker/08-operability.md §3):
         // Multiplier × CheckIntervalSec = 30 c при дефолтах, ЕДИНЫЙ для всех
         // циклов; healthz-порог (LoopStaleness) в формуле не участвует.
         var watchdog = options.CurrentValue.Loops.Watchdog;
@@ -27,7 +27,7 @@ public sealed class EtcdWorkerLoopsVitality(
             new LoopHeartbeat("keepalive", snap.LastKeepaliveTick, staleAfter),
             // snapshot: тик ИЛИ пульс Retry-сна (застрявший тик после первого
             // прохода игнорировал пульс — watchdog сносил цикл в законном
-            // RetryIntervalSec-ожидании при отстающей выгрузке, arch/25 §5/§6)
+            // RetryIntervalSec-ожидании при отстающей выгрузке, arch/etcdworker/00-etcd-contract.md/§6)
             new LoopHeartbeat("snapshot", Latest(snap.LastSnapshotTick, snap.LastSnapshotActivity), staleAfter),
             new LoopHeartbeat("reconcile", snap.LastReconcileActivity ?? snap.LastReconcileTick, staleAfter),
         ];

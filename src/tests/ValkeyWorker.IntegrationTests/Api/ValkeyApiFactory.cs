@@ -64,7 +64,7 @@ public sealed class ValkeyApiCollection : ICollectionFixture<ValkeyApiFixture>
     public const string Name = "valkey-api";
 }
 
-// Гарантированный env WAF-хостов сборки (arch/21 §1.1): in-memory конфиг из
+// Гарантированный env WAF-хостов сборки (arch/valkeyworker/05-api.md §1): in-memory конфиг из
 // ConfigureWebHost применяется при Build(), а fail-fast ConfigureMtls в
 // Program.Main исполняется раньше — env процесса должен быть выставлен до
 // первого CreateClient. ModuleInitializer исполняется до любого кода сборки.

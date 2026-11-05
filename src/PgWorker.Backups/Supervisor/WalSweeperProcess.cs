@@ -11,7 +11,7 @@ using Shared.Metrics.Worker;
 
 namespace PgWorker.Backups.Supervisor;
 
-/// <summary>Фоновая чистка мусора префикса wal/ (arch/19 §4 «wal-sweeper»):
+/// <summary>Фоновая чистка мусора префикса wal/ (arch/backups/05-etcd-contract.md «wal-sweeper»):
 /// ТОЛЬКО глобальный лидер /pgworker/leader; per-shard независимо (отказ/пауза
 /// шарда не останавливает остальные); листинг — соло, первая доступная нода
 /// (инвентарная семантика §5, повторные проходы досматривают лаг mesh).
@@ -22,7 +22,7 @@ namespace PgWorker.Backups.Supervisor;
 /// финалом, устаревшие версии, ниже cutoff). Список на удаление — ОДИН
 /// batch-delete на шард (идемпотентно). Backups:Enabled=false ⇒ no-op.
 /// Наблюдаемость: worker_loop_*{loop="wal-sweeper"} (цикл) + per-shard серия
-/// WalSweepShardUnix (arch/18 §2.2).</summary>
+/// WalSweepShardUnix (arch/metrics/02-dictionary.md §2).</summary>
 public sealed class WalSweeperProcess(
     IEtcdGateway etcd,
     string[] endpoints,
@@ -134,7 +134,7 @@ public sealed class WalSweeperProcess(
 
         // Cutoff = wal_start новейшего verify-OK COMPLETED из ОСТАВЛЯЕМЫХ
         // (SelectKeep — тот же отбор, что у ретенции; кандидат Delete[0] не
-        // якорит — arch/19 §4 п.5). Нет OK-полного ⇒ cutoff null.
+        // якорит — arch/backups/05-etcd-contract.md). Нет OK-полного ⇒ cutoff null.
         WalFileName? cutoff = null;
         WalFileName? oldestKeptStart = null;
         if (shardBackups?.Full is { Count: > 0 } fulls)

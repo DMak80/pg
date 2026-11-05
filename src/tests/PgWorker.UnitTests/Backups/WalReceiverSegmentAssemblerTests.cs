@@ -4,7 +4,7 @@ using Xunit;
 
 namespace PgWorker.UnitTests.Backups;
 
-// Математика сегментов от LSN (arch/19 §3): границы/имена 1:1 с WalFileName,
+// Математика сегментов от LSN (arch/backups/02-wal-archive.md §1): границы/имена 1:1 с WalFileName,
 // отбрасывание неполного головного сегмента, TLI из long page header, разрыв LSN —
 // внутренняя ошибка (протокол физической репликации дыр не даёт).
 public class WalReceiverSegmentAssemblerTests
@@ -170,7 +170,7 @@ public class WalReceiverSegmentAssemblerTests
         PgWorker.Backups.WalFileName.FromLsn(1, "0/FF000000").Name.Should().Be(closed[0].Name);
     }
 
-    // AAA: serverWalEnd последнего куска — позиция записи сервера (arch/18 §2.8,
+    // AAA: serverWalEnd последнего куска — позиция записи сервера (arch/metrics/02-dictionary.md §8,
     // база backlog) — отдаётся наружу свойством сборщика.
     [Fact]
     public void ServerWalEnd_TracksLastChunk()
@@ -211,7 +211,7 @@ public class WalReceiverSegmentAssemblerTests
         second[0].Data[4].Should().Be(2, "the pooled buffer is fully rewritten by the new segment");
     }
 
-    // AAA (снимок префикса, arch/19 §3): нет незакрытого сегмента — снимка нет.
+    // AAA (снимок префикса, arch/backups/02-wal-archive.md §1): нет незакрытого сегмента — снимка нет.
     [Fact]
     public void PartialSnapshot_NoSegment_ReturnsNull()
     {

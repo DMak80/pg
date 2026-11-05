@@ -8,7 +8,7 @@ using Xunit;
 
 namespace S3Worker.UnitTests.Provisioning;
 
-// Rolling-ротация (arch/23 §6, arch/24 §4): заявка нет → no-op; secrets
+// Rolling-ротация (arch/s3-clusters/06-secrets.md, arch/s3worker/04-security.md): заявка нет → no-op; secrets
 // отсутствуют/битые → journal-отказ (invalid-secrets), заявка жива; проигрыш
 // RMW-замены secrets → waiting-secrets (заявка жива, повтор следующим тиком);
 // по одной ноде за тик (wait: неоживлённая держит следующую); все приведены →

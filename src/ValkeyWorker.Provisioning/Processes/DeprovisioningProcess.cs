@@ -5,7 +5,7 @@ using ValkeyWorker.Docker.Drivers;
 namespace ValkeyWorker.Provisioning.Processes;
 
 /// <summary>
-/// Deprovisioning valkey-кластера (arch/21 §5 B, фазы X0–X3): от заявки
+/// Deprovisioning valkey-кластера (arch/valkeyworker/02-cluster-lifecycle.md §3 B, фазы X0–X3): от заявки
 /// TO_REMOVE до чистого etcd и удалённого контейнера. ПОРЯДОК «сначала docker,
 /// потом etcd»: ошибка docker-хоста оставляет etcd-декларацию нетронутой —
 /// следующий тик повторит демонтаж (томов у домена нет; TLS-материал жил в
@@ -31,7 +31,7 @@ public sealed class DeprovisioningProcess(
     {
         var cluster = snap.Cluster;
 
-        // Мутации — только держателем живого клэйма (arch/21 §6).
+        // Мутации — только держателем живого клэйма (arch/valkeyworker/06-operability.md §3).
         var claimed = ProcessCommon.EnsureClaimed(claims, cluster, Op);
         if (!claimed.IsSuccess)
             return claimed;
@@ -85,7 +85,7 @@ public sealed class DeprovisioningProcess(
 
         // X3: снапшот «после» + verify + явное снятие клэйма. Journal-записи
         // после чистки НЕТ: «done» воскресил бы удалённый work/<C> (координация
-        // <C> обязана остаться пустой — arch/21 §5 B).
+        // <C> обязана остаться пустой — arch/valkeyworker/02-cluster-lifecycle.md §3 B).
         if (snapshot is not null)
         {
             var after = await snapshot(ct);

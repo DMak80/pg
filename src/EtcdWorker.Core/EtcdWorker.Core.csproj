@@ -3,7 +3,7 @@
         <ProjectReference Include="..\Shared.Core\Shared.Core.csproj"/>
         <ProjectReference Include="..\Shared.Tls\Shared.Tls.csproj"/>
         <!-- EtcdContourMembers (managed-детект состава) работает над EtcdMember
-             из Shared.Etcd — ссылка обязательна (arch/25 §2). -->
+             из Shared.Etcd — ссылка обязательна (arch/etcdworker/01-placement.md). -->
         <ProjectReference Include="..\Shared.Etcd\Shared.Etcd.csproj"/>
     </ItemGroup>
     <ItemGroup>
@@ -12,7 +12,7 @@
 
     <ItemGroup>
         <!-- Минимальный S3-клиент слепков (осознанное дублирование BackupS3,
-             arch/25 §8): AWSSDK как в PgWorker.Backups (центральные версии). -->
+             arch/etcdworker/06-operability.md §5): AWSSDK как в PgWorker.Backups (центральные версии). -->
         <PackageReference Include="AWSSDK.S3"/>
     </ItemGroup>
 </Project>

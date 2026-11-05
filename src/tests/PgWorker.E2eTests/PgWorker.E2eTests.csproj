@@ -8,8 +8,8 @@
          растягивались сверх бюджетов, те же сценарии соло зелёные;
          xunit.v3 читает конфиг ТОЛЬКО из output — копирование обязательно).
          Каждый E2E-класс — класс-фикстура со СВОИМ окружением
-         (docs/e2e-isolation.md §1) — классы параллельны; факты внутри класса
-         последовательны. Правила соседней нагрузки — docs/e2e-launch.md §5. -->
+         (arch/testing/02-e2e-isolation.md §1) — классы параллельны; факты внутри класса
+         последовательны. Правила соседней нагрузки — arch/testing/01-e2e-launch.md §5. -->
     <ItemGroup>
         <None Update="xunit.runner.json" CopyToOutputDirectory="PreserveNewest"/>
     </ItemGroup>

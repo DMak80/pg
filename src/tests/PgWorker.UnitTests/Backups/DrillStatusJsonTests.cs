@@ -3,11 +3,11 @@ using PgWorker.Etcd.Parsing;
 
 namespace PgWorker.UnitTests.Backups;
 
-// Сериализация статуса дрилла (t02-restore-drill): JSON канона arch/19 §4 —
+// Сериализация статуса дрилла (t02-restore-drill): JSON канона arch/backups/05-etcd-contract.md —
 // ключ /pgworker/backups/<C>/<X>/drill; null-поля не пишутся (по факту).
 public class DrillStatusJsonTests
 {
-    // AAA: сериализация статуса дрилла в формат канона arch/19 §4 —
+    // AAA: сериализация статуса дрилла в формат канона arch/backups/05-etcd-contract.md —
     // обязательные state/id/backup_id/started_unix; null-поля не пишутся.
     [Fact]
     public void Serialize_Running_Minimal_WritesCoreFields()

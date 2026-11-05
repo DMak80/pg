@@ -4,7 +4,7 @@ using PgWorker.Etcd.S3;
 
 namespace PgWorker.PgNode.Operations;
 
-/// <summary>Verify-операция процесса приёмника ноды (arch/19 §5): одна
+/// <summary>Verify-операция процесса приёмника ноды (arch/backups/06-s3-layout.md): одна
 /// активная ops-операция на процесс (общий OpsOperationRegistry; полный —
 /// свой реестр и не мешает). Фаза downloading —
 /// union-лист full/&lt;id&gt;/ по всем endpoints + скачивание 1:1 .NET S3-клиентом
@@ -146,7 +146,7 @@ public sealed class VerifyOperation : IReceiverOperation
         {
             // Операторская отмена (cancel API, внешний канал): снимок
             // state=cancelled — НЕ failed (отмена не суждение о данных,
-            // arch/19 §5); воркер-супервиз вернёт кандидата в PENDING.
+            // arch/backups/06-s3-layout.md); воркер-супервиз вернёт кандидата в PENDING.
             Update(OperationStates.Cancelled, CurrentPhase(), "cancelled by operator");
         }
         catch (Exception e)
@@ -178,7 +178,7 @@ public sealed class VerifyOperation : IReceiverOperation
     }
 
     // Обновление снимка с переносом started_unix TryBegin (возрастной бюджет
-    // verify воркера, arch/19 §6): Update заменяет снимок целиком.
+    // verify воркера, arch/backups/09-operability.md): Update заменяет снимок целиком.
     private void Update(string state, string phase, string? error = null)
         => _registry.Update(new OperationSnapshot(
             _request.BackupId, state, phase,

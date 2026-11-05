@@ -1,6 +1,6 @@
 namespace Metrics.SdGenerator;
 
-// Самонаблюдение генератора (arch/18 §5.2 job sd-generator): gauge
+// Самонаблюдение генератора (arch/metrics/05-storage.md §2 job sd-generator): gauge
 // sd_generator_last_success_timestamp_seconds — unix-время последнего успешного
 // тика (консервативно: обновляется только успехом, пустой префикс = успех).
 // Meter приходит через ctor (канон репо: DI-Meter из AddAppMetrics, паттерн

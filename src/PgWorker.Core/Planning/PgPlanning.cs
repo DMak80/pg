@@ -13,7 +13,7 @@ public static class PgPlanning
     public static string HostOf(NodeAddress a) => a.Host;
 
     /// <summary>Адрес ноды: последовательная тройка слотов диапазона
-    /// (pg / patroni / doorman = base / base+1 / base+2 — arch/14 §2.4 п.2,
+    /// (pg / patroni / doorman = base / base+1 / base+2 — arch/pgworker/01-placement.md §5 п.2,
     /// схема смещений +3000/+1500 упразднена; диапазон параметризуется
     /// средой — прод per-install, E2E — per-contour окно).</summary>
     public static NodeAddress MakeAddress(string host, int basePort)

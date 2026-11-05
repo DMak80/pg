@@ -9,7 +9,7 @@ namespace Shared.Etcd.Coordination;
 // переживает рестарты), не из mod_revision etcd.
 public sealed record TicketRequestAudit(long RequestedUnix, string? RequestedBy);
 
-// Исходы заявок воркеров (arch/15 §4 / arch/20 §3): пишет только воркер,
+// Исходы заявок воркеров (arch/kafka-clusters/04-coordination.md §1 / arch/valkey-clusters/03-coordination.md §1): пишет только воркер,
 // перезаписывается каждым новым исходом, чистится демонтажом X2.
 public static class TicketOutcomes
 {
@@ -63,7 +63,7 @@ public static class TicketOutcomes
         [property: JsonPropertyName("finished_unix")] long FinishedUnix);
 }
 
-// Возрастная экспирация не-начатой заявки (arch/16 §5 / arch/21 §5).
+// Возрастная экспирация не-начатой заявки (arch/kafkaworker/README.md / arch/valkeyworker/README.md).
 // Гвард экспирации (spec §3.1) — тройной предикат «не начато»:
 //  1) заявка жива (ticketPayload != null — за вызывающим);
 //  2) окно ротации не открыто (staging ca_next_* отсутствует — за вызывающим:

@@ -645,7 +645,7 @@ public class PgNodeMachineTests
 
     // (9) apply с изменённой spilo_configuration (rest-пара) → reload Patroni
     // (ApplyRestPairAsync); рестарт Patroni-программы/контейнера для пароля
-    // ЗАПРЕЩЁН (arch/14 §5 I — П11.9).
+    // ЗАПРЕЩЁН (arch/pgworker/processes/i-secret-rotator.md I — П11.9).
     [Fact]
     public async Task Apply_RestPairChanged_ReloadsPatroni()
     {
@@ -855,7 +855,7 @@ public class PgNodeMachineTests
         rig.Supervisor.Commands.Count.Should().Be(commandsAfterFirst);
     }
 
-    // Т7б (MR-#12 + arch/14 §5 I R3): Apply с падающим применением (reload) —
+    // Т7б (MR-#12 + arch/pgworker/processes/i-secret-rotator.md I R3): Apply с падающим применением (reload) —
     // промежуточная публикация со СТАРОЙ ревизией и error-фактом
     // («полуприменённое» не маскируется), затем применитель САМ ретраит
     // (коулдаун-пауза 0) и доводит материал — applied обновлён БЕЗ второго
@@ -898,7 +898,7 @@ public class PgNodeMachineTests
     // Растущий mod_revision ТОГО ЖЕ контента (переписывание ключа тем же
     // материалом) НЕ триггерит re-применение: материалы совпадают с
     // применёнными — ревизия догоняется фиксацией БЕЗ рестартов/reload
-    // (arch/14 §5 I R3: переписывание тем же контентом не снимает/не будит).
+    // (arch/pgworker/processes/i-secret-rotator.md I R3: переписывание тем же контентом не снимает/не будит).
     [Fact]
     public async Task Apply_SameContentRewrite_FixesRevisionWithoutRestarts()
     {
@@ -927,7 +927,7 @@ public class PgNodeMachineTests
         rig.PatroniApply.ReloadCalls.Should().Be(reloadsBefore, "no reload on same content");
     }
 
-    // Материальный гейт анти-дребезга (arch/14 §5 I R3): материал НЕДАВНО
+    // Материальный гейт анти-дребезга (arch/pgworker/processes/i-secret-rotator.md I R3): материал НЕДАВНО
     // падал — пин при РАСТУЩЕЙ ревизии того же контента держится коулдауном:
     // ok-пинок, применитель не запускается, команд нет.
     [Fact]

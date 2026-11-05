@@ -1,4 +1,4 @@
-// Табличные тесты классификации managed/external (arch/25 §3.1): каноническая
+// Табличные тесты классификации managed/external (arch/etcdworker/02-membership.md): каноническая
 // peer-URL-константа http://etcdw-node-<k>:2380 против отклонений формы.
 // AAA — на каждый кейс: Arrange (member) → Act (isManagedMember) → Assert.
 import { describe, expect, it } from 'vitest';

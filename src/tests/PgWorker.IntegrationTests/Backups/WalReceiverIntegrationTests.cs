@@ -182,7 +182,7 @@ public class WalReceiverIntegrationTests
                 });
 
             // Assert — доставлены ≥2 ФИНАЛЬНЫХ сегмента, цепочка непрерывна;
-            // `.partial`-версии живого сегмента — штатные объекты (arch/19 §3).
+            // `.partial`-версии живого сегмента — штатные объекты (arch/backups/02-wal-archive.md §1).
             var (minName, names) = await ListSegmentsAsync(s3, cluster, shard, ct);
             minName.Should().NotBeNull("the chain is anchored by the first full segment");
             FinalCount(names).Should().BeGreaterThanOrEqualTo(2,

@@ -21,7 +21,7 @@ public sealed class E2eScenarios(E2eScenariosFx Ctx, ITestOutputHelper output) :
 
     private EtcdGateway G => Fx.Gateway;
 
-    // Уникальные имена кластеров на прогон ({slug}{тег прогона}, docs/e2e-isolation.md
+    // Уникальные имена кластеров на прогон ({slug}{тег прогона}, arch/testing/02-e2e-isolation.md
     // §1): движковые контейнеры/тома pgw-<C>-* опознаются teardown'ом окружения
     // по своему тегу (OwnName) и снимаются им; константные имена запрещены.
     private string Cluster => $"shop{Fx.ClusterTag}";
@@ -41,7 +41,7 @@ public sealed class E2eScenarios(E2eScenariosFx Ctx, ITestOutputHelper output) :
         }
         catch
         {
-            // docs/e2e-launch.md §3: упавший сценарий — окружение ОСТАНОВИТЬ,
+            // arch/testing/01-e2e-launch.md §3: упавший сценарий — окружение ОСТАНОВИТЬ,
             // не удалить (телеметрия в артефактах + живые объекты для разбора).
             Fx.MarkFailed();
             throw;
@@ -60,7 +60,7 @@ public sealed class E2eScenarios(E2eScenariosFx Ctx, ITestOutputHelper output) :
 
         await AssertProvisioningResultAsync(Cluster, ct);
 
-        // Клиентский вход — только через пулер (arch/14 §8): SQL через
+        // Клиентский вход — только через пулер (arch/pgworker/08-operability.md §5): SQL через
         // опубликованный doorman-порт мастера шарда.
         await AssertDoormanClientEntryAsync(Cluster, "shard1", ct);
 
@@ -209,7 +209,7 @@ public sealed class E2eScenarios(E2eScenariosFx Ctx, ITestOutputHelper output) :
             .Select(m => m.Groups[1].Value)
             .ToList();
         // IPv4/IPv6-байндинги дублируют каждую пару — уникальных должно быть 12
-        // (тройка портов ноды всегда: пулер обязателен, arch/14 §8).
+        // (тройка портов ноды всегда: пулер обязателен, arch/pgworker/08-operability.md §5).
         published.Distinct().Should().HaveCount(12,
             "3 publish ports (pg+patroni+doorman) per node across 4 nodes, all host ports are unique");
 
@@ -283,7 +283,7 @@ public sealed class E2eScenarios(E2eScenariosFx Ctx, ITestOutputHelper output) :
         //  (гейт против stale-RUNNING): фиксируем ревизию ключа state ноды
         // ДО stop. После docker stop супервизор пишет ключ строго в порядке
         // UNREACHABLE → REBUILDING → RUNNING (NodeSupervisor.SuperviseShardAsync,
-        // arch/14 §5 C): каждая запись — PutAsync и растит ModRevision, а
+        // arch/pgworker/processes/c-node-supervisor.md C): каждая запись — PutAsync и растит ModRevision, а
         // RUNNING живого пути пишется только нодам, живым пробой. До-стоповое
         // RUNNING (с provisioning-времени) имеет ревизию <= revAtStop — гейт
         // фазы ac5-rebuild ниже отсекает его безусловно, не полагаясь на
@@ -300,7 +300,7 @@ public sealed class E2eScenarios(E2eScenariosFx Ctx, ITestOutputHelper output) :
         stopSw.Stop();
         output.WriteLine($"[PHASE] ac5-docker-stop: elapsed={stopSw.Elapsed.TotalSeconds:F1}s");
 
-        // Смена лидера (выборы Patroni): бюджет ≤5с (arch/14 §5 C —
+        // Смена лидера (выборы Patroni): бюджет ≤5с (arch/pgworker/processes/c-node-supervisor.md C —
         // критическое требование: ускорение failover воркером — не-running
         // контейнер лидера → снятие лидер-лока — + промоушен в пределах
         // loop_wait). T0 жёсткого ассерта — момент СМЕРТИ лидера (завершение
@@ -356,7 +356,7 @@ public sealed class E2eScenarios(E2eScenariosFx Ctx, ITestOutputHelper output) :
         // перезаписывают RUNNING), а новая запись RUNNING с ревизией выше
         // возможна только после реального цикла восстановления: порядок
         // записей строго UNREACHABLE → REBUILDING → RUNNING, RUNNING пишется
-        // только живым пробой нодам (NodeSupervisor, arch/14 §5 C). Без гейта
+        // только живым пробой нодам (NodeSupervisor, arch/pgworker/processes/c-node-supervisor.md C). Без гейта
         // фаза мгновенно истинна на stale-ключе (рейс /) и одиночный
         // inspect ниже падает на исходном остановленном контейнере.
         var rebuilt = await E2ePhase.WaitAsync(Fx, "ac5-rebuild", async () =>
@@ -477,7 +477,7 @@ public sealed class E2eScenarios(E2eScenariosFx Ctx, ITestOutputHelper output) :
                             .Select(async n => $"{n}={await ContainerStatusAsync(n, ct)}")))}");
         }
 
-        // После P7 (журнал QUARANTINED пишется ДО docker-стопов, arch/14 §5 D)
+        // После P7 (журнал QUARANTINED пишется ДО docker-стопов, arch/pgworker/processes/d-bucket-evacuator.md D)
         // факт QUARANTINED не означает завершения стопов: ждём exited нод —
         // ассерты ниже валидны только после фактической остановки (устранение
         // тестовой гонки; существа сценария не меняет: exited требовался и раньше).
@@ -601,7 +601,7 @@ public sealed class E2eScenarios(E2eScenariosFx Ctx, ITestOutputHelper output) :
     // Master-ключ шарда → адрес ноды из portalloc (host:doorman → шард/нода).
     private sealed record MasterAddr(string Node, string Host, int Pg, int Doorman);
 
-    // Пробы Patroni из теста (семантика /primary, arch/14 §5 C).
+    // Пробы Patroni из теста (семантика /primary, arch/pgworker/processes/c-node-supervisor.md C).
     // Patroni REST нод — https (цепочка к per-contour CA, без hostname)
     private HttpClient PatroniHttp => Fx.NewPatroniHttpClient();
 
@@ -630,7 +630,7 @@ public sealed class E2eScenarios(E2eScenariosFx Ctx, ITestOutputHelper output) :
         return null;
     }
 
-    // Клиентский вход — ТОЛЬКО через пулер :6432 (arch/14 §8): SELECT 1
+    // Клиентский вход — ТОЛЬКО через пулер :6432 (arch/pgworker/08-operability.md §5): SELECT 1
     // app-ролью per-cluster секрета по опубликованному doorman-порту мастера;
     // TLS require без верификации цепочки (P17); допуск — per-pool auth_query
     // (SCRAM по verifier'у из pg_shadow, к бэкенду — переиспользование
@@ -738,7 +738,7 @@ public sealed class E2eScenarios(E2eScenariosFx Ctx, ITestOutputHelper output) :
 }
 
 /// <summary>Компаньон-фикстура окружения класса (полный контур на класс:
-/// сеть/etcd/CA/окно портов; docs/e2e-isolation.md §1).</summary>
+/// сеть/etcd/CA/окно портов; arch/testing/02-e2e-isolation.md §1).</summary>
 public sealed class E2eScenariosFx : E2eContourFixture
 {
     protected override string Slug => "ac2-ac7";

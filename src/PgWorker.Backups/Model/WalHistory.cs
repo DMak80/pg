@@ -5,7 +5,7 @@ namespace PgWorker.Backups;
 /// <summary>Строка timeline-history: родитель и точка переключения (LSN «X/Y»).</summary>
 public sealed record WalHistoryEntry(uint ParentTli, string SwitchLsn);
 
-/// <summary>Строгий парсер <c>.history</c> (arch/19 §3): строки
+/// <summary>Строгий парсер <c>.history</c> (arch/backups/02-wal-archive.md §1): строки
 /// «parentTLI switchWALLSN [reason]» (tab-разделение, как пишет PostgreSQL);
 /// последняя запись файла &lt;newTLI&gt;.history описывает сам newTLI — ответвление
 /// от parentTLI в switchWALLSN. Мусорные строки пропускаются; ни одной

@@ -1,12 +1,12 @@
 namespace KafkaWorker.Core.Model;
 
-// Доменная модель контроль-плейна /kafka/clusters/<C>/ (arch/15 §2–3).
+// Доменная модель контроль-плейна /kafka/clusters/<C>/ (arch/kafka-clusters/02-keys.md §1–3).
 // Immutable records; state-значения — строки (толерантность к новым значениям,
-// arch/15 §6): парсер не знает enum'ов состояний.
+// arch/kafka-clusters/06-fault-tolerance.md): парсер не знает enum'ов состояний.
 
 /// <summary>
 /// Заявка-конфиг кластера (ключ config): B/R/M/P/X + created_unix;
-/// State — только у невыполненных заявок (null = Active, arch/15 §2.1).
+/// State — только у невыполненных заявок (null = Active, arch/kafka-clusters/02-keys.md §2).
 /// </summary>
 public sealed record KafkaClusterConfig(
     int Brokers,
@@ -23,7 +23,7 @@ public sealed record BrokerResources(decimal Cpu, int MemGi, int DiskGi);
 /// <summary>Декларация брокера: state-строка + роль (controller|broker) + ресурсы.</summary>
 public sealed record KafkaBrokerDecl(string Name, string? State, string? Role, BrokerResources? Resources);
 
-/// <summary>Desired-заявка конфигов топика (управляемые поля, arch/15 §3).</summary>
+/// <summary>Desired-заявка конфигов топика (управляемые поля, arch/kafka-clusters/03-topics.md §1).</summary>
 public sealed record TopicDesired(
     int? Partitions,
     IReadOnlyDictionary<string, string>? Configs);
@@ -44,7 +44,7 @@ public sealed record KafkaTopicReg(
     long? SyncedUnix,
     bool Missing);
 
-/// <summary>Операции lifecycle-заявки топика (arch/15 §3.1).</summary>
+/// <summary>Операции lifecycle-заявки топика (arch/kafka-clusters/03-topics.md §2).</summary>
 public static class TopicLifecycleOps
 {
     public const string Create = "create";
@@ -53,7 +53,7 @@ public static class TopicLifecycleOps
 
 /// <summary>
 /// Lifecycle-заявка топика (leaf-ключ topics/&lt;T&gt;/desired.create|delete,
-/// arch/15 §3.1): create — параметры создания (configs — начальные, управляемые),
+/// arch/kafka-clusters/03-topics.md §2): create — параметры создания (configs — начальные, управляемые),
 /// delete — только аудит. RequestedUnix обязателен (панель пишет аудит всегда;
 /// образец толерантности — KafkaRotationTicket панели).
 /// </summary>
@@ -68,9 +68,9 @@ public sealed record TopicLifecycleTicket(
 
 /// <summary>
 /// Снимок кластера после разбора префикса: config + брокеры + топики;
-/// Endpoints/AppUser/AppPassword — дискавери-поля (arch/15 §2/§5), читаются
+/// Endpoints/AppUser/AppPassword — дискавери-поля (arch/kafka-clusters/02-keys.md §1/§5), читаются
 /// процессами для AdminClient-доступа и RMW endpoints. Поля безопасности 
-/// (arch/15 §2): AdminUser/AdminPassword/CaPem/CaKey; null — премиграционный
+/// (arch/kafka-clusters/02-keys.md §1): AdminUser/AdminPassword/CaPem/CaKey; null — премиграционный
 /// кластер, мигрирует M (SecurityMigrator).
 /// </summary>
 public sealed record KafkaClusterSnapshot(

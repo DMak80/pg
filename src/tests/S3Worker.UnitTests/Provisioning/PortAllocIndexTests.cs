@@ -5,7 +5,7 @@ using Xunit;
 
 namespace S3Worker.UnitTests.Provisioning;
 
-// Индекс занятости portalloc (arch/23 §8): union чужих записей (поле "s3");
+// Индекс занятости portalloc (arch/s3-clusters/08-coordination.md): union чужих записей (поле "s3");
 // битый JSON соседа — игнор с логом, не ошибка тика.
 public class PortAllocIndexTests
 {

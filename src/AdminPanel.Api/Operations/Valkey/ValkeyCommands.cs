@@ -4,7 +4,7 @@ using Shared.Core.DI;
 
 namespace AdminPanel.Api.Operations.Valkey;
 
-// ===== Valkey-мутации — прокси в API ValkeyWorker (arch/02 §11.2, arch/21 §1.1):
+// ===== Valkey-мутации — прокси в API ValkeyWorker (arch/02 §11.2, arch/valkeyworker/05-api.md §1):
 // панель не пишет в etcd; воркер валидирует и пишет. Оператор (requestedBy) —
 // только rotate (заявка с аудитом) — заголовком X-Requested-By. =====
 

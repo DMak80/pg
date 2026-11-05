@@ -2,9 +2,9 @@ using PgWorker.App;
 
 namespace PgWorker.UnitTests.App;
 
-// Каркас конфигурации бэкапов (arch/19 §9): default выключен и валиден,
+// Каркас конфигурации бэкапов (arch/backups/09-operability.md §1): default выключен и валиден,
 // включение требует полный S3-комплект — fail-fast старта (образец TLS
-// arch/14 §2.2.1). Процессной логики в нет — только options.
+// arch/pgworker/01-placement.md §4). Процессной логики в нет — только options.
 public class BackupsOptionsTests
 {
     [Fact]
@@ -32,7 +32,7 @@ public class BackupsOptionsTests
     public void Enabled_CompleteS3_Valid()
     {
         // Arrange — включённая подсистема: из per-install констант — Bucket
-        // (креды пула — per-cluster secrets etcd, arch/19 §7).
+        // (креды пула — per-cluster secrets etcd, arch/backups/08-secrets.md).
         var options = new BackupsOptions
         {
             Enabled = true,
@@ -46,7 +46,7 @@ public class BackupsOptionsTests
         options.IsValid().Should().BeTrue();
     }
 
-    // arch/19 §7: конфиг-креды (Endpoint/AccessKey/SecretKey) больше НЕ
+    // arch/backups/08-secrets.md: конфиг-креды (Endpoint/AccessKey/SecretKey) больше НЕ
     // влияют на валидность — креды пула читаются из /s3/clusters/<C>/secrets;
     // достаточно Bucket.
     [Fact]
@@ -66,7 +66,7 @@ public class BackupsOptionsTests
     [Fact]
     public void Defaults_JobRetry_CanonValues()
     {
-        // Arrange / Act — дефолты (arch/19 §9): бэкофф 300/3600.
+        // Arrange / Act — дефолты (arch/backups/09-operability.md §1): бэкофф 300/3600.
         var options = new BackupsOptions();
 
         // Assert
@@ -152,7 +152,7 @@ public class BackupsOptionsTests
         runtime.WalStaleSec.Should().Be(300);
     }
 
-    // AAA: CaBundlePath прокидывается в runtime (arch/19 §7) — null по умолчанию
+    // AAA: CaBundlePath прокидывается в runtime (arch/backups/08-secrets.md) — null по умолчанию
     [Fact]
     public void ToRuntime_Carries_CaBundlePath()
     {
@@ -229,7 +229,7 @@ public class BackupsOptionsTests
         // Arrange — дефолтная секция (appsettings без ретенции/квоты).
         var options = new BackupsOptions();
 
-        // Act / Assert — дефолты (arch/19 §9) валидны и соответствуют канону.
+        // Act / Assert — дефолты (arch/backups/09-operability.md §1) валидны и соответствуют канону.
         options.IsValid().Should().BeTrue();
         options.Retention.IntervalSec.Should().Be(600);
         options.Retention.KeepFailed.Should().Be(20);
@@ -312,7 +312,7 @@ public class BackupsOptionsTests
         options.IsValid().Should().BeTrue("OrphanTtlSec=0 — alert-only mode, the config is valid");
     }
 
-    // AAA: дефолты каноничны (arch/19 §9) и ToRuntime их проксирует
+    // AAA: дефолты каноничны (arch/backups/09-operability.md §1) и ToRuntime их проксирует
     [Fact]
     public void Supervisor_AndBudgets_Defaults_Canonical()
     {
@@ -335,7 +335,7 @@ public class BackupsOptionsTests
         runtime.JobRestoreTimeoutSec.Should().Be(86400);
     }
 
-    // ---- reliability : дрилл восстановимости (arch/19 §9) ----
+    // ---- reliability : дрилл восстановимости (arch/backups/09-operability.md §1) ----
 
     // AAA: Drill-секция склеивается в runtime (дефолты 1/21600)
     [Fact]
@@ -347,7 +347,7 @@ public class BackupsOptionsTests
         // Act
         var runtime = options.ToRuntime();
 
-        // Assert — дефолты канона arch/19 §9.
+        // Assert — дефолты канона arch/backups/README.md §9.
         options.Drill.IntervalDays.Should().Be(1);
         options.Drill.TimeoutSec.Should().Be(21600);
         runtime.DrillIntervalDays.Should().Be(1);
@@ -385,7 +385,7 @@ public class BackupsOptionsTests
         options.ToRuntime().DrillIntervalDays.Should().Be(0);
     }
 
-    // ---- Wal:PartialIntervalSec — период .partial-доотправки (arch/19 §9) ----
+    // ---- Wal:PartialIntervalSec — период .partial-доотправки (arch/backups/09-operability.md §1) ----
 
     // AAA: дефолт 3 (канон §9), значение <1 — fail-fast; ToRuntime проксирует.
     [Fact]
@@ -401,7 +401,7 @@ public class BackupsOptionsTests
 
         // Assert — дефолт канона 3, <1 невалиден, 3 валиден и доезжает до runtime
         defaultSec.Should().Be(3);
-        zeroValid.Should().BeFalse("PartialIntervalSec < 1 is garbage config (arch/19 §9)");
+        zeroValid.Should().BeFalse("PartialIntervalSec < 1 is garbage config (arch/backups/09-operability.md §1)");
         options.IsValid().Should().BeTrue();
         options.ToRuntime().WalPartialIntervalSec.Should().Be(3);
     }

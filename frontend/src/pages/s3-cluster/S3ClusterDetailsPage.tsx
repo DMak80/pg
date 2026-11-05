@@ -146,7 +146,7 @@ export function S3ClusterDetailsPage() {
             content: (
               <Stack gap="md">
                 <WorkJournalBlock work={c.work} />
-                {/* Креды клиентской грани (arch/23 §2): состав без значений */}
+                {/* Креды клиентской грани (arch/s3-clusters/02-keys.md §1): состав без значений */}
                 <Card withBorder padding="md" radius="md">
                   <Group justify="space-between" mb="xs">
                     <Text size="sm" fw={500}>Креды клиентской грани</Text>

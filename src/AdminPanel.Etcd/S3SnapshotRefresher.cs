@@ -14,7 +14,7 @@ namespace AdminPanel.Etcd;
 // /workers/api_tls/s3worker на активном endpoint (sticky + failover, опции
 // общие с pg-циклом EtcdOptions). Транспортный провал любого чтения роняет тик:
 // прежние данные, EtcdReachable=false, счётчик отказов. Применение только
-// изменений — arch/02 §12/§5 (arch/17 S10): прочитанное идентично кэшу
+// изменений — arch/02 §12/§5 (arch/synchronization/05-delta-application.md §S10): прочитанное идентично кэшу
 // последнего успешно прочитанного состояния → тик без изменений: пересборки и
 // алертного пересчёта нет, обновляются свежая доступностная часть и штамп
 // свежести; тики не классифицируются (E11) — гейт только по дельте состояния.
@@ -32,7 +32,7 @@ public sealed class S3SnapshotRefresher(
     private string? _activeEndpoint;
     private bool _endpointsWarned;
 
-    // Кэш последнего успешно прочитанного состояния (arch/02 §12, arch/17 S10):
+    // Кэш последнего успешно прочитанного состояния (arch/02 §12, arch/synchronization/05-delta-application.md §S10):
     // тик сравнивает прочитанное с ним и пересобирает снапшот только при
     // фактическом изменении. Обновляется только на пересборке — отказной и
     // тик без изменений кэш не меняют (по построению кэш хранит успешно прочитанное).
@@ -90,7 +90,7 @@ public sealed class S3SnapshotRefresher(
         var rotationsTask = RangeWithFailoverAsync(endpoints, active, Prefixes.Rotations, ct);
         var workerApiTask = RangeWithFailoverAsync(endpoints, active, Prefixes.WorkerApi, ct);
         var certTask = RangeWithFailoverAsync(endpoints, active, Prefixes.WorkerApiCert, ct);
-        // u13/u14: work-журналы и координация s3-домена (arch/23 §8).
+        // u13/u14: work-журналы и координация s3-домена (arch/s3-clusters/08-coordination.md).
         var workTask = RangeWithFailoverAsync(endpoints, active, Prefixes.Work, ct);
         var leaderTask = RangeWithFailoverAsync(endpoints, active, Prefixes.Leader, ct);
         var claimsTask = RangeWithFailoverAsync(endpoints, active, Prefixes.Claims, ct);
@@ -109,7 +109,7 @@ public sealed class S3SnapshotRefresher(
 
         _activeEndpoint = active;
 
-        // Прочитанное тика — вход сравнения с кэшем (arch/02 §12, arch/17 S10):
+        // Прочитанное тика — вход сравнения с кэшем (arch/02 §12, arch/synchronization/05-delta-application.md §S10):
         // списки KV всех наблюдаемых префиксов (Kv — record: ключ/значение/
         // mod_revision); member list/alarm/статусы endpoints домен не читает.
         (string Prefix, IReadOnlyList<Kv> Items)[] reads =
@@ -124,7 +124,7 @@ public sealed class S3SnapshotRefresher(
             (Prefixes.Instances, instancesKv.Value),
         ];
 
-        // arch/02 §12/§5 (arch/17 S10): прочитанное идентично кэшу (последнему
+        // arch/02 §12/§5 (arch/synchronization/05-delta-application.md §S10): прочитанное идентично кэшу (последнему
         // успешно прочитанному состоянию из etcd) — тик без изменений: снапшот не
         // пересобирается, алертный пересчёт не выполняется; обновляются свежая
         // доступностная часть (телеметрия доступности не замерзает) и штамп
@@ -182,11 +182,11 @@ public sealed class S3SnapshotRefresher(
     }
 
     // Кэш последнего успешно прочитанного состояния: обновляется только на
-    // пересборке — отказной и тик без изменений кэш не меняют (arch/02 §12, arch/17 S10).
+    // пересборке — отказной и тик без изменений кэш не меняют (arch/02 §12, arch/synchronization/05-delta-application.md §S10).
     private void RememberTick((string Prefix, IReadOnlyList<Kv> Items)[] reads)
         => _lastRead = reads;
 
-    // Сравнение прочитанного тика с кэшем (arch/02 §12, arch/17 S10): списки
+    // Сравнение прочитанного тика с кэшем (arch/02 §12, arch/synchronization/05-delta-application.md §S10): списки
     // KV наблюдаемых префиксов по значению. Кэш хранит последнее успешно
     // прочитанное состояние: обновляется только на пересборке, отказной тик
     // его не меняет по построению; тики не классифицируются (E11) — ветвление
@@ -245,7 +245,7 @@ public sealed class S3SnapshotRefresher(
         public const string Rotations = "/s3worker/rotations/";
         public const string WorkerApi = "/s3worker/api/";
         public const string WorkerApiCert = "/workers/api_tls/s3worker";
-        // u13/u14 (arch/23 §8, adminpanel/02 §2.3.4).
+        // u13/u14 (arch/s3-clusters/08-coordination.md, adminpanel/02 §2.3.4).
         public const string Work = "/s3worker/work/";
         public const string Leader = "/s3worker/leader";
         public const string Claims = "/s3worker/claims/";

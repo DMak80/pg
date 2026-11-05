@@ -2,12 +2,12 @@ using EtcdWorker.Docker.Drivers;
 
 namespace EtcdWorker.Provisioning;
 
-/// <summary>Провижининг managed-узла etcd (arch/25 §3.1): сеть контура →
+/// <summary>Провижининг managed-узла etcd (arch/etcdworker/02-membership.md): сеть контура →
 /// контейнер/сервис драйвером (volume идемпотентно, host-публикация только
 /// client-порта) → health-поллинг клиентской грани (хост размещения
 /// portalloc, см. ProbeHost) до бюджета NodeBootSec с прогресс-отметками
 /// итераций (ILoopProgress — watchdog не сносит reconcile в законном
-/// ожидании загрузки, arch/25 §6). Идемпотентен: каждый шаг перепроверяет
+/// ожидании загрузки, arch/etcdworker/06-operability.md §3). Идемпотентен: каждый шаг перепроверяет
 /// факт (Ensure* драйвера — no-op при наличии).</summary>
 public sealed class EtcdNodeProvisioner(
     IEtcdNodeDriver driver,
@@ -33,7 +33,7 @@ public sealed class EtcdNodeProvisioner(
         while (DateTimeOffset.UtcNow < deadline)
         {
             var status = await etcd.StatusAsync(probeEndpoint, ct);
-            progress?.Mark(); // heartbeat: исполненная итерация health-ожидания (arch/25 §6)
+            progress?.Mark(); // heartbeat: исполненная итерация health-ожидания (arch/etcdworker/06-operability.md §3)
             if (status.IsSuccess)
                 return Result.Success();
             last = Result.Failed(status.Error!);
@@ -45,7 +45,7 @@ public sealed class EtcdNodeProvisioner(
     }
 
     // Хост пробы клиентской грани — host размещения узла из portalloc
-    // (arch/25 §3.2; мультихост-канон: проба адресует хост размещения, а не
+    // (arch/etcdworker/03-node-supervision.md; мультихост-канон: проба адресует хост размещения, а не
     // окружение самого воркера). Пустой хост и стендовое имя "local" —
     // локальный docker-демон → localhost.
     private static string ProbeHost(string? portAllocHost)

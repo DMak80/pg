@@ -1,10 +1,10 @@
 namespace PgWorker.PgNode.Operations;
 
-/// <summary>IMMUTABLE-снимок статуса операции бэкапов (arch/19 §2, spec §3.2):
+/// <summary>IMMUTABLE-снимок статуса операции бэкапов (arch/backups/01-full-backup.md, spec §3.2):
 /// публикация — атомарная замена ссылки (паттерн LiveFacts); поля — контракт
 /// GET-статусов (snake_case имена в JSON). Error — однострочная причина
 /// (JSON-безопасность). Маркер транзиента скачивания — пара State=failed +
-/// Phase=downloading (arch/19 §5); failed с phase verifying/recovering —
+/// Phase=downloading (arch/backups/06-s3-layout.md); failed с phase verifying/recovering —
 /// permanent. StartedUnix — unix-время TryBegin (возрастной бюджет verify
 /// воркера §6: docker-инспектов больше нет).</summary>
 public sealed record OperationSnapshot(
@@ -22,7 +22,7 @@ public sealed record OperationSnapshot(
 /// failed; у полного дополнительно uploading (фаза фиксации); у ops-операций
 /// (verify/restore/drill) дополнительно cancelled — операторская отмена
 /// (cancel API, внешний канал): НЕ failed — отмена не суждение о данных
-/// (arch/19 §3.5/§5); снимок персистентен — воркер-супервиз отличает отмену
+/// (arch/backups/03-restore.md/§5); снимок персистентен — воркер-супервиз отличает отмену
 /// от vanished (404).</summary>
 public static class OperationStates
 {

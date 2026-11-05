@@ -12,7 +12,7 @@ public sealed record RotateClusterSecretsCommand(string Cluster, string Requeste
 
 public sealed record ClusterSecretsRotatedDto(string Cluster, long RequestedUnix, string RequestedBy);
 
-// Прокси: панель не пишет в etcd — команда уходит в API PgWorker (arch/14 §1.1);
+// Прокси: панель не пишет в etcd — команда уходит в API PgWorker (arch/pgworker/07-api.md §1);
 // requestedBy передаётся заголовком X-Requested-By — воркер пишет его в
 // requested_by заявки (значения etcd не меняются, spec §3.7).
 [InjectAsScoped]

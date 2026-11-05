@@ -6,7 +6,7 @@ using Shared.Etcd.Client;
 namespace KafkaWorker.Provisioning.Processes;
 
 /// <summary>
-/// Per-cluster секреты безопасности (arch/15 §2): креды ролей
+/// Per-cluster секреты безопасности (arch/kafka-clusters/02-keys.md §1): креды ролей
 /// app (приложения, ACL) и admin (воркер/панель/CLI) + per-cluster PKI
 /// (публичный серт CA и приватный ключ CA, PEM одной строкой).
 /// </summary>
@@ -19,7 +19,7 @@ public sealed record ClusterSecrets(
     string CaKey);
 
 /// <summary>
-/// Ensure per-cluster секретов кластера (arch/16 §4): чтение
+/// Ensure per-cluster секретов кластера (arch/kafkaworker/04-security.md §3): чтение
 /// /kafka/clusters/&lt;C&gt;/{app_user,app_password,admin_user,admin_password,ca_pem,ca_key};
 /// отсутствующие ключи генерируются и кладутся ОДНОЙ txn put-if-absent
 /// (compare NotExists только на отсутствующие). Проигрыш txn (гонка/re-run)
@@ -94,7 +94,7 @@ public sealed class ClusterSecretEnsurer(IEtcdGateway etcd, string[] endpoints) 
 
     // Ключи/значения отсутствующих: пароли — генератор 32 симв [A-Za-z0-9],
     // CA — per-cluster self-signed (архив/16 §2.3), пользователи — канон
-    // arch/15 §2 ("app"/"admin").
+    // arch/kafka-clusters/02-keys.md §1 ("app"/"admin").
     private static IReadOnlyList<(string Key, string Value)> MissingKeys(string cluster, RawSecrets? current)
     {
         var missing = new List<(string Key, string Value)>(6);

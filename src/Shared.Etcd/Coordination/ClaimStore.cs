@@ -21,7 +21,7 @@ public sealed class ClaimStore(string keyPrefix, string[] endpoints, IEtcdGatewa
 
     private readonly object _sync = new();
     private readonly Dictionary<string, long> _clusterLeases = []; // cluster → lease (live)
-    // Cancellation-гварды потери клэйма (arch/17 S5): cluster → токен прерывания
+    // Cancellation-гварды потери клэйма (arch/synchronization/02-predicates-and-mutations.md §S5): cluster → токен прерывания
     // исполняющегося тика. Отменяются при потере lease (keepalive-провал), release
     // и dispose; не диспозятся — CTS без CancelAfter не держит неуправляемых
     // ресурсов, а dispose создал бы риски порядка с держателями токенов.
@@ -133,7 +133,7 @@ public sealed class ClaimStore(string keyPrefix, string[] endpoints, IEtcdGatewa
         }
     }
 
-    // Cancellation-гвард потери клэйма (arch/17 S5): тик кластера линкует свой
+    // Cancellation-гвард потери клэйма (arch/synchronization/02-predicates-and-mutations.md §S5): тик кластера линкует свой
     // токен с этим после захвата — потеря lease прерывает исполняющиеся операции.
     // Клэйма нет → отменённый токен (мутировать нечем).
     public CancellationToken LeaseToken(string cluster)
@@ -158,7 +158,7 @@ public sealed class ClaimStore(string keyPrefix, string[] endpoints, IEtcdGatewa
         }
     }
 
-    // Живая сверка владения клэймом перед критической мутацией (arch/17 S5):
+    // Живая сверка владения клэймом перед критической мутацией (arch/synchronization/02-predicates-and-mutations.md §S5):
     // чтение ключа claims/<C> — наш → true; ключа нет (lease истёк, etcd удалил
     // сам) или чужой → false + потеря фиксируется (гвард отменён); etcd недоступен
     // → Failed — без свежего чтения мутация не начинается (P9).
@@ -274,7 +274,7 @@ public sealed class ClaimStore(string keyPrefix, string[] endpoints, IEtcdGatewa
 
             // lease истёк/отозван: помечаем потерю, ключ под ним etcd уже удалил сам.
             // Гварды собираются под lock, отменяются ВНЕ lock: колбэки linked-токенов
-            // прерывают исполняющиеся тики (arch/17 S5).
+            // прерывают исполняющиеся тики (arch/synchronization/02-predicates-and-mutations.md §S5).
             var lostGuards = new List<CancellationTokenSource>();
             CancellationTokenSource? leaderGuard = null;
             lock (_sync)
@@ -386,7 +386,7 @@ public sealed class ClaimStore(string keyPrefix, string[] endpoints, IEtcdGatewa
                 return; // оба ключа ставятся на одном lease: отказ = ни одного
             }
 
-            // Ключ доступа API (arch/14 §1.1): тем же lease, что instances/<id>, —
+            // Ключ доступа API (arch/pgworker/07-api.md §1): тем же lease, что instances/<id>, —
             // гаснут вместе; панель резолвит URL воркера только по этому ключу.
             if (_advertiseApiUrl is { Length: > 0 } url)
             {
@@ -457,7 +457,7 @@ public sealed class ClaimStore(string keyPrefix, string[] endpoints, IEtcdGatewa
 
     // Отметить потерю клэйма кластера (EnsureClaimAliveAsync: ключ исчез/чужой).
     // Словарь lease чистится (тик перестанет продлевать и признает IsMine=false),
-    // гвард отменяется вне lock — исполняющийся тик прерывается (arch/17 S5).
+    // гвард отменяется вне lock — исполняющийся тик прерывается (arch/synchronization/02-predicates-and-mutations.md §S5).
     private void MarkClusterLost(string cluster)
     {
         CancellationTokenSource? guard;
@@ -470,7 +470,7 @@ public sealed class ClaimStore(string keyPrefix, string[] endpoints, IEtcdGatewa
         guard?.Cancel();
     }
 
-    // Failover по endpoints — единая точка EtcdEndpointFailover (arch/17 S7:
+    // Failover по endpoints — единая точка EtcdEndpointFailover (arch/synchronization/03-fault-tolerance.md §S7:
     // sticky последнего живого + per-attempt бюджет; дубликат цикла запрещён).
     private Task<Result<T>> WithFailoverAsync<T>(Func<string, Task<Result<T>>> call)
         => EtcdEndpointFailover.CallAsync(endpoints, call);
@@ -484,7 +484,7 @@ public sealed class ClaimStore(string keyPrefix, string[] endpoints, IEtcdGatewa
         [property: JsonPropertyName("since_unix")] long SinceUnix,
         [property: JsonPropertyName("phase")] string? Phase);
 
-    // Value ключа <prefix>/api/<id> (arch/14 §1.1): {"url","instance","since_unix",
+    // Value ключа <prefix>/api/<id> (arch/pgworker/07-api.md §1): {"url","instance","since_unix",
     // "cert_thumbprint"?} — thumbprint серта, фактически применённого на грани
     // (etcd-ключ §1.1.1 или env-фоллбек); опционально для читателей.
     // ВАЖНО: PayloadJson.Json НЕ задаёт PropertyNamingPolicy (дефолт PascalCase) —

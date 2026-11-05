@@ -16,7 +16,7 @@ public interface IDockerEngine : IAsyncDisposable
     Task<Result> CreateContainerAsync(ContainerSpec spec, string name, CancellationToken ct);
     Task<Result> StartContainerAsync(string idOrName, CancellationToken ct);
     Task<Result> StopContainerAsync(string idOrName, int timeoutSec, CancellationToken ct);
-    // Жёсткая остановка spilo-нод PgWorker (arch/14 §6/§5 D E3): SIGKILL —
+    // Жёсткая остановка spilo-нод PgWorker (arch/pgworker/08-operability.md §3/§5 D E3): SIGKILL —
     // exited-факт немедленный, поллинг не нужен; 404 = успех (идемпотентность).
     Task<Result> KillContainerAsync(string idOrName, CancellationToken ct);
     Task<Result> RemoveContainerAsync(string idOrName, bool force, CancellationToken ct);
@@ -25,7 +25,7 @@ public interface IDockerEngine : IAsyncDisposable
     Task<Result> DeleteNetworkAsync(string name, CancellationToken ct);
 
     // Подключить работающий контейнер к сети (POST /networks/<net>/connect;
-    // /arch/14 §2.1): ensure-инвариант «нода и её wal-агенты в одной сети
+    // /arch/pgworker/01-placement.md §1): ensure-инвариант «нода и её wal-агенты в одной сети
     // кластера» — лечение ноды с данными, пересоздание которой недопустимо.
     Task<Result> NetworkConnectAsync(string network, string container, CancellationToken ct);
     Task<Result> RemoveVolumeAsync(string name, CancellationToken ct);
@@ -34,7 +34,7 @@ public interface IDockerEngine : IAsyncDisposable
 
     // Листинг имён томов по префиксу (GET /volumes, локальная фильтрация
     // StartsWith — docker-фильтр name подстрочный): сироты X2 — имена инстансов
-    // произвольные, перебор детерминированных имён невозможен (arch/24 §2).
+    // произвольные, перебор детерминированных имён невозможен (arch/s3worker/01-placement.md).
     Task<Result<IReadOnlyList<string>>> ListVolumesAsync(string namePrefix, CancellationToken ct);
     Task<Result> EnsureVolumeAsync(string name, string labelKey, string label, CancellationToken ct);
     Task<Result> DeleteVolumeAsync(string name, CancellationToken ct);
@@ -44,7 +44,7 @@ public interface IDockerEngine : IAsyncDisposable
     Task<Result<IReadOnlyList<string>>> ListServicesAsync(string namePrefix, CancellationToken ct);
 
     // Имена + label'ы сервисов по префиксу (label s3worker=<C> — точность
-    // перечисления объектов кластера, arch/24 §2).
+    // перечисления объектов кластера, arch/s3worker/01-placement.md).
     Task<Result<IReadOnlyList<DockerService>>> ListServiceRecordsAsync(string namePrefix, CancellationToken ct);
     Task<Result<IReadOnlyList<DockerTask>>> ListTasksAsync(string serviceName, CancellationToken ct);
     Task<Result<IReadOnlySet<(string Host, int Port)>>> BusyPortsAsync(CancellationToken ct);
@@ -60,31 +60,31 @@ public interface IDockerEngine : IAsyncDisposable
 
 // Контейнер из /containers/json (Names — с ведущим "/"; Labels — label'ы
 // контейнера, напр. s3worker=<C> — точность перечисления объектов кластера,
-// arch/24 §2; null — ответ без labels, фейк-движки).
+// arch/s3worker/01-placement.md; null — ответ без labels, фейк-движки).
 public sealed record DockerContainer(
     string Id, string[] Names, string State, string Image,
     IReadOnlyDictionary<string, string>? Labels = null);
 
 // Swarm-сервис из /services: имя + label'ы спеки (перечисление объектов
-// кластера по префиксу + label, arch/24 §2).
+// кластера по префиксу + label, arch/s3worker/01-placement.md).
 public sealed record DockerService(string Name, IReadOnlyDictionary<string, string>? Labels);
 
 // Инспект контейнера GET /containers/<id>/json: hostname, сетевые алиасы, env
 // и host-биндинги — вход матчинга усыновления (spec §3.1); Running/ExitCode —
-// runtime-факт джоба бэкапа (: exit-код — истина итога, arch/19 §2).
+// runtime-факт джоба бэкапа (: exit-код — истина итога, arch/backups/01-full-backup.md).
 public sealed record DockerContainerInspect(
     string Id, string Hostname, string[] Aliases, string[] Env, PortMap[] Ports,
     bool? Running = null, int? ExitCode = null,
-    //  (arch/19 §6): docker-факт возраста running-джоба (StartedAt, RFC3339 →
+    //  (arch/backups/09-operability.md): docker-факт возраста running-джоба (StartedAt, RFC3339 →
     // unix) — бюджет verify-джоба; null при отсутствии/битой строке инспекта.
     long? StartedAtUnix = null,
-    //  (arch/14 §2.1): имена сетей контейнера (ключи NetworkSettings.Networks)
+    //  (arch/pgworker/01-placement.md §1): имена сетей контейнера (ключи NetworkSettings.Networks)
     // — сверка ensure-инварианта «нода и её wal-агенты в одной сети кластера»;
     // null = инспект без сетей (фейки/урезанный ответ).
     string[]? Networks = null);
 
 // Swarm-нода из /nodes + число работающих тасков. Labels — node.Spec.Labels
-// (placement-селекторы swarm_labels, arch/23 §4); у ноды без labels — пустой
+// (placement-селекторы swarm_labels, arch/s3-clusters/04-placement.md); у ноды без labels — пустой
 // словарь (не null: предикат равенства селектора упрощается).
 public sealed record DockerSwarmNode(
     string Id, string Hostname, string State, int RunningTasks,

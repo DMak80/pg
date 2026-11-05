@@ -4,7 +4,7 @@ using Shared.Etcd.Client;
 
 namespace PgWorker.App.Api.Operations;
 
-// Ответ 200 POST /api/seed/demo (arch/14 §1.1.1).
+// Ответ 200 POST /api/seed/demo (arch/pgworker/07-api.md §5).
 public sealed record SeedDemoDto(bool Seeded);
 
 // Демо-сид pg-контура через API воркера (task etcd-via-worker-api): перенос

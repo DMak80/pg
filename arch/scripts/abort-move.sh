@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # scripts/abort-move.sh
 #
-# P7 (arch/12-bucket-pitfalls.md): отмена незавершённого переезда и уборка его
+# P7 (arch/pg-clusters/12-bucket-pitfalls.md): отмена незавершённого переезда и уборка его
 # артефактов. Состояние переезда живёт в etcd-контрол-плейне.
 #
 # Модель («Референс топологии» в 12-bucket-pitfalls.md; всё под префиксом

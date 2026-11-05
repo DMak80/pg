@@ -8,7 +8,7 @@ using Xunit;
 namespace PgWorker.UnitTests.Moves;
 
 // MoveDdl (Д3): DDL-перенос — pg_dump --schema-only командой
-// приёмнику ноды-источника (канал arch/25 №22), применение Npgsql-батчем,
+// приёмнику ноды-источника (канал arch/communications/02-channel-registry.md №22), применение Npgsql-батчем,
 // гранты app-роли, сверка инвентаря P5. StubSql — записывающий мок.
 public class MoveDdlTests
 {
@@ -81,7 +81,7 @@ public class MoveDdlTests
     }
 
     // AAA: pgdump-команда приёмнику ноды-источника — адрес по имени ноды
-    // (pgw-<C>-<X>-<n>:8080), схема и БД — в теле (канон arch/25 №22)
+    // (pgw-<C>-<X>-<n>:8080), схема и БД — в теле (канон arch/communications/02-channel-registry.md №22)
     [Fact]
     public async Task DumpAsync_RequestsReceiverOfSourceNode()
     {

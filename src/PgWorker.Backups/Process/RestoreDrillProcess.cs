@@ -12,7 +12,7 @@ namespace PgWorker.Backups.Process;
 
 /// <summary>
 /// RestoreDrillProcess — тиковая машина планового тестового восстановления
-/// (reliability /, arch/19 §3.6) под клэймом &lt;C&gt; (Op backup-drill):
+/// (reliability /, arch/backups/04-drill.md) под клэймом &lt;C&gt; (Op backup-drill):
 /// супервиз активной drill-операции WalReceiver ПЕРВОЙ ноды шарда (фазы
 /// downloading|recovering и итог — по API приёмника GetRestoreAsync; команда
 /// уходит в живой приёмник — «заявка → операция работает» за секунды),
@@ -36,7 +36,7 @@ public sealed class RestoreDrillProcess(
     BackupsRuntimeOptions options,
     TimeProvider time,
     ILogger<RestoreDrillProcess> logger,
-    Action<string, string, string>? drillObserver = null, // (cluster, shard, ok|failed), arch/18 §2.7
+    Action<string, string, string>? drillObserver = null, // (cluster, shard, ok|failed), arch/metrics/02-dictionary.md §7
     TimeSpan? watchdogWindow = null,
     Shared.Core.Hosting.ILoopProgress? progress = null) // аудит долгих фаз: итерации поллинга дают Mark (spec §1.2 п.4)
 {
@@ -74,7 +74,7 @@ public sealed class RestoreDrillProcess(
 
         if (running.Drill is not null)
         {
-            // Гвард приоритета restore (arch/19 §3.5/§3.6): активная
+            // Гвард приоритета restore (arch/backups/03-restore.md/§3.6): активная
             // restore-заявка владеет жизненным циклом шарда — идущий дрилл
             // уступает (гасит свою операцию и удаляет ключ), иначе он держит
             // единственный ops-слот первой ноды, restore получает 409 и
@@ -92,7 +92,7 @@ public sealed class RestoreDrillProcess(
         }
 
         // ── Отбор кандидата (новых запусков нет, пока есть незавершённый дрилл —
-        // выше; arch/19 §3.6 п.3): интервал — policy.drill.interval_days ?? конфига;
+        // выше; arch/backups/04-drill.md): интервал — policy.drill.interval_days ?? конфига;
         // 0/Enabled=false — выкл новых запусков.
         var intervalDays = mine.Policy?.DrillIntervalDays ?? options.DrillIntervalDays;
         if (intervalDays <= 0 || !options.Enabled)
@@ -108,7 +108,7 @@ public sealed class RestoreDrillProcess(
         return await ValidateAndStartAsync(snap, candidate, mine, nowUnix, ct);
     }
 
-    // ── Валидация кандидата + запуск (arch/19 §3.6 п.4–5) — путь restore-заявки
+    // ── Валидация кандидата + запуск (arch/backups/04-drill.md–5) — путь restore-заявки
     // own-source (RestoreProcess.ValidateAsync, чистые функции те же): ──
 
     private async Task<Result<ProcessOutcome>> ValidateAndStartAsync(
@@ -116,7 +116,7 @@ public sealed class RestoreDrillProcess(
     {
         var cluster = snap.Config.Cluster;
 
-        //  (arch/19 §5): пул чтения per-cluster — манифест/label/лист wal с
+        //  (arch/backups/06-s3-layout.md): пул чтения per-cluster — манифест/label/лист wal с
         // перебором ReadAll. null/Failed — transient: journal, тик повторит.
         var poolRead = await s3Factory.ResolveAsync(cluster, ct);
         if (!poolRead.IsSuccess || poolRead.Value is not { } poolCtx)
@@ -161,7 +161,7 @@ public sealed class RestoreDrillProcess(
 
         // 3. Непрерывность WAL-цепочки (WalChain); S3-отказ → transient
         // (статус не трогаем — тик повторит). Листинг — UNION по всем нодам
-        // пула (arch/19 §5 «где данные есть»): соло-лист первой живой
+        // пула (arch/backups/06-s3-layout.md «где данные есть»): соло-лист первой живой
         // ноды не содержит сегментов, залитых на другие (полный — на первую
         // живую момента заливки) → ложный gap «expected wal_start, found N+1»
         // и валидационный FAILED — предшественник шторма пересъёмов.
@@ -178,7 +178,7 @@ public sealed class RestoreDrillProcess(
                 chain.GapError ?? "WAL chain gap", ct);
 
         // ── Запуск: journal-before-manipulations — put RUNNING до команды;
-        // операцию исполняет WalReceiver ПЕРВОЙ ноды шарда (arch/19 §3.6).
+        // операцию исполняет WalReceiver ПЕРВОЙ ноды шарда (arch/backups/04-drill.md).
         var id = BackupPlanner.NextId([], time.GetUtcNow().UtcDateTime);
         var receiverUrl = await ResolveReceiverUrl(snap, shard);
         if (receiverUrl is null)
@@ -241,7 +241,7 @@ public sealed class RestoreDrillProcess(
         return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
     }
 
-    // Уступка активной restore-заявке (arch/19 §3.5/§3.6): шард принадлежит
+    // Уступка активной restore-заявке (arch/backups/03-restore.md/§3.6): шард принадлежит
     // restore; дрилл гасит СВОЮ операцию (сверка id снимка — реестр один, в
     // нём может быть чужая restore/verify) и удаляет свой ключ — симметрия
     // операторской отмене («операции нет — записи нет»). Отказ etcd или
@@ -295,7 +295,7 @@ public sealed class RestoreDrillProcess(
             : null;
     }
 
-    // ── Супервиз RUNNING-дрилла (arch/19 §3.6 п.2) ──
+    // ── Супервиз RUNNING-дрилла (arch/backups/04-drill.md) ──
 
     private async Task SuperviseRunningAsync(
         ClusterSnapshot snap, string shard, DrillState drill, long nowUnix, CancellationToken ct)
@@ -312,7 +312,7 @@ public sealed class RestoreDrillProcess(
             return;
         }
 
-        // Адрес приёмника первой ноды (детерминирован, arch/19 §3.6); ноды нет
+        // Адрес приёмника первой ноды (детерминирован, arch/backups/04-drill.md); ноды нет
         // в portalloc (шард демонтируется) — transient: статус ключа не трогаем.
         var receiverUrl = await ResolveReceiverUrl(snap, shard);
         if (receiverUrl is null)
@@ -441,7 +441,7 @@ public sealed class RestoreDrillProcess(
                 // внешний канал мимо воркера; снимок state=cancelled отличает
                 // её от vanished): ключ дрилла УДАЛЯЕТСЯ — операций нет,
                 // записи нет (scratch чистит приёмник при отмене); никакого
-                // FAILED (arch/19 §3.6; следующий дрилл шарда — по общим
+                // FAILED (arch/backups/04-drill.md; следующий дрилл шарда — по общим
                 // правилам отбора).
                 var delOp = await etcd.DeleteAsync(endpoints[0],
                     BackupNames.DrillKey(cluster, shard), prefix: false, ct);
@@ -487,7 +487,7 @@ public sealed class RestoreDrillProcess(
         }
     }
 
-    // alias:8080 приёмника ПЕРВОЙ ноды шарда (arch/19 §2/§3.6): имя docker-
+    // alias:8080 приёмника ПЕРВОЙ ноды шарда (arch/backups/01-full-backup.md/§3.6): имя docker-
     // контейнера в общей сети воркера и нод (object — имя её контейнера из
     // portalloc); ноды нет в portalloc — null (transient тика).
     private async Task<string?> ResolveReceiverUrl(ClusterSnapshot snap, string shard)

@@ -6,12 +6,12 @@ using Xunit;
 namespace PgWorker.IntegrationTests.E2e;
 
 // HA-etcd контур E2E (spec §8): отказ ОДНОГО узла 3-нодового контура
-// посреди надзора — не-событие. Изоляция/телеметрия — docs/e2e-isolation.md,
-// docs/e2e-launch.md (guid-имена, own-only teardown, MarkFailed — стоп без
+// посреди надзора — не-событие. Изоляция/телеметрия — arch/testing/02-e2e-isolation.md,
+// arch/testing/01-e2e-launch.md (guid-имена, own-only teardown, MarkFailed — стоп без
 // удаления). Жертва — FOLЛОВЕР кворума (StopEtcdFollowerAsync): отказ лидера
 // = окно выборов ~2–4 с, в котором etcd-put отклоняется и lease-ключи с
 // TTL 5 с (master-ключ) гаснут — пробы «непрерывно жив» невыполнимы
-// конструктивно; отказ folловера кворум-запись не трогает (arch/04 §8).
+// конструктивно; отказ folловера кворум-запись не трогает (arch/etcdworker/06-operability.md §7).
 // Проверки во время отказа идут через host-endpoints с перебором (URL
 // остановленного узла пропускается — кто жертва, решается на рантайме).
 public sealed class E2eHaEtcdScenarios(E2eHaEtcdScenariosFx Ctx) : IClassFixture<E2eHaEtcdScenariosFx>
@@ -50,7 +50,7 @@ public sealed class E2eHaEtcdScenarios(E2eHaEtcdScenariosFx Ctx) : IClassFixture
                 .Should().HaveCount(3, "member list = 3 members before the failure");
 
             // Act: останавливаем FOLЛОВЕРА кворума (не лидера; кворум-запись
-            // сохраняется, arch/04) и СРАЗУ добавляем шард — provisioning идёт
+            // сохраняется, arch/etcdworker/06-operability.md §7) и СРАЗУ добавляем шард — provisioning идёт
             // через уцелевшие endpoints (failover воркера).
             var stopped = await Fx.StopEtcdFollowerAsync(ct);
             await SeedAddDeclarationAsync(cluster, "shard3", ct);
@@ -76,7 +76,7 @@ public sealed class E2eHaEtcdScenarios(E2eHaEtcdScenariosFx Ctx) : IClassFixture
                 // api-ключи: мёртвый IP в сети — «чёрная дыра» (~2 с на SYN до
                 // таймаута): failover шлюза платит штраф за мёртвый endpoint,
                 // lease-ключи воркера могут кратковременно гаснуть — к концу
-                // окна живы (канон arch/04: кворум жив, takeover ≤15 с).
+                // окна живы (канон arch/etcdworker/06-operability.md §7: кворум жив, takeover ≤15 с).
                 if (apiKeys > 0)
                     apiKeysEver = true;
                 if (probe == 0)
@@ -88,7 +88,7 @@ public sealed class E2eHaEtcdScenarios(E2eHaEtcdScenariosFx Ctx) : IClassFixture
 
             // К концу окна отказа ключи живы снова: DCS-хаппап члена etcd +
             // штраф failover'а за мёртвый IP дают кратковременные гашения
-            // lease-ключей (TTL 5-15 с); канон (arch/04) обещает кворум/запись,
+            // lease-ключей (TTL 5-15 с); канон (arch/etcdworker/06-operability.md §7) обещает кворум/запись,
             // а НЕ zero-gap непрерывность ключей.
             apiKeysEver.Should().BeTrue("the worker api keepalive keys were published during the failure window");
             masterAliveAtWindowEnd.Should().BeTrue(
@@ -130,7 +130,7 @@ public sealed class E2eHaEtcdScenarios(E2eHaEtcdScenariosFx Ctx) : IClassFixture
         }
         catch (Exception)
         {
-            // Телеметрия (docs/e2e-launch.md): упавший сценарий помечается —
+            // Телеметрия (arch/testing/01-e2e-launch.md): упавший сценарий помечается —
             // teardown ОСТАНАВЛИВАЕТ контейнеры, не удаляя (разбор по логам).
             Fx.MarkFailed();
             throw;
@@ -252,7 +252,7 @@ public sealed class E2eHaEtcdScenarios(E2eHaEtcdScenariosFx Ctx) : IClassFixture
 }
 
 /// <summary>Компаньон-фикстура окружения класса (полный контур на класс:
-/// сеть/etcd/CA/окно портов; docs/e2e-isolation.md §1).</summary>
+/// сеть/etcd/CA/окно портов; arch/testing/02-e2e-isolation.md §1).</summary>
 public sealed class E2eHaEtcdScenariosFx : E2eContourFixture
 {
     protected override string Slug => "ha-etcd";

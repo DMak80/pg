@@ -1,14 +1,14 @@
 namespace AdminPanel.Core;
 
 // Панельная модель WAL-потока шарда (ключ /pgworker/backups/<C>/<X>/wal,
-// arch/19 §4; adminpanel/02 §2.3.1;). Дубли воркерной модели — осознанные
+// arch/backups/05-etcd-contract.md; adminpanel/02 §2.3.1;). Дубли воркерной модели — осознанные
 // (бэкапные модели выведены за скоуп унификации); агрегат по кластерам —
 // ClusterBackupsInfo (BackupInfo.cs, модель + Wal-словарь).
 // WalChainError — разрыв цепочки (permanent; воркер переснимает полный).
 public enum WalStreamInfoState { Active, Degraded, Stopped, WalChainError }
 
 /// <summary>Границы RPO-зазора tli-прыжка приёмника из поля gap wal-ключа
-/// (архивный формат arch/19 §4): сегменты (From .. To] невосстановимы из
+/// (архивный формат arch/backups/05-etcd-contract.md): сегменты (From .. To] невосстановимы из
 /// бэкапов.</summary>
 public sealed record WalGapInfo(string From, string To, uint Tli);
 
@@ -33,7 +33,7 @@ public sealed record WalLifeInfo(
 /// /pgworker/backups/orphans ( дубль воркерной модели — осознанный):
 /// префикс «&lt;C&gt;/&lt;X&gt;»,
 /// kind shard|cluster, размер, первое наблюдение, состояние OBSERVED|DELETING;
-/// HasValidFull — автозащита DR-hold (reliability, arch/19 §4): в префиксе
+/// HasValidFull — автозащита DR-hold (reliability, arch/backups/05-etcd-contract.md): в префиксе
 /// есть валидный полный (full/&lt;id&gt;/backup_manifest), TTL-автоматика не
 /// удалит; отсутствие поля (старый воркер) — false.</summary>
 public sealed record BackupOrphanInfo(
@@ -41,12 +41,12 @@ public sealed record BackupOrphanInfo(
     bool HasValidFull = false);
 
 /// <summary>Hold-флаг сироты из ключа /pgworker/backups/orphan-holds/&lt;C&gt;/&lt;X&gt;
-/// (reliability, arch/19 §4): защита «до разбора», ставит API воркера.</summary>
+/// (reliability, arch/backups/05-etcd-contract.md): защита «до разбора», ставит API воркера.</summary>
 public sealed record OrphanHoldInfo(string Prefix, long SetUnix, string SetBy);
 
 /// <summary>Заявка явного удаления сироты из ключа
 /// /pgworker/backups/orphan-deletes/&lt;C&gt;/&lt;X&gt; (reliability,
-/// arch/19 §4): исполнит sweeper ближайшим проходом.</summary>
+/// arch/backups/05-etcd-contract.md): исполнит sweeper ближайшим проходом.</summary>
 public sealed record OrphanDeleteRequestInfo(string Prefix, long RequestedUnix, string RequestedBy);
 
 /// <summary>Реестр сирот установки из глобального ключа
@@ -68,7 +68,7 @@ public sealed record BackupStorageInfo(
     BackupStorageState State, long UpdatedUnix);
 
 /// <summary>Статус DR-выгрузки слепков etcd в S3 (ключ
-/// /etcdworker/snapshots, arch/25 §5; пишет EtcdWorker): null-поля —
+/// /etcdworker/snapshots, arch/etcdworker/00-etcd-contract.md; пишет EtcdWorker): null-поля —
 /// толерантный парсинг (битые/старые ключи); поля enabled в формате нет —
 /// выгрузка безусловна; ключа нет — правила молчат.</summary>
 public sealed record EtcdSnapshotExportInfo(

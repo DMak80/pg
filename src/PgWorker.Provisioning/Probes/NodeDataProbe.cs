@@ -12,9 +12,9 @@ public sealed record NodeDataProbeReply(int StatusCode, string? PgVersion, strin
     public bool IsSuccess => StatusCode is >= 200 and < 300;
 }
 
-/// <summary>Проба данных ноды (Д3, spec §3.7, arch/14 R11): факт PG_VERSION
+/// <summary>Проба данных ноды (Д3, spec §3.7, arch/pgworker/README.md R11): факт PG_VERSION
 /// файловой системой контейнера ноды — GET /api/node/pgdata её приёмника
-/// (канал arch/25 №22). Исполнитель — процесс приёмника ноды; шов для
+/// (канал arch/communications/02-channel-registry.md №22). Исполнитель — процесс приёмника ноды; шов для
 /// Provisioning — реализация живёт у владельца клиента приёмника.</summary>
 public interface INodeDataProbe
 {

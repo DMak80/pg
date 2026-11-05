@@ -6,7 +6,7 @@ using PgWorker.Provisioning.Processes;
 
 namespace PgWorker.UnitTests.Provisioning;
 
-// DeprovisioningProcess D0–D3 (задача 20; arch/14 §5 B): удаление нод и сирот,
+// DeprovisioningProcess D0–D3 (задача 20; arch/pgworker/processes/b-deprovisioning.md B): удаление нод и сирот,
 // очистка префикса кластера + service-скопов, снятие клэйма сразу (не по TTL).
 public class DeprovisioningProcessTests
 {

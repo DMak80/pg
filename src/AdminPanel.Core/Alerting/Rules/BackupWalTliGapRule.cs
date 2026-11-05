@@ -3,10 +3,10 @@ using Shared.Core.DI;
 
 namespace AdminPanel.Core.Alerting.Rules;
 
-// backup-wal-tli-gap (critical, arch/19 §3/§4): живое поле gap wal-ключа шарда
+// backup-wal-tli-gap (critical, arch/backups/02-wal-archive.md §1/§4): живое поле gap wal-ключа шарда
 // живого Active-кластера — RPO-зазор tli-прыжка приёмника (58P01 пережит,
 // сегменты между from и to невосстановимы из бэкапов); воркер сам переснимает
-// полный (планировщик arch/19 §2 реагирует на gap), метка снимается
+// полный (планировщик arch/backups/01-full-backup.md реагирует на gap), метка снимается
 // заживлением. DEGRADED без gap — домен wal-chain-broken/лагов (не трогается).
 [InjectAsSingleton(typeof(IAlertRule))]
 public sealed class BackupWalTliGapRule : IAlertRule

@@ -13,9 +13,9 @@ internal sealed record FetchWalContext(
     string AccessKey, string SecretKey, string? CaPem, uint? ChainLife = null);
 
 /// <summary>Sub-режим того же бинаря `walreceiver fetch-wal &lt;seg&gt; &lt;dest&gt;`
-/// (arch/19 §3.5, spec §3.4): restore_command postgres — скачивание
+/// (arch/backups/03-restore.md, spec §3.4): restore_command postgres — скачивание
 /// сегмента/.history из wal/-префикса С ПЕРВОЙ ноды пула, ГДЕ ОН ЕСТЬ (перебор
-/// read-списка до найденного — arch/19 §5; лаг mesh допущен); нигде нет →
+/// read-списка до найденного — arch/backups/06-s3-layout.md; лаг mesh допущен); нигде нет →
 /// exit 1 — конец WAL (канон §3.5). Регистр: %f приходит ВЕРХНИМ hex
 /// (XLogFileName), объекты S3 записаны приёмником строчными, S3-ключи
 /// регистрозависимы — нормализация обязательна, иначе первый буквенный сегмент
@@ -38,13 +38,13 @@ internal static class FetchWalCommand
     internal static readonly int TransportAttempts = 3;
     private static readonly TimeSpan TransportRetryDelay = TimeSpan.FromSeconds(2);
 
-    // Жёсткий дедлайн ВСЕГО вызова (arch/19 §3.5): после него — stderr-факт и
+    // Жёсткий дедлайн ВСЕГО вызова (arch/backups/03-restore.md): после него — stderr-факт и
     // exit 1 (для postgres — конец WAL; повторный вызов restore_command продолжит
     // добор). Проверяется МЕЖДУ попытками: текущая доигрывается в своём
     // пер-запросном таймауте, попытки сверх дедлайна не начинаются.
     internal static readonly TimeSpan CallDeadline = TimeSpan.FromSeconds(45);
 
-    // Корень данных ноды (arch/19 §3.5, Spilo-layout): data-volume монтируется
+    // Корень данных ноды (arch/backups/03-restore.md, Spilo-layout): data-volume монтируется
     // сюда, PGDATA — data/ под ним; postgres зовёт restore_command с cwd = PGDATA.
     internal const string PgDataRoot = "/home/postgres/pgdata/pgroot/data";
 
@@ -102,7 +102,7 @@ internal static class FetchWalCommand
 
     /// <summary>Чистая функция для тестов: продолжать ли транспортные попытки —
     /// лимит попыток НЕ исчерпан И жёсткий дедлайн вызова НЕ наступил
-    /// (arch/19 §3.5: вызов в любом исходе — секунды, не минуты).</summary>
+    /// (arch/backups/03-restore.md: вызов в любом исходе — секунды, не минуты).</summary>
     internal static bool ShouldRetryTransport(int attempt, long startTick, long nowTick)
         => attempt < TransportAttempts
            && TimeSpan.FromTicks(nowTick - startTick) < CallDeadline;
@@ -417,7 +417,7 @@ internal static class FetchWalCommand
     }
 
     /// <summary>Дописать валидный префикс `.partial` нулями до полного
-    /// `wal_segment_size` и положить в запрошенный путь (arch/19 §2/§3.5):
+    /// `wal_segment_size` и положить в запрошенный путь (arch/backups/01-full-backup.md/§3.5):
     /// postgres отвергает архивный файл размера ≠ `wal_segment_size`
     /// («archive file … has wrong size»); нули за концом последней валидной
     /// записи — штатный конец WAL. false — префикс пуст/больше сегмента/ошибка

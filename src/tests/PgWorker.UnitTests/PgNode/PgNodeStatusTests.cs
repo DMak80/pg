@@ -1,7 +1,7 @@
 using PgWorker.PgNode;
 using Xunit;
 
-// AAA: PgNodeStatus — JSON-контракт статусного ключа (arch/14 §3.3, spec §3.6):
+// AAA: PgNodeStatus — JSON-контракт статусного ключа (arch/pgworker/00-etcd-contract.md §4, spec §3.6):
 // null-поля не сериализуются, компоненты — словарём {"pg":…,"doorman":…}.
 public class PgNodeStatusTests
 {

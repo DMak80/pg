@@ -2,7 +2,7 @@ using System.Globalization;
 
 namespace ValkeyWorker.Core.Writing;
 
-// Канонический JSON-контракт домена (arch/20 §2.1; pg §9.3 для ресурсов):
+// Канонический JSON-контракт домена (arch/valkey-clusters/02-keys.md §2; pg §9.3 для ресурсов):
 // единое место сборки значений ключей etcd — читатели (панель, дискавери
 // видят дословно канонические строки.
 public static class ValkeyWriting
@@ -12,7 +12,7 @@ public static class ValkeyWriting
     public static string ConfigJson(int nodes, long maxmemoryBytes, string policy, long createdUnix)
         => $$"""{"nodes":{{nodes}},"maxmemory_bytes":{{maxmemoryBytes}},"maxmemory_policy":"{{policy}}","created_unix":{{createdUnix}}}""";
 
-    // Дискавери-ключ endpoints (arch/20 §2): "h:p" (nodes=1 — один адрес).
+    // Дискавери-ключ endpoints (arch/valkey-clusters/02-keys.md §1): "h:p" (nodes=1 — один адрес).
     public static string EndpointsValue(string host, int port)
         => $"{host}:{port}";
 
@@ -24,7 +24,7 @@ public static class ValkeyWriting
     public static string ResourcesJson(decimal cpu, int memGi, int diskGi)
         => $$"""{"cpu":"{{CanonicalCpu(cpu)}}","mem":"{{memGi}}Gi","disk":"{{diskGi}}Gi"}""";
 
-    /// <summary>8 значений maxmemory_policy канона (arch/20 §2; валидация — API).</summary>
+    /// <summary>8 значений maxmemory_policy канона (arch/valkey-clusters/02-keys.md §1; валидация — API).</summary>
     public static readonly IReadOnlySet<string> KnownPolicies = new HashSet<string>(
         [
             "allkeys-lru", "allkeys-lfu",

@@ -10,7 +10,7 @@ using Xunit;
 namespace PgWorker.IntegrationTests.Backups;
 
 /// <summary>
-/// СОБСТВЕННЫЙ postgres одного Fact (e2e-isolation, docs/e2e-isolation.md):
+/// СОБСТВЕННЫЙ postgres одного Fact (e2e-isolation, arch/testing/02-e2e-isolation.md):
 /// guid-имя pgw-pg-{guid}, динамический хост-порт, физический слот приёмника,
 /// TLS (self-signed, генерируется кодом фикстуры): серты кладутся resource
 /// mapping'ом в /tmp, после старта docker-exec раскладывает их в

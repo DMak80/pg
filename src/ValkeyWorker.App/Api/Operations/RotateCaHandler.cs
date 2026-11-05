@@ -7,7 +7,7 @@ namespace ValkeyWorker.App.Api.Operations;
 // Ответ 202 POST /api/valkey/clusters/{c}/ca/rotate (арх-канон; дубль осознан).
 public sealed record ValkeyCaRotatedDto(string Cluster, long RequestedUnix, string RequestedBy);
 
-// Заявка ротации per-cluster CA/сертов через API воркера (arch/21 §5 K):
+// Заявка ротации per-cluster CA/сертов через API воркера (arch/valkeyworker/04-security.md §6 K):
 // клэйм-txn /valkeyworker/ca_rotations/<C> NotExists; исполнение — CaRotator
 // (фазы P/D/R/C). state-гейт: НЕ-Active (NOT_INITIALIZED/TO_REMOVE) → 409 —
 // ротация не поднятого кластера бессмысленна (образец kafka, ОТЛИЧИЕ от
@@ -58,7 +58,7 @@ public sealed class RotateCaHandler(IEtcdGateway gateway, string[] endpoints, Ti
     }
 }
 
-// Заявка ротации CA (arch/20 §3): {"requested_unix","requested_by"} — без role.
+// Заявка ротации CA (arch/valkey-clusters/03-coordination.md §1): {"requested_unix","requested_by"} — без role.
 public sealed record CaRotationTicketJson(
     [property: System.Text.Json.Serialization.JsonPropertyName("requested_unix")] long RequestedUnix,
     [property: System.Text.Json.Serialization.JsonPropertyName("requested_by")] string? RequestedBy);

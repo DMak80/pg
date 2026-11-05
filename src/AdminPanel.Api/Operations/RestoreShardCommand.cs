@@ -6,7 +6,7 @@ namespace AdminPanel.Api.Operations;
 
 // Restore-заявка (u-restore, arch/02 §9.13): панель — прокси POST
 // /api/clusters/{c}/shards/{x}/restore API PgWorker (воркер уже реализован —
-// RestoreShardHandler, arch/19 §3.5); панель в etcd не пишет. requestedBy —
+// RestoreShardHandler, arch/backups/03-restore.md); панель в etcd не пишет. requestedBy —
 // username сессии (X-Requested-By, аудит воркера). Имена кластера/шарда —
 // канонические (path-интерполяция прокси, §9.3): неканонические — 404 до
 // вызова воркера (тот же код, что отвечает воркер на неканоническое имя).

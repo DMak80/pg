@@ -9,7 +9,7 @@ using Xunit;
 
 namespace PgWorker.IntegrationTests.Backups;
 
-// Резолв sync-standby шарда (arch/19 §3.3 п.2): Patroni GET /cluster на
+// Резолв sync-standby шарда (arch/backups/02-wal-archive.md §1 п.2): Patroni GET /cluster на
 // динамическом порту (TcpListener(0)-зонд + HttpListener — fейк Patroni),
 // portalloc-сид с patroni=<порт>. Не найден/недоступен → null БЕЗ fallback
 // (второй агент поднимется тиком при появлении sync).

@@ -6,7 +6,7 @@ using Xunit;
 
 namespace AdminPanel.UnitTests;
 
-// Парсер s3-домена: канон arch/23 §2.1/§3 (приёмочные) + толерантность §2.
+// Парсер s3-домена: канон arch/s3-clusters/02-keys.md §2/§3 (приёмочные) + толерантность §2.
 public sealed class S3ParserTests
 {
     // Arrange: канонические фикстуры §2.1/§3. Act: ParseClusters.

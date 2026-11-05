@@ -15,7 +15,7 @@ using PgWorker.Provisioning.Probes;
 
 namespace PgWorker.UnitTests.Provisioning;
 
-// NodeSupervisor + MasterKeyReconciler (задача 21; arch/14 §5 C, P11):
+// NodeSupervisor + MasterKeyReconciler (задача 21; arch/pgworker/processes/c-node-supervisor.md C, P11):
 // самовосстановление декларации, rebuild мёртвой не-лидерской ноды при
 // кворуме, лидер не трогается (failover — Patroni), детект мёртвого шарда,
 // сверка мастер-ключа только при рассинхроне.
@@ -70,7 +70,7 @@ public class NodeSupervisorTests
         etcd.Seed("/clusters/shop/buckets/routing/bucket_1", "shard1");
         // per-cluster REST-пара (эффективный пароль EnsureNode-путей надзора)
         etcd.Seed("/clusters/shop/rest_password", RestPassword);
-        // Заявки ресурсов ОБЯЗАТЕЛЬНЫ (arch/14 §2.1 п.4) — сидим как панель.
+        // Заявки ресурсов ОБЯЗАТЕЛЬНЫ (arch/pgworker/01-placement.md §2) — сидим как панель.
         etcd.Seed("/service/shop-shard1/request_cpu", "2");
         etcd.Seed("/service/shop-shard1/request_mem", "8Gi");
         // portalloc: ноды h1/h2 чередуются, порты уникальны per-нода (18000/18001/18002)
@@ -147,14 +147,14 @@ public class NodeSupervisorTests
         return new Rig(etcd, driver, claims, journal, supervisor);
     }
 
-    // Счётчик прогресс-отметок (arch/14 §6 ILoopProgress).
+    // Счётчик прогресс-отметок (arch/pgworker/08-operability.md §3 ILoopProgress).
     private sealed class CountingProgress : Shared.Core.Hosting.ILoopProgress
     {
         public int Count;
         public void Mark() => Count++;
     }
 
-    // AAA (arch/14 §6, поллинг-инвариант): итерации надзора — пробы нод —
+    // AAA (arch/pgworker/08-operability.md §3, поллинг-инвариант): итерации надзора — пробы нод —
     // отмечают прогресс ILoopProgress; тик из медленных проб не выглядит для
     // watchdog'а тишиной (факт прогона ha-etcd: снос живого тика на 32-й
     // секунде, shard3 не дошёл до scale-shards).
@@ -173,7 +173,7 @@ public class NodeSupervisorTests
         marks.Count.Should().BeGreaterThanOrEqualTo(3);
     }
 
-    // AAA (arch/17 S5): потеря клэйма ПОСЛЕ входа в тик (ключ исчез из etcd —
+    // AAA (arch/synchronization/02-predicates-and-mutations.md §S5): потеря клэйма ПОСЛЕ входа в тик (ключ исчез из etcd —
     // как по истёкшему lease при takeover) — мутации фаз не начинаются:
     // первый EnsureClaimAlive отказывает тик, журнал несёт claim-lost/declared-nodes.
     [Fact]
@@ -256,7 +256,7 @@ public class NodeSupervisorTests
         outcome.Value.DeadShards.Should().BeEmpty("shard in restore — not an evacuation candidate");
     }
 
-    // AAA (arch/19 §3.5 «Гвард исключения» — свежая сверка на шаге мутации):
+    // AAA (arch/backups/03-restore.md «Гвард исключения» — свежая сверка на шаге мутации):
     // restore-заявка, записанная в etcd ПОСЛЕ чтения снапшота тика (гонка
     // «долгий тик надзора, начавшийся до заявки»), тоже гвардит: шард с
     // ключом в etcd не пересоздаётся и не пробуется, даже когда
@@ -325,7 +325,7 @@ public class NodeSupervisorTests
         rig.Etcd.Store["/clusters/shop/shards/shard1/nodes/shard1a/state"].Value.Should().Be("REBUILDING");
     }
 
-    // AAA (arch/14 §5 C, симметрично ускорению failover): rebuild — невозвратный
+    // AAA (arch/pgworker/processes/c-node-supervisor.md C, симметрично ускорению failover): rebuild — невозвратный
     // снос контейнера+volume, требующий ПОЛОЖИТЕЛЬНОГО свидетельства смерти.
     // Молчание REST-пробы при running-контейнере (нагрузка хоста, транспорт,
     // долгий bootstrap пересозданной ноды) — не смерть: сноса нет, нода
@@ -421,7 +421,7 @@ public class NodeSupervisorTests
         rig.Etcd.Store["/clusters/shop/shards/shard1/nodes/shard1a/state"].Value.Should().Be("PROVISIONING");
     }
 
-    // AAA (t09-review, arch/14 §5 C): драйвер БЕЗ честной running-инспекции
+    // AAA (t09-review, arch/pgworker/processes/c-node-supervisor.md C): драйвер БЕЗ честной running-инспекции
     // (Swarm-семантика: InspectNodesAsync — заглушка, всегда пуст). «Ноды нет
     // в инспекте» неотличимо от «инспект-заглушка» → inspect-ускорение
     // failover ДОЛЖНО молчать: иначе любой транспортный флап пробы лидера
@@ -495,7 +495,7 @@ public class NodeSupervisorTests
         rig.Driver.EnsuredNodes.Should().Contain("shard1/shard1a");
     }
 
-    // AAA (arch/14 §5 C): устаревший failover-маркер ожившего лидера снимается.
+    // AAA (arch/pgworker/processes/c-node-supervisor.md C): устаревший failover-маркер ожившего лидера снимается.
     // docker restart/кратковременный флап дают маркер {"leader":<нода>} + снятый
     // leader-ключ; вернувшийся лидер отвечает пробой — маркер устарел, и Patroni
     // зацикливается на неисполнимом switchover (факт rtls). Надзор снимает
@@ -566,7 +566,7 @@ public class NodeSupervisorTests
             .Should().Be("TO_RECREATE", "a revived node does not cancel the operator's recreation request");
     }
 
-    // Гвард окна ротации ETCD-FIRST (arch/14 §3.3/§5 I, П11.6б): предикат —
+    // Гвард окна ротации ETCD-FIRST (arch/pgworker/00-etcd-contract.md §4/§5 I, П11.6б): предикат —
     // ТОЛЬКО флаг rest_window_open (failure-фаза alter/shard1 не влияет).
     // Открытый флаг → RecreateMarked-soft живого лидера транзиент-skip
     // (switchover через REST до закрытия окна подавлен): skip-фаза
@@ -660,7 +660,7 @@ public class NodeSupervisorTests
         rig.Etcd.Store["/clusters/shop/shards/shard1/nodes/shard1a/state"].Value.Should().Be("REBUILDING");
     }
 
-    // AAA (arch/14 §5 C): проба лидера глухая, НО контейнер running
+    // AAA (arch/pgworker/processes/c-node-supervisor.md C): проба лидера глухая, НО контейнер running
     // (инспекция видит) — свидетельства смерти процесса нет (рестарт Patroni/
     // транспортный флап): ускорение failover НЕ запускается, только честный
     // UNREACHABLE; docker и HA-ключи не тронуты.
@@ -692,7 +692,7 @@ public class NodeSupervisorTests
         rig.Etcd.Store["/clusters/shop/shards/shard1/nodes/shard1a/state"].Value.Should().Be("UNREACHABLE");
     }
 
-    // AAA (arch/14 §5 C): лидер не отвечает И контейнер не running
+    // AAA (arch/pgworker/processes/c-node-supervisor.md C): лидер не отвечает И контейнер не running
     // (инспекция running-only его не видит — docker stop/жёсткая смерть) —
     // положительное свидетельство смерти: ускорение failover (маркер+снятие
     // лидер-лока) БЕЗ ожидания NodeDeadSec и БЕЗ docker-мутаций; rebuild
@@ -988,7 +988,7 @@ public class NodeSupervisorTests
         // Act
         var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
 
-        // Assert: эвакуация не запускается (arch/14 §5 C: master протух — обязательное условие)
+        // Assert: эвакуация не запускается (arch/pgworker/processes/c-node-supervisor.md C: master протух — обязательное условие)
         outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
         outcome.Value.DeadShards.Should().BeEmpty();
     }
@@ -1005,7 +1005,7 @@ public class NodeSupervisorTests
             etcd.Seed("/clusters/shop/shards/shard2/dsn", "host=h1,h2 port=15010,15011 dbname=shop user=bucket_admin");
         if (markedToRemove)
             etcd.Seed("/clusters/shop/shards/shard2/state", "TO_REMOVE");
-        // Заявки ресурсов ОБЯЗАТЕЛЬНЫ (arch/14 §2.1 п.4) — сидим как панель.
+        // Заявки ресурсов ОБЯЗАТЕЛЬНЫ (arch/pgworker/01-placement.md §2) — сидим как панель.
         etcd.Seed("/service/shop-shard2/request_cpu", "2");
         etcd.Seed("/service/shop-shard2/request_mem", "8Gi");
         // portalloc: объединённый (shard1 из SeedCluster + новый shard2)
@@ -1197,7 +1197,7 @@ public class NodeSupervisorTests
         return alloc;
     }
 
-    // AAA (spec §3.4, arch/14 §5 C/R9): усыновлённая (object) нода ВНЕ домена
+    // AAA (spec §3.4, arch/pgworker/processes/c-node-supervisor.md C/R9): усыновлённая (object) нода ВНЕ домена
     // EnsureNode — self-healing off. Реальный ListNodeObjectsAsync отдаёт только
     // имена pgw-<C>- (фейк синхронизирован с этим контрактом и выкидывает as-*),
     // поэтому не-пересоздание обеспечивает GUARD по object-полю, а не матчинг
@@ -1384,7 +1384,7 @@ public class NodeSupervisorTests
         etcd.Seed($"/clusters/{cluster}/buckets/routing/bucket_1", "shard1");
         // per-cluster REST-пара (эффективный пароль EnsureNode-путей надзора)
         etcd.Seed($"/clusters/{cluster}/rest_password", RestPassword);
-        // Заявки ресурсов ОБЯЗАТЕЛЬНЫ (arch/14 §2.1 п.4) — сидим как панель.
+        // Заявки ресурсов ОБЯЗАТЕЛЬНЫ (arch/pgworker/01-placement.md §2) — сидим как панель.
         etcd.Seed($"/service/{cluster}-shard1/request_cpu", "2");
         etcd.Seed($"/service/{cluster}-shard1/request_mem", "8Gi");
         var alloc = new Dictionary<string, NodeAddress>();
@@ -1654,7 +1654,7 @@ public class NodeSupervisorTests
         MasterKeyReconciler.KeepalivePeriod.Should().Be(TimeSpan.FromSeconds(2));
     }
 
-    // AAA: миграция app_params (arch/14 §5 C) — ноды шарда с dsn без ключа получают
+    // AAA: миграция app_params (arch/pgworker/processes/c-node-supervisor.md C) — ноды шарда с dsn без ключа получают
     // дефолт; ручное значение существующего ключа не перезаписывается
     [Fact]
     public async Task Tick_NodeWithoutAppParams_MigrationPutsDefault()
@@ -1674,7 +1674,7 @@ public class NodeSupervisorTests
             .Should().Be("sslmode=verify-full");
     }
 
-    // --- HA-факты (arch/14 §3.3/§5 C): last_failover/last_rebuild в work-ключе ---
+    // --- HA-факты (arch/pgworker/00-etcd-contract.md §4/§5 C): last_failover/last_rebuild в work-ключе ---
 
     private static async Task<WorkState?> WorkStateOf(Rig rig)
         => (await rig.Journal.ReadAsync("shop", CancellationToken.None)).Value;
@@ -1971,7 +1971,7 @@ public class NodeSupervisorTests
             .Should().Be("REMOVING");
     }
 
-    // Гвард окна ротации ETCD-FIRST (arch/14 §3.3/§5 I, П11.6б): предикат —
+    // Гвард окна ротации ETCD-FIRST (arch/pgworker/00-etcd-contract.md §4/§5 I, П11.6б): предикат —
     // ТОЛЬКО флаг rest_window_open (failure-фаза alter/shard1 не влияет).
     // Открытый флаг → DCS-конвергенция транзиент-skip (PATCH /config не
     // зовётся); supervise-запись тика флаг переносит — следующий тик гвард

@@ -6,7 +6,7 @@ using S3Worker.App;
 namespace S3Worker.App.HealthChecks;
 
 /// <summary>
-/// Агрегированный health S3Worker (arch/24 §7): секции etcd-reachable,
+/// Агрегированный health S3Worker (arch/s3worker/08-operability.md §4): секции etcd-reachable,
 /// docker-hosts, loops-alive, claims, snapshot-freshness, watchdog. Пассивные
 /// данные — из HealthState (тики циклов), активные — пробы ServiceProbes.
 /// Недоступный etcd / docker-хост / зависший цикл / протухший снапшот →

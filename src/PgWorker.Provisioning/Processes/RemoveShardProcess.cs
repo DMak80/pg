@@ -9,7 +9,7 @@ namespace PgWorker.Provisioning.Processes;
 
 /// <summary>
 /// RemoveShardProcess — демонтаж ОТДЕЛЬНОГО шарда Active-кластера по маркеру
-/// shards/&lt;X&gt;/state=TO_REMOVE (spec §5.3; arch/14 §5 H; эталон remove-shard.sh
+/// shards/&lt;X&gt;/state=TO_REMOVE (spec §5.3; arch/pgworker/processes/h-remove-shard.md H; эталон remove-shard.sh
 /// + DeprovisioningProcess scoped-to-shard). Guard'ы G1–G7 в S1 перед любым
 /// разрушающим действием; порядок «сначала docker, потом etcd» — мёртвые ключи
 /// при сбое безвредны (маркер стоит, повторный тик продолжает). Кластер живёт.
@@ -78,7 +78,7 @@ public sealed class RemoveShardProcess(
         if (!cancelled.IsSuccess)
             return await FailAsync(cluster, cancelled.Error!, "cancelling-restore", ct);
 
-        // S1.5 (/, arch/19 §3 «Стоп-семантика»): санитарный снос legacy
+        // S1.5 (/, arch/backups/02-wal-archive.md §1 «Стоп-семантика»): санитарный снос legacy
         // wal-контейнеров шарда ДО нод (идемпотентно; приёмники WAL живут в
         // контейнерах нод — гаснут вместе с нодами на S2); ключ wal
         // /pgworker/backups/<C>/<X>/ удаляет CleanKeysAsync (шаг 4) вместе с
@@ -140,7 +140,7 @@ public sealed class RemoveShardProcess(
         return Result.Success();
     }
 
-    // Сериализация FAILED-статуса (канон arch/19 §4). Локальная копия структуры
+    // Сериализация FAILED-статуса (канон arch/backups/05-etcd-contract.md). Локальная копия структуры
     // RestoreStatusJson (PgWorker.Backups): обратная ссылка Provisioning→Backups
     // невозможна (Backups ссылается на Provisioning); прецедент — имена
     // BackupNames в ClusterDriver.BackupJobsCleaner. Roundtrip с парсером 
@@ -293,7 +293,7 @@ public sealed class RemoveShardProcess(
         if (!delScope.IsSuccess)
             return delScope;
 
-        //  (arch/19 §4): ключи бэкапов шарда (wal-статус; full-ключи)
+        //  (arch/backups/05-etcd-contract.md): ключи бэкапов шарда (wal-статус; full-ключи)
         // не переживают демонтаж — S-аналог D2-чистки deprovisioning.
         var delBackups = await DeleteAsync($"/pgworker/backups/{cluster}/{shardName}/", prefix: true, ct);
         if (!delBackups.IsSuccess)
@@ -350,7 +350,7 @@ public sealed class RemoveShardProcess(
         return Result<ProcessOutcome>.Failed(error);
     }
 
-    // Failover-обёртки — единая точка (arch/17 S7: sticky + per-attempt бюджет +
+    // Failover-обёртки — единая точка (arch/synchronization/03-fault-tolerance.md §S7: sticky + per-attempt бюджет +
     // негативный кэш; дубликаты цикла обхода удалены).
     private Task<Result<Kv?>> GetAsync(string key, CancellationToken ct)
         => EtcdEndpointFailover.CallAsync(endpoints, endpoint => etcd.GetAsync(endpoint, key, ct));

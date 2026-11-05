@@ -6,7 +6,7 @@ using Shared.Etcd.Client;
 
 namespace S3Worker.UnitTests.App;
 
-// Catch-all проб и чека (arch/24 §7): сетевое исключение шлюза → Result.Failed
+// Catch-all проб и чека (arch/s3worker/08-operability.md §4): сетевое исключение шлюза → Result.Failed
 // (Degraded с секциями), чек никогда не падает исключением.
 public class HealthTests
 {

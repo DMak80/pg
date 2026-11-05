@@ -29,6 +29,6 @@ public sealed class EtcdNoQuorumRule : IAlertRule
             null,
             "raft signs of a missing leader: writes fail on all members — worker declarations and panel heartbeats will stall; the etcd cluster must keep a majority",
             AlertRemedy.OperatorRunbook,
-            "restore quorum per arch/09 (restart failed members; if the majority is lost — restore from a snapshot)");
+            "restore quorum per arch/pg-clusters/09-troubleshooting.md (restart failed members; if the majority is lost — restore from a snapshot)");
     }
 }

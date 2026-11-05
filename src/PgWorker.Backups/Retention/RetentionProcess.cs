@@ -11,7 +11,7 @@ using PgWorker.Provisioning.Processes;
 
 namespace PgWorker.Backups;
 
-/// <summary>Ретенционный проход (arch/19 §4): под клэймом &lt;C&gt; по
+/// <summary>Ретенционный проход (arch/backups/05-etcd-contract.md): под клэймом &lt;C&gt; по
 /// расписанию Retention:IntervalSec для каждого шарда — доводка DELETING,
 /// GFS-отбор (один кандидат-полный в DELETING за проход), чистка WAL ниже
 /// cutoff оставляемых, гигиена FAILED; после шардов — монитор занятости
@@ -45,7 +45,7 @@ public sealed class RetentionProcess(
     {
         var cluster = snap.Config.Cluster;
 
-        // Мутации /pgworker/backups/* — только держатель клэйма (arch/19 §4).
+        // Мутации /pgworker/backups/* — только держатель клэйма (arch/backups/05-etcd-contract.md).
         if (!claims.IsMine(cluster))
             return Result<ProcessOutcome>.Failed(new ApplicationException(
                 $"{Op} {cluster}: claim is not ours (or lost) — mutations forbidden"));
@@ -60,7 +60,7 @@ public sealed class RetentionProcess(
 
         var nowUnix = time.GetUtcNow().ToUnixTimeSeconds();
 
-        //  (arch/19 §4): per-cluster проход — гвард policy.s3. null (пул не
+        //  (arch/backups/05-etcd-contract.md): per-cluster проход — гвард policy.s3. null (пул не
         // выбран) → кластер молчит (не чистит; алерт missing — проекция панели);
         // Failed → journal, ретраи проходом (retention-interval).
         var poolRead = await s3Factory.ResolveAsync(cluster, ct);
@@ -143,7 +143,7 @@ public sealed class RetentionProcess(
             await FinishDeletionAsync(cluster, shard, marked, s3, ct);
         }
 
-        // (4) Чистка WAL (arch/19 §4 п.5): cutoff = wal_start новейшего
+        // (4) Чистка WAL (arch/backups/05-etcd-contract.md): cutoff = wal_start новейшего
         // (по started_unix) verify-OK COMPLETED-полного из оставляемых — ОДНА
         // точка с chain_start контроля (§3). ГВАРД verify: прунинг ФИНАЛОВ без
         // успешного verify нового полного запрещён (OK-полного нет ⇒ финалы не
@@ -242,7 +242,7 @@ public sealed class RetentionProcess(
     // префиксы) → used → EvaluateStorage → put ТОЛЬКО при изменении наблюдаемых
     // полей (used_bytes/quota_bytes/used_percent/state). updated_unix в
     // сравнение не входит: меняющийся now делал бы put каждым проходом, а
-    // свежесть прохода видна по возрасту updated_unix (arch/19 §4 «при
+    // свежесть прохода видна по возрасту updated_unix (arch/backups/05-etcd-contract.md «при
     // изменении»; строковое сравнение — образец WalStatusWriter.WriteIfChangedAsync).
     // Недоступный пул — used_bytes был бы занижен: частичный вердикт НЕ
     // публикуется (ключ остаётся с последним ПОЛНЫМ значением — квота-алерт
@@ -257,7 +257,7 @@ public sealed class RetentionProcess(
             return Result.Success();
         _lastStoragePassUnix = nowUnix;
 
-        //  (arch/19 §5): union по ВСЕМ существующим пулам /s3/clusters/ —
+        //  (arch/backups/06-s3-layout.md): union по ВСЕМ существующим пулам /s3/clusters/ —
         // по первому доступному endpoint каждого (CreateForPoolAsync: write=read=
         // все ноды; листинг с первой доступной); дедуп ключей — по (пул, ключ)
         // (mesh-дубликат в разных пулах учтён один раз).
@@ -304,7 +304,7 @@ public sealed class RetentionProcess(
             if (!current.IsSuccess)
                 continue; // failover
             if (current.Value is { } kv && SameObservable(kv.Value, status))
-                return Result.Success(); // без изменений — не пишем (arch/19 §4)
+                return Result.Success(); // без изменений — не пишем (arch/backups/05-etcd-contract.md)
             var put = await etcd.PutAsync(endpoint, "/pgworker/backups/storage",
                 StorageStatusJson.Serialize(status), null, ct);
             if (put.IsSuccess)

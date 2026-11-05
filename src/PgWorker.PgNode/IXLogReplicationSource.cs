@@ -13,7 +13,7 @@ public sealed class WalStartRefused(string serverError)
     : ApplicationException($"START_REPLICATION refused (58P01): {serverError}");
 
 /// <summary>Слот репликации отсутствует (SQLSTATE 42704 — «replication slot …
-/// does not exist»; проверки слота SQL'ом — пустой результат). Канон arch/19
+/// does not exist»; проверки слота SQL'ом — пустой результат). Канон arch/backups/README.md
 /// §3: transient-ожидание (waiting_slot) — ensure/recreate делает воркер.</summary>
 public sealed class WalSlotMissing(string slot)
     : ApplicationException($"replication slot is missing: {slot}");
@@ -22,7 +22,7 @@ public sealed class WalSlotMissing(string slot)
 /// таймлайн сервера и позиция записи WAL.</summary>
 public sealed record ServerIdentity(uint Tli, ulong XLogPos);
 
-/// <summary>Транспорт физической репликации (arch/19 §3): реализация Npgsql —
+/// <summary>Транспорт физической репликации (arch/backups/02-wal-archive.md §1): реализация Npgsql —
 /// Task 5; фейк — юнит-тесты. Семантика: Open — подключение + сверка
 /// wal_segment_size (mismatch → Failed permanent); Start — START_REPLICATION
 /// SLOT <slot> PHYSICAL <startLsn> со СТАРТОВОЙ позицией, отказ 58P01 — наружу
@@ -31,7 +31,7 @@ public sealed record ServerIdentity(uint Tli, ulong XLogPos);
 /// после успешного Start; SetConfirmed — standby status update (write=flush=
 /// applied одной LSN — ЕДИНСТВЕННОЕ место подтверждения слота — после S3-put);
 /// ReadTimelineHistory — TIMELINE_HISTORY протокола; null = рантайм не
-/// экспонирует (fallback-контроль воркера, arch/19 §3).</summary>
+/// экспонирует (fallback-контроль воркера, arch/backups/02-wal-archive.md §1).</summary>
 public interface IXLogReplicationSource : IAsyncDisposable
 {
     Task<Result> OpenAsync(CancellationToken ct);

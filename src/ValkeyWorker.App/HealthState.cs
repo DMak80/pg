@@ -1,7 +1,7 @@
 namespace ValkeyWorker.App;
 
 /// <summary>
-/// Пассивные состояния наблюдаемости (arch/21 §7): циклы пишут тики/события,
+/// Пассивные состояния наблюдаемости (arch/valkeyworker/06-operability.md §4): циклы пишут тики/события,
 /// health-проба /healthz читает снимок. Immutable-снимок + lock — без гонок.
 /// Реализует ILoopProgress — доставка прогресс-отметок в процессы ниже App.
 /// </summary>

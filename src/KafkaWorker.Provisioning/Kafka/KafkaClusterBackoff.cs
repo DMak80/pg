@@ -5,7 +5,7 @@ namespace KafkaWorker.Provisioning.Kafka;
 /// сколько kafka-проб подряд упало и когда разрешена следующая. Писатели —
 /// supervise-проба и коллектор метрик (первые kafka-контакты конвейера);
 /// успех сбрасывает. Чистая политика частоты: НЕ состояние кластера — в etcd
-/// ничего не пишет, brokers/&lt;b&gt;/state не трогает (флап ≠ смерть, arch/17 S7).
+/// ничего не пишет, brokers/&lt;b&gt;/state не трогает (флап ≠ смерть, arch/synchronization/03-fault-tolerance.md §S7).
 /// </summary>
 public sealed class KafkaClusterBackoff(TimeProvider clock)
 {

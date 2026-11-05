@@ -1,5 +1,5 @@
 #!/bin/sh
-# Декларативное создание кластера ЧЕРЕЗ API PgWorker (arch/14 §1.1; задача
+# Декларативное создание кластера ЧЕРЕЗ API PgWorker (arch/pgworker/07-api.md §1; задача
 # etcd-via-worker-api): прежний etcdctl-сид стал тонкой curl-обёрткой над
 # POST /api/clusters — единственный писатель деклараций теперь воркер.
 # Создаёт: config NOT_INITIALIZED + S=2 шарда × replicas=2 + routing/status

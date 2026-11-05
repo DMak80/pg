@@ -8,10 +8,10 @@ using Xunit;
 
 namespace S3Worker.UnitTests.Provisioning;
 
-// PkiStore — PKI репликации per-cluster в etcd (arch/23 §6, spec §3.2, §8.1.3):
+// PkiStore — PKI репликации per-cluster в etcd (arch/s3-clusters/06-secrets.md, spec §3.2, §8.1.3):
 // ленивый выпуск txn put-if-absent (повтор — тот же материал), добор
 // оркестратора существующим CA, отказ «CA невосстановим», изоляция trust-доменов
-// кластеров, целостность ключ↔сертификат при чтении, канонический JSON arch/23 §2.1.
+// кластеров, целостность ключ↔сертификат при чтении, канонический JSON arch/s3-clusters/02-keys.md §2.
 public class PkiStoreTests
 {
     private const string Cluster = "backups";
@@ -189,7 +189,7 @@ public class PkiStoreTests
         // Act
         var json = PkiStore.SerializeCa(material);
 
-        // Assert: поля канона arch/23 §2.1 (смешанный регистр: camelCase + snake_case).
+        // Assert: поля канона arch/s3-clusters/02-keys.md §2 (смешанный регистр: camelCase + snake_case).
         json.Should().StartWith("""{"name":"backups","publicKeyPem":"-----BEGIN PUBLIC KEY-----""");
         json.Should().Contain("\"private_key_pem\":\"-----BEGIN PRIVATE KEY-----");
     }

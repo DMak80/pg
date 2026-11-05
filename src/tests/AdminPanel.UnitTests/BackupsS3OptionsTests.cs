@@ -26,7 +26,7 @@ public class BackupsS3OptionsTests
     }
 
     // AAA: биндинг читает bucket/region/path-style и периодику; полей кредов и
-    // endpoints у S3Options нет — креды per-cluster в etcd (arch/23 §6).
+    // endpoints у S3Options нет — креды per-cluster в etcd (arch/s3-clusters/06-secrets.md).
     [Fact]
     public void Binding_BucketRegionPathStyle_Timings()
     {

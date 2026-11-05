@@ -15,10 +15,10 @@ using ValkeyWorker.Core.Valkey;
 using ValkeyWorker.Provisioning.Processes;
 using Shared.Etcd.Client;
 
-// Точка входа ValkeyWorker (arch/21 §8): host-builder с HTTPS-гранью HTTP API
+// Точка входа ValkeyWorker (arch/valkeyworker/06-operability.md §5): host-builder с HTTPS-гранью HTTP API
 // (mTLS — только /api; /healthz — открытая грань), конфигурация appsettings+env, DI (etcd →
 // координация → циклы). Per-install env-секреты — только TLS HTTP API
-// (arch/21 §4); per-cluster секреты (app/admin) — в etcd.
+// (arch/valkeyworker/04-security.md §3); per-cluster секреты (app/admin) — в etcd.
 // Fail-fast: пустые Etcd:Endpoints, не-https AdvertiseUrl.
 // Каркас (фаза 2): циклы живы, процессы A–E — задача 12, API — задача 13.
 
@@ -31,9 +31,9 @@ builder.Services.AddSingleton<HealthState>();
 // Прогресс-отметки долгих фаз reconcile в глубину процессов (provisioning).
 builder.Services.AddSingleton<Shared.Core.Hosting.ILoopProgress>(sp => sp.GetRequiredService<HealthState>());
 
-// Метрики (arch/18 §2.2): /metrics на том же HTTPS-Kestrel-порту, что /healthz —
-// открытая грань скрейпа без клиентского серта (arch/18 §5.2). Коллектор доменных метрик
-// INFO — arch/18 §4.2 (ValkeyMetricsCollector ниже).
+// Метрики (arch/metrics/02-dictionary.md §2): /metrics на том же HTTPS-Kestrel-порту, что /healthz —
+// открытая грань скрейпа без клиентского серта (arch/metrics/05-storage.md §2). Коллектор доменных метрик
+// INFO — arch/metrics/04-collectors.md §2 (ValkeyMetricsCollector ниже).
 builder.Services.AddAppMetrics("ValkeyWorker", builder.Configuration.GetSection("ValkeyWorker:Metrics"));
 builder.Services.AddSingleton(sp =>
 {
@@ -48,10 +48,10 @@ builder.Services.AddSingleton(sp =>
 });
 
 // etcd-клиент: HTTP JSON gateway /v3/*; handler против DNS-флейпа Docker
-// embedded DNS ( arch/21 §7): PooledConnectionLifetime + IPv4-first резолв.
+// embedded DNS ( arch/valkeyworker/06-operability.md §4): PooledConnectionLifetime + IPv4-first резолв.
 // EtcdGateway-синглтон захвачен HttpClient навсегда — ротация handler'ов фабрики
 // на него не действует, поэтому явный SocketsHttpHandler.
-// Поллинг-инвариант (arch/21 §6): одиночный HTTP-вызов к etcd не молчит дольше
+// Поллинг-инвариант (arch/valkeyworker/06-operability.md §3): одиночный HTTP-вызов к etcd не молчит дольше
 // окна проверки watchdog — таймаут = половина окна (7.5 c при дефолтах); зависший
 // запрос → исключение → transient-фейл тика, а не молчание до дефолтных 100 c.
 builder.Services.AddHttpClient("etcd", c => c.Timeout = TimeSpan.FromSeconds(7.5))
@@ -59,27 +59,27 @@ builder.Services.AddHttpClient("etcd", c => c.Timeout = TimeSpan.FromSeconds(7.5
 
 // Fail-fast при старте: без etcd-endpoints воркер бессмысленен (docker-правила —
 // в DI-фабрике драйвера, задача 4);
-// ключ доступа /valkeyworker/api/<id> без URL бессмысленен (arch/21 §1.1).
+// ключ доступа /valkeyworker/api/<id> без URL бессмысленен (arch/valkeyworker/05-api.md §1).
 builder.Services.AddOptions<ValkeyWorkerOptions>()
     .Validate(o => o.Etcd.Endpoints is { Length: > 0 }, "ValkeyWorker:Etcd:Endpoints are not set")
     .Validate(o => !string.IsNullOrWhiteSpace(o.Api.AdvertiseUrl),
         "ValkeyWorker:Api:AdvertiseUrl is not set (env VWK_API_ADVERTISE_URL)")
     .Validate(o => o.Api.Tls.AllowInsecureHttp
         || o.Api.AdvertiseUrl.StartsWith("https://", StringComparison.Ordinal),
-        "AdvertiseUrl must be https:// (HTTPS-only edge, mTLS on /api only; arch/21 §1.1)")
+        "AdvertiseUrl must be https:// (HTTPS-only edge, mTLS on /api only; arch/valkeyworker/05-api.md §1)")
     .ValidateOnStart();
 
-// Управляемый серт API (arch/21 §1.1): чтение ключа /workers/api_tls/valkeyworker
+// Управляемый серт API (arch/valkeyworker/05-api.md §1): чтение ключа /workers/api_tls/valkeyworker
 // ДО поднятия Kestrel; приоритет etcd > env; битый ключ — fail-fast.
 var etcdEndpoints = builder.Configuration.GetSection("ValkeyWorker:Etcd:Endpoints").Get<string[]>() ?? [];
 var managedCert = await WorkerApiCertReader.ReadAsync(etcdEndpoints, "valkeyworker", CancellationToken.None);
 
-// HTTPS HTTP API (arch/21 §1.1): env-секреты TLS → конфиг, Kestrel c
+// HTTPS HTTP API (arch/valkeyworker/05-api.md §1): env-секреты TLS → конфиг, Kestrel c
 // серверным сертом; клиентский серт опционален, mTLS — только /api.
 TlsEndpoints.ApplyEnvOverrides(builder.Configuration);
 var apiTls = TlsEndpoints.ConfigureMtls(builder, port: 8080, managedCert);
 
-// Thumbprint применённого серта → дискавери-ключ (arch/21 §1.1): панель
+// Thumbprint применённого серта → дискавери-ключ (arch/valkeyworker/05-api.md §1): панель
 // сверяет с целевым → applied/pending restart.
 var apiCertThumbprint = apiTls.ServerCert is { } appliedCert
     ? Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(appliedCert.RawData)).ToLowerInvariant()
@@ -97,7 +97,7 @@ builder.Services.AddSingleton(sp => new ClaimStore(
     sp.GetRequiredService<TimeProvider>(),
     sp.GetRequiredService<IOptions<ValkeyWorkerOptions>>().Value.Api.AdvertiseUrl,
     apiCertThumbprint));
-// Глобальный portalloc-клэйм (arch/21 §2) — DI-синглтон, InstanceId единый с
+// Глобальный portalloc-клэйм (arch/valkeyworker/01-placement.md) — DI-синглтон, InstanceId единый с
 // ClaimStore (сквозная диагностика держателя).
 builder.Services.AddSingleton(sp => new PortAllocLock(
     KeyPrefix,
@@ -112,13 +112,13 @@ builder.Services.AddSingleton(sp => new WorkJournal(
 
 // docker-фабрика движков (health-пробы docker-hosts) + драйвер по режиму
 // (Plain: таблица Hosts; Swarm: manager endpoint) — fail-fast на противоречивой
-// конфигурации (arch/21 §8).
+// конфигурации (arch/valkeyworker/06-operability.md §5).
 builder.Services.AddSingleton<DockerEngineFactory>();
 builder.Services.AddSingleton<IClusterDriver>(sp =>
 {
     var docker = sp.GetRequiredService<IOptions<ValkeyWorkerOptions>>().Value.Docker;
     var factory = sp.GetRequiredService<DockerEngineFactory>();
-    // Контурная сеть (arch/21 §2): Mode=Swarm + ContourNetwork — ошибка
+    // Контурная сеть (arch/valkeyworker/01-placement.md): Mode=Swarm + ContourNetwork — ошибка
     // конфигурации (сеть overlay назначает сам Swarm) — fail-fast.
     docker.EnsureContourNetworkMode();
     if (string.Equals(docker.Mode, "Swarm", StringComparison.OrdinalIgnoreCase))
@@ -150,7 +150,7 @@ builder.Services.AddSingleton(sp =>
         opts.Snapshots.Dir, opts.Snapshots.RetentionFiles, opts.Snapshots.MaintenanceIntervalMin);
 });
 
-// Процессы A–E + вспомогательные (arch/21 §5): снапшот-делегат P12 «до/после»
+// Процессы A–E + вспомогательные (arch/valkeyworker/README.md): снапшот-делегат P12 «до/после»
 // у provisioning/deprovisioning; RESP-клиент — короткоживущие пробы.
 builder.Services.AddSingleton<IValkeyConnection, ValkeyConnection>();
 builder.Services.AddSingleton<IClusterSecretEnsurer>(sp => new ClusterSecretEnsurer(
@@ -230,7 +230,7 @@ builder.Services.AddSingleton(sp => new PasswordRotator(
     sp.GetRequiredService<IValkeyConnection>(),
     rotationTicketTimeoutSec: sp.GetRequiredService<IOptions<ValkeyWorkerOptions>>().Value.Thresholds.RotationTicketTimeoutSec));
 
-// HTTP API воркера (arch/21 §1.1): мутации декларативного контракта
+// HTTP API воркера (arch/valkeyworker/05-api.md §1): мутации декларативного контракта
 // valkey-домена — хендлеры-синглтоны.
 builder.Services.AddSingleton(sp => new CreateClusterHandler(
     sp.GetRequiredService<IEtcdGateway>(),
@@ -271,7 +271,7 @@ builder.Services.AddSingleton(sp => new RestartHandler(
     sp.GetRequiredService<ILoggerFactory>().CreateLogger<RestartHandler>()));
 
 // Циклы: keepalive первым (lease живут до Reconcile), затем снапшоты и reconcile.
-// Опросные кэши контроль-плейна тика (arch/17 S10, arch/21 §5): ReconcileLoop
+// Опросные кэши контроль-плейна тика (arch/synchronization/05-delta-application.md §S10, arch/valkeyworker/README.md): ReconcileLoop
 // читает слепок и гейтится по дельте — etcd в каждом тике не range-ится.
 builder.Services.AddSingleton<IPrefixPollSources, EtcdPrefixSources>();
 builder.Services.AddSingleton<IValkeyClusterProcesses, ValkeyClusterProcesses>();
@@ -282,7 +282,7 @@ builder.Services.AddHostedService(sp => sp.GetRequiredService<KeepaliveLoop>());
 builder.Services.AddHostedService(sp => sp.GetRequiredService<SnapshotLoop>());
 builder.Services.AddHostedService(sp => sp.GetRequiredService<ReconcileLoop>());
 
-// Коллектор доменных метрик INFO (arch/18 §4.2): read-only сбор вне клэймов;
+// Коллектор доменных метрик INFO (arch/metrics/04-collectors.md §2): read-only сбор вне клэймов;
 // источники — снапшот /valkey/clusters/ (парсер ValkeySnapshotParser) и Range
 // /valkeyworker/portalloc/; только Active + полные дискавери-креды (зеркало
 // Kafka-коллектора: сразу после циклов).
@@ -298,7 +298,7 @@ builder.Services.AddHostedService(sp => new ValkeyMetricsCollector(
     sp.GetRequiredService<TimeProvider>(),
     sp.GetRequiredService<ILogger<ValkeyMetricsCollector>>()));
 
-// Наблюдаемость (arch/21 §7): агрегированный health + per-loop обёртки.
+// Наблюдаемость (arch/valkeyworker/06-operability.md §4): агрегированный health + per-loop обёртки.
 builder.Services.AddSingleton<ServiceProbes>();
 builder.Services.AddSingleton<ValkeyWorkerHealth>();
 builder.Services.AddSingleton<HealthCheckAbstract<ReconcileLoop>>(
@@ -313,7 +313,7 @@ builder.Services.AddHealthChecks()
     .AddCheck<HealthCheckAbstract<KeepaliveLoop>>("keepalive-loop")
     .AddCheck<HealthCheckAbstract<SnapshotLoop>>("snapshot-loop");
 
-// Watchdog зависших циклов (arch/21 §6): staleness активности (тик или
+// Watchdog зависших циклов (arch/valkeyworker/06-operability.md §3): staleness активности (тик или
 // прогресс-отметка) всех циклов → журнал +
 // метрика + graceful self-stop (путь POST /api/restart); Enabled=false (секция
 // ValkeyWorker:Loops:Watchdog) — компонент не регистрируется.
@@ -326,7 +326,7 @@ builder.Services.AddLoopWatchdog(
     loopsWatchdog,
     (sp, loop) => sp.GetRequiredService<Shared.Metrics.Worker.WorkerMetricsInstrumentation>()
         .WatchdogRestart(loop));
-// fail-fast инварианта живости (arch/21 §8): тики быстрых циклов чаще порога
+// fail-fast инварианта живости (arch/valkeyworker/06-operability.md §5): тики быстрых циклов чаще порога
 // сноса (Multiplier × CheckIntervalSec); конфиг watchdog не меняется
 var loopsCfg = builder.Configuration.GetSection("ValkeyWorker:Loops").Get<LoopsOptions>() ?? new LoopsOptions();
 if (loopsWatchdog.Enabled)
@@ -336,12 +336,12 @@ if (loopsWatchdog.Enabled)
 var app = builder.Build();
 if (app.Services.GetRequiredService<IOptions<ValkeyWorkerOptions>>().Value.Api.Tls.AllowInsecureHttp)
     app.Logger.LogWarning(
-        "ValkeyWorker:Api:Tls:AllowInsecureHttp=true — HTTP without TLS (WAF tests only, arch/21 §1.1)");
+        "ValkeyWorker:Api:Tls:AllowInsecureHttp=true — HTTP without TLS (WAF tests only, arch/valkeyworker/05-api.md §1)");
 if (apiTls.Source is { } certSource)
     app.Logger.LogInformation("ValkeyWorker:Api:Tls: API server certificate — source {Source}", certSource);
 if (apiTls.Warning is { } certWarning)
     app.Logger.LogWarning("ValkeyWorker:Api:Tls: {Warning}", certWarning);
-// Открытая грань (arch/21 §1.1): клиентский серт опционален на хендшейке;
+// Открытая грань (arch/valkeyworker/05-api.md §1): клиентский серт опционален на хендшейке;
 // 401 без валидного серта — только на /api; /healthz и /metrics — без серта.
 app.UseMiddleware<Shared.Tls.ClientCertAuthMiddleware>();
 app.MapAppMetrics();
@@ -350,7 +350,7 @@ app.MapWorkerApi();
 
 await app.RunAsync();
 
-// Опции процессов из дерева конфигурации (arch/21 §8).
+// Опции процессов из дерева конфигурации (arch/valkeyworker/06-operability.md §5).
 static ValkeyWorker.Provisioning.Processes.ValkeyProvisioningOptions ToProvisioningOptions(ValkeyWorkerOptions opts) => new(
     opts.Docker.PortRange.From,
     opts.Docker.PortRange.To,
@@ -359,14 +359,14 @@ static ValkeyWorker.Provisioning.Processes.ValkeyProvisioningOptions ToProvision
     opts.AdvertisedClientHost,
     opts.Docker.Images.Node,
     opts.Thresholds.RotationTicketTimeoutSec,
-    // Контурная сеть нод (arch/21 §2): пусто → null — прежнее поведение.
+    // Контурная сеть нод (arch/valkeyworker/01-placement.md): пусто → null — прежнее поведение.
     opts.Docker.ContourNetwork is { Length: > 0 } ? opts.Docker.ContourNetwork : null);
 
 // Делегат снапшота для процессов (P12 «до/после» в точках изменений).
 static Func<CancellationToken, Task<Result>> SnapshotDelegate(SnapshotJob job)
     => async ct => await job.TakeAsync(ct);
 
-// Источник кластеров для коллектора метрик (arch/18 §4.2): Range /valkey/clusters/
+// Источник кластеров для коллектора метрик (arch/metrics/04-collectors.md §2): Range /valkey/clusters/
 // c failover по endpoints → ValkeySnapshotParser (паттерн Kafka-коллектора).
 static async Task<Result<IReadOnlyList<ValkeyWorker.Core.Model.ValkeyClusterSnapshot>>> SnapshotClustersAsync(
     IServiceProvider sp, CancellationToken ct)

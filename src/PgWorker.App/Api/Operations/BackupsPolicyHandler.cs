@@ -7,7 +7,7 @@ using Shared.Etcd.Client;
 using PgWorker.Core.Writing;
 namespace PgWorker.App.Api.Operations;
 
-// Приём per-cluster политики бэкапов (arch/19 §4): тело канона
+// Приём per-cluster политики бэкапов (arch/backups/05-etcd-contract.md): тело канона
 // {"retention":{"days":..,"weeks":..,"months":..},"full_max_age_sec":..,
 // "verify":{"on_create":..}}; отсутствующие retention-поля → дефолты, тело
 // ЦЕЛИКОМ замещает политику (put полного значения). Применение — следующим
@@ -22,15 +22,15 @@ public sealed partial class BackupsPolicyHandler(IEtcdGateway gateway, string[] 
         [property: JsonPropertyName("full_max_age_sec")] long? FullMaxAgeSec,
         [property: JsonPropertyName("verify")] VerifyBody? Verify,
         [property: JsonPropertyName("drill")] DrillBody? Drill,
-        //  (arch/19 §4): секция s3 — пул + списки роли источника;
+        //  (arch/backups/05-etcd-contract.md): секция s3 — пул + списки роли источника;
         // отсутствие секции → в policy не кладётся (выключение бэкапов).
         [property: JsonPropertyName("s3")] BackupsPolicyS3Body? S3,
-        //  (u16, arch/19 §4): возрастной гейт мусора супервизора; поле
+        //  (u16, arch/backups/05-etcd-contract.md): возрастной гейт мусора супервизора; поле
         // отсутствует → в policy НЕ кладётся (кластер живёт на дефолте
         // конфига супервизора 600 с).
         [property: JsonPropertyName("garbage_min_age_sec")] long? GarbageMinAgeSec);
 
-    // reliability (arch/19 §4/§14 §1.1): interval_days — период дрилов
+    // reliability (arch/backups/05-etcd-contract.md/§14 §1.1): interval_days — период дрилов
     // шардов кластера в сутках; null/отсутствие секции → поля в policy нет.
     private sealed record DrillBody(
         [property: JsonPropertyName("interval_days")] int? IntervalDays);
@@ -78,7 +78,7 @@ public sealed partial class BackupsPolicyHandler(IEtcdGateway gateway, string[] 
         //    months [0..120], full_max_age_sec >= 600, on_create — bool из JSON-схемы.
         var errors = new List<ValidationError>();
         //    отсутствующие retention-поля → дефолт 1/1/1 (целевая схема,
-        //    arch/19 §9) — partial-policy PUT не возвращает кластер к 7/4/6.
+        //    arch/backups/09-operability.md §1) — partial-policy PUT не возвращает кластер к 7/4/6.
         var days = body.Retention?.Days ?? 1;
         var weeks = body.Retention?.Weeks ?? 1;
         var months = body.Retention?.Months ?? 1;

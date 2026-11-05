@@ -2,7 +2,7 @@ using KafkaWorker.Core.Model;
 
 namespace KafkaWorker.App.Loops;
 
-// Тип работы над кластером (arch/16 §5): классификация по config.state.
+// Тип работы над кластером (arch/kafkaworker/README.md): классификация по config.state.
 
 /// <summary>NOT_INITIALIZED → Provision; TO_REMOVE → Deprovision; иначе → Active.</summary>
 public enum KafkaClusterWork
@@ -18,7 +18,7 @@ public enum KafkaClusterWork
 }
 
 /// <summary>
-/// Чистая функция классификации кластера по config.state (arch/16 §5) +
+/// Чистая функция классификации кластера по config.state (arch/kafkaworker/README.md) +
 /// кандидаты scale-прохода волны B: брокеры NOT_INITIALIZED (add) и
 /// TO_REMOVE (remove) у Active-кластера.
 /// </summary>
@@ -28,7 +28,7 @@ public static class KafkaClusterClassifier
     {
         "NOT_INITIALIZED" => KafkaClusterWork.Provision,
         "TO_REMOVE" => KafkaClusterWork.Deprovision,
-        _ => KafkaClusterWork.Active, // отсутствие state = Active (arch/15 §2.1)
+        _ => KafkaClusterWork.Active, // отсутствие state = Active (arch/kafka-clusters/02-keys.md §2)
     };
 
     /// <summary>Add-кандидаты Active-ветки: brokers/&lt;b&gt;/state=NOT_INITIALIZED (волна B).</summary>

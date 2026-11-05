@@ -4,7 +4,7 @@ using Shared.Etcd.Client;
 
 namespace PgWorker.UnitTests.Etcd;
 
-// S3PoolStore (arch/23 §7): сборка пула из словаря Kv-заглушек —
+// S3PoolStore (arch/s3-clusters/07-client-pool.md): сборка пула из словаря Kv-заглушек —
 // имена нод из ключей заявки, адреса из portalloc; нода без portalloc-записи
 // не выпадает из пула (Host=null); нет config → null.
 public class S3PoolStoreParseTests
@@ -52,7 +52,7 @@ public class S3PoolStoreParseTests
     }
 
     // AAA: инстанс с placement без portalloc-записи → нода в Nodes с Host=null
-    // (заявлена, не провижинена — не выпадает из пула, arch/19 §4).
+    // (заявлена, не провижинена — не выпадает из пула, arch/backups/05-etcd-contract.md).
     [Fact]
     public async Task Read_NodeWithoutPortAlloc_KeptWithNullAddress()
     {

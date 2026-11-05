@@ -27,7 +27,7 @@ namespace PgWorker.IntegrationTests.Backups;
 // (alias:8080, Phase="launching"), "launching"/"downloading"/"recovering" —
 // только GET-супервиз.
 // REJOINING: Patroni-пробы/SQL-гейт.
-// Целевая архитектура E2E (docs/e2e-isolation.md §1): единица изоляции —
+// Целевая архитектура E2E (arch/testing/02-e2e-isolation.md §1): единица изоляции —
 // класс; окружение — СВОЙ etcd в СВОЙ docker-сети (OwnedEtcdFixture) —
 // чужие записи в общий etcd коллекции на класс не влияют.
 [Collection(NonE2eCollection.Name)]
@@ -71,7 +71,7 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
         await fixture.Gateway.DeleteAsync(fixture.Endpoint, $"/pgworker/backups/{cluster}/", prefix: true, ct);
         await fixture.Gateway.DeleteAsync(fixture.Endpoint, $"/pgworker/claims/{cluster}", prefix: false, ct);
         await fixture.Gateway.DeleteAsync(fixture.Endpoint, $"/pgworker/work/{cluster}", prefix: false, ct);
-        // Изоляция (канон docs/e2e-isolation.md §1): etcd один на коллекцию,
+        // Изоляция (канон arch/testing/02-e2e-isolation.md §1): etcd один на коллекцию,
         // соседние тесты класса оставляют /clusters/<C>/... (состояния нод
         // REBUILDING/RUNNING) — без чистки ассерты BeNull флакуют от порядка
         // (прецедент : литеральные имена кластеров в общей коллекции).
@@ -81,7 +81,7 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
             {
                 [$"{shard}/shard1a"] = new("localhost", new NodePorts(16001, 18001, 17001)),
             }), null, ct);
-        // Заявки ресурсов ОБЯЗАТЕЛЬНЫ (arch/14 §2.1 п.4): restore-путь рендерит
+        // Заявки ресурсов ОБЯЗАТЕЛЬНЫ (arch/pgworker/01-placement.md §2): restore-путь рендерит
         // bootstrap с tuned-параметрами (pgtune.Create на EnsureNode-пути) —
         // без заявок pgtune честно фейлит фазу.
         await fixture.Gateway.PutAsync(fixture.Endpoint,
@@ -700,7 +700,7 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
         running.Phase.Should().Be("launching", "the next tick polls GET only");
     }
 
-    // AAA (t05 tool-доставка, arch/14 §4, spec §3.6-3а/§8-22): тик запуска —
+    // AAA (t05 tool-доставка, arch/pgworker/04-security.md, spec §3.6-3а/§8-22): тик запуска —
     // EnsureNode, ЗАТЕМ tool-пин is_tool_start=true ДО команды restore
     // (28P01-окно: transient-ретрай тиком, Phase заявки не меняется),
     // машина prepared → POST /api/ops/restore (Phase="launching").
@@ -788,7 +788,7 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
             .Should().Contain("receiver-unavailable");
     }
 
-    // AAA (arch/19 §3.5): 409 при запуске — в общем ops-реестре приёмника
+    // AAA (arch/backups/03-restore.md): 409 при запуске — в общем ops-реестре приёмника
     // ЧУЖАЯ ops-операция (verify свежего полного); снимок 409 не различает
     // свою/чужую, и принять 409 за «свою живую» нельзя — воркер уходил бы в
     // REJOINING от чужого succeeded без system_id. 409 — transient: фаза
@@ -1387,7 +1387,7 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
         // Arrange — REJOINING; журнал работы несёт rest_window_open=true
         // (открытое окно REST-ротации, ETCD-FIRST): EnsureNode-путь restore
         // окно НЕ расширяет — нода поднимается с NEW-парой из etcd
-        // (arch/14 §5 I).
+        // (arch/pgworker/processes/i-secret-rotator.md I).
         var ct = TestContext.Current.CancellationToken;
         await SeedAsync("c1");
         var inner = new StubScaleDriver();

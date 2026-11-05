@@ -3,7 +3,7 @@ using S3Worker.Core.Model;
 
 namespace S3Worker.UnitTests.App;
 
-// Классификация тика (arch/24 §5): чистая функция Classify по config.state —
+// Классификация тика (arch/s3worker/README.md): чистая функция Classify по config.state —
 // NOT_INITIALIZED/TO_REMOVE/Active (state нет)/Skip (config нет)/незнакомое raw.
 public class S3ClusterClassifierTests
 {
@@ -26,7 +26,7 @@ public class S3ClusterClassifierTests
     [Fact]
     public void Classify_StateNull_Active()
     {
-        // Arrange — Active: state отсутствует (arch/23 §2)
+        // Arrange — Active: state отсутствует (arch/s3-clusters/02-keys.md §1)
         var snap = Snap(new S3ClusterConfig("owns3", 3, null, 1, null));
 
         // Act
@@ -65,7 +65,7 @@ public class S3ClusterClassifierTests
     [Fact]
     public void Classify_UnknownState_Active()
     {
-        // Arrange — незнакомое state (толерантность arch/23 §2 — система развивается)
+        // Arrange — незнакомое state (толерантность arch/s3-clusters/02-keys.md §1 — система развивается)
         var snap = Snap(new S3ClusterConfig("owns3", 3, null, 1, "SOMETHING"));
 
         // Act

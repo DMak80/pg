@@ -4,7 +4,7 @@ using Shared.Etcd.Client;
 
 namespace AdminPanel.Etcd.Parsing;
 
-// Точечный разбор ключа /pgworker/backups-disabled (u10; канон arch/19 §4):
+// Точечный разбор ключа /pgworker/backups-disabled (u10; канон arch/backups/05-etcd-contract.md):
 // значение {"updated_unix","updated_by"?} → BackupsDisabledInfo. Ключа нет —
 // null (бэкапы работают); битый JSON / не объект / нет updated_unix —
 // KeyParseError (толерантный читатель, ключ не трогаем).

@@ -6,7 +6,7 @@ using Xunit;
 
 namespace Shared.Docker.UnitTests.Engine;
 
-// KillContainerAsync — жёсткая остановка spilo-нод (arch/14 §6/§5 D E3):
+// KillContainerAsync — жёсткая остановка spilo-нод (arch/pgworker/08-operability.md §3/§5 D E3):
 // SIGKILL, exited-факт немедленный — поллинга нет; 404 = успех (идемпотентность);
 // транспортный отказ/ошибка демона — Result.Failed, не исключение.
 public class DockerEngineKillTests

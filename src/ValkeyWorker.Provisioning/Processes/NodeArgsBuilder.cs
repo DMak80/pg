@@ -1,9 +1,9 @@
 namespace ValkeyWorker.Provisioning.Processes;
 
-// Сборка аргументов контейнера ноды (arch/21 §2): ACL при старте + maxmemory +
+// Сборка аргументов контейнера ноды (arch/valkeyworker/01-placement.md): ACL при старте + maxmemory +
 // persistence off. Детерминизм: аргументы ТОЛЬКО из etcd-факта (декларация +
 // креды) → пересоздание контейнера собирает актуальные пароли (spec §4.5.1).
-// BuildCmd — cmd-обёртка env-TLS (arch/21 §2): раскатка PEM из env в /tls и
+// BuildCmd — cmd-обёртка env-TLS (arch/valkeyworker/01-placement.md): раскатка PEM из env в /tls и
 // exec valkey-server с каноническим набором args (shell-экранированным).
 public static class NodeArgsBuilder
 {
@@ -19,7 +19,7 @@ public static class NodeArgsBuilder
             "--maxmemory-policy", maxmemoryPolicy,
             "--save", "",
             "--appendonly", "no",
-            // TLS (arch/21 §2): тот же клиентский порт portalloc (контейнерный
+            // TLS (arch/valkeyworker/01-placement.md): тот же клиентский порт portalloc (контейнерный
             // 6379 слушает TLS), plain закрыт; серты — /tls (env-TLS: PEM в env
             // VALKEY_TLS_{CERT,KEY,CA}, раскатка обёрткой BuildCmd); клиенты без
             // сертификатов — принципалы из ACL.
@@ -33,7 +33,7 @@ public static class NodeArgsBuilder
         ];
 
     /// <summary>
-    /// Cmd-обёртка старта ноды (env-TLS, arch/21 §2): ["sh","-c", раскатка +
+    /// Cmd-обёртка старта ноды (env-TLS, arch/valkeyworker/01-placement.md): ["sh","-c", раскатка +
     /// "; exec " + shell-escape(args)]. Раскатка — umask 077 + /tls + printf
     /// PEM из env; entrypoint образа при $1 == sh делает exec "$@" как есть —
     /// обёртка срабатывает ДО valkey-server (Р7-верификация на пине образа).

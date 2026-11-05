@@ -16,7 +16,7 @@ public sealed class E2eMoveScenarios(E2eMoveScenariosFx Ctx, ITestOutputHelper o
 {
     private E2eEnvironment Fx => Ctx.Fx;
 
-    // Уникальное имя кластера на прогон ({slug}{тег прогона}, docs/e2e-isolation.md
+    // Уникальное имя кластера на прогон ({slug}{тег прогона}, arch/testing/02-e2e-isolation.md
     // §1): движковые контейнеры/тома pgw-<C>-* опознаются teardown'ом окружения
     // по своему тегу (OwnName) и снимаются им; константное имя запрещено.
     private string Cluster => $"mshop{Fx.ClusterTag}";
@@ -58,7 +58,7 @@ public sealed class E2eMoveScenarios(E2eMoveScenariosFx Ctx, ITestOutputHelper o
         }
         catch
         {
-            // docs/e2e-launch.md §3: упавший сценарий — окружение ОСТАНОВИТЬ, не
+            // arch/testing/01-e2e-launch.md §3: упавший сценарий — окружение ОСТАНОВИТЬ, не
             // удалить (телеметрия в артефактах + живые объекты для разбора).
             Fx.MarkFailed();
             throw;
@@ -443,7 +443,7 @@ public sealed class E2eMoveScenarios(E2eMoveScenariosFx Ctx, ITestOutputHelper o
     // публикации (PATCH /config мутаций синхрон-режима).
     private sealed record MasterInfo(string Node, string Host, int Pg, int Patroni, string Dsn);
 
-    // Пробы Patroni из теста (семантика /primary, arch/14 §5 C).
+    // Пробы Patroni из теста (семантика /primary, arch/pgworker/processes/c-node-supervisor.md C).
     // Patroni REST нод — https (цепочка к per-contour CA, без hostname)
     private HttpClient PatroniHttp => Fx.NewPatroniHttpClient();
 
@@ -468,7 +468,7 @@ public sealed class E2eMoveScenarios(E2eMoveScenariosFx Ctx, ITestOutputHelper o
                     try
                     {
                         // Публикации ноды на хост: REST — localhost:{Patroni},
-                        // SQL — localhost:{Pg} (docs/e2e-isolation.md §2).
+                        // SQL — localhost:{Pg} (arch/testing/02-e2e-isolation.md §2).
                         using var response = await PatroniHttp.GetAsync(
                             $"https://localhost:{addr.Patroni}/primary", ct);
                         if (!response.IsSuccessStatusCode)
@@ -642,7 +642,7 @@ public sealed class E2eMoveScenarios(E2eMoveScenariosFx Ctx, ITestOutputHelper o
 }
 
 /// <summary>Компаньон-фикстура окружения класса (полный контур на класс:
-/// сеть/etcd/CA/окно портов; docs/e2e-isolation.md §1).</summary>
+/// сеть/etcd/CA/окно портов; arch/testing/02-e2e-isolation.md §1).</summary>
 public sealed class E2eMoveScenariosFx : E2eContourFixture
 {
     protected override string Slug => "move-chain";

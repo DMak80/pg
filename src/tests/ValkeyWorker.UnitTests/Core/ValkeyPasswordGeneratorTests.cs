@@ -5,7 +5,7 @@ using Xunit;
 
 namespace ValkeyWorker.UnitTests.Core;
 
-// Генератор per-cluster паролей (arch/21 §4): 32 символа [A-Za-z0-9].
+// Генератор per-cluster паролей (arch/valkeyworker/04-security.md §3): 32 символа [A-Za-z0-9].
 public class ValkeyPasswordGeneratorTests
 {
     [Fact]

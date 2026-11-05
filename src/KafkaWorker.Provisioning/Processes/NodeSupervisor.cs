@@ -11,7 +11,7 @@ using KafkaWorker.Provisioning.Kafka;
 namespace KafkaWorker.Provisioning.Processes;
 
 /// <summary>
-/// Надзор нод Active-кластера (arch/16 §5 C, spec §4.2 C, порт NodeSupervisor
+/// Надзор нод Active-кластера (arch/kafkaworker/02-cluster-lifecycle.md §4 C, spec §4.2 C, порт NodeSupervisor
 /// PgWorker): сверка декларации с фактом docker + AdminClient-проба. Снесённый
 /// контейнер пересоздаётся (тот же volume/env — self-healing). Брокер молчит
 /// дольше NodeDeadSec (по УСПЕШНОМУ ответу пробы) → state=UNREACHABLE +
@@ -214,7 +214,7 @@ public sealed class NodeSupervisor(
                     return Fail(cluster, marked.Error!, "mark-unreachable");
 
                 // RF=1 и том утрачен: чистый том = потеря единственной копии —
-                // journal-warning (документированное поведение, arch/16 §5 C).
+                // journal-warning (документированное поведение, arch/kafkaworker/02-cluster-lifecycle.md §4 C).
                 string? warning = removeVolume && snap.Config.ReplicationFactor <= 1
                     ? $"broker {brokerName}: data volume is lost, RF=1 — the only copy of cluster data is lost"
                     : null;
@@ -237,7 +237,7 @@ public sealed class NodeSupervisor(
         return Result.Success();
     }
 
-    // Надзору подвластны только стабильные ноды (границы arch/16 §5 C).
+    // Надзору подвластны только стабильные ноды (границы arch/kafkaworker/02-cluster-lifecycle.md §4 C).
     private static List<KafkaBrokerDecl> Supervisable(KafkaClusterSnapshot snap)
         => snap.Brokers
             .Where(b => b.State is null or "RUNNING" or "UNREACHABLE")

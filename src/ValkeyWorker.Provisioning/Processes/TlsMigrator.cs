@@ -9,7 +9,7 @@ using ValkeyWorker.Docker.Drivers;
 namespace ValkeyWorker.Provisioning.Processes;
 
 /// <summary>
-/// TlsMigrator (arch/21 §5 T): авто-миграция plain→TLS — первый шаг
+/// TlsMigrator (arch/valkeyworker/04-security.md §5 T): авто-миграция plain→TLS — первый шаг
 /// Active-ветки (до надзора C; образец kafka M). Детект — чистая функция
 /// NeedsMigration (ca_pem/ca_key в etcd отсутствуют ИЛИ args живого контейнера
 /// без --tls-port). Фазы: T0 journal-before-manipulations + снапшот «до»;
@@ -48,7 +48,7 @@ public sealed class TlsMigrator(
     }
 
     /// <summary>
-    /// Чистый детект премиграционного кластера (arch/21 §5 T): ca_pem/ca_key в
+    /// Чистый детект премиграционного кластера (arch/valkeyworker/04-security.md §5 T): ca_pem/ca_key в
     /// etcd отсутствуют ИЛИ живой контейнер собран без --tls-port (старый канон).
     /// Args живого контейнера — cmd-обёртка ["sh","-c","…--tls-port…"], поэтому
     /// детект — по вхождению подстроки в элементы, не точное равенство.
@@ -61,7 +61,7 @@ public sealed class TlsMigrator(
     {
         var cluster = snap.Cluster;
 
-        // Мутации — только держателем живого клэйма (arch/21 §6).
+        // Мутации — только держателем живого клэйма (arch/valkeyworker/06-operability.md §3).
         if (!claims.IsMine(cluster))
             return Result<MigrationOutcome>.Failed(new ApplicationException(
                 $"migrate-tls {cluster}: claim is not ours (or lost) — mutations forbidden"));

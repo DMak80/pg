@@ -3,7 +3,7 @@ using Confluent.Kafka.Admin;
 
 namespace AdminPanel.Probes.Kafka;
 
-// Адаптер Confluent.Kafka для kafka-пробы: SASL/PLAIN поверх SASL_SSL (arch/15 §5);
+// Адаптер Confluent.Kafka для kafka-пробы: SASL/PLAIN поверх SASL_SSL (arch/kafka-clusters/05-client-discovery.md §1);
 // DescribeCluster с RequestTimeout на вызов (прецедент KafkaAdminClient воркера);
 // исключения → Result.Failed (проба не роняет панель). Единственное место
 // Probes-сборки с Confluent-типами.

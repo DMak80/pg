@@ -7,7 +7,7 @@ using Shared.Etcd.Client;
 namespace S3Worker.App.Api.Operations;
 
 // ============================================================
-// Исключения API S3-домена (arch/24 §1.1; порт ValkeyExceptions):
+// Исключения API S3-домена (arch/s3worker/07-api.md §1; порт ValkeyExceptions):
 // тексты ProblemDetails-маппинга ApiModule.
 // ============================================================
 
@@ -31,7 +31,7 @@ public class S3ValidationException(IReadOnlyList<ValidationError> errors)
     public IReadOnlyList<ValidationError> Errors { get; } = errors;
 }
 
-// Второй etcd-backup кластер установки — 409 (arch/23 §2: единственность).
+// Второй etcd-backup кластер установки — 409 (arch/s3-clusters/02-keys.md §1: единственность).
 public sealed class S3EtcdBackupConflictException(string existing)
     : Exception($"etcd_backup cluster already exists: {existing} (at most one per installation)");
 
@@ -75,7 +75,7 @@ public sealed class WorkerApiNotFoundException(string message) : Exception(messa
 // DTO (camelCase JSON; spec §6).
 // ============================================================
 
-// Заявка размещения (arch/23 §4): минимум один атрибут.
+// Заявка размещения (arch/s3-clusters/04-placement.md): минимум один атрибут.
 public sealed record S3PlacementDto(
     [property: JsonPropertyName("dockerHost")] string? DockerHost,
     [property: JsonPropertyName("swarmNode")] string? SwarmNode,
@@ -85,7 +85,7 @@ public sealed record S3PlacementDto(
         && string.IsNullOrWhiteSpace(SwarmNode)
         && SwarmLabels is not { Count: > 0 };
 
-    // Канонический JSON селектора (arch/23 §2 placement — только указанные).
+    // Канонический JSON селектора (arch/s3-clusters/02-keys.md §1 placement — только указанные).
     public string ToJson()
     {
         using var buffer = new MemoryStream();
@@ -117,7 +117,7 @@ public sealed record S3ResourcesDto(
     [property: JsonPropertyName("memGi")] int? MemGi,
     [property: JsonPropertyName("diskGi")] int? DiskGi);
 
-// Заявка инстанса при создании кластера (arch/24 §1.1): имя произвольное
+// Заявка инстанса при создании кластера (arch/s3worker/07-api.md §1): имя произвольное
 // (паттерн кластера, не orchestrator), placement обязателен, resources —
 // per-instance с fallback на общий resources кластера.
 public sealed record S3InstanceDto(
@@ -152,7 +152,7 @@ public sealed record UpdateResourcesRequest(
 public record ValidationError(string Field, string Message);
 
 // ============================================================
-// Лимиты/валидатор (spec §6; канон arch/23 §2).
+// Лимиты/валидатор (spec §6; канон arch/s3-clusters/02-keys.md §1).
 // ============================================================
 
 public static partial class S3Limits
@@ -165,20 +165,20 @@ public static partial class S3Limits
     public const int MinGiB = 1;
     public const int MaxGiB = 65536;
 
-    // Резерв имени инстанса (сертификат оркестратора PKI — arch/23 §6).
+    // Резерв имени инстанса (сертификат оркестратора PKI — arch/s3-clusters/06-secrets.md).
     public const string ReservedInstanceName = "orchestrator";
 
     [System.Text.RegularExpressions.GeneratedRegex(@"^[a-z][a-z0-9_]{0,62}$")]
     public static partial System.Text.RegularExpressions.Regex ClusterPattern();
 
-    // Паттерн имени инстанса — тот же, что у кластера (arch/23 §2: произвольные
+    // Паттерн имени инстанса — тот же, что у кластера (arch/s3-clusters/02-keys.md §1: произвольные
     // имена того же паттерна); переиспользование генератора.
     public static System.Text.RegularExpressions.Regex InstanceNamePattern() => ClusterPattern();
 
     public static string CanonicalCpu(decimal cpu)
         => cpu.ToString(System.Globalization.CultureInfo.InvariantCulture);
 
-    // Ресурсы декларации → канонический JSON arch/23 §2 (строки).
+    // Ресурсы декларации → канонический JSON arch/s3-clusters/02-keys.md §1 (строки).
     public static string ResourcesJson(S3ResourcesDto resources)
         => JsonSerializer.Serialize(new S3ResourcesJson(
             CanonicalCpu(resources.Cpu ?? 1m),
@@ -186,7 +186,7 @@ public static partial class S3Limits
             $"{resources.DiskGi ?? 10}Gi"));
 }
 
-// Ресурсы в etcd: {"cpu":"2","mem":"4Gi","disk":"200Gi"} (arch/23 §2).
+// Ресурсы в etcd: {"cpu":"2","mem":"4Gi","disk":"200Gi"} (arch/s3-clusters/02-keys.md §1).
 public sealed record S3ResourcesJson(
     [property: JsonPropertyName("cpu")] string Cpu,
     [property: JsonPropertyName("mem")] string Mem,
@@ -201,7 +201,7 @@ public static class S3ApiHelpers
     public const string ConfigKeyFormat = "/s3/clusters/{0}/config";
     public const string NodesPrefixFormat = "/s3/clusters/{0}/nodes/";
 
-    // Префикс всех ключей кластеров (failover-range по нему — arch/23 §2).
+    // Префикс всех ключей кластеров (failover-range по нему — arch/s3-clusters/02-keys.md §1).
     public const string ClustersPrefix = "/s3/clusters/";
 
     public static string ConfigKey(string cluster) => string.Format(ConfigKeyFormat, cluster);
@@ -212,7 +212,7 @@ public static class S3ApiHelpers
     public static string RotationKey(string cluster) => $"/s3worker/rotations/{cluster}";
 
     // Ключи mesh-деклараций и PKI — делегирование S3ProcessCommon (одна точка
-    // истины формата с процессами; arch/23 §2).
+    // истины формата с процессами; arch/s3-clusters/02-keys.md §1).
     public static string LinksKey(string cluster) => S3ProcessCommon.LinksKey(cluster);
 
     public static string DenyListKey(string cluster) => S3ProcessCommon.DenyListKey(cluster);
@@ -259,7 +259,7 @@ public static class S3ApiHelpers
         return Result<IReadOnlyList<string>>.Success(names);
     }
 
-    /// <summary>Имя существующего etcd_backup-кластера (arch/23 §2:
+    /// <summary>Имя существующего etcd_backup-кластера (arch/s3-clusters/02-keys.md §1:
     /// единственность); null — такого нет. Битые config'и пропускаются.</summary>
     public static async Task<Result<string?>> ListEtcdBackupClustersAsync(
         IEtcdGateway gateway, string[] endpoints, CancellationToken ct)

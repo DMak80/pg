@@ -128,7 +128,7 @@ public sealed class ValkeyEtcdFixture : IAsyncLifetime
         var ct = TestContext.Current.CancellationToken;
         await _etcd.InitializeAsync();
 
-        // Канонические примеры arch/20 §2.1 (guid-кластеры): Active + endpoints +
+        // Канонические примеры arch/valkey-clusters/02-keys.md §2 (guid-кластеры): Active + endpoints +
         // admin-пара (полный/частичный) + ротация; отдельный leaf-ключ API воркера.
         await EtcdSeed.PutAsync(Endpoint, $"/valkey/clusters/{ClusterA}/config",
             """{"nodes":1,"maxmemory_bytes":536870912,"maxmemory_policy":"allkeys-lru","created_unix":1756500000}""", ct);

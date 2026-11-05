@@ -32,7 +32,7 @@ public class KafkaClientChurnTests(EtcdFixture etcd)
     {
         // Arrange: Active-кластер, endpoints на закрытый порт + креды, БЕЗ
         // brokers-ключей (лестница/пересоздания вне сценария — гейт пробы
-        // изолирован, паттерн KafkaActiveGateTests). шов (arch/15 §2):
+        // изолирован, паттерн KafkaActiveGateTests). шов (arch/kafka-clusters/02-keys.md §1):
         // проба надзора (DescribeAliveAsync) зряча только при admin-кредах и
         // ВАЛИДНОМ ca_pem — без них она слепая (success, без клиента), клиент
         // не создаётся вовсе и churn-граница теста не исполняется.

@@ -9,14 +9,14 @@ using System.Diagnostics;
 
 namespace PgWorker.App.Loops;
 
-/// <summary>Лидерный фоновый цикл сирот S3 (arch/19 §4, паттерн
+/// <summary>Лидерный фоновый цикл сирот S3 (arch/backups/05-etcd-contract.md, паттерн
 /// SnapshotLoop упрощённый; тики живости — HealthState.MarkOrphanSweepTick):
 /// глобальный лидер /pgworker/leader выполняет BackupOrphanSweeper.SweepAsync
 /// раз в Supervisor:IntervalSec; не-лидер периодически пытается захватить
 /// лидерство (takeover ≤ TTL 15 с + тик) и ждёт Loops:ScanIntervalSec.
 /// Backups:Enabled=false — лидерство поддерживается, сверки не выполняются
 /// (no-op), лидер каждый тик поддерживает стоп-ключ /pgworker/backups-disabled
-/// (arch/19 §4); при Enabled=true лидер зеркально стирает ключ в каждом
+/// (arch/backups/05-etcd-contract.md); при Enabled=true лидер зеркально стирает ключ в каждом
 /// тике (идемпотентный del), каждый инстанс при старте с Enabled=true тоже
 /// снимает ключ (решение spec §7 №7).</summary>
 internal sealed class BackupOrphanSweeperLoop(
@@ -29,7 +29,7 @@ internal sealed class BackupOrphanSweeperLoop(
     IEtcdGateway etcd,
     string[] etcdEndpoints) : BackgroundService
 {
-    //  (arch/19 §4): писатель/стирающий глобального стоп-ключа приёмников.
+    //  (arch/backups/05-etcd-contract.md): писатель/стирающий глобального стоп-ключа приёмников.
     private readonly BackupsDisabledGate _disabledGate = new(etcd);
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -60,7 +60,7 @@ internal sealed class BackupOrphanSweeperLoop(
                             "leadership acquired (orphan-sweeper): {InstanceId}", claims.InstanceId);
                 }
 
-                //  (arch/19 §4): держатель глобального лидера при
+                //  (arch/backups/05-etcd-contract.md): держатель глобального лидера при
                 // Backups:Enabled=false поддерживает /pgworker/backups-disabled
                 // на КАЖДОМ тике лидера (plain-ключ — TTL нет, период тика
                 // достаточен); при Enabled=true лидер ЗЕРКАЛЬНО стирает ключ в
@@ -87,7 +87,7 @@ internal sealed class BackupOrphanSweeperLoop(
                 {
                     try
                     {
-                        // Cancellation-гвард лидерства (arch/17 S5): потеря leader-lease
+                        // Cancellation-гвард лидерства (arch/synchronization/02-predicates-and-mutations.md §S5): потеря leader-lease
                         // прерывает проход; цикл продолжит как не-лидер.
                         using var leaderLease = CancellationTokenSource.CreateLinkedTokenSource(
                             stoppingToken, claims.LeaderToken);
@@ -96,11 +96,11 @@ internal sealed class BackupOrphanSweeperLoop(
                         // Проход может длиться дольше окна watchdog (порт сноса 30 c):
                         // S3-вызовы сверки на недоступном endpoint идут до
                         // пер-попыточного таймаута клиента (bad-S3 — штатный
-                        // прод-контур, arch/19 §5 «transient — следующий проход»).
+                        // прод-контур, arch/backups/06-s3-layout.md «transient — следующий проход»).
                         // Пульс АКТИВНОСТИ (MarkOrphanSweepActivity, зеркально
                         // snapshot-ветке; тики ≠ активность — healthz loops-alive
                         // читает только тики) каждые полокна проверки: «проход
-                        // жив», watchdog не гасит цикл посреди сверки (arch/14 §6).
+                        // жив», watchdog не гасит цикл посреди сверки (arch/pgworker/08-operability.md §3).
                         using var sweepPulse = new Timer(
                             _ => health.MarkOrphanSweepActivity(), null,
                             TimeSpan.Zero,
@@ -110,7 +110,7 @@ internal sealed class BackupOrphanSweeperLoop(
                         // Ошибка прохода — лог (SweepAsync сам Result; transient-отказы
                         // S3/etcd повторит следующий проход). Реестр в etcd переживает
                         // смену лидера — продолжение с факта, не с нуля. Тик/длительность
-                        // цикла orphan-sweep (arch/18 §2.2): ok = успех ЗАВЕРШЁННОГО
+                        // цикла orphan-sweep (arch/metrics/02-dictionary.md §2): ok = успех ЗАВЕРШЁННОГО
                         // прохода лидера; не-лидер и Backups:Enabled=false серию не пишут.
                         var startedAt = Stopwatch.GetTimestamp();
                         var result = await sweeper.SweepAsync(tick);
@@ -130,7 +130,7 @@ internal sealed class BackupOrphanSweeperLoop(
                     }
                     catch (OperationCanceledException) when (!stoppingToken.IsCancellationRequested)
                     {
-                        // Потеря leader-lease прервала проход (гвард arch/17 S5) —
+                        // Потеря leader-lease прервала проход (гвард arch/synchronization/02-predicates-and-mutations.md §S5) —
                         // пауза скана, пере-захват следующим тиком.
                         await Task.Delay(
                             TimeSpan.FromSeconds(options.CurrentValue.Loops.ScanIntervalSec),

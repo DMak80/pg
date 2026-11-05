@@ -27,7 +27,7 @@ internal static class DockerEnvBindings
         ("PGW_DOCKER_SSH_FINGERPRINT", "PgWorker:Docker:Ssh:FingerprintSha256"),
     ];
 
-    // REST-TLS нод (arch/14 §4 гр.3): per-install CA + ключ выпуска
+    // REST-TLS нод (arch/pgworker/04-security.md гр.3): per-install CA + ключ выпуска
     // серверных сертов REST-эндпоинтов нод; PEM-дуализм значение/_PATH-файл.
     private static readonly (string Env, string Key)[] RestTlsBindings =
     [

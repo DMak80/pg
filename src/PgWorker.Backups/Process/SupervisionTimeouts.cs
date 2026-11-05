@@ -2,11 +2,11 @@ using PgWorker.Etcd.Parsing;
 
 namespace PgWorker.Backups;
 
-/// <summary>Чистые решения бюджетов зависших джобов (arch/19 §6): отбор
+/// <summary>Чистые решения бюджетов зависших джобов (arch/backups/09-operability.md): отбор
 /// кандидатов таймаута по статусу/возрасту — без I/O, юнит-тестируемо.
 /// Применение — супервизия существующих процессов (BackupProcess/
 /// BackupVerifyProcess/RestoreProcess): kill+rm + FAILED/квота попытки по
-/// общим правилам arch/17 (transient-транспорт — статус не меняем).</summary>
+/// общим правилам arch/synchronization/README.md (transient-транспорт — статус не меняем).</summary>
 public static class SupervisionTimeouts
 {
     /// <summary>Возраст джоба (now − started) превысил бюджет. Строго больше —

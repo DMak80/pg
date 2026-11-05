@@ -20,7 +20,7 @@ public sealed class ServiceProbes(
     private readonly Dictionary<string, IDockerEngine> _engines = []; // кэш клиентов
 
     /// <summary>etcd жив: хотя бы один endpoint отвечает на range по /kafkaworker/.
-    /// Catch-all (arch/16 §7): сетевое исключение — тоже Failed-результат,
+    /// Catch-all (arch/kafkaworker/08-operability.md §5): сетевое исключение — тоже Failed-результат,
     /// чек получает структуру, а не исключение (DNS-флейп не роняет health).</summary>
     public async Task<Result> EtcdReachableAsync(CancellationToken ct)
     {

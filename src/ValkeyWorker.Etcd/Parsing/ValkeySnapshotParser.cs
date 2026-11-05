@@ -7,9 +7,9 @@ using ValkeyWorker.Core.Valkey;
 namespace ValkeyWorker.Etcd.Parsing;
 
 // Парсер контроль-плейна /valkey/clusters/ в доменную модель ValkeyWorker
-// (arch/20 §2/§5; порт стиля KafkaSnapshotParser). Чистая функция Kv[] →
+// (arch/valkey-clusters/02-keys.md §1/§5; порт стиля KafkaSnapshotParser). Чистая функция Kv[] →
 // модель: битые значения не бросают исключений, а попадают в parseErrors;
-// неизвестные ключи — в unknownKeys (arch/20 §5).
+// неизвестные ключи — в unknownKeys (arch/valkey-clusters/05-fault-tolerance.md).
 public static class ValkeySnapshotParser
 {
     private sealed class NodeAcc(string name)
@@ -104,7 +104,7 @@ public static class ValkeySnapshotParser
                 }
 
                 default:
-                    // система развивается — неизвестный ключ не ошибка (arch/20 §5):
+                    // система развивается — неизвестный ключ не ошибка (arch/valkey-clusters/05-fault-tolerance.md):
                     // имя ключа в unknownKeys (длина списка = счётчик).
                     acc.UnknownKeys.Add(kv.Key);
                     unknown.Add(kv.Key);
@@ -124,7 +124,7 @@ public static class ValkeySnapshotParser
 
     private static ValkeyClusterSnapshot BuildCluster(ClusterAcc acc)
     {
-        // CA-ключи (arch/20 §5): битый PEM → parseError, поле в null —
+        // CA-ключи (arch/valkey-clusters/05-fault-tolerance.md): битый PEM → parseError, поле в null —
         // кластер жив (миграция/надзор доберут или алертят).
         var caPem = acc.CaPem;
         if (caPem is not null && !ValkeyPki.TryParseCertificate(caPem, out _))
@@ -173,7 +173,7 @@ public static class ValkeySnapshotParser
                 ReadLong(root, "maxmemory_bytes") ?? 0,
                 ReadString(root, "maxmemory_policy") ?? "",
                 ReadLong(root, "created_unix") ?? 0,
-                ReadString(root, "state")); // отсутствие state = Active (arch/20 §2)
+                ReadString(root, "state")); // отсутствие state = Active (arch/valkey-clusters/02-keys.md §1)
         }
         catch (JsonException)
         {
@@ -195,7 +195,7 @@ public static class ValkeySnapshotParser
         return new ValkeyNodeSnapshot(node.Name, node.State, resources);
     }
 
-    // Raw-строки как в etcd (arch/20 §5): парсинг в лимиты — ProcessCommon.
+    // Raw-строки как в etcd (arch/valkey-clusters/05-fault-tolerance.md): парсинг в лимиты — ProcessCommon.
     private static ValkeyResources? ParseResources(string raw)
     {
         try

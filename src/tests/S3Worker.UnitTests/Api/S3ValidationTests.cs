@@ -4,7 +4,7 @@ using Xunit;
 
 namespace S3Worker.UnitTests.Api;
 
-// Валидаторы API S3-домена (arch/24 §1.1, spec §8.1.2): создание с instances[]
+// Валидаторы API S3-домена (arch/s3worker/07-api.md §1, spec §8.1.2): создание с instances[]
 // (имена/резерв/дубли/placement), add-node, links (существование, a≠b,
 // уникальность пар с точностью до зеркальности).
 public class S3ValidationTests
@@ -25,7 +25,7 @@ public class S3ValidationTests
         var empty = S3ClusterValidator.Validate(Valid(instances: []));
         var two = S3ClusterValidator.Validate(Valid(instances: [Instance("east1"), Instance("east2")]));
 
-        // Assert: 0..9 — валидно (arch/23 §2).
+        // Assert: 0..9 — валидно (arch/s3-clusters/02-keys.md §1).
         empty.Should().BeEmpty();
         two.Should().BeEmpty();
     }
@@ -50,7 +50,7 @@ public class S3ValidationTests
         // Arrange + Act
         var errors = S3ClusterValidator.Validate(Valid(platform: "minio"));
 
-        // Assert: только owns3 (arch/23 §2).
+        // Assert: только owns3 (arch/s3-clusters/02-keys.md §1).
         errors.Should().Contain(e => e.Field == "platform");
     }
 
@@ -200,7 +200,7 @@ public class S3ValidationTests
         var mirrored = S3LinksValidator.Validate(
             [new S3LinkDto("east1", "east2"), new S3LinkDto("east2", "east1")], Names);
 
-        // Assert: {a,b} ≡ {b,a} — одна связь (arch/23 §2).
+        // Assert: {a,b} ≡ {b,a} — одна связь (arch/s3-clusters/02-keys.md §1).
         straight.Should().Contain(e => e.Field == "links[1]");
         mirrored.Should().Contain(e => e.Field == "links[1]");
     }

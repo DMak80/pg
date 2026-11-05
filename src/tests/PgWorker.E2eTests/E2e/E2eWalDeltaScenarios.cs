@@ -17,7 +17,7 @@ namespace PgWorker.IntegrationTests.E2e;
 // E2E дельта-доставки RPO-хвоста (t15, spec §5 Ф5, arch/pgnode/processes/
 // g-wal-delta-assembly.md): изолированное окружение E2eRestoreScenariosFx
 // (своя сеть/etcd/ownS3 по guid, динамические порты, полный teardown с ассертом
-// чистоты — docs/e2e-isolation.md) + provisioned-кластер с бэкапами. Три
+// чистоты — arch/testing/02-e2e-isolation.md) + provisioned-кластер с бэкапами. Три
 // сценария сборки кусков без живой логики писателя поверх реального префикса:
 // (1) дыра в середине покрытия — восстановление до дыры, после отброшено;
 // (2) конфликтное пересечение копий — режим выживания собирает консистентный
@@ -25,7 +25,7 @@ namespace PgWorker.IntegrationTests.E2e;
 // одной жизни, restore доезжает до конца хвоста, номер жизни не меняется.
 // Подмена кусочного семейства — ПОСЛЕ демонтажа restore-заявки (демонтаж
 // сносит ноды с живыми приёмниками): иначе хвост зарастает выкладкой.
-// Телеметрия — docs/e2e-launch.md ([PHASE]-строки, MarkFailed оставляет
+// Телеметрия — arch/testing/01-e2e-launch.md ([PHASE]-строки, MarkFailed оставляет
 // контейнеры для разбора по /tmp/pgw-e2e-artifacts-<guid>/).
 public sealed class E2eWalDeltaScenarios(E2eRestoreScenariosFx Ctx) : IClassFixture<E2eRestoreScenariosFx>
 {
@@ -460,7 +460,7 @@ public sealed class E2eWalDeltaScenarios(E2eRestoreScenariosFx Ctx) : IClassFixt
     // ===== Хелперы (образцы — E2eRestoreScenarios/E2eDrillScenarios:
     // файлы сценариев независимы, паттерн репо) =====
 
-    // Запуск сценария под политикой телеметрии (docs/e2e-launch.md): упавший
+    // Запуск сценария под политикой телеметрии (arch/testing/01-e2e-launch.md): упавший
     // тест помечает окружение MarkFailed — teardown ОСТАНАВЛИВАЕТ контейнеры
     // (логи/тома остаются для разбора), зачистка — по README-cleanup.txt.
     private async Task RunScenarioAsync(Func<E2eEnvironment, Task> body, CancellationToken ct)
@@ -476,7 +476,7 @@ public sealed class E2eWalDeltaScenarios(E2eRestoreScenariosFx Ctx) : IClassFixt
         }
     }
 
-    // Ожидание фазы с телеметрией (docs/e2e-launch.md): длительность в журнал
+    // Ожидание фазы с телеметрией (arch/testing/01-e2e-launch.md): длительность в журнал
     // всегда; фаза дольше 60 с — немедленный сбор docker-логов в артефакты.
     private async Task<bool> WaitPhaseAsync(
         string phase, Func<Task<bool>> condition, TimeSpan timeout, CancellationToken ct)
@@ -530,7 +530,7 @@ public sealed class E2eWalDeltaScenarios(E2eRestoreScenariosFx Ctx) : IClassFixt
     }
 
     // Ожидание фазы ПОСЛЕ демонтажа restore-заявки: фаза пишется только после
-    // DemolishAsync (arch/19 §3.5) — снесены ноды с живыми приёмниками, поэтому
+    // DemolishAsync (arch/backups/03-restore.md) — снесены ноды с живыми приёмниками, поэтому
     // подмена кусочного семейства цели больше не «зарастает» выкладкой.
     private async Task WaitDemolishedAsync(
         string cluster, string shard, string restoreId, TimeSpan budget, CancellationToken ct)

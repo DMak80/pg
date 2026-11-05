@@ -8,7 +8,7 @@ using ValkeyWorker.Core.Valkey;
 namespace ValkeyWorker.Provisioning.Processes;
 
 /// <summary>
-/// ConfigConverger (arch/21 §5 D) — лёгкий шаг Active-ветки: CONFIG GET vs
+/// ConfigConverger (arch/valkeyworker/03-configuration.md D) — лёгкий шаг Active-ветки: CONFIG GET vs
 /// декларация → CONFIG SET при отличии (без рестартов; маппинг
 /// maxmemory_bytes→maxmemory, maxmemory_policy→maxmemory-policy); ACL-план:
 /// ACL LIST vs канон (admin/app — on с правами §2; default off) →
@@ -63,7 +63,7 @@ public sealed class ConfigConverger(
                     $"converge {cluster}: CONFIG SET maxmemory-policy: {setPolicy.Error!.Message}", setPolicy.Error!));
         }
 
-        // ACL-план канона (arch/21 §5 D): admin/app — ВКЛЮЧЕНЫ с правами §2
+        // ACL-план канона (arch/valkeyworker/03-configuration.md D): admin/app — ВКЛЮЧЕНЫ с правами §2
         // (выключенный пользователь права имеет, но не работает — сверяем и
         // флаг on); default — off (включённый default — дыра безпарольного
         // входа). Пароли в ACL LIST не видны — не сверяем.

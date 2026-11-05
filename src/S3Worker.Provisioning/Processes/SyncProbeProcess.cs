@@ -8,12 +8,12 @@ using Shared.Etcd.Client;
 namespace S3Worker.Provisioning.Processes;
 
 /// <summary>
-/// Процесс F — SyncProbe (arch/24 §5 F, spec §3.2–§3.5): зонд
+/// Процесс F — SyncProbe (arch/s3worker/06-sync-probes.md F, spec §3.2–§3.5): зонд
 /// связности/синхронности ownS3-кластера — читатель факта, не надзиратель.
 /// Прогон: probe-опрос всех RUNNING (матрица настроенных линков + пары сверек),
 /// статусы приёмников (fetch-очередь для lag_objects), постраничная сверка пар
 /// (sync-report → количественный diff листингов при расхождении), запись двух
-/// ключей наблюдения (arch/23 §3 — connectivity/sync, один checked_unix) и del
+/// ключей наблюдения (arch/s3-clusters/03-observation-statuses.md — connectivity/sync, один checked_unix) и del
 /// заявки /s3worker/probes/&lt;C&gt;. Никакого лечения — доводка состава зона G.
 /// Триггеры: заявка ИЛИ истечение гейта SyncIntervalSec (checked_unix ключа
 /// connectivity); тихий тик — без journal-записи. Все грани — через
@@ -34,7 +34,7 @@ public sealed class SyncProbeProcess(
 {
     public const string Op = "sync-probe";
 
-    // Диагностика усекается как last_error журнала (канон arch/23 §3).
+    // Диагностика усекается как last_error журнала (канон arch/s3-clusters/03-observation-statuses.md).
     private const int DiagnosticsLimit = 300;
 
     private readonly Counter<long> _runs = meter.CreateCounter<long>("s3worker_sync_probe_runs_total");
@@ -45,7 +45,7 @@ public sealed class SyncProbeProcess(
     {
         var cluster = snap.Cluster;
 
-        // Мутации — только держателем живого клэйма (arch/17 S5).
+        // Мутации — только держателем живого клэйма (arch/synchronization/02-predicates-and-mutations.md §S5).
         var claimed = S3ProcessCommon.EnsureClaimed(claims, cluster, Op);
         if (!claimed.IsSuccess)
             return claimed;
@@ -57,7 +57,7 @@ public sealed class SyncProbeProcess(
         if (running.Count == 0)
             return await IdleAsync(cluster, deleteRequest: true, warning: null, ct);
 
-        // Креды — per-cluster secrets из etcd (arch/23 §6): грани недостижимы
+        // Креды — per-cluster secrets из etcd (arch/s3-clusters/06-secrets.md): грани недостижимы
         // без них — диагностический skip (ретраи тиком; значения секретов
         // в диагностики не попадают); заявка живёт — исполнится после починки.
         var secretsRead = await secrets.TryReadAsync(cluster, ct);
@@ -111,7 +111,7 @@ public sealed class SyncProbeProcess(
             return Fail(cluster, pastSync.Error!, "read-sync");
         var past = S3ProcessCommon.ParseSyncDiscrepancies(pastSync.Value?.Value);
 
-        // 1. portalloc (адреса опроса; формат arch/23 §8 — словарь по именам).
+        // 1. portalloc (адреса опроса; формат arch/s3-clusters/08-coordination.md — словарь по именам).
         var addresses = await ReadPortAllocAsync(cluster, ct);
         if (!addresses.IsSuccess)
             return Fail(cluster, addresses.Error!, "portalloc");

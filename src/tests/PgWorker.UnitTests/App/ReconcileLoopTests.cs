@@ -514,7 +514,7 @@ public class ReconcileLoopTests
         work.Should().Contain("\"phase\":\"crashed\"");
         work.Should().Contain("process bug");
 
-        // Act — следующий тик ПО НОВОЙ ДЕЛЬТЕ (arch/17 S10, владелец): ретрай-ветки
+        // Act — следующий тик ПО НОВОЙ ДЕЛЬТЕ (arch/synchronization/05-delta-application.md §S10, владелец): ретрай-ветки
         // по исходу тика нет — недоведённое добивается тиком, до которого донесло
         // изменение контроль-плейна; процесс уже не бросает
         _etcd.Seed("/clusters/shop/shards/shard3/replicas", "2");
@@ -598,7 +598,7 @@ public class ReconcileLoopTests
         afterTick2.ClaimsHeld.Should().Be(1);
     }
 
-    // AAA (arch/17 S10): изменение наблюдаемого префикса, принесённое опросным
+    // AAA (arch/synchronization/05-delta-application.md §S10): изменение наблюдаемого префикса, принесённое опросным
     // кэшем (шард3 в слепке) → тик обрабатывает новое состояние.
     [Fact]
     public async Task Tick_DeltaInWatchedPrefix_Processes()
@@ -622,7 +622,7 @@ public class ReconcileLoopTests
         processes.Supervised.Should().HaveCount(2);
     }
 
-    // AAA (arch/17 S10): сбой опроса — слепок остаётся последним успешным;
+    // AAA (arch/synchronization/05-delta-application.md §S10): сбой опроса — слепок остаётся последним успешным;
     // цикл продолжает обрабатывать последний успешный слепок (само-healing),
     // без ретрай-веток по исходу тика (владелец: тики не классифицируются).
     [Fact]
@@ -646,7 +646,7 @@ public class ReconcileLoopTests
         processes.Supervised.Should().HaveCount(2);
     }
 
-    // AAA (arch/14 §3): смерть чужого инстанса гасит его клэйм-lease — ключ
+    // AAA (arch/pgworker/00-etcd-contract.md): смерть чужого инстанса гасит его клэйм-lease — ключ
     // исчезает из /pgworker/claims/; слепок кэша отражает удаление → тик берёт
     // клэйм — takeover доезжает (≤ TTL + тик).
     [Fact]
@@ -805,7 +805,7 @@ public class ReconcileLoopTests
             return Task.FromResult(Result<ProcessOutcome>.Success(ProcessOutcome.Done));
         }
 
-        // reliability (arch/19 §3.6): дрилл — после backup-restore, до repair.
+        // reliability (arch/backups/04-drill.md): дрилл — после backup-restore, до repair.
         public Task<Result<ProcessOutcome>> DrillAsync(
             ClusterSnapshot snap, IReadOnlyList<ClusterBackups> backups, CancellationToken ct)
         {
@@ -813,7 +813,7 @@ public class ReconcileLoopTests
             return Task.FromResult(Result<ProcessOutcome>.Success(ProcessOutcome.Done));
         }
 
-        //  (arch/19 §4): per-cluster сверка S3↔etcd — между retention и restore.
+        //  (arch/backups/05-etcd-contract.md): per-cluster сверка S3↔etcd — между retention и restore.
         public Task<Result<ProcessOutcome>> SuperviseBackupsAsync(
             ClusterSnapshot snap, IReadOnlyList<ClusterBackups> backups, CancellationToken ct)
         {
@@ -855,7 +855,7 @@ public class ReconcileLoopTests
     }
 
     // Управляемый источник контроль-плейна тика (замена EtcdPrefixSources на
-    // фейках, arch/17 S10): слепки и Version правит тест — «опрос принёс
+    // фейках, arch/synchronization/05-delta-application.md §S10): слепки и Version правит тест — «опрос принёс
     // изменение» эмулируется перечитыванием Store + инкрементом Version (реальный
     // кэш поднимает Changed на факте изменения); «сбой опроса» — ничего не меняет.
     private sealed class FakeSources : PgWorker.App.IPrefixPollSources

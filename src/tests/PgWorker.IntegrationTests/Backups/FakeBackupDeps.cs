@@ -353,7 +353,7 @@ public static class FakePoolFactory
             breakerWindow: breakerWindow);
     }
 
-    // Пул с ДВУМЯ read-целями, одна из которых мертва (arch/19 §5 —
+    // Пул с ДВУМЯ read-целями, одна из которых мертва (arch/backups/06-s3-layout.md —
     // неполнота union-наблюдения контроля): node1 → alive-фейк (write+read),
     // node2 → dead-фейк (транспортный отказ листинга).
     public static BackupS3Factory SplitAliveDead(
@@ -381,7 +381,7 @@ public static class FakePoolFactory
     }
 
     // Два пула («backups», «cold») на ОДНОМ фейк-таргете: union-сверки свипера
-    // (arch/19 §5) видят одинаковые ключи в обоих пулах — дедуп по (пул, ключ)
+    // (arch/backups/06-s3-layout.md) видят одинаковые ключи в обоих пулах — дедуп по (пул, ключ)
     // учитывает каждую пул-копию. Store отдаётся раздельно (свипер листит имена
     // пулов из него).
     public static (BackupS3Factory Factory, PgWorker.Etcd.S3.IS3PoolStore Store) TwoPoolsSameTarget(

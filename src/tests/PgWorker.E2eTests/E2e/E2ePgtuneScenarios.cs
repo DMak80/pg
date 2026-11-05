@@ -7,7 +7,7 @@ namespace PgWorker.IntegrationTests.E2e;
 
 // E2E-сценарии PGTune (spec.md §4.6, AC §7 п.2/3/4) на живом стенде —
 // изолированное окружение E2eEnvironment на каждый Fact (своя сеть/etcd,
-// guid-имена, own-only teardown + ассерт чистоты — docs/e2e-isolation.md;
+// guid-имена, own-only teardown + ассерт чистоты — arch/testing/02-e2e-isolation.md;
 // динамические хост-порты; etcd-префикс сценария умирает вместе с etcd):
 // 1) provision → SPILO_CONFIGURATION нод — merge(PGTune ∪ канон) от заявок
 //    request_*, doorman-бюджет синхронизирован, env нод одного прохода идентичен;
@@ -74,7 +74,7 @@ public sealed class E2ePgtuneScenarios(E2ePgtuneScenariosFx Ctx) : IClassFixture
 
         // Assert: ноды одного прохода идентичны по РАСЧЁТУ (spilo_configuration
         // несёт ровно один пер-нодовый ключ — restapi.connect_address t22
-        // (arch/14 §2.4 п.6); он нормализуется, прочие строки обязаны совпадать).
+        // (arch/pgworker/01-placement.md §5 п.6); он нормализуется, прочие строки обязаны совпадать).
         var spilos = new List<string>();
         foreach (var shard in new[] { "shard1", "shard2" })
         foreach (var node in new[] { $"{shard}a", $"{shard}b" })
@@ -138,7 +138,7 @@ public sealed class E2ePgtuneScenarios(E2ePgtuneScenariosFx Ctx) : IClassFixture
 
         // Act: перезаписать заявку request_mem → 8Gi ДО сноса контейнера (без гонки:
         // пересоздание надзором прочитает уже НОВУЮ заявку), затем снести контейнер
-        // ноды — сверка декларации (arch/14 §5 C) пересоздаёт её.
+        // ноды — сверка декларации (arch/pgworker/processes/c-node-supervisor.md C) пересоздаёт её.
         (await G.PutAsync(Endpoint, $"/service/{cluster}-shard1/request_mem", "8Gi", null, ct))
             .IsSuccess.Should().BeTrue("the request_mem request must be overwritten");
         await Fx.RunDockerAsync(["rm", "-f", node], ct);
@@ -184,7 +184,7 @@ public sealed class E2ePgtuneScenarios(E2ePgtuneScenariosFx Ctx) : IClassFixture
         var cluster = $"dshop{Fx.ClusterTag}";
 
         // Arrange: сид БЕЗ заявок request_* (SeedClusterAsync сеет их только при
-        // requestMem != null) — заявки ОБЯЗАТЕЛЬНЫ (arch/14 §2.1 п.4).
+        // requestMem != null) — заявки ОБЯЗАТЕЛЬНЫ (arch/pgworker/01-placement.md §2).
         await SeedClusterAsync(cluster, requestMem: null, ct);
         await using var host = await Fx.StartHostAsync("s1", ct: ct);
 
@@ -516,7 +516,7 @@ public sealed class E2ePgtuneScenarios(E2ePgtuneScenariosFx Ctx) : IClassFixture
     // публикации (GET /config, /patroni).
     private sealed record MasterInfo(string Node, string Host, int Patroni, string Dsn);
 
-    // Мастер шарда: резолв по контракту arch/14 §5 C — проба /primary по
+    // Мастер шарда: резолв по контракту arch/pgworker/processes/c-node-supervisor.md C — проба /primary по
     // patroni-портам portalloc (приём E2eScaleScenarios.MasterInfoAsync:
     // матч master-ключа по doorman-порту дискриминантен (S4), но резолв
     // остаётся по пробам /primary — первоисточник (S4)).
@@ -536,7 +536,7 @@ public sealed class E2ePgtuneScenarios(E2ePgtuneScenariosFx Ctx) : IClassFixture
                     try
                     {
                         // Публикации ноды на хост: REST — localhost:{Patroni},
-                        // SQL — localhost:{Pg} (docs/e2e-isolation.md §2).
+                        // SQL — localhost:{Pg} (arch/testing/02-e2e-isolation.md §2).
                         using var response = await PatroniHttp.GetAsync(
                             $"https://localhost:{addr.Patroni}/primary", ct);
                         if (!response.IsSuccessStatusCode)
@@ -572,7 +572,7 @@ public sealed class E2ePgtuneScenarios(E2ePgtuneScenariosFx Ctx) : IClassFixture
 }
 
 /// <summary>Компаньон-фикстура окружения класса (полный контур на класс:
-/// сеть/etcd/CA/окно портов; docs/e2e-isolation.md §1).</summary>
+/// сеть/etcd/CA/окно портов; arch/testing/02-e2e-isolation.md §1).</summary>
 public sealed class E2ePgtuneScenariosFx : E2eContourFixture
 {
     protected override string Slug => "pgtune-provision";

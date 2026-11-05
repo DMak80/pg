@@ -1,10 +1,10 @@
 namespace PgWorker.Core.Templates;
 
 /// <summary>
-/// Общий хелпер REST-грани Patroni (arch/14 §2.1/§5): константа REST-пары.
+/// Общий хелпер REST-грани Patroni (arch/pgworker/01-placement.md §1/§5): константа REST-пары.
 /// env-хеш механики упразднён t05 (rest-пара доставляется bootstrap-каналом,
-/// не env — arch/14 §4); резолвор «эффективной пары» упразднён ETCD-FIRST
-/// (arch/14 §5 I): effective = ключ etcd rest_password (с R2-txn — NEW).
+/// не env — arch/pgworker/04-security.md); резолвор «эффективной пары» упразднён ETCD-FIRST
+/// (arch/pgworker/processes/i-secret-rotator.md I): effective = ключ etcd rest_password (с R2-txn — NEW).
 /// </summary>
 public static class RestRotation
 {

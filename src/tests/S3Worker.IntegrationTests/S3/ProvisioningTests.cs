@@ -61,7 +61,7 @@ public class ProvisioningTests(S3ClusterFixture fx)
         config.Should().NotContain("state").And.Contain("\"platform\":\"owns3\"");
         (await fx.GetAsync($"/s3worker/work/{cluster}")).Should().Contain("done");
 
-        // PKI per-cluster (arch/23 §6): ключи ca/orchestrator/инстанса в etcd.
+        // PKI per-cluster (arch/s3-clusters/06-secrets.md): ключи ca/orchestrator/инстанса в etcd.
         (await fx.GetAsync($"/s3/clusters/{cluster}/pki/ca")).Should().Contain("publicKeyPem");
         (await fx.GetAsync($"/s3/clusters/{cluster}/pki/orchestrator")).Should().Contain("certificate");
         (await fx.GetAsync($"/s3/clusters/{cluster}/nodes/node1/pki")).Should().Contain("certificate");

@@ -7,7 +7,7 @@ using Microsoft.AspNetCore.Routing;
 
 namespace AdminPanel.Api.Operations.Kafka;
 
-// Модуль kafka-мутаций (arch/03 §7.1) — ПРОКСИ в API KafkaWorker (arch/16 §1.1):
+// Модуль kafka-мутаций (arch/03 §7.1) — ПРОКСИ в API KafkaWorker (arch/kafkaworker/07-api.md §1):
 // панель не пишет в etcd; успех — DTO воркера, ошибки — ProblemDetails как есть,
 // недоступность API — собственный 503. UI-контракт §10.2 не меняется.
 public static class KafkaOperationsModule

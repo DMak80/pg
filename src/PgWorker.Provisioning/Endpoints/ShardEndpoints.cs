@@ -30,7 +30,7 @@ public sealed partial class ShardEndpoints(IEtcdGateway etcd, string[] endpoints
     // ── Чтение адресов ──
 
     // /pgworker/portalloc/<C>: ключа нет → пустой словарь (failover — единая
-    // точка EtcdEndpointFailover, arch/17 S7).
+    // точка EtcdEndpointFailover, arch/synchronization/03-fault-tolerance.md §S7).
     public async Task<Result<IReadOnlyDictionary<string, NodeAddress>>> ReadPortAllocAsync(
         string cluster, CancellationToken ct)
     {
@@ -46,7 +46,7 @@ public sealed partial class ShardEndpoints(IEtcdGateway etcd, string[] endpoints
         return Portalloc.Parse(cluster, kv.Value);
     }
 
-    // Мастер шарда для SQL (adopt-repair §3.3, arch/14 §5 F — цепочка):
+    // Мастер шарда для SQL (adopt-repair §3.3, arch/pgworker/processes/f-move.md F — цепочка):
     // (1) master-ключ → ноды шарда по имени (byName, включая усыновлённый
     // формат node:pg-port), затем по host:doorman (host неуникален) →
     // (2) HA-лидер контура /service/<C>-<X>/leader → имя → portalloc →
@@ -67,7 +67,7 @@ public sealed partial class ShardEndpoints(IEtcdGateway etcd, string[] endpoints
             // Формат писателей ключа (Patroni-callback и reconciler): <host>:<doormanPort>.
             // Ноду различает doorman-порт (уникален per-node, факт стенда — single-host
             // стенды: все ноды на одном хосте). Хост-часть может расходиться с portalloc
-            // (advertised-режим, arch/16: ключ пишут ноды с env-хостом контейнера,
+            // (advertised-режим, arch/kafkaworker/README.md: ключ пишут ноды с env-хостом контейнера,
             // portalloc — advertised-имя) — резолв по порту, хост информативен.
             if (parts.Length == 2 && int.TryParse(parts[1], out var doorman) && doorman > 0)
             {
@@ -77,7 +77,7 @@ public sealed partial class ShardEndpoints(IEtcdGateway etcd, string[] endpoints
             }
         }
 
-        // Шаг 2 (spec §3.3, arch/14 §5 F): HA-лидер контура — имя из
+        // Шаг 2 (spec §3.3, arch/pgworker/processes/f-move.md F): HA-лидер контура — имя из
         // /service/<C>-<X>/leader, адрес ноды из portalloc; работает без
         // Patroni-REST (усыновлённые шарды, окно failover с протухшим
         // master-ключом). Значение — голое имя Patroni (JSON-обёртка демо-сидов
@@ -103,7 +103,7 @@ public sealed partial class ShardEndpoints(IEtcdGateway etcd, string[] endpoints
         return Result<NodeAddress?>.Success(null);
     }
 
-    // Sync-standby шарда (arch/19 §3.3 п.2): Patroni GET /cluster —
+    // Sync-standby шарда (arch/backups/02-wal-archive.md §1 п.2): Patroni GET /cluster —
     // member role=replica, state=running, sync=true, имя в portalloc шарда →
     // адрес ноды. Не найден/недоступен → Success(null) БЕЗ fallback на мастера
     // (двойная архивация: второй агент поднимется тиком при появлении sync).
@@ -135,7 +135,7 @@ public sealed partial class ShardEndpoints(IEtcdGateway etcd, string[] endpoints
         return Result<NodeAddress?>.Success(null);
     }
 
-    // Источник полного бэкапа (arch/19 §2/§6): штатно sync-standby —
+    // Источник полного бэкапа (arch/backups/01-full-backup.md/§6): штатно sync-standby —
     // мастер не трогаем; нет sync-реплики/недоступна → fallback мастер
     // (ResolveMasterAsync, запись журнала role=master).
     public async Task<Result<NodeAddress?>> ResolveBackupSourceAsync(
@@ -147,7 +147,7 @@ public sealed partial class ShardEndpoints(IEtcdGateway etcd, string[] endpoints
         return await ResolveMasterAsync(cluster, shard, addresses, ct);
     }
 
-    // Точечный GET с failover-обёрткой (единая точка, arch/17 S7).
+    // Точечный GET с failover-обёрткой (единая точка, arch/synchronization/03-fault-tolerance.md §S7).
     private Task<Result<Kv?>> GetAsync(string key, CancellationToken ct)
         => EtcdEndpointFailover.CallAsync(endpoints, endpoint => etcd.GetAsync(endpoint, key, ct));
 

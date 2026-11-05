@@ -23,7 +23,7 @@ public class S3MetricsApiFactory(S3EtcdFixture etcd) : WebApplicationFactory<Pro
             ["S3Worker:Docker:Hosts:0:Endpoint"] = "unix:///var/run/does-not-exist.sock",
             ["S3Worker:Api:AdvertiseUrl"] = "https://localhost:9995",
             ["S3Worker:Api:EnableSeedEndpoint"] = "false",
-            // WAF-транспорт in-memory — только без TLS (arch/24 §1.1).
+            // WAF-транспорт in-memory — только без TLS (arch/s3worker/07-api.md §1).
             ["S3Worker:Api:Tls:AllowInsecureHttp"] = "true",
         }));
     }

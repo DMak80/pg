@@ -4,7 +4,7 @@ using Xunit;
 namespace S3Worker.IntegrationTests.E2e;
 
 // ShellToFileAsync телеметрии обязан писать ОБА потока процесса (stdout+
-// stderr, канон docs/e2e-launch.md §1): лёгкий факт без docker — /bin/sh
+// stderr, канон arch/testing/01-e2e-launch.md §1): лёгкий факт без docker — /bin/sh
 // пишет в оба потока, файл содержит оба блока.
 public sealed class S3ShellToFileTests
 {

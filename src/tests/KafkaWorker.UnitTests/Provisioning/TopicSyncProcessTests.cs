@@ -10,7 +10,7 @@ using Xunit;
 
 namespace KafkaWorker.UnitTests.Provisioning;
 
-// TopicSyncProcess (план C1-шаги 2–3; канон arch/15 §3, arch/16 §5 D):
+// TopicSyncProcess (план C1-шаги 2–3; канон arch/kafka-clusters/03-topics.md §1, arch/kafkaworker/05-topics.md D):
 // автосинк факта + исполнение desired-заявок на fake gateway/adminclient.
 // Покрыто: RMW по mod_revision (обе стороны гонки с панелью), apply-порядок
 // (конфиги до partitions), идемпотентность повтора, missing-ветка, перманентный
@@ -261,7 +261,7 @@ public class TopicSyncProcessTests
         // Act
         var result = await rig.Process.RunAsync(await rig.Snapshot(), CancellationToken.None);
 
-        // Assert: нет топика и нет заявки → ключ удалён (arch/15 §3).
+        // Assert: нет топика и нет заявки → ключ удалён (arch/kafka-clusters/03-topics.md §1).
         result.IsSuccess.Should().BeTrue();
         (await rig.Etcd.GetAsync(Ep, Key, CancellationToken.None)).Value.Should().BeNull();
     }

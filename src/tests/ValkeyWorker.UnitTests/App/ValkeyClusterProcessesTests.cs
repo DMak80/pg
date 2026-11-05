@@ -106,7 +106,7 @@ public class ValkeyClusterProcessesTests
         public string? Work(string cluster)
             => Etcd.Store.TryGetValue($"/valkeyworker/work/{cluster}", out var kv) ? kv.Value : null;
 
-        // Слепок домена /valkey/ (arch/17 S10): Processes тикает от слепка
+        // Слепок домена /valkey/ (arch/synchronization/05-delta-application.md §S10): Processes тикает от слепка
         // опросного кэша — ReconcileLoop читает etcd больше не сам.
         public List<Kv> DomainKvs()
             => Etcd.Store

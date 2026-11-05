@@ -7,7 +7,7 @@ using Xunit;
 
 namespace S3Worker.UnitTests.Provisioning;
 
-// Процесс G — MeshGovernance (arch/24 §5 G, spec §8.1.5): недостающая пара →
+// Процесс G — MeshGovernance (arch/s3worker/05-mesh-governance.md G, spec §8.1.5): недостающая пара →
 // join (endpoint b из portalloc, AdvertisedHost-приоритет); лишняя запись →
 // delete на обеих сторонах; deny-инстанс — изоляция (∅, снос записей); 409 →
 // delete конфликтной стороны + повтор; не-RUNNING сосед — ожидание; deny-перезапись
@@ -19,7 +19,7 @@ public class MeshGovernanceTests
     // getenv-профиль store'а: спец-ключ etcd-backup (тестами не используется).
     private static readonly Dictionary<string, string?> Env = [];
 
-    // Валидный secrets-ключ кластера (канон arch/23 §6): root-пара +
+    // Валидный secrets-ключ кластера (канон arch/s3-clusters/06-secrets.md): root-пара +
     // backups(read-write) и panel(read-only); значения — фиксированные
     // несекретные литералы.
     private static string SecretsJson(string cluster) => ClusterSecretsStore.Serialize(
@@ -143,7 +143,7 @@ public class MeshGovernanceTests
     }
 
     // AAA: deny-инстанс — полная изоляция: join с ним не зовётся, его записи у
-    // соседей и свои сносятся одной delete-парой (arch/24 §5 G п.3, §9.2).
+    // соседей и свои сносятся одной delete-парой (arch/s3worker/05-mesh-governance.md G п.3, §9.2).
     [Fact]
     public async Task DenyInstance_Isolation_RecordsRemoved()
     {
@@ -237,7 +237,7 @@ public class MeshGovernanceTests
                 nodes: [("east1", S3NodeStates.Running), ("east2", S3NodeStates.Running), ("west1", S3NodeStates.Running)]),
             TestContext.Current.CancellationToken);
 
-        // Assert: denylist у RUNNING, КРОМЕ отозванного (arch/24 §5 G п.1):
+        // Assert: denylist у RUNNING, КРОМЕ отозванного (arch/s3worker/05-mesh-governance.md G п.1):
         // east1 и east2 получают перезапись, west1 (DenyList-имя) — нет.
         result.IsSuccess.Should().BeTrue(result.Error?.Message);
         rig.NodeClient.MeshCalls.Count(c => c.Op == "denylist").Should().Be(2);

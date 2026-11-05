@@ -61,7 +61,7 @@ export function BackupsSliceTab({ cluster }: { cluster: string }) {
         </Text>
       ) : (
         <>
-          {/* policy кластера (arch/19 §4): null-поля — дефолт воркера. */}
+          {/* policy кластера (arch/backups/05-etcd-contract.md): null-поля — дефолт воркера. */}
           <Group gap="lg">
             <Text size="sm">
               Policy: retention {policy?.retentionDays ?? '—'}d/{policy?.retentionWeeks ?? '—'}w/

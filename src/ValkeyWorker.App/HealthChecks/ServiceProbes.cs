@@ -5,7 +5,7 @@ using Shared.Etcd.Client;
 namespace ValkeyWorker.App.HealthChecks;
 
 /// <summary>
-/// Активные пробы внешних зависимостей для /healthz (arch/21 §7):
+/// Активные пробы внешних зависимостей для /healthz (arch/valkeyworker/06-operability.md §4):
 /// etcd-reachable (range по всем endpoints) и docker-hosts (ping каждого хоста
 /// plain-таблицы / manager swarm). Пробы с коротким таймаутом — health не висит.
 /// </summary>
@@ -20,7 +20,7 @@ public sealed class ServiceProbes(
     private readonly Dictionary<string, IDockerEngine> _engines = []; // кэш клиентов
 
     /// <summary>etcd жив: хотя бы один endpoint отвечает на range по /valkeyworker/.
-    /// Catch-all (arch/21 §7): сетевое исключение — тоже Failed-результат,
+    /// Catch-all (arch/valkeyworker/06-operability.md §4): сетевое исключение — тоже Failed-результат,
     /// чек получает структуру, а не исключение (DNS-флейп не роняет health).</summary>
     public async Task<Result> EtcdReachableAsync(CancellationToken ct)
     {

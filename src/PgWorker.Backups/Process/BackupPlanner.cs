@@ -3,7 +3,7 @@ using PgWorker.Etcd.Parsing;
 
 namespace PgWorker.Backups;
 
-// Чистые решения планировщика полных бэкапов (arch/19 §2): без I/O,
+// Чистые решения планировщика полных бэкапов (arch/backups/01-full-backup.md): без I/O,
 // юнит-тестируемы. Записи шарда отсортированы по Id (= время, парсер).
 public static class BackupPlanner
 {
@@ -11,7 +11,7 @@ public static class BackupPlanner
         => fulls.Any(f => f.State
             is FullBackupStatus.Planned or FullBackupStatus.Running or FullBackupStatus.Uploading);
 
-    // Валидный полный (arch/19 §2): COMPLETED и verify ≠ FAILED
+    // Валидный полный (arch/backups/01-full-backup.md): COMPLETED и verify ≠ FAILED
     // (null — не проверялся; PENDING — идёт; OK — проверен).
     private static bool IsValid(FullBackupState f)
         => f.State == FullBackupStatus.Completed
@@ -19,7 +19,7 @@ public static class BackupPlanner
 
     // Unix последнего ВАЛИДНОГО полного (finished_unix, толерантно started_unix —
     // образец IsDue); null — валидного нет. Источник возрастной серии
-    // pgworker_backup_full_age_seconds (arch/18 §2.7): метрика не вводит
+    // pgworker_backup_full_age_seconds (arch/metrics/02-dictionary.md §7): метрика не вводит
     // третьего толкования «валидный».
     public static long? LastValidUnix(IReadOnlyList<FullBackupState> fulls)
     {
@@ -33,7 +33,7 @@ public static class BackupPlanner
     // Rolling-правило (+ +  §3.5 + §3.2 +): нет ВАЛИДНОГО
     // COMPLETED — true; иначе возраст последнего валидного (finished_unix;
     // толерантно started_unix) больше full_max_age_sec. Инвариант «поднятый
-    // шард всегда имеет валидную цепочку или свежий полный» (arch/19 §2):
+    // шард всегда имеет валидную цепочку или свежий полный» (arch/backups/01-full-backup.md):
     // цепочку заведёт контроль (§3) от wal_start_segment свежего COMPLETED,
     // когда агенты донесут ПЕРВЫЙ ЗАКРЫТЫЙ сегмент — приёмник выгружает
     // только закрытые сегменты, поэтому на шарде без нагрузки ключ wal
@@ -47,12 +47,12 @@ public static class BackupPlanner
     public static bool IsDue(
         IReadOnlyList<FullBackupState> fulls, long fullMaxAgeSec, long nowUnix,
         long? lastRestoreFinishedUnix = null, bool walChainBroken = false,
-        //  (arch/19 §2): живой непокрытый tli-gap wal-ключа — пересъём
+        //  (arch/backups/01-full-backup.md): живой непокрытый tli-gap wal-ключа — пересъём
         // безусловно, симметрично WAL_CHAIN_ERROR; правило покрытия и бэкофф — как у
         // walChainBroken.
         bool walGapUncovered = false)
     {
-        //  (arch/19 §2): WAL_CHAIN_ERROR wal-ключа — пересъём безусловно (разрыв лечит
+        //  (arch/backups/01-full-backup.md): WAL_CHAIN_ERROR wal-ключа — пересъём безусловно (разрыв лечит
         // только новый полный); бэкофф серии FAILED применяется вызывающим как
         // всегда — шторм пересъёмов исключён.
         if (walChainBroken || walGapUncovered)
@@ -70,7 +70,7 @@ public static class BackupPlanner
 
     // Бэкофф переснятия: n = попытки после последнего ВАЛИДНОГО — FAILED-джобы +
     // COMPLETED с verify=FAILED + НЕпокрывшие COMPLETED (uncovered — предикат
-    // вызывающего: wal_start ниже границы разрыва; arch/19 §2 антишторм :
+    // вызывающего: wal_start ниже границы разрыва; arch/backups/01-full-backup.md антишторм :
     // пока redo/restart-точка источника не перешла границу зазора, повторный
     // полный снимается с той же позиции — без пользы; считать попыткой —
     // окно растёт). Окно = min(BaseSec·2^(n−1), MaxSec) от последней попытки

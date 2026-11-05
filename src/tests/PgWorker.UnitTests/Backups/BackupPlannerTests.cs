@@ -4,7 +4,7 @@ using PgWorker.Etcd.Parsing;
 
 namespace PgWorker.UnitTests.Backups;
 
-// Чистые решения планировщика полных бэкапов (arch/19 §2): due по
+// Чистые решения планировщика полных бэкапов (arch/backups/01-full-backup.md): due по
 // возрасту последнего COMPLETED, бэкофф min(Base·2^(n−1), Max), инвариант
 // одного активного, суффикс коллизии id.
 public class BackupPlannerTests
@@ -150,7 +150,7 @@ public class BackupPlannerTests
     // окне бессмыслен (серия полных подряд ничего не добавляет) — цепочку
     // заведёт контроль от wal_start_segment свежего COMPLETED при первом
     // донесённом сегменте (инвариант «поднятый шард имеет валидную цепочку
-    // или свежий полный», arch/19 §2).
+    // или свежий полный», arch/backups/01-full-backup.md).
     [Fact]
     public void IsDue_NoWalKey_FreshFull_ExtinguishesDue()
     {
@@ -222,7 +222,7 @@ public class BackupPlannerTests
         BackupPlanner.BackoffPassed(fulls, 300, 3600, Unix(Now)).Should().BeTrue();
     }
 
-    // AAA: антишторм (arch/19 §2) — НЕпокрывший COMPLETED (wal_start ниже
+    // AAA: антишторм (arch/backups/01-full-backup.md) — НЕпокрывший COMPLETED (wal_start ниже
     // границы разрыва) считается попыткой бэкоффа: пока redo/restart-точка
     // источника не перешла границу, повторный полный снимается с той же позиции
     // — без пользы (шторм «полный каждые 10 с»); предикат caller'а учитывает

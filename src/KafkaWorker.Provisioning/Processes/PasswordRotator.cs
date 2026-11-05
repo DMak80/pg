@@ -11,7 +11,7 @@ using KafkaWorker.Provisioning.Kafka;
 namespace KafkaWorker.Provisioning.Processes;
 
 /// <summary>
-/// PasswordRotator (arch/16 §5 H): исполнение заявок ротации паролей
+/// PasswordRotator (arch/kafkaworker/04-security.md §4 H): исполнение заявок ротации паролей
 /// ролей app (/kafkaworker/rotations/&lt;C&gt;) и admin (/kafkaworker/admin_rotations/&lt;C&gt;).
 /// Обрабатывает не более ОДНОЙ заявки за тик: app — раньше admin (детерминированный
 /// порядок). Фазы без окна недоступности: A) rolling-пересоздание брокеров с JAAS
@@ -139,7 +139,7 @@ public sealed class PasswordRotator(
             // afterCommit-хвост (заявка снята фазой B) журнал не перезаписывает:
             // waiting-фазы пишутся только при живой заявке — затирание маркера
             // rotated-commit/phase-c делало бы финал недостижимым
-            // (ротация-«зомби»); тихая передержка тика (arch/16 §5 H).
+            // (ротация-«зомби»); тихая передержка тика (arch/kafkaworker/04-security.md §4 H).
             if (ticket.Value is null)
                 return Result<bool>.Success(false);
             return await WaitOrExpireAsync(
@@ -167,7 +167,7 @@ public sealed class PasswordRotator(
         var alive = await WaitForBrokersAsync(snap, 1, ct);
         if (!alive.Value)
         {
-            // afterCommit-хвост журнал не перезаписывает (arch/16 §5 H):
+            // afterCommit-хвост журнал не перезаписывает (arch/kafkaworker/04-security.md §4 H):
             // waiting-фазы — только при живой заявке; хвост доигрывается
             // следующим тиком по journal-маркеру.
             if (ticket.Value is null)

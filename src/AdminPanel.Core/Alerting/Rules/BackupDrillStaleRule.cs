@@ -4,9 +4,9 @@ using Shared.Core.DI;
 
 namespace AdminPanel.Core.Alerting.Rules;
 
-// backup-drill-stale (warning, reliability, arch/19 §3.6): у шарда
+// backup-drill-stale (warning, reliability, arch/backups/04-drill.md): у шарда
 // Active-кластера есть COMPLETED-полные и интервал дрилов включён
-// (policy.drill.interval_days, нет — панельный дефолт 1, канон arch/19 §9),
+// (policy.drill.interval_days, нет — панельный дефолт 1, канон arch/backups/09-operability.md §1),
 // а успешного дрилла нет вовсе либо он старше 2×интервала — «восстановимость
 // не доказывается» (дриллы молча не исполняются: вечный transient, гонки
 // выключения). Пустой префикс бэкапов кластера (нет COMPLETED) — правило
@@ -17,7 +17,7 @@ public sealed class BackupDrillStaleRule : IAlertRule
 {
     public const string KindName = "backup-drill-stale";
 
-    // Панельный дефолт интервала — канон arch/19 §9 (Drill:IntervalDays=1).
+    // Панельный дефолт интервала — канон arch/backups/09-operability.md §1 (Drill:IntervalDays=1).
     public const int DefaultIntervalDays = 1;
 
     private const long DaySec = 86400;

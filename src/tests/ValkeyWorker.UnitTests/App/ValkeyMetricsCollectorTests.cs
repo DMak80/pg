@@ -9,7 +9,7 @@ using Xunit;
 
 namespace ValkeyWorker.UnitTests.App;
 
-// Юнит-тесты ValkeyMetricsCollector (arch/18 §4.2) на inline-фейке
+// Юнит-тесты ValkeyMetricsCollector (arch/metrics/04-collectors.md §2) на inline-фейке
 // IValkeyConnection: успешный сбор обновляет стейт, ошибка ноды — тик жив и
 // LastSuccess не двигается, пустой домен — успех, пропуски не-Active/без кредов/
 // без portalloc, advertised-приоритет хоста, консервативные null-поля, дефолт <=0.
@@ -122,7 +122,7 @@ public sealed class ValkeyMetricsCollectorTests
         state.DebugSnapshot().LastSuccess.Should().Be(DateTimeOffset.UnixEpoch.AddHours(5));
     }
 
-    // AAA: advertised == null → хост пробы из portalloc-записи (правило §2 arch/21).
+    // AAA: advertised == null → хост пробы из portalloc-записи (правило §2 arch/valkeyworker/README.md).
     [Fact]
     public async Task Collect_WithoutAdvertised_HostFromPortalloc()
     {

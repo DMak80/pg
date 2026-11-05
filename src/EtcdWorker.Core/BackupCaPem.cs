@@ -1,7 +1,7 @@
 namespace EtcdWorker.Core;
 
 /// <summary>Материал CA https S3-endpoint цели слепков (перенос BackupCaPem
-/// t08/t42, arch/19 §7): при заданном CaBundlePath PEM читается файлом хоста
+/// t08/t42, arch/backups/08-secrets.md): при заданном CaBundlePath PEM читается файлом хоста
 /// воркера — SDK-клиент получает фабрику HttpClient с валидацией корня цепочки
 /// по CA. null — путь не задан (http-endpoint).</summary>
 public static class BackupCaPem

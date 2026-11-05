@@ -6,7 +6,7 @@ using Shared.Etcd.Coordination;
 
 namespace EtcdWorker.Provisioning.Processes;
 
-/// <summary>Доводка состава managed-узлов etcd (arch/25 §3.1): недобор
+/// <summary>Доводка состава managed-узлов etcd (arch/etcdworker/02-membership.md): недобор
 /// декларации /etcd/config → add-learner → provision → promote; перебор →
 /// вывод старейшего не-лидера (кворум-гвард ≥3 после вывода); авто-замена
 /// мёртвого члена по фактам supervisor (порог NodeDeadSec, не лидер). Каждый
@@ -67,7 +67,7 @@ public sealed class MembershipProcess(
         // Гейт здорового кворума цикла — лидер жив; ≥3-гвард перебора к
         // замене НЕ применяется: замена сохраняет итоговый состав, окно с
         // меньшим числом voting в 3-членном контуре — принятый риск R1
-        // (мёртвый член не голосует, arch/25 §3.1).
+        // (мёртвый член не голосует, arch/etcdworker/02-membership.md).
         var dead = MembershipDecisions.DetectDeadReplacement(
             deadFacts, options.NodeDeadSec, leaderId,
             DateTimeOffset.UtcNow.ToUnixTimeSeconds());
@@ -75,7 +75,7 @@ public sealed class MembershipProcess(
             return await RemoveAsync(replacing.K, replacing.Member.Id, "replacing", removeVolume: true, ct);
 
         // Перебор: вывод старейшего не-лидера под кворум-гвардом (итог =
-        // managed + внешние − выводимый ≥ 3, arch/25 §1.1).
+        // managed + внешние − выводимый ≥ 3, arch/etcdworker/05-api.md §1).
         if (managed.Count > config.Nodes)
         {
             var candidate = MembershipDecisions.PickRemoveCandidate(managed, leaderId);
@@ -123,7 +123,7 @@ public sealed class MembershipProcess(
 
         await journal.WriteAsync(Op, "add-learner", claims.InstanceId, null, ct);
 
-        // Глобальный portalloc-клэйм (arch/25 §3.1/§5, паттерн t90): окно
+        // Глобальный portalloc-клэйм (arch/etcdworker/02-membership.md/§5, паттерн t90): окно
         // аллокации client-порта + member-add; клэйм у соседнего инстанса —
         // PortLockBusyException → transient-отказ тика (ретрай следующим).
         var acquired = await portLock.TryAcquireAsync(ct);
@@ -202,7 +202,7 @@ public sealed class MembershipProcess(
         return Result.Success();
     }
 
-    // Takeover-доводка PROVISIONING-узла (arch/25 §3.1): контейнер мог не
+    // Takeover-доводка PROVISIONING-узла (arch/etcdworker/02-membership.md): контейнер мог не
     // доехать (краш-окно после member-add до ensure) — доводим его путём
     // добавления (порт — из portalloc, закреплён с member-add), затем promote.
     private async Task<Result> ResumeAsync(ManagedMember member, CancellationToken ct)

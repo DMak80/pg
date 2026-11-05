@@ -1,5 +1,5 @@
 // Модалка «Добавить ноду» (arch/03 §12.3; 02 §12.2-3): имя + placement
-// (docker_host / swarm_node / swarm_labels key-value — канон arch/23 §4) +
+// (docker_host / swarm_node / swarm_labels key-value — канон arch/s3-clusters/04-placement.md) +
 // ресурсы; валидация-зеркало 02 §12.3; 409 «инстанс уже существует» — текстом.
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import {

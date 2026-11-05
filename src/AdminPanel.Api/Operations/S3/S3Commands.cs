@@ -4,7 +4,7 @@ using Shared.Core.DI;
 
 namespace AdminPanel.Api.Operations.S3;
 
-// ===== S3-мутации — прокси в API S3Worker (arch/02 §12.2, arch/24 §1.1):
+// ===== S3-мутации — прокси в API S3Worker (arch/02 §12.2, arch/s3worker/07-api.md §1):
 // панель не пишет в etcd; воркер валидирует и пишет. Оператор (requestedBy) —
 // ротация и зонд (заявки с аудитом) — заголовком X-Requested-By. =====
 

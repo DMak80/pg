@@ -15,7 +15,7 @@ public interface IS3PoolStore
 }
 
 /// <summary>
-/// Чтение домена /s3/ воркером (arch/23 §7): PgWorker — ЧИТАТЕЛЬ,
+/// Чтение домена /s3/ воркером (arch/s3-clusters/07-client-pool.md): PgWorker — ЧИТАТЕЛЬ,
 /// участником контракта не становится. ReadAsync собирает пул из config,
 /// ключей заявки нод (nodes/&lt;I&gt;/state|placement — ИСТОЧНИК ИМЁН),
 /// placed_on и portalloc (ИСТОЧНИК АДРЕСОВ); Failover — локальный цикл по
@@ -28,7 +28,7 @@ public sealed class S3PoolStore(IEtcdGateway gateway, string[] endpoints, ILogge
 
     /// <summary>Пул по имени: null — config отсутствует (пула нет; Failed —
     /// недоступность etcd). Ноды — из ключей заявки; нода без portalloc-записи
-    /// остаётся в Nodes с Host=null (заявлена, не провижинена — arch/19 §4).</summary>
+    /// остаётся в Nodes с Host=null (заявлена, не провижинена — arch/backups/05-etcd-contract.md).</summary>
     public async Task<Result<S3Pool?>> ReadAsync(string pool, CancellationToken ct)
     {
         var config = await RangeSingleAsync($"{ClustersPrefix}{pool}/config", ct);
@@ -148,7 +148,7 @@ public sealed class S3PoolStore(IEtcdGateway gateway, string[] endpoints, ILogge
         }
     }
 
-    // Префиксный range с failover — единая точка (arch/17 S7; библиотека — без DI).
+    // Префиксный range с failover — единая точка (arch/synchronization/03-fault-tolerance.md §S7; библиотека — без DI).
     private Task<Result<IReadOnlyList<Kv>>> RangeAsync(string prefix, CancellationToken ct)
         => EtcdEndpointFailover.CallAsync(endpoints, endpoint => gateway.RangeAsync(endpoint, prefix, ct));
 

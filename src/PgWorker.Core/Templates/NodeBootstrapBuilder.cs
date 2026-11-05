@@ -5,10 +5,10 @@ using PgWorker.Core.Tuning;
 
 namespace PgWorker.Core.Templates;
 
-/// <summary>Bootstrap-ключ ноды (arch/14 §3.2/§4, t05): JSON
+/// <summary>Bootstrap-ключ ноды (arch/pgworker/00-etcd-contract.md §3/§4, t05): JSON
 /// {spilo_configuration, cert_pem, key_pem} — полный SPILO_CONFIGURATION
 /// (rest_password внутри) и серверный серт ноды (per-install REST-CA, SAN —
-/// arch/14 §2.4 п.6; один серт на REST :8008 / doorman :6432 / mTLS-канал
+/// arch/pgworker/01-placement.md §5 п.6; один серт на REST :8008 / doorman :6432 / mTLS-канал
 /// :8081). Пишет ТОЛЬКО воркер; читает агент PgNode; per-install пароли PG
 /// сюда НЕ входят (прямая mTLS-передача). Сериализация симметрична —
 /// детерминированный вывод без дребезга mod_revision (spec §3.7.2).</summary>

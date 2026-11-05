@@ -9,7 +9,7 @@ using Xunit;
 
 namespace ValkeyWorker.UnitTests.Provisioning;
 
-// PasswordRotator E1–E3 (arch/21 §5 E): окно двух паролей, доигрывание по
+// PasswordRotator E1–E3 (arch/valkeyworker/04-security.md §4 E): окно двух паролей, доигрывание по
 // стейту work/<C>/rotation (Тот ЖЕ NEW после отказа; E3 без заявки; срыв
 // compare E2 — пароль уже NEW — доигрывается), условный del заявки (compare
 // payload из стейта — чужая/снятая не трогается), изоляция ролей, битая

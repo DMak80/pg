@@ -7,7 +7,7 @@ namespace PgWorker.Backups.Sql;
 /// тиками; ошибка → Result.Failed (transient).</summary>
 public sealed class NpgsqlWalSqlExecutor : IWalSqlExecutor
 {
-    // Поллинг-инвариант (arch/14 §6): одиночная SQL-проба/операция слота не молчит
+    // Поллинг-инвариант (arch/pgworker/08-operability.md §3): одиночная SQL-проба/операция слота не молчит
     // дольше окна проверки watchdog — таймауты подключения и команды = половина
     // окна (7 c при дефолтах); зависшая операция → transient-фейл, тик повторит.
     private const int SqlTimeoutSec = 7;
@@ -83,7 +83,7 @@ public sealed class NpgsqlWalSqlExecutor : IWalSqlExecutor
         }
     }
 
-    // immediate+reserved (arch/19 §3): повтор при живом слоте — duplicate_object →
+    // immediate+reserved (arch/backups/02-wal-archive.md §1): повтор при живом слоте — duplicate_object →
     // успех (идемпотентность); общий create для ensure/recreate.
     private static async Task<Result> CreateSlotAsync(string adminDsn, string slot, CancellationToken ct)
     {

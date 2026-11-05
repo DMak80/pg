@@ -11,7 +11,7 @@ using Xunit;
 
 namespace EtcdWorker.IntegrationTests.Membership;
 
-// Ядро приёмки состава §7.2 (arch/25 §3): доводка nodes=N на живом контуре
+// Ядро приёмки состава §7.2 (arch/etcdworker/02-membership.md): доводка nodes=N на живом контуре
 // (seed внешним членом, managed-узлы контейнерами docker-хоста рига в сети
 // сценария); rolling-вывод под кворум-гвардом; авто-замена мёртвого узла;
 // orphan-cleanup. Каждый кейс полностью чистит свои контейнеры/тома/ключи.
@@ -199,7 +199,7 @@ public sealed class MembershipProcessTests(EtcdWorkerEnvironment env)
         }
     }
 
-    // Телеметрия таймаута (канон docs/e2e-launch.md): журнал фаз, member list,
+    // Телеметрия таймаута (канон arch/testing/01-e2e-launch.md): журнал фаз, member list,
     // контейнеры узлов с последними лог-строками и хронология docker-событий
     // за время кейса — «почему не сошлось».
     private static async Task<string> DiagnoseAsync(EtcdWorkerEnvironment env, DateTimeOffset sinceUtc)
@@ -327,7 +327,7 @@ public sealed class MembershipProcessTests(EtcdWorkerEnvironment env)
     // AAA: клэйм /etcdworker/locks/portalloc у соседнего инстанса — окно
     // аллокации порта не входит: тик завершается transient-отказом
     // (PortLockBusyException), состав не меняется; снятие клэйма — следующий
-    // тик доводит состав (arch/25 §3.1/§5, t90-паттерн)
+    // тик доводит состав (arch/etcdworker/02-membership.md/§5, t90-паттерн)
     [Fact]
     public async Task AddAsync_PortAllocLockHeld_TransientRefusal()
     {

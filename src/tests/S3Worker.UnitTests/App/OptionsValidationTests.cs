@@ -2,7 +2,7 @@ using S3Worker.App;
 
 namespace S3Worker.UnitTests.App;
 
-// Fail-fast валидации старта (arch/24 §8) — чистые предикаты S3StartupChecks:
+// Fail-fast валидации старта (arch/s3worker/08-operability.md §5) — чистые предикаты S3StartupChecks:
 // каждая — граничные кейсы (Program применяет их на ValidateOnStart).
 public class OptionsValidationTests
 {
@@ -38,7 +38,7 @@ public class OptionsValidationTests
         o.Api.AdvertiseUrl = url;
         o.Api.Tls.AllowInsecureHttp = allowInsecure;
 
-        // Assert — https:// обязателен (HTTPS-грань, mTLS — только /api, arch/24 §1.1); AllowInsecureHttp — WAF-лазейка
+        // Assert — https:// обязателен (HTTPS-грань, mTLS — только /api, arch/s3worker/07-api.md §1); AllowInsecureHttp — WAF-лазейка
         S3StartupChecks.AdvertiseUrl(o).Should().Be(expected);
     }
 
@@ -57,7 +57,7 @@ public class OptionsValidationTests
         empty.Docker.Hosts = [];
         S3StartupChecks.DockerTopology(empty).Should().BeFalse();
 
-        // дубликат имён — нет (имя — атрибут docker_host, arch/23 §4)
+        // дубликат имён — нет (имя — атрибут docker_host, arch/s3-clusters/04-placement.md)
         var dup = Valid();
         dup.Docker.Hosts =
         [

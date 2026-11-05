@@ -9,7 +9,7 @@ using Xunit;
 
 namespace PgWorker.UnitTests.Backups;
 
-// Машина состояний цикла приёмника (arch/19 §3, spec §3.1 п.2–8): гейты
+// Машина состояний цикла приёмника (arch/backups/02-wal-archive.md §1, spec §3.1 п.2–8): гейты
 // (disabled → waiting_disabled; wal-ключ STOPPED/WAL_CHAIN_ERROR → paused), роль none →
 // waiting_role, креды/цели (waiting_password/waiting_policy), слот (waiting_slot),
 // permanent-исходы ядра без выхода процесса (failed_permanent), факты
@@ -165,7 +165,7 @@ public class WalReceiverLoopTests
             string prefix, int? maxKeysPerTest = null, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<Result> DeleteKeysAsync(IReadOnlyList<string> keys, CancellationToken ct = default)
         {
-            // Поглощение .partial финалом (arch/19 §3) — идемпотентный batch-delete.
+            // Поглощение .partial финалом (arch/backups/02-wal-archive.md §1) — идемпотентный batch-delete.
             foreach (var key in keys)
                 Objects.Remove(key);
             return Task.FromResult(Result.Success());
@@ -629,7 +629,7 @@ public class WalReceiverLoopTests
         }
     }
 
-    // AAA (стоп-гейт живого стрима, arch/19 §3): wal-ключ STOPPED при
+    // AAA (стоп-гейт живого стрима, arch/backups/02-wal-archive.md §1): wal-ключ STOPPED при
     // живой сессии — проба из стрима завершает её (Reconnect), цикл
     // перепроверяет гейты и уходит в paused; приёмник не ждёт обрыва
     // транспорта.
@@ -714,7 +714,7 @@ public class WalReceiverLoopTests
         }
     }
 
-    // AAA (граница сессии, arch/19 §3 «Агент»): факт pool_exhausted наблюдала
+    // AAA (граница сессии, arch/backups/02-wal-archive.md §1 «Агент»): факт pool_exhausted наблюдала
     // СЕССИЯ A (put отказал маркером исчерпания); после смены сессии (STOPPED
     // → пауза → гейт снят) новая сессия B на idle-источнике НЕ ДЕЛАЕТ ни
     // одного put — «снятый первым успешным put» не наступает никогда, и без
@@ -771,12 +771,12 @@ public class WalReceiverLoopTests
         }
     }
 
-    // AAA (arch/19 §3, idle-детект): инвентарный проход трогает пул S3 тем же
+    // AAA (arch/backups/02-wal-archive.md §1, idle-детект): инвентарный проход трогает пул S3 тем же
     // write-списком — на idle-источнике (put'ов нет) отказ прохода (list down)
     // ОБЯЗАН ставить факт pool_exhausted без ожидания закрытия сегмента;
     // успешный проход после исцеления пула снимает (симметрия с «снятый
     // первым успешным put»). retryDelay 2 с: флаг живёт до начала следующей
-    // итерации (перепубликация на границе сессии, arch/19 §3) — окно ≥ 2 с
+    // итерации (перепубликация на границе сессии, arch/backups/02-wal-archive.md §1) — окно ≥ 2 с
     // ловится поллингом; снятие — следующий проход после исцеления.
     [Fact]
     public async Task InventoryPoolFailure_SetsExhaustedOnIdleMaster_ClearedByHealedPool()
@@ -812,7 +812,7 @@ public class WalReceiverLoopTests
         }
     }
 
-    // AAA (arch/19 §7, первый канал hba): приёмник — владелец строки
+    // AAA (arch/backups/08-secrets.md, первый канал hba): приёмник — владелец строки
     // backup_exec — самообеспечение выполняется ДО сессии цикла подключения
     // (воркерный тик не связан со стартом контейнера — гонка 28000).
     [Fact]
@@ -993,7 +993,7 @@ public class WalReceiverLoopTests
         }
     }
 
-    // ── Ре-доклад инвентаря.history (spec §3.1 п.6, arch/19 §3) ──
+    // ── Ре-доклад инвентаря.history (spec §3.1 п.6, arch/backups/02-wal-archive.md §1) ──
 
     // tmpdir с pg_wal-файлом истории (имя — 8 hex + ".history", как пишет PG).
     private static string PgWalDirWith(params string[] names)
@@ -1096,7 +1096,7 @@ public class WalReceiverLoopTests
         }
     }
 
-    // ── Ре-доклад инвентаря СЕГМЕНТОВ (arch/19 §3) ──
+    // ── Ре-доклад инвентаря СЕГМЕНТОВ (arch/backups/02-wal-archive.md §1) ──
 
     // tmpdir с закрытыми сегментными файлами штатного размера (разряжённые —
     // PG пишет имена ВЕРХНИМ hex; содержимое для ре-докала не важно).
@@ -1261,7 +1261,7 @@ public class WalReceiverLoopTests
         s3.PutCalls.Should().Be(0);
     }
 
-    // AAA (arch/19 §3, граница собственного прогресса): сегмент ЕСТЬ в архиве
+    // AAA (arch/backups/02-wal-archive.md §1, граница собственного прогресса): сегмент ЕСТЬ в архиве
     // (чужой соло-хвост 0007 — доставлен другим источником двойной архивации),
     // но доставлен НЕ этой нодой (свой delivered 0006) — локально закрытые
     // 0007/0008 ДОНОСЯТСЯ на write-цель: идемпотентный повтор того же имени,
@@ -1291,7 +1291,7 @@ public class WalReceiverLoopTests
         diagnostics.Should().Contain(m => m.Contains("redelivered 2"));
     }
 
-    // AAA (mixedness, arch/19 §3): позиция границы+1 уже заархивирована ДРУГИМ
+    // AAA (mixedness, arch/backups/02-wal-archive.md §1): позиция границы+1 уже заархивирована ДРУГИМ
     // именем (tli-ветвление: точка переключения под именем родителя) — проход
     // останавливается БЕЗ второй копии позиции.
     [Fact]
@@ -1318,7 +1318,7 @@ public class WalReceiverLoopTests
         diagnostics.Should().Contain(m => m.Contains("tli branch point"));
     }
 
-    // AAA (arch/19 §3 «Возобновление»): старт сессии НЕ выше собственного
+    // AAA (arch/backups/02-wal-archive.md §1 «Возобновление»): старт сессии НЕ выше собственного
     // доставленного прогресса — соло-хвост чужой ноды (0007 в архиве) не
     // переводит сессию через свой недоставленный сегмент: сессия B стартует от
     // своего delivered 0001 и доносит 0002..0008 (повтор 0007 идемпотентен).
@@ -1384,7 +1384,7 @@ public class WalReceiverLoopTests
         }
     }
 
-    // AAA (arch/19 §3, повтор инвентаря в живой сессии): сегмент закрылся
+    // AAA (arch/backups/02-wal-archive.md §1, повтор инвентаря в живой сессии): сегмент закрылся
     // локально ПОСЛЕ старта сессии — периодический инвентарный проход доносит
     // его БЕЗ переподключения (сессия жива: один источник на всём тесте).
     [Fact]

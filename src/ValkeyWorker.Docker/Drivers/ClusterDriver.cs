@@ -15,10 +15,10 @@ public sealed record HostEndpoint(string Name, string Endpoint);
 /// <summary>
 /// Спецификация ноды для docker-драйвера: Args = cmd-обёртка
 /// NodeArgsBuilder.BuildCmd (детерминирована от декларации/кредов etcd —
-/// arch/21 §2), Env — TLS-материал VALKEY_TLS_{CERT,KEY,CA} (свежий серт
+/// arch/valkeyworker/01-placement.md), Env — TLS-материал VALKEY_TLS_{CERT,KEY,CA} (свежий серт
 /// ноды; обёртка раскатывает PEM в /tls при старте); драйвер только
 /// размещает (хост, host-порт публикации 6379, лимиты; томов нет,
-/// per-cluster сети нет — arch/21 §2).
+/// per-cluster сети нет — arch/valkeyworker/01-placement.md).
 /// </summary>
 public sealed record ValkeyNodeSpec(
     string Cluster,
@@ -38,7 +38,7 @@ public sealed record ValkeyNodeSpec(
 public sealed record NodeEndpointInspection(string Host, int ClientHostPort, bool Running = true);
 
 // Унифицированное управление нодой в обоих режимах (порт драйверов kfw с
-// упрощениями домена — arch/21 §2): объекты — контейнер/сервис
+// упрощениями домена — arch/valkeyworker/01-placement.md): объекты — контейнер/сервис
 // vwk-<C>-node<k>; TLS-материал — env контейнера, томов и per-cluster сетей
 // нет (легаси-том vwk-<C>-tls старой volume-модели убирает
 // CleanupLegacyVolumeAsync — утилита миграции надзора).
@@ -101,7 +101,7 @@ public sealed class PlainClusterDriver(
     IReadOnlyList<HostEndpoint> hosts,
     DockerEngineFactory factory) : IClusterDriver
 {
-    // Контейнерный порт ноды valkey → выделенный host-порт (arch/21 §2).
+    // Контейнерный порт ноды valkey → выделенный host-порт (arch/valkeyworker/01-placement.md).
     public const int ClientContainerPort = 6379;
 
     // Label-ключ контейнеров/сервисов vwk-домена (: наследие-литерал
@@ -363,7 +363,7 @@ public sealed class SwarmClusterDriver(
     public async Task<Result> EnsureNodeAsync(ValkeyNodeSpec spec, string? contourNetwork, CancellationToken ct)
     {
         // contourNetwork не используется: сеть overlay назначает сам Swarm
-        // (Mode=Swarm + ContourNetwork отсечён fail-fast старта, arch/21 §2).
+        // (Mode=Swarm + ContourNetwork отсечён fail-fast старта, arch/valkeyworker/01-placement.md).
         return await Result.FromAsync(async () =>
         {
             // constraint: node.id==<id>, id ищем по Hostname==spec.Host.

@@ -2,7 +2,7 @@ using Shared.Core;
 
 namespace EtcdWorker.Core;
 
-/// <summary>Размещение managed-узла (arch/25 §2; Swarm): анти-аффинити —
+/// <summary>Размещение managed-узла (arch/etcdworker/01-placement.md; Swarm): анти-аффинити —
 /// swarm-ноды без managed-узлов; исчерпаны → least-loaded (минимум занятых
 /// слотов), tie-break — имя Ordinal (детерминизм).</summary>
 public static class PlacementPlanner
@@ -12,7 +12,7 @@ public static class PlacementPlanner
     {
         if (swarmNodes.Count == 0)
             return Result<string>.Failed(new ApplicationException(
-                "placement: no swarm nodes available (arch/25 §2)"));
+                "placement: no swarm nodes available (arch/etcdworker/01-placement.md)"));
 
         var free = swarmNodes
             .Where(n => !placedOnExisting.Contains(n, StringComparer.Ordinal))

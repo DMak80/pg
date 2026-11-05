@@ -9,7 +9,7 @@ using KafkaWorker.Provisioning.Kafka;
 namespace KafkaWorker.Provisioning.Processes;
 
 /// <summary>
-/// Прогресс reassignment /kafkaworker/reassignments/&lt;C&gt; (arch/15 §4):
+/// Прогресс reassignment /kafkaworker/reassignments/&lt;C&gt; (arch/kafka-clusters/04-coordination.md §1):
 /// перестраиваемый кэш хода (источник истины — метаданные Kafka), camelCase
 /// как WorkState. Отсутствие ключа = операции нет.
 /// </summary>
@@ -24,12 +24,12 @@ public sealed record ReassignProgress(
     [property: JsonPropertyName("last_error")] string? LastError = null);
 
 /// <summary>
-/// PartitionReassignerProcess (arch/16 §5 I; spec §5): перенос реплик
+/// PartitionReassignerProcess (arch/kafkaworker/06-rebalancing.md §2 I; spec §5): перенос реплик
 /// партиций между брокерами. Drain (приоритет): опустошение брокера
 /// state=TO_REMOVE — каждым тиком план пересчитывается из свежих метаданных
 /// describe-all (включая __-топики), подаются идемпотентные батчи ≤
 /// BatchPartitions операцией AlterReassignments (KIP-455) протокольным
-/// миниклиентом (arch/16 §2.4); завершение по факту (drain-брокер вне
+/// миниклиентом (arch/kafkaworker/06-rebalancing.md §1); завершение по факту (drain-брокер вне
 /// Replicas и нет USR). Balance: converge к декларации по заявке /kafkaworker/rebalances/&lt;C&gt;
 /// (панель), заявка снимается по сходимости. Слепая проба — никаких подач
 /// (собственная слепота воркера не повод трогать партиции), прошлый
@@ -74,7 +74,7 @@ public sealed class PartitionReassignerProcess(
     {
         var cluster = snap.Cluster;
 
-        // Мутации — только держателем живого клэйма (arch/16 §5).
+        // Мутации — только держателем живого клэйма (arch/kafkaworker/README.md).
         if (!claims.IsMine(cluster))
             return Result.Failed(new ApplicationException(
                 $"reassign {cluster}: claim is not ours (or lost) — mutations are forbidden"));
@@ -394,7 +394,7 @@ public sealed class PartitionReassignerProcess(
             return Result.Success();
         }
 
-        // Подача AlterReassignments (KIP-455, arch/16 §2.4) протокольным
+        // Подача AlterReassignments (KIP-455, arch/kafkaworker/06-rebalancing.md §1) протокольным
         // миниклиентом по CLIENT endpoints — контейнер-цель не нужна; бюджет
         // SubmitSec покрывает все endpoint-попытки клиента (per-endpoint —
         // внутренние 30 с NetworkSubmitTimeout адаптера).

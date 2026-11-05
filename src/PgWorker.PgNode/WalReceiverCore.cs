@@ -4,7 +4,7 @@ using Shared.Core;
 
 namespace PgWorker.PgNode;
 
-/// <summary>Исход одной стрим-сессии приёмника (arch/19 §3): одна сессия =
+/// <summary>Исход одной стрим-сессии приёмника (arch/backups/02-wal-archive.md §1): одна сессия =
 /// «открытие → резолв хвоста → START_REPLICATION → приём до обрыва/смены роли».
 /// Reconnect — обрыв источника/transient (переподключение с повторным резолвом
 /// хвоста); WaitingSlot — слота нет на пустом префиксе S3 (transient-ожидание,
@@ -56,7 +56,7 @@ public sealed class WalSessionEvents
     /// <summary>Переподключение к источнику — counter walreceiver_reconnects_total.</summary>
     public Action? Reconnect;
 
-    /// <summary>Прогресс позиции потока — serverWalEnd сервера (arch/18 §2.8:
+    /// <summary>Прогресс позиции потока — serverWalEnd сервера (arch/metrics/02-dictionary.md §8:
     /// backlog = позиция записи сервера − подтверждённый хвост).</summary>
     public Action<ulong>? StreamProgress;
 
@@ -65,11 +65,11 @@ public sealed class WalSessionEvents
     public Action<ulong>? Confirmed;
 
     /// <summary>Доставлена `.history` (байты) — counter bytes_delivered
-    /// (arch/18 §2.8: счётчик байт включает history-объекты).</summary>
+    /// (arch/metrics/02-dictionary.md §8: счётчик байт включает history-объекты).</summary>
     public Action<long>? HistoryDelivered;
 
     /// <summary>Факт отсутствия `.history` TLI (ни из рантайма, ни из ФС ноды) —
-    /// живая публикация history_missing_tli в статус-ключ (arch/19 §4):
+    /// живая публикация history_missing_tli в статус-ключ (arch/backups/05-etcd-contract.md):
     /// факт обязан быть наблюдаем до завершения сессии.</summary>
     public Action<uint>? HistoryMissing;
 
@@ -79,7 +79,7 @@ public sealed class WalSessionEvents
     /// pool_exhausted до конца сессии.</summary>
     public Action<bool>? PoolExhaustedChanged;
 
-    /// <summary>Факт tli-прыжка (58P01 fallback, arch/19 §3): живая публикация в
+    /// <summary>Факт tli-прыжка (58P01 fallback, arch/backups/02-wal-archive.md §1): живая публикация в
     /// статус-ключ — сессия после прыжка продолжает стрим, исход-факт доехал бы
     /// только при её завершении (прыжок живёт в статусе до следующего).</summary>
     public Action<WalReceiverTliJump>? TliJump;
@@ -87,7 +87,7 @@ public sealed class WalSessionEvents
     /// <summary>Проба роли из стрима (5 c): true — роль сменилась, сессия прерывается.</summary>
     public Func<CancellationToken, Task<bool>>? RoleChangedProbe;
 
-    /// <summary>Проба ПОЛНОГО стоп-гейта из стрима (5 c, /arch/19 §3): true —
+    /// <summary>Проба ПОЛНОГО стоп-гейта из стрима (5 c, /arch/backups/02-wal-archive.md §1): true —
     /// глобальный ключ /pgworker/backups-disabled жив ИЛИ wal-ключ шарда в
     /// STOPPED/WAL_CHAIN_ERROR — сессия чисто завершается (Reconnect): цикл
     /// перепроверит гейты и уйдёт в waiting_disabled/paused; живой стрим
@@ -101,7 +101,7 @@ public sealed class WalSessionEvents
     public Action<string>? Diagnostic;
 }
 
-/// <summary>Ядро WAL-приёмника как управляемая сессия (→ wal-агент, arch/19 §3):
+/// <summary>Ядро WAL-приёмника как управляемая сессия (→ wal-агент, arch/backups/02-wal-archive.md §1):
 /// подключение со сверкой wal_segment_size, резолв старта от хвоста S3 (пустой
 /// префикс — от restart_lsn слота), приём XLogData → сборка сегментов → put в
 /// S3 → подтверждение слота ТОЛЬКО после успешного put (инвариант RPO:
@@ -123,7 +123,7 @@ public sealed class WalReceiverCore
     // висел до отмены попытки — вторая цель не получала ни одной попытки).
     internal static readonly TimeSpan PutAttemptTimeout = TimeSpan.FromSeconds(15);
 
-    // Порог мгновенного сигнала пампу (arch/19 §3: «и/или по порогу байт» —
+    // Порог мгновенного сигнала пампу (arch/backups/02-wal-archive.md §1: «и/или по порогу байт» —
     // 4 МиБ, 1/4 сегмента; константа приёмника, не конфиг): при бурной записи
     // выкладка не ждёт тика PartialIntervalSec.
     internal static readonly ulong PartialThresholdBytes = 4L * 1024 * 1024;
@@ -152,20 +152,20 @@ public sealed class WalReceiverCore
     // многогигабайтный файл доезжает и при скромном канале (~10 МиБ/с — 3 ГиБ),
     // а «молча принявшая TCP» нода (прецедент R3 выше) по-прежнему не съедает
     // бюджет перебора — фейловер доезжает до следующей цели; заведомо ниже
-    // воркеровских бюджетов операции (6/24 ч, arch/19 §6).
+    // воркеровских бюджетов операции (6/24 ч, arch/backups/09-operability.md).
     internal static readonly TimeSpan FileAttemptTimeout = TimeSpan.FromSeconds(300);
 
-    // Период пробы роли из стрима (arch/19 §3: смена ролей подхватывается
+    // Период пробы роли из стрима (arch/backups/02-wal-archive.md §1: смена ролей подхватывается
     // приёмником без участия воркера).
     private static readonly TimeSpan RoleProbePeriod = TimeSpan.FromSeconds(5);
 
-    // pg_wal PGDATA ноды (arch/14 §2.1): fallback-чтение `.history` приёмником
+    // pg_wal PGDATA ноды (arch/pgworker/01-placement.md §1): fallback-чтение `.history` приёмником
     // из ФС своей ноды (приёмник живёт в контейнере ноды, user=postgres).
     public const string DefaultPgWalDir = "/home/postgres/pgdata/pgroot/data/pg_wal";
 
     /// <summary>Одна сессия стрима (описание исходов — WalSessionOutcome).
     /// lastDeliveredSegment — собственный доставленный прогресс прошлой
-    /// сессии (статус-ключ, arch/19 §3 «Возобновление»): стартовая позиция НЕ
+    /// сессии (статус-ключ, arch/backups/02-wal-archive.md §1 «Возобновление»): стартовая позиция НЕ
     /// выше его конца — соло-хвост чужой ноды (mesh-лаг/полный набор) не
     /// переводит сессию через свой недоставленный сегмент; перечитка у
     /// источника и повторный put идемпотентны.</summary>
@@ -282,7 +282,7 @@ public sealed class WalReceiverCore
                 // 2. Стартовая позиция: хвост S3 (позиция + имя хвостового сегмента —
                 //    вход tli-процедуры при 58P01); транспортный сбой резолва — ретрай;
                 //    пустой префикс — restart_lsn слота; слота нет — transient-ожидание
-                //    (ensure делает воркер, arch/19 §3 — НЕ permanent).
+                //    (ensure делает воркер, arch/backups/02-wal-archive.md §1 — НЕ permanent).
                 WalTail? walTail = null;
                 while (walTail is null)
                 {
@@ -305,7 +305,7 @@ public sealed class WalReceiverCore
                     tailSegment = tailInfo.SegmentName;
 
                     // Старт НЕ выше собственного доставленного прогресса
-                    // (arch/19 §3 «Возобновление»): соло-хвост резолвится с
+                    // (arch/backups/02-wal-archive.md §1 «Возобновление»): соло-хвост резолвится с
                     // первой доступной read-ноды и может содержать сегменты,
                     // доставленные ДРУГИМ источником двойной архивации и не
                     // лежащие на write-цели ЭТОЙ ноды. Через свой
@@ -332,7 +332,7 @@ public sealed class WalReceiverCore
                     if (!restart.IsSuccess)
                     {
                         // Слота нет/lost (SQLSTATE 42704) — waiting_slot: воркер
-                        // ensure'ит/recreate'ит (arch/19 §3). Иной отказ (PG
+                        // ensure'ит/recreate'ит (arch/backups/02-wal-archive.md §1). Иной отказ (PG
                         // недоступен/SQL-сбой) — transient: диагностика + ретрай,
                         // состояние не маскируем waiting_slot.
                         if (restart.Error is WalSlotMissing)
@@ -355,7 +355,7 @@ public sealed class WalReceiverCore
                 if (!started.IsSuccess)
                 {
                     // Lost-слот при непустом хвосте (SQLSTATE 42704): waiting_slot,
-                    // а не generic-retry в streaming (arch/19 §3 — lost-слот тоже
+                    // а не generic-retry в streaming (arch/backups/02-wal-archive.md §1 — lost-слот тоже
                     // waiting_slot; ensure/recreate делает воркер).
                     if (started.Error is WalSlotMissing)
                         return Outcome(WalSessionKind.WaitingSlot);
@@ -377,7 +377,7 @@ public sealed class WalReceiverCore
                     else
                     {
                         // Конфликт содержимого (.history чужой инкарнации) —
-                        // permanent: retry не разрешится (arch/19 §3).
+                        // permanent: retry не разрешится (arch/backups/02-wal-archive.md §1).
                         if (WalArchiveConflict.Is(procedureResult))
                             return Outcome(WalSessionKind.FailedPermanent,
                                 procedureResult.Error!.Message);
@@ -536,7 +536,7 @@ public sealed class WalReceiverCore
                             }
 
                             // Позиция потока для наблюдаемости — serverWalEnd
-                            // (arch/18 §2.8), не позиция принятых байт: backlog =
+                            // (arch/metrics/02-dictionary.md §8), не позиция принятых байт: backlog =
                             // позиция записи сервера − подтверждённый хвост.
                             lastStreamLsn = Math.Max(lastStreamLsn, assembler.ServerWalEnd);
                             events.StreamProgress?.Invoke(assembler.ServerWalEnd);
@@ -609,13 +609,13 @@ public sealed class WalReceiverCore
                                         // Подтверждение не прошло (транспорт): слот не двинулся,
                                         // следующий сегмент повторит статус с той же LSN;
                                         // диагностика — застой не молчит. Это НЕ put-ошибка
-                                        // (словарь arch/18 §2.8) — walreceiver_put_errors_total
+                                        // (словарь arch/metrics/02-dictionary.md §8) — walreceiver_put_errors_total
                                         // не растёт.
                                         Diagnostic(events,
                                             $"confirm failed: {confirmed.Error!.Message.Split('\n')[0]}");
                                     }
 
-                                    // Поглощение версий финалом (arch/19 §3): best-effort list узкого
+                                    // Поглощение версий финалом (arch/backups/02-wal-archive.md §1): best-effort list узкого
                                     // префикса + batch-delete; отказ — diagnostic (докладывает sweeper).
                                     var absorbed = await s3.ListAsync(
                                         o.Cluster, o.Shard, $"wal/{WalPartialName.SegmentPrefixOf(segment.Name)}",
@@ -740,7 +740,7 @@ public sealed class WalReceiverCore
         return Result<byte[]?>.Success(null);
     }
 
-    /// <summary>Tli-процедура (58P01, arch/19 §3): досыпка старого таймлайна от
+    /// <summary>Tli-процедура (58P01, arch/backups/02-wal-archive.md §1): досыпка старого таймлайна от
     /// хвоста S3 до точки переключения (CopyDone → переподключение от выросшего
     /// хвоста — зазора нет, RPO=0) или прыжок-fallback на текущий таймлайн от
     /// границы сегмента xlogpos (сегменты (tail .. старт] в S3 не появятся —
@@ -923,7 +923,7 @@ public sealed class WalReceiverCore
                 events.PutSuccess?.Invoke();
                 if (exhaustion.IsSet)
                 {
-                    // Первый успешный put снимает флаг исчерпания (arch/19 §3).
+                    // Первый успешный put снимает флаг исчерпания (arch/backups/02-wal-archive.md §1).
                     exhaustion.IsSet = false;
                     events.PoolExhaustedChanged?.Invoke(false);
                 }
@@ -956,7 +956,7 @@ public sealed class WalReceiverCore
             using (var attemptCts = CancellationTokenSource.CreateLinkedTokenSource(ct))
             {
                 attemptCts.CancelAfter(callBudget);
-                // Гвард чужой цепочки (arch/19 §3) — ТОЛЬКО на финальных объектах
+                // Гвард чужой цепочки (arch/backups/02-wal-archive.md §1) — ТОЛЬКО на финальных объектах
                 // wal/<segment>: .partial кладётся обычным put-ом (правило
                 // «длиннее выигрывает» исключает конкурирующие байты — конфликт
                 // невозможен по построению).
@@ -970,7 +970,7 @@ public sealed class WalReceiverCore
                 events.PutSuccess?.Invoke();
                 if (exhaustion.IsSet)
                 {
-                    // Первый успешный put снимает флаг исчерпания (arch/19 §3).
+                    // Первый успешный put снимает флаг исчерпания (arch/backups/02-wal-archive.md §1).
                     exhaustion.IsSet = false;
                     events.PoolExhaustedChanged?.Invoke(false);
                 }
@@ -991,7 +991,7 @@ public sealed class WalReceiverCore
         }
     }
 
-    /// <summary>Ре-доклад инвентаря СЕГМЕНТОВ (arch/19 §3): закрытые сегменты
+    /// <summary>Ре-доклад инвентаря СЕГМЕНТОВ (arch/backups/02-wal-archive.md §1): закрытые сегменты
     /// pg_wal своей ноды, продолжающие непрерывную часть S3-цепочки, кладутся в
     /// wal/ отсутствующие — в возрастающем порядке позиций, до первой дыры или
     /// отказа put. Покрывает исход «WAL физически есть на ноде, но приёмник его
@@ -999,7 +999,7 @@ public sealed class WalReceiverCore
     /// S3 остаётся на прежнем таймлайне — без ре-доклада сегменты между хвостом
     /// архива и первым сегментом нового TLI не попадают в S3 никогда (валидатор
     /// restore видел бы реальный разрыв). Граница прохода — конец СОБСТВЕННОГО
-    /// доставленного прогресса (deliveredSegment, arch/19 §3), при его
+    /// доставленного прогресса (deliveredSegment, arch/backups/02-wal-archive.md §1), при его
     /// отсутствии — хвост S3: локально закрытые сегменты между своим
     /// прогрессом и хвостом чужой ноды ДОНОСЯТСЯ (для приёмника «числится на
     /// чужой ноде» не значит «доставлено» — дубль того же имени идемпотентен);
@@ -1026,7 +1026,7 @@ public sealed class WalReceiverCore
         if (!listing.IsSuccess)
         {
             diagnostic?.Invoke($"wal inventory: list wal/ failed: {listing.Error!.Message.Split('\n')[0]}");
-            failed?.Invoke(); // пул недостижим — сигнал фактам (idle-детект, arch/19 §3)
+            failed?.Invoke(); // пул недостижим — сигнал фактам (idle-детект, arch/backups/02-wal-archive.md §1)
             return; // list не прошёл — ре-доклад отложен до следующего прохода
         }
         var archivedNames = listing.Value
@@ -1130,7 +1130,7 @@ public sealed class WalReceiverCore
                 // (иначе сегменты выше легли бы миксом поверх чужой цепочки).
                 if (WalArchiveConflict.Is(put))
                     return;
-                failed?.Invoke(); // пул недостижим — сигнал фактам (idle-детект, arch/19 §3)
+                failed?.Invoke(); // пул недостижим — сигнал фактам (idle-детект, arch/backups/02-wal-archive.md §1)
                 return; // следующий проход повторит с той же позиции
             }
 
@@ -1155,7 +1155,7 @@ public sealed class WalReceiverCore
         return WalChain.Check(start, namesByPos.Values).LastSegment?.Name;
     }
 
-    /// <summary>Ре-доклад инвентаря.history (arch/19 §3): перечисляет
+    /// <summary>Ре-доклад инвентаря.history (arch/backups/02-wal-archive.md §1): перечисляет
     /// .history-файлы pg_wal своей ноды и кладёт в S3 wal/ отсутствующие —
     /// страховка TLI-переходов вне окна стрима (промоут, пока приёмник не
     /// стримил: после промоута файл лежит в pg_wal нового мастера, после
@@ -1164,7 +1164,7 @@ public sealed class WalReceiverCore
     /// идемпотентно (put только отсутствующих по list); любой отказ —
     /// diagnostic-log, доставит следующий цикл подключения; фактов в
     /// статус-ключ не пишет. delivered — опц. колбэк байт доставленных
-    /// history-объектов (counter bytes_delivered, arch/18 §2.8).</summary>
+    /// history-объектов (counter bytes_delivered, arch/metrics/02-dictionary.md §8).</summary>
     public static async Task RedeliverHistoryInventoryAsync(
         IBackupS3 s3, string cluster, string shard, string pgWalDir,
         Action<string>? diagnostic, CancellationToken ct,
@@ -1200,7 +1200,7 @@ public sealed class WalReceiverCore
             // list не прошёл — ре-доклад отложен до следующего цикла.
             diagnostic?.Invoke(
                 $"history inventory: list wal/ failed: {listing.Error!.Message.Split('\n')[0]}");
-            failed?.Invoke(); // пул недостижим — сигнал фактам (idle-детект, arch/19 §3)
+            failed?.Invoke(); // пул недостижим — сигнал фактам (idle-детект, arch/backups/02-wal-archive.md §1)
             return;
         }
 
@@ -1229,7 +1229,7 @@ public sealed class WalReceiverCore
                     // Конфликт — чужая инкарнация: остановить проход (не миксовать).
                     if (WalArchiveConflict.Is(put))
                         return;
-                    failed?.Invoke(); // пул недостижим — сигнал фактам (idle-детект, arch/19 §3)
+                    failed?.Invoke(); // пул недостижим — сигнал фактам (idle-детект, arch/backups/02-wal-archive.md §1)
                 }
             }
             catch (Exception e)

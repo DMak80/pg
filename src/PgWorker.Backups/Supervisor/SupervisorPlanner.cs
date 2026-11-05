@@ -2,7 +2,7 @@ using PgWorker.Etcd.Parsing;
 
 namespace PgWorker.Backups.Supervisor;
 
-/// <summary>Чистые решения сверок S3↔etcd (arch/19 §4): без I/O,
+/// <summary>Чистые решения сверок S3↔etcd (arch/backups/05-etcd-contract.md): без I/O,
 /// юнит-тестируемы. Мгновенно удаляется только мусор, который восстановление
 /// гарантированно не выберет: префикс full/&lt;id&gt;/ в S3 БЕЗ etcd-ключа
 /// (выбора кандидатов restore не имеет); всё, что может иметь DR-ценность, —
@@ -20,7 +20,7 @@ public static class SupervisorPlanner
         return s3FullIds.Where(id => !owned.Contains(id)).ToList();
     }
 
-    /// <summary>Возрастной гейт мусора (arch/19 §4 «Гейты мусора»): самый старый
+    /// <summary>Возрастной гейт мусора (arch/backups/05-etcd-contract.md «Гейты мусора»): самый старый
     /// объект unowned-префикса достиг порога GarbageMinAgeSec → мусор дозрел
     /// (заливка in-flight молода — снимок тика мог отстать от планировщика
     /// этого же тика). minAgeSec &lt;= 0 — гейт снят (мгновенное удаление).</summary>

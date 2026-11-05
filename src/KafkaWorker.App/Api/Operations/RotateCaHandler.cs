@@ -9,7 +9,7 @@ public sealed record CaRotatedDto(string Cluster, long RequestedUnix, string Req
 
 // Заявка ротации per-cluster CA/сертов через API воркера (arch/02 §10.2-17):
 // клэйм-txn /kafkaworker/ca_rotations/<C>; исполнение — CaRotator воркера
-// (фазы P/D/R/C, arch/16 §5 K). Порт панельного RotateCaCommandHandler.
+// (фазы P/D/R/C, arch/kafkaworker/04-security.md §4 K). Порт панельного RotateCaCommandHandler.
 // requested_by — заголовок X-Requested-By (панель шлёт оператора), fallback
 // "api" (у панели ClaimsPrincipal; значения etcd не меняются, spec §3.7).
 public sealed class RotateCaHandler(IEtcdGateway gateway, string[] endpoints, TimeProvider time)

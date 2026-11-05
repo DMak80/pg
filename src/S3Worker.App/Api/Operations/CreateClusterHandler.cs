@@ -7,8 +7,8 @@ using Shared.Etcd.Client;
 
 namespace S3Worker.App.Api.Operations;
 
-// Ответ 201 POST /api/s3/clusters (arch/24 §1.1): instances — имена созданных
-// инстансов (0 инстансов — валидная декларация без развёртывания, arch/23 §2).
+// Ответ 201 POST /api/s3/clusters (arch/s3worker/07-api.md §1): instances — имена созданных
+// инстансов (0 инстансов — валидная декларация без развёртывания, arch/s3-clusters/02-keys.md §1).
 public sealed record S3ClusterCreatedDto(
     [property: JsonPropertyName("name")] string Name,
     [property: JsonPropertyName("state")] string State,
@@ -20,7 +20,7 @@ public sealed record S3ClusterCreatedDto(
 // (422/409) → клэйм-txn NotExists(config) + пакет (config c nodes=len(instances) +
 // instances × {placement, resources, state=NOT_INITIALIZED}; 0 инстансов —
 // только config; 409). Запись — ОДНА атомарная txn: сбой midway частичного
-// состояния не оставляет, компенсация не требуется (arch/24 §1.1).
+// состояния не оставляет, компенсация не требуется (arch/s3worker/07-api.md §1).
 // Создание клэйм-lease НЕ берёт — это заявка.
 public sealed class CreateClusterHandler(
     IEtcdGateway gateway, string[] endpoints, TimeProvider time)
@@ -32,7 +32,7 @@ public sealed class CreateClusterHandler(
         if (errors.Count > 0)
             return Result<S3ClusterCreatedDto>.Failed(new S3ValidationException(errors));
 
-        // 2) Гварды etcdBackup (arch/24 §1.1): полнота спец-ключа env (422 при
+        // 2) Гварды etcdBackup (arch/s3worker/07-api.md §1): полнота спец-ключа env (422 при
         //    отсутствии ИЛИ неполноте пары) и единственность etcd-backup кластера
         //    установки (409). Единственность — чтение существующих config'ов
         //    перед клэйм-txn: txn закрывает только коллизию имени кластера;
@@ -95,7 +95,7 @@ public sealed class CreateClusterHandler(
     }
 }
 
-// Валидатор создания (чистая функция; arch/24 §1.1: name/platform/instances 0..9
+// Валидатор создания (чистая функция; arch/s3worker/07-api.md §1: name/platform/instances 0..9
 // c именами паттерна кластера и обязательным placement; ресурсы — per-instance
 // с fallback на общий).
 public static class S3ClusterValidator
@@ -107,7 +107,7 @@ public static class S3ClusterValidator
             errors.Add(new("name", "name: [a-z][a-z0-9_]{0,62} (lowercase, no hyphen)"));
 
         if (!string.Equals(request.Platform, S3Limits.Platform, StringComparison.Ordinal))
-            errors.Add(new("platform", $"platform: only \"{S3Limits.Platform}\" (arch/23 §2)"));
+            errors.Add(new("platform", $"platform: only \"{S3Limits.Platform}\" (arch/s3-clusters/02-keys.md §1)"));
 
         var instances = request.Instances ?? [];
         if (instances.Count > S3Limits.MaxNodes)

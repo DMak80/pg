@@ -5,8 +5,8 @@ using Xunit;
 
 namespace PgWorker.UnitTests.PgNode;
 
-// Node-операции приёмника (arch/25 №22): обеспечение pg_hba (arch/19 §7),
-// pg_dump схемы (arch/14 §Move M1). HbaEnsure — файловая механика на tmpdir
+// Node-операции приёмника (arch/communications/02-channel-registry.md №22): обеспечение pg_hba (arch/backups/08-secrets.md),
+// pg_dump схемы (arch/pgworker/processes/f-move.md M1). HbaEnsure — файловая механика на tmpdir
 // (пути NodePaths.Pgdata заменяются направляющим symlink? нет — операции
 // читают константы NodePaths: файловая часть тестируется вставкой в секцию
 // (InsertIntoPgHbaSection) и идемпотентностью логики через tmp-подмену root).

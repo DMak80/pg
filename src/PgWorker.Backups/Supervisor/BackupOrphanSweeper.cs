@@ -7,23 +7,23 @@ using PgWorker.Etcd.Parsing;
 
 namespace PgWorker.Backups.Supervisor;
 
-/// <summary>Глобальный проход сверки bucket↔etcd (arch/19 §4): list ВСЕГО
+/// <summary>Глобальный проход сверки bucket↔etcd (arch/backups/05-etcd-contract.md): list ВСЕГО
 /// bucket → префиксы «&lt;C&gt;/&lt;X&gt;/» без владельца (кластер ToRemove/исчез,
 /// шард удалён) — сироты: реестр /pgworker/backups/orphans (merge first_seen и
 /// has_valid_full, гвард воскресения) + отбор кандидата с приоритетом (
-/// arch/19 §4): доводка первого DELETING → первая заявка /orphan-deletes/ (
+/// arch/backups/05-etcd-contract.md): доводка первого DELETING → первая заявка /orphan-deletes/ (
 /// обходит hold и автоправило) → TTL-кандидат без валидного полного и без
 /// hold-ключа (DR-hold). Санитар прохода : hold/заявки с префиксом вне
 /// merged-реестра (воскрес/исчез/уже удалён) гасятся. ОДИН префикс за проход:
 /// DELETING → batch-delete → list-подтверждение → del записи (+ del заявки).
-/// Перед удалением — перепроверка (arch/19 §4): лидерство, владельцы /clusters/
+/// Перед удалением — перепроверка (arch/backups/05-etcd-contract.md): лидерство, владельцы /clusters/
 /// и hold-ключ кандидата заново (снимок /clusters/ мог устареть) — воскресший
 /// владелец отменяет и DELETING-доводку: гасятся запись/hold/заявка, объекты
 /// живого владельца не трогаются. Выполняется ТОЛЬКО глобальным лидером
 /// /pgworker/leader (двойного писателя
 /// нет); runtime() == null (Enabled=false) → no-op. Все шаги идемпотентны,
 /// transient-отказы (S3/etcd) — Result.Failed без мутаций, следующий проход
-/// повторит (arch/17).</summary>
+/// повторит (arch/synchronization/README.md).</summary>
 public sealed class BackupOrphanSweeper(
     IEtcdGateway etcd,
     string[] endpoints,
@@ -51,7 +51,7 @@ public sealed class BackupOrphanSweeper(
 
         var nowUnix = time.GetUtcNow().ToUnixTimeSeconds();
 
-        // (1) (arch/19 §5): union по ВСЕМ существующим пулам /s3/clusters/
+        // (1) (arch/backups/06-s3-layout.md): union по ВСЕМ существующим пулам /s3/clusters/
         // (первый доступный endpoint каждого; дедуп по (пул, ключ)) → группировка.
         var poolNames = await pools.ListPoolNamesAsync(ct);
         if (!poolNames.IsSuccess)
@@ -178,7 +178,7 @@ public sealed class BackupOrphanSweeper(
             return Result.Success();
         var entry = merged.Orphans.First(e => e.Prefix == candidate);
 
-        // (4.5) Перепроверка перед удалением (arch/19 §4): снимок /clusters/ (2)
+        // (4.5) Перепроверка перед удалением (arch/backups/05-etcd-contract.md): снимок /clusters/ (2)
         // мог устареть — воскресение владельца между снимком и удалением отменяет
         // и DELETING-доводку: вместо объектов гасятся запись реестра, hold-ключ и
         // заявка (объекты живого владельца не трогаются). Потеря лидерства — тихий
@@ -244,7 +244,7 @@ public sealed class BackupOrphanSweeper(
 
         // batch-delete префикса + list-подтверждение пустоты — через КАЖДЫЙ
         // доступный пул (: префикс <C>/<X> может лежать в любом пуле;
-        // удаление идемпотентно, mesh разносит tombstone — arch/19 §5).
+        // удаление идемпотентно, mesh разносит tombstone — arch/backups/06-s3-layout.md).
         var delPrefix = $"{candidate}/";
         foreach (var poolName in poolNames.Value)
         {
@@ -324,7 +324,7 @@ public sealed class BackupOrphanSweeper(
             $"del {key}: no live endpoints"));
     }
 
-    // «<C>/<X>» — 2 последних сегмента ключа hold/заявки (формат arch/19 §4).
+    // «<C>/<X>» — 2 последних сегмента ключа hold/заявки (формат arch/backups/05-etcd-contract.md).
     private static string PrefixOfKey(string key)
         => string.Join('/', key.Split('/')[^2..]);
 
@@ -394,7 +394,7 @@ public sealed class BackupOrphanSweeper(
     }
 
     // Фаза свипера — глобальный ключ /pgworker/backups/orphan-journal
-    // (arch/19 §4): failover-put по endpoints (образец PutRegistryAsync),
+    // (arch/backups/05-etcd-contract.md): failover-put по endpoints (образец PutRegistryAsync),
     // plain put без read-modify-write. Журнал — наблюдаемость: неудача
     // записи НЕ роняет проход (все endpoints упали — предупреждение).
     private async Task WriteJournalAsync(string phase, CancellationToken ct)

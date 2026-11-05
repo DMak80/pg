@@ -21,7 +21,7 @@ public sealed record CreateClusterRequest(
     bool? Sharded = null,
     bool? SynchronousModeStrict = null);
 
-// Команда создания кластера — прокси в API PgWorker (arch/14 §1.1): панель
+// Команда создания кластера — прокси в API PgWorker (arch/pgworker/07-api.md §1): панель
 // не пишет в etcd; воркер выполняет claim-txn/PUT/компенсацию 1:1 (§9.2).
 public sealed record CreateClusterCommand(CreateClusterRequest Request) : ICommand<ClusterCreatedDto>;
 
@@ -38,7 +38,7 @@ public sealed record ClusterCreatedDto(
     string RequestDisk,
     string State);
 
-// Прокси: панель не пишет в etcd — команда уходит в API PgWorker (arch/14 §1.1);
+// Прокси: панель не пишет в etcd — команда уходит в API PgWorker (arch/pgworker/07-api.md §1);
 // у create нет оператора (requested_by ключи не пишет) — requestedBy: null,
 // заголовок X-Requested-By не шлётся (шлюз Task 12).
 [InjectAsScoped]

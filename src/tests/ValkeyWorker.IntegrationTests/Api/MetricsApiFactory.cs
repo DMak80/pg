@@ -21,7 +21,7 @@ public class MetricsApiFactory(ValkeyEtcdFixture etcd) : WebApplicationFactory<P
             ["ValkeyWorker:Docker:Hosts:0:Endpoint"] = "unix:///var/run/does-not-exist.sock",
             ["ValkeyWorker:Api:AdvertiseUrl"] = "https://localhost:9996",
             ["ValkeyWorker:Api:EnableSeedEndpoint"] = "false",
-            // WAF-транспорт in-memory — только без TLS (arch/21 §1.1).
+            // WAF-транспорт in-memory — только без TLS (arch/valkeyworker/05-api.md §1).
             ["ValkeyWorker:Api:Tls:AllowInsecureHttp"] = "true",
         }));
     }

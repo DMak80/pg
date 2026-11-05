@@ -6,7 +6,7 @@ using ValkeyWorker.App;
 namespace ValkeyWorker.App.HealthChecks;
 
 /// <summary>
-/// Агрегированный health ValkeyWorker (arch/21 §7): секции etcd-reachable,
+/// Агрегированный health ValkeyWorker (arch/valkeyworker/06-operability.md §4): секции etcd-reachable,
 /// docker-hosts, loops-alive, claims, snapshot-freshness. Пассивные данные — из
 /// HealthState (тики циклов), активные — пробы ServiceProbes. Недоступный etcd /
 /// docker-хост / зависший цикл / протухший снапшот → Degraded (сервис жив, но
@@ -32,7 +32,7 @@ public sealed class ValkeyWorkerHealth(
         }
         catch (Exception ex)
         {
-            // Catch-all (arch/21 §7): чек ВСЕГДА отдаёт структуру — неожиданный
+            // Catch-all (arch/valkeyworker/06-operability.md §4): чек ВСЕГДА отдаёт структуру — неожиданный
             // отказ тела превращается в Degraded с данными, а не исключение чека.
             return HealthCheckResult.Degraded(
                 $"health check failed: {ex.Message}",

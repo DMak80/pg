@@ -1,6 +1,6 @@
 namespace KafkaWorker.App.Api.Operations;
 
-// Эффективный конфиг установки (arch/16 §1.1 GET /api/config, u15): read-only,
+// Эффективный конфиг установки (arch/kafkaworker/07-api.md §1 GET /api/config, u15): read-only,
 // БЕЗ секретов/TLS/endpoints (Etcd/Docker/Api/Metrics-секции и любые креды
 // наружу не выходят никогда); поле source=env — значения применяются
 // рестартом воркера. Панель отдаёт это как есть через on-demand прокси

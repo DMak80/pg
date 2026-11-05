@@ -1,8 +1,8 @@
 namespace AdminPanel.Api.Operations.S3;
 
-// Тела запросов — зеркало DTO S3Worker (arch/24 §1.1; панель НЕ валидирует —
+// Тела запросов — зеркало DTO S3Worker (arch/s3worker/07-api.md §1; панель НЕ валидирует —
 // сервер источник истины, фронт дублирует для UX). platform="owns3" панель
-// подставляет всегда (единственное значение канона arch/23 §2; UI поле не показывает).
+// подставляет всегда (единственное значение канона arch/s3-clusters/02-keys.md §1; UI поле не показывает).
 public sealed record CreateS3ClusterPanelRequest(
     string? Name,
     IReadOnlyList<S3InstancePanelRequest>? Instances,

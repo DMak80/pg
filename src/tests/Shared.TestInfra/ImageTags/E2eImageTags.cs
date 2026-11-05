@@ -3,7 +3,7 @@ using System.Text;
 
 namespace Shared.TestInfra;
 
-/// <summary>Суффикс per-branch тегов e2e-образов (docs/e2e-isolation.md §9):
+/// <summary>Суффикс per-branch тегов e2e-образов (arch/testing/02-e2e-isolation.md §9):
 /// санитизированное имя ветки — [a-z0-9._-]{1,32}; git недоступен или HEAD
 /// detached — fallback {хэш8}: первые 8 hex SHA256 абсолютного пути корня.
 /// Одна ветка — один набор образов (git-инвариант «одна ветка — один checkout»).</summary>

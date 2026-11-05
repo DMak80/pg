@@ -12,13 +12,13 @@ namespace PgWorker.IntegrationTests.E2e;
 // монолитный одиночный факт (2-6 мин) — отдельный класс.
 // E2E полных бэкапов (spec §7.1–7.4): изолированное окружение E2eEnvironment
 // (своя docker-сеть, свой etcd, СВОЯ ownS3-нода — withS3Node:true; порт динамический)
-// + операции бэкапов в приёмниках WalReceiver нод (arch/19 §5) + живой кластер воркером с Backups:Enabled=true.
+// + операции бэкапов в приёмниках WalReceiver нод (arch/backups/06-s3-layout.md) + живой кластер воркером с Backups:Enabled=true.
 // COMPLETED с полными полями и объектами в S3; FAILED по недоступному S3 с
 // переснятием новым id; deprovisioning чистит джобы и префикс; ротация
 // backup_password включает backup_exec. Каждый Fact — своё окружение: методы
 // оставляют после себя Active-кластеры, и без per-method изоляции воркер
 // следующего Fact'а подхватывал бы чужие джобы (инцидент Release). Имя кластера сценария —
-// {slug}{Fx.ClusterTag} (уникально на прогон, docs/e2e-isolation.md §1):
+// {slug}{Fx.ClusterTag} (уникально на прогон, arch/testing/02-e2e-isolation.md §1):
 // движковые контейнеры/тома pgw-*-<C>-* опознаются teardown'ом окружения.
 public sealed class E2eWalStreamPromoteScenarios(E2eWalStreamPromoteScenariosFx Ctx) : IClassFixture<E2eWalStreamPromoteScenariosFx>
 {
@@ -334,7 +334,7 @@ public sealed class E2eWalStreamPromoteScenarios(E2eWalStreamPromoteScenariosFx 
         {
             ["PgWorker__Backups__Enabled"] = "true",
             ["PgWorker__Backups__S3__Bucket"] = Bucket,
-            // креды пула — env-профиль (arch/19 §7); пул — policy.s3, адреса
+            // креды пула — env-профиль (arch/backups/08-secrets.md); пул — policy.s3, адреса
             // резолвит воркер из /s3/ (advertised host.docker.internal, extra_hosts).
             ["PgWorker__Backups__Retry__BaseSec"] = "2",
             ["PgWorker__Backups__Retry__MaxSec"] = "4",
@@ -513,7 +513,7 @@ public sealed class E2eWalStreamPromoteScenarios(E2eWalStreamPromoteScenariosFx 
 }
 
 /// <summary>Компаньон-фикстура окружения класса (полный контур на класс:
-/// сеть/etcd/CA/окно портов; docs/e2e-isolation.md §1).</summary>
+/// сеть/etcd/CA/окно портов; arch/testing/02-e2e-isolation.md §1).</summary>
 public sealed class E2eWalStreamPromoteScenariosFx : E2eContourFixture
 {
     protected override string Slug => "wal-prom";

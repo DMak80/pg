@@ -260,7 +260,7 @@ public sealed class WorkerCertService(
                 yield return thumb;
     }
 
-    // Бандл ca_pem в окне ротации — конкатенация PEM (arch/15 §2.1): каждый кусок.
+    // Бандл ca_pem в окне ротации — конкатенация PEM (arch/kafka-clusters/02-keys.md §2): каждый кусок.
     private static IEnumerable<string> SplitBundle(string pem)
         => pem.Split("-----END CERTIFICATE-----", StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .Where(p => p.Contains("BEGIN CERTIFICATE"))

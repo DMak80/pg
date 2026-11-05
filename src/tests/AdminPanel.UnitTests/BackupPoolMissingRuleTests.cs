@@ -56,7 +56,7 @@ public class BackupPoolMissingRuleTests
         alerts.Should().BeEmpty();
     }
 
-    // AAA: policy-ключа нет вовсе → алерт (молчание = «не выбран», arch/19 §4).
+    // AAA: policy-ключа нет вовсе → алерт (молчание = «не выбран», arch/backups/05-etcd-contract.md).
     [Fact]
     public void NoPolicy_Alert()
     {

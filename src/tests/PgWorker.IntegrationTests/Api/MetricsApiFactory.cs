@@ -20,7 +20,7 @@ public class MetricsApiFactory(Etcd.EtcdFixture etcd) : WebApplicationFactory<Pr
             ["PgWorker:Etcd:Endpoints:0"] = etcd.Endpoint,
             ["PgWorker:Docker:Hosts:0:Name"] = "local",
             ["PgWorker:Docker:Hosts:0:Endpoint"] = "unix:///var/run/does-not-exist.sock",
-            // WAF-хост без сертов: mTLS выключен (прод-канон — false, arch/14 §1.1).
+            // WAF-хост без сертов: mTLS выключен (прод-канон — false, arch/pgworker/07-api.md §1).
             ["PgWorker:Api:Tls:AllowInsecureHttp"] = "true",
             ["PgWorker:Api:AdvertiseUrl"] = "https://localhost:9997",
             ["PgWorker:Api:EnableSeedEndpoint"] = "false",

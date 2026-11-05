@@ -1,7 +1,7 @@
 namespace EtcdWorker.App;
 
 /// <summary>
-///     Fail-fast валидации старта (arch/25 §8) — чистые предикаты EtcdWorkerOptions → bool
+///     Fail-fast валидации старта (arch/etcdworker/06-operability.md §5) — чистые предикаты EtcdWorkerOptions → bool
 ///     (юнит-тестируемы): Program проверяет их на ValidateOnStart.
 /// </summary>
 internal static class EtcdStartupChecks
@@ -15,7 +15,7 @@ internal static class EtcdStartupChecks
            && (o.Api.Tls.AllowInsecureHttp
                || o.Api.AdvertiseUrl.StartsWith("https://", StringComparison.Ordinal));
 
-    // Docker-топология (arch/25 §2): Plain → РОВНО один хост (мультихост — Swarm)
+    // Docker-топология (arch/etcdworker/01-placement.md): Plain → РОВНО один хост (мультихост — Swarm)
     // + непустая сеть контура; Swarm → SwarmManager.
     public static bool DockerTopology(EtcdWorkerOptions o)
     {
@@ -39,7 +39,7 @@ internal static class EtcdStartupChecks
            && o.Docker.PortRange.From < o.Docker.PortRange.To
            && o.Docker.PortRange.To <= 65535;
 
-    // Интервалы слепков (arch/25 §8): положительные; ретенция ≥ 1.
+    // Интервалы слепков (arch/etcdworker/06-operability.md §5): положительные; ретенция ≥ 1.
     public static bool Snapshots(EtcdWorkerOptions o)
         => o.Snapshots.IntervalMin > 0 && o.Snapshots.MinIntervalSec > 0
            && o.Snapshots.RetentionFiles >= 1 && o.Snapshots.RetentionObjects >= 1

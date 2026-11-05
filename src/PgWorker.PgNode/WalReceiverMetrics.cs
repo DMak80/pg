@@ -2,7 +2,7 @@ using System.Diagnostics.Metrics;
 
 namespace PgWorker.PgNode;
 
-/// <summary>Инструменты телеметрии приёмника WAL (arch/18 §2.8; паттерн
+/// <summary>Инструменты телеметрии приёмника WAL (arch/metrics/02-dictionary.md §8; паттерн
 /// Shared.Metrics.Worker.WorkerMetricsInstrumentation): инструменты создаются
 /// из Meter `PgWorker.PgNode`, марк-методы пассивные — не бросают и не
 /// влияют на цикл/стрим. Лейблы cluster/shard/node константны per-процесс
@@ -45,20 +45,20 @@ public sealed class WalReceiverMetrics : IDisposable
         var segments = meter.CreateCounter<long>(
             "walreceiver_segments_delivered_total",
             unit: "{segment}",
-            description: "Closed WAL segments delivered to S3 (arch/18 §2.8)");
+            description: "Closed WAL segments delivered to S3 (arch/metrics/02-dictionary.md §8)");
         var bytes = meter.CreateCounter<long>(
             "walreceiver_bytes_delivered_total",
             unit: "By",
-            description: "WAL segment/history bytes delivered to S3 (arch/18 §2.8)");
+            description: "WAL segment/history bytes delivered to S3 (arch/metrics/02-dictionary.md §8)");
         var putRetries = meter.CreateCounter<long>(
             "walreceiver_put_retries_total",
-            description: "Retry put attempts across pool write targets (arch/18 §2.8)");
+            description: "Retry put attempts across pool write targets (arch/metrics/02-dictionary.md §8)");
         var putErrors = meter.CreateCounter<long>(
             "walreceiver_put_errors_total",
-            description: "Failed put attempts incl. write-list exhaustion (arch/18 §2.8)");
+            description: "Failed put attempts incl. write-list exhaustion (arch/metrics/02-dictionary.md §8)");
         var reconnects = meter.CreateCounter<long>(
             "walreceiver_reconnects_total",
-            description: "Reconnects to the replication source (drops/role changes, arch/18 §2.8)");
+            description: "Reconnects to the replication source (drops/role changes, arch/metrics/02-dictionary.md §8)");
 
         // Gauge-серии: по одному ObservableGauge; колбэки читают стейт под lock.
         meter.CreateObservableGauge(
@@ -73,12 +73,12 @@ public sealed class WalReceiverMetrics : IDisposable
                     new Measurement<long>(active == "none" ? 1 : 0, WithLabel("role", "none")),
                 };
             }),
-            description: "Source role by REST probe (1 in the active series, arch/18 §2.8)");
+            description: "Source role by REST probe (1 in the active series, arch/metrics/02-dictionary.md §8)");
 
         meter.CreateObservableGauge(
             "walreceiver_streaming",
             () => Measure(() => new[] { new Measurement<long>(_streaming ? 1 : 0, _labels) }),
-            description: "1 = replication stream active, 0 = waiting (arch/18 §2.8)");
+            description: "1 = replication stream active, 0 = waiting (arch/metrics/02-dictionary.md §8)");
 
         meter.CreateObservableGauge(
             "walreceiver_backlog_bytes",
@@ -86,7 +86,7 @@ public sealed class WalReceiverMetrics : IDisposable
                 ? new[] { new Measurement<long>(value, _labels) }
                 : Array.Empty<Measurement<long>>()),
             unit: "By",
-            description: "WAL tail pending delivery: stream position − confirmed tail (arch/18 §2.8)");
+            description: "WAL tail pending delivery: stream position − confirmed tail (arch/metrics/02-dictionary.md §8)");
 
         meter.CreateObservableGauge(
             "walreceiver_last_success_timestamp_seconds",
@@ -94,7 +94,7 @@ public sealed class WalReceiverMetrics : IDisposable
                 ? new[] { new Measurement<long>(unix, _labels) }
                 : Array.Empty<Measurement<long>>()),
             unit: "s",
-            description: "Unix time of the last successful put (arch/18 §2.8)");
+            description: "Unix time of the last successful put (arch/metrics/02-dictionary.md §8)");
 
         SegmentDeliveredMark = count =>
         {
@@ -213,7 +213,7 @@ public sealed class WalReceiverMetrics : IDisposable
     // Доставлен закрытый сегмент (counter сегментов + байт).
     public void SegmentDelivered(long bytes) => SegmentDeliveredMark(bytes);
 
-    // Доставлена `.history` (counter байт; сегменты не трогает — arch/18 §2.8).
+    // Доставлена `.history` (counter байт; сегменты не трогает — arch/metrics/02-dictionary.md §8).
     public void HistoryDelivered(long bytes) => BytesDeliveredMark(bytes);
 
     // Повторная попытка put (перебор целей).

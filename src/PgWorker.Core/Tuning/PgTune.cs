@@ -3,7 +3,7 @@ using System.Globalization;
 namespace PgWorker.Core.Tuning;
 
 // Ядро расчёта параметров PostgreSQL по алгоритму PGTune — чистая функция 1:1
-// docs/pgtune-calculation-spec.md (входы §2, формулы §4, формат §5, псевдокод §6,
+// arch/pgworker/09-pgtune.md (входы §2, формулы §4, формат §5, псевдокод §6,
 // контрольные примеры §7 — тест-векторы PgTuneTests один-в-один).
 //
 // Каналы ядра (spec.md §2 принцип 1/2):

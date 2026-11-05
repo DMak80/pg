@@ -5,8 +5,8 @@ using Xunit;
 
 namespace KafkaWorker.UnitTests.Provisioning;
 
-// Чистые decision-функции автосинка топиков (план C1-шаг 1; канон arch/15 §3,
-// arch/16 §5 D): (факт-набор Kafka, реестр etcd) → план действий. Тесты
+// Чистые decision-функции автосинка топиков (план C1-шаг 1; канон arch/kafka-clusters/03-topics.md §1,
+// arch/kafkaworker/05-topics.md D): (факт-набор Kafka, реестр etcd) → план действий. Тесты
 // таблицей покрывают все ветки протокола: автосинк факта, исчезновение
 // (с/без desired), desired-применение, перманентный отказ уменьшения.
 public class TopicSyncDecisionTests
@@ -260,7 +260,7 @@ public class TopicSyncDecisionTests
     public void DecideLifecycle_CreateWithMissingRegistryKey_ProducesLifecycleCreate()
     {
         // Arrange: create-заявка при висящем missing-ключе реестра (топика нет в
-        // факте — «пересоздание», arch/15 §3.1): desired у ключа уже отменён.
+        // факте — «пересоздание», arch/kafka-clusters/03-topics.md §2): desired у ключа уже отменён.
         var tickets = new[] { new TopicLifecycleTicket("ghost", TopicLifecycleOps.Create, 3, 1, null, 1, "u") };
         var registry = new[] { new KafkaTopicReg("ghost", 3, 1, null, null, null, null, 1, true) };
 

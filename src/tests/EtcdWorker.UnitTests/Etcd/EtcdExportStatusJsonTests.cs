@@ -4,7 +4,7 @@ using Xunit;
 
 namespace EtcdWorker.UnitTests.Etcd;
 
-// Статус-ключ /etcdworker/snapshots (t08, arch/14 §3.3): сериализация OK/FAILED
+// Статус-ключ /etcdworker/snapshots (t08, arch/pgworker/00-etcd-contract.md §4): сериализация OK/FAILED
 // (FAILED сохраняет поля последнего успеха), толерантный парсинг, IsBehind-детект.
 public class EtcdExportStatusJsonTests
 {

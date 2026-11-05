@@ -18,7 +18,7 @@ namespace PgWorker.IntegrationTests.Backups;
 // Unknown — транспортный отказ etcd: операция не стартовала, fail-closed);
 // GET full — 200 снимок / 404 (после Clear — vanished-семантика); cancel —
 // 202/404; ops-маршруты verify/restore — те же таблицы (СВОЙ ops-реестр —
-// полный ops-операцию не блокирует, arch/19 §5). Операции — фейки
+// полный ops-операцию не блокирует, arch/backups/06-s3-layout.md). Операции — фейки
 // через DI (интерфейсы фабрик подменяются, шаг 4); hosted-цикл стрима
 // выключен env PGW_WALRECEIVER_NO_STREAM=1. AAA-комментарии.
 [Collection("pgnode-api")]
@@ -218,7 +218,7 @@ public class BackupApiOperationTests : IDisposable
         var ok = await client.GetAsync("/api/backup/full", ct);
 
         // Assert: 200 со снимком фейка. Терминальный снимок персистентен
-        // (снятий в проде нет — супервизы опираются на него, arch/19 §4).
+        // (снятий в проде нет — супервизы опираются на него, arch/backups/05-etcd-contract.md).
         ((int)ok.StatusCode).Should().Be(200);
         var status = await ok.Content.ReadFromJsonAsync<FullStatusResponse>(ct);
         status!.State.Should().Be("running");
@@ -326,7 +326,7 @@ public class BackupApiOperationTests : IDisposable
         ((int)response.StatusCode).Should().Be(202);
     }
 
-    // ── /api/ops/* (ops-реестр; полный не блокирует — arch/19 §5) ────────
+    // ── /api/ops/* (ops-реестр; полный не блокирует — arch/backups/06-s3-layout.md) ────────
 
     [Fact]
     public async Task PostVerify_NoActive_Returns202_SecondReturns409()
@@ -391,7 +391,7 @@ public class BackupApiOperationTests : IDisposable
     }
 
     // AAA: полный и ops-операция — разные реестры: идущий полный НЕ блокирует
-    // запуск verify (ops-реестр пуст), и наоборот (arch/19 §5).
+    // запуск verify (ops-реестр пуст), и наоборот (arch/backups/06-s3-layout.md).
     [Fact]
     public async Task FullAndOps_RegistriesIndependent()
     {

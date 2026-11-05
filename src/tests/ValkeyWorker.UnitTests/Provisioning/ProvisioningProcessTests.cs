@@ -8,7 +8,7 @@ using Xunit;
 
 namespace ValkeyWorker.UnitTests.Provisioning;
 
-// ProvisioningProcess V0–V5 (arch/21 §5 A): полный прогон, идемпотентность
+// ProvisioningProcess V0–V5 (arch/valkeyworker/02-cluster-lifecycle.md §2 A): полный прогон, идемпотентность
 // re-run, сверка V3 (args), ожидание portalloc-клэйма, гонка TO_REMOVE,
 // бюджет V4 (boot-timeout), чужой клэйм.
 public class ProvisioningProcessTests
@@ -271,7 +271,7 @@ public class ProvisioningProcessTests
     [Fact]
     public async Task ExtraPortAllocation_ClaimBeforeOccupancyRead()
     {
-        // Arrange: порт не закреплён — требуется секция довыделения (arch/20 §3).
+        // Arrange: порт не закреплён — требуется секция довыделения (arch/valkey-clusters/03-coordination.md §1).
         const string cluster = "order";
         var rig = Rig.Create(withSnapshot: false);
         rig.SeedCluster(cluster);

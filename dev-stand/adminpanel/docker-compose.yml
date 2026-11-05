@@ -99,12 +99,12 @@ services:
     volumes:
       - etcd3-data:/var/etcd/data
 
-  # MinIO — переходный read-only-архив бэкапов (arch/19 §5): подсистема
+  # MinIO — переходный read-only-архив бэкапов (arch/backups/06-s3-layout.md): подсистема
   # бэкапов пишет в ownS3 (deploy-проект, alias owns3:9000 в стендовой сети);
   # as-minio новых объектов не получает, bucket в нём не сидится (критерий
   # сноса — ../OwnS3/docs/owns3-migration.md §4, порядок сноса — §6). Креды —
   # стендовые дефолты (ТОЛЬКО локальный стенд; прод — per-install S3,
-  # arch/19 §7).
+  # arch/backups/08-secrets.md).
   minio:
     image: minio/minio:RELEASE.2025-09-07T16-13-09Z
     container_name: as-minio
@@ -183,9 +183,9 @@ services:
 
   # Живой KafkaWorker (план B8): профиль kafka — только явно. Управляет docker-
   # хостом через сокет; advertised host.docker.internal делает endpoints в etcd
-  # резолвимыми для клиентов (arch/16 §2.1). Сид kafka-домена наливается его
+  # резолвимыми для клиентов (arch/kafkaworker/01-placement.md §1). Сид kafka-домена наливается его
   # API (05-seed.sh kafka, spec §3.5): пробы контейнеров брокеров слепые →
-  # сидовые заявки не исполняются, данные стабильны (arch/16 §5 C).
+  # сидовые заявки не исполняются, данные стабильны (arch/kafkaworker/02-cluster-lifecycle.md §4 C).
   kafkaworker:
     build:
       context: ../..
@@ -199,7 +199,7 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - kfw-snapshots:/snapshots
-      # mTLS HTTP API (t03, arch/16 §1.1): per-install пакет генерирует
+      # mTLS HTTP API (t03, arch/kafkaworker/07-api.md §1): per-install пакет генерирует
       # 00-up.sh (bash deploy/tls/gen.sh, идемпотентно).
       - ../../deploy/tls:/tls:ro
     extra_hosts:
@@ -211,7 +211,7 @@ services:
       KafkaWorker__Etcd__Endpoints__1: http://etcd2:2379
       KafkaWorker__Etcd__Endpoints__2: http://etcd3:2379
       KafkaWorker__AdvertisedClientHost: host.docker.internal
-      # HTTP API воркера (arch/16 §1.1, t03): HTTPS-грань, mTLS только на /api; панель ходит по
+      # HTTP API воркера (arch/kafkaworker/07-api.md §1, t03): HTTPS-грань, mTLS только на /api; панель ходит по
       # compose-DNS с клиентским сертом (lease-ключ /kafkaworker/api/<id> —
       # AdvertiseUrl https://), демо-сид включён (стенд).
       KafkaWorker__Api__AdvertiseUrl: https://kafkaworker:8080
@@ -221,7 +221,7 @@ services:
       KafkaWorker__Api__EnableSeedEndpoint: "true"
     depends_on: [etcd1, etcd2, etcd3]
 
-  # Второй инстанс KafkaWorker (t07, arch/16 §2.1): тот же образ/env/сеть,
+  # Второй инстанс KafkaWorker (t07, arch/kafkaworker/01-placement.md §1): тот же образ/env/сеть,
   # compose-DNS advertise; БЕЗ хост-публикации порта (панель и Prometheus
   # ходят из сети стенда; хост-порт 8082 остаётся у первого для curl-чеков).
   kafkaworker-2:
@@ -266,7 +266,7 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - vw-snapshots:/snapshots
-      # mTLS HTTP API (arch/21 §1.1): per-install пакет (deploy/tls/gen.sh) —
+      # mTLS HTTP API (arch/valkeyworker/05-api.md §1): per-install пакет (deploy/tls/gen.sh) —
       # server-серт с SAN DNS:valkeyworker (t03), клиентский CA общий.
       - ../../deploy/tls:/tls:ro
     extra_hosts:
@@ -276,7 +276,7 @@ services:
       ValkeyWorker__Etcd__Endpoints__1: http://etcd2:2379
       ValkeyWorker__Etcd__Endpoints__2: http://etcd3:2379
       ValkeyWorker__AdvertisedClientHost: host.docker.internal
-      # Контурный режим сетей (arch/21 §2): ноды vwk-* — в стендовой сети контура.
+      # Контурный режим сетей (arch/valkeyworker/01-placement.md): ноды vwk-* — в стендовой сети контура.
       ValkeyWorker__Docker__ContourNetwork: adminpanel-stand-net
       ValkeyWorker__Api__AdvertiseUrl: https://valkeyworker:8080
       VWK_API_TLS_CERT_PATH: /tls/server.crt
@@ -285,7 +285,7 @@ services:
       ValkeyWorker__Api__EnableSeedEndpoint: "true"
     depends_on: [etcd1, etcd2, etcd3]
 
-  # Второй инстанс ValkeyWorker (t07, arch/21 §2): симметрично kafkaworker-2 —
+  # Второй инстанс ValkeyWorker (t07, arch/valkeyworker/01-placement.md): симметрично kafkaworker-2 —
   # compose-DNS advertise, без хост-публикации; клэймы/portalloc разрулит etcd.
   valkeyworker-2:
     build:
@@ -306,7 +306,7 @@ services:
       ValkeyWorker__Etcd__Endpoints__1: http://etcd2:2379
       ValkeyWorker__Etcd__Endpoints__2: http://etcd3:2379
       ValkeyWorker__AdvertisedClientHost: host.docker.internal
-      # Контурный режим сетей (arch/21 §2): ноды vwk-* — в стендовой сети контура.
+      # Контурный режим сетей (arch/valkeyworker/01-placement.md): ноды vwk-* — в стендовой сети контура.
       ValkeyWorker__Docker__ContourNetwork: adminpanel-stand-net
       ValkeyWorker__Api__AdvertiseUrl: https://valkeyworker-2:8080
       VWK_API_TLS_CERT_PATH: /tls/server.crt
@@ -315,7 +315,7 @@ services:
       ValkeyWorker__Api__EnableSeedEndpoint: "true"
     depends_on: [etcd1, etcd2, etcd3]
 
-  # Стек мониторинга (arch/18 §5; профиль metrics — входит в полный подъём
+  # Стек мониторинга (arch/metrics/05-storage.md; профиль metrics — входит в полный подъём
   # 00-up.sh, quick без него). Порты — env-override при коллизиях на хосте (M4).
   prometheus:
     image: prom/prometheus:v3.14.0
@@ -333,15 +333,15 @@ services:
       # file_sd-таргет pgworker (сетевые адреса пишет 00-up.sh; файл
       # перезаписывается in place, prometheus перечитывает сам).
       - ./metrics/prometheus/pgworker-targets.json:/etc/prometheus/pgworker-targets.json:ro
-      # file_sd-таргеты реальных Patroni-нод — пишет sd-generator (t15, arch/18 §5.4).
+      # file_sd-таргеты реальных Patroni-нод — пишет sd-generator (t15, arch/metrics/05-storage.md §4).
       - prometheus-sd:/etc/prometheus/sd:ro
       - prometheus-data:/prometheus
       # Скрейп воркеров — https + tls_config только ca_file, без клиентского
-      # серта (arch/18 §5.2); bind-маунт пакета ro — ради ca.pem.
+      # серта (arch/metrics/05-storage.md §2); bind-маунт пакета ro — ради ca.pem.
       - ../../deploy/tls:/tls:ro
     command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.retention.time=7d"]
 
-  # file_sd-генератор реальных Patroni-нод (t15, arch/18 §5.4): тик читает
+  # file_sd-генератор реальных Patroni-нод (t15, arch/metrics/05-storage.md §4): тик читает
   # /pgworker/portalloc/ (read-only) и пишет таргеты в volume Prometheus.
   # Локально собираемый образ — в registry НЕ класть (канон AGENTS.md).
   # Publish выполняется НА ХОСТЕ (00-up.sh) в artifacts/sd-generator/publish.

@@ -20,7 +20,7 @@
   (../arch/pgworker/README.md §1, 16 §1, 21 §1, 24 §1). Ответственность разделена предсказуемо.
 - **Порт схемы воркера**: клэймы (lease TTL 15 с), журнал фаз, portalloc,
   дискавери API, заявки ротаций — одинаковая механика у PgWorker/KafkaWorker/
-  ValkeyWorker/S3Worker (../arch/kafkaworker/00-etcd-contract.md, 23 §8). Новый компонент интегрируется по
+  ValkeyWorker/S3Worker (../arch/kafka-clusters/04-coordination.md, ../arch/s3-clusters/08-coordination.md). Новый компонент интегрируется по
   готовому шаблону.
 - **Флап ≠ смерть, деструктив — по положительному свидетельству** (../arch/synchronization/README.md
   S7); идемпотентность «по факту» во всех процессах; takeover без оператора.
@@ -68,7 +68,7 @@
 
 - **Где**: ../arch/communications/02-channel-registry.md №15 — «KafkaWorker-джобы → KafkaWorker: etcd-журнал
   (`/pgworker/work/<C>`, WorkJournal)». Координационный префикс KafkaWorker —
-  `/kafkaworker/` (../arch/kafkaworker/00-etcd-contract.md, журнал `/kafkaworker/work/<C>`).
+  `/kafkaworker/` (../arch/kafka-clusters/04-coordination.md, журнал `/kafkaworker/work/<C>`).
 - **Противоречие**: реестр каналов — эталон границ; ссылка на чужой префикс
   либо опечатка, либо ложный сигнал, что домены делят один журнал.
 - **Направление**: исправить на `/kafkaworker/work/<C>`.

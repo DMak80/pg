@@ -14,7 +14,7 @@ public sealed class E2eRotateScenarios(E2eRotateScenariosFx Ctx) : IClassFixture
 {
     private E2eEnvironment Fx => Ctx.Fx;
 
-    // Уникальное имя кластера на прогон ({slug}{тег прогона}, docs/e2e-isolation.md
+    // Уникальное имя кластера на прогон ({slug}{тег прогона}, arch/testing/02-e2e-isolation.md
     // §1): движковые контейнеры/тома pgw-<C>-* опознаются teardown'ом окружения
     // по своему тегу (OwnName) и снимаются им; константное имя запрещено.
     private string Cluster => $"rotate{Fx.ClusterTag}";
@@ -191,9 +191,9 @@ public sealed class E2eRotateScenarios(E2eRotateScenariosFx Ctx) : IClassFixture
         // Assert 2b (критерий «без остановки записи»): writer — DSN-точка
         // входа bucket_admin — стартует ПОСЛЕ закрытия окна (R4: pg_authid
         // выровнен с etcd) и продолжает писать. Старт в ОТКРЫТОМ окне —
-        // 28P01 транзиент (pg_authid OLD до R4, arch/14 §5 I); живой клиент
+        // 28P01 транзиент (pg_authid OLD до R4, arch/pgworker/processes/i-secret-rotator.md I); живой клиент
         // ретраит вставки до перечитывания — writer повторяет попытки тем же
-        // бюджетом (поведение клиента по arch/14).
+        // бюджетом (поведение клиента по arch/pgworker/README.md).
         // Окно уже закрыто (Т3-ожидание выше) — вставки writer'а проходят.
         var inserts = 0;
         string? lastError = null;
@@ -279,7 +279,7 @@ public sealed class E2eRotateScenarios(E2eRotateScenariosFx Ctx) : IClassFixture
             await G.PutAsync(Endpoint, $"/clusters/{cluster}/shards/{shard}/replicas", "2", null, ct);
             await G.PutAsync(Endpoint, $"/clusters/{cluster}/shards/{shard}/nodes/{shard}a/state", "NOT_INITIALIZED", null, ct);
             await G.PutAsync(Endpoint, $"/clusters/{cluster}/shards/{shard}/nodes/{shard}b/state", "NOT_INITIALIZED", null, ct);
-            // Заявки ресурсов панель-создания (arch/14 §2.1 п.4): pgtune-фаза
+            // Заявки ресурсов панель-создания (arch/pgworker/01-placement.md §2): pgtune-фаза
             // provisioning требует их обязательно (f6d4574: дефолтов нет).
             await G.PutAsync(Endpoint, $"/service/{cluster}-{shard}/request_cpu", "2", null, ct);
             await G.PutAsync(Endpoint, $"/service/{cluster}-{shard}/request_mem", "2Gi", null, ct);
@@ -396,7 +396,7 @@ public sealed class E2eRotateScenarios(E2eRotateScenariosFx Ctx) : IClassFixture
 }
 
 /// <summary>Компаньон-фикстура окружения класса (полный контур на класс:
-/// сеть/etcd/CA/окно портов; docs/e2e-isolation.md §1).</summary>
+/// сеть/etcd/CA/окно портов; arch/testing/02-e2e-isolation.md §1).</summary>
 public sealed class E2eRotateScenariosFx : E2eContourFixture
 {
     protected override string Slug => "rotate";

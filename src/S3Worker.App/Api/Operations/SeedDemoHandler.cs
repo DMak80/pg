@@ -41,7 +41,7 @@ public sealed class SeedDemoHandler(
         if (!created.IsSuccess)
             return Result<SeedDemoDto>.Failed(created.Error!);
 
-        // Граф демо-кластера: пара east1↔east2 (канонический JSON arch/23 §2.1).
+        // Граф демо-кластера: пара east1↔east2 (канонический JSON arch/s3-clusters/02-keys.md §2).
         var links = await S3ApiHelpers.CallAsync<bool>(endpoints, async endpoint =>
         {
             var write = await gateway.PutAsync(endpoint, S3ApiHelpers.LinksKey("demo"),

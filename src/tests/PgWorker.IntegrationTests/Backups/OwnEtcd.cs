@@ -10,7 +10,7 @@ using Xunit;
 namespace PgWorker.IntegrationTests.Backups;
 
 /// <summary>
-/// СОБСТВЕННОЕ etcd-окружение одного Fact (e2e-isolation §1/§3, docs/e2e-isolation.md):
+/// СОБСТВЕННОЕ etcd-окружение одного Fact (e2e-isolation §1/§3, arch/testing/02-e2e-isolation.md):
 /// guid-имя pgw-ee-{guid}, динамический хост-порт, свой ключевой контур — тест
 /// НЕ делит etcd ни с соседними классами, ни с чужими прогонами (инцидент :
 /// джобы/ключи соседних сценариев в общем etcd). Ключи умирают вместе с

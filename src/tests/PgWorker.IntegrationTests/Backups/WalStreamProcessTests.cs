@@ -54,7 +54,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         await SeedAgentAsync(cluster, "shard1a", AgentJson("shard1a"));
     }
 
-    // сид статус-ключа приёмника agent/<N> (формат arch/19 §4; факты
+    // сид статус-ключа приёмника agent/<N> (формат arch/backups/05-etcd-contract.md; факты
     // tli_jump/pool_exhausted сидируются конкретными тестами через AgentJson).
     private async Task SeedAgentAsync(string cluster, string node, string json)
         => await fixture.Gateway.PutAsync(
@@ -569,7 +569,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         wal.State.Should().Be(WalStreamStatus.Active);
     }
 
-    // ── : факты приёмников из статус-ключей etcd (arch/19 §4) ──
+    // ── : факты приёмников из статус-ключей etcd (arch/backups/05-etcd-contract.md) ──
 
     // AAA: сид agent-ключей → контроль пишет agents wal-ключа по нодам portalloc
     // шарда: ключ жив (lease) → running; exited новыми записями не пишется
@@ -741,9 +741,9 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         ages.Should().ContainSingle(t => t.C == "cw2" && t.Age == null);
     }
 
-    // ---/ (arch/19 §3/§4): tli-зазор из факта tli_jump мастер-приёмника ----
+    // ---/ (arch/backups/02-wal-archive.md §1/§4): tli-зазор из факта tli_jump мастер-приёмника ----
 
-    // Сид факт tli_jump в статус-ключе мастер-приёмника (формат arch/19 §4;
+    // Сид факт tli_jump в статус-ключе мастер-приёмника (формат arch/backups/05-etcd-contract.md;
     // факт живёт в etcd до следующего прыжка — docker-лог агента не читается).
     private async Task SeedTliJumpAsync(string cluster, string from, string to, uint tli)
         => await SeedAgentAsync(cluster, "shard1a",
@@ -912,7 +912,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         var journalUnix1 = System.Text.Json.JsonDocument.Parse(journal1.Value!.Value)
             .RootElement.GetProperty("updated_unix").GetInt64();
         clock.Now = clock.Now.AddSeconds(600);
-        // Прод-семантика снапшота (arch/19 §4, ReconcileLoop): бэкап-префикс
+        // Прод-семантика снапшота (arch/backups/05-etcd-contract.md, ReconcileLoop): бэкап-префикс
         // перечитывается из etcd КАЖДЫЙ тик — тик 2 обязан видеть gap, записанный
         // тиком 1; статичный снапшот с прежним wal-ключом эмулировал бы
         // несуществующий в проде путь «установка gap повторно» (повторная
@@ -1046,7 +1046,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         wal.Error.Should().NotContain("tli-gap");
     }
 
-    // ---/ (arch/19 §3): исчерпание write-списка — флаг pool_exhausted
+    // ---/ (arch/backups/02-wal-archive.md §1): исчерпание write-списка — флаг pool_exhausted
     // статус-ключа мастер-приёмника (детектор хвоста docker-лога удалён:
     // факт персистентен в etcd до первого успешного put) ----
 
@@ -1177,7 +1177,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
 
     // AAA: дыра цепочки при НЕПОЛНОМ union-наблюдении (одна нода пула не
     // ответила — сегмент «дыры» может лежать на ней) — НЕ WAL_CHAIN_ERROR:
-    // transient-DEGRADED с маркером s3-pool-exhausted (arch/19 §3/§5);
+    // transient-DEGRADED с маркером s3-pool-exhausted (arch/backups/02-wal-archive.md §1/§5);
     // возврат ноды — полный обход, цепочка цела → ACTIVE (self-heal).
     [Fact]
     public async Task VerifyGapWithUnavailablePoolNode_DegradedThenHeals()

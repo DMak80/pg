@@ -11,7 +11,7 @@ public sealed record DeleteClusterCommand(string Name) : ICommand<ClusterDeleted
 // Результат DELETE /api/clusters/{name} (arch/03 §1.2); эндпоинт отвечает 204.
 public sealed record ClusterDeletedDto(string Name, string State);
 
-// Прокси: панель не пишет в etcd — команда уходит в API PgWorker (arch/14 §1.1);
+// Прокси: панель не пишет в etcd — команда уходит в API PgWorker (arch/pgworker/07-api.md §1);
 // у delete нет оператора — requestedBy: null (заголовок не шлётся).
 [InjectAsScoped]
 public sealed class DeleteClusterCommandHandler(IWorkerApiGateway api)

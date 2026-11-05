@@ -3,7 +3,7 @@ using Microsoft.AspNetCore.Http;
 
 namespace Shared.Tls;
 
-// 401-политика клиентского серта на HTTPS-грани воркеров (arch/14 §1.1 —
+// 401-политика клиентского серта на HTTPS-грани воркеров (arch/pgworker/07-api.md §1 —
 // канон всех четырёх воркеров: PgWorker/KafkaWorker/ValkeyWorker/S3Worker):
 // хендшейк серт не требует (ClientCertificateMode.AllowCertificate), здесь —
 // точечная авторизация. Валидный клиентский серт per-install API-CA обязателен
@@ -12,7 +12,7 @@ namespace Shared.Tls;
 // присланный серт игнорируется. Enabled=false — pass-through (режим
 // AllowInsecureHttp, только in-memory WAF-тесты).
 /// <summary>401-политика клиентского серта на префиксе /api — опция
-/// middleware ClientCertAuthMiddleware (arch/14 §1.1 — канон всех четырёх
+/// middleware ClientCertAuthMiddleware (arch/pgworker/07-api.md §1 — канон всех четырёх
 /// воркеров). Enabled=false — pass-through (режим AllowInsecureHttp, только
 /// in-memory WAF-тесты); ClientCa — CA валидации клиентских сертов
 /// per-install API-PKI.</summary>
@@ -28,7 +28,7 @@ public sealed class ClientCertAuthMiddleware
 
     public ClientCertAuthMiddleware(RequestDelegate next, ClientCertAuthOptions options)
     {
-        // Guard инварианта опции (arch/14 §1.1): без него невалидная пара
+        // Guard инварианта опции (arch/pgworker/07-api.md §1): без него невалидная пара
         // дошла бы до TlsChain.ValidateChain(cert, null) и упала 500-м
         // на каждом /api-запросе при зелёном старте (не fail-fast).
         if (options.Enabled && options.ClientCa is null)

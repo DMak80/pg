@@ -12,7 +12,7 @@ if [ "${1:-}" = "-v" ]; then
   # Профили как в 00-up (full + kafka + valkey + metrics): воркеры не должны
   # переживать teardown со стёртым etcd (adopt-repair: полный прогон
   # детерминирован). metrics обязателен: живой as-prometheus держит
-  # external-сеть pgw-metrics — deploy-down не снесёт её (t15, arch/18 §5.4).
+  # external-сеть pgw-metrics — deploy-down не снесёт её (t15, arch/metrics/05-storage.md §4).
   docker compose --profile full --profile kafka --profile valkey --profile metrics down -v --remove-orphans
   echo "✓ stand taken down (data erased)"
 else

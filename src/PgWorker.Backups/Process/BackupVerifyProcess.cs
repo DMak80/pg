@@ -11,7 +11,7 @@ namespace PgWorker.Backups;
 
 /// <summary>
 /// BackupVerifyProcess — тиковая машина проверки полных бэкапов (/,
-/// arch/19 §5/§8) под клэймом &lt;C&gt;: due-резолв кандидатов (PENDING от
+/// arch/backups/06-s3-layout.md/§8) под клэймом &lt;C&gt;: due-резолв кандидатов (PENDING от
 /// on_create / периодика по verify.interval_sec; FAILED терминален) →
 /// цепочечная проверка list-ами S3 + строгий LSN-разбор .history
 /// (WalChain.CheckRange + WalHistory, без скачивания сегментов) →
@@ -35,7 +35,7 @@ public sealed class BackupVerifyProcess(
     ILogger<BackupVerifyProcess> logger,
     Action<string, string, string>? verifyObserver = null, // (cluster, shard, result: ok|failed|transient)
     TimeSpan? watchdogWindow = null, // период S3-пульса — полокна (образец сверстников)
-    Shared.Core.Hosting.ILoopProgress? progress = null) // S3-вызовы — пульс S3Pulse (arch/14 §6)
+    Shared.Core.Hosting.ILoopProgress? progress = null) // S3-вызовы — пульс S3Pulse (arch/pgworker/08-operability.md §3)
 {
     private const string Op = "backup-verify";
 
@@ -69,7 +69,7 @@ public sealed class BackupVerifyProcess(
         if (!addresses.IsSuccess)
             return Result<ProcessOutcome>.Failed(addresses.Error!);
 
-        //  (arch/19 §5): пул чтения per-cluster — точечные GET/листинги с
+        //  (arch/backups/06-s3-layout.md): пул чтения per-cluster — точечные GET/листинги с
         // перебором ReadAll. null/Failed — transient: journal, ретраи тиком
         // (кандидаты остаются PENDING/OK, статусы не трогаем).
         var poolRead = await s3Factory.ResolveAsync(cluster, ct);
@@ -98,7 +98,7 @@ public sealed class BackupVerifyProcess(
             }
             catch (Exception ex)
             {
-                // ошибка шарда не роняет остальные (arch/17)
+                // ошибка шарда не роняет остальные (arch/synchronization/README.md)
                 logger.LogError(ex, "{Op} {cluster}/{shard}: shard tick failed", Op, cluster, shard.Name);
                 await journal.WritePhaseAsync(cluster, Op, "shard-error", claims.InstanceId,
                     $"{shard.Name}: {ex.Message}", ct);
@@ -154,7 +154,7 @@ public sealed class BackupVerifyProcess(
 
         // (3) Цепочка: list wal/ + list набора + строгие TLI-переходы (по содержимому
         //     history при наличии). Transient list/GET → шард-skip, статус не трогаем.
-        //     Листинги — UNION по всем нодам пула (arch/19 §5 «где данные
+        //     Листинги — UNION по всем нодам пула (arch/backups/06-s3-layout.md «где данные
         //     есть»): полный заливается на первую живую ноду момента заливки —
         //     соло-лист другой ноды (отказ посреди заливки/лаг mesh) неполон и дал бы
         //     недокачанный набор → ложный permanent verify-FAILED.
@@ -212,7 +212,7 @@ public sealed class BackupVerifyProcess(
             historyContents[tli] = content.Value;
         }
 
-        // UNION имён wal/ и pg_wal набора (arch/19 §5 п.2: «list wal/ + list
+        // UNION имён wal/ и pg_wal набора (arch/backups/06-s3-layout.md: «list wal/ + list
         // full/<id>/pg_wal/»): последний сегмент набора может быть живым в источнике
         // на момент заливки и НЕ дублироваться в wal/ (§2 t14) — диапазон до точки
         // бэкапа закрывается объектами набора; сегменты выше end игнорирует Walk.
@@ -228,7 +228,7 @@ public sealed class BackupVerifyProcess(
             return;
         }
 
-        // (4) Verify-операция WalReceiver ноды-источника полного (arch/19 §5):
+        // (4) Verify-операция WalReceiver ноды-источника полного (arch/backups/06-s3-layout.md):
         //     alias:8080 приёмника candidate.Node (object — имя её контейнера).
         //     Итог — ТОЛЬКО по API: GET /api/ops/verify; 404 (операции нет —
         //     старт не дошёл/рестарт приёмника) → повторный POST идемпотентно
@@ -287,7 +287,7 @@ public sealed class BackupVerifyProcess(
             case "running":
             {
                 // Возрастной бюджет операции — started_unix из снимка приёмника
-                // (arch/19 §6): исчерпан → cancel best-effort, кандидат остаётся
+                // (arch/backups/09-operability.md): исчерпан → cancel best-effort, кандидат остаётся
                 // PENDING с checked_unix=now (попытка зачтена, лив-лок немедленных
                 // перезапусков исключён; вердикт FAILED по таймауту НЕ ставится —
                 // данные не виноваты).
@@ -412,7 +412,7 @@ public sealed class BackupVerifyProcess(
         }
     }
 
-    // alias:8080 приёмника ноды-источника (arch/19 §2/§5): имя docker-
+    // alias:8080 приёмника ноды-источника (arch/backups/01-full-backup.md/§5): имя docker-
     // контейнера в общей сети воркера и нод (object — имя её контейнера из
     // portalloc); ноды нет в portalloc — null (transient тика).
     private static string? ResolveReceiverUrl(

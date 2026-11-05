@@ -8,7 +8,7 @@ using PgWorker.Provisioning.Probes;
 namespace PgWorker.Provisioning.Processes;
 
 /// <summary>
-/// P11-сверка мастер-ключей (задача 21; arch/14 §5 C, дока 12 P11): Patroni
+/// P11-сверка мастер-ключей (задача 21; arch/pgworker/processes/c-node-supervisor.md C, дока 12 P11): Patroni
 /// callback — основной писатель /clusters/&lt;C&gt;/shards/&lt;X&gt;/master; reconciler —
 /// «сверяющий демон»: GET /primary по нодам шарда → фактический primary;
 /// расхождение (или ключа нет при живом primary) → lease-put TTL 5с значения
@@ -41,7 +41,7 @@ public sealed class MasterKeyReconciler(
         {
             var key = $"/clusters/{cluster}/shards/{shard.Name}/master";
 
-            // Усыновлённые шарды не сверяем (spec §3.4, arch/14 §5 C/R8): их master-ключ
+            // Усыновлённые шарды не сверяем (spec §3.4, arch/pgworker/processes/c-node-supervisor.md C/R8): их master-ключ
             // пишет внешний HA-контур своим форматом node:port — коррекция порождает
             // войну писателей; резолв мастера понимает оба формата (§5 F).
             var adopted = shard.Nodes.Any(n =>
@@ -56,7 +56,7 @@ public sealed class MasterKeyReconciler(
             NodeAddress? primary = null;
             foreach (var node in nodes)
             {
-                // Прогресс-отметка итерации пробы (arch/14 §6, поллинг-инвариант):
+                // Прогресс-отметка итерации пробы (arch/pgworker/08-operability.md §3, поллинг-инвариант):
                 // GET /primary по деградировавшему Patroni тянется до бюджета
                 // клиента — серия проб без отметок выглядит тишиной цикла.
                 progress?.Mark();
@@ -98,9 +98,9 @@ public sealed class MasterKeyReconciler(
 
     /// <summary>
     /// Ключ соответствует факту primary. Хост-часть может расходиться с portalloc
-    /// (advertised-режим, arch/16): ключ пишут lease-демоны нод с env-хостом
+    /// (advertised-режим, arch/kafkaworker/README.md): ключ пишут lease-демоны нод с env-хостом
     /// КОНТЕЙНЕРА (PGW_NODE_HOST), а portalloc несёт advertised-имя — писатели
-    /// согласны, когда совпадает doorman-порт (уникален per-node, arch/14 §2.4).
+    /// согласны, когда совпадает doorman-порт (уникален per-node, arch/pgworker/01-placement.md §5).
     /// </summary>
     private static bool IsCurrent(string? masterKey, NodeAddress primary)
     {
@@ -154,7 +154,7 @@ public sealed class MasterKeyReconciler(
         }
     }
 
-    // Единая точка failover (arch/17 S7: sticky + per-attempt бюджет + негативный
+    // Единая точка failover (arch/synchronization/03-fault-tolerance.md §S7: sticky + per-attempt бюджет + негативный
     // кэш; дубликат цикла обхода отсюда удалён — собственный обход платил полным
     // HTTP-бюджетом за мёртвый endpoint каждым вызовом).
     private Task<Result<T>> WithFailoverAsync<T>(Func<string, Task<Result<T>>> call)

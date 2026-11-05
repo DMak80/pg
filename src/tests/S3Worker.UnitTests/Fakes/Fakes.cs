@@ -19,7 +19,7 @@ internal static class Fakes
         public Action<string>? OnPut { get; set; }
 
         // Журнал операций в порядке вызова (тесты порядка секций: «docker до
-        // etcd» X2, «клэйм portalloc до чтения занятости» — arch/23 §8).
+        // etcd» X2, «клэйм portalloc до чтения занятости» — arch/s3-clusters/08-coordination.md).
         public List<string> Ops { get; } = [];
 
         private readonly List<string>? _sharedOps;
@@ -300,7 +300,7 @@ internal static class Fakes
     }
 
     /// <summary>Клиент ownS3-ноды-дублёр: health-флаг, usage-факт, бакеты в памяти;
-    /// флаг сбоя — транзиент-ветки процессов. Mesh-расширения (arch/24 §5 G):
+    /// флаг сбоя — транзиент-ветки процессов. Mesh-расширения (arch/s3worker/05-mesh-governance.md G):
     /// программируемые исходы status/join/delete/denylist + журнал вызовов
     /// (защёлки assertions).</summary>
     internal sealed class FakeNodeClient : S3Worker.Core.OwnS3.IOwnS3NodeClient

@@ -4,7 +4,7 @@ using Shared.Etcd.Coordination;
 
 namespace S3Worker.App;
 
-// Источник контроль-плейна тика ReconcileLoop (arch/17 S10, arch/24 §5):
+// Источник контроль-плейна тика ReconcileLoop (arch/synchronization/05-delta-application.md §S10, arch/s3worker/README.md):
 // опросный кэш домена вместо полных Range в каждом тике. Тик работает
 // КАЖДЫЙ раз (self-healing ждёт не-etcd события — гейтов по дельте нет) и
 // читает слепок кэша: etcd-чтений в тике ноль (E10 — чтение уходит в
@@ -34,7 +34,7 @@ internal sealed class EtcdPrefixSources(
     IOptionsMonitor<S3WorkerOptions> options,
     IEtcdGateway gateway) : IPrefixPollSources
 {
-    // Наблюдаемый префикс — домен (arch/24 §5).
+    // Наблюдаемый префикс — домен (arch/s3worker/README.md).
     private const string DomainPrefix = "/s3/";
 
     private readonly SemaphoreSlim _gate = new(1, 1);

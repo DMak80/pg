@@ -11,8 +11,8 @@ namespace ValkeyWorker.IntegrationTests.E2e;
 // valkeyworker:e2e → API-create → контейнер vwk-<C>-node1 (env-TLS:
 // VALKEY_TLS_* + cmd-обёртка, тома нет) → дискавери →
 // RESP app-кред по TLS → DELETE → чистота (отсутствие TLS-тома проверяется —
-// в env-модели он не создаётся). Изоляция по docs/e2e-isolation.md,
-// телеметрия по docs/e2e-launch.md.
+// в env-модели он не создаётся). Изоляция по arch/testing/02-e2e-isolation.md,
+// телеметрия по arch/testing/01-e2e-launch.md.
 public class ValkeyE2eLifecycleTests
 {
     [Fact]
@@ -236,7 +236,7 @@ public class ValkeyE2eLifecycleTests
         }
         catch
         {
-            // docs/e2e-launch.md §3: упавший сценарий — teardown остановит
+            // arch/testing/01-e2e-launch.md §3: упавший сценарий — teardown остановит
             // контейнеры, но не удалит (разбор по артефактам).
             fx.MarkFailed();
             throw;
@@ -382,7 +382,7 @@ public class ValkeyE2eLifecycleTests
         }
         catch
         {
-            // docs/e2e-launch.md §3: упавший сценарий — teardown остановит
+            // arch/testing/01-e2e-launch.md §3: упавший сценарий — teardown остановит
             // контейнеры, но не удалит (разбор по артефактам /tmp/pgw-e2e-artifacts-*).
             fx.MarkFailed();
             throw;

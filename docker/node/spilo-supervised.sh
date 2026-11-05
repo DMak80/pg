@@ -1,5 +1,5 @@
 #!/bin/sh
-# pgworker-node: supervisord-обёртка Spilo (arch/14 §2.1, arch/19 §3.5).
+# pgworker-node: supervisord-обёртка Spilo (arch/pgworker/01-placement.md §1, arch/backups/03-restore.md).
 # Апстримный /launch.sh ставит `runsvdir -P` — каждый runsv в СВОЕЙ группе
 # процессов, групповой stop/kill supervisord'а (stopasgroup/killasgroup) их
 # не достаёт: сироты держат supervise/lock, и Patroni следующего запуска не
@@ -8,7 +8,7 @@
 # Обёртка гасит runit-дерево сама: TERM → штатный sv-stop (patroni — он
 # останавливает свой постгрес; бюджет до окна supervisord'а), затем точечный
 # добор runsv/runsvdir — лок освобождён, `start spilo` поднимает Patroni чисто.
-# Доставка секретов (arch/14 §4): секретные env ПРОЦЕССА — из tmpfs-файлов
+# Доставка секретов (arch/pgworker/04-security.md): секретные env ПРОЦЕССА — из tmpfs-файлов
 # агента PgNode; файлов нет (доставка не выполнена) — немедленный отказ
 # старта: supervisord старт-отказы не лупит, воркер повторит доставкой.
 for f in /run/pgw/spilo-env /run/pgw/spilo-configuration.yml /run/pgw/rest-cert.pem /run/pgw/rest-key.pem; do

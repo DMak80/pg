@@ -16,7 +16,7 @@ namespace PgWorker.IntegrationTests.Backups;
 
 // Интеграции RestoreDrillProcess (reliability, spec §3.3 п.2): у КАЖДОГО
 // Fact своё etcd-окружение OwnEtcd (guid-имя pgw-ee-*, динамический порт,
-// own-only teardown с ассертом чистоты — docs/e2e-isolation.md). Drill-операцию
+// own-only teardown с ассертом чистоты — arch/testing/02-e2e-isolation.md). Drill-операцию
 // исполняет WalReceiver ПЕРВОЙ ноды шарда по HTTP API (POST/GET /api/ops/restore)
 // — docker-фейков у процесса больше нет: поведение приёмника фейкается
 // FakeReceiverClient (паттерны BackupVerifyProcessTests/RestoreProcessTests),
@@ -184,7 +184,7 @@ public class RestoreDrillProcessTests
     }
 
     // AAA: активная restore-заявка владеет жизненным циклом шарда
-    // (arch/19 §3.5/§3.6) — идущий дрилл уступает: гасит СВОЮ операцию (id
+    // (arch/backups/03-restore.md/§3.6) — идущий дрилл уступает: гасит СВОЮ операцию (id
     // снимка совпал), удаляет ключ дрилла и НЕ повторяет POST. Иначе дрилл
     // держит единственный ops-слот ноды, restore получает 409 и ждёт.
     [Fact]
@@ -610,7 +610,7 @@ public class RestoreDrillProcessTests
     [Fact]
     public async Task Tick_ActiveRestore_ShardExcluded()
     {
-        // Arrange — restore-ключ RUNNING шарда (restore владеет ЖЦ, arch/19 §3.5).
+        // Arrange — restore-ключ RUNNING шарда (restore владеет ЖЦ, arch/backups/03-restore.md).
         var ct = TestContext.Current.CancellationToken;
         await using var fx = await OwnEtcd.StartAsync("drill", ct);
         Fx = fx;

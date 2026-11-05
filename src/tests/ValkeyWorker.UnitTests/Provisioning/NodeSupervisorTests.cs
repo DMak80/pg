@@ -8,7 +8,7 @@ using Xunit;
 
 namespace ValkeyWorker.UnitTests.Provisioning;
 
-// NodeSupervisor (arch/21 §5 C): снос/пересоздание, автоконверге лимитов,
+// NodeSupervisor (arch/valkeyworker/02-cluster-lifecycle.md §4 C): снос/пересоздание, автоконверге лимитов,
 // слепой docker-инспект (S7), UNREACHABLE по NodeDeadSec (таймаут и refused —
 // молчание при живом docker-факте), E9, endpoints-RMW.
 public class NodeSupervisorTests

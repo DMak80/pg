@@ -6,7 +6,7 @@ using Xunit;
 
 namespace AdminPanel.UnitTests;
 
-// Парсер range /pgworker/evacuations/ (u12, arch/14 §3.2/§5 D): валидный DONE +
+// Парсер range /pgworker/evacuations/ (u12, arch/pgworker/00-etcd-contract.md §3/§5 D): валидный DONE +
 // QUARANTINED с returned_unix и buckets-словарём; битый JSON / не объект /
 // нет buckets → parseError, тик не роняет. AAA.
 public class EvacuationsParserTests
@@ -40,7 +40,7 @@ public class EvacuationsParserTests
     [Fact]
     public void Parse_QuarantinedWithReturnedUnix_CarriesReturn()
     {
-        // Arrange — возврат шарда: state=QUARANTINED + returned_unix (arch/14 §5 D)
+        // Arrange — возврат шарда: state=QUARANTINED + returned_unix (arch/pgworker/processes/d-bucket-evacuator.md D)
         var kvs = new[]
         {
             new Kv("/pgworker/evacuations/demo/s2",

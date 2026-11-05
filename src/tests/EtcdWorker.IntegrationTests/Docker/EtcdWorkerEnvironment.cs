@@ -11,7 +11,7 @@ namespace EtcdWorker.IntegrationTests.Docker;
 // testcontainers-сеть etcdw-<guid>-net + единственный seed-узел etcd 3.5
 // (initial-cluster-state=new). Клиентская грань — динамический host-порт
 // (AGENTS.md); peer-грань — имена в сети контура, host-публикаций нет
-// (arch/25 §2). Готовность — POST-ретрай (встроенные HTTP-wait шлют GET,
+// (arch/etcdworker/01-placement.md). Готовность — POST-ретрай (встроенные HTTP-wait шлют GET,
 // /v3/* требует POST). Полный teardown при любом исходе: свои ключи →
 // контейнер → сеть; успех DisposeAsync сети/контейнера — ассерт чистоты
 // (удаление несуществующих объектов testcontainers падает).
@@ -77,7 +77,7 @@ public sealed class EtcdWorkerEnvironment : IAsyncLifetime
     public async ValueTask DisposeAsync()
     {
         // Teardown при любом исходе: свои ключи → контейнеры → сеть
-        // (docs/e2e-isolation.md; порядок — лучшее усилие, падение dispose
+        // (arch/testing/02-e2e-isolation.md; порядок — лучшее усилие, падение dispose
         // сети/контейнера валит тест — это ассерт чистоты окружения).
         if (Endpoint.Length > 0)
             await Gateway.DeleteAsync(Endpoint, TestPrefix, prefix: true, CancellationToken.None);
@@ -131,7 +131,7 @@ public sealed class EtcdWorkerEnvironment : IAsyncLifetime
             .WithEnvironment("OWNS3_ROOT_USER", "it-root")
             .WithEnvironment("OWNS3_ROOT_PASSWORD", "it-root-password")
             // Ключ backups — тот же, что сидится в /s3/clusters/eb/secrets
-            // (формат env ноды arch/23 §6): экспортёр ходит этим ключом.
+            // (формат env ноды arch/s3-clusters/06-secrets.md): экспортёр ходит этим ключом.
             .WithEnvironment("OWNS3_ACCESS_KEYS__0__ACCESSKEY", "eb-key")
             .WithEnvironment("OWNS3_ACCESS_KEYS__0__SECRETKEY", "eb-secret")
             .WithEnvironment("OWNS3_ACCESS_KEYS__0__POLICY", "read-write")
@@ -142,7 +142,7 @@ public sealed class EtcdWorkerEnvironment : IAsyncLifetime
         await WaitOwnS3ReadyAsync(ct);
     }
 
-    // Сид etcd-backup контура в etcd окружения (arch/23 §5/§6): config с
+    // Сид etcd-backup контура в etcd окружения (arch/s3-clusters/05-platform.md/§6): config с
     // признаком etcd_backup, endpoints хост:порт, secrets с ключом backups;
     // фиксированный слепковый bucket создаётся root-кредами (в проде его
     // создаёт S3Worker P3 — здесь нода «сырая»).

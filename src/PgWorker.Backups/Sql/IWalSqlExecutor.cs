@@ -9,7 +9,7 @@ public interface IWalSqlExecutor
 {
     /// <summary>Зонд слота: (Exists, WalStatus) из pg_replication_slots. Строки
     /// нет → (false, null); существующий слот с null-статусом (старые PG/edge) —
-    /// трактуется вызывающим как живой: лечим только явный 'lost' (arch/19 §3).</summary>
+    /// трактуется вызывающим как живой: лечим только явный 'lost' (arch/backups/02-wal-archive.md §1).</summary>
     Task<Result<(bool Exists, string? WalStatus)>> SlotProbeAsync(string adminDsn, string slot, CancellationToken ct);
 
     /// <summary>Идемпотентно, self-contained (зонд внутри): отсутствует → create

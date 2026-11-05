@@ -15,7 +15,7 @@ using Xunit;
 
 namespace KafkaWorker.IntegrationTests.Api;
 
-// HTTPS HTTP API (arch/16 §1.1): клиентский серт опционален на хендшейке;
+// HTTPS HTTP API (arch/kafkaworker/07-api.md §1): клиентский серт опционален на хендшейке;
 // /api без серта и с невалидным сертом — 401 (HTTP-ответ, не TLS-отказ);
 // /healthz и /metrics — открытая грань (200 без серта, невалидный серт
 // игнорируется). Реальный Kestrel-сокет (WAF-транспорт in-memory TLS не

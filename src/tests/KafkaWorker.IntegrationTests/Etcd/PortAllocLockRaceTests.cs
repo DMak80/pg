@@ -86,7 +86,7 @@ public class PortAllocLockRaceTests(EtcdFixture fixture)
         return Result.Failed(new ApplicationException("the port lock was not released for 10 s — race/deadlock"));
     }
 
-    // Формат arch/15 §4: {"broker<k>":{"host":"h","client":P}} — пары (host, client).
+    // Формат arch/kafka-clusters/04-coordination.md §1: {"broker<k>":{"host":"h","client":P}} — пары (host, client).
     private static IEnumerable<(string Host, int Port)> ParseEntries(string json)
     {
         using var doc = System.Text.Json.JsonDocument.Parse(json);

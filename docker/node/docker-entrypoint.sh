@@ -23,7 +23,7 @@ else
     : > /etc/haproxy/haproxy.cfg
 fi
 
-# Пулер pg_doorman обязателен (arch/14 §8): нет бинарника — отказ старта
+# Пулер pg_doorman обязателен (arch/pgworker/08-operability.md §5): нет бинарника — отказ старта
 # контейнера (ненулевой exit ДО supervisord; воркер видит exited-контейнер).
 # Молчаливых «not starting» не существует.
 if [ ! -x /usr/local/bin/pg_doorman ]; then
@@ -32,7 +32,7 @@ if [ ! -x /usr/local/bin/pg_doorman ]; then
 fi
 
 # Шаблон конфига пулера (неконфиденциальный): пароль подставляет агент PgNode
-# при рендере в tmpfs (arch/14 §4); пустой шаблон — старт-отказ контейнера.
+# при рендере в tmpfs (arch/pgworker/04-security.md); пустой шаблон — старт-отказ контейнера.
 if [ -z "$DOORMAN_CONFIG_TEMPLATE" ]; then
     echo "pg_doorman: DOORMAN_CONFIG_TEMPLATE env is empty - cannot start the mandatory pooler"
     exit 1

@@ -13,7 +13,7 @@ namespace PgWorker.IntegrationTests.E2e;
 // E2E самолечения wal-цепочки (t24/ревизия 8 — разбиение E2eSupervisorScenarios
 // на однофактные; хелперы — копии, прецедент :385-386): ChainBroken.
 // E2eEnvironment (своя сеть/etcd/ownS3, динамические порты, полный teardown
-// в DisposeAsync — docs/e2e-isolation.md; телеметрия — docs/e2e-launch.md).
+// в DisposeAsync — arch/testing/02-e2e-isolation.md; телеметрия — arch/testing/01-e2e-launch.md).
 // Два сценария AC10: (1) ChainBroken_SelfHeals — дыра ВНУТРИ цепочки живого
 // кластера → wal=WAL_CHAIN_ERROR → планировщик переснимает полный → цепь непрерывна от
 // нового wal_start → ACTIVE, агент жив; (2) OrphanRegistry_TtlDelete —
@@ -152,7 +152,7 @@ public sealed class E2eSupervisorSelfHealScenarios(E2eSupervisorSelfHealScenario
             $"the gap must be gone into the chain history: chain_start={chainStartBefore}, " +
             $"gap={hole}, window=[{string.Join(",", inChain)}]");
         // Предусловие пересъёма (spec §3.2): полный стартует с позиции источника
-        // (реплики) — она обязана быть ВЫШЕ дыры, иначе ratchet (arch/19 §3:
+        // (реплики) — она обязана быть ВЫШЕ дыры, иначе ratchet (arch/backups/02-wal-archive.md §1:
         // «полные ниже границы игнорируются») честно не заживит разрыв. Гейт
         // отделяет здоровье репликации среды от логики t07: обе ноды шарда
         // (primary по current_wal_lsn, реплика по last_wal_replay_lsn) — не
@@ -321,7 +321,7 @@ public sealed class E2eSupervisorSelfHealScenarios(E2eSupervisorSelfHealScenario
             TimeSpan.FromSeconds(90), ct);
         if (!healed)
         {
-            // Диагностика без перезапуска (docs/e2e-launch.md): все статусы
+            // Диагностика без перезапуска (arch/testing/01-e2e-launch.md): все статусы
             // полных (wal_start переснятых — ключ к ratchet-разбору), wal-ключ,
             // факт S3-цепи.
             var fullDump = string.Join(";\n", (await FullKeysAsync(cluster, "shard1"))
@@ -359,7 +359,7 @@ public sealed class E2eSupervisorSelfHealScenarios(E2eSupervisorSelfHealScenario
     // ===== Хелперы (копии образца E2eRetentionScenarios — файлы сценариев
     // независимы, паттерн репо) =====
 
-    // Политика телеметрии (docs/e2e-launch.md, образец E2eRestoreScenarios):
+    // Политика телеметрии (arch/testing/01-e2e-launch.md, образец E2eRestoreScenarios):
     // упавший тест помечает окружение MarkFailed — teardown ОСТАНАВЛИВАЕТ
     // контейнеры, но не удаляет (host.log/тома остаются для разбора «что
     // произошло»); перезапуск ради логов запрещён; зачистка — вручную.
@@ -388,7 +388,7 @@ public sealed class E2eSupervisorSelfHealScenarios(E2eSupervisorSelfHealScenario
         return done.Key.Split('/').Last();
     }
 
-    // Ожидание фазы с телеметрией (docs/e2e-launch.md): длительность в журнал
+    // Ожидание фазы с телеметрией (arch/testing/01-e2e-launch.md): длительность в журнал
     // теста всегда; фаза дольше 60 с — docker-логи окружения снимаются в
     // артефакты немедленно (отчёт «почему так долго» собирается по логам,
     // без перезапуска), независимо от исхода фазы.
@@ -412,7 +412,7 @@ public sealed class E2eSupervisorSelfHealScenarios(E2eSupervisorSelfHealScenario
         {
             ["PgWorker__Backups__Enabled"] = "true",
             ["PgWorker__Backups__S3__Bucket"] = Bucket,
-            // t36: креды пула — env-профиль (arch/19 §7); пул — policy.s3, адреса
+            // t36: креды пула — env-профиль (arch/backups/08-secrets.md); пул — policy.s3, адреса
             // резолвит воркер из /s3/ (advertised host.docker.internal, extra_hosts).
             ["PgWorker__Backups__Retry__BaseSec"] = "2",
             ["PgWorker__Backups__Retry__MaxSec"] = "4",
@@ -601,7 +601,7 @@ public sealed class E2eSupervisorSelfHealScenarios(E2eSupervisorSelfHealScenario
 }
 
 /// <summary>Компаньон-фикстура окружения класса (полный контур на класс:
-/// сеть/etcd/CA/окно портов; docs/e2e-isolation.md §1).</summary>
+/// сеть/etcd/CA/окно портов; arch/testing/02-e2e-isolation.md §1).</summary>
 public sealed class E2eSupervisorSelfHealScenariosFx : E2eContourFixture
 {
     protected override string Slug => "bk-spr";

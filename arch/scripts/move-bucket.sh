@@ -2,7 +2,7 @@
 # scripts/move-bucket.sh
 #
 # Онлайн-переезд бакета (схемы) между шардами: состояние переезда живёт
-# в etcd-контрол-плейне. Обёртка над runbook'ом из arch/11-bucket-sharding.md:
+# в etcd-контрол-плейне. Обёртка над runbook'ом из arch/pg-clusters/11-buckets.md:
 # §5 (переезд), §6 (откат), §5-шаг-5 (уборка).
 # Решения P1/P4/P5/P6/P7/P8 из 12-bucket-pitfalls.md внесены.
 #

@@ -3,7 +3,7 @@ using KafkaWorker.Core.Model;
 
 namespace KafkaWorker.Provisioning.Processes;
 
-/// <summary>Исход процесса (arch/16 §5): для цикла ReconcileLoop.</summary>
+/// <summary>Исход процесса (arch/kafkaworker/README.md): для цикла ReconcileLoop.</summary>
 public enum ProcessOutcome
 {
     /// <summary>Продолжить следующими тиками (ждём ключей панели, подъёма брокеров).</summary>
@@ -16,7 +16,7 @@ public enum ProcessOutcome
 /// <summary>
 /// Параметры процессов (appsettings KafkaWorker:Docker/Thresholds → A12):
 /// диапазон клиентских портов, бюджет подъёма брокеров, advertised-хост
-/// CLIENT-listener (null → имя docker-хоста ноды, arch/16 §2.1), образ брокера.
+/// CLIENT-listener (null → имя docker-хоста ноды, arch/kafkaworker/01-placement.md §1), образ брокера.
 /// </summary>
 public sealed record ProvisioningOptions(
     int PortFrom,
@@ -31,7 +31,7 @@ public sealed record ProvisioningOptions(
 }
 
 /// <summary>
-/// Параметры процесса reassign I (arch/16 §8): интервал тиков, размер батча
+/// Параметры процесса reassign I (arch/kafkaworker/08-operability.md §6): интервал тиков, размер батча
 /// подач, бюджет reassign-подачи батча (§2.4) и окно дедупа переподачи одного
 /// батча. RotationTicketTimeoutSec — возраст не-начатой заявки rebalances до снятия.
 /// </summary>
@@ -46,7 +46,7 @@ public sealed record ReassignOptions(
 }
 
 /// <summary>
-/// Converge mutable-конфигов кластера как dynamic broker configs (arch/16 §5 E;
+/// Converge mutable-конфигов кластера как dynamic broker configs (arch/kafkaworker/02-cluster-lifecycle.md §5 E;
 /// реализация — задача A11). Вызывается provisioning'ом (стартовый converge)
 /// и Active-веткой цикла; применяется без рестартов брокеров.
 /// </summary>

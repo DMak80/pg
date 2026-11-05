@@ -23,7 +23,7 @@ Patroni REST/SQL (тик 15 c), 48 правил алертов.
 | `src/AdminPanel.Probes` | Live-пробы Patroni REST/SQL, `HostMapResolver` |
 | `src/Shared.Core` | Каркас из референса `Puzzle` (/common/): attribute-DI, CQRS, `Result`, health-checks |
 | `src/tests/` | Unit (xunit v3 + FluentAssertions) + Integration (Testcontainers: etcd, postgres:18) |
-| [`frontend/`](frontend/package.json) | SPA (React+Vite+TS+Mantine); сборка в `src/AdminPanel.Api/wwwroot` |
+| [`frontend/`](../../frontend/package.json) | SPA (React+Vite+TS+Mantine); сборка в `src/AdminPanel.Api/wwwroot` |
 | [`dev-stand/adminpanel/`](../../dev-stand/adminpanel/README.md) | Docker-стенд — один контур одна сеть (etcd + канонический PG-demo движком + PgWorker/ownS3 + мониторинг) и e2e-чеки |
 | `Dockerfile`, `.dockerignore` | Многостадийная сборка образа (node → publish → runtime) |
 | `docs/adminpanel/superpowers/` | История задач (spec/plan по каждой) |

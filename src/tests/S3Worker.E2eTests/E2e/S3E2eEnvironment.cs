@@ -12,8 +12,8 @@ using Xunit;
 namespace S3Worker.IntegrationTests.E2e;
 
 /// <summary>
-/// Изолированное docker-E2E окружение S3Worker (docs/e2e-isolation.md +
-/// docs/e2e-launch.md): собственная docker-сеть s3w-en-{runId}, свой etcd
+/// Изолированное docker-E2E окружение S3Worker (arch/testing/02-e2e-isolation.md +
+/// arch/testing/01-e2e-launch.md): собственная docker-сеть s3w-en-{runId}, свой etcd
 /// s3w-ee-{runId}, свой воркер s3w-ew(1|2)-{runId} (образ s3worker:e2e-{runId}
 /// — свежий Release, publish НА ХОСТЕ + узкий COPY-контекст артефактов; канон
 /// E2E-образов AGENTS.md) + owns3:dev для нод — ВНЕШНИЙ статический ассет
@@ -33,7 +33,7 @@ public sealed class S3E2eEnvironment : IAsyncDisposable
     private const string EtcdImage = "quay.io/coreos/etcd:v3.5.21";
     private const string OwnS3Image = "owns3:dev";
 
-    // Per-branch тег (docs/e2e-isolation.md §9); per-run тег e2e-{runId} и
+    // Per-branch тег (arch/testing/02-e2e-isolation.md §9); per-run тег e2e-{runId} и
     // NOBUILD-фоллбек s3worker:e2e упразднены.
     private static readonly string WorkerImageTag =
         $"e2e-{E2eImageTags.SuffixFor(FindRepoRoot())}";
@@ -63,7 +63,7 @@ public sealed class S3E2eEnvironment : IAsyncDisposable
            || ex.Message.Contains("address already in use", StringComparison.OrdinalIgnoreCase);
 
     // Креды кластеров — per-cluster secrets-ключ etcd /s3/clusters/<C>/secrets
-    // (генерирует воркер; arch/23 §2/§6): сценарии читают root-пару хелпером
+    // (генерирует воркер; arch/s3-clusters/02-keys.md §1/§6): сценарии читают root-пару хелпером
     // RootPairOfAsync — значения ТОЛЬКО в память теста, БЕЗ печати.
     public const string BucketName = "pgworker-backups";
 
@@ -160,7 +160,7 @@ public sealed class S3E2eEnvironment : IAsyncDisposable
     public void MarkFailed() => _failed = true;
 
     /// <summary>Root-пара кластера из per-cluster secrets-ключа etcd
-    /// (arch/23 §2); значения — только в память теста, БЕЗ печати.</summary>
+    /// (arch/s3-clusters/02-keys.md §1); значения — только в память теста, БЕЗ печати.</summary>
     public async Task<(string RootUser, string RootPassword)> RootPairOfAsync(
         string cluster, CancellationToken ct)
     {
@@ -352,7 +352,7 @@ public sealed class S3E2eEnvironment : IAsyncDisposable
         }
     }
 
-    // Env воркера окружения (arch/24 §8): etcd/advertise/порты из динамических
+    // Env воркера окружения (arch/s3worker/08-operability.md §5): etcd/advertise/порты из динамических
     // значений; bucket per-install (креды кластеров — per-cluster в etcd, env
     // секретов не несёт); ускоренные циклы/пороги (ScanIntervalSec=1,
     // NodeBootSec=100, NodeDeadSec=15, HealthIntervalSec=3); mTLS-серты из
@@ -383,7 +383,7 @@ public sealed class S3E2eEnvironment : IAsyncDisposable
     // не собирает — fail-fast с командой); s3worker:e2e-{runId} — self-build:
     // publish S3Worker.App + build (тег per-прогон — свежесть каждого прогона).
     // NOBUILD=1 — только бисект: s3worker берётся из ручного тега s3worker:e2e.
-    /// <summary>Сборка образа ONCE-per-process (docs/e2e-isolation.md §9):
+    /// <summary>Сборка образа ONCE-per-process (arch/testing/02-e2e-isolation.md §9):
     /// owns3:dev — внешний ассет (fail-fast с командой ../OwnS3);
     /// s3worker — publish в СВОЙ per-process каталог + docker build per-branch
     /// тега; NOBUILD — существующий тег обязателен (fail-fast с подсказкой);
@@ -697,7 +697,7 @@ public sealed class S3E2eEnvironment : IAsyncDisposable
         return process.ExitCode == 0;
     }
 
-    // Телеметрия (docs/e2e-launch.md §1): docker-логи+inspect всех контейнеров
+    // Телеметрия (arch/testing/01-e2e-launch.md §1): docker-логи+inspect всех контейнеров
     // окружения (воркеры — 1 или 2 + etcd), списки docker ps/volume ls и ноды
     // кластеров сценария (s3w-<tag>-*) — ДО любого удаления; вызывается в
     // teardown и на slow-phase.
@@ -756,7 +756,7 @@ public sealed class S3E2eEnvironment : IAsyncDisposable
         }
     }
 
-    /// <summary>Отчёт по фазе (docs/e2e-launch.md §2): замер + строка [PHASE];
+    /// <summary>Отчёт по фазе (arch/testing/01-e2e-launch.md §2): замер + строка [PHASE];
     /// фаза дольше 60 с — немедленный сбор логов в артефакты.</summary>
     public async Task<TimeSpan> WaitPhaseAsync(string phase, Func<Task<bool>> condition,
         TimeSpan budget, CancellationToken ct)
@@ -784,7 +784,7 @@ public sealed class S3E2eEnvironment : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        // Телеметрия ДО любого удаления (docs/e2e-launch.md §1).
+        // Телеметрия ДО любого удаления (arch/testing/01-e2e-launch.md §1).
         try
         {
             await CollectDiagnosticsAsync("teardown");
@@ -796,7 +796,7 @@ public sealed class S3E2eEnvironment : IAsyncDisposable
 
         if (_failed)
         {
-            // docs/e2e-launch.md §3: упавший сценарий — контейнеры ОСТАНОВИТЬ,
+            // arch/testing/01-e2e-launch.md §3: упавший сценарий — контейнеры ОСТАНОВИТЬ,
             // не удалить (тома/сети/etcd остаются для разбора).
             foreach (var worker in _workers)
                 await SafeStopAsync(worker, remove: false);
@@ -909,7 +909,7 @@ public sealed class S3E2eEnvironment : IAsyncDisposable
 
     // Телеметрия процесса в файл ОБЪЕДИНЁННО (stdout-блок, затем stderr-блок —
     // docker-CLI разводит потоки контейнера по своим потокам, канон
-    // docs/e2e-launch.md §1). Оба потока читаются ПАРАЛЛЕЛЬНО до ожидания
+    // arch/testing/01-e2e-launch.md §1). Оба потока читаются ПАРАЛЛЕЛЬНО до ожидания
     // выхода — полный stderr-пайп при непараллельном чтении дедлокит процесс;
     // бюджет 60 с: по истечении дерево убивается, доступный вывод дренажится
     // и пишется. Телеметрия — «лучшими усилиями»: исключения наружу не

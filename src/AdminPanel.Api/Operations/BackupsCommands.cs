@@ -5,7 +5,7 @@ using Shared.Core.DI;
 namespace AdminPanel.Api.Operations;
 
 // Мутация policy бэкапов (reliability, arch/02 §9.12): панель НЕ пишет
-// в etcd — команда-прокси в POST policy-API воркера (arch/14 §1.1) ПОЛНЫМ
+// в etcd — команда-прокси в POST policy-API воркера (arch/pgworker/07-api.md §1) ПОЛНЫМ
 // телом (retention + full_max_age_sec + verify + drill; канон замещения
 // целиком — панель в своей форме всегда шлёт полный набор полей, включая
 // текущее значение drill).

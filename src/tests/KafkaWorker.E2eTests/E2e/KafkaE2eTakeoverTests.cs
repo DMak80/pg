@@ -13,7 +13,7 @@ namespace KafkaWorker.IntegrationTests.E2e;
 // kill (claims.instance → api-ключ → url → порт → сопоставление с
 // Api1/Api2Port) — kill доказательно попадает в держателя. Сид кластера — в
 // стиле панели (копия формата KafkaClusterFixture.SeedClusterAsync(cluster, 3)).
-// Изоляция/телеметрия — docs/e2e-isolation.md + docs/e2e-launch.md; ожидания —
+// Изоляция/телеметрия — arch/testing/02-e2e-isolation.md + arch/testing/01-e2e-launch.md; ожидания —
 // только KafkaE2ePhase.WaitAsync (docker-CLI в тиках запрещён — якорь
 // docker-проверяет в теле условия).
 public class KafkaE2eTakeoverTests
@@ -230,7 +230,7 @@ public class KafkaE2eTakeoverTests
         }
         catch
         {
-            // docs/e2e-launch.md §3: упавший сценарий — teardown остановит
+            // arch/testing/01-e2e-launch.md §3: упавший сценарий — teardown остановит
             // контейнеры, но не удалит (разбор по артефактам /tmp/pgw-e2e-artifacts-*).
             fx.MarkFailed();
             throw;

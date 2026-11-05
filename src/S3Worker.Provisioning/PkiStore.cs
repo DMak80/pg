@@ -9,9 +9,9 @@ using Shared.Etcd.Client;
 namespace S3Worker.Provisioning;
 
 /// <summary>
-/// PKI репликации per-cluster в etcd (arch/23 §2/§6, spec §3.2): ленивый выпуск
+/// PKI репликации per-cluster в etcd (arch/s3-clusters/02-keys.md §1/§6, spec §3.2): ленивый выпуск
 /// CA кластера, сертификата оркестратора и сертификатов инстансов — txn
-/// put-if-absent (проигрыш → re-read, первый записавший — истина, arch/17 S5).
+/// put-if-absent (проигрыш → re-read, первый записавший — истина, arch/synchronization/02-predicates-and-mutations.md §S5).
 /// Сертификаты бессрочные (expiresDays ≤ 0). Чтение — с проверкой целостности
 /// (ключ ↔ сертификат, Verify против CA); битый/несогласованный материал —
 /// Failed с диагностикой, без исключений наружу. Криптомеханика — библиотека
@@ -19,7 +19,7 @@ namespace S3Worker.Provisioning;
 /// </summary>
 public sealed class PkiStore(IEtcdGateway gateway, string[] endpoints, TimeProvider clock)
 {
-    // Формат pki/ca (arch/23 §2.1 — смешанный регистр полей канона, ручная
+    // Формат pki/ca (arch/s3-clusters/02-keys.md §2 — смешанный регистр полей канона, ручная
     // сериализация): {"name":"<C>","publicKeyPem":…,"private_key_pem":…}.
     internal static string SerializeCa(ClusterCaMaterial material)
     {
@@ -36,7 +36,7 @@ public sealed class PkiStore(IEtcdGateway gateway, string[] endpoints, TimeProvi
         return System.Text.Encoding.UTF8.GetString(buffer.ToArray());
     }
 
-    // Формат pki/orchestrator и nodes/<I>/pki (arch/23 §2.1): сертификат —
+    // Формат pki/orchestrator и nodes/<I>/pki (arch/s3-clusters/02-keys.md §2): сертификат —
     // экранированная JSON-строка (PeerCertificate JSON), ключ — snake_case.
     internal static string SerializeIssued(IssuedPkiMaterial material)
     {
@@ -183,7 +183,7 @@ public sealed class PkiStore(IEtcdGateway gateway, string[] endpoints, TimeProvi
         => TryReadIssuedAsync(S3ProcessCommon.NodePkiKey(cluster, node), cluster, ct);
 
     /// <summary>Чтение сертификата оркестратора (ключ pki/orchestrator —
-    /// НЕ nodes/orchestrator/pki; см. arch/23 §2).</summary>
+    /// НЕ nodes/orchestrator/pki; см. arch/s3-clusters/02-keys.md §1).</summary>
     public Task<Result<IssuedPkiMaterial?>> TryReadOrchestratorPkiAsync(
         string cluster, CancellationToken ct)
         => TryReadIssuedAsync(S3ProcessCommon.OrchestratorPkiKey(cluster), cluster, ct);

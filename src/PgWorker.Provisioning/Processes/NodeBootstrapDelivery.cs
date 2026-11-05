@@ -13,7 +13,7 @@ namespace PgWorker.Provisioning.Processes;
 /// провал EnsureNode-пути — spec §3.7.2).</summary>
 public sealed record DeliveryOutcome(bool Delivered, bool Wait, bool Transient, string? Detail);
 
-/// <summary>Доставка bootstrap-данных ноде (arch/14 §4, spec §3.7.2): put
+/// <summary>Доставка bootstrap-данных ноде (arch/pgworker/04-security.md, spec §3.7.2): put
 /// ключа /clusters/&lt;C&gt;/shards/&lt;X&gt;/nodes/&lt;n&gt;/bootstrap только
 /// при изменении (симметричная сериализация — без дребезга mod_revision),
 /// затем хендшейк по статусному ключу: not_initialized → команда доставки с
@@ -49,7 +49,7 @@ public sealed class NodeBootstrapDelivery(
     public static string BootstrapKey(string cluster, string shard, string node)
         => $"/clusters/{cluster}/shards/{shard}/nodes/{node}/bootstrap";
 
-    // Delivered-факт per нода (arch/14 §5 C/§5 I R3): ревизия bootstrap-ключа,
+    // Delivered-факт per нода (arch/pgworker/processes/c-node-supervisor.md C/§5 I R3): ревизия bootstrap-ключа,
     // пин применения которой уже ПРИНЯТ агентом (Ok). Повтор пина той же
     // ревизии не отправляется — применение неудавшегося материала повторяет
     // сам агент (коулдаун по материалу), прогресс читается статусным ключом.
@@ -101,7 +101,7 @@ public sealed class NodeBootstrapDelivery(
         }
 
         // 2) Статусный ключ → реакции: нет — Wait (агент стартует, следующий
-        // тик увидит not_initialized — arch/14 §5 C); not_initialized —
+        // тик увидит not_initialized — arch/pgworker/processes/c-node-supervisor.md C); not_initialized —
         // команда доставки; initializing/start_failed — Wait; ready с
         // расхождением applied_revision — команда применения.
         var statusKey = PgNodeStatusFact.StatusKey(topology.Cluster, topology.Shard, nodeName);
@@ -131,7 +131,7 @@ public sealed class NodeBootstrapDelivery(
                     _pinnedRevisions.TryRemove((topology.Cluster, topology.Shard, nodeName), out _);
                     return new DeliveryOutcome(Delivered: true, Wait: false, Transient: false, null);
                 }
-                // Дисциплина пина (arch/14 §5 C/§5 I R3): пин этой ревизии уже
+                // Дисциплина пина (arch/pgworker/processes/c-node-supervisor.md C/§5 I R3): пин этой ревизии уже
                 // принят агентом — повтор не отправляется (ok-ответ ≠ прогресс:
                 // применитель агента сам доводит материал, статусный ключ —
                 // источник прогресса). Без этого гварда не-applied нода

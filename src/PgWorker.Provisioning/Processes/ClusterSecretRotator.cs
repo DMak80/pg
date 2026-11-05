@@ -13,7 +13,7 @@ namespace PgWorker.Provisioning.Processes;
 
 /// <summary>
 /// Ротация per-cluster секретов по заявке /pgworker/rotations/&lt;C&gt; —
-/// порядок ETCD-FIRST (arch/14 §5 I/§3.3): R0 заявка/битая-мусор + takeover
+/// порядок ETCD-FIRST (arch/pgworker/processes/i-secret-rotator.md I/§3.3): R0 заявка/битая-мусор + takeover
 /// открытого окна по флагу rest_window_open → гвард «тихого окна» (все
 /// канонические ноды ready — до открытия) → R1 ensure кредов (OLD —
 /// compare-база) → R2 txn-коммит NEW-четвёрки (app/bucket_admin/bucket_mover/
@@ -24,7 +24,7 @@ namespace PgWorker.Provisioning.Processes;
 /// каждого dsn-шарда (rotate-waiting-master/&lt;X&gt; при недоступном мастере,
 /// флаг переносится) → снапшот P12 → done (флаг false). backup_exec — вне
 /// тикета (spec §8-19b). Имя journal-op сохранено (rotate-app-password) —
-/// совместимость журналов (образец RotationRole.Phase, arch/16 §5 H). Вызывается
+/// совместимость журналов (образец RotationRole.Phase, arch/kafkaworker/04-security.md §4 H). Вызывается
 /// только держателем клэйма &lt;C&gt;. Ротация при активном переезде: mover-DSN
 /// строится из свежего снапшота на тик — оборванная ротацией фаза переезда
 /// возобновляется с journal-фазы уже с новыми кредами (etcd).
@@ -48,20 +48,20 @@ public sealed partial class ClusterSecretRotator(
     /// R4-ALTER (канон N=3 — образец триады оконных таймаутов §5 I).</summary>
     internal const int QuietTicksThreshold = 3;
 
-    // Имя mover-роли фиксировано (arch/14 §4); user-ключа mover нет.
+    // Имя mover-роли фиксировано (arch/pgworker/04-security.md); user-ключа mover нет.
     private const string MoverRole = "bucket_mover";
 
     public async Task<Result<ProcessOutcome>> TickAsync(ClusterSnapshot snap, CancellationToken ct)
     {
         var cluster = snap.Config.Cluster;
 
-        // Мутации — только держателем живого клэйма (инвариант arch/14 §3.3).
+        // Мутации — только держателем живого клэйма (инвариант arch/pgworker/00-etcd-contract.md §4).
         if (!claims.IsMine(cluster))
             return Result<ProcessOutcome>.Failed(new ApplicationException(
                 $"{Op} {cluster}: claim is not ours (or lost) — mutations forbidden"));
 
         // R0: заявка (цикл префикс /pgworker/ не читает — читаем ключ сами).
-        // Раннего no-op-выхода при отсутствии заявки НЕТ (arch/14 §5 I
+        // Раннего no-op-выхода при отсутствии заявки НЕТ (arch/pgworker/processes/i-secret-rotator.md I
         // ETCD-FIRST): после R2-txn заявка снята, а окно продолжает жить —
         // тики R3/R4 работают БЕЗ заявки; no-op — в ветке !windowOpen ниже.
         var ticket = await GetAsync(TicketKey(cluster), ct);
@@ -79,7 +79,7 @@ public sealed partial class ClusterSecretRotator(
             return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
         }
 
-        // Takeover-детект открытого окна (arch/14 §5 I/§3.3): маркер —
+        // Takeover-детект открытого окна (arch/pgworker/processes/i-secret-rotator.md I/§3.3): маркер —
         // ТОЛЬКО переносимый флаг rest_window_open (заявки уже нет — снята
         // txn R2; supervise-записи надзора флаг переносят, фазовый маркер
         // затирался бы). Имена фаз — только прогресс: failure-фазы на
@@ -121,7 +121,7 @@ public sealed partial class ClusterSecretRotator(
                 return await FailAsync(cluster, credsResult.Error!, "ensure-app-secret", ct);
             var creds = credsResult.Value;
 
-            // R2 (ETCD-FIRST, arch/14 §5 I): txn-коммит NEW-четвёрки В
+            // R2 (ETCD-FIRST, arch/pgworker/processes/i-secret-rotator.md I): txn-коммит NEW-четвёрки В
             // НАЧАЛЕ окна — etcd несёт NEW, роли PG ещё OLD; заявка снимается
             // той же txn (неразделимо). backup_exec вне тикета t05 (spec
             // §8-19b: backup_password статичен с ensure).
@@ -400,7 +400,7 @@ public sealed partial class ClusterSecretRotator(
         [property: System.Text.Json.Serialization.JsonPropertyName("updated_unix")] long UpdatedUnix,
         [property: System.Text.Json.Serialization.JsonPropertyName("rest_window_open")] bool RestWindowOpen);
 
-    // Гвард «тихого окна» (arch/14 §5 I): все канонические ноды кластера
+    // Гвард «тихого окна» (arch/pgworker/processes/i-secret-rotator.md I): все канонические ноды кластера
     // должны иметь статусную машину ready ДО мутаций ротации (R4 ALTER app
     // меняет pg_authid — initializing-нода с etcd-кредами теряет вход через
     // doorman навсегда, пока окно не закроется). Триада исходов: Success(true)
@@ -523,7 +523,7 @@ public sealed partial class ClusterSecretRotator(
         }
 
         // HA-лидер контура (окно failover с протухшим master-ключом): значение
-        // leader-ключа — ИМЯ лидера (arch/14 §5 F, шаг 2 резолва; голое имя
+        // leader-ключа — ИМЯ лидера (arch/pgworker/processes/f-move.md F, шаг 2 резолва; голое имя
         // Patroni, JSON-обёртка демо-сидов — легаси; обе формы — LeaderKeyName).
         var leader = await GetAsync($"/service/{cluster}-{shard.Name}/leader", ct);
         if (leader.IsSuccess && Endpoints.LeaderKeyName.From(leader.Value?.Value) is { Length: > 0 } leaderName
@@ -590,7 +590,7 @@ public sealed partial class ClusterSecretRotator(
     private Task<Result<TxnResult>> TxnAsync(TxnRequest req, CancellationToken ct)
         => EtcdEndpointFailover.CallAsync(endpoints, endpoint => etcd.TxnAsync(endpoint, req, ct));
 
-    // Единая точка failover (arch/17 S7: sticky + per-attempt бюджет + негативный
+    // Единая точка failover (arch/synchronization/03-fault-tolerance.md §S7: sticky + per-attempt бюджет + негативный
     // кэш; дубликат цикла обхода удалён).
     private Task<Result<T>> WithFailoverAsync<T>(Func<string, Task<Result<T>>> call)
         => EtcdEndpointFailover.CallAsync(endpoints, call);

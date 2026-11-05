@@ -3,7 +3,7 @@ using System.Security.Cryptography.X509Certificates;
 namespace PgWorker.App;
 
 /// <summary>
-/// Материал REST-TLS нод (arch/14 §8): per-install CA PEM + ключ выпуска
+/// Материал REST-TLS нод (arch/pgworker/08-operability.md §5): per-install CA PEM + ключ выпуска
 /// серверных сертов REST-эндпоинтов нод + распарсенный сертификат CA (для
 /// TLS-верификации клиентом «patroni»). Разбирается на старте fail-fast;
 /// живёт всё приложение.

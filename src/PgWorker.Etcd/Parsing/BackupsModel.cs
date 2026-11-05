@@ -1,10 +1,10 @@
 namespace PgWorker.Etcd.Parsing;
 
-// Модель подсистемы бэкапов (arch/19 §4): префикс /pgworker/backups/*
+// Модель подсистемы бэкапов (arch/backups/05-etcd-contract.md): префикс /pgworker/backups/*
 // пишет ТОЛЬКО PgWorker (клэйм <C>), панель читает (02 §2.3.1); потребители в
 // воркере — +. Значения-строки etcd → типизированные records.
 
-/// <summary>Состояние полного бэкапа (etcd state, arch/19 §4).</summary>
+/// <summary>Состояние полного бэкапа (etcd state, arch/backups/05-etcd-contract.md).</summary>
 public enum FullBackupStatus
 {
     Planned,
@@ -16,14 +16,14 @@ public enum FullBackupStatus
 }
 
 /// <summary>Источник полного бэкапа: штатно реплика, fallback — мастер
-/// (запись журнала I/O одной операции, arch/19 §6).</summary>
+/// (запись журнала I/O одной операции, arch/backups/09-operability.md).</summary>
 public enum BackupSourceRole
 {
     Replica,
     Master,
 }
 
-/// <summary>Состояние WAL-потока шарда (arch/19 §4; : WalChainError — разрыв
+/// <summary>Состояние WAL-потока шарда (arch/backups/05-etcd-contract.md; : WalChainError — разрыв
 /// цепочки/слот исчез, лечение — пересъём полного; DEGRADED — только
 /// transient lag/тишина).</summary>
 public enum WalStreamStatus
@@ -34,7 +34,7 @@ public enum WalStreamStatus
     WalChainError,
 }
 
-/// <summary>Статус проверки полного (pg_verifybackup, arch/19 §8).</summary>
+/// <summary>Статус проверки полного (pg_verifybackup, arch/backups/README.md).</summary>
 public enum BackupVerifyStatus
 {
     Pending,
@@ -43,7 +43,7 @@ public enum BackupVerifyStatus
 }
 
 /// <summary>Состояние операции восстановления шарда (ключ
-/// /pgworker/backups/&lt;C&gt;/&lt;X&gt;/restore/&lt;id&gt;, arch/19 §4).</summary>
+/// /pgworker/backups/&lt;C&gt;/&lt;X&gt;/restore/&lt;id&gt;, arch/backups/05-etcd-contract.md).</summary>
 public enum RestoreStatus
 {
     Planned,
@@ -53,7 +53,7 @@ public enum RestoreStatus
     Failed,
 }
 
-/// <summary>Секция s3 policy бэкапов (arch/19 §4): пул = имя кластера
+/// <summary>Секция s3 policy бэкапов (arch/backups/05-etcd-contract.md): пул = имя кластера
 /// /s3/clusters/; списки — упорядоченные имена инстансов пула (ссылки, не
 /// адреса; резолв — воркером через endpoints/portalloc).</summary>
 public sealed record BackupPolicyS3(
@@ -70,16 +70,16 @@ public sealed record BackupPolicyS3(
 /// <param name="VerifyIntervalSec">Период перепроверки оставшихся полных, c
 /// null — не задан в policy-ключе → дефолт подставляет потребитель.</param>
 /// <param name="DrillIntervalDays">Период дрилов шардов кластера, суток
-/// (reliability, arch/19 §4); 0 — дрилл кластера выключен; null — поля
+/// (reliability, arch/backups/05-etcd-contract.md); 0 — дрилл кластера выключен; null — поля
 /// нет в policy-ключе → дефолт конфига подставляет потребитель.</param>
-/// <param name="GarbageMinAgeSec">Возрастной гейт мусора супервизора (arch/19
+/// <param name="GarbageMinAgeSec">Возрастной гейт мусора супервизора (arch/backups/README.md
 /// §4 «Гейты мусора»): минимальный возраст самого старого объекта S3-префикса
 /// `full/&lt;id&gt;/`, прежде чем префикс без etcd-ключа сочтётся удаляемым
 /// мусором (защита заливающегося полного от устаревшего снапшота тика);
 /// null — поля нет в policy-ключе → дефолт конфига подставляет потребитель;
 /// 0 — гейт снят.</param>
 /// <param name="S3">Секция s3 : null — пул не выбран (отсутствие/битая
-/// секция — подсистема кластера не пишет и не читает, arch/19 §4).</param>
+/// секция — подсистема кластера не пишет и не читает, arch/backups/05-etcd-contract.md).</param>
 public sealed record BackupPolicy(
     int RetentionDays, int RetentionWeeks, int RetentionMonths,
     long FullMaxAgeSec, bool VerifyOnCreate, long? VerifyIntervalSec = null,
@@ -93,7 +93,7 @@ public sealed record BackupVerify(BackupVerifyStatus State, long? CheckedUnix, s
 
 /// <summary>Один полный бэкап шарда (ключ
 /// /pgworker/backups/&lt;C&gt;/&lt;X&gt;/full/&lt;id&gt;, id=YYYYMMDDHHMMSSZ
-/// сортируемый, коллизия — суффикс -2/-3, arch/19 §2); WalStartSegment —
+/// сортируемый, коллизия — суффикс -2/-3, arch/backups/01-full-backup.md); WalStartSegment —
 /// опционален до фазы UPLOADING (: заполняется с UPLOADING, §4).</summary>
 public sealed record FullBackupState(
     string Id,
@@ -110,7 +110,7 @@ public sealed record FullBackupState(
     // задание restore несёт его в fetch-wal (фильтр кусков). null — старый ключ.
     uint? ChainLife = null);
 
-/// <summary>Факт приёмника WAL на ноде (arch/19 §4): running — живой
+/// <summary>Факт приёмника WAL на ноде (arch/backups/05-etcd-contract.md): running — живой
 /// lease-ключ статус-приёмника; absent — ключа нет (процесс мёртв/нода вниз);
 /// exited — только legacy-значение панельного парсера (контейнерного агента
 /// больше нет, новым писателем не пишется).</summary>
@@ -128,7 +128,7 @@ public sealed record WalGapState(string From, string To, uint Tli);
 
 /// <summary>WAL-поток шарда (ключ /pgworker/backups/&lt;C&gt;/&lt;X&gt;/wal):
 /// wal-агенты per-node; инвариант непрерывности chain_start →
-/// last_uploaded без дыр (arch/19 §3).</summary>
+/// last_uploaded без дыр (arch/backups/02-wal-archive.md §1).</summary>
 public sealed record WalStreamState(
     WalStreamStatus State,
     string Slot,
@@ -139,16 +139,16 @@ public sealed record WalStreamState(
     long? LastUploadedUnix,
     long? LagSegments,
     string? Error,
-    //  (arch/19 §4): опциональные супервиз-факты per-node (старые ключи
+    //  (arch/backups/05-etcd-contract.md): опциональные супервиз-факты per-node (старые ключи
     // поля не несут — парсер возвращает null, обратная совместимость AC7).
     IReadOnlyList<WalAgentState>? Agents = null,
-    //  (arch/19 §4): опциональный RPO-зазор tli-прыжка; null у старых
+    //  (arch/backups/05-etcd-contract.md): опциональный RPO-зазор tli-прыжка; null у старых
     // ключей — обратная совместимость.
     WalGapState? Gap = null);
 
 /// <summary>Операция восстановления шарда из бэкапа (ключ
 /// /pgworker/backups/&lt;C&gt;/&lt;X&gt;/restore/&lt;id&gt;, id=YYYYMMDDHHMMSSZ
-/// как у полных, arch/19 §4). Source — S3-префикс источника
+/// как у полных, arch/backups/05-etcd-contract.md). Source — S3-префикс источника
 /// «&lt;srcC&gt;/&lt;srcX&gt;» (default — собственный); Target — «latest»
 /// или «time:&lt;RFC3339&gt;»; Phase — фаза джоба (downloading|recovering).</summary>
 public sealed record RestoreOperationState(
@@ -165,7 +165,7 @@ public sealed record RestoreOperationState(
     string? Phase = null,
     string? RestoredToLsn = null,
     string? Error = null,
-    //  (arch/14 §1.1): пул чтения DR-источника (source_pool); null —
+    //  (arch/pgworker/07-api.md §1): пул чтения DR-источника (source_pool); null —
     // собственный пул кластера policy.s3. null у старых ключей — совместимо.
     string? SourcePool = null,
     // t15 (arch/backups/05 §1): номер жизни цепочки выбранного полного —
@@ -186,7 +186,7 @@ public sealed record RestoreOperationState(
 }
 
 /// <summary>Состояние дрилла восстановимости шарда (ключ
-/// /pgworker/backups/&lt;C&gt;/&lt;X&gt;/drill, reliability, arch/19 §4).</summary>
+/// /pgworker/backups/&lt;C&gt;/&lt;X&gt;/drill, reliability, arch/backups/05-etcd-contract.md).</summary>
 public enum DrillStatus
 {
     Running,
@@ -197,7 +197,7 @@ public enum DrillStatus
 /// <summary>Последний/текущий дрилл шарда: state/id/backup_id/started_unix
 /// обязательны; Phase — downloading|recovering|cleaning (снятие фазы у
 /// терминального = контур подтверждённо снесён); ключ перезаписывается каждым
-/// новым дриллом (история — фазы журнала воркера, arch/19 §4).</summary>
+/// новым дриллом (история — фазы журнала воркера, arch/backups/05-etcd-contract.md).</summary>
 public sealed record DrillState(
     string Id,
     DrillStatus State,

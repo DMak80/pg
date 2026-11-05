@@ -41,7 +41,7 @@ public class TargetMappingTests
     [Fact]
     public void Map_SuppressedNode_SkipsWithoutWarning()
     {
-        // Arrange: вторая запись словаря усыптлена (patroni=0 — штатная семантика arch/14 §2.4)
+        // Arrange: вторая запись словаря усыптлена (patroni=0 — штатная семантика arch/pgworker/01-placement.md §5)
         var kv = KvOf("/pgworker/portalloc/c1",
             """{"shard1/shard1a":{"host":"h1","pg":5432,"patroni":8008,"doorman":6432},"shard1/shard1b":{"host":"h2","pg":5432,"patroni":0,"doorman":6432}}""");
 
@@ -70,7 +70,7 @@ public class TargetMappingTests
     [Fact]
     public void Map_UnknownFields_Tolerated()
     {
-        // Arrange: поле object (усытовление arch/14 §2.4) и незнакомые поля — игнорируются
+        // Arrange: поле object (усытовление arch/pgworker/01-placement.md §5) и незнакомые поля — игнорируются
         var kv = KvOf("/pgworker/portalloc/c1",
             """{"shard1/shard1a":{"host":"h1","pg":5432,"patroni":8008,"doorman":6432,"object":"pgw-x","extra":true}}""");
 
@@ -164,7 +164,7 @@ public class TargetMappingTests
         warnings.Should().BeEmpty();
     }
 
-    // AAA (ревизия 3, arch/18 §2.5): запись с alias → сетевой таргет
+    // AAA (ревизия 3, arch/metrics/02-dictionary.md §5): запись с alias → сетевой таргет
     // <alias>:8008 (контейнерный порт Patroni REST); порты host-публикации
     // записи НЕ участвуют (patroni=18008, таргет — :8008).
     [Fact]

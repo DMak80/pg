@@ -267,7 +267,7 @@ public class ClusterSnapshotParserTests
     [Fact]
     public void ParseClusters_PerClusterSecretKeys_FilledIntoSnapshot()
     {
-        // Arrange — per-cluster креды mover/bucket_admin (§3.1, arch/14 §3.3)
+        // Arrange — per-cluster креды mover/bucket_admin (§3.1, arch/pgworker/00-etcd-contract.md §4)
         var kvs = new List<Kv>
         {
             new("/clusters/shop/mover_password", "Mv1password32charsaaaaaaaaaaaaa", 1),

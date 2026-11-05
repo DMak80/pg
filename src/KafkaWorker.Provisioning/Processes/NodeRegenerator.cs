@@ -9,7 +9,7 @@ using Shared.Etcd.Client;
 
 namespace KafkaWorker.Provisioning.Processes;
 
-// Прогресс /kafkaworker/regens/<C> (arch/15 §4): live-ключ — живёт
+// Прогресс /kafkaworker/regens/<C> (arch/kafka-clusters/04-coordination.md §1): live-ключ — живёт
 // только во время операции (put при старте первого пересоздания, del по
 // сходимости; отсутствие ключа = операции нет — фантомы запрещены).
 internal sealed record KafkaRegenProgressJson(
@@ -21,7 +21,7 @@ internal sealed record KafkaRegenProgressJson(
     [property: JsonPropertyName("last_error")] string? LastError = null);
 
 /// <summary>
-/// NodeRegenerator (arch/16 §5 J): автоконверге лимитов контейнера к
+/// NodeRegenerator (arch/kafkaworker/03-broker-scaling.md §3 J): автоконверге лимитов контейнера к
 /// декларации brokers/&lt;b&gt;/resources. Триггер — ТОЛЬКО расхождение cpu/mem
 /// (inspect vs декларация — NodeRegenPlanner, арифметика записи; env
 /// пересобирается попутно, disk не сверяется). Один брокер за тик:
@@ -212,7 +212,7 @@ public sealed class NodeRegenerator(
             }
             catch (JsonException)
             {
-                // Битый прогресс — мусор (arch/15 §6): перезаписываем фактом.
+                // Битый прогресс — мусор (arch/kafka-clusters/06-fault-tolerance.md): перезаписываем фактом.
             }
         }
 

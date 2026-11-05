@@ -4,7 +4,7 @@ using Shared.Etcd.Client;
 namespace PgWorker.Provisioning.Processes;
 
 /// <summary>
-/// Ensure per-node app_params (spec §4.2, arch/14 §5 P2.5'): ключ
+/// Ensure per-node app_params (spec §4.2, arch/pgworker/processes/a-provisioning.md P2.5'): ключ
 /// /clusters/&lt;C&gt;/shards/&lt;X&gt;/nodes/&lt;n&gt;/app_params — put-if-absent ОДНОЙ txn
 /// [NotExists]+[put] с дефолтом PgWorker:AppParams:Default. Проигрыш compare —
 /// законный исход (ключ есть: ручные правки оператора живы). Txn —
@@ -41,7 +41,7 @@ public sealed class AppParamsEnsurer(IEtcdGateway etcd, string[] endpoints, stri
     private static string Key(string cluster, string shard, string node)
         => $"/clusters/{cluster}/shards/{shard}/nodes/{node}/app_params";
 
-    // Failover-обёртка — единая точка (arch/17 S7: sticky + per-attempt бюджет +
+    // Failover-обёртка — единая точка (arch/synchronization/03-fault-tolerance.md §S7: sticky + per-attempt бюджет +
     // негативный кэш; дубликат цикла обхода удалён).
     private Task<Result<TxnResult>> TxnAsync(TxnRequest req, CancellationToken ct)
         => EtcdEndpointFailover.CallAsync(endpoints, endpoint => etcd.TxnAsync(endpoint, req, ct));

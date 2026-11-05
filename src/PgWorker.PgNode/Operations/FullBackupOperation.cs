@@ -7,7 +7,7 @@ using Shared.Etcd.Client;
 
 namespace PgWorker.PgNode.Operations;
 
-/// <summary>Операция полного бэкапа приёмника ноды (arch/19 §2, spec §3.4):
+/// <summary>Операция полного бэкапа приёмника ноды (arch/backups/01-full-backup.md, spec §3.4):
 /// фоновая Task процесса приёмника, параллельная стриму. Пайплайн: резолв
 /// кредов/пула из etcd (как у стрима, Р4) → роль (REST-проба; write-список
 /// ФИКСИРУЕТСЯ на старте — смена роли посреди полного её не рвёт, Р10) →
@@ -17,7 +17,7 @@ namespace PgWorker.PgNode.Operations;
 /// backup_manifest/pg_wal/ + дублирование закрытых сегментов набора в wal/).
 /// Резюмов нет: любой отказ → failed с однострочной причиной, переснятие —
 /// новым id. Статус — IMMUTABLE-снимки в OperationRegistry (атомарная замена
-/// ссылки); etcd-контракта операция не знает (пишет только воркер, arch/19 §4).</summary>
+/// ссылки); etcd-контракта операция не знает (пишет только воркер, arch/backups/05-etcd-contract.md).</summary>
 public sealed class FullBackupOperation : IReceiverOperation
 {
     // DSN-параметры pg_basebackup — как у стримного подключения приёмника
@@ -150,7 +150,7 @@ public sealed class FullBackupOperation : IReceiverOperation
             Directory.CreateDirectory(Path.Combine(opRoot, "full"));
 
             // 4. Фаза basebackup: pg_basebackup ЛОКАЛЬНО (127.0.0.1:5432),
-            //    plain-формат -X stream (arch/19 §2). Пароль — ТОЛЬКО env
+            //    plain-формат -X stream (arch/backups/01-full-backup.md). Пароль — ТОЛЬКО env
             //    PGPASSWORD child-процесса (не argv/DSN, Р13).
             _registry.Update(Snap(OperationStates.Running, OperationPhases.Basebackup));
             var psi = new ProcessStartInfo { FileName = "pg_basebackup" };
@@ -166,7 +166,7 @@ public sealed class FullBackupOperation : IReceiverOperation
             // user=postgres), а HOME наследует от supervisord (/root) —
             // в образе Spilo там лежит postgresql.crt, недоступный uid 101
             // (Permission denied); с HOME=/tmp libpq клиентский сертификат
-            // не ищет (sslmode=require его не требует). Приём arch/19 §3.5
+            // не ищет (sslmode=require его не требует). Приём arch/backups/03-restore.md
             // (pg_ctl restore) — тот же паттерн, RestoreOperation.PgCtl.
             psi.EnvironmentVariables["HOME"] = "/tmp";
             psi.EnvironmentVariables["PGPASSWORD"] = targets.Password!;
@@ -192,7 +192,7 @@ public sealed class FullBackupOperation : IReceiverOperation
             // 6. Фаза uploading: upload 1:1 (вкл. backup_manifest, pg_wal/) —
             //    ключ = <C>/<X>/full/<id>/<отн. путь>; ЗАТЕМ закрытые сегменты
             //    набора (pg_wal/* без *.partial/*.history) дублируются в
-            //    общий префикс wal/ (идемпотентная перезапись, arch/19 §2).
+            //    общий префикс wal/ (идемпотентная перезапись, arch/backups/01-full-backup.md).
             _registry.Update(new OperationSnapshot(
                 _id, OperationStates.Uploading, OperationPhases.Uploading,
                 WalStartSegment: walStart));
@@ -238,7 +238,7 @@ public sealed class FullBackupOperation : IReceiverOperation
                 Fail(uploadError);
                 return;
             }
-            // Закрытость сегментов — ПО ИСТОЧНИКУ НА МОМЕНТ ЗАЛИВКИ (arch/19 §2):
+            // Закрытость сегментов — ПО ИСТОЧНИКУ НА МОМЕНТ ЗАЛИВКИ (arch/backups/01-full-backup.md):
             // дублируются только сегменты набора СТРОГО ниже текущего активного
             // wal-файла источника (IDENTIFY_SYSTEM); последний живой сегмент набора
             // остаётся только в full/<id>/pg_wal/ — его финал доставит стрим при
@@ -277,8 +277,8 @@ public sealed class FullBackupOperation : IReceiverOperation
                     // Имя дубля — НОРМАЛИЗОВАННОЕ (строчное): pg_basebackup кладёт
                     // сегменты набора ВЕРХНИМ hex, а канон ключей wal/ — строчные
                     // (симметрия стриму приёмников и fetch-wal) — дубль сливается
-                    // со стримом, дублирования объектов нет (arch/19 §2).
-                    // Гвард чужой цепочки (arch/19 §3) обязателен и здесь: полный
+                    // со стримом, дублирования объектов нет (arch/backups/01-full-backup.md).
+                    // Гвард чужой цепочки (arch/backups/02-wal-archive.md §1) обязателен и здесь: полный
                     // ПЕРЕСОЗДАННОГО кластера дублировал бы свои pg_wal-сегменты
                     // поверх цепочки погибшей инкарнации — DR-источник разрушался
                     // (факт E2E: pg_control полного и WAL разошлись по system id).
@@ -286,7 +286,7 @@ public sealed class FullBackupOperation : IReceiverOperation
                     if (WalFileName.TryParse(normalized) is not { } setSegment)
                         continue;
                     // Позиция сегмента набора строго ниже активного сегмента источника
-                    // (закрытость — по источнику на момент заливки, arch/19 §2):
+                    // (закрытость — по источнику на момент заливки, arch/backups/01-full-backup.md):
                     // живой последний сегмент набора остаётся только в
                     // full/<id>/pg_wal/, его финал доставит стрим при закрытии.
                     var setPos = (long)setSegment.Log * WalFileName.SegsPerLog + setSegment.Seg;

@@ -63,7 +63,7 @@ public class PortAllocHealerTests
         return new Rig(etcd, driver, claims, journal, options, snapshot, addresses, healer);
     }
 
-    // Чтение portalloc рига (форма записи — arch/15 §4).
+    // Чтение portalloc рига (форма записи — arch/kafka-clusters/04-coordination.md §1).
     private static async Task<IReadOnlyDictionary<string, NodeAddress>> ReadPortAllocAsync(Fakes.FakeEtcd etcd)
     {
         var kv = (await etcd.GetAsync(Ep, "/kafkaworker/portalloc/events", CancellationToken.None)).Value;
@@ -136,7 +136,7 @@ public class PortAllocHealerTests
 
     // AAA: ветка 3 — EnsureNode (docker-фаза) исполняется ПОСЛЕ освобождения
     // portalloc-клэйма: секция лока — только «чтение занятости → запись
-    // portalloc» (arch/15 §4, без keepalive: docker-операции не укладываются
+    // portalloc» (arch/kafka-clusters/04-coordination.md §1, без keepalive: docker-операции не укладываются
     // в TTL 15 с, чужой takeover не должен застать секцию открытой).
     [Fact]
     public async Task Reallocate_EnsureNode_RunsOutsidePortLock()

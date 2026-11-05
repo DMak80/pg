@@ -11,7 +11,7 @@ using Xunit;
 
 namespace PgWorker.UnitTests.Provisioning;
 
-// Шаг хендшейка/конвергенции надзора (arch/14 §5 C, spec §3.7.3): реакции по
+// Шаг хендшейка/конвергенции надзора (arch/pgworker/processes/c-node-supervisor.md C, spec §3.7.3): реакции по
 // статусному ключу /pgworker/nodes/<C>/… — not_initialized → доставка
 // (delivery.EnsureAsync ровно один раз/тик); ready на ревизии → мутаций нет;
 // ready+расхождение → доставка (apply); start_failed → RemoveNodeAsync +
@@ -166,7 +166,7 @@ public class NodeSupervisorBootstrapStepTests
 
         // Assert: доставок нет (ключа нет — delivery ставит Wait... delivery
         // вызывается ТОЛЬКО при статусе not_initialized/ready-расхождении —
-        // без статусов шаг молчит, arch/14 §5 C).
+        // без статусов шаг молчит, arch/pgworker/processes/c-node-supervisor.md C).
         outcome.IsSuccess.Should().BeTrue();
         rig.Delivery.Calls.Should().BeEmpty();
     }
@@ -218,7 +218,7 @@ public class NodeSupervisorBootstrapStepTests
     }
 
     // Т13а (§8-27): start_failed ЛИДЕРА — failover-first. Act-1: лидерство
-    // ещё у ноды (leader-ключ — её голое имя, arch/14 §5 F) → СНОСА НЕТ при
+    // ещё у ноды (leader-ключ — её голое имя, arch/pgworker/processes/f-move.md F) → СНОСА НЕТ при
     // живом свидетеле (witness необходим, не достаточен), фаза
     // start-failed-waiting-quorum, delivery не зван. Act-2: сим DCS-failover
     // (leader-ключ сменил владельца) → бывший лидер сносится с новым диском.
@@ -264,7 +264,7 @@ public class NodeSupervisorBootstrapStepTests
     // Т13б (§8-27): start_failed лидера БЕЗ живых реплик/свидетеля
     // (одноузловой шард — частный случай) — снос «в пустоту» ЗАПРЕЩЁН:
     // идемпотентное ожидание (start-failed-waiting-quorum) оба тика,
-    // восстановление одноузлового — restore-контур (arch/19 §3.5), не надзор.
+    // восстановление одноузлового — restore-контур (arch/backups/03-restore.md), не надзор.
     [Fact]
     public async Task Tick_StartFailedLeader_NoWitness_WaitsQuorum()
     {

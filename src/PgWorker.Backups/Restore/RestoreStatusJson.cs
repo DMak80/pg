@@ -4,7 +4,7 @@ using PgWorker.Etcd.Parsing;
 namespace PgWorker.Backups.Restore;
 
 // Сериализация статуса restore в JSON канона /pgworker/backups/<C>/<X>/restore/<id>
-// (arch/19 §4): пишет ТОЛЬКО воркер (держатель клэйма); обязательные поля
+// (arch/backups/05-etcd-contract.md): пишет ТОЛЬКО воркер (держатель клэйма); обязательные поля
 // заявки — всегда, опциональные — по факту (null не сериализуем). Roundtrip с
 // BackupsParser — гарантия согласованности writer/reader (юнит-тест).
 public static class RestoreStatusJson
@@ -39,7 +39,7 @@ public static class RestoreStatusJson
             o["system_id"] = sysid;
         if (state.Error is { } error)
             o["error"] = error;
-        //  (arch/14 §1.1): пул чтения DR-источника — roundtrip с парсером
+        //  (arch/pgworker/07-api.md §1): пул чтения DR-источника — roundtrip с парсером
         // (BackupsParser читает source_pool); потеря поля уводит DR-заявку в
         // «собственный пул» — при wiped/отсутствии policy она навсегда висит
         // в transient «пул не выбран» (PLANNED без продвижения).

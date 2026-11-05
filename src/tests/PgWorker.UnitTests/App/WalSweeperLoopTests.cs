@@ -10,7 +10,7 @@ using Xunit;
 
 namespace PgWorker.UnitTests.App;
 
-// Цикл чистки wal/ (arch/19 §4, arch/18 §2.2): при Backups:Enabled=false
+// Цикл чистки wal/ (arch/backups/05-etcd-contract.md, arch/metrics/02-dictionary.md §2): при Backups:Enabled=false
 // серия loop="wal-sweeper" не пишется (выключенная подсистема не алертится),
 // цикл тикает без исключений; лидерный путь покрывается E2E.
 public sealed class WalSweeperLoopTests

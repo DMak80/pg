@@ -18,10 +18,10 @@ using KafkaWorker.Etcd.Parsing;
 using KafkaWorker.Provisioning.Kafka;
 using KafkaWorker.Provisioning.Processes;
 
-// Точка входа KafkaWorker (arch/16 §8): host-builder с HTTPS-гранью HTTP API
+// Точка входа KafkaWorker (arch/kafkaworker/08-operability.md §6): host-builder с HTTPS-гранью HTTP API
 // (mTLS — только /api; /healthz — открытая грань), конфигурация appsettings+env, DI (etcd →
 // координация → docker → процессы → циклы). Per-install env-секреты — только
-// TLS HTTP API (arch/16 §4); per-cluster секреты (app/admin/CA) — в etcd.
+// TLS HTTP API (arch/kafkaworker/04-security.md §3); per-cluster секреты (app/admin/CA) — в etcd.
 // Fail-fast: пустые Etcd:Endpoints/Hosts, не-https AdvertiseUrl.
 
 var builder = WebApplication.CreateBuilder(args);
@@ -31,8 +31,8 @@ builder.Services.Configure<KafkaWorkerOptions>(builder.Configuration.GetSection(
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<HealthState>();
 
-// Метрики (arch/18 §3): /metrics на том же HTTPS-Kestrel-порту, что /healthz
-//  — открытая грань скрейпа без клиентского серта (arch/18 §5.2).
+// Метрики (arch/metrics/03-exposure.md): /metrics на том же HTTPS-Kestrel-порту, что /healthz
+//  — открытая грань скрейпа без клиентского серта (arch/metrics/05-storage.md §2).
 builder.Services.AddAppMetrics("KafkaWorker", builder.Configuration.GetSection("KafkaWorker:Metrics"));
 builder.Services.AddSingleton(sp =>
 {
@@ -47,24 +47,24 @@ builder.Services.AddSingleton(sp =>
 });
 
 // etcd-клиент: HTTP JSON gateway /v3/*; handler против DNS-флейпа Docker
-// embedded DNS ( arch/16 §7): PooledConnectionLifetime + IPv4-first резолв.
+// embedded DNS ( arch/kafkaworker/08-operability.md §5): PooledConnectionLifetime + IPv4-first резолв.
 // EtcdGateway-синглтон захвачен HttpClient навсегда — ротация handler'ов фабрики
 // на него не действует, поэтому явный SocketsHttpHandler.
-// Поллинг-инвариант (arch/16 §6): одиночный HTTP-вызов к etcd не молчит дольше
+// Поллинг-инвариант (arch/kafkaworker/08-operability.md §4): одиночный HTTP-вызов к etcd не молчит дольше
 // окна проверки watchdog — таймаут = половина окна (7.5 c при дефолтах); зависший
 // запрос → исключение → transient-фейл тика, а не молчание до дефолтных 100 c.
 builder.Services.AddHttpClient("etcd", c => c.Timeout = TimeSpan.FromSeconds(7.5))
     .ConfigurePrimaryHttpMessageHandler(EtcdConnectCallback.CreateHandler);
 
 // Fail-fast при старте: без etcd-endpoints воркер бессмысленен (hosts — в DI-фабрике драйвера);
-// ключ доступа /kafkaworker/api/<id> без URL бессмысленен (arch/16 §1.1).
+// ключ доступа /kafkaworker/api/<id> без URL бессмысленен (arch/kafkaworker/07-api.md §1).
 builder.Services.AddOptions<KafkaWorkerOptions>()
     .Validate(o => o.Etcd.Endpoints is { Length: > 0 }, "KafkaWorker:Etcd:Endpoints is not set")
     .Validate(o => !string.IsNullOrWhiteSpace(o.Api.AdvertiseUrl),
         "KafkaWorker:Api:AdvertiseUrl is not set (env KFW_API_ADVERTISE_URL)")
     .Validate(o => o.Api.Tls.AllowInsecureHttp
         || o.Api.AdvertiseUrl.StartsWith("https://", StringComparison.Ordinal),
-        "AdvertiseUrl must be https:// (HTTPS-only edge, mTLS on /api only; arch/16 §1.1)")
+        "AdvertiseUrl must be https:// (HTTPS-only edge, mTLS on /api only; arch/kafkaworker/07-api.md §1)")
     .ValidateOnStart();
 
 // Управляемый серт API (spec §3.2 п.1): чтение ключа /workers/api_tls/kafkaworker
@@ -72,7 +72,7 @@ builder.Services.AddOptions<KafkaWorkerOptions>()
 var etcdEndpoints = builder.Configuration.GetSection("KafkaWorker:Etcd:Endpoints").Get<string[]>() ?? [];
 var managedCert = await WorkerApiCertReader.ReadAsync(etcdEndpoints, "kafkaworker", CancellationToken.None);
 
-// HTTPS HTTP API (arch/16 §1.1): env-секреты TLS → конфиг, Kestrel c
+// HTTPS HTTP API (arch/kafkaworker/07-api.md §1): env-секреты TLS → конфиг, Kestrel c
 // серверным сертом; клиентский серт опционален, mTLS — только /api.
 TlsEndpoints.ApplyEnvOverrides(builder.Configuration);
 var apiTls = TlsEndpoints.ConfigureMtls(builder, port: 8080, managedCert);
@@ -95,7 +95,7 @@ builder.Services.AddSingleton(sp => new ClaimStore(
     sp.GetRequiredService<TimeProvider>(),
     sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Api.AdvertiseUrl,
     apiCertThumbprint));
-// глобальный portalloc-клэйм (arch/15 §4 / arch/16 §2.1) — DI-синглтон,
+// глобальный portalloc-клэйм (arch/kafka-clusters/04-coordination.md §1 / arch/kafkaworker/01-placement.md §1) — DI-синглтон,
 // InstanceId единый с ClaimStore (сквозная диагностика держателя).
 builder.Services.AddSingleton(sp => new PortAllocLock(
     KeyPrefix,
@@ -107,11 +107,11 @@ builder.Services.AddSingleton(sp => new WorkJournal(
     KeyPrefix,
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Etcd.Endpoints));
-// Опросные кэши контроль-плейна тика (arch/17 S10, arch/16 §5): ReconcileLoop
+// Опросные кэши контроль-плейна тика (arch/synchronization/05-delta-application.md §S10, arch/kafkaworker/README.md): ReconcileLoop
 // читает слепок и гейтится по дельте — etcd в каждом тике не range-ится.
 builder.Services.AddSingleton<IPrefixPollSources, EtcdPrefixSources>();
 
-// HTTP API воркера (arch/16 §1.1): мутации декларативного контракта kafka-домена —
+// HTTP API воркера (arch/kafkaworker/07-api.md §1): мутации декларативного контракта kafka-домена —
 // хендлеры-синглтоны (task etcd-via-worker-api).
 builder.Services.AddSingleton(sp => new CreateClusterHandler(
     sp.GetRequiredService<IEtcdGateway>(),
@@ -181,7 +181,7 @@ builder.Services.AddSingleton(sp => new CancelLifecycleHandler(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Etcd.Endpoints));
 
-// Демо-сид kafka-домена (arch/16 §1.1.1; task etcd-via-worker-api).
+// Демо-сид kafka-домена (arch/kafkaworker/07-api.md §1; task etcd-via-worker-api).
 builder.Services.AddSingleton(sp => new SeedDemoHandler(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Etcd.Endpoints,
@@ -237,18 +237,18 @@ builder.Services.AddSingleton<IKafkaAdminClientFactory>(sp =>
 builder.Services.AddSingleton(sp =>
     new KafkaClusterBackoff(sp.GetRequiredService<TimeProvider>()));
 
-// Кеш серверных сертов нод (R3, arch/16 §2.3): DI-синглтом.
+// Кеш серверных сертов нод (R3, arch/kafkaworker/04-security.md): DI-синглтом.
 builder.Services.AddSingleton(new BrokerCertificateCache());
 
-// Ensure per-cluster секретов: CA + креды admin/app (arch/16 §4).
+// Ensure per-cluster секретов: CA + креды admin/app (arch/kafkaworker/04-security.md §3).
 builder.Services.AddSingleton<IClusterSecretEnsurer>(sp => new ClusterSecretEnsurer(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Etcd.Endpoints));
 
-// Converge dynamic broker configs (arch/16 §5 E).
+// Converge dynamic broker configs (arch/kafkaworker/02-cluster-lifecycle.md §5 E).
 builder.Services.AddSingleton<IClusterConfigConverger, ClusterConfigConverger>();
 
-// Процессы-машины состояний (arch/16 §5): снапшот-делегат P12 «до/после».
+// Процессы-машины состояний (arch/kafkaworker/README.md): снапшот-делегат P12 «до/после».
 builder.Services.AddSingleton(sp =>
 {
     var opts = sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value;
@@ -266,7 +266,7 @@ builder.Services.AddSingleton(sp =>
         sp.GetRequiredService<BrokerCertificateCache>(),
         SnapshotDelegate(sp.GetRequiredService<SnapshotJob>()));
 });
-// индекс занятости portalloc чужих кластеров (arch/16 §2.1) — DI-синглтон.
+// индекс занятости portalloc чужих кластеров (arch/kafkaworker/01-placement.md §1) — DI-синглтон.
 builder.Services.AddSingleton(sp => new PortAllocIndex(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Etcd.Endpoints,
@@ -278,7 +278,7 @@ builder.Services.AddSingleton(sp => new DeprovisioningProcess(
     sp.GetRequiredService<ClaimStore>(),
     sp.GetRequiredService<WorkJournal>(),
     SnapshotDelegate(sp.GetRequiredService<SnapshotJob>())));
-// Лестница E9 самолечения portalloc (arch/17): supervise вызывает её для
+// Лестница E9 самолечения portalloc (arch/synchronization/README.md): supervise вызывает её для
 // безадресных брокеров ДО любых деструктивных действий.
 builder.Services.AddSingleton(sp => new PortAllocHealer(
     sp.GetRequiredService<IEtcdGateway>(),
@@ -302,7 +302,7 @@ builder.Services.AddSingleton(sp => new NodeSupervisor(
     backoff: sp.GetRequiredService<KafkaClusterBackoff>(),
     healer: sp.GetRequiredService<PortAllocHealer>()));
 
-// Scale-проход и ротация (arch/16 §5 F/G/H): ротатор — со снапшот-делегатом P12.
+// Scale-проход и ротация (arch/kafkaworker/03-broker-scaling.md §1 F/G/H): ротатор — со снапшот-делегатом P12.
 // Reassignment (I) — перед G: drain TO_REMOVE-брокеров + заявки balance.
 builder.Services.AddSingleton(sp =>
 {
@@ -367,7 +367,7 @@ builder.Services.AddSingleton(sp => new NodeRegenerator(
     ToProvisioningOptions(sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value),
     sp.GetRequiredService<BrokerCertificateCache>()));
 
-// Автосинк топиков (arch/16 §5 D): троттлинг TopicSyncIntervalSec внутри.
+// Автосинк топиков (arch/kafkaworker/05-topics.md D): троттлинг TopicSyncIntervalSec внутри.
 builder.Services.AddSingleton(sp => new TopicSyncProcess(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Etcd.Endpoints,
@@ -377,7 +377,7 @@ builder.Services.AddSingleton(sp => new TopicSyncProcess(
     sp.GetRequiredService<TimeProvider>(),
     sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Loops.TopicSyncIntervalSec));
 
-// Converge-миграция премиграционных кластеров в канон (arch/16 §5 M).
+// Converge-миграция премиграционных кластеров в канон (arch/kafkaworker/06-rebalancing.md §3 M).
 builder.Services.AddSingleton(sp => new SecurityMigrator(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Etcd.Endpoints,
@@ -399,9 +399,9 @@ builder.Services.AddHostedService(sp => sp.GetRequiredService<KeepaliveLoop>());
 builder.Services.AddHostedService(sp => sp.GetRequiredService<SnapshotLoop>());
 builder.Services.AddHostedService(sp => sp.GetRequiredService<ReconcileLoop>());
 
-// Коллектор лагов/USR (arch/18 §4): read-only сбор вне клэймов; источник кластеров —
+// Коллектор лагов/USR (arch/metrics/04-collectors.md): read-only сбор вне клэймов; источник кластеров —
 // тот же снапшот /kafka/clusters/, что у ReconcileLoop (парсер KafkaSnapshotParser);
-// только Active (Config.State == null — arch/15 §2.1, ревью Ф4-6).
+// только Active (Config.State == null — arch/kafka-clusters/02-keys.md §2, ревью Ф4-6).
 builder.Services.AddSingleton(sp => new KafkaMetricsState(
     sp.GetRequiredService<System.Diagnostics.Metrics.Meter>()));
 builder.Services.AddHostedService(sp => new KafkaMetricsCollector(
@@ -413,7 +413,7 @@ builder.Services.AddHostedService(sp => new KafkaMetricsCollector(
     sp.GetRequiredService<ILogger<KafkaMetricsCollector>>(),
     sp.GetRequiredService<KafkaClusterBackoff>()));
 
-// Наблюдаемость (arch/16 §7): агрегированный health + per-loop обёртки.
+// Наблюдаемость (arch/kafkaworker/08-operability.md §5): агрегированный health + per-loop обёртки.
 builder.Services.AddSingleton<ServiceProbes>();
 builder.Services.AddSingleton<KafkaWorkerHealth>();
 builder.Services.AddSingleton<HealthCheckAbstract<ReconcileLoop>>(
@@ -428,7 +428,7 @@ builder.Services.AddHealthChecks()
     .AddCheck<HealthCheckAbstract<KeepaliveLoop>>("keepalive-loop")
     .AddCheck<HealthCheckAbstract<SnapshotLoop>>("snapshot-loop");
 
-// Watchdog зависших циклов (arch/16 §6): staleness активности (тик или
+// Watchdog зависших циклов (arch/kafkaworker/08-operability.md §4): staleness активности (тик или
 // прогресс-отметка) всех циклов → журнал +
 // метрика + graceful self-stop (путь POST /api/restart); Enabled=false (секция
 // KafkaWorker:Loops:Watchdog) — компонент не регистрируется.
@@ -441,7 +441,7 @@ builder.Services.AddLoopWatchdog(
     loopsWatchdog,
     (sp, loop) => sp.GetRequiredService<Shared.Metrics.Worker.WorkerMetricsInstrumentation>()
         .WatchdogRestart(loop));
-// fail-fast инварианта живости (arch/16 §8): тики быстрых циклов чаще порога
+// fail-fast инварианта живости (arch/kafkaworker/08-operability.md §6): тики быстрых циклов чаще порога
 // сноса (Multiplier × CheckIntervalSec); конфиг watchdog не меняется
 var loopsCfg = builder.Configuration.GetSection("KafkaWorker:Loops").Get<LoopsOptions>() ?? new LoopsOptions();
 if (loopsWatchdog.Enabled)
@@ -451,12 +451,12 @@ if (loopsWatchdog.Enabled)
 var app = builder.Build();
 if (app.Services.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Api.Tls.AllowInsecureHttp)
     app.Logger.LogWarning(
-        "KafkaWorker:Api:Tls:AllowInsecureHttp=true — HTTP without TLS (WAF tests ONLY, arch/16 §1.1)");
+        "KafkaWorker:Api:Tls:AllowInsecureHttp=true — HTTP without TLS (WAF tests ONLY, arch/kafkaworker/07-api.md §1)");
 if (apiTls.Source is { } certSource)
     app.Logger.LogInformation("KafkaWorker:Api:Tls: API server certificate — source {Source}", certSource);
 if (apiTls.Warning is { } certWarning)
     app.Logger.LogWarning("KafkaWorker:Api:Tls: {Warning}", certWarning);
-// Открытая грань (arch/16 §1.1): клиентский серт опционален на хендшейке;
+// Открытая грань (arch/kafkaworker/07-api.md §1): клиентский серт опционален на хендшейке;
 // 401 без валидного серта — только на /api; /healthz и /metrics — без серта.
 app.UseMiddleware<Shared.Tls.ClientCertAuthMiddleware>();
 app.MapAppMetrics();
@@ -465,7 +465,7 @@ app.MapWorkerApi();
 
 await app.RunAsync();
 
-// Опции процессов из дерева конфигурации (arch/16 §8).
+// Опции процессов из дерева конфигурации (arch/kafkaworker/08-operability.md §6).
 static ProvisioningOptions ToProvisioningOptions(KafkaWorkerOptions opts) => new(
     opts.Docker.PortRange.From,
     opts.Docker.PortRange.To,
@@ -479,7 +479,7 @@ static ProvisioningOptions ToProvisioningOptions(KafkaWorkerOptions opts) => new
 static Func<CancellationToken, Task<Result>> SnapshotDelegate(SnapshotJob job)
     => async ct => await job.TakeAsync(ct);
 
-// Источник кластеров для коллектора метрик (arch/18 §4): RangeAsync по
+// Источник кластеров для коллектора метрик (arch/metrics/04-collectors.md): RangeAsync по
 // /kafka/clusters/ c failover по endpoints (паттерн ReconcileLoop воркера)
 // → KafkaSnapshotParser; ошибки чтения → Result.Failed (коллектор пропустит тик).
 static async Task<Result<IReadOnlyList<KafkaClusterSnapshot>>> SnapshotClustersAsync(

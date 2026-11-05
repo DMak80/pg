@@ -78,11 +78,11 @@ public class WalReceiverApiClientTests
         reply.Status.Should().BeNull();
     }
 
-    // AAA: node-операция (arch/25 №22) — 200 несёт тело итога
+    // AAA: node-операция (arch/communications/02-channel-registry.md №22) — 200 несёт тело итога
     [Fact]
     public async Task EnsureHbaAsync_200_ParsesBody()
     {
-        // Arrange — приёмник подтвердил hba-строку (arch/19 §7)
+        // Arrange — приёмник подтвердил hba-строку (arch/backups/08-secrets.md)
         var ct = TestContext.Current.CancellationToken;
         var client = ClientWith(new HttpResponseMessage(HttpStatusCode.OK)
         {
@@ -102,7 +102,7 @@ public class WalReceiverApiClientTests
     [Fact]
     public async Task PgDumpAsync_200_ParsesDdl()
     {
-        // Arrange — приёмник вернул дамп схемы (arch/14 §Move M1)
+        // Arrange — приёмник вернул дамп схемы (arch/pgworker/processes/f-move.md M1)
         var ct = TestContext.Current.CancellationToken;
         var handler = new CapturingHandler(new HttpResponseMessage(HttpStatusCode.OK)
         {

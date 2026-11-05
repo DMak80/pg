@@ -4,11 +4,11 @@ using Xunit;
 
 namespace ValkeyWorker.UnitTests.Provisioning;
 
-// Сборка args контейнера (arch/21 §2, spec §4.5.1): канонический порядок
+// Сборка args контейнера (arch/valkeyworker/01-placement.md, spec §4.5.1): канонический порядок
 // флагов valkey-server из декларации и кредов — детерминизм сверки V3.
 public class NodeArgsBuilderTests
 {
-    // AAA: канонический набор флагов valkey-server из декларации и кредов (arch/21 §2)
+    // AAA: канонический набор флагов valkey-server из декларации и кредов (arch/valkeyworker/01-placement.md)
     [Fact]
     public void Build_CanonicalFlagSet()
     {
@@ -40,7 +40,7 @@ public class NodeArgsBuilderTests
     [Fact]
     public void Build_EmptySaveArgument_ExactlyOneEmptyElement()
     {
-        // Arrange: persistence off (arch/21 §2) — `--save ""`.
+        // Arrange: persistence off (arch/valkeyworker/01-placement.md) — `--save ""`.
         // Act
         var args = NodeArgsBuilder.Build(1, "noeviction", "a", "b");
 
@@ -61,7 +61,7 @@ public class NodeArgsBuilderTests
         first.Should().NotEqual(second);
     }
 
-    // AAA: TLS-хвост канон arch/21 §2 — TLS-порт = контейнерный 6379,
+    // AAA: TLS-хвост канон arch/valkeyworker/01-placement.md — TLS-порт = контейнерный 6379,
     // plain закрыт, серты из /tls, клиенты без сертов (ACL).
     [Fact]
     public void Build_IncludesCanonicalTlsFlags()
@@ -84,7 +84,7 @@ public class NodeArgsBuilderTests
         });
     }
 
-    // ── BuildCmd (env-TLS, arch/21 §2): cmd-обёртка раскатки PEM + exec ──
+    // ── BuildCmd (env-TLS, arch/valkeyworker/01-placement.md): cmd-обёртка раскатки PEM + exec ──
 
     // AAA: канонический args → ["sh","-c", раскатка §2 + exec с экранированными args]
     [Fact]
@@ -96,7 +96,7 @@ public class NodeArgsBuilderTests
         // Act
         var cmd = NodeArgsBuilder.BuildCmd(args);
 
-        // Assert — форма обёртки канона arch/21 §2 (env → /tls, exec valkey-server);
+        // Assert — форма обёртки канона arch/valkeyworker/01-placement.md (env → /tls, exec valkey-server);
         // каждый arg экранирован литералом '…' (контракт shell-escape §4.1)
         cmd.Should().HaveCount(3);
         cmd[0].Should().Be("sh");

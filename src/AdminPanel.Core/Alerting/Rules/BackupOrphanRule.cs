@@ -4,7 +4,7 @@ using Microsoft.Extensions.Options;
 
 namespace AdminPanel.Core.Alerting.Rules;
 
-// backup-orphan (warning, arch/19 §4): запись реестра сирот
+// backup-orphan (warning, arch/backups/05-etcd-contract.md): запись реестра сирот
 // /pgworker/backups/orphans — S3-префикс без владельца в etcd. Fate-приоритет
 // (reliability, spec §3.5): DELETING «идёт удаление» (включая по заявке) →
 // hold «защищён hold-флагом (<by>) — удаление только явной командой» →
@@ -18,7 +18,7 @@ public sealed class BackupOrphanRule(IOptions<AlertsOptions> options) : IAlertRu
 {
     public const string KindName = "backup-orphan";
 
-    // Каталожный дефолт — 7 суток (arch/19 §9); фолбэк при опечатке конфига.
+    // Каталожный дефолт — 7 суток (arch/backups/09-operability.md §1); фолбэк при опечатке конфига.
     public const long DefaultOrphanTtlSec = 604800;
 
     public string Kind => KindName;
@@ -44,7 +44,7 @@ public sealed class BackupOrphanRule(IOptions<AlertsOptions> options) : IAlertRu
                 && orphans.DeleteRequests.TryGetValue(entry.Prefix, out var requested))
                 deleteRequested = requested;
 
-            // Показ и сбоя, и действия воркера (канон arch/19 §4).
+            // Показ и сбоя, и действия воркера (канон arch/backups/05-etcd-contract.md).
             string fate;
             var remedy = AlertRemedy.WorkerAuto;
             var protectedByHoldOrFull = false;

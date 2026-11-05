@@ -1,6 +1,6 @@
 namespace PgWorker.IntegrationTests.E2e;
 
-/// <summary>База класс-фикстур PgWorker E2E (docs/e2e-isolation.md §1): слот
+/// <summary>База класс-фикстур PgWorker E2E (arch/testing/02-e2e-isolation.md §1): слот
 /// E2eParallelismGuard ДО первого docker-объекта, затем полный контур класса
 /// (сеть/etcd/ownS3/CA/окно портов — E2eEnvironment.StartAsync); teardown
 /// при любом исходе в DisposeAsync. Единица окружения — тестовый класс.</summary>

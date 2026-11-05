@@ -11,7 +11,7 @@ using Microsoft.AspNetCore.Routing;
 namespace AdminPanel.Api.Operations;
 
 // Модуль операций (мутирующие эндпоинты) — ПРОКСИ в API воркеров (arch/01 §1,
-// arch/14 §1.1): панель не пишет в etcd; успех — десериализованный DTO воркера,
+// arch/pgworker/07-api.md §1): панель не пишет в etcd; успех — десериализованный DTO воркера,
 // ошибки — ProblemDetails воркера как есть (UI-контракт arch/03 §1 не меняется),
 // недоступность API — собственный 503. InspectionModule остаётся read-only.
 public static class OperationsModule

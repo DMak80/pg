@@ -2,7 +2,7 @@ using Microsoft.Extensions.Configuration;
 
 namespace EtcdWorker.App;
 
-// env-секреты docker-транспорта EtcdWorker (arch/24 §2: транспорт — общий
+// env-секреты docker-транспорта EtcdWorker (arch/s3worker/01-placement.md: транспорт — общий
 // Shared.Docker; env-имена ETCDW_DOCKER_* — etcd-специфика, модели в общей сборке
 // их не знают; REST-TLS-блока нет — он pg-специфичен). PEM-дуализм env-секретов —
 // значение или _PATH-файл; перенос env → конфиг-дерево — до всего остального

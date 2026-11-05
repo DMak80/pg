@@ -5,14 +5,14 @@ using KafkaWorker.Core.Model;
 namespace KafkaWorker.Core.Templates;
 
 /// <summary>
-/// Вход генератора env брокера (arch/16 §2.2): всё детерминировано от заявки,
+/// Вход генератора env брокера (arch/kafkaworker/01-placement.md §2): всё детерминировано от заявки,
 /// плана размещения и кредов — повторная генерация даёт тот же набор (R3).
 /// </summary>
 /// <param name="Cluster">Имя кластера (из него — детерминированный CLUSTER_ID).</param>
 /// <param name="NodeId">Числовой id ноды (k из broker&lt;k&gt;).</param>
 /// <param name="NodeName">Имя ноды (docker-DNS alias, INTERNAL advertised).</param>
 /// <param name="AdvertisedClient">advertised CLIENT host:port — вычислен по правилу
-/// arch/16 §2.1 (AdvertisedClientHost ?? имя docker-хоста + клиентский порт).</param>
+/// arch/kafkaworker/01-placement.md §1 (AdvertisedClientHost ?? имя docker-хоста + клиентский порт).</param>
 /// <param name="IsController">Нода — участник KRaft-кворума (combined broker,controller).</param>
 /// <param name="QuorumVoters">Кворум "id@host:9093" (только controller-ноды).</param>
 /// <param name="AppUser">SASL-пользователь приложений (обычно "app").</param>
@@ -44,7 +44,7 @@ public sealed record NodeEnvSpec(
     string DataDir);
 
 /// <summary>
-/// Генератор env брокера apache/kafka:4.0.0 (arch/16 §2.2, канон таблицы).
+/// Генератор env брокера apache/kafka:4.0.0 (arch/kafkaworker/01-placement.md §2, канон таблицы).
 /// KRaft без ZooKeeper, SASL_SSL на INTERNAL/CLIENT, PLAINTEXT CONTROLLER
 /// внутри сети kfw-net-<C> кластера; StandardAuthorizer deny-by-default;
 /// служебные топики — RF min(3,B)/minISR min(2,B), чтобы 1-брокерный стенд
@@ -63,7 +63,7 @@ public static class NodeEnvBuilder
         // (вскрыто 3-брокерным e2e волны C). Креды inter НЕ ротируются
         // (ротация app не должна ломать репликацию) — детерминированный
         // per-cluster пароль, живёт пересоздания контейнеров; listener доступен
-        // только внутри закрытой сети kfw-net-<C> кластера (arch/16 §2.1).
+        // только внутри закрытой сети kfw-net-<C> кластера (arch/kafkaworker/01-placement.md §1).
         var interPassword = InterBrokerPassword(spec.Cluster);
         var env = new Dictionary<string, string>
         {
@@ -88,7 +88,7 @@ public static class NodeEnvBuilder
             ["KAFKA_SASL_ENABLED_MECHANISMS"] = "PLAIN",
             ["KAFKA_SASL_MECHANISM_INTER_BROKER_PROTOCOL"] = "PLAIN", // требует Kafka при SASL на INTERNAL
 
-            // TLS: PEM-пара серта ноды + доверие per-cluster CA (arch/16 §2.2/§2.3).
+            // TLS: PEM-пара серта ноды + доверие per-cluster CA (arch/kafkaworker/01-placement.md §2/§2.3).
             // Переносы PEM экранированы \n: env → properties образ apache/kafka
             // пишет как есть, а Java Properties разворачивает \n обратно в
             // переносы значения (реальный перенос сломал бы файл properties).
@@ -108,7 +108,7 @@ public static class NodeEnvBuilder
             ["KAFKA_ALLOW_EVERYONE_IF_NO_ACL_FOUND"] = "false",
 
             // INTERNAL-JAAS: inter-креды брокера-клиента + пользователи ролей
-            // admin/app с окнами ротации user_<name>2 (arch/16 §2.2).
+            // admin/app с окнами ротации user_<name>2 (arch/kafkaworker/01-placement.md §2).
             ["KAFKA_LISTENER_NAME_INTERNAL_PLAIN_SASL_JAAS_CONFIG"] =
                 "org.apache.kafka.common.security.plain.PlainLoginModule required "
                 + $@"username=""inter"" password=""{interPassword}"" user_inter=""{interPassword}"" {users};",
@@ -127,7 +127,7 @@ public static class NodeEnvBuilder
             ["KAFKA_NUM_PARTITIONS"] = spec.Config.DefaultPartitions.ToString(CultureInfoInvariant),
             ["KAFKA_LOG_RETENTION_MS"] = spec.Config.DefaultRetentionMs.ToString(CultureInfoInvariant),
 
-            // Состав топиков — только явное создание (CLI/клиентами, arch/15 §3).
+            // Состав топиков — только явное создание (CLI/клиентами, arch/kafka-clusters/03-topics.md §1).
             ["KAFKA_AUTO_CREATE_TOPICS_ENABLE"] = "false",
             ["KAFKA_LOG_DIRS"] = spec.DataDir,
         };

@@ -7,7 +7,7 @@ namespace ValkeyWorker.Core.Valkey;
 // обязательный — plain-ветки нет (plain-порт закрыт).
 public sealed record ValkeyEndpoint(string Host, int Port, string User, string Password, string CaPem);
 
-// RESP-миниклиент (arch/21; spec §4.3): одна команда = одно короткоживущее
+// RESP-миниклиент (arch/valkeyworker/README.md; spec §4.3): одна команда = одно короткоживущее
 // TCP-соединение (пробы/команды тиковые, мультиплексирование не нужно);
 // таймаут — секунды; ретраи — Polly снаружи (оркестрация, не клиент).
 // Ошибка сети/протокола → Result.Failed (S7: слепая проба — не исключение).
@@ -28,6 +28,6 @@ public interface IValkeyConnection
     // ACL SETUSER <user> <args…> (ротация E1/E3, converge D) — args целиком.
     Task<Result> AclSetUserAsync(ValkeyEndpoint ep, IReadOnlyList<string> args, CancellationToken ct);
 
-    // INFO all → плоский словарь ключ → значение (коллектор метрик, arch/18 §4.2).
+    // INFO all → плоский словарь ключ → значение (коллектор метрик, arch/metrics/04-collectors.md §2).
     Task<Result<IReadOnlyDictionary<string, string>>> InfoAllAsync(ValkeyEndpoint ep, CancellationToken ct);
 }

@@ -3,7 +3,7 @@ using PgWorker.Etcd.Parsing;
 
 namespace PgWorker.Backups.Drill;
 
-/// <summary>Чистый отбор кандидата дрилла (reliability, arch/19 §3.6):
+/// <summary>Чистый отбор кандидата дрилла (reliability, arch/backups/04-drill.md):
 /// один шард за проход кластера — наименее свежий по последнему терминальному
 /// дриллу («никогда» = 0 — обслуживается первым). Гварды: интервал ≤ 0 — выкл;
 /// незавершённый дрилл кластера (RUNNING либо терминальный с phase=cleaning)

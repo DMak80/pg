@@ -1,8 +1,8 @@
 namespace ValkeyWorker.App;
 
-// Конфигурация ValkeyWorker (arch/21 §8): секция "ValkeyWorker" в appsettings.json +
+// Конфигурация ValkeyWorker (arch/valkeyworker/06-operability.md §5): секция "ValkeyWorker" в appsettings.json +
 // env-оверрайды (ValkeyWorker__Etcd__Endpoints__0=http://…). Per-install env-секреты —
-// только TLS HTTP API (VWK_API_TLS_*, arch/21 §4); per-cluster секреты (app/admin) —
+// только TLS HTTP API (VWK_API_TLS_*, arch/valkeyworker/04-security.md §3); per-cluster секреты (app/admin) —
 // в etcd.
 
 /// <summary>Корневые настройки сервиса.</summary>
@@ -21,36 +21,36 @@ public sealed class ValkeyWorkerOptions
     public SnapshotOptions Snapshots { get; set; } = new();
 
     /// <summary>
-    /// Advertised-хост клиентского порта ноды (arch/21 §2): null → имя docker-хоста
+    /// Advertised-хост клиентского порта ноды (arch/valkeyworker/01-placement.md): null → имя docker-хоста
     /// размещения. Значение обязано резолвиться клиентами (попадает в endpoints).
     /// Локальные стенды: host.docker.internal.
     /// </summary>
     public string? AdvertisedClientHost { get; set; }
 
-    /// <summary>HTTP API воркера (arch/21 §1.1): advertise-URL + стендовый сид.</summary>
+    /// <summary>HTTP API воркера (arch/valkeyworker/05-api.md §1): advertise-URL + стендовый сид.</summary>
     public ApiOptions Api { get; set; } = new();
 
-    /// <summary>Метрики воркера (arch/18 §2.2/§2.6/§4.2): экспозиция + тик
+    /// <summary>Метрики воркера (arch/metrics/02-dictionary.md §2/§2.6/§4.2): экспозиция + тик
     /// коллектора INFO.</summary>
     public ValkeyWorkerMetricsOptions Metrics { get; set; } = new();
 }
 
-/// <summary>Метрики ValkeyWorker (arch/18 §2.6/§4.2): базовая экспозиция +
+/// <summary>Метрики ValkeyWorker (arch/metrics/02-dictionary.md §6/§4.2): базовая экспозиция +
 /// интервал тика коллектора INFO.</summary>
 public sealed class ValkeyWorkerMetricsOptions : Shared.Metrics.MetricsOptions
 {
-    /// <summary>Тик коллектора INFO, сек (default 30; arch/18 §4.2).</summary>
+    /// <summary>Тик коллектора INFO, сек (default 30; arch/metrics/04-collectors.md §2).</summary>
     public int CollectIntervalSec { get; set; } = 30;
 }
 
-/// <summary>HTTP API воркера (arch/21 §1.1): advertise-URL в /valkeyworker/api/&lt;id&gt;
+/// <summary>HTTP API воркера (arch/valkeyworker/05-api.md §1): advertise-URL в /valkeyworker/api/&lt;id&gt;
 /// + стендовый сид-эндпоинт.</summary>
 public sealed class ApiOptions
 {
     /// <summary>URL API, достижимый клиентами (панелью); пусто → fail-fast старта.</summary>
     public string AdvertiseUrl { get; set; } = "";
 
-    /// <summary>mTLS-конфигурация HTTP API (arch/21 §1.1).</summary>
+    /// <summary>mTLS-конфигурация HTTP API (arch/valkeyworker/05-api.md §1).</summary>
     public TlsOptions Tls { get; set; } = new();
 
     /// <summary>Демо-сид-эндпоинт POST /api/seed/demo (стенд; default false).</summary>
@@ -58,7 +58,7 @@ public sealed class ApiOptions
 }
 
 /// <summary>
-/// HTTPS HTTP API воркера (arch/21 §1.1; mTLS — только /api): серверный серт+ключ и CA клиентских
+/// HTTPS HTTP API воркера (arch/valkeyworker/05-api.md §1; mTLS — только /api): серверный серт+ключ и CA клиентских
 /// сертов per-install API-PKI; env VWK_API_TLS_{CERT,KEY,CLIENT_CA}[_PATH]
 /// (таблица TlsEndpoints.EnvBindings). AllowInsecureHttp — ТОЛЬКО WAF-тесты.
 /// </summary>
@@ -79,7 +79,7 @@ public sealed class TlsOptions
 
     public string? ClientCaPath { get; set; }
 
-    /// <summary>true — HTTP без TLS; ТОЛЬКО WAF-фикстуры тестов (arch/21 §1.1).</summary>
+    /// <summary>true — HTTP без TLS; ТОЛЬКО WAF-фикстуры тестов (arch/valkeyworker/05-api.md §1).</summary>
     public bool AllowInsecureHttp { get; set; }
 }
 
@@ -107,10 +107,10 @@ public sealed class DockerOptions
 
     /// <summary>Стенд/E2E: ноды создаются в сети контура поставки; сеть воркером
     /// не создаётся/не удаляется; пусто — default bridge docker-хоста запуска.
-    /// Не поддерживается в Mode=Swarm — fail-fast старта (arch/21 §2).</summary>
+    /// Не поддерживается в Mode=Swarm — fail-fast старта (arch/valkeyworker/01-placement.md).</summary>
     public string? ContourNetwork { get; set; }
 
-    /// <summary>Fail-fast старта (arch/21 §2): ContourNetwork не поддерживается
+    /// <summary>Fail-fast старта (arch/valkeyworker/01-placement.md): ContourNetwork не поддерживается
     /// в Mode=Swarm — сеть overlay назначает сам Swarm (канон PgWorker).</summary>
     public void EnsureContourNetworkMode()
     {
@@ -129,7 +129,7 @@ public sealed class DockerHostOptions
     public string Endpoint { get; set; } = "";
 }
 
-/// <summary>Диапазон клиентских портов нод [From, To): 17000–17999 (arch/21 §2).</summary>
+/// <summary>Диапазон клиентских портов нод [From, To): 17000–17999 (arch/valkeyworker/01-placement.md).</summary>
 public sealed class PortRangeOptions
 {
     public int From { get; set; } = 17000;
@@ -143,7 +143,7 @@ public sealed class DockerImagesOptions
     public string Node { get; set; } = "valkey/valkey:9.1.2";
 }
 
-/// <summary>Интервалы циклов и задержка после ошибки тика (arch/21 §8).</summary>
+/// <summary>Интервалы циклов и задержка после ошибки тика (arch/valkeyworker/06-operability.md §5).</summary>
 public sealed class LoopsOptions
 {
     public int ScanIntervalSec { get; set; } = 5;
@@ -153,19 +153,19 @@ public sealed class LoopsOptions
     public int ErrorDelayMs { get; set; } = 2000;
 
     // Перенос механики снапшотов образца kfw/pg (SnapshotLoop-ритм лидера):
-    // spec §4.1 и arch/21 §8 поле не указывают — дефолт 360 мин как у образцов,
+    // spec §4.1 и arch/valkeyworker/06-operability.md §5 поле не указывают — дефолт 360 мин как у образцов,
     // транспорентно для домена (прецедент примечания плана про
     // Snapshots.MaintenanceIntervalMin).
     public int SnapshotIntervalMin { get; set; } = 360;
 
-    /// <summary>Watchdog зависших циклов (arch/21 §6/§8 — у PgWorker/Kafka свои
-    /// arch/14 §6/§8 / arch/16 §6/§8): Enabled=false — компонент не регистрируется;
+    /// <summary>Watchdog зависших циклов (arch/valkeyworker/06-operability.md §3/§8 — у PgWorker/Kafka свои
+    /// arch/pgworker/08-operability.md §3/§8 / arch/kafkaworker/08-operability.md §4/§8): Enabled=false — компонент не регистрируется;
     /// порог сноса = Multiplier × CheckIntervalSec (30 c при дефолтах, единый для
     /// всех циклов; порог healthz loops-alive в формуле не участвует).</summary>
     public Shared.Core.Hosting.WatchdogOptions Watchdog { get; set; } = new();
 }
 
-/// <summary>Пороги процессов (arch/21 §8).</summary>
+/// <summary>Пороги процессов (arch/valkeyworker/06-operability.md §5).</summary>
 public sealed class ThresholdsOptions
 {
     /// <summary>Бюджет готовности ноды (PING) при provisioning (V4); тесты ≤ 100.</summary>
@@ -175,7 +175,7 @@ public sealed class ThresholdsOptions
     public int NodeDeadSec { get; set; } = 90;
 
     /// <summary>Возраст не-начатой заявки (ротации кредов/CA valkey), после
-    /// которого воркер снимает её в waiting-точке (arch/21 §8).</summary>
+    /// которого воркер снимает её в waiting-точке (arch/valkeyworker/06-operability.md §5).</summary>
     public int RotationTicketTimeoutSec { get; set; } = 3600;
 }
 
@@ -193,7 +193,7 @@ public sealed class SnapshotOptions
     public int RetentionFiles { get; set; } = 10;
 
     // Перенос механики снапшотов образца kfw (SnapshotJob.MaintainAsync —
-    // обслуживание не чаще раза в интервал); в spec §4.1/arch/21 §8 не указано —
+    // обслуживание не чаще раза в интервал); в spec §4.1/arch/valkeyworker/06-operability.md §5 не указано —
     // осознанное решение плана (транспорентно для домена).
     public int MaintenanceIntervalMin { get; set; } = 60;
 }

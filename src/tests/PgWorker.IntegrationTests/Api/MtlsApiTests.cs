@@ -17,13 +17,13 @@ using Xunit;
 
 namespace PgWorker.IntegrationTests.Api;
 
-// HTTPS HTTP API PgWorker (arch/14 §1.1): клиентский серт опционален на
+// HTTPS HTTP API PgWorker (arch/pgworker/07-api.md §1): клиентский серт опционален на
 // хендшейке; /api без серта и с невалидным сертом — 401 (HTTP-ответ, не
 // TLS-отказ); /healthz и /metrics — открытая грань (200 без серта, невалидный
 // серт игнорируется). Реальный Kestrel-сокет (WAF-транспорт in-memory TLS не
 // исполняет) — порт динамический (зонд FreePort). https-валидация advertise:
 // http-URL при выключенном AllowInsecureHttp — fail-fast старта хоста
-// (ValidateOnStart, arch/14 §1.1).
+// (ValidateOnStart, arch/pgworker/07-api.md §1).
 [Collection(NonE2eCollection.Name)]
 public class MtlsApiTests(PgApiFixture fx)
 {
@@ -234,7 +234,7 @@ public class MtlsApiTests(PgApiFixture fx)
         using var factory = new HttpAdvertiseFactory(fx.Etcd);
 
         // Act / Assert: ValidateOnStart — старт хоста падает fail-fast
-        // (AdvertiseUrl обязан быть https://, arch/14 §1.1).
+        // (AdvertiseUrl обязан быть https://, arch/pgworker/07-api.md §1).
         Assert.ThrowsAny<Exception>(() => factory.CreateClient());
     }
 }

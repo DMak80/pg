@@ -3,7 +3,7 @@ using Shared.Core.Hosting;
 
 namespace PgWorker.UnitTests.Backups;
 
-// «Пульс конечного внешнего вызова» (arch/14 §6, arch/19 §5): на время
+// «Пульс конечного внешнего вызова» (arch/pgworker/08-operability.md §3, arch/backups/06-s3-layout.md): на время
 // ОДНОГО S3-вызова Mark-отметки идут по расписанию (период инъектируется —
 // реальные 10 с в тестах не ждём); завершение вызова гасит пульс.
 public sealed class S3PulseTests

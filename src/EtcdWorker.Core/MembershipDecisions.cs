@@ -9,7 +9,7 @@ namespace EtcdWorker.Core;
 public sealed record ManagedDeadFact(
     ManagedMember Member, long? ProblemSinceUnix, bool EnvironmentMissing);
 
-/// <summary>Чистые решения доводки состава (arch/25 §3.1).</summary>
+/// <summary>Чистые решения доводки состава (arch/etcdworker/02-membership.md).</summary>
 public static class MembershipDecisions
 {
     /// <summary>Номер нового узла: максимальный существующий + 1 (имена не
@@ -17,7 +17,7 @@ public static class MembershipDecisions
     public static int NextNumber(IReadOnlyList<int> existingNumbers)
         => existingNumbers.Count == 0 ? 1 : existingNumbers.Max() + 1;
 
-    /// <summary>Кандидат вывода (arch/25 §3.1): старейший по номеру НЕ лидер;
+    /// <summary>Кандидат вывода (arch/etcdworker/02-membership.md): старейший по номеру НЕ лидер;
     /// null — кандидата нет (пусто/все — лидер).</summary>
     public static ManagedMember? PickRemoveCandidate(
         IReadOnlyList<ManagedMember> managed, ulong? leaderId)
@@ -30,7 +30,7 @@ public static class MembershipDecisions
     public static bool QuorumRemoveGuard(int totalMembersAfterRemove)
         => totalMembersAfterRemove >= 3;
 
-    /// <summary>Детект авто-замены (решение 2, arch/25 §3.1): проблема члена
+    /// <summary>Детект авто-замены (решение 2, arch/etcdworker/02-membership.md): проблема члена
     /// (unstarted ИЛИ health-молчание) наблюдается ≥ NodeDeadSec И окружение не
     /// восстановлено; не лидер. Порог — для ОБОИХ случаев: unstarted-ветка тоже
     /// гейтится меткой первого наблюдения (ProblemSinceUnix) — немедленной

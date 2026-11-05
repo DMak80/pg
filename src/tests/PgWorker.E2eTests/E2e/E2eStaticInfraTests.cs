@@ -11,7 +11,7 @@ namespace PgWorker.IntegrationTests.E2e;
 /// <summary>Юнит-факты статической E2E-инфраструктуры (без docker):
 /// резолв per-branch суффикса тега, атомарность штампа подготовки, чистая
 /// функция отбора авто-уборки тегов, same-process-ожидание лока подготовки
-/// (docs/e2e-isolation.md §9, spec §3.1-3.2).</summary>
+/// (arch/testing/02-e2e-isolation.md §9, spec §3.1-3.2).</summary>
 public sealed class E2eStaticInfraTests
 {
     [Fact]

@@ -11,7 +11,7 @@ using Shared.Etcd.Client;
 namespace S3Worker.Provisioning.Processes;
 
 /// <summary>
-/// Provisioning S3-кластера (arch/24 §5 A, фазы P0–P5): от заявки
+/// Provisioning S3-кластера (arch/s3worker/02-cluster-lifecycle.md §2 A, фазы P0–P5): от заявки
 /// NOT_INITIALIZED до Active-кластера. Все фазы идемпотентны и перепроверяют
 /// факт; перед фазами — перечитывание config (S-гонка: TO_REMOVE посреди
 /// работы безопасно прекращает процесс, без docker-мутаций). Снапшоты P12
@@ -46,7 +46,7 @@ public sealed class ProvisioningProcess(
     {
         var cluster = snap.Cluster;
 
-        // Мутации — только держателем живого клэйма (arch/17 S5).
+        // Мутации — только держателем живого клэйма (arch/synchronization/02-predicates-and-mutations.md §S5).
         if (!claims.IsMine(cluster))
             return Result.Failed(new ApplicationException(
                 $"provisioning {cluster}: claim is not ours (or lost) — mutations forbidden"));
@@ -78,7 +78,7 @@ public sealed class ProvisioningProcess(
             return Fail(cluster, planned.Error!, "planning");
         }
 
-        // P2-вход: выпуск per-cluster secrets (arch/23 §6): txn put-if-absent,
+        // P2-вход: выпуск per-cluster secrets (arch/s3-clusters/06-secrets.md): txn put-if-absent,
         // спец-ключ etcd-backup из env; выполняется и для 0-инстансовых
         // кластеров (etcd-операция, docker-мутаций нет). Битость/неполнота
         // существующего ключа — permanent-отказ с диагностикой без значений.
@@ -109,7 +109,7 @@ public sealed class ProvisioningProcess(
         if (!bucket.IsSuccess)
             return Fail(cluster, bucket.Error!, "ensure-buckets");
 
-        // P4: доводка mesh по links (та же механика, что G — arch/24 §5).
+        // P4: доводка mesh по links (та же механика, что G — arch/s3worker/README.md).
         // Расхождение состава — НЕ отказ provisioning'а: отказ P4 (join/delete
         // недоступен) пишется journal waiting-mesh, а P5 продолжает — endpoints/
         // config не зависят от состава targets; mesh додоводит Active-тиками G.
@@ -127,7 +127,7 @@ public sealed class ProvisioningProcess(
             return await FinishAsync(cluster, "aborted-state-changed", ct);
 
         // P5: endpoints (advertised host:port; 0 инстансов — ключ НЕ пишется,
-        // arch/23 §2: endpoints существует ⟺ ≥1 инстанс) + config без state.
+        // arch/s3-clusters/02-keys.md §1: endpoints существует ⟺ ≥1 инстанс) + config без state.
         var endpoints = BuildEndpoints(snap, planned.Value);
         if (endpoints.Length > 0)
         {
@@ -150,7 +150,7 @@ public sealed class ProvisioningProcess(
         return await FinishAsync(cluster, "done", ct);
     }
 
-    // P1: per-node placement (arch/23 §4: предикат равенства по атрибутам,
+    // P1: per-node placement (arch/s3-clusters/04-placement.md: предикат равенства по атрибутам,
     // least-loaded + Ordinal tie-break) → порт-аллокация под глобальным клэймом
     // /s3worker/locks/portalloc (: без него параллельные сеяния выбирают
     // одинаковые порты) → txn put-if-absent portalloc → placed_on.
@@ -204,7 +204,7 @@ public sealed class ProvisioningProcess(
                     busy.Add((host.Name, pair.Port));
             }
 
-            // Per-node резолвция селектора + перечень кандидатов (arch/23 §4).
+            // Per-node резолвция селектора + перечень кандидатов (arch/s3-clusters/04-placement.md).
             var placements = new List<NodePlacement>();
             foreach (var node in snap.Nodes.Where(n => wanted.Contains(n.Node)).OrderBy(n => n.Node, StringComparer.Ordinal))
             {
@@ -272,7 +272,7 @@ public sealed class ProvisioningProcess(
     }
 
     // P2: EnsureNode всех нод (state != RUNNING) + state=PROVISIONING; env ноды
-    // — OWNS3_* профиля + OWNS3_DATA_DIR=/data (arch/23 §6).
+    // — OWNS3_* профиля + OWNS3_DATA_DIR=/data (arch/s3-clusters/06-secrets.md).
     private async Task<Result> EnsureNodesAsync(
         S3ClusterSnapshot snap,
         IReadOnlyDictionary<string, NodeAddress> addresses,
@@ -294,7 +294,7 @@ public sealed class ProvisioningProcess(
                     return marked;
             }
 
-            // PKI лениво при первом использовании (arch/23 §6): пара CA+оркестратор,
+            // PKI лениво при первом использовании (arch/s3-clusters/06-secrets.md): пара CA+оркестратор,
             // затем материал инстанса — txn put-if-absent, идемпотентно на тиках.
             var clusterPki = await pki.EnsureClusterPkiAsync(cluster, ct);
             if (!clusterPki.IsSuccess)
@@ -372,7 +372,7 @@ public sealed class ProvisioningProcess(
         OwnS3NodeSecrets nodeSecrets,
         CancellationToken ct)
     {
-        // P3 (arch/23 §5): per-install bucket на каждой ноде; для etcd-backup
+        // P3 (arch/s3-clusters/05-platform.md): per-install bucket на каждой ноде; для etcd-backup
         // кластера — ДОПОЛНИТЕЛЬНО фиксированный etcd-слепковый bucket
         // (создаёт EtcdWorker'у цель выгрузки; идемпотентно: exists → пропуск).
         var buckets = S3ProcessCommon.BucketsForInstance(
@@ -392,7 +392,7 @@ public sealed class ProvisioningProcess(
         return Result.Success();
     }
 
-    // endpoints: advertised host:port по нодам через запятую (arch/23 §2.1).
+    // endpoints: advertised host:port по нодам через запятую (arch/s3-clusters/02-keys.md §2).
     private string BuildEndpoints(S3ClusterSnapshot snap, IReadOnlyDictionary<string, NodeAddress> addresses)
         => string.Join(",", snap.Nodes
             .Where(n => n.State is null or S3NodeStates.NotInitialized or S3NodeStates.Provisioning or S3NodeStates.Running)
@@ -404,7 +404,7 @@ public sealed class ProvisioningProcess(
             }));
 
     // P5-конец: txn compare config.mod_revision → put канонического JSON без state
-    // (Active-пример arch/23 §2.1: platform/nodes/etcd_backup?/created_unix).
+    // (Active-пример arch/s3-clusters/02-keys.md §2: platform/nodes/etcd_backup?/created_unix).
     private async Task<Result> CommitConfigAsync(S3ClusterSnapshot snap, CancellationToken ct)
     {
         var key = S3ProcessCommon.ConfigKey(snap.Cluster);
@@ -514,7 +514,7 @@ public sealed class ProvisioningProcess(
         return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 
-    // Канонический config после provisioning: state отсутствует (arch/23 §2.1,
+    // Канонический config после provisioning: state отсутствует (arch/s3-clusters/02-keys.md §2,
     // порядок полей канона).
     private sealed record CanonicalConfig(
         [property: JsonPropertyName("platform")] string Platform,

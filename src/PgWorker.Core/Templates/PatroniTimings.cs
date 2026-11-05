@@ -1,7 +1,7 @@
 namespace PgWorker.Core.Templates;
 
 /// <summary>
-/// Канонические тайминги Patroni (arch/14 §2.1/§5 C) — единый источник
+/// Канонические тайминги Patroni (arch/pgworker/01-placement.md §1/§5 C) — единый источник
 /// для bootstrap.dcs SPILO_CONFIGURATION и для конвергенции динамического
 /// DCS-конфига в надзоре. Полы Patroni 4.x: loop_wait≥1, retry_timeout≥3,
 /// ttl≥20 и правило loop_wait + 2*retry_timeout ≤ ttl — заниженное значение

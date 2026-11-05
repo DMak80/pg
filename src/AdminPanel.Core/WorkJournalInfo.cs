@@ -1,7 +1,7 @@
 namespace AdminPanel.Core;
 
 // Журнал текущего процесса кластера /pgworker/work/<C> (arch/adminpanel/02 §2.3.1,
-// формат arch/14 §3.3): фаза/ошибка процесса + серия фейлов provision (бэкофф).
+// формат arch/pgworker/00-etcd-contract.md §4): фаза/ошибка процесса + серия фейлов provision (бэкофф).
 // Поля серии optional — журналы старого формата читаются с null.
 public sealed record WorkJournalInfo(
     string Cluster,
@@ -16,7 +16,7 @@ public sealed record WorkJournalInfo(
     HaSupervisionInfo? LastFailover = null,
     HaSupervisionInfo? LastRebuild = null);
 
-// Последний HA-факт надзора из /pgworker/work/<C> (arch/14 §3.3;
+// Последний HA-факт надзора из /pgworker/work/<C> (arch/pgworker/00-etcd-contract.md §4;
 // панельный дубль воркерной модели — осознанный): null = факта нет/старый ключ.
 public sealed record HaSupervisionInfo(
     string Shard, string Node, string Cause,

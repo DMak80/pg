@@ -6,7 +6,7 @@ using Xunit;
 
 namespace KafkaWorker.UnitTests.Docker;
 
-// PlainClusterDriver.EnsureNodeAsync (arch/16 §2.3, K3): идемпотентность —
+// PlainClusterDriver.EnsureNodeAsync (arch/kafkaworker/04-security.md, K3): идемпотентность —
 // ЖИВОЙ контейнер не пересоздаётся; найденный созданным-но-незапущенным
 // (держатель клэйма умер между create и start — takeover-путь) доводится
 // до running, иначе кластер навсегда недосчитывается брокера.

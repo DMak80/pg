@@ -82,7 +82,7 @@ public class SigV4GetSignerTests
         first.Authorization.Should().NotBe(second.Authorization);
     }
 
-    // AAA: обобщение до произвольного метода (arch/24 §5 G) — METHOD входит в
+    // AAA: обобщение до произвольного метода (arch/s3worker/05-mesh-governance.md G) — METHOD входит в
     // canonical request первой строкой; POST/DELETE дают разные подписи, GET-
     // сигнатура не меняется (регрессия).
     [Theory]

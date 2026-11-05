@@ -8,7 +8,7 @@ using Xunit;
 
 namespace ValkeyWorker.IntegrationTests.Api;
 
-// Чтение ключа /workers/api_tls/valkeyworker при старте (arch/21 §1.1,
+// Чтение ключа /workers/api_tls/valkeyworker при старте (arch/valkeyworker/05-api.md §1,
 // порт WorkerApiCertStartupTests kfw): Found/Missing/Unreachable/Broken +
 // применение в ConfigureMtls (серт грани из ключа; fail-fast на битый;
 // env-фоллбек VWK_API_TLS_*).

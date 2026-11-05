@@ -91,7 +91,7 @@ public sealed class ValkeyConnection : IValkeyProbeClient
         }
     }
 
-    // SAN-хост (arch/21 §2): advertised DNS либо IP — сверяем весь список SAN,
+    // SAN-хост (arch/valkeyworker/01-placement.md): advertised DNS либо IP — сверяем весь список SAN,
     // отказ при отсутствии покрытия (копия воркерского валидатора).
     private static bool SanMatchesHost(X509Certificate certificate, string host)
     {

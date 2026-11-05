@@ -49,7 +49,7 @@ public sealed class EvacuationJournalStore(IEtcdGateway gateway, string[] endpoi
 
     private static string EvacuationKey(string cluster, string shard) => $"/pgworker/evacuations/{cluster}/{shard}";
 
-    // Единая точка failover (arch/17 S7: sticky + per-attempt бюджет + негативный
+    // Единая точка failover (arch/synchronization/03-fault-tolerance.md §S7: sticky + per-attempt бюджет + негативный
     // кэш; дубликаты цикла обхода удалены).
     private Task<Result<T>> WithFailoverAsync<T>(Func<string, Task<Result<T>>> call)
         => EtcdEndpointFailover.CallAsync(endpoints, call);

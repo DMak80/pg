@@ -95,7 +95,7 @@ export function ValkeyClusterDetailsPage() {
               {/* u02/u17: общая кнопка ротации; бейдж живой заявки в modeBadges */}
               <RotateSecretButton
                 title="Сменить app-пароль"
-                warningText={'Воркер даст ноде ДВА пароля (окно двух паролей, arch/21 §5 E — без рестарта ноды), '
+                warningText={'Воркер даст ноде ДВА пароля (окно двух паролей, arch/valkeyworker/04-security.md §4 E — без рестарта ноды), '
                   + 'затем атомарно заменит app_password в etcd и удалит старый кред. После применения подключения '
                   + 'со старым паролем отвергаются, пока клиент не перечитает кред из etcd.'}
                 liveTicketText={c.rotation !== null ? `ротация пароля (${c.rotation.role})…` : null}

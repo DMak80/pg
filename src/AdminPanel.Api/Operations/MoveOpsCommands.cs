@@ -17,7 +17,7 @@ public sealed record RollbackBucketsCommand(
     string Cluster, IReadOnlyList<int> Buckets, string RequestedBy)
     : ICommand<RollbackQueuedDto>;
 
-// Прокси: панель не пишет в etcd — команда уходит в API PgWorker (arch/14 §1.1).
+// Прокси: панель не пишет в etcd — команда уходит в API PgWorker (arch/pgworker/07-api.md §1).
 [InjectAsScoped]
 public sealed class RollbackBucketsCommandHandler(IWorkerApiGateway api)
     : ICommandHandler<RollbackBucketsCommand, RollbackQueuedDto>

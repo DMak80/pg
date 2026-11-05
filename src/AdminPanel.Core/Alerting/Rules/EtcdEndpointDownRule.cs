@@ -24,6 +24,6 @@ public sealed class EtcdEndpointDownRule : IAlertRule
                 null,
                 "etcd endpoint not responding: the panel reads with failover over live endpoints, but quorum and performance depend on all members; every endpoint from AdminPanel:Etcd:Endpoints must be alive",
                 AlertRemedy.OperatorRunbook,
-                "check the stand etcd containers and the network (arch/09); an endpoint taken out of the cluster must be removed from AdminPanel:Etcd:Endpoints");
+                "check the stand etcd containers and the network (arch/pg-clusters/09-troubleshooting.md); an endpoint taken out of the cluster must be removed from AdminPanel:Etcd:Endpoints");
     }
 }

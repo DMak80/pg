@@ -8,11 +8,11 @@ using Xunit;
 namespace ValkeyWorker.IntegrationTests.E2e;
 
 // Takeover-E2E ValkeyWorker (spec §8): kill ДЕРЖАТЕЛЯ клэйма ДО начала
-// X0 ДЕМОНТАЖА кластера (X0–X3, arch/21 §5 B) — выживший инстанс пере-захватывает
+// X0 ДЕМОНТАЖА кластера (X0–X3, arch/valkeyworker/02-cluster-lifecycle.md §3 B) — выживший инстанс пере-захватывает
 // клэйм (TTL ≤15 с) и доигрывает демонтаж до терминальной чистоты: пустой
 // домен + пустая координация + нет контейнеров, без дублей (инварианты I1–I7).
 // Модель env-TLS: серты нод — VALKEY_TLS_* в env контейнера + cmd-обёртка;
-// TLS-тома у домена нет. У демонтажа НЕТ journal-записи done (arch/21 §5 B:
+// TLS-тома у домена нет. У демонтажа НЕТ journal-записи done (arch/valkeyworker/02-cluster-lifecycle.md §3 B:
 // запись после чистки воскресила бы удалённый work) — терминальные факты:
 // пустой домен + пустая координация + нет контейнеров.
 // I2 — ПО ПОСТРОЕНИЮ + документальный лог (решение пользователя 2026-10-09,
@@ -26,8 +26,8 @@ namespace ValkeyWorker.IntegrationTests.E2e;
 // терминальная чистота + подстрока «deprovision {C}» в логах survivor.
 // Держатель резолвится по etcd-фактам ПЕРЕД kill (claims.instance → api-ключ
 // → url → порт → сопоставление с Api1/Api2Port) — kill доказательно попадает
-// в держателя. Изоляция/телеметрия — docs/e2e-isolation.md +
-// docs/e2e-launch.md; ожидения — только ValkeyE2ePhase.WaitAsync (docker-CLI
+// в держателя. Изоляция/телеметрия — arch/testing/02-e2e-isolation.md +
+// arch/testing/01-e2e-launch.md; ожидения — только ValkeyE2ePhase.WaitAsync (docker-CLI
 // в тиках запрещён).
 public class ValkeyE2eTakeoverTests
 {
@@ -249,7 +249,7 @@ public class ValkeyE2eTakeoverTests
                 .Should().ContainSingle("the holder's instance key expired together with its lease (I1)");
 
             // A5: терминал — финиш демонтажа выжившим. Journal-записи done у
-            // демонтажа НЕТ (arch/21 §5 B) — терминальные факты: контейнеров
+            // демонтажа НЕТ (arch/valkeyworker/02-cluster-lifecycle.md §3 B) — терминальные факты: контейнеров
             // node1 ровно 0 (вкл. stopped) + пустой домен + пустая координация.
             // Wait-clean ≤15 с от re-захвата — целевой бюджет демонтажа
             // (survivor проходит X0→X2 одним тиком; превышение без объяснения
@@ -302,7 +302,7 @@ public class ValkeyE2eTakeoverTests
         }
         catch
         {
-            // docs/e2e-launch.md §3: упавший сценарий — teardown остановит
+            // arch/testing/01-e2e-launch.md §3: упавший сценарий — teardown остановит
             // контейнеры, но не удалит (разбор по артефактам pgw-e2e-artifacts-*).
             fx.MarkFailed();
             throw;
@@ -351,7 +351,7 @@ public class ValkeyE2eTakeoverTests
         return string.Join("; ", keys.Select(k => $"{k.Key}={k.Value}"));
     }
 
-    // Координация кластера пуста (arch/21 §5 B, X2): claims, work,
+    // Координация кластера пуста (arch/valkeyworker/02-cluster-lifecycle.md §3 B, X2): claims, work,
     // work/rotation, portalloc, rotations, ca_rotations, ticket_outcomes.
     private static async Task<bool> CoordinationGoneAsync(
         ValkeyE2eEnvironment fx, string cluster, CancellationToken ct)

@@ -7,7 +7,7 @@ namespace PgWorker.Provisioning.Processes;
 
 /// <summary>
 /// Deprovisioning — безопасное удаление кластера (задача 20; spec §6.4 B,
-/// arch/14 §5 B). D1 удаляет ноды (и сироты-контейнеры по имени pgw-<C>-*) ДО
+/// arch/pgworker/processes/b-deprovisioning.md B). D1 удаляет ноды (и сироты-контейнеры по имени pgw-<C>-*) ДО
 /// чистки etcd — «мёртвые» ключи при сбое безвредны (кластер в TO_REMOVE,
 /// повторный тик продолжает). Успех = пустой /clusters/&lt;C&gt;/ + ЯВНО снятый
 /// клэйм (del + revoke lease, не ждём TTL — ревизия 2 плана, №5).
@@ -40,7 +40,7 @@ public sealed class DeprovisioningProcess(
         if (!started.IsSuccess)
             return Result<ProcessOutcome>.Failed(started.Error!);
 
-        // D1' (arch/19 §3): WAL-агенты бэкапов кластера — вниз ДО нод (idempotent
+        // D1' (arch/backups/02-wal-archive.md §1): WAL-агенты бэкапов кластера — вниз ДО нод (idempotent
         // по префиксу pgw-backup-wal-<C>-); etcd-ключи чистит D2 ниже.
         progress?.Mark(); // heartbeat: демонтаж начинается, дальше — docker-шаги
         var agents = await driver.RemoveBackupAgentsAsync(cluster, shard: null, ct);
@@ -66,7 +66,7 @@ public sealed class DeprovisioningProcess(
 
         // D2: del prefix /clusters/<C>/ + заявки request_* + префиксы service-скопов
         // + /pgworker/portalloc, /pgworker/work и заявки переездов /pgworker/moves/<C>/
-        // (spec §4.2, arch/14 §5 B; spec §5.3 — заявки не переживают кластер).
+        // (spec §4.2, arch/pgworker/processes/b-deprovisioning.md B; spec §5.3 — заявки не переживают кластер).
         progress?.Mark(); // heartbeat: переходим к etcd-очистке
         var cleaned = await CleanKeysAsync(cluster, snap, ct);
         if (!cleaned.IsSuccess)
@@ -192,7 +192,7 @@ public sealed class DeprovisioningProcess(
         if (!delBackups.IsSuccess)
             return delBackups;
 
-        // Статусные ключи агентов PgNode (arch/14 §3.3: D2 чистит префикс).
+        // Статусные ключи агентов PgNode (arch/pgworker/00-etcd-contract.md §4: D2 чистит префикс).
         var delNodeStatus = await DeleteAsync($"/pgworker/nodes/{cluster}/", prefix: true, ct);
         if (!delNodeStatus.IsSuccess)
             return delNodeStatus;
@@ -213,7 +213,7 @@ public sealed class DeprovisioningProcess(
         return Result<ProcessOutcome>.Failed(error);
     }
 
-    // Failover-обёртки — единая точка (arch/17 S7: sticky + per-attempt бюджет +
+    // Failover-обёртки — единая точка (arch/synchronization/03-fault-tolerance.md §S7: sticky + per-attempt бюджет +
     // негативный кэш; дубликаты цикла обхода удалены).
     private Task<Result<Kv?>> GetAsync(string key, CancellationToken ct)
         => EtcdEndpointFailover.CallAsync(endpoints, endpoint => etcd.GetAsync(endpoint, key, ct));

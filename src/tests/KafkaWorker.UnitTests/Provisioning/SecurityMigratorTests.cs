@@ -9,7 +9,7 @@ using Xunit;
 
 namespace KafkaWorker.UnitTests.Provisioning;
 
-// SecurityMigrator (Ф6, arch/16 §5 M): чистый детект премиграционного
+// SecurityMigrator (Ф6, arch/kafkaworker/06-rebalancing.md §3 M): чистый детект премиграционного
 // кластера; M0-гварды живых операций; M2 пересоздаёт всех брокеров разом
 // (том жив); M3 waiting до готовности; идемпотентность канонического кластера.
 public class SecurityMigratorTests
