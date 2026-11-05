@@ -1214,6 +1214,31 @@ public class WalReceiverLoopTests
         s3.PutOrder.Should().Equal(WalKeyOf(4, 3), WalKeyOf(4, 4));
     }
 
+    // AAA (восстановленный шард): в АРХИВЕ позиция занята ДВУМЯ именами —
+    // сегменты откатанной ветки (TLI 1) остались в wal/, живая ветка (TLI 3)
+    // пишет ту же позицию своим именем. Построение карты позиций бросало
+    // duplicate key и убивало проход ре-докала на весь цикл (статус получал
+    // ложный факт s3-pool-exhausted): хвост — живая ветка, её закрытый
+    // локальный сегмент доносится.
+    [Fact]
+    public async Task RedeliverWalInventory_SamePositionTwoBranches_NewestTliTail()
+    {
+        // Arrange — архив: TLI1 №14 (откатанная ветка) + TLI3 №14 (живая);
+        // локально закрыт TLI3 №15, текущий №16
+        var s3 = new FakeS3();
+        s3.Objects[WalKeyOf(1, 14)] = SegmentData(1, 14UL * (ulong)SegmentBytes);
+        s3.Objects[WalKeyOf(3, 14)] = SegmentData(3, 14UL * (ulong)SegmentBytes);
+        var pgWalDir = PgWalDirWithSegments("00000003000000000000000F");
+
+        // Act
+        await WalReceiverCore.RedeliverWalInventoryAsync(
+            s3, Cluster, Shard, pgWalDir, currentTli: 3, currentLsn: 16UL * SegmentBytes,
+            null, TestContext.Current.CancellationToken);
+
+        // Assert — проход не упал: закрытый сегмент живой ветки доехал
+        s3.PutOrder.Should().Equal(WalKeyOf(3, 15));
+    }
+
     // AAA: отказ put останавливает проход на этой позиции (порядок не
     // ломается); следующий цикл подключения продолжает с неё.
     [Fact]

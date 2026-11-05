@@ -1028,10 +1028,23 @@ public sealed class WalReceiverCore
             failed?.Invoke(); // пул недостижим — сигнал фактам (idle-детект, arch/19 §3)
             return; // list не прошёл — ре-доклад отложен до следующего прохода
         }
-        var archivedNames = listing.Value
-            .Select(o => WalFileName.TryParse(o.Name))
-            .OfType<WalFileName>()
-            .ToDictionary(s => (long)(s.Log * WalFileName.SegsPerLog + s.Seg), s => s.Name);
+        // Позиция бывает занята ДВУМЯ именами после restore: сегменты откатанной
+        // ветки остались в wal/, живая ветка пишет ту же позицию своим TLI
+        // (TLI-ветвление). ToDictionary по позиции бросал duplicate key и убивал
+        // проход ре-доклада на весь цикл; на одну позицию остаётся НОВЕЙШИЙ TLI
+        // (живая ветка — тот же выбор, что у локального инвентаря шага 2).
+        var archivedNames = new Dictionary<long, string>();
+        foreach (var segment in listing.Value
+                     .Select(o => WalFileName.TryParse(o.Name))
+                     .OfType<WalFileName>())
+        {
+            var pos = (long)(segment.Log * WalFileName.SegsPerLog + segment.Seg);
+            if (archivedNames.TryGetValue(pos, out var archived)
+                && WalFileName.TryParse(archived) is { } archivedFile
+                && archivedFile.Tli >= segment.Tli)
+                continue;
+            archivedNames[pos] = segment.Name;
+        }
         long boundaryPos;
         if (deliveredPosition is { } ownPos)
             boundaryPos = (long)ownPos; // свой доставленный сегмент — проход выше него
