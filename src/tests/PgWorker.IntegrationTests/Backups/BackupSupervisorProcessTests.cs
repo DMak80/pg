@@ -1,5 +1,6 @@
 using FluentAssertions;
 using PgWorker.Backups;
+using PgWorker.Backups.Job;
 using PgWorker.Backups.Supervisor;
 using PgWorker.Core.Model;
 using Shared.Etcd.Client;
@@ -65,16 +66,15 @@ public class BackupSupervisorProcessTests(EtcdFixture fixture) : IAsyncLifetime
     [Fact]
     public async Task PassGarbageOfLiveShardRemovedIdempotently()
     {
-        // Arrange — клэйм c1; объекты c1/shard1/full/A/... и full/B/...;
+        // Arrange — клэйм c1; объекты c1/shard1/full/A.tar и full/B.tar;
         // etcd-ключ только для A (COMPLETED); S3 wal-объекты — живы;
         // объекты старше дефолтного GarbageMinAgeSec (600 с) — мусор дозрел
         var ct = TestContext.Current.CancellationToken;
         var cluster = $"sc1{Tag}";
         await SeedAsync(cluster);
         var s3 = new FakeBackupS3 { LastModified = DateTimeOffset.UtcNow.AddMinutes(-30) };
-        s3.PrefixObjects.Add(($"{cluster}/shard1/full/20260911110000Z/backup_manifest", 100));
-        s3.PrefixObjects.Add(($"{cluster}/shard1/full/20260911110000Z/backup_label", 50));
-        s3.PrefixObjects.Add(($"{cluster}/shard1/full/20260911120000Z/backup_manifest", 100));
+        s3.PrefixObjects.Add(($"{cluster}/shard1/full/20260911110000Z.tar", 150));
+        s3.PrefixObjects.Add(($"{cluster}/shard1/full/20260911120000Z.tar", 100));
         s3.Objects.Add((cluster, "shard1", "000000010000000000000001"));
         var owned = new FullBackupState("20260911110000Z", FullBackupStatus.Completed, "shard1a",
             BackupSourceRole.Replica, 1757500000, 1757500300, "000000010000000000000001", 150, null, null);
@@ -85,10 +85,10 @@ public class BackupSupervisorProcessTests(EtcdFixture fixture) : IAsyncLifetime
         // Act 1 — проход супервизора
         (await process.TickAsync(BuildSnap(cluster), backups, ct)).IsSuccess.Should().BeTrue();
 
-        // Assert 1 — объекты B удалены, A и wal/ живы; journal-факт swept-full
-        s3.DeletedKeys.Should().Contain($"{cluster}/shard1/full/20260911120000Z/backup_manifest");
-        s3.DeletedKeys.Should().HaveCount(1, "the owned prefix and wal/ are not touched");
-        s3.PrefixObjects.Should().Contain(o => o.Key == $"{cluster}/shard1/full/20260911110000Z/backup_manifest");
+        // Assert 1 — объект B удалён, A и wal/ живы; journal-факт swept-full
+        s3.DeletedKeys.Should().Contain($"{cluster}/shard1/full/20260911120000Z.tar");
+        s3.DeletedKeys.Should().HaveCount(1, "the owned object and wal/ are not touched");
+        s3.PrefixObjects.Should().Contain(o => o.Key == $"{cluster}/shard1/full/20260911110000Z.tar");
         var journal = await fixture.Gateway.GetAsync(fixture.Endpoint, $"/pgworker/work/{cluster}", ct);
         journal.Value!.Value.Should().Contain("swept-full/shard1/20260911120000Z");
 
@@ -110,16 +110,15 @@ public class BackupSupervisorProcessTests(EtcdFixture fixture) : IAsyncLifetime
         var cluster = $"sc4{Tag}";
         await SeedAsync(cluster);
         var s3 = new FakeBackupS3(); // LastModified = UtcNow — моложе дефолтных 600 с
-        s3.PrefixObjects.Add(($"{cluster}/shard1/full/20260911120000Z/backup_manifest", 100));
-        s3.PrefixObjects.Add(($"{cluster}/shard1/full/20260911120000Z/base/1/2600", 8192));
+        s3.PrefixObjects.Add(($"{cluster}/shard1/full/20260911120000Z.tar", 8292));
         var process = BuildProcess(Options(), s3);
 
         // Act
         (await process.TickAsync(BuildSnap(cluster), null, ct)).IsSuccess.Should().BeTrue();
 
-        // Assert — объекты живы, запись журналаов удаления нет
-        s3.DeletedKeys.Should().BeEmpty("a young unowned prefix is an in-flight upload, not garbage");
-        s3.PrefixObjects.Should().HaveCount(2);
+        // Assert — объект жив, записи об удалении нет
+        s3.DeletedKeys.Should().BeEmpty("a young unowned object is an in-flight upload, not garbage");
+        s3.PrefixObjects.Should().ContainSingle();
     }
 
     // AAA (гейт 1 — свежее чтение ключа): etcd-ключ появился ПОСЛЕ снятия
@@ -134,7 +133,7 @@ public class BackupSupervisorProcessTests(EtcdFixture fixture) : IAsyncLifetime
         var cluster = $"sc5{Tag}";
         await SeedAsync(cluster);
         var s3 = new FakeBackupS3 { LastModified = DateTimeOffset.UtcNow.AddMinutes(-30) };
-        s3.PrefixObjects.Add(($"{cluster}/shard1/full/20260911120000Z/backup_manifest", 100));
+        s3.PrefixObjects.Add(($"{cluster}/shard1/full/20260911120000Z.tar", 100));
         var process = BuildProcess(Options(), s3);
         (await fixture.Gateway.PutAsync(fixture.Endpoint,
             BackupNames.FullKey(cluster, "shard1", "20260911120000Z"),
@@ -159,7 +158,7 @@ public class BackupSupervisorProcessTests(EtcdFixture fixture) : IAsyncLifetime
         var cluster = $"sc2{Tag}";
         await SeedAsync(cluster);
         var s3 = new FakeBackupS3();
-        s3.PrefixObjects.Add(($"{cluster}/shard1/full/20260911120000Z/backup_manifest", 100));
+        s3.PrefixObjects.Add(($"{cluster}/shard1/full/20260911120000Z.tar", 100));
         var process = BuildProcess(Options(), s3);
         var restoring = new ShardBackups([], null,
             [new RestoreOperationState("20260911130000Z", RestoreStatus.Planned,
@@ -185,14 +184,14 @@ public class BackupSupervisorProcessTests(EtcdFixture fixture) : IAsyncLifetime
         var cluster = $"sc3{Tag}";
         await SeedAsync(cluster);
         var s3 = new FakeBackupS3();
-        s3.PrefixObjects.Add(($"{cluster}/shard1/full/20260911120000Z/backup_manifest", 100));
+        s3.PrefixObjects.Add(($"{cluster}/shard1/full/20260911120000Z.tar", 100));
         var disabled = BuildProcess(null, s3);
         (await disabled.TickAsync(BuildSnap(cluster), null, ct)).IsSuccess.Should().BeTrue();
         s3.DeletedKeys.Should().BeEmpty("Enabled=false — no-op");
 
         // Arrange 2 — не-Active кластер: Done без list
         var s3b = new FakeBackupS3();
-        s3b.PrefixObjects.Add(($"{cluster}/shard1/full/20260911120000Z/backup_manifest", 100));
+        s3b.PrefixObjects.Add(($"{cluster}/shard1/full/20260911120000Z.tar", 100));
         var process = BuildProcess(Options(), s3b);
         var notActive = new ClusterSnapshot(
             new ClusterConfig(cluster, 2, cluster, null, ClusterState.NotInitialized),
@@ -204,7 +203,7 @@ public class BackupSupervisorProcessTests(EtcdFixture fixture) : IAsyncLifetime
 
         // Arrange 3 — чужой клэйм: отказ до любых мутаций
         var s3c = new FakeBackupS3();
-        s3c.PrefixObjects.Add(($"{cluster}/shard1/full/20260911120000Z/backup_manifest", 100));
+        s3c.PrefixObjects.Add(($"{cluster}/shard1/full/20260911120000Z.tar", 100));
         await using var claims2 = new ClaimStore("/pgworker", [fixture.Endpoint], fixture.Gateway, TimeProvider.System);
         var other = new BackupSupervisorProcess(
             fixture.Gateway, [fixture.Endpoint], FakePoolFactory.Single(s3c), claims2,
@@ -213,5 +212,117 @@ public class BackupSupervisorProcessTests(EtcdFixture fixture) : IAsyncLifetime
         (await other.TickAsync(BuildSnap(cluster), null, ct)).IsSuccess.Should().BeFalse(
             "mutations without a claim are forbidden");
         s3c.DeletedKeys.Should().BeEmpty();
+    }
+
+    // AAA (#1/#9): старая multipart-сессия БЕЗ живой операции (ключа полного
+    // нет) — Abort + journal-факт; запрос идёт через пул/фейк (без сети).
+    [Fact]
+    public async Task StaleMultipartWithoutLiveOperation_AbortedAndJournaled()
+    {
+        // Arrange — сессия 30 минут назад, etcd-ключа полного нет.
+        var ct = TestContext.Current.CancellationToken;
+        var cluster = $"sc6{Tag}";
+        await SeedAsync(cluster);
+        var s3 = new FakeBackupS3();
+        var upload = new MultipartUploadInfo(
+            $"{cluster}/shard1/full/20260911120000Z.tar", "upload-1",
+            DateTimeOffset.UtcNow.AddMinutes(-30));
+        s3.MultipartUploads.Add(upload);
+        var process = BuildProcess(Options(), s3);
+
+        // Act
+        (await process.TickAsync(BuildSnap(cluster), null, ct)).IsSuccess.Should().BeTrue();
+
+        // Assert — сессия абортнута, журнал несёт aborted-mpu.
+        s3.AbortedUploads.Should().ContainSingle()
+            .Which.Should().Be((upload.Key, upload.UploadId));
+        var journal = await fixture.Gateway.GetAsync(fixture.Endpoint, $"/pgworker/work/{cluster}", ct);
+        journal.Value!.Value.Should().Contain("aborted-mpu/shard1/upload-1");
+    }
+
+    // AAA (#1): сессия живого полного (RUNNING в пределах JobFullTimeoutSec) —
+    // НЕ абортится: Abort живой заливки = NoSuchUpload у следующей части.
+    [Fact]
+    public async Task LiveFullMultipartSession_Skipped()
+    {
+        // Arrange — сессия 30 минут назад + свежий RUNNING-ключ (5 минут).
+        var ct = TestContext.Current.CancellationToken;
+        var cluster = $"sc7{Tag}";
+        await SeedAsync(cluster);
+        var s3 = new FakeBackupS3();
+        var upload = new MultipartUploadInfo(
+            $"{cluster}/shard1/full/20260911120000Z.tar", "upload-live",
+            DateTimeOffset.UtcNow.AddMinutes(-30));
+        s3.MultipartUploads.Add(upload);
+        var started = TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 300;
+        await fixture.Gateway.PutAsync(fixture.Endpoint,
+            BackupNames.FullKey(cluster, "shard1", "20260911120000Z"),
+            BackupStatusJson.Serialize(new FullBackupState(
+                "20260911120000Z", FullBackupStatus.Running, "shard1a",
+                BackupSourceRole.Replica, started, null, null, null, null, null)),
+            null, ct);
+        var process = BuildProcess(Options(), s3);
+
+        // Act
+        (await process.TickAsync(BuildSnap(cluster), null, ct)).IsSuccess.Should().BeTrue();
+
+        // Assert — живая сессия не тронута.
+        s3.AbortedUploads.Should().BeEmpty("a live full's multipart session must not be aborted");
+        s3.MultipartUploads.Should().ContainSingle();
+    }
+
+    // AAA (#1): активный полный СТАРШЕ JobFullTimeoutSec — не живой (его
+    // гасит возрастной бюджет §4): сессия абортится.
+    [Fact]
+    public async Task FullBeyondTimeout_MultipartSessionAborted()
+    {
+        // Arrange — сессия 30 минут назад + RUNNING-ключ 7 часов (бюджет 6 ч).
+        var ct = TestContext.Current.CancellationToken;
+        var cluster = $"sc8{Tag}";
+        await SeedAsync(cluster);
+        var s3 = new FakeBackupS3();
+        var upload = new MultipartUploadInfo(
+            $"{cluster}/shard1/full/20260911120000Z.tar", "upload-old",
+            DateTimeOffset.UtcNow.AddMinutes(-30));
+        s3.MultipartUploads.Add(upload);
+        var started = TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 7 * 3600;
+        await fixture.Gateway.PutAsync(fixture.Endpoint,
+            BackupNames.FullKey(cluster, "shard1", "20260911120000Z"),
+            BackupStatusJson.Serialize(new FullBackupState(
+                "20260911120000Z", FullBackupStatus.Running, "shard1a",
+                BackupSourceRole.Replica, started, null, null, null, null, null)),
+            null, ct);
+        var process = BuildProcess(Options(), s3);
+
+        // Act
+        (await process.TickAsync(BuildSnap(cluster), null, ct)).IsSuccess.Should().BeTrue();
+
+        // Assert — просроченная операция не защищает сессию.
+        s3.AbortedUploads.Should().ContainSingle();
+    }
+
+    // AAA (#1/#9): транспортный отказ листинга multipart — warning + journal,
+    // проход не падает, следующий проход повторит (acyclic-семантика).
+    [Fact]
+    public async Task MultipartListTransportFailure_WarningNextPass()
+    {
+        // Arrange — листинг multipart падает транспортом.
+        var ct = TestContext.Current.CancellationToken;
+        var cluster = $"sc9{Tag}";
+        await SeedAsync(cluster);
+        var s3 = new FakeBackupS3 { FailMultipartList = true };
+        s3.MultipartUploads.Add(new MultipartUploadInfo(
+            $"{cluster}/shard1/full/20260911120000Z.tar", "upload-x",
+            DateTimeOffset.UtcNow.AddMinutes(-30)));
+        var process = BuildProcess(Options(), s3);
+
+        // Act — проход успешен (сверка объектов не зависит от гигиены).
+        (await process.TickAsync(BuildSnap(cluster), null, ct)).IsSuccess.Should().BeTrue();
+
+        // Assert — abort не звался, journal-факт отказа листинга.
+        s3.AbortedUploads.Should().BeEmpty();
+        s3.MultipartUploads.Should().ContainSingle();
+        var journal = await fixture.Gateway.GetAsync(fixture.Endpoint, $"/pgworker/work/{cluster}", ct);
+        journal.Value!.Value.Should().Contain("multipart-list-failed/shard1");
     }
 }

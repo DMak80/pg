@@ -112,9 +112,8 @@ public static class OrphanRegistry
     /// <summary>Группировка list-объектов (один проход): суммы размеров по
     /// префиксам «&lt;C&gt;/&lt;X&gt;/» нашей формы (имена валидны по regex;
     /// посторонние корневые объекты вне реестра) + детект валидных полных —
-    /// ключ full/&lt;id&gt;/backup_manifest (5 сегментов, 3-й full, последний
-    /// backup_manifest) — критерий DR-выбора, из уже снятого list, ноль лишних
-    /// запросов к S3 (arch/19 §4, DR-hold).</summary>
+    /// объект full/&lt;id&gt;.tar (4 сегмента, 3-й full) — критерий DR-выбора, из
+    /// уже снятого list, ноль лишних запросов к S3 (arch/19 §4, DR-hold).</summary>
     public static PrefixGrouping GroupPrefixes(IReadOnlyList<S3ObjectInfo> objects)
     {
         var sizes = new Dictionary<string, long>(StringComparer.Ordinal);

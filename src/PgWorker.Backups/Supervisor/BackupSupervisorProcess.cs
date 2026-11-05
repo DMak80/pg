@@ -65,7 +65,7 @@ public sealed class BackupSupervisorProcess(
             return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
         _lastPassUnix[cluster] = nowUnix;
 
-        //  (arch/19 §5): пул-клиент кластера (удаления сирот full/<id>/ —
+        //  (arch/19 §5): пул-клиент кластера (удаления сирот full/<id>.tar —
         // первая доступная нода: put/delete-семантика пула). null (пул не
         // выбран) → проход молчит; Failed → journal, ретраи проходом.
         var poolRead = await s3Factory.ResolveAsync(cluster, ct);
@@ -99,7 +99,7 @@ public sealed class BackupSupervisorProcess(
                 // policy-ключ кластера перекрывает дефолт конфига.
                 var garbageMinAgeSec = backups?.Policy?.GarbageMinAgeSec ?? options.GarbageMinAgeSec;
                 await SweepShardAsync(
-                    cluster, shard.Name, shardBackups, garbageMinAgeSec, s3, poolCtx, options, ct);
+                    cluster, shard.Name, shardBackups, garbageMinAgeSec, s3, options, ct);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -124,8 +124,7 @@ public sealed class BackupSupervisorProcess(
     // гигиена висячих multipart-сессий шарда (spec t01 §3.7).
     private async Task SweepShardAsync(
         string cluster, string shard, ShardBackups? shardBackups,
-        long garbageMinAgeSec, IBackupS3 s3, BackupPoolContext pool,
-        BackupsRuntimeOptions options, CancellationToken ct)
+        long garbageMinAgeSec, IBackupS3 s3, BackupsRuntimeOptions options, CancellationToken ct)
     {
         var listed = await S3PulseAsync(token => s3.ListFullsAsync(cluster, shard, ct: token), ct);
         if (!listed.IsSuccess)
@@ -186,53 +185,94 @@ public sealed class BackupSupervisorProcess(
                 Op, cluster, shard, id);
         }
 
-        await AbortStaleMultipartAsync(cluster, shard, garbageMinAgeSec, pool, options, ct);
+        await AbortStaleMultipartAsync(cluster, shard, garbageMinAgeSec, s3, options, ct);
     }
 
-    // NEW-гигиена (spec t01 §3.7): висячие multipart-сессии шарда (незавершённые
-    // попытки полного после отказа/смерти приёмника) старше порога мусора —
-    // Abort на СВОЁМ endpoint'е сессии. Write-список полного фиксируется ПО
-    // РОЛИ на старте операции, роль супервизор не знает — обходятся ОБА списка
-    // пула (дедуп по endpoint); транспортный отказ endpoint'а — warning и
-    // продолжение (следующий проход повторит).
+    // Гигиена (spec t01 §3.7, e-supervisor §1): висячие multipart-сессии шарда
+    // (незавершённые попытки полного после отказа/смерти приёмника) старше
+    // порога мусора — Abort. Клиент — ПУЛ из фабрики (шов резолва/перебора/
+    // breaker; прямой new BackupS3 обходил контракт). ЖИВАЯ заливка не
+    // трогается никогда: перед abort'ом конкретной сессии СВЕЖЕЕ чтение
+    // etcd-ключа full/<id> (id — из ключа сессии); активный полный
+    // (PLANNED/RUNNING/UPLOADING) с возрастом операции в бюджете
+    // JobFullTimeoutSec — сессия может быть его текущей заливкой → пропуск
+    // (Abort = NoSuchUpload у следующей части и падение большого полного).
+    // Не прочитали ключ/статус — не абортим (безопасность важнее места).
+    // Транспортный отказ endpoint'а — warning, следующий проход.
     private async Task AbortStaleMultipartAsync(
-        string cluster, string shard, long garbageMinAgeSec, BackupPoolContext pool,
+        string cluster, string shard, long garbageMinAgeSec, IBackupS3 s3,
         BackupsRuntimeOptions options, CancellationToken ct)
     {
-        var endpoints = pool.WriteMaster.Concat(pool.WriteReplica)
-            .Distinct(StringComparer.Ordinal)
-            .ToList();
-        foreach (var endpoint in endpoints)
+        if (s3 is not IMultipartS3 multipart)
+            throw new ApplicationException(
+                $"{Op} {cluster}/{shard}: pool client does not support multipart hygiene");
+        var prefix = $"{cluster}/{shard}/";
+        var uploads = await S3PulseAsync(
+            token => multipart.ListMultipartUploadsAsync(prefix, token), ct);
+        if (!uploads.IsSuccess)
         {
-            await using var client = new BackupS3(new S3ClientOptions(
-                endpoint, options.S3Bucket, pool.AccessKey, pool.SecretKey,
-                CaBundlePath: options.S3CaBundlePath, MaxErrorRetry: 0));
-            var uploads = await S3PulseAsync(
-                token => client.ListMultipartUploadsAsync($"{cluster}/{shard}/", token), ct);
-            if (!uploads.IsSuccess)
+            // Исчерпание пула/транспорт — гигиена следующего прохода (не
+            // ошибка шарда: объектная сверка уже выполнена).
+            logger?.LogWarning(
+                "{Op} {Cluster}/{Shard}: list multipart uploads failed: {Error}",
+                Op, cluster, shard, uploads.Error!.Message);
+            await journal.WritePhaseAsync(cluster, Op, $"multipart-list-failed/{shard}",
+                claims.InstanceId, uploads.Error!.Message, ct);
+            return;
+        }
+
+        var now = time.GetUtcNow();
+        foreach (var upload in uploads.Value)
+        {
+            if (!SupervisorPlanner.IsGarbageMatured(upload.Initiated, garbageMinAgeSec, now))
+                continue;
+
+            var id = SupervisorPlanner.FullIdFromMultipartKey(upload.Key, cluster, shard);
+            if (id is null)
             {
                 logger?.LogWarning(
-                    "{Op} {Cluster}/{Shard}: list multipart on {Endpoint} failed: {Error}",
-                    Op, cluster, shard, endpoint, uploads.Error!.Message);
+                    "{Op} {Cluster}/{Shard}: multipart session {Key} has no full id — left untouched",
+                    Op, cluster, shard, upload.Key);
                 continue;
             }
 
-            foreach (var upload in uploads.Value)
+            var fresh = await GetFullKeyAsync(cluster, shard, id, ct);
+            if (!fresh.IsSuccess)
             {
-                if (!SupervisorPlanner.IsGarbageMatured(
-                        upload.Initiated, garbageMinAgeSec, time.GetUtcNow()))
-                    continue;
-                var aborted = await S3PulseAsync(
-                    token => client.AbortMultipartUploadAsync(upload.Key, upload.UploadId, token), ct);
-                var uploadPrefix = upload.UploadId[..Math.Min(8, upload.UploadId.Length)];
-                await journal.WritePhaseAsync(cluster, Op, $"aborted-mpu/{shard}/{uploadPrefix}",
-                    claims.InstanceId, aborted.IsSuccess ? null : aborted.Error!.Message, ct);
-                if (aborted.IsSuccess)
-                {
-                    logger?.LogInformation(
-                        "{Op} {Cluster}/{Shard}: aborted stale multipart upload {Key} ({UploadId} started {Initiated})",
-                        Op, cluster, shard, upload.Key, uploadPrefix, upload.Initiated);
-                }
+                logger?.LogWarning(
+                    "{Op} {Cluster}/{Shard}: fresh key check for multipart {Key} failed: {Error} — not aborted",
+                    Op, cluster, shard, upload.Key, fresh.Error!.Message);
+                continue;
+            }
+
+            if (fresh.Value is { } kv
+                && SupervisorPlanner.IsLiveFull(
+                    kv.Value, now.ToUnixTimeSeconds(), options.JobFullTimeoutSec) is not false)
+            {
+                // true — живой полный; null — статус не разобран (не рискуем).
+                logger?.LogInformation(
+                    "{Op} {Cluster}/{Shard}: multipart session {Key} belongs to a live full {Id} — skipped",
+                    Op, cluster, shard, upload.Key, id);
+                continue;
+            }
+
+            var aborted = await S3PulseAsync(
+                token => multipart.AbortMultipartUploadAsync(
+                    upload.Key, upload.UploadId, token), ct);
+            var uploadPrefix = upload.UploadId[..Math.Min(8, upload.UploadId.Length)];
+            await journal.WritePhaseAsync(cluster, Op, $"aborted-mpu/{shard}/{uploadPrefix}",
+                claims.InstanceId, aborted.IsSuccess ? null : aborted.Error!.Message, ct);
+            if (aborted.IsSuccess)
+            {
+                logger?.LogInformation(
+                    "{Op} {Cluster}/{Shard}: aborted stale multipart upload {Key} ({UploadId} started {Initiated})",
+                    Op, cluster, shard, upload.Key, uploadPrefix, upload.Initiated);
+            }
+            else
+            {
+                logger?.LogWarning(
+                    "{Op} {Cluster}/{Shard}: abort multipart {Key} ({UploadId}) failed: {Error} — next pass retries",
+                    Op, cluster, shard, upload.Key, uploadPrefix, aborted.Error!.Message);
             }
         }
     }

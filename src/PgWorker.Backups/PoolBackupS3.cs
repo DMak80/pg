@@ -19,7 +19,7 @@ namespace PgWorker.Backups;
 /// BucketExists — любая доступная.
 /// </summary>
 public sealed class PoolBackupS3
-    : IBackupS3, IWalSegmentGuard, IDeleteObjectS3, IStreamObjectS3, IAsyncDisposable
+    : IBackupS3, IWalSegmentGuard, IDeleteObjectS3, IStreamObjectS3, IMultipartS3, IAsyncDisposable
 {
     // Окно исключения отказавшей цели (arch/19 §5): закрывает тыл
     // ретрай-циклам источников (приёмник WAL — 30-35 с) — мёртвая цель не
@@ -221,76 +221,11 @@ public sealed class PoolBackupS3
         return Result<WalUnionListing>.Success(new WalUnionListing([.. merged.Values], failed));
     }
 
-    /// <summary>Union-листинг ПРОИЗВОЛЬНОГО префикса по ВСЕМ read-целям (
-    /// arch/19 §5 «где данные есть»): полный бэкап заливается на первую живую
-    /// ноду момента заливки — набор full/&lt;id&gt;/pg_wal/ и wal/-дубли
-    /// размещены по нодам; соло-листинг первой живой цели даёт ложное «пусто»
-    /// (verify FAILED «set contains no pg_wal WAL segments») и ложный gap
-    /// (drill). Дедуп по имени; успех — если ответил хотя бы один узел;
-    /// исчерпание — маркер.</summary>
-    public async Task<Result<IReadOnlyList<WalObject>>> ListUnionAsync(
-        string cluster, string shard, string prefix, int? maxKeysPerTest = null, CancellationToken ct = default)
-    {
-        var merged = new Dictionary<string, WalObject>(StringComparer.Ordinal);
-        Result<IReadOnlyList<WalObject>> last = default;
-        var anySuccess = false;
-        foreach (var uri in _readTargets)
-        {
-            var result = await AttemptAsync(uri, ct, () => Target(uri).ListAsync(cluster, shard, prefix, maxKeysPerTest, ct));
-            if (!result.IsSuccess)
-            {
-                last = result;
-                continue;
-            }
-
-            anySuccess = true;
-            foreach (var o in result.Value)
-                merged.TryAdd(o.Name, o);
-        }
-
-        if (!anySuccess)
-            return Result<IReadOnlyList<WalObject>>.Failed(new ApplicationException(
-                $"{S3PoolMarkers.Exhausted}: list-union {prefix} — all pool nodes are unavailable: {last.Error!.Message}"));
-        return Result<IReadOnlyList<WalObject>>.Success([.. merged.Values]);
-    }
-
     public async Task<Result<IReadOnlyList<S3ObjectInfo>>> ListPrefixAsync(
         string prefix, int? maxKeysPerTest = null, CancellationToken ct = default)
         => await FirstAliveAsync(
             uri => Target(uri).ListPrefixAsync(prefix, maxKeysPerTest, ct),
             ct, $"list {prefix}");
-
-    /// <summary>Union-листинг произвольного префикса (S3ObjectInfo) по ВСЕМ
-    /// read-целям, дедуп по ключу: полный набор заливается на первую живую
-    /// ноду момента заливки — при её отказе посреди заливки/лаге mesh соло-
-    /// листинг первой живой цели неполон, и скачивающий (verify/restore)
-    /// получает недокачанный набор — ложный permanent-FAILED. Успех — если
-    /// ответил хотя бы один узел; исчерпание — маркер.</summary>
-    public async Task<Result<IReadOnlyList<S3ObjectInfo>>> ListPrefixUnionAsync(
-        string prefix, int? maxKeysPerTest = null, CancellationToken ct = default)
-    {
-        var merged = new Dictionary<string, S3ObjectInfo>(StringComparer.Ordinal);
-        Result<IReadOnlyList<S3ObjectInfo>> last = default;
-        var anySuccess = false;
-        foreach (var uri in _readTargets)
-        {
-            var result = await AttemptAsync(uri, ct, () => Target(uri).ListPrefixAsync(prefix, maxKeysPerTest, ct));
-            if (!result.IsSuccess)
-            {
-                last = result;
-                continue;
-            }
-
-            anySuccess = true;
-            foreach (var o in result.Value)
-                merged.TryAdd(o.Key, o);
-        }
-
-        if (!anySuccess)
-            return Result<IReadOnlyList<S3ObjectInfo>>.Failed(new ApplicationException(
-                $"{S3PoolMarkers.Exhausted}: list-prefix-union {prefix} — all pool nodes are unavailable: {last.Error!.Message}"));
-        return Result<IReadOnlyList<S3ObjectInfo>>.Success([.. merged.Values]);
-    }
 
     // Запись: попытка на текущей, отказ → следующая; исчерпание → маркер.
     public async Task<Result> PutObjectAsync(string key, byte[] data, string? sha256, CancellationToken ct = default)
@@ -387,11 +322,6 @@ public sealed class PoolBackupS3
 
     // Точечное чтение: NotFound/транспортный отказ → следующая; успех — оттуда;
     // исчерпание → последняя исходная ошибка (не маркер — причина важнее).
-    public async Task<Result<string>> GetObjectAsync(
-        string cluster, string shard, string key, CancellationToken ct = default)
-        => await FirstFoundAsync(
-            uri => Target(uri).GetObjectAsync(cluster, shard, key, ct), ct, $"get {key}");
-
     public async Task<Result<(byte[] Data, string? ETag)>> GetObjectBytesAsync(
         string cluster, string shard, string key, CancellationToken ct = default)
         => await FirstFoundAsync(
@@ -419,51 +349,6 @@ public sealed class PoolBackupS3
         => await FirstAliveAsync(
             uri => Target(uri).ListFullsAsync(cluster, shard, maxKeysPerTest, ct),
             ct, "list-fulls");
-
-    public async Task<Result<string>> DownloadTextAsync(
-        string cluster, string shard, string objectKey, CancellationToken ct = default)
-        => await FirstFoundAsync(
-            uri => Target(uri).DownloadTextAsync(cluster, shard, objectKey, ct),
-            ct, $"get {objectKey}");
-
-    // Файловый WAL-гвард (дубль pg_wal полного): write-перебор с немедленной
-    // остановкой на конфликте содержимого (как PutWalSegmentAsync).
-    public async Task<Result> PutWalSegmentFileAsync(
-        string key, string filePath, CancellationToken ct = default)
-    {
-        Result last = default;
-        foreach (var uri in _writeTargets)
-        {
-            var result = await AttemptAsync(uri, ct, () =>
-                Target(uri) is IWalSegmentGuard guard
-                    ? guard.PutWalSegmentFileAsync(key, filePath, ct)
-                    : Target(uri).PutFileAsync(key, filePath, ct));
-            if (result.IsSuccess)
-                return result;
-            if (WalArchiveConflict.Is(result))
-                return result;
-            last = result;
-        }
-
-        return Result.Failed(new ApplicationException(
-            $"{S3PoolMarkers.Exhausted}: put-file {key} — all list nodes are unavailable: {last.Error!.Message}"));
-    }
-
-    // Запись файла: write-семантика put (перебор write-списка); исчерпание → маркер.
-    public async Task<Result> PutFileAsync(string key, string filePath, CancellationToken ct = default)
-    {
-        Result last = default;
-        foreach (var uri in _writeTargets)
-        {
-            var result = await AttemptAsync(uri, ct, () => Target(uri).PutFileAsync(key, filePath, ct));
-            if (result.IsSuccess)
-                return result;
-            last = result;
-        }
-
-        return Result.Failed(new ApplicationException(
-            $"{S3PoolMarkers.Exhausted}: put-file {key} — all list nodes are unavailable: {last.Error!.Message}"));
-    }
 
     // Файловый GET: перебор read-списка до найденного (как GetObjectAsync);
     // исчерпание — последняя исходная ошибка (не маркер — причина важнее).
@@ -548,6 +433,102 @@ public sealed class PoolBackupS3
         => throw new NotSupportedException(
             "stream is endpoint-pinned; use single-target client");
 
+    // ── Multipart (гигиена супервизора, spec t01 §3.7): сессия живёт на ОДНОЙ
+    // write-цели — листинг union'ом по write-списку (дедуп key+uploadId),
+    // abort перебором до успеха (на чужой цели — NoSuchUpload, следующая).
+
+    /// <summary>Создание сессии: write-перебор целей (перебор делает пул);
+    /// сессия фиксируется на ответившей цели.</summary>
+    public async Task<Result<IMultipartUploadSession>> CreateMultipartUploadAsync(
+        string key, CancellationToken ct)
+    {
+        Result<IMultipartUploadSession> last = default;
+        foreach (var uri in _writeTargets)
+        {
+            var target = Target(uri);
+            if (target is not IMultipartS3 multipart)
+            {
+                last = Result<IMultipartUploadSession>.Failed(new ApplicationException(
+                    $"target {uri} does not support multipart uploads"));
+                continue;
+            }
+
+            var result = await AttemptAsync(
+                uri, ct, () => multipart.CreateMultipartUploadAsync(key, ct));
+            if (result.IsSuccess)
+                return result;
+            last = result;
+        }
+
+        return Result<IMultipartUploadSession>.Failed(new ApplicationException(
+            $"{S3PoolMarkers.Exhausted}: multipart {key} — all write targets are unavailable: {last.Error!.Message}"));
+    }
+
+    /// <summary>Union-листинг висячих сессий по ВСЕМ write-целям (сессия
+    /// могла остаться на любой из них; дедуп key+uploadId); успех — если
+    /// ответила хотя бы одна цель, исчерпание — маркер.</summary>
+    public async Task<Result<IReadOnlyList<MultipartUploadInfo>>> ListMultipartUploadsAsync(
+        string prefix, CancellationToken ct)
+    {
+        var merged = new Dictionary<(string Key, string UploadId), MultipartUploadInfo>();
+        Result<IReadOnlyList<MultipartUploadInfo>> last = default;
+        var anySuccess = false;
+        foreach (var uri in _writeTargets)
+        {
+            var target = Target(uri);
+            if (target is not IMultipartS3 multipart)
+            {
+                last = Result<IReadOnlyList<MultipartUploadInfo>>.Failed(
+                    new ApplicationException($"target {uri} does not support multipart uploads"));
+                continue;
+            }
+
+            var result = await AttemptAsync(
+                uri, ct, () => multipart.ListMultipartUploadsAsync(prefix, ct));
+            if (!result.IsSuccess)
+            {
+                last = result;
+                continue;
+            }
+
+            anySuccess = true;
+            foreach (var upload in result.Value)
+                merged.TryAdd((upload.Key, upload.UploadId), upload);
+        }
+
+        if (!anySuccess)
+            return Result<IReadOnlyList<MultipartUploadInfo>>.Failed(new ApplicationException(
+                $"{S3PoolMarkers.Exhausted}: list-multipart {prefix} — all write targets are unavailable: {last.Error!.Message}"));
+        return Result<IReadOnlyList<MultipartUploadInfo>>.Success([.. merged.Values]);
+    }
+
+    /// <summary>Abort сессии: перебор write-целей до успеха (сессия на одной;
+    /// NoSuchUpload чужой цели — следующий); исчерпание — маркер.</summary>
+    public async Task<Result> AbortMultipartUploadAsync(
+        string key, string uploadId, CancellationToken ct)
+    {
+        Result last = default;
+        foreach (var uri in _writeTargets)
+        {
+            var target = Target(uri);
+            if (target is not IMultipartS3 multipart)
+            {
+                last = Result.Failed(new ApplicationException(
+                    $"target {uri} does not support multipart uploads"));
+                continue;
+            }
+
+            var result = await AttemptAsync(
+                uri, ct, () => multipart.AbortMultipartUploadAsync(key, uploadId, ct));
+            if (result.IsSuccess)
+                return result;
+            last = result;
+        }
+
+        return Result.Failed(new ApplicationException(
+            $"{S3PoolMarkers.Exhausted}: abort-multipart {key} — all write targets are unavailable: {last.Error!.Message}"));
+    }
+
     // Листинги: первая доступная read-цель (успех = пустой список тоже успех);
     // исчерпание — маркер (алертная грань «пул недоступен»).
     private async Task<Result<T>> FirstAliveAsync<T>(
@@ -564,23 +545,6 @@ public sealed class PoolBackupS3
 
         return Result<T>.Failed(new ApplicationException(
             $"{S3PoolMarkers.Exhausted}: {what} — all pool nodes are unavailable: {last.Error!.Message}"));
-    }
-
-    // Точечные GET: любой отказ (NotFound/транспорт) → следующая; успех — оттуда;
-    // исчерпание — ПОСЛЕДНЯЯ исходная ошибка (текст причины).
-    private async Task<Result<string>> FirstFoundAsync(
-        Func<string, Task<Result<string>>> call, CancellationToken ct, string what)
-    {
-        Result<string> last = default;
-        foreach (var uri in _readTargets)
-        {
-            var result = await AttemptAsync(uri, ct, () => call(uri));
-            if (result.IsSuccess)
-                return result;
-            last = result;
-        }
-
-        return last;
     }
 
     // Точечный GET с перебором read-целей до найденного (generic-форма:

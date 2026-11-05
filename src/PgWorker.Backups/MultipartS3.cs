@@ -24,8 +24,8 @@ public interface IMultipartUploadSession
 public sealed record MultipartUploadInfo(string Key, string UploadId, DateTimeOffset Initiated);
 
 /// <summary>Multipart-заливка одного объекта (spec t01 §3.3): создание
-/// сессии по ПОЛНОМУ ключу bucket'а (`&lt;C&gt;/&lt;X&gt;/full/&lt;id&gt;.tar` —
-/// симметрия PutFileAsync), листинг/отмена висячих сессий по префиксу.</summary>
+/// сессии по ПОЛНОМУ ключу bucket'а (`&lt;C&gt;/&lt;X&gt;/full/&lt;id&gt;.tar`),
+/// листинг/отмена висячих сессий по префиксу.</summary>
 public interface IMultipartS3
 {
     Task<Result<IMultipartUploadSession>> CreateMultipartUploadAsync(
