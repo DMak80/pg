@@ -16,7 +16,8 @@ downloading
   разбор backup_manifest (валидация checksum заголовков tar)
 verifying
   проход по объекту: sha256 каждого файла, сверка с manifest
-  (перечень/размеры/хэши, вкл. pg_wal/), сквозной sha256 — против
+  (перечень/размеры/хэши; пропускаются backup_manifest и WAL-сегменты
+  pg_wal/<segment> — 05-verify.md §2), сквозной sha256 — против
   etcd-поля sha256 полного
 succeeded | failed | cancelled
 ```
