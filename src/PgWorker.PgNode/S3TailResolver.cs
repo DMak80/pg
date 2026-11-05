@@ -39,7 +39,13 @@ public static class S3TailResolver
             return Result<WalTail?>.Success(null);
 
         var names = listed.Value.Select(o => o.Name).ToList();
-        var chain = WalChain.Check(segments[0], names);
+        // Живая ветка (arch/pgnode/03 §3): проходка от минимального сегмента
+        // обрывается на TLI-границе ОТКАТАННОЙ ветки после restore (сегменты
+        // прежней ветки выше точки форка остаются в wal/, хвостом не являются).
+        // CheckWithRestart перезапускает проверку от максимального TLI — то же
+        // правило, что у контроля цепочки; настоящая дыра внутри живого TLI
+        // перезапуском не лечится (хвост — конец непрерывной части).
+        var chain = WalChain.CheckWithRestart(segments[0], names);
         if (chain.LastSegment is not { } last)
             return Result<WalTail?>.Success(null); // цепочка не закреплена — старт от слота
 

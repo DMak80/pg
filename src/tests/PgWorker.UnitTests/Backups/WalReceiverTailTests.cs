@@ -130,6 +130,30 @@ public class WalReceiverTailTests
         tail!.Position.Should().Be(3UL << 24);
     }
 
+    // AAA (восстановленный шард): restore откатил LSN назад — сегменты прежней
+    // ветки выше точки форка остались в wal/, а живой TLI начинается с МЕНЬШЕГО
+    // сегмента. Хвост — конец живого (максимального) TLI, не откатанной ветки:
+    // иначе стартовая LSN оказывается впереди flush-позиции сервера и
+    // START_REPLICATION отвергается вечно (arch/pgnode/03 §3).
+    [Fact]
+    public void RestoreRolledBackBranch_TailIsNewestTli()
+    {
+        // Arrange — TLI 1: сегменты 1..15 непрерывны; TLI 3: сегмент 14 (форк ниже)
+        var objects = Enumerable.Range(1, 15)
+            .Select(i => Seg($"0000000100000000000000{i:x2}"))
+            .Append(Seg("00000003000000000000000e"))
+            .Append(Seg("00000002.history"))
+            .Append(Seg("00000003.history"))
+            .ToArray();
+
+        // Act
+        var tail = Resolve(objects);
+
+        // Assert — хвост — конец сегмента 14 живой ветки TLI 3, а не откатанного 15
+        tail!.Position.Should().Be(15UL << 24);
+        tail.SegmentName.Should().Be("00000003000000000000000e");
+    }
+
     [Fact]
     public void EndLsn_Consistent_WithWalFileName()
     {
