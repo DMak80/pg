@@ -296,10 +296,13 @@ public sealed class E2eSupervisorSelfHealScenarios(E2eSupervisorSelfHealScenario
         var planned = await WaitPhaseAsync("replan-full", async () =>
         {
             var fulls = await FullKeysAsync(cluster, "shard1");
-            var fresh = fulls.FirstOrDefault(f =>
-                f.Key.Split('/').Last() != real && f.Value.Contains("PLANNED")
-                || f.Key.Split('/').Last() != real && f.Value.Contains("RUNNING")
-                || f.Key.Split('/').Last() != real && f.Value.Contains("UPLOADING"));
+            // Доказательство реакции планировщика — сам новый ключ (id ≠
+            // первого), в ЛЮБОМ состоянии: быстрый ретейк (факт прогона
+            // 2026-11-05: started→COMPLETED→verify OK за ~4 c) проходит
+            // транзитные PLANNED/RUNNING/UPLOADING ДО старта этой фазы —
+            // окно транзита не является условием (следующая фаза ждёт
+            // COMPLETED этого же нового полного).
+            var fresh = fulls.FirstOrDefault(f => f.Key.Split('/').Last() != real);
             if (fresh is not null)
                 newFull = fresh.Key.Split('/').Last();
             return newFull is not null;
@@ -308,8 +311,12 @@ public sealed class E2eSupervisorSelfHealScenarios(E2eSupervisorSelfHealScenario
         var completed = await WaitPhaseAsync("refull-completed", async () =>
         {
             var fulls = await FullKeysAsync(cluster, "shard1");
+            // COMPLETED любой новый (≠ первого): захваченный в replan-full
+            // мог FAILED-нуться — планировщик перезапустит пересъём новым id.
             var done = fulls.FirstOrDefault(f =>
-                f.Key.Split('/').Last() == newFull && f.Value.Contains("COMPLETED"));
+                f.Key.Split('/').Last() != real && f.Value.Contains("COMPLETED"));
+            if (done is not null)
+                newFull = done.Key.Split('/').Last();
             return done is not null;
         }, TimeSpan.FromSeconds(90), ct);
         completed.Should().BeTrue($"the retaken full {newFull} must reach COMPLETED");
