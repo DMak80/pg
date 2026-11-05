@@ -294,6 +294,63 @@ public class WalChainTests
         result.GapError.Should().Contain("00000002.history").And.Contain("0/5000000");
     }
 
+    // AAA (f-restore §2): TLI-прыжок через ПУСТЫЕ промежуточные таймлайны
+    // (TLI 3 без сегментов — только .history): родословная 1→2→3→4 с
+    // не-убывающими switch-точками и финальной в первом сегменте TLI 4 —
+    // цепочка непрерывна (реальный случай TLI-серии 2→4 после failover).
+    [Fact]
+    public void Check_TliJumpOverEmptyTimelines_IsContinuous()
+    {
+        // Arrange — TLI1 seg 1,2; TLI4 первый сегмент 3; histories в одном
+        // файле 4 с непрерывной родословной от 1.
+        var objects = new[]
+        {
+            "000000010000000000000001",
+            "000000010000000000000002",
+            "000000040000000000000003",
+            "00000003.history",
+            "00000004.history",
+        };
+        var histories = new Dictionary<uint, string>
+        {
+            [4] = "1\t0/3000000\tno recovery target specified\n" +
+                  "2\t0/3000000\tno recovery target specified\n" +
+                  "3\t0/3000000\tno recovery target specified\n",
+        };
+
+        // Act
+        var result = WalChain.Check(Seg(1, 0, 1), objects, histories);
+
+        // Assert — gap нет: пустые TLI адресованы history, switch в одном сегменте.
+        result.IsContinuous.Should().BeTrue(result.GapError);
+    }
+
+    // AAA: TLI-прыжок с переключением ПОЗЖЕ первого сегмента нового TLI —
+    // дыра (сегменты промежуточного таймлайна отсутствуют, а switch сдвинут).
+    [Fact]
+    public void Check_TliJumpWithSwitchBeyondFirstSegment_IsGap()
+    {
+        // Arrange — первый сегмент TLI4 = 3, финальный switch в сегменте 5.
+        var objects = new[]
+        {
+            "000000010000000000000001",
+            "000000010000000000000002",
+            "000000040000000000000003",
+            "00000004.history",
+        };
+        var histories = new Dictionary<uint, string>
+        {
+            [4] = "1\t0/3000000\n2\t0/3000000\n3\t0/5000000\n",
+        };
+
+        // Act
+        var result = WalChain.Check(Seg(1, 0, 1), objects, histories);
+
+        // Assert
+        result.IsContinuous.Should().BeFalse();
+        result.GapError.Should().Contain("00000004.history").And.Contain("0/5000000");
+    }
+
     // AAA: строгий переход — parent не совпадает (history говорит parent=5) → дыра
     [Fact]
     public void CheckRange_StrictSwitch_ForeignParent_Hole()

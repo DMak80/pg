@@ -28,7 +28,7 @@ public sealed class BackupVerifyFailedRule : IAlertRule
                     ["checkedUnix"] = failure.CheckedUnix?.ToString() ?? string.Empty,
                 },
                 null,
-                "full backup verification failed (pg_verifybackup/WAL chain): recoverability at risk",
+                "full backup streaming verification failed (manifest/sha256/WAL-Ranges): recoverability at risk",
                 AlertRemedy.OperatorRunbook,
                 "worker re-takes the full backup automatically (verify FAILED is not counted as freshness); for analysis see the arch/backups/README.md runbook");
     }

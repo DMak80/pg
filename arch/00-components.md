@@ -19,7 +19,7 @@
 
 | Компонент | Роль | Документ |
 |---|---|---|
-| **PgNode** | Агент внутри контейнера PG-ноды (один процесс Kestrel): приёмник WAL (физическая репликация из PG с выгрузкой в S3), полные `pg_basebackup`, verify/restore/drill, hba-гвард, `pg_dump` схемы, проверка данных ноды; API ноды для PgWorker. | [pgnode/README.md](pgnode/README.md) |
+| **PgNode** | Агент внутри контейнера PG-ноды (один процесс Kestrel): приёмник WAL (физическая репликация из PG с выгрузкой в S3), полные бэкапы (стриминговый клиент `BASE_BACKUP` → единый tar-объект в S3), verify/restore/drill, hba-гвард, `pg_dump` схемы, проверка данных ноды; API ноды для PgWorker. | [pgnode/README.md](pgnode/README.md) |
 
 ## 3. Кластеры данных и домены
 

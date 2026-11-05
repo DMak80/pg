@@ -14,7 +14,8 @@ public class PoolBackupS3Tests
         Func<IReadOnlyList<string>, Task<Result>>? delete = null,
         Func<string, Task<Result<string>>>? get = null,
         Func<string, Task<Result<IReadOnlyList<WalObject>>>>? list = null,
-        Func<string, Task<Result<IReadOnlyList<S3ObjectInfo>>>>? listPrefix = null) : IBackupS3
+        Func<string, Task<Result<IReadOnlyList<S3ObjectInfo>>>>? listPrefix = null,
+        Func<string, Task<Result<(byte[] Data, string? ETag)>>>? getBytes = null) : IBackupS3
     {
         public int Calls;
 
@@ -54,7 +55,7 @@ public class PoolBackupS3Tests
             string cluster, string shard, int? maxKeysPerTest = null, CancellationToken ct = default)
             => Task.FromResult(Result<IReadOnlyList<string>>.Success(["id1"]));
 
-// файловые методы интерфейса в этом тесте не используются —
+        // файловые методы интерфейса в этом тесте не используются —
         // заглушка (фейк нужен только перечисленным выше операциям).
         public Task<Result> PutFileAsync(string key, string filePath, CancellationToken ct = default)
             => Task.FromResult(Result.Failed(new ApplicationException("put-file: not supported by this fake")));
@@ -65,8 +66,12 @@ public class PoolBackupS3Tests
 
         public Task<Result<(byte[] Data, string? ETag)>> GetObjectBytesAsync(
             string cluster, string shard, string key, CancellationToken ct = default)
-            => Task.FromResult(Result<(byte[] Data, string? ETag)>.Failed(
-                new ApplicationException("get-bytes: not supported by this fake")));
+        {
+            Calls++;
+            return (getBytes ?? (_ => Task.FromResult(
+                Result<(byte[] Data, string? ETag)>.Failed(
+                    new ApplicationException("S3 get: not found")))))(key);
+        }
 
         public Task<Result> GetObjectToFileAsync(string cluster, string shard, string key, string destFilePath, CancellationToken ct = default)
             => Task.FromResult(Result.Failed(new ApplicationException("get-to-file: not supported by this fake")));
@@ -152,22 +157,27 @@ public class PoolBackupS3Tests
         result.Error!.Message.Should().Contain(S3PoolMarkers.Exhausted);
     }
 
-    // AAA: get — NotFound на первой, значение со второй.
+    // AAA: точечное чтение (GetObjectBytesAsync — путь fetch-wal) — NotFound
+    // на первой цели, значение со второй.
     [Fact]
-    public async Task Get_NotFoundOnFirst_FoundOnSecond()
+    public async Task GetBytes_NotFoundOnFirst_FoundOnSecond()
     {
         // Arrange — первая отдаёт «not found», вторая содержимое.
-        var t1 = new FakeTargetS3(get: _ => Task.FromResult(Result<string>.Failed(
-            new ApplicationException("S3 get k: not found"))));
-        var t2 = new FakeTargetS3(get: _ => Task.FromResult(Result<string>.Success("body")));
+        var t1 = new FakeTargetS3(getBytes: _ => Task.FromResult(
+            Result<(byte[] Data, string? ETag)>.Failed(
+                new ApplicationException("S3 get k: not found"))));
+        var t2 = new FakeTargetS3(getBytes: _ => Task.FromResult(
+            Result<(byte[] Data, string? ETag)>.Success(([1, 2, 3], "etag"))));
         var pool = Pool(t1, t2);
 
         // Act
-        var result = await pool.GetObjectAsync("c", "s", "wal/00000001.history", CancellationToken.None);
+        var result = await pool.GetObjectBytesAsync(
+            "c", "s", "wal/00000001.history", CancellationToken.None);
 
         // Assert
         result.IsSuccess.Should().BeTrue();
-        result.Value.Should().Be("body");
+        result.Value.Data.Should().Equal(1, 2, 3);
+        result.Value.ETag.Should().Be("etag");
     }
 
     // AAA: листинг — первая живая цель выигрывает, третья не трогалась.
@@ -303,24 +313,26 @@ public class PoolBackupS3Tests
     }
 
     // AAA: NotFound — НЕ отказ цели (сервер жив и отвечает): breaker не
-    // открывается, цель остаётся в переборе чтения (union-семантика
-    // «где данные есть» — отстающая mesh-нода не выпадает).
+    // открывается, цель остаётся в переборе чтения (отстающая mesh-нода
+    // не выпадает).
     [Fact]
-    public async Task Get_NotFoundDoesNotOpenBreaker()
+    public async Task GetBytes_NotFoundDoesNotOpenBreaker()
     {
         // Arrange — n1 отдаёт NotFound (объекта нет), n2 — тело.
-        var t1 = new FakeTargetS3(get: _ => Task.FromResult(Result<string>.Failed(
-            new ApplicationException("S3 get k: not found"))));
-        var t2 = new FakeTargetS3(get: _ => Task.FromResult(Result<string>.Success("body")));
+        var t1 = new FakeTargetS3(getBytes: _ => Task.FromResult(
+            Result<(byte[] Data, string? ETag)>.Failed(
+                new ApplicationException("S3 get k: not found"))));
+        var t2 = new FakeTargetS3(getBytes: _ => Task.FromResult(
+            Result<(byte[] Data, string? ETag)>.Success(([9], null))));
         var pool = Pool(t1, t2, new FakeClock());
 
-        // Act — два вызова get в пределах окна.
-        var first = await pool.GetObjectAsync("c", "s", "wal/x", CancellationToken.None);
-        var second = await pool.GetObjectAsync("c", "s", "wal/x", CancellationToken.None);
+        // Act — два вызова в пределах окна.
+        var first = await pool.GetObjectBytesAsync("c", "s", "wal/x", CancellationToken.None);
+        var second = await pool.GetObjectBytesAsync("c", "s", "wal/x", CancellationToken.None);
 
         // Assert — оба раза n1 опрошена (окно не открылось), значение — со второй.
-        first.Value.Should().Be("body");
-        second.Value.Should().Be("body");
+        first.Value.Data.Should().Equal(9);
+        second.Value.Data.Should().Equal(9);
         t1.Calls.Should().Be(2, "NotFound does not open the breaker — the target is alive");
         t2.Calls.Should().Be(2);
     }
@@ -383,116 +395,6 @@ public class PoolBackupS3Tests
         second.Error!.Message.Should().Contain("conn refused");
     }
 
-    // AAA (arch/backups/06-s3-layout.md «где данные есть»): union-листинг ПРОИЗВОЛЬНОГО
-    // префикса объединяет ответы ВСЕХ read-целей с дедупом по имени и живёт,
-    // пока отвечает хотя бы одна (первая живая может не иметь сегмента,
-    // залитого на вторую — прецедент AC4: полный заливается на первую живую
-    // ноду, а лист набора verify с FirstAlive видел пусто).
-    [Fact]
-    public async Task ListUnion_MergesAllTargets_DedupByName()
-    {
-        // Arrange — n1: сегмент 02; n2: 02 (дубль) и 03; n3 — мёртвая.
-        WalObject W(string s) => new(s, DateTimeOffset.UnixEpoch);
-        var t1 = new FakeTargetS3(list: _ => Task.FromResult(
-            Result<IReadOnlyList<WalObject>>.Success([W("000000010000000000000002")])));
-        var t2 = new FakeTargetS3(list: _ => Task.FromResult(
-            Result<IReadOnlyList<WalObject>>.Success(
-            [W("000000010000000000000002"), W("000000010000000000000003")])));
-        var t3 = new FakeTargetS3(list: _ => Task.FromResult(
-            Result<IReadOnlyList<WalObject>>.Failed(new ApplicationException("n3 down"))));
-        var map = new Dictionary<string, IBackupS3>
-        {
-            ["http://n1:9000"] = t1, ["http://n2:9000"] = t2, ["http://n3:9000"] = t3,
-        };
-        var pool = new PoolBackupS3(
-            ["http://n1:9000"], ["http://n1:9000", "http://n2:9000", "http://n3:9000"],
-            "ak", "sk", "b", null,
-            targetFactory: uri => map[uri]);
-
-        // Act — union префикса набора полного (как verify-валидация).
-        var result = await pool.ListUnionAsync("c", "s", "full/id1/pg_wal/", ct: CancellationToken.None);
-
-        // Assert — успех при мёртвой n3; дедуп 02; 03 из n2 присутствует.
-        result.IsSuccess.Should().BeTrue();
-        var names = result.Value.Select(o => o.Name).OrderBy(n => n).ToList();
-        names.Should().BeEquivalentTo(
-            ["000000010000000000000002", "000000010000000000000003"]);
-    }
-
-    // AAA: ВСЕ цели мертвы → Failed с маркером исчерпания (не пустой успех).
-    [Fact]
-    public async Task ListUnion_AllTargetsFail_ExhaustedMarker()
-    {
-        // Arrange
-        var t1 = new FakeTargetS3(list: _ => Task.FromResult(
-            Result<IReadOnlyList<WalObject>>.Failed(new ApplicationException("S3 list: down"))));
-        var t2 = new FakeTargetS3(list: _ => Task.FromResult(
-            Result<IReadOnlyList<WalObject>>.Failed(new ApplicationException("S3 list: down"))));
-        var pool = Pool(t1, t2);
-
-        // Act
-        var result = await pool.ListUnionAsync("c", "s", "wal/", ct: CancellationToken.None);
-
-        // Assert
-        result.IsSuccess.Should().BeFalse();
-        result.Error!.Message.Should().Contain(S3PoolMarkers.Exhausted);
-    }
-
-    // AAA: union list-prefix по всем нодам пула (скачивание набора в
-    // verify/restore): пересечение ответов дедупится по ПОЛНОМУ ключу —
-    // полный заливается на одну ноду момента заливки, лаг mesh даёт копии.
-    [Fact]
-    public async Task ListPrefixUnion_MergesAllTargets_DedupByKey()
-    {
-        // Arrange — n1: объект A; n2: A (копия/лаг) и B.
-        S3ObjectInfo O(string key) => new(key, 16, DateTimeOffset.UnixEpoch);
-        var t1 = new FakeTargetS3(listPrefix: _ => Task.FromResult(
-            Result<IReadOnlyList<S3ObjectInfo>>.Success([O("c/s/full/id1/backup_label")])));
-        var t2 = new FakeTargetS3(listPrefix: _ => Task.FromResult(
-            Result<IReadOnlyList<S3ObjectInfo>>.Success(
-            [O("c/s/full/id1/backup_label"), O("c/s/full/id1/backup_manifest")])));
-        var pool = Pool(t1, t2);
-
-        // Act — union префикса набора (как скачивание verify/restore).
-        var result = await pool.ListPrefixUnionAsync("c/s/full/id1/", ct: CancellationToken.None);
-
-        // Assert — дедуп по ключу: A один раз, B присутствует.
-        result.IsSuccess.Should().BeTrue();
-        result.Value.Select(o => o.Key).OrderBy(k => k).Should().BeEquivalentTo(
-            ["c/s/full/id1/backup_label", "c/s/full/id1/backup_manifest"]);
-    }
-
-    // AAA: частичный отказ пула — успех при живой хотя бы одной ноде
-    // (симметрия ListUnionAsync: соло-лист живой ноды достоверен);
-    // ВСЕ мертвы → Failed с маркером исчерпания.
-    [Fact]
-    public async Task ListPrefixUnion_PartialFailure_SucceedsAllFail_Exhausted()
-    {
-        // Arrange 1 — n1 мертва, n2 отвечает: union успешен.
-        var dead = new FakeTargetS3(listPrefix: _ => Task.FromResult(
-            Result<IReadOnlyList<S3ObjectInfo>>.Failed(new ApplicationException("S3 list: down"))));
-        var alive = new FakeTargetS3(listPrefix: _ => Task.FromResult(
-            Result<IReadOnlyList<S3ObjectInfo>>.Success(
-                [new S3ObjectInfo("c/s/full/id1/backup_label", 16, DateTimeOffset.UnixEpoch)])));
-        var pool = Pool(dead, alive);
-
-        // Act 1 / Assert 1
-        var result = await pool.ListPrefixUnionAsync("c/s/full/id1/", ct: CancellationToken.None);
-        result.IsSuccess.Should().BeTrue("one live node's listing is sufficient");
-        result.Value.Should().ContainSingle().Which.Key.Should().Be("c/s/full/id1/backup_label");
-
-        // Arrange 2 — обе мертвы.
-        var pool2 = Pool(
-            new FakeTargetS3(listPrefix: _ => Task.FromResult(
-                Result<IReadOnlyList<S3ObjectInfo>>.Failed(new ApplicationException("S3 list: down")))),
-            new FakeTargetS3(listPrefix: _ => Task.FromResult(
-                Result<IReadOnlyList<S3ObjectInfo>>.Failed(new ApplicationException("S3 list: down")))));
-
-        // Act 2 / Assert 2 — маркер исчерпания (не пустой успех).
-        var result2 = await pool2.ListPrefixUnionAsync("c/s/full/id1/", ct: CancellationToken.None);
-        result2.IsSuccess.Should().BeFalse();
-        result2.Error!.Message.Should().Contain(S3PoolMarkers.Exhausted);
-    }
 
     // AAA: детальный union — одна цель не ответила: успех, объекты живой цели
     // ДОСТАВЛЕНЫ, FailedTargets несёт отказавший uri (факт неполноты для
@@ -561,5 +463,185 @@ public class PoolBackupS3Tests
         // Assert
         result.IsSuccess.Should().BeFalse();
         result.Error!.Message.Should().Contain(S3PoolMarkers.Exhausted);
+    }
+
+    // AAA (spec t01 §6.10): удаление полного — ОДИН объект full/<id>.tar;
+    // write-перебор: первая цель отказала — вторая удалила → успех.
+    [Fact]
+    public async Task DeleteObject_FailsOverToSecondTarget()
+    {
+        // Arrange — n1 отказывает, n2 удаляет.
+        var t1 = new FakeDeleteTargetS3(fail: true);
+        var t2 = new FakeDeleteTargetS3();
+        var pool = PoolOf([("http://n1:9000", t1), ("http://n2:9000", t2)]);
+
+        // Act
+        var result = await pool.DeleteObjectAsync("c", "s", "full/id.tar", CancellationToken.None);
+
+        // Assert
+        result.IsSuccess.Should().BeTrue();
+        t1.Deleted.Should().BeEmpty();
+        t2.Deleted.Should().Equal("c/s/full/id.tar");
+    }
+
+    // AAA: все цели отказали — маркер исчерпания пула в ошибке.
+    [Fact]
+    public async Task DeleteObject_AllTargetsFail_ExhaustedMarker()
+    {
+        // Arrange
+        var pool = PoolOf(
+        [
+            ("http://n1:9000", new FakeDeleteTargetS3(fail: true)),
+            ("http://n2:9000", new FakeDeleteTargetS3(fail: true)),
+        ]);
+
+        // Act
+        var result = await pool.DeleteObjectAsync("c", "s", "full/id.tar", CancellationToken.None);
+
+        // Assert
+        result.IsSuccess.Should().BeFalse();
+        result.Error!.Message.Should().Contain(S3PoolMarkers.Exhausted);
+    }
+
+    // Пул на произвольных целях (write=read=список endpoint'ов).
+    private static PoolBackupS3 PoolOf(
+        IReadOnlyList<(string Uri, IBackupS3 Target)> targets)
+    {
+        var map = targets.ToDictionary(t => t.Uri, t => t.Target, StringComparer.Ordinal);
+        var uris = targets.Select(t => t.Uri).ToList();
+        return new PoolBackupS3(uris, uris, "ak", "sk", "b", null,
+            targetFactory: uri => map[uri]);
+    }
+
+    /// <summary>Фейк-цель одиночного удаления: копит композированные ключи,
+    /// управляемо отказывает; IBackupS3-методы не используются.</summary>
+    private sealed class FakeDeleteTargetS3(bool fail = false) : IBackupS3, IDeleteObjectS3
+    {
+        public List<string> Deleted { get; } = [];
+
+        public Task<Result> DeleteObjectAsync(
+            string cluster, string shard, string key, CancellationToken ct)
+        {
+            if (fail)
+                return Task.FromResult(Result.Failed(new ApplicationException("S3 delete: conn refused")));
+            Deleted.Add($"{cluster}/{shard}/{key}");
+            return Task.FromResult(Result.Success());
+        }
+
+        public Task<Result<bool>> BucketExistsAsync(CancellationToken ct) => throw new NotSupportedException();
+        public Task<Result<IReadOnlyList<WalObject>>> ListWalAsync(string cluster, string shard, int? maxKeysPerTest = null, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<IReadOnlyList<S3ObjectInfo>>> ListPrefixAsync(string prefix, int? maxKeysPerTest = null, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result> DeleteKeysAsync(IReadOnlyList<string> keys, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result> PutObjectAsync(string key, byte[] data, string? sha256, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<IReadOnlyList<WalObject>>> ListAsync(string cluster, string shard, string prefix, int? maxKeysPerTest = null, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<string>> GetObjectAsync(string cluster, string shard, string key, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result> PutObjectMd5Async(string key, byte[] data, string md5Hex, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<(byte[] Data, string? ETag)>> GetObjectBytesAsync(string cluster, string shard, string key, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<IReadOnlyList<string>>> ListFullsAsync(string cluster, string shard, int? maxKeysPerTest = null, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<string>> DownloadTextAsync(string cluster, string shard, string objectKey, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result> PutFileAsync(string key, string filePath, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result> GetObjectToFileAsync(string cluster, string shard, string key, string destFilePath, CancellationToken ct = default) => throw new NotSupportedException();
+    }
+
+    // AAA (spec t01 §6.23): HEAD по read-целям — первая найденная цель даёт
+    // размер; все NotFound → (false, 0).
+    [Fact]
+    public async Task HeadObject_FirstExistingTargetGivesSize_AllMissFalse()
+    {
+        // Arrange — n1 «нет объекта», n2 отдаёт размер.
+        var pool = PoolOf(
+        [
+            ("http://n1:9000", new FakeStreamTargetS3 { Exists = false }),
+            ("http://n2:9000", new FakeStreamTargetS3 { Size = 4096 }),
+        ]);
+
+        // Act
+        var found = await pool.HeadObjectAsync("c", "s", "full/id.tar", CancellationToken.None);
+        var missPool = PoolOf(
+        [
+            ("http://n1:9000", new FakeStreamTargetS3 { Exists = false }),
+            ("http://n2:9000", new FakeStreamTargetS3 { Exists = false }),
+        ]);
+        var missing = await missPool.HeadObjectAsync("c", "s", "full/id.tar", CancellationToken.None);
+
+        // Assert
+        found.IsSuccess.Should().BeTrue();
+        found.Value.Exists.Should().BeTrue();
+        found.Value.SizeBytes.Should().Be(4096);
+        missing.IsSuccess.Should().BeTrue();
+        missing.Value.Exists.Should().BeFalse();
+        missing.Value.SizeBytes.Should().Be(0);
+    }
+
+    // AAA: Range-GET по read-целям: NotFound на первой — срез со второй.
+    [Fact]
+    public async Task GetObjectRange_NotFoundOnFirst_FoundOnSecond()
+    {
+        // Arrange
+        var pool = PoolOf(
+        [
+            ("http://n1:9000", new FakeStreamTargetS3 { RangeNotFound = true }),
+            ("http://n2:9000", new FakeStreamTargetS3 { RangeBytes = [7, 8, 9] }),
+        ]);
+
+        // Act
+        var result = await pool.GetObjectRangeAsync("c", "s", "full/id.tar", 0, 2, CancellationToken.None);
+
+        // Assert
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Should().Equal(7, 8, 9);
+    }
+
+    // AAA: стрим тела пулом не реализуется — операции приёмника фиксируют endpoint.
+    [Fact]
+    public async Task GetObjectStream_NotSupported_PoolIsEndpointPinned()
+    {
+        var pool = PoolOf([("http://n1:9000", new FakeStreamTargetS3())]);
+
+        var act = async () => await pool.GetObjectStreamAsync("c", "s", "full/id.tar", CancellationToken.None);
+
+        await act.Should().ThrowAsync<NotSupportedException>();
+    }
+
+    /// <summary>Фейк-цель потокового чтения (HEAD/Range); IBackupS3 — заглушки.</summary>
+    private sealed class FakeStreamTargetS3 : IBackupS3, IStreamObjectS3
+    {
+        public bool Exists { get; init; } = true;
+
+        public long Size { get; init; } = 1024;
+
+        public bool RangeNotFound { get; init; }
+
+        public byte[] RangeBytes { get; init; } = [1, 2, 3];
+
+        public Task<Result<(bool Exists, long SizeBytes)>> HeadObjectAsync(
+            string cluster, string shard, string key, CancellationToken ct)
+            => Task.FromResult(Result<(bool Exists, long SizeBytes)>.Success(
+                (Exists, Exists ? Size : 0L)));
+
+        public Task<Result<byte[]>> GetObjectRangeAsync(
+            string cluster, string shard, string key, long start, long end, CancellationToken ct)
+            => Task.FromResult(RangeNotFound
+                ? Result<byte[]>.Failed(new ApplicationException(
+                    $"S3 get-range {cluster}/{shard}/{key}: not found"))
+                : Result<byte[]>.Success(RangeBytes));
+
+        public Task<Result<(Stream Body, long Size)>> GetObjectStreamAsync(
+            string cluster, string shard, string key, CancellationToken ct)
+            => throw new NotSupportedException();
+
+        public Task<Result<bool>> BucketExistsAsync(CancellationToken ct) => throw new NotSupportedException();
+        public Task<Result<IReadOnlyList<WalObject>>> ListWalAsync(string cluster, string shard, int? maxKeysPerTest = null, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<IReadOnlyList<S3ObjectInfo>>> ListPrefixAsync(string prefix, int? maxKeysPerTest = null, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result> DeleteKeysAsync(IReadOnlyList<string> keys, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result> PutObjectAsync(string key, byte[] data, string? sha256, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<IReadOnlyList<WalObject>>> ListAsync(string cluster, string shard, string prefix, int? maxKeysPerTest = null, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<string>> GetObjectAsync(string cluster, string shard, string key, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result> PutObjectMd5Async(string key, byte[] data, string md5Hex, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<(byte[] Data, string? ETag)>> GetObjectBytesAsync(string cluster, string shard, string key, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<IReadOnlyList<string>>> ListFullsAsync(string cluster, string shard, int? maxKeysPerTest = null, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<string>> DownloadTextAsync(string cluster, string shard, string objectKey, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result> PutFileAsync(string key, string filePath, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result> GetObjectToFileAsync(string cluster, string shard, string key, string destFilePath, CancellationToken ct = default) => throw new NotSupportedException();
     }
 }

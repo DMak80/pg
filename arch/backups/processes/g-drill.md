@@ -49,7 +49,7 @@ WAL внутри операции — общий `Restore:RecoveryTimeoutSec` (R
 ## 3. Валидация и запуск
 
 Валидация кандидата — та же, что у restore-заявки own-source (новейший
-COMPLETED ⇒ манифест `full/<id>/backup_manifest` существует (S3) ⇒
+COMPLETED ⇒ объект `full/<id>.tar` существует (S3) ⇒
 `wal_start_segment` (etcd-статус либо `backup_label`) ⇒ WalChain непрерывна
 — RPO-зазор tli-прыжка приёмника тоже даёт permanent-отказ с границами:
 дрилл периодически вскрывает незакрытый зазор оператору; verify полных вне

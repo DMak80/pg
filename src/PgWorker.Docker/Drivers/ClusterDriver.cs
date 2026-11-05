@@ -8,8 +8,8 @@ namespace PgWorker.Docker.Drivers;
 // Хост plain-режима: имя + endpoint Engine API (tcp://… | unix://…).
 public sealed record HostEndpoint(string Name, string Endpoint);
 
+/// <summary>Наличие данных PG у ноды (Д3, arch/14 R11): Present/Absent — факт
 /// <summary>Наличие данных PG у ноды (Д3, arch/pgworker/README.md R11): Present/Absent — факт
-/// PG_VERSION пробой приёмника ноды (arch/communications/02-channel-registry.md №22); Unknown — транспорт
 /// недоступен (НЕ доказательство утраты).</summary>
 public enum DataPresence { Present, Absent, Unknown }
 
@@ -34,8 +34,8 @@ public interface IClusterDriver
     // §2.1: пересчёт на каждый EnsureNode-путь, без фиксации в etcd); несётся в
     // SPILO_CONFIGURATION (merge(PGTune ∪ канон)) и doorman-бюджет; null →
     // прежний хардкод-набор (изолированные пути). syncStrict — per-cluster
+    // опция synchronous_mode_strict из config кластера (arch/14 §3).
     // опция synchronous_mode_strict из config кластера (arch/pgworker/00-etcd-contract.md).
-    // Секреты через драйвер НЕ проходят (t05, arch/pgworker/04-security.md): их несёт
     // NodeBootstrapDelivery (bootstrap-ключ etcd + mTLS-push).
     Task<Result> EnsureNodeAsync(ShardTopology topology, string nodeName, NodeAddress addr,
         EtcdEndpoints etcd, NodeResources? resources,
@@ -577,16 +577,12 @@ public sealed class PlainClusterDriver(
                 env["PGW_BACKUP_S3_BUCKET"] = backupEnv.Bucket;
             if (!string.IsNullOrWhiteSpace(backupEnv.CaPem))
                 env["PGW_BACKUP_S3_CA_PEM"] = backupEnv.CaPem;
-            // Staging полного (arch/backups/01-full-backup.md/§9): каталог в data-volume
-            // ноды; null/пусто → env не ставится — приёмник возьмёт дефолт.
-            if (!string.IsNullOrWhiteSpace(backupEnv.StagingDir))
-                env["PGW_BACKUP_STAGING_DIR"] = backupEnv.StagingDir;
             // Период .partial-доотправки приёмника (arch/backups/02-wal-archive.md §1/§9): env по образцу
-            // staging; null/≤1 → env не ставится — приёмник берёт дефолт 3 с.
+            // bucket/CA; null/≤1 → env не ставится — приёмник берёт дефолт 3 с.
             if (backupEnv.PartialIntervalSec is > 0)
                 env["PGW_WAL_PARTIAL_INTERVAL_SEC"] = backupEnv.PartialIntervalSec.Value.ToString();
-            // t15 (arch/backups/09 §1): период компакции дельт приёмника — env по
-            // образцу выше; null/<60 → не ставится (приёмник берёт дефолт 3600).
+            // t15 (arch/backups/09 §1): период компакции дельт приёмника — env
+            // по образцу выше; null/<60 → не ставится (дефолт 3600).
             if (backupEnv.PartialCompactIntervalSec is >= 60)
                 env["PGW_WAL_PARTIAL_COMPACT_INTERVAL_SEC"] =
                     backupEnv.PartialCompactIntervalSec.Value.ToString();

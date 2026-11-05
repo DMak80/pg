@@ -9,10 +9,11 @@ using PgWorker.Provisioning.Processes;
 namespace PgWorker.Backups.Supervisor;
 
 /// <summary>BackupSupervisorProcess — per-cluster сверка S3↔etcd (arch/backups/README.md
-/// §4) под клэймом &lt;C&gt; по расписанию Supervisor:IntervalSec: префиксы
-/// full/&lt;id&gt;/ живого шарда БЕЗ etcd-ключа — мусор (выбора кандидатов
-/// restore нет) — немедленный batch-delete с list-подтверждением и journal-фактом
-/// swept-full. WAL-префикс НЕ трогаем (владельцы — контроль цепочки и
+/// §4) под клэймом &lt;C&gt; по расписанию Supervisor:IntervalSec: объекты
+/// full/&lt;id&gt;.tar живого шарда БЕЗ etcd-ключа — мусор (выбора кандидатов
+/// restore нет) — удаление ОДНОГО объекта с list-подтверждением и
+/// journal-фактом swept-full; висячие multipart-сессии старше порога гасятся
+/// Abort'ом (spec t01 §3.7). WAL-префикс НЕ трогаем (владельцы — контроль цепочки и
 /// ретенция). Гварды: клэйм, Enabled (runtime()==null — no-op), Active;
 /// шард в активном restore — skip (гвард владельца). Таймауты операций — в их
 /// процессах (§3.3), здесь только сверка хранилища. Ошибка шарда не роняет
@@ -64,7 +65,7 @@ public sealed class BackupSupervisorProcess(
             return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
         _lastPassUnix[cluster] = nowUnix;
 
-        //  (arch/backups/06-s3-layout.md): пул-клиент кластера (удаления сирот full/<id>/ —
+        //  (arch/19 §5): пул-клиент кластера (удаления сирот full/<id>.tar —
         // первая доступная нода: put/delete-семантика пула). null (пул не
         // выбран) → проход молчит; Failed → journal, ретраи проходом.
         var poolRead = await s3Factory.ResolveAsync(cluster, ct);
@@ -97,7 +98,8 @@ public sealed class BackupSupervisorProcess(
                 // Возрастной гейт мусора (arch/backups/05-etcd-contract.md «Гейты мусора»):
                 // policy-ключ кластера перекрывает дефолт конфига.
                 var garbageMinAgeSec = backups?.Policy?.GarbageMinAgeSec ?? options.GarbageMinAgeSec;
-                await SweepShardAsync(cluster, shard.Name, shardBackups, garbageMinAgeSec, s3, ct);
+                await SweepShardAsync(
+                    cluster, shard.Name, shardBackups, garbageMinAgeSec, s3, options, ct);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -115,13 +117,14 @@ public sealed class BackupSupervisorProcess(
         return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
     }
 
-    // Сверка одного шарда: list full/-префиксов → отбор без etcd-ключа →
-    // гейты мусора (arch/backups/05-etcd-contract.md): свежее чтение ключа + возрастной гейт →
-    // batch-delete каждого с list-подтверждением пустоты (иначе журнал-ошибка —
-    // следующий проход повторит, идемпотентно).
+    // Сверка одного шарда: list full/-объектов → отбор без etcd-ключа →
+    // гейты мусора (arch/02 §9.12): свежее чтение ключа + возрастной гейт
+    // КОНКРЕТНОГО объекта → удаление одного full/<id>.tar с list-подтверждением
+    // (иначе журнал-ошибка — следующий проход повторит, идемпотентно); в конце —
+    // гигиена висячих multipart-сессий шарда (spec t01 §3.7).
     private async Task SweepShardAsync(
         string cluster, string shard, ShardBackups? shardBackups,
-        long garbageMinAgeSec, IBackupS3 s3, CancellationToken ct)
+        long garbageMinAgeSec, IBackupS3 s3, BackupsRuntimeOptions options, CancellationToken ct)
     {
         var listed = await S3PulseAsync(token => s3.ListFullsAsync(cluster, shard, ct: token), ct);
         if (!listed.IsSuccess)
@@ -141,39 +144,136 @@ public sealed class BackupSupervisorProcess(
             if (fresh.Value is not null)
                 continue;
 
-            var prefix = $"{cluster}/{shard}/full/{id}/";
-            var objects = await S3PulseAsync(token => s3.ListPrefixAsync(prefix, ct: token), ct);
+            var fullPrefix = $"{cluster}/{shard}/full/";
+            var key = $"{fullPrefix}{id}.tar";
+            var objects = await S3PulseAsync(token => s3.ListPrefixAsync(fullPrefix, ct: token), ct);
             if (!objects.IsSuccess)
-                throw new ApplicationException($"list {prefix}: {objects.Error!.Message}");
-            if (objects.Value.Count > 0)
+                throw new ApplicationException($"list {fullPrefix}: {objects.Error!.Message}");
+            var target = objects.Value.FirstOrDefault(o =>
+                string.Equals(o.Key, key, StringComparison.Ordinal));
+            if (target is not null)
             {
-                // Гейт 2 : самый старый объект префикса моложе порога →
-                // заливка in-flight (снапшот мог отстать, гейт 1 — страховка
-                // фантомов) — не мусор, остаётся следующему проходу.
-                var oldest = objects.Value.Min(o => o.LastModified);
-                if (!SupervisorPlanner.IsGarbageMatured(oldest, garbageMinAgeSec, time.GetUtcNow()))
+                // Гейт 2 : возраст КОНКРЕТНОГО объекта моложе порога → заливка
+                // in-flight (снапшот мог отстать, гейт 1 — страховка фантомов) —
+                // не мусор, остаётся следующему проходу.
+                if (!SupervisorPlanner.IsGarbageMatured(target.LastModified, garbageMinAgeSec, time.GetUtcNow()))
                 {
                     logger?.LogInformation(
-                        "{Op} {Cluster}/{Shard}: prefix {Id} is younger than {Age}s — not garbage yet",
+                        "{Op} {Cluster}/{Shard}: object {Id}.tar is younger than {Age}s — not garbage yet",
                         Op, cluster, shard, id, garbageMinAgeSec);
                     continue;
                 }
 
-                var deleted = await S3PulseAsync(token => s3.DeleteKeysAsync(
-                    objects.Value.Select(o => o.Key).ToList(), token), ct);
-                if (!deleted.IsSuccess)
-                    throw new ApplicationException($"delete {prefix}: {deleted.Error!.Message}");
-                var recheck = await S3PulseAsync(token => s3.ListPrefixAsync(prefix, ct: token), ct);
-                if (!recheck.IsSuccess || recheck.Value.Count > 0)
+                if (s3 is not IDeleteObjectS3 deleter)
                     throw new ApplicationException(
-                        $"deletion of {prefix} did not complete — next pass will retry");
+                        $"{Op} {cluster}/{shard}: pool client does not support single-object delete");
+                var deleted = await S3PulseAsync(
+                    token => deleter.DeleteObjectAsync(cluster, shard, $"full/{id}.tar", token), ct);
+                if (!deleted.IsSuccess)
+                    throw new ApplicationException($"delete {key}: {deleted.Error!.Message}");
+                var recheck = await S3PulseAsync(token => s3.ListPrefixAsync(fullPrefix, ct: token), ct);
+                if (!recheck.IsSuccess
+                    || recheck.Value.Any(o => string.Equals(o.Key, key, StringComparison.Ordinal)))
+                    throw new ApplicationException(
+                        $"deletion of {key} did not complete — next pass will retry");
             }
 
-            // Объектов не было (пустой префикс) или удалены — запись журнала.
+            // Объекта не было или удалён — запись журнала.
             await journal.WritePhaseAsync(cluster, Op, $"swept-full/{shard}/{id}",
                 claims.InstanceId, null, ct);
-            logger?.LogInformation("{Op} {Cluster}/{Shard}: prefix {Id} without etcd key deleted",
+            logger?.LogInformation("{Op} {Cluster}/{Shard}: object {Id}.tar without etcd key deleted",
                 Op, cluster, shard, id);
+        }
+
+        await AbortStaleMultipartAsync(cluster, shard, garbageMinAgeSec, s3, options, ct);
+    }
+
+    // Гигиена (spec t01 §3.7, e-supervisor §1): висячие multipart-сессии шарда
+    // (незавершённые попытки полного после отказа/смерти приёмника) старше
+    // порога мусора — Abort. Клиент — ПУЛ из фабрики (шов резолва/перебора/
+    // breaker; прямой new BackupS3 обходил контракт). ЖИВАЯ заливка не
+    // трогается никогда: перед abort'ом конкретной сессии СВЕЖЕЕ чтение
+    // etcd-ключа full/<id> (id — из ключа сессии); активный полный
+    // (PLANNED/RUNNING/UPLOADING) с возрастом операции в бюджете
+    // JobFullTimeoutSec — сессия может быть его текущей заливкой → пропуск
+    // (Abort = NoSuchUpload у следующей части и падение большого полного).
+    // Не прочитали ключ/статус — не абортим (безопасность важнее места).
+    // Транспортный отказ endpoint'а — warning, следующий проход.
+    private async Task AbortStaleMultipartAsync(
+        string cluster, string shard, long garbageMinAgeSec, IBackupS3 s3,
+        BackupsRuntimeOptions options, CancellationToken ct)
+    {
+        if (s3 is not IMultipartS3 multipart)
+            throw new ApplicationException(
+                $"{Op} {cluster}/{shard}: pool client does not support multipart hygiene");
+        var prefix = $"{cluster}/{shard}/";
+        var uploads = await S3PulseAsync(
+            token => multipart.ListMultipartUploadsAsync(prefix, token), ct);
+        if (!uploads.IsSuccess)
+        {
+            // Исчерпание пула/транспорт — гигиена следующего прохода (не
+            // ошибка шарда: объектная сверка уже выполнена).
+            logger?.LogWarning(
+                "{Op} {Cluster}/{Shard}: list multipart uploads failed: {Error}",
+                Op, cluster, shard, uploads.Error!.Message);
+            await journal.WritePhaseAsync(cluster, Op, $"multipart-list-failed/{shard}",
+                claims.InstanceId, uploads.Error!.Message, ct);
+            return;
+        }
+
+        var now = time.GetUtcNow();
+        foreach (var upload in uploads.Value)
+        {
+            if (!SupervisorPlanner.IsGarbageMatured(upload.Initiated, garbageMinAgeSec, now))
+                continue;
+
+            var id = SupervisorPlanner.FullIdFromMultipartKey(upload.Key, cluster, shard);
+            if (id is null)
+            {
+                logger?.LogWarning(
+                    "{Op} {Cluster}/{Shard}: multipart session {Key} has no full id — left untouched",
+                    Op, cluster, shard, upload.Key);
+                continue;
+            }
+
+            var fresh = await GetFullKeyAsync(cluster, shard, id, ct);
+            if (!fresh.IsSuccess)
+            {
+                logger?.LogWarning(
+                    "{Op} {Cluster}/{Shard}: fresh key check for multipart {Key} failed: {Error} — not aborted",
+                    Op, cluster, shard, upload.Key, fresh.Error!.Message);
+                continue;
+            }
+
+            if (fresh.Value is { } kv
+                && SupervisorPlanner.IsLiveFull(
+                    kv.Value, now.ToUnixTimeSeconds(), options.JobFullTimeoutSec) is not false)
+            {
+                // true — живой полный; null — статус не разобран (не рискуем).
+                logger?.LogInformation(
+                    "{Op} {Cluster}/{Shard}: multipart session {Key} belongs to a live full {Id} — skipped",
+                    Op, cluster, shard, upload.Key, id);
+                continue;
+            }
+
+            var aborted = await S3PulseAsync(
+                token => multipart.AbortMultipartUploadAsync(
+                    upload.Key, upload.UploadId, token), ct);
+            var uploadPrefix = upload.UploadId[..Math.Min(8, upload.UploadId.Length)];
+            await journal.WritePhaseAsync(cluster, Op, $"aborted-mpu/{shard}/{uploadPrefix}",
+                claims.InstanceId, aborted.IsSuccess ? null : aborted.Error!.Message, ct);
+            if (aborted.IsSuccess)
+            {
+                logger?.LogInformation(
+                    "{Op} {Cluster}/{Shard}: aborted stale multipart upload {Key} ({UploadId} started {Initiated})",
+                    Op, cluster, shard, upload.Key, uploadPrefix, upload.Initiated);
+            }
+            else
+            {
+                logger?.LogWarning(
+                    "{Op} {Cluster}/{Shard}: abort multipart {Key} ({UploadId}) failed: {Error} — next pass retries",
+                    Op, cluster, shard, upload.Key, uploadPrefix, aborted.Error!.Message);
+            }
         }
     }
 

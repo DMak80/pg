@@ -194,8 +194,8 @@ public sealed class DockerOptions
     public string? AdvertisedHost { get; set; }
 
     /// <summary>
+    /// Имя docker-сети контура мониторинга поставки (arch/14 §2.1/§2.4,
     /// Имя docker-сети контура мониторинга поставки (arch/pgworker/01-placement.md §1/§2.4,
-    /// arch/metrics/05-storage.md §4): задано → движок Ensure-attach'ит канонические ноды к ней
     /// (поверх pgw-net-<C>) и точки записи portalloc дописывают alias/net,
     /// sd-generator строит таргеты <alias>:8008. Пусто — поведение идентично
     /// базе (ни attach, ни полей). Сеть принадлежит поставке/сценарию (движок
@@ -302,8 +302,8 @@ public sealed class LoopsOptions
 
     public int ErrorDelayMs { get; set; } = 2000;
 
+    /// <summary>Watchdog зависших циклов (arch/14 §6/§8 — у Kafka/Valkey свои
     /// <summary>Watchdog зависших циклов (arch/pgworker/08-operability.md §3/§8 — у Kafka/Valkey свои
-    /// arch/kafkaworker/08-operability.md §4/§8 / arch/valkeyworker/06-operability.md §3/§8): Enabled=false — компонент не регистрируется;
     /// порог сноса = Multiplier × CheckIntervalSec (30 c при дефолтах, единый для
     /// всех циклов; порог healthz loops-alive в формуле не участвует).</summary>
     public Shared.Core.Hosting.WatchdogOptions Watchdog { get; set; } = new();
@@ -409,8 +409,6 @@ public sealed class BackupsOptions
 
     public BackupsPolicyOptions Policy { get; set; } = new();
 
-    public BackupsStagingOptions Staging { get; set; } = new();
-
     public BackupsJobOptions Job { get; set; } = new();
 
     public BackupsRetryOptions Retry { get; set; } = new();
@@ -448,7 +446,6 @@ public sealed class BackupsOptions
         S3CaBundlePath: S3.CaBundlePath,
         RetryBaseSec: Retry.BaseSec,
         RetryMaxSec: Retry.MaxSec,
-        StagingDir: Staging.Dir,
         WalVerifyIntervalSec: Wal.VerifyIntervalSec,
         WalLagMaxSegments: Wal.LagMaxSegments,
         WalStaleSec: Wal.StaleSec,
@@ -557,7 +554,7 @@ public sealed class BackupsJobOptions
 {
     /// <summary>Бюджет активного полного (PLANNED/RUNNING/UPLOADING), c :
     /// возраст > лимита → FAILED job-timeout + cancel API приёмника → переснятие
-    /// по бэкоффу (: контейнера полного нет, staging чистит приёмник).</summary>
+    /// по бэкоффу (: контейнера полного нет; staging-каталога у операции нет).</summary>
     public int FullTimeoutSec { get; set; } = 21600;
 
     /// <summary>Бюджет running verify-операции приёмника (started_unix снимка
@@ -618,13 +615,6 @@ public sealed class BackupsRetentionOptions
     public int Weeks { get; set; } = 1;
 
     public int Months { get; set; } = 1;
-}
-
-/// <summary>Staging полного (arch/backups/09-operability.md §1): каталог в data-volume ноды
-/// (дефолт — канон); ENOSPC — реактивный FAILED приёмника; квоты нет.</summary>
-public sealed class BackupsStagingOptions
-{
-    public string Dir { get; set; } = "/home/postgres/pgdata/backup-staging";
 }
 
 /// <summary>WAL-поток шарда (arch/backups/02-wal-archive.md §1/§9): период list/контроля цепочки,

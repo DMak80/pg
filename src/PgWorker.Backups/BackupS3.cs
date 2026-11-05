@@ -20,11 +20,13 @@ public sealed record S3ObjectInfo(string Key, long SizeBytes, DateTimeOffset Las
 /// стенда/фикстур (прямой AWSSDK-клиент), НЕ интерфейс подсистемы.
 /// ListPrefixAsync/DeleteKeysAsync — ретенционные list с размерами и
 /// batch-delete (S3-удаления ТОЛЬКО в ретенционных путях, R4).
-/// ListAsync/GetObjectAsync — verify-листинг относительно &lt;C&gt;/&lt;X&gt;/
-/// и GET history; общий кор пагинации с листом.
-/// ListFullsAsync/DownloadTextAsync — DR-поиск полных по CommonPrefixes и
-/// чтение маленьких текстовых объектов (backup_label/backup_manifest);
-/// restore S3 ТОЛЬКО читает — удаляющих операций тут нет (arch/backups/03-restore.md).</summary>
+/// ListAsync — узкий листинг приёмника WAL относительно &lt;C&gt;/&lt;X&gt;/
+/// (общий кор пагинации с ListPrefixAsync): дельта-памп `wal/<seg>` (финал +
+/// кусочное семейство) и поглощение версий финалом (list + batch-delete).
+/// ListFullsAsync — DR-поиск полных: объекты
+/// `full/<id>.tar`, id — имя без `.tar` (spec t01 §6.1). restore/drill и
+/// verify S3 ТОЛЬКО читают (стрим/HEAD/Range/файл) — удаляющих операций тут
+/// нет (arch/19 §3.5); удаление полного — отдельный IDeleteObjectS3.</summary>
 public interface IBackupS3
 {
     Task<Result<bool>> BucketExistsAsync(CancellationToken ct);
@@ -33,8 +35,8 @@ public interface IBackupS3
     Task<Result<IReadOnlyList<WalObject>>> ListWalAsync(
         string cluster, string shard, int? maxKeysPerTest = null, CancellationToken ct = default);
 
-    /// <summary>list-objects-v2 с пагинацией по произвольному префиксу (full/&lt;id&gt;/,
-    /// wal/, "" — весь bucket) с размерами; maxKeysPerTest — инъекция страницы.
+    /// <summary>list-objects-v2 с пагинацией по произвольному префиксу
+    /// (full/, wal/, "" — весь bucket) с размерами; maxKeysPerTest — инъекция страницы.
     /// Реализация — общий кор листинга с ListAsync (без дублирования пагинации).</summary>
     Task<Result<IReadOnlyList<S3ObjectInfo>>> ListPrefixAsync(
         string prefix, int? maxKeysPerTest = null, CancellationToken ct = default);
@@ -49,15 +51,11 @@ public interface IBackupS3
     /// доставлены целыми. sha256=null — без проверки (мелкие служебные объекты).</summary>
     Task<Result> PutObjectAsync(string key, byte[] data, string? sha256, CancellationToken ct = default);
 
-    /// <summary>Листинг произвольного префикса (verify): prefix — относительно
-    /// &lt;C&gt;/&lt;X&gt;/, напр. "wal/" | "full/&lt;id&gt;/pg_wal/"; та же пагинация list-v2
-    /// через общий кор с ListPrefixAsync.</summary>
+    /// <summary>Листинг узкого префикса приёмником WAL: prefix — относительно
+    /// &lt;C&gt;/&lt;X&gt;/, напр. "wal/&lt;seg&gt;" (дельта-памп и поглощение версий
+    /// финалом); та же пагинация list-v2 через общий кор с ListPrefixAsync.</summary>
     Task<Result<IReadOnlyList<WalObject>>> ListAsync(
         string cluster, string shard, string prefix, int? maxKeysPerTest = null, CancellationToken ct = default);
-
-    /// <summary>Содержимое маленького объекта (.history для строгих TLI-переходов);
-    /// key — относительно &lt;C&gt;/&lt;X&gt;/, напр. "wal/00000002.history".</summary>
-    Task<Result<string>> GetObjectAsync(string cluster, string shard, string key, CancellationToken ct = default);
 
     /// <summary>put куска с Content-MD5 (spec §4.4, решение №22): MD5Digest
     /// (base64 БАЙТОВ хэша) уходит с запросом — транспорт отвергает битое;
@@ -66,30 +64,20 @@ public interface IBackupS3
     Task<Result> PutObjectMd5Async(string key, byte[] data, string md5Hex, CancellationToken ct = default);
 
     /// <summary>Байты объекта в память + ETag (сборка fetch-wal, spec §4.4);
-    /// key — относительно &lt;C&gt;/&lt;X&gt;, как GetObjectAsync; кавычки ETag MinIO сняты
+    /// key — относительно &lt;C&gt;/&lt;X&gt;/, как GetObjectToFileAsync; кавычки ETag MinIO сняты
     /// (ETag одиночного put = md5 содержимого — сверка безномерных legacy-версий).</summary>
     Task<Result<(byte[] Data, string? ETag)>> GetObjectBytesAsync(
         string cluster, string shard, string key, CancellationToken ct = default);
 
-    /// <summary>: id полных шарда по префиксу `<C>/<X>/full/` с Delimiter="/"
-    /// (CommonPrefixes — каталоги `full/<id>/`), сортировка Ordinal; пагинация по
-    /// IsTruncated/NextContinuationToken. DR-путь: etcd-статусов может не быть.</summary>
+    /// <summary>: id полных шарда по префиксу `<C>/<X>/full/` — имена объектов
+    /// `full/<id>.tar` (один объект = один полный, spec t01 §6.1), сортировка
+    /// Ordinal; пагинация по IsTruncated/NextContinuationToken. DR-путь:
+    /// etcd-статусов может не быть.</summary>
     Task<Result<IReadOnlyList<string>>> ListFullsAsync(
         string cluster, string shard, int? maxKeysPerTest = null, CancellationToken ct = default);
 
-    /// <summary>: маленький текстовый объект (`objectKey` — путь внутри
-    /// префикса шарда, напр. `full/&lt;id&gt;/backup_label`); отсутствующий —
-    /// Failed (не исключение наружу — валидация restore разведает transien/permanent).</summary>
-    Task<Result<string>> DownloadTextAsync(
-        string cluster, string shard, string objectKey, CancellationToken ct = default);
-
-    /// <summary>: put файла 1:1 объектом (upload полного — arch/backups/01-full-backup.md);
-    /// key — ПОЛНЫЙ ключ в bucket (&lt;C&gt;/&lt;X&gt;/full/&lt;id&gt;/…). Содержимое —
-    /// FileStream (файл не читается в память целиком — наборы бывают большими).</summary>
-    Task<Result> PutFileAsync(string key, string filePath, CancellationToken ct = default);
-
     /// <summary>: скачивание объекта в файл (verify/restore — arch/backups/06-s3-layout.md/§3.5);
-    /// key — относительно &lt;C&gt;/&lt;X&gt;/, как GetObjectAsync; ответ — через
+    /// key — относительно &lt;C&gt;/&lt;X&gt;/ (симметрия GetObjectBytesAsync); ответ — через
     /// временный &lt;dest&gt;.part с атомарной заменой по успеху (обрыв не оставляет
     /// частичный файл; dest перезаписывается — ретраи идемпотентны).</summary>
     Task<Result> GetObjectToFileAsync(
@@ -109,11 +97,6 @@ public interface IWalSegmentGuard
 {
     Task<Result> PutWalSegmentAsync(
         string key, byte[] data, string? sha256, CancellationToken ct = default);
-
-    /// <summary>Файловая форма (дубль pg_wal полного в общий wal/): та же
-    /// сверка содержимого по ETag, файл не читается в память целиком.</summary>
-    Task<Result> PutWalSegmentFileAsync(
-        string key, string filePath, CancellationToken ct = default);
 }
 
 /// <summary>Маркер permanent-конфликта WAL-архива (arch/backups/02-wal-archive.md §1): сегмент с тем
@@ -133,13 +116,14 @@ public static class WalArchiveConflict
            && result.Error!.Message.Contains(Marker, StringComparison.Ordinal);
 }
 
-public sealed class BackupS3 : IBackupS3, IWalSegmentGuard, IAsyncDisposable
+public sealed class BackupS3
+    : IBackupS3, IWalSegmentGuard, IMultipartS3, IStreamObjectS3, IDeleteObjectS3, IAsyncDisposable
 {
     private readonly AmazonS3Client _client;
     private readonly string _bucket;
 
+    // Пер-попыточный таймаут S3-запроса (arch/14 §6 «пульс конечного внешнего
     // Пер-попыточный таймаут S3-запроса (arch/pgworker/08-operability.md §3 «пульс конечного внешнего
-    // вызова», arch/backups/06-s3-layout.md): короче окна проверки watchdog — симметрия таймаутов
     // etcd/patroni/SQL. Дефолт — полокна (10 с при дефолтных опциях);
     // фабрика передаёт производный от Loops:Watchdog:CheckIntervalSec.
     private static readonly TimeSpan DefaultRequestTimeout = TimeSpan.FromSeconds(10);
@@ -207,22 +191,6 @@ public sealed class BackupS3 : IBackupS3, IWalSegmentGuard, IAsyncDisposable
         }
 
         return Result<IReadOnlyList<WalObject>>.Success(result);
-    }
-
-    public async Task<Result<string>> GetObjectAsync(
-        string cluster, string shard, string key, CancellationToken ct = default)
-    {
-        try
-        {
-            var response = await _client.GetObjectAsync(
-                new GetObjectRequest { BucketName = _bucket, Key = $"{cluster}/{shard}/{key}" }, ct);
-            using var reader = new StreamReader(response.ResponseStream, System.Text.Encoding.UTF8);
-            return Result<string>.Success(await reader.ReadToEndAsync(ct));
-        }
-        catch (Exception e)
-        {
-            return Result<string>.Failed(new ApplicationException($"S3 get {key}: {e.Message}", e));
-        }
     }
 
     public async Task<Result> PutObjectMd5Async(
@@ -387,53 +355,6 @@ public sealed class BackupS3 : IBackupS3, IWalSegmentGuard, IAsyncDisposable
         return await PutObjectAsync(key, data, sha256, ct);
     }
 
-    /// <summary>Файловая форма гварда (дубль pg_wal полного): HEAD + md5 файла
-    /// (потоково) против ETag; идентичность — идемпотентный успех, иное —
-    /// WalArchiveConflict, отсутствие — обычный put-file. Обычный путь
-    /// перезаписи файла (без гварда) — PutFileAsync.</summary>
-    public async Task<Result> PutWalSegmentFileAsync(
-        string key, string filePath, CancellationToken ct = default)
-    {
-        GetObjectMetadataResponse? existing;
-        try
-        {
-            existing = await _client.GetObjectMetadataAsync(
-                new GetObjectMetadataRequest { BucketName = _bucket, Key = key }, ct);
-        }
-        catch (AmazonS3Exception e) when (e.StatusCode == System.Net.HttpStatusCode.NotFound)
-        {
-            existing = null;
-        }
-        catch (Exception e)
-        {
-            return Result.Failed(new ApplicationException($"S3 head {key}: {e.Message}", e));
-        }
-
-        if (existing is not null)
-        {
-            string md5;
-            try
-            {
-                await using var input = new FileStream(
-                    filePath, FileMode.Open, FileAccess.Read, FileShare.Read);
-                md5 = Convert.ToHexString(MD5.HashData(input)).ToLowerInvariant();
-            }
-            catch (Exception e)
-            {
-                return Result.Failed(new ApplicationException(
-                    $"wal segment file read {filePath}: {e.Message}", e));
-            }
-            var etag = existing.ETag?.Trim('"');
-            if (string.Equals(etag, md5, StringComparison.OrdinalIgnoreCase))
-                return Result.Success();
-            return Result.Failed(new ApplicationException(
-                $"{WalArchiveConflict.Marker}: {key} already archived with different content " +
-                $"(etag={etag ?? "?"}, md5={md5}) — refusing to overwrite a foreign WAL chain"));
-        }
-
-        return await PutFileAsync(key, filePath, ct);
-    }
-
     public async Task<Result> PutObjectAsync(string key, byte[] data, string? sha256, CancellationToken ct = default)
     {
         try
@@ -462,6 +383,9 @@ public sealed class BackupS3 : IBackupS3, IWalSegmentGuard, IAsyncDisposable
     {
         try
         {
+            // Полный бэкап — ОДИН объект `full/<id>.tar` (spec t01 §6.1):
+            // обычный листинг по префиксу без delimiter; id — имя без `.tar`,
+            // прочие ключи префикса (гипотетические внутренние) игнорируются.
             var ids = new SortedSet<string>(StringComparer.Ordinal);
             string? token = null;
             do
@@ -470,19 +394,16 @@ public sealed class BackupS3 : IBackupS3, IWalSegmentGuard, IAsyncDisposable
                 {
                     BucketName = _bucket,
                     Prefix = $"{cluster}/{shard}/full/",
-                    Delimiter = "/",
                     ContinuationToken = token,
                 };
                 if (maxKeysPerTest is { } maxKeys)
                     request.MaxKeys = maxKeys;
                 var page = await _client.ListObjectsV2Async(request, ct);
-                foreach (var common in page.CommonPrefixes)
+                foreach (var obj in page.S3Objects)
                 {
-                    // common — каталог "…/full/<id>/": id = последний компонент без хвостового '/'
-                    var id = common.TrimEnd('/');
-                    id = id[(id.LastIndexOf('/') + 1)..];
-                    if (id.Length > 0)
-                        ids.Add(id);
+                    var name = obj.Key[(obj.Key.LastIndexOf('/') + 1)..];
+                    if (name.EndsWith(".tar", StringComparison.Ordinal) && name.Length > ".tar".Length)
+                        ids.Add(name[..^".tar".Length]);
                 }
 
                 token = page.IsTruncated is true ? page.NextContinuationToken : null;
@@ -495,53 +416,6 @@ public sealed class BackupS3 : IBackupS3, IWalSegmentGuard, IAsyncDisposable
         {
             return Result<IReadOnlyList<string>>.Failed(new ApplicationException(
                 $"S3 list {cluster}/{shard}/full/: {e.Message}", e));
-        }
-    }
-
-    public async Task<Result<string>> DownloadTextAsync(
-        string cluster, string shard, string objectKey, CancellationToken ct = default)
-    {
-        try
-        {
-            var response = await _client.GetObjectAsync(new GetObjectRequest
-            {
-                BucketName = _bucket,
-                Key = $"{cluster}/{shard}/{objectKey}",
-            }, ct);
-            using var reader = new StreamReader(response.ResponseStream);
-            return Result<string>.Success(await reader.ReadToEndAsync(ct));
-        }
-        catch (AmazonS3Exception e) when (e.StatusCode == System.Net.HttpStatusCode.NotFound)
-        {
-            // Отсутствующий объект — валидный «нет» (проверка факта manifest/label),
-            // а не транспортный сбой: наружу — Failed без исключения.
-            return Result<string>.Failed(new ApplicationException(
-                $"S3 get {cluster}/{shard}/{objectKey}: not found"));
-        }
-        catch (Exception e)
-        {
-            return Result<string>.Failed(new ApplicationException(
-                $"S3 get {cluster}/{shard}/{objectKey}: {e.Message}", e));
-        }
-    }
-
-    public async Task<Result> PutFileAsync(string key, string filePath, CancellationToken ct = default)
-    {
-        try
-        {
-            await using var input = new FileStream(
-                filePath, FileMode.Open, FileAccess.Read, FileShare.Read);
-            await _client.PutObjectAsync(new PutObjectRequest
-            {
-                BucketName = _bucket,
-                Key = key,
-                InputStream = input,
-            }, ct);
-            return Result.Success();
-        }
-        catch (Exception e)
-        {
-            return Result.Failed(new ApplicationException($"S3 put-file {key}: {e.Message}", e));
         }
     }
 
@@ -595,6 +469,262 @@ public sealed class BackupS3 : IBackupS3, IWalSegmentGuard, IAsyncDisposable
             try { File.Delete(partPath); } catch { /* уже нет */ }
             throw;
         }
+    }
+
+    // ── Multipart-заливка ОДНОГО объекта (spec t01 §3.3): части 16 МиБ с
+    // Content-MD5 (транспорт отвергает битое), Complete по partNumber→ETag.
+    // Сессия живёт на ОДНОМ endpoint (перебор нод — забота операции: отказ →
+    // Abort → рестарт попытки на следующей ноде).
+
+    public async Task<Result<IMultipartUploadSession>> CreateMultipartUploadAsync(
+        string key, CancellationToken ct)
+    {
+        try
+        {
+            var response = await _client.InitiateMultipartUploadAsync(
+                new InitiateMultipartUploadRequest { BucketName = _bucket, Key = key }, ct);
+            if (response.UploadId is not { Length: > 0 } uploadId)
+                return Result<IMultipartUploadSession>.Failed(
+                    new ApplicationException($"S3 multipart {key}: empty upload id"));
+            return Result<IMultipartUploadSession>.Success(new MultipartSession(this, key, uploadId));
+        }
+        catch (Exception e)
+        {
+            return Result<IMultipartUploadSession>.Failed(
+                new ApplicationException($"S3 multipart {key}: {e.Message}", e));
+        }
+    }
+
+    public async Task<Result<IReadOnlyList<MultipartUploadInfo>>> ListMultipartUploadsAsync(
+        string prefix, CancellationToken ct)
+    {
+        try
+        {
+            var uploads = new List<MultipartUploadInfo>();
+            string? keyMarker = null;
+            string? uploadIdMarker = null;
+            do
+            {
+                var page = await _client.ListMultipartUploadsAsync(new ListMultipartUploadsRequest
+                {
+                    BucketName = _bucket,
+                    Prefix = prefix,
+                    KeyMarker = keyMarker,
+                    UploadIdMarker = uploadIdMarker,
+                }, ct);
+                foreach (var upload in page.MultipartUploads)
+                {
+                    uploads.Add(new MultipartUploadInfo(
+                        upload.Key, upload.UploadId,
+                        new DateTimeOffset(DateTime.SpecifyKind(upload.Initiated, DateTimeKind.Utc))));
+                }
+
+                if (page.IsTruncated is true)
+                {
+                    keyMarker = page.NextKeyMarker;
+                    uploadIdMarker = page.NextUploadIdMarker;
+                }
+                else
+                {
+                    keyMarker = null;
+                }
+            }
+            while (keyMarker is not null);
+
+            return Result<IReadOnlyList<MultipartUploadInfo>>.Success(uploads);
+        }
+        catch (Exception e)
+        {
+            return Result<IReadOnlyList<MultipartUploadInfo>>.Failed(
+                new ApplicationException($"S3 list-multipart {prefix}: {e.Message}", e));
+        }
+    }
+
+    public async Task<Result> AbortMultipartUploadAsync(
+        string key, string uploadId, CancellationToken ct)
+    {
+        try
+        {
+            await _client.AbortMultipartUploadAsync(new AbortMultipartUploadRequest
+            {
+                BucketName = _bucket,
+                Key = key,
+                UploadId = uploadId,
+            }, ct);
+            return Result.Success();
+        }
+        catch (Exception e)
+        {
+            return Result.Failed(
+                new ApplicationException($"S3 abort-multipart {key} ({uploadId}): {e.Message}", e));
+        }
+    }
+
+    // ── Потоковое чтение (restore/verify/дубль WAL) и одиночное удаление ──
+
+    public async Task<Result<(Stream Body, long Size)>> GetObjectStreamAsync(
+        string cluster, string shard, string key, CancellationToken ct)
+    {
+        try
+        {
+            var response = await _client.GetObjectAsync(
+                new GetObjectRequest { BucketName = _bucket, Key = $"{cluster}/{shard}/{key}" }, ct);
+            // Стрим диспозит вызывающий (он владеет жизненным циклом чтения).
+            return Result<(Stream Body, long Size)>.Success(
+                (response.ResponseStream, response.ContentLength));
+        }
+        catch (AmazonS3Exception e) when (e.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            return Result<(Stream Body, long Size)>.Failed(new ApplicationException(
+                $"S3 get-stream {cluster}/{shard}/{key}: not found"));
+        }
+        catch (Exception e)
+        {
+            return Result<(Stream Body, long Size)>.Failed(
+                new ApplicationException($"S3 get-stream {cluster}/{shard}/{key}: {e.Message}", e));
+        }
+    }
+
+    public async Task<Result<byte[]>> GetObjectRangeAsync(
+        string cluster, string shard, string key, long start, long end, CancellationToken ct)
+    {
+        try
+        {
+            var response = await _client.GetObjectAsync(new GetObjectRequest
+            {
+                BucketName = _bucket,
+                Key = $"{cluster}/{shard}/{key}",
+                ByteRange = new ByteRange(start, end),
+            }, ct);
+            using var buffer = new MemoryStream();
+            await response.ResponseStream.CopyToAsync(buffer, ct);
+            return Result<byte[]>.Success(buffer.ToArray());
+        }
+        catch (AmazonS3Exception e) when (e.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            return Result<byte[]>.Failed(new ApplicationException(
+                $"S3 get-range {cluster}/{shard}/{key}: not found"));
+        }
+        catch (Exception e)
+        {
+            return Result<byte[]>.Failed(
+                new ApplicationException($"S3 get-range {cluster}/{shard}/{key}: {e.Message}", e));
+        }
+    }
+
+    public async Task<Result<(bool Exists, long SizeBytes)>> HeadObjectAsync(
+        string cluster, string shard, string key, CancellationToken ct)
+    {
+        try
+        {
+            var response = await _client.GetObjectMetadataAsync(new GetObjectMetadataRequest
+            {
+                BucketName = _bucket,
+                Key = $"{cluster}/{shard}/{key}",
+            }, ct);
+            // Размер — тем же HEAD'ом (без суффиксного Range/Content-Range,
+            // spec §6.23): verify нужен полный размер до чтения хвоста.
+            return Result<(bool Exists, long SizeBytes)>.Success((true, response.ContentLength));
+        }
+        catch (AmazonS3Exception e) when (e.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            return Result<(bool Exists, long SizeBytes)>.Success((false, 0L));
+        }
+        catch (Exception e)
+        {
+            return Result<(bool Exists, long SizeBytes)>.Failed(
+                new ApplicationException($"S3 head {cluster}/{shard}/{key}: {e.Message}", e));
+        }
+    }
+
+    public async Task<Result> DeleteObjectAsync(
+        string cluster, string shard, string key, CancellationToken ct)
+    {
+        try
+        {
+            await _client.DeleteObjectAsync(new DeleteObjectRequest
+            {
+                BucketName = _bucket,
+                Key = $"{cluster}/{shard}/{key}",
+            }, ct);
+            return Result.Success();
+        }
+        catch (Exception e)
+        {
+            return Result.Failed(
+                new ApplicationException($"S3 delete {cluster}/{shard}/{key}: {e.Message}", e));
+        }
+    }
+
+    /// <summary>Сессия multipart-заливки на ОДНОМ endpoint (ключ и BucketName —
+    /// этого клиента). Complete сверяет контигуальность partNumber 1..N
+    /// (сервер дополнительно валидирует ETag частей сам).</summary>
+    private sealed class MultipartSession(BackupS3 owner, string key, string uploadId)
+        : IMultipartUploadSession
+    {
+        public string UploadId => uploadId;
+
+        public async Task<Result<string>> UploadPartAsync(
+            int partNumber, byte[] data, CancellationToken ct)
+        {
+            try
+            {
+                var response = await owner._client.UploadPartAsync(new UploadPartRequest
+                {
+                    BucketName = owner._bucket,
+                    Key = key,
+                    UploadId = uploadId,
+                    PartNumber = partNumber,
+                    InputStream = new MemoryStream(data),
+                    // Content-MD5: base64 БАЙТОВ хэша (транспорт отвергает битое).
+                    MD5Digest = Convert.ToBase64String(MD5.HashData(data)),
+                }, ct);
+                return Result<string>.Success(response.ETag?.Trim('"') ?? "");
+            }
+            catch (Exception e)
+            {
+                return Result<string>.Failed(new ApplicationException(
+                    $"S3 upload-part {key} #{partNumber}: {e.Message}", e));
+            }
+        }
+
+        public async Task<Result<string>> CompleteAsync(
+            IReadOnlyDictionary<int, string> partETags, CancellationToken ct)
+        {
+            if (partETags.Count == 0)
+                return Result<string>.Failed(new ApplicationException(
+                    $"S3 complete-multipart {key}: no parts uploaded"));
+            var ordered = partETags.Keys.OrderBy(number => number).ToList();
+            for (var i = 0; i < ordered.Count; i++)
+            {
+                if (ordered[i] != i + 1)
+                    return Result<string>.Failed(new ApplicationException(
+                        $"S3 complete-multipart {key}: part numbers are not contiguous from 1"));
+            }
+
+            try
+            {
+                var response = await owner._client.CompleteMultipartUploadAsync(
+                    new CompleteMultipartUploadRequest
+                    {
+                        BucketName = owner._bucket,
+                        Key = key,
+                        UploadId = uploadId,
+                        PartETags = partETags
+                            .Select(pair => new PartETag(pair.Key, pair.Value))
+                            .ToList(),
+                    }, ct);
+                return Result<string>.Success(response.ETag?.Trim('"') ?? "");
+            }
+            catch (Exception e)
+            {
+                return Result<string>.Failed(new ApplicationException(
+                    $"S3 complete-multipart {key}: {e.Message}", e));
+            }
+        }
+
+        public async Task<Result> AbortAsync(CancellationToken ct)
+            => await owner.AbortMultipartUploadAsync(key, uploadId, ct);
     }
 
     public ValueTask DisposeAsync()

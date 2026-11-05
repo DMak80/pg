@@ -37,7 +37,7 @@ public sealed class E2eBackupJobsScenarios(E2eBackupJobsScenariosFx Ctx) : IClas
     private EtcdGateway G => Fx.Gateway;
 
     // AAA: полный суточный цикл — PLANNED→RUNNING→UPLOADING→COMPLETED,
-    // поля канона, объекты full/<id>/ + wal/ в S3, чистка контейнера/volume
+    // поля канона, ОДИН объект full/<id>.tar + wal/ в S3, чистка контейнера/volume
     [Fact]
     public async Task Backup_FullDaily_Completes()
     {
@@ -72,13 +72,18 @@ public sealed class E2eBackupJobsScenarios(E2eBackupJobsScenariosFx Ctx) : IClas
         status["size_bytes"].GetInt64().Should().BeGreaterThan(0);
         status["verify"].GetProperty("state").GetString().Should().Be("PENDING");
 
-        // Assert 2 — объекты в S3: full/<id>/ с manifest и pg_wal/ + wal/<seg>
+        // Assert 2 — в S3 РОВНО ОДИН объект набора full/<id>.tar (spec t01 §6.1)
+        // + дубль закрытого сегмента набора в wal/ (строчное имя — канон ключей).
         var id = done.Key.Split('/').Last();
-        var listing = await McLsAsync($"{cluster}/shard1/");
-        listing.Should().Contain($"full/{id}/backup_manifest");
-        listing.Should().Contain($"full/{id}/PG_VERSION");
-        listing.Should().Contain($"full/{id}/pg_wal/");
-        listing.Should().Contain($"wal/{walSeg}", "the closed segment of the -X stream set is duplicated into the wal/ prefix");
+        // mc ls <prefix> печатает имена ОТНОСИТЕЛЬНО префикса: ровно одна
+        // строка — единственный объект набора (spec t01 §6.1).
+        var listing = await McLsAsync($"{cluster}/shard1/full/");
+        listing.Should().Contain($"{id}.tar");
+        listing.Split('\n', StringSplitOptions.RemoveEmptyEntries).Should().ContainSingle(
+            "the full backup is a single tar object");
+        var shardListing = await McLsAsync($"{cluster}/shard1/");
+        shardListing.Should().Contain($"wal/{walSeg!.ToLowerInvariant()}",
+            "the closed segment of the -X stream set is duplicated into the wal/ prefix (lowercase canon)");
 
         // Assert 3 — чистка: контейнера и staging volume нет. COMPLETED пишется
         // в etcd ДО CleanupJobAsync (BackupProcess.PutAsync → CleanupJobAsync) —

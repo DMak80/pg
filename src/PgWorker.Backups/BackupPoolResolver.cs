@@ -15,7 +15,16 @@ namespace PgWorker.Backups;
 public sealed record BackupPoolContext(
     string Pool, string AccessKey, string SecretKey,
     IReadOnlyList<string> WriteMaster, IReadOnlyList<string> WriteReplica,
-    IReadOnlyList<string> ReadAll);
+    IReadOnlyList<string> ReadAll)
+{
+    // record ToString печатал бы SecretKey — интерполяция контекста в лог
+    // стала бы утечкой кредов; наружу — только пул/списки.
+    public override string ToString()
+        => $"BackupPoolContext {{ Pool = {Pool}, AccessKey = ***, SecretKey = ***, " +
+           $"WriteMaster = [{string.Join(", ", WriteMaster)}], " +
+           $"WriteReplica = [{string.Join(", ", WriteReplica)}], " +
+           $"ReadAll = [{string.Join(", ", ReadAll)}] }}";
+}
 
 /// <summary>
 /// Единая точка «какой кластер куда пишет/читает» (arch/backups/05-etcd-contract.md): имена нод

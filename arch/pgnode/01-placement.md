@@ -51,7 +51,7 @@ Env ноды секретов НЕ несёт: `docker inspect` не раскр�
   `USE_DATA_DIR_FOR_WAL`;
 - etcd: `PGW_ETCD`, `ETCD3_HOSTS` (формат `host:port` БЕЗ scheme);
 - S3: `PGW_BACKUP_S3_BUCKET` (per-install bucket), опц.
-  `PGW_BACKUP_S3_CA_PEM`, `PGW_BACKUP_STAGING_DIR`,
+  `PGW_BACKUP_S3_CA_PEM`,
   `PGW_WAL_PARTIAL_INTERVAL_SEC` (доставка `Wal:PartialIntervalSec`),
   `PGW_WAL_PARTIAL_COMPACT_INTERVAL_SEC` (доставка
   `Wal:PartialCompactIntervalSec`);
@@ -80,9 +80,10 @@ docker-env контейнера при этом чист. Права доста�
 поставщик (tmpfs 0600 postgres): root-владелец файла — PermissionError
 Patroni на reload.
 
-Локальные каталоги на data-volume ноды: staging полного/verify —
-`Staging:Dir` (дефолт `/home/postgres/pgdata/backup-staging`), scratch
-дрилла — `/home/postgres/pgdata/backup-drill/<id>/pgdata`. Staging-ТОМА
+Локальные каталоги на data-volume ноды: scratch дрилла —
+`/home/postgres/pgdata/backup-drill/<id>/pgdata`. Staging полного/verify
+УПРАЗДНЁН: полный льётся стримингово в S3 (на диск не пишется), verify
+читает tar-объект потоково (без распаковки). Staging-ТОМА
 приёмника НЕТ: локальный буфер сегментов — кэш без гарантий durability;
 всё неподтверждённое перезаказывается у источника (RPO-инвариант
 [03-wal-receiver.md](03-wal-receiver.md) §3), терять нечего.
@@ -92,7 +93,8 @@ Patroni на reload.
 Отдельных контейнеров/лимитов для операций бэкапов НЕТ — verify/restore/
 drill исполняет PgNode внутри контейнера ноды и делит его ресурсы с нодой
 (стрим/полный — и так делили). Память приёмника: буфер сегмента
-`wal_segment_size` — обычно 16 МиБ + рабочие множества фоновых операций;
-скачанные наборы лежат на data-volume ноды: staging полного/verify (ENOSPC —
-реактивный FAILED), scratch дрилла. Размеры — операционный риск
-[backups/09-operability.md](../backups/09-operability.md) §5.
+`wal_segment_size` — обычно 16 МиБ, буфер частей полного (≤5×16 МиБ —
+multipart-заливка) и рабочие множества фоновых операций; restore/drill
+распаковывают tar-объект в PGDATA/scratch data-volume ноды напрямую (архив
+на диске не появляется; ENOSPC тома — реактивный FAILED). Размеры —
+операционный риск [backups/09-operability.md](../backups/09-operability.md) §5.

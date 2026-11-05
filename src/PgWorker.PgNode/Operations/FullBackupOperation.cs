@@ -1,92 +1,89 @@
-using System.Diagnostics;
-using System.Security.Cryptography;
+using System.Text;
 using PgWorker.Backups;
 using PgWorker.Backups.Restore;
+using PgWorker.Backups.Tar;
 using PgWorker.Etcd.S3;
+using PgWorker.PgNode.BaseBackup;
+using Shared.Core;
 using Shared.Etcd.Client;
 
 namespace PgWorker.PgNode.Operations;
 
-/// <summary>Операция полного бэкапа приёмника ноды (arch/backups/01-full-backup.md, spec §3.4):
-/// фоновая Task процесса приёмника, параллельная стриму. Пайплайн: резолв
-/// кредов/пула из etcd (как у стрима, Р4) → роль (REST-проба; write-список
-/// ФИКСИРУЕТСЯ на старте — смена роли посреди полного её не рвёт, Р10) →
-/// чистка staging → pg_basebackup локально 127.0.0.1:5432 под backup_exec
-/// (пароль — env PGPASSWORD child-процесса, в argv/DSN НЕ передаётся, Р13) →
-/// wal_start_segment из backup_label → upload 1:1 .NET PoolBackupS3 (вкл.
-/// backup_manifest/pg_wal/ + дублирование закрытых сегментов набора в wal/).
+/// <summary>Операция полного бэкапа приёмника ноды (arch/pgnode/04 §3,
+/// spec t01 §3.4): фоновая Task процесса приёмника, параллельная стриму.
+/// Пайплайн: резолв кредов/пула из etcd → роль (REST-проба; write-список
+/// ФИКСИРУЕТСЯ на старте) → попытки по endpoint'ам write-списка: multipart-
+/// сессия ОДНОГО объекта `full/&lt;id&gt;.tar` → BASE_BACKUP (свой wire-клиент) →
+/// перепаковка входного tar-потока ЕДИНЫМ tar-writer'ом прямо в части
+/// multipart (диска не касаемся) → Complete → фаза uploading: IDENTIFY_SYSTEM
+/// и дубль закрытых сегментов набора в `wal/` (Range-GET из своего объекта) →
+/// succeeded с `wal_start_segment`, `size_bytes`, `sha256`, прогрессом.
 /// Резюмов нет: любой отказ → failed с однострочной причиной, переснятие —
-/// новым id. Статус — IMMUTABLE-снимки в OperationRegistry (атомарная замена
-/// ссылки); etcd-контракта операция не знает (пишет только воркер, arch/backups/05-etcd-contract.md).</summary>
-public sealed class FullBackupOperation : IReceiverOperation
+/// новым id. Статус — IMMUTABLE-снимки в OperationRegistry; etcd-контракта
+/// операция не знает (пишет только воркер, arch/02 §9.12).</summary>
+public sealed class FullBackupOperation(
+    string id,
+    PgNodeIdentity identity,
+    IEtcdGateway etcd,
+    string[] etcdEndpoints,
+    IS3PoolStore pools,
+    Func<CancellationToken, Task<WalReceiverRole>> roleProbe,
+    OperationRegistry registry,
+    Func<string, IBackupS3>? targetFactory = null,              // тестовый шов (endpoint → клиент)
+    Func<WalReceiverOptions, IXLogReplicationSource>? sourceFactory = null, // IDENTIFY_SYSTEM шов
+    Func<string, string, IBaseBackupSource>? wireFactory = null) // (host, password) → BASE_BACKUP-источник
+    : IReceiverOperation
 {
-    // DSN-параметры pg_basebackup — как у стримного подключения приёмника
+    // DSN-параметры BASE_BACKUP — как у стримного подключения приёмника
     // (WalReceiverOptions: 127.0.0.1:5432, роль backup_exec, БД postgres).
     private const string PgHost = "127.0.0.1";
     private const int PgPort = 5432;
 
-    private readonly string _id;
-    private readonly string _stagingRoot;
-    private readonly PgNodeIdentity _identity;
-    private readonly IEtcdGateway _etcd;
-    private readonly string[] _etcdEndpoints;
-    private readonly IS3PoolStore _pools;
-    private readonly Func<CancellationToken, Task<WalReceiverRole>> _roleProbe;
-    private readonly IProcessRunner _runner;
-    private readonly OperationRegistry _registry;
+    // Параллелизм дубля закрытых сегментов набора в wal/ (как у прежней
+    // заливки набора; порядок put не значим).
+    private const int DuplicateParallelism = 8;
+
+    // Строка прогресса в журнал ноды — каждые 64 МиБ потока.
+    private const long ProgressLogEveryBytes = 64L * 1024 * 1024;
+
+    // Потолок объекта: 10000 частей × 16 МиБ (лимиты OwnS3, spec §5);
+    // превышение — FAILED с диагностикой (набор не влезает в multipart).
+    private const long MaxObjectBytes = 10_000L * 16 * 1024 * 1024;
+
+    // Имя записи манифеста в едином tar (verify читает его хвостом объекта).
+    private const string ManifestEntryName = "backup_manifest";
+
     private readonly CancellationTokenSource _cts = new();
 
-    public FullBackupOperation(
-        string id,
-        string stagingDir,
-        PgNodeIdentity identity,
-        IEtcdGateway etcd,
-        string[] etcdEndpoints,
-        IS3PoolStore pools,
-        Func<CancellationToken, Task<WalReceiverRole>> roleProbe,
-        IProcessRunner runner,
-        OperationRegistry registry,
-        Func<string, IBackupS3>? targetFactory = null,
-        Func<WalReceiverOptions, IXLogReplicationSource>? sourceFactory = null)
-    {
-        _id = id;
-        _stagingRoot = stagingDir;
-        _identity = identity;
-        _etcd = etcd;
-        _etcdEndpoints = etcdEndpoints;
-        _pools = pools;
-        _roleProbe = roleProbe;
-        _runner = runner;
-        _registry = registry;
-        _targetFactory = targetFactory; // тестовый шов: фейк IBackupS3 (шаг 9)
-        _sourceFactory = sourceFactory; // тестовый шов IDENTIFY_SYSTEM (образец WalReceiverLoop)
-    }
+    // Состояние текущей попытки (BASE_BACKUP → единый tar → части).
+    private TarStreamWriter? _tar;
+    private MultipartPartBufferStream? _parts;
+    private byte[]? _manifest;
+    private string? _walStart;
+    private readonly List<(string Name, long Offset, long Size)> _walEntries = [];
+    private long _progressBucket = -1;
 
-    private readonly Func<string, IBackupS3>? _targetFactory;
-
-    // Тестовый шов IDENTIFY_SYSTEM дубля (образец _sourceFactory WalReceiverLoop);
-    // прод — null → NpgsqlXLogSource.
-    private readonly Func<WalReceiverOptions, IXLogReplicationSource>? _sourceFactory;
+    // Итог успешной попытки.
+    private string? _sha256;
+    private long _sizeBytes;
 
     /// <summary>Текущий снимок операции (чтение реестра).</summary>
-    public OperationSnapshot? Snapshot => _registry.Current;
+    public OperationSnapshot? Snapshot => registry.Current;
 
     public async Task RunAsync(CancellationToken ct)
     {
         // Связка отмен cancel API и хоста: любой из них гасит операцию
-        // (runner убивает дерево текущего child-процесса).
+        // (сокет BASE_BACKUP и multipart-сессия закрываются обработчиками).
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, _cts.Token);
         var token = linked.Token;
-        var opRoot = Path.Combine(_stagingRoot, _id);
-        IBackupS3? s3 = null;
         string? caBundlePath = null;
+        IBackupS3? uploadedClient = null;
         try
         {
-            // 1. Резолв кредов/пула из etcd (как у стрима, Р4): ожидания-условия
-            //    (нет пароля/policy) — честный transient-отказ операции; гвард
-            //    G1/G3 воркера обычно исключает. Переснятие — новым id.
-            var targets = await new WalReceiverTargets(_etcd, _etcdEndpoints, _pools)
-                .ResolveAsync(_identity.Cluster, _identity.Shard, token);
+            // 1. Резолв кредов/пула из etcd (как у стрима): ожидания-условия
+            //    (нет пароля/policy) — честный transient-отказ операции.
+            var targets = await new WalReceiverTargets(etcd, etcdEndpoints, pools)
+                .ResolveAsync(identity.Cluster, identity.Shard, token);
             if (targets.WaitingPassword || targets.WaitingPolicy)
             {
                 Fail(targets.Error is { Length: > 0 } e
@@ -94,161 +91,154 @@ public sealed class FullBackupOperation : IReceiverOperation
                     : "backup password/policy is not resolved");
                 return;
             }
-            // Bucket per-install (Р4): пусто — инконсистентность инсталляции.
-            if (_identity.S3Bucket is not { Length: > 0 } bucket)
+
+            // Bucket per-install: пусто — инконсистентность инсталляции.
+            if (identity.S3Bucket is not { Length: > 0 } bucket)
             {
                 Fail("env PGW_BACKUP_S3_BUCKET is not set — backups disabled on this install");
                 return;
             }
 
-            // 2. Роль + write-список: ФИКСАЦИЯ на старте операции (Р10) —
-            //    смена роли посреди полного её не рвёт.
-            var role = await _roleProbe(token);
+            // Роль + write-список: ФИКСАЦИЯ на старте операции (смена роли
+            // посреди полного её не рвёт).
+            var role = await roleProbe(token);
             var pool = targets.Pool!;
             var writeTargets = role == WalReceiverRole.Master
                 ? pool.WriteMaster
                 : pool.WriteReplica;
-            // Прогресс в журнал ноды (диагностика «почему долго»: приёмник не
-            // молчит между 202 и терминальным статусом).
             Prog($"basebackup start (role={role.ToString().ToLowerInvariant()})");
 
             // CA https S3 (per-install, env ноды): материализация в temp —
             // один раз на операцию (образец WalReceiverLoop), 0600.
-            if (_identity.S3CaPem is { Length: > 0 } caPem)
+            caBundlePath = await MaterializeCaAsync();
+
+            // 2. Попытки по endpoint'ам write-списка: полный рестарт чтения на
+            //    каждой (источник не перематывается); сессия — на ОДНОМ endpoint.
+            var objectKey = $"{identity.Cluster}/{identity.Shard}/full/{id}.tar";
+            var errors = new List<string>();
+            var uploaded = false;
+            foreach (var endpoint in writeTargets)
             {
-                caBundlePath = Path.Combine(Path.GetTempPath(), $"s3-ca-{Guid.NewGuid():N}.pem");
-                var caOptions = OperatingSystem.IsWindows()
-                    ? new FileStreamOptions { Mode = FileMode.Create, Access = FileAccess.Write, Share = FileShare.None }
-                    : new FileStreamOptions
+                token.ThrowIfCancellationRequested();
+                var client = CreateClient(endpoint, bucket, pool, caBundlePath);
+                var keepClient = false;
+                try
+                {
+                    var created = await ((IMultipartS3)client)
+                        .CreateMultipartUploadAsync(objectKey, token);
+                    if (!created.IsSuccess)
                     {
-                        Mode = FileMode.Create,
-                        Access = FileAccess.Write,
-                        Share = FileShare.None,
-                        UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite,
-                    };
-                await using (var caStream = new FileStream(caBundlePath, caOptions))
-                using (var writer = new StreamWriter(caStream))
-                {
-                    await writer.WriteAsync(caPem + "\n");
-                }
-            }
+                        errors.Add(OneLine(created.Error!.Message));
+                        continue;
+                    }
 
-            s3 = new PoolBackupS3(
-                writeTargets, pool.ReadAll, pool.AccessKey, pool.SecretKey,
-                bucket, caBundlePath, requestTimeout: WalReceiverCore.FileAttemptTimeout,
-                targetFactory: _targetFactory);
-
-            // 3. Чистка staging: прошлые <id>-каталоги + создание свежего (Р5).
-            // Каталог создаётся ПЕРЕД чисткой: на первой операции ноды его ещё
-            // нет (каталог — не volume-маунт, а обычный путь в data-volume).
-            // Список материализуется ДО удаления: снос во время ленивой
-            // EnumerateFileSystemEntries по тому же каталогу — неопределённое
-            // поведение перечисления (пропуски/IOException).
-            Directory.CreateDirectory(_stagingRoot);
-            foreach (var stale in Directory.EnumerateFileSystemEntries(_stagingRoot).ToList())
-                TryDelete(stale);
-            Directory.CreateDirectory(Path.Combine(opRoot, "full"));
-
-            // 4. Фаза basebackup: pg_basebackup ЛОКАЛЬНО (127.0.0.1:5432),
-            //    plain-формат -X stream (arch/backups/01-full-backup.md). Пароль — ТОЛЬКО env
-            //    PGPASSWORD child-процесса (не argv/DSN, Р13).
-            _registry.Update(Snap(OperationStates.Running, OperationPhases.Basebackup));
-            var psi = new ProcessStartInfo { FileName = "pg_basebackup" };
-            psi.ArgumentList.Add("-d");
-            psi.ArgumentList.Add($"host={PgHost} port={PgPort} user=backup_exec dbname=postgres sslmode=require");
-            psi.ArgumentList.Add("-D");
-            psi.ArgumentList.Add(Path.Combine(opRoot, "full"));
-            psi.ArgumentList.Add("-X");
-            psi.ArgumentList.Add("stream");
-            psi.ArgumentList.Add("--checkpoint=fast");
-            psi.ArgumentList.Add("--manifest-checksums=SHA256");
-            // HOME=/tmp: walreceiver работает под postgres (supervisord
-            // user=postgres), а HOME наследует от supervisord (/root) —
-            // в образе Spilo там лежит postgresql.crt, недоступный uid 101
-            // (Permission denied); с HOME=/tmp libpq клиентский сертификат
-            // не ищет (sslmode=require его не требует). Приём arch/backups/03-restore.md
-            // (pg_ctl restore) — тот же паттерн, RestoreOperation.PgCtl.
-            psi.EnvironmentVariables["HOME"] = "/tmp";
-            psi.EnvironmentVariables["PGPASSWORD"] = targets.Password!;
-            var (exitCode, _, stderr) = await _runner.RunAsync(psi, token);
-            if (exitCode != 0)
-            {
-                Fail(FirstLine(stderr, "pg_basebackup failed"));
-                return;
-            }
-
-            // 5. wal_start_segment из backup_label; size_bytes — сумма файлов.
-            var labelText = await File.ReadAllTextAsync(
-                Path.Combine(opRoot, "full", "backup_label"), token);
-            var walStart = BackupLabel.WalStartSegment(labelText);
-            if (walStart is null)
-            {
-                Fail("backup_label: START WAL LOCATION not found");
-                return;
-            }
-            var sizeBytes = DirectorySize(Path.Combine(opRoot, "full"));
-            Prog($"basebackup done: wal_start={walStart} size={sizeBytes} bytes — uploading");
-
-            // 6. Фаза uploading: upload 1:1 (вкл. backup_manifest, pg_wal/) —
-            //    ключ = <C>/<X>/full/<id>/<отн. путь>; ЗАТЕМ закрытые сегменты
-            //    набора (pg_wal/* без *.partial/*.history) дублируются в
-            //    общий префикс wal/ (идемпотентная перезапись, arch/backups/01-full-backup.md).
-            _registry.Update(new OperationSnapshot(
-                _id, OperationStates.Uploading, OperationPhases.Uploading,
-                WalStartSegment: walStart));
-            var fullDir = Path.Combine(opRoot, "full");
-            // Параллельная заливка: набор — 1000+ файлов, последовательный put
-            // растягивал uploading на ~80 с под нагрузкой (полный COMPLETED не
-            // укладывался в бюджет сходимости после TLI-прыжка). 8 потоков — тот
-            // же параллелизм, что у сборки дельт; порядок put не значим (ключи
-            // независимы, put идемпотентен).
-            var files = Directory.EnumerateFiles(fullDir, "*", SearchOption.AllDirectories).ToList();
-            var uploadedFiles = 0;
-            string? uploadError = null;
-            using (var gate = new SemaphoreSlim(UploadParallelism))
-            {
-                await Task.WhenAll(files.Select(async file =>
-                {
-                    await gate.WaitAsync(token);
+                    var parts = new MultipartPartBufferStream(created.Value);
+                    var tar = new TarStreamWriter(parts);
+                    BeginAttempt(tar, parts);
+                    registry.Update(new OperationSnapshot(
+                        id, OperationStates.Running, OperationPhases.Basebackup));
                     try
                     {
-                        if (Volatile.Read(ref uploadError) is not null)
-                            return; // первая ошибка — остальные put не начинаем
-                        var rel = Path.GetRelativePath(fullDir, file).Replace('\\', '/');
-                        var put = await s3.PutFileAsync(
-                            $"{_identity.Cluster}/{_identity.Shard}/full/{_id}/{rel}", file, token);
-                        if (!put.IsSuccess)
+                        await using var source = await OpenSourceAsync(targets.Password!, token);
+                        await new BaseBackupCommand(source).RunAsync(id, CopyStreamAsync, token);
+                        if (_walStart is null)
                         {
-                            Interlocked.CompareExchange(
-                                ref uploadError, put.Error!.Message.Split('\n')[0], null);
-                            return;
+                            errors.Add("backup_label: START WAL LOCATION not found");
+                            await parts.AbortAsync();
+                            continue;
                         }
-                        var uploaded = Interlocked.Increment(ref uploadedFiles);
-                        if (uploaded % UploadProgressEveryFiles == 0)
-                            Prog($"upload progress: {uploaded} files, {DirectorySize(fullDir)} bytes");
+
+                        // Секция манифеста обязательна: MANIFEST 'yes' запрошен,
+                        // без манифеста verify не докажет полноту НИКОГДА
+                        // (вечный transient) — fail-fast до Complete.
+                        if (_manifest is not { } manifest)
+                        {
+                            errors.Add("manifest section is missing in BASE_BACKUP stream");
+                            await parts.AbortAsync();
+                            continue;
+                        }
+
+                        // Манифест — ПОСЛЕДНЕЙ записью единого tar (verify
+                        // читает его хвостом объекта, spec §6.7).
+                        await tar.WriteEntryAsync(
+                            new TarEntry(
+                                ManifestEntryName, TarTypeFlags.File, manifest.Length, 0x1A4, ""),
+                            manifest, token);
+
+                        await tar.FinishAsync(token);
+                        var completed = await parts.CompleteAsync(token);
+                        if (!completed.IsSuccess)
+                        {
+                            errors.Add(OneLine(completed.Error!.Message));
+                            await parts.AbortAsync();
+                            continue;
+                        }
+
+                        _sha256 = Convert.ToHexString(tar.Sha256Hash()).ToLowerInvariant();
+                        _sizeBytes = tar.TotalBytes;
+                        uploaded = true;
+                        // Объект залит на ЭТОТ endpoint: дубль WAL читает его же.
+                        uploadedClient = client;
+                        keepClient = true;
+                        break;
+                    }
+                    catch (OperationCanceledException) when (token.IsCancellationRequested)
+                    {
+                        // Отмена гасит и BASE_BACKUP-соединение, и multipart-
+                        // сессию; цикл попыток прерывается (отмена — не отказ
+                        // endpoint'а; деградация в s3-pool-exhausted недопустима).
+                        await parts.AbortAsync();
+                        throw;
+                    }
+                    catch (Exception e)
+                    {
+                        errors.Add(OneLine($"{e.GetType().Name}: {e.Message}"));
+                        await parts.AbortAsync();
+                        continue;
                     }
                     finally
                     {
-                        gate.Release();
+                        tar.Dispose();
+                        _tar = null;
+                        _parts = null;
                     }
-                }));
+                }
+                finally
+                {
+                    if (!keepClient && client is IAsyncDisposable disposable)
+                        await disposable.DisposeAsync();
+                }
             }
-            if (uploadError is not null)
+
+            if (!uploaded)
             {
-                Fail(uploadError);
+                // Отмена, пойманная как отказ части, — не исчерпание пула:
+                // операция уходит в failed с причиной `cancelled` (spec §3.4),
+                // не s3-pool-exhausted.
+                if (token.IsCancellationRequested)
+                {
+                    Fail("cancelled");
+                    return;
+                }
+
+                Fail($"{S3PoolMarkers.Exhausted}: " +
+                     $"{errors.FirstOrDefault() ?? "write target list is empty"}");
                 return;
             }
-            // Закрытость сегментов — ПО ИСТОЧНИКУ НА МОМЕНТ ЗАЛИВКИ (arch/backups/01-full-backup.md):
-            // дублируются только сегменты набора СТРОГО ниже текущего активного
-            // wal-файла источника (IDENTIFY_SYSTEM); последний живой сегмент набора
-            // остаётся только в full/<id>/pg_wal/ — его финал доставит стрим при
-            // закрытии, срез гонки «дубль против финала» исключён. Отказ identify —
-            // операция FAILED (резюмов нет — переснятие новым id, §2).
+
+            Prog($"basebackup done: size={_sizeBytes} bytes sha256={_sha256}");
+
+            // 3. Фаза uploading: снимок + IDENTIFY_SYSTEM (позиция источника)
+            //    + дубль закрытых сегментов набора в общий wal/.
+            registry.Update(new OperationSnapshot(
+                id, OperationStates.Uploading, OperationPhases.Uploading,
+                WalStartSegment: _walStart));
+
             var identifyOptions = new WalReceiverOptions(
-                "127.0.0.1", 5432, "backup_exec", targets.Password!, "postgres",
-                targets.Slot!, _identity.Cluster, _identity.Shard,
+                PgHost, PgPort, "backup_exec", targets.Password!, "postgres",
+                targets.Slot!, identity.Cluster, identity.Shard,
                 writeTargets, pool.ReadAll, bucket, pool.AccessKey, pool.SecretKey);
-            var identifySource = _sourceFactory is { } factory
+            var identifySource = sourceFactory is { } factory
                 ? factory(identifyOptions)
                 : new NpgsqlXLogSource(identifyOptions);
             await using (identifySource)
@@ -256,63 +246,42 @@ public sealed class FullBackupOperation : IReceiverOperation
                 var opened = await identifySource.OpenAsync(token);
                 if (!opened.IsSuccess)
                 {
-                    Fail($"IDENTIFY_SYSTEM open failed: {opened.Error!.Message.Split('\n')[0]}");
+                    Fail($"IDENTIFY_SYSTEM open failed: {OneLine(opened.Error!.Message)}");
                     return;
                 }
 
                 var identified = await identifySource.IdentifySystemAsync(token);
                 if (!identified.IsSuccess)
                 {
-                    Fail($"IDENTIFY_SYSTEM failed: {identified.Error!.Message.Split('\n')[0]}");
+                    Fail($"IDENTIFY_SYSTEM failed: {OneLine(identified.Error!.Message)}");
                     return;
                 }
 
                 var activeSegId = identified.Value.XLogPos / (ulong)WalFileName.SegmentBytes;
-                foreach (var file in Directory.EnumerateFiles(Path.Combine(fullDir, "pg_wal")))
+                // Дубль WAL — ПУЛОМ write-списка (retry/перебор/breaker целей):
+                // после успешного Complete объект уже в bucket, транспортный
+                // сбой одного Range/put не должен валить операцию с нуля
+                // (spec t01 §6.12). Range читается из ТОГО endpoint'а, куда
+                // объект залит (сессия фиксирована), с ограниченными повторами.
+                await using var walPool = CreateWalPool(writeTargets, bucket, pool, caBundlePath);
+                var duplicateError = await DuplicateWalAsync(
+                    (IStreamObjectS3)uploadedClient!, walPool, activeSegId, token);
+                if (duplicateError is not null)
                 {
-                    var name = Path.GetFileName(file);
-                    if (name.EndsWith(".partial", StringComparison.Ordinal)
-                        || name.EndsWith(".history", StringComparison.Ordinal))
-                        continue;
-                    // Имя дубля — НОРМАЛИЗОВАННОЕ (строчное): pg_basebackup кладёт
-                    // сегменты набора ВЕРХНИМ hex, а канон ключей wal/ — строчные
-                    // (симметрия стриму приёмников и fetch-wal) — дубль сливается
-                    // со стримом, дублирования объектов нет (arch/backups/01-full-backup.md).
-                    // Гвард чужой цепочки (arch/backups/02-wal-archive.md §1) обязателен и здесь: полный
-                    // ПЕРЕСОЗДАННОГО кластера дублировал бы свои pg_wal-сегменты
-                    // поверх цепочки погибшей инкарнации — DR-источник разрушался
-                    // (факт E2E: pg_control полного и WAL разошлись по system id).
-                    var normalized = FetchWalCommand.NormalizeSegment(name);
-                    if (WalFileName.TryParse(normalized) is not { } setSegment)
-                        continue;
-                    // Позиция сегмента набора строго ниже активного сегмента источника
-                    // (закрытость — по источнику на момент заливки, arch/backups/01-full-backup.md):
-                    // живой последний сегмент набора остаётся только в
-                    // full/<id>/pg_wal/, его финал доставит стрим при закрытии.
-                    var setPos = (long)setSegment.Log * WalFileName.SegsPerLog + setSegment.Seg;
-                    if (setPos >= (long)activeSegId)
-                    {
-                        Prog($"wal duplicate skipped: {normalized} is not closed in the source yet");
-                        continue;
-                    }
-
-                    var key = $"{_identity.Cluster}/{_identity.Shard}/wal/{normalized}";
-                    var put = s3 is IWalSegmentGuard guard
-                        ? await guard.PutWalSegmentFileAsync(key, file, token)
-                        : await s3.PutFileAsync(key, file, token);
-                    if (!put.IsSuccess)
-                    {
-                        Fail(put.Error!.Message.Split('\n')[0]);
-                        return;
-                    }
+                    Fail(duplicateError);
+                    return;
                 }
             }
 
-            // 7. Итог succeeded (чистка staging — в finally, при любом исходе).
-            _registry.Update(new OperationSnapshot(
-                _id, OperationStates.Succeeded, OperationPhases.Uploading,
-                WalStartSegment: walStart, SizeBytes: sizeBytes));
-            Prog($"COMPLETED: wal_start={walStart} size={sizeBytes} bytes, files={uploadedFiles}");
+            // 4. Итог succeeded: wal_start, размер объекта, сквозной sha256.
+            // Прогресс в терминальном снимке НЕ публикуется (контракт:
+            // progress — только RUNNING/UPLOADING, arch/backups/05 §1).
+            registry.Update(new OperationSnapshot(
+                id, OperationStates.Succeeded, OperationPhases.Uploading,
+                WalStartSegment: _walStart,
+                SizeBytes: _sizeBytes,
+                Sha256: _sha256));
+            Prog($"COMPLETED: wal_start={_walStart} size={_sizeBytes} bytes sha256={_sha256}");
         }
         catch (OperationCanceledException)
         {
@@ -326,71 +295,273 @@ public sealed class FullBackupOperation : IReceiverOperation
         }
         finally
         {
-            TryDelete(opRoot);
             if (caBundlePath is not null)
                 try { File.Delete(caBundlePath); } catch { /* уже нет */ }
-            if (s3 is IAsyncDisposable disposable)
+            if (uploadedClient is IAsyncDisposable disposable)
                 await disposable.DisposeAsync();
         }
     }
 
-    // Прогресс-строка в stderr (журнал ноды): шаг прогресс-диагностики —
-    // приёмник не молчит в логах между 202 и терминальным статусом.
-    private const int UploadProgressEveryFiles = 500;
-
-    // Параллелизм заливки набора full/<id>/ (файлы независимы).
-    private const int UploadParallelism = 8;
-
-    private void Prog(string message)
-        => Console.Error.WriteLine($"walreceiver: full {_id} {message}");
-
-    /// <summary>Best-effort отмена (cancel API): гасит внутренний CTS — runner
-    /// убивает дерево текущего child-процесса; операция завершится failed
-    /// `cancelled` с чисткой staging.</summary>
+    /// <summary>Best-effort отмена (cancel API): гасит внутренний CTS — чтение
+    /// сокета и заливка частей прерываются; операция завершится failed
+    /// `cancelled` (multipart-сессия гасится Abort'ом в обработчике).</summary>
     public Task CancelAsync()
     {
         _cts.Cancel();
         return Task.CompletedTask;
     }
 
-    private OperationSnapshot Snap(string state, string phase)
-        => new(_id, state, phase);
+    /// <summary>Перепаковка одной секции COPY-потока BASE_BACKUP в единый tar:
+    /// index 0 — base.tar (WAL-сегменты уже внутри с префиксом pg_wal/),
+    /// index 1 — отдельный WAL-архив (защита для серверов без WAL-in-tar),
+    /// <see cref="BaseBackupCommand.ManifestIndex"/> — манифест (сырые байты,
+    /// пишется последней записью).</summary>
+    private async Task CopyStreamAsync(int index, Stream stream, CancellationToken ct)
+    {
+        var tar = _tar ?? throw new InvalidOperationException("tar writer is not initialized");
+        var parts = _parts ?? throw new InvalidOperationException("multipart stream is not initialized");
+
+        if (index == BaseBackupCommand.ManifestIndex)
+        {
+            using var manifest = new MemoryStream();
+            await stream.CopyToAsync(manifest, ct);
+            _manifest = manifest.ToArray();
+            Prog($"manifest received: {_manifest.Length} bytes");
+            return;
+        }
+
+        var reader = new TarStreamReader(stream);
+        while (await reader.ReadHeaderAsync(ct) is { } entry)
+        {
+            // Потолок объекта проверяется ДО записи записи: после записи
+            // 10001-й части Complete уже не пройдёт, а диагностика потеряется.
+            if (tar.TotalBytes + entry.Size + 1024 > MaxObjectBytes)
+                throw new ApplicationException("backup exceeds 160 GiB multipart limit");
+            // Отдельный WAL-архив сервера — записи с префиксом pg_wal/.
+            var name = index == 0 ? entry.Name : "pg_wal/" + entry.Name;
+            if (name == "backup_label")
+            {
+                var label = await reader.ReadAllDataAsync(ct);
+                _walStart = BackupLabel.WalStartSegment(Encoding.ASCII.GetString(label));
+                await tar.WriteEntryAsync(entry with { Name = name }, label, ct);
+            }
+            else if (entry.TypeFlag is TarTypeFlags.Dir or TarTypeFlags.Symlink)
+            {
+                // Каталоги/симлинки — только заголовок (данных нет).
+                await tar.WriteEntryAsync(entry with { Name = name }, Stream.Null, ct);
+            }
+            else
+            {
+                // Смещение ДАННЫХ записи в выходном tar — фактическое, после всех
+                // заголовков (служебные longname/PAX тоже сдвигают данные): из
+                // писателя, не «Position + 512» (Range-GET дубля).
+                var dataOffset = await tar.WriteEntryWithDataOffsetAsync(
+                    entry with { Name = name }, reader.OpenData(), ct);
+                if (name.StartsWith("pg_wal/", StringComparison.Ordinal))
+                    _walEntries.Add((name, dataOffset, entry.Size));
+            }
+
+            PublishProgress(tar.TotalBytes, parts.PartsDone);
+            var bucket = tar.TotalBytes / ProgressLogEveryBytes;
+            if (bucket != _progressBucket)
+            {
+                _progressBucket = bucket;
+                Prog($"upload progress: bytes={tar.TotalBytes} parts={parts.PartsDone}");
+            }
+        }
+    }
+
+    // Дубль закрытых сегментов набора в wal/ (arch/pgnode/04 §3): Range-GET
+    // байтов сегмента из СВОЕГО tar-объекта → гвард чужой цепочки; последний
+    // живой сегмент набора не дублируется. Возврат — первая ошибка или null.
+    // Range читается из endpoint'а, куда залит объект (сессия фиксирована):
+    // транзиентный обрыв после успешного Complete не должен валить операцию —
+    // ограниченные повторы на том же endpoint (данные в bucket, объект жив).
+    private async Task<string?> DuplicateWalAsync(
+        IStreamObjectS3 reader, IWalSegmentGuard guard, ulong activeSegId, CancellationToken ct)
+    {
+        // Последний сегмент НАБОРА (несёт end-of-backup запись) не дублируется
+        // никогда (arch/backups/01 §2): его tar-срез — состояние на момент
+        // снятия, а стрим позже кладёт в wal/ финальную версию того же имени;
+        // дубль среза дал бы ложный wal-archive-conflict и FAILED полного.
+        // Сегменты строго ниже активного wal-файла источника и ниже последнего
+        // набора — закрытые, их байты в tar финальны.
+        var setPositions = _walEntries
+            .Select(e => WalFileName.TryParse(
+                FetchWalCommand.NormalizeSegment(e.Name[(e.Name.LastIndexOf('/') + 1)..])))
+            .OfType<WalFileName>()
+            .Select(s => (long)s.Log * WalFileName.SegsPerLog + s.Seg)
+            .ToList();
+        var lastSetPos = setPositions.Count > 0 ? setPositions.Max() : -1L;
+        string? error = null;
+        using var gate = new SemaphoreSlim(DuplicateParallelism);
+        await Task.WhenAll(_walEntries.Select(async entry =>
+        {
+            var fileName = entry.Name[(entry.Name.LastIndexOf('/') + 1)..];
+            var normalized = FetchWalCommand.NormalizeSegment(fileName);
+            if (WalFileName.TryParse(normalized) is not { } segment || entry.Size <= 0)
+                return; // не сегмент (archive_status/*.done, *.history) — пропуск
+            var setPos = (long)segment.Log * WalFileName.SegsPerLog + segment.Seg;
+            if (setPos == lastSetPos)
+            {
+                Prog($"wal duplicate skipped: {normalized} is the last segment of the set " +
+                     "(its final version is delivered by the stream)");
+                return;
+            }
+
+            if (setPos >= (long)activeSegId)
+            {
+                Prog($"wal duplicate skipped: {normalized} is not closed in the source yet");
+                return;
+            }
+
+            await gate.WaitAsync(ct);
+            try
+            {
+                if (Volatile.Read(ref error) is not null)
+                    return; // первая ошибка — остальные Range/put не начинаем
+                var range = await RangeWithRetryAsync(
+                    reader, $"full/{id}.tar", entry.Offset, entry.Offset + entry.Size - 1, ct);
+                if (!range.IsSuccess)
+                {
+                    Interlocked.CompareExchange(ref error, OneLine(range.Error!.Message), null);
+                    return;
+                }
+
+                var put = await guard.PutWalSegmentAsync(
+                    $"{identity.Cluster}/{identity.Shard}/wal/{normalized}", range.Value, null, ct);
+                if (!put.IsSuccess)
+                    Interlocked.CompareExchange(ref error, OneLine(put.Error!.Message), null);
+            }
+            finally
+            {
+                gate.Release();
+            }
+        }));
+        return error;
+    }
+
+    // Range-GET с ограниченными повторами: объект уже залит и неизменен, обрыв
+    // — транспортный (моргание ноды), повтор на ТОМ ЖЕ endpoint оправдан
+    // (другие ноды объект не получали — переносить чтение нельзя).
+    private async Task<Result<byte[]>> RangeWithRetryAsync(
+        IStreamObjectS3 reader, string key, long start, long end, CancellationToken ct)
+    {
+        const int maxAttempts = 3;
+        Result<byte[]> last = default;
+        for (var attempt = 1; attempt <= maxAttempts; attempt++)
+        {
+            last = await reader.GetObjectRangeAsync(
+                identity.Cluster, identity.Shard, key, start, end, ct);
+            if (last.IsSuccess)
+                return last;
+            if (attempt < maxAttempts)
+                await Task.Delay(TimeSpan.FromMilliseconds(250), ct);
+        }
+
+        return last;
+    }
+
+    // Пул write-списка для дубля WAL (retry/перебор целей + breaker):
+    // read-стороны у него нет — Range читается фиксированным клиентом.
+    private PoolBackupS3 CreateWalPool(
+        IReadOnlyList<string> writeTargets, string bucket, BackupPoolContext pool,
+        string? caBundlePath)
+        => new(
+            writeTargets, writeTargets, pool.AccessKey, pool.SecretKey, bucket, caBundlePath,
+            WalReceiverCore.FileAttemptTimeout,
+            targetFactory: targetFactory);
+
+    private void BeginAttempt(TarStreamWriter tar, MultipartPartBufferStream parts)
+    {
+        _tar = tar;
+        _parts = parts;
+        _manifest = null;
+        _walStart = null;
+        _progressBucket = -1;
+        _walEntries.Clear();
+    }
+
+    // Прогресс в снимке (дешёвая замена ссылки): bytes_done/parts_done при
+    // живом прогрессе — штатная частота обновления реестра.
+    private void PublishProgress(long bytesDone, long partsDone)
+    {
+        var current = registry.Current;
+        if (current is not { State: OperationStates.Running })
+            return;
+        registry.Update(current with { BytesDone = bytesDone, PartsDone = partsDone });
+    }
+
+    private IBackupS3 CreateClient(
+        string endpoint, string bucket, BackupPoolContext pool, string? caBundlePath)
+        => targetFactory is { } factory
+            ? factory(endpoint)
+            // MaxErrorRetry: 0 — своя политика попыток (перебор endpoint'ов).
+            : new BackupS3(
+                new S3ClientOptions(endpoint, bucket, pool.AccessKey, pool.SecretKey,
+                    CaBundlePath: caBundlePath, MaxErrorRetry: 0),
+                WalReceiverCore.FileAttemptTimeout);
+
+    // Источник BASE_BACKUP: прод — свой wire-клиент (подключение+SCRAM), тест —
+    // готовый фейк через wireFactory.
+    private async Task<IBaseBackupSource> OpenSourceAsync(string password, CancellationToken ct)
+    {
+        if (wireFactory is { } factory)
+            return factory(PgHost, password);
+        var client = new PgWireReplicationClient(PgHost, PgPort, "backup_exec", password);
+        await client.ConnectAsync(ct);
+        return client;
+    }
+
+    // CA https S3 в temp-файл (образец WalReceiverLoop): 0600, путь — в S3-клиент.
+    private async Task<string?> MaterializeCaAsync()
+    {
+        if (identity.S3CaPem is not { Length: > 0 } caPem)
+            return null;
+        var path = Path.Combine(Path.GetTempPath(), $"s3-ca-{Guid.NewGuid():N}.pem");
+        var options = OperatingSystem.IsWindows()
+            ? new FileStreamOptions { Mode = FileMode.Create, Access = FileAccess.Write, Share = FileShare.None }
+            : new FileStreamOptions
+            {
+                Mode = FileMode.Create,
+                Access = FileAccess.Write,
+                Share = FileShare.None,
+                UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite,
+            };
+        try
+        {
+            await using (var stream = new FileStream(path, options))
+            using (var writer = new StreamWriter(stream))
+            {
+                await writer.WriteAsync(caPem + "\n");
+            }
+        }
+        catch
+        {
+            // Исключение записи — файл не остаётся сиротой (путь ещё не
+            // возвращён вызывающему, его finally его не увидит).
+            try { File.Delete(path); } catch { /* уже нет */ }
+            throw;
+        }
+
+        return path;
+    }
+
+    private void Prog(string message)
+        => Console.Error.WriteLine($"walreceiver: full {id} {message}");
 
     /// <summary>Публикация терминального failed-снимка (фаза — текущая);
     /// причина — в stdout контейнера (диагностика: etcd-статус живёт до
     /// переснятия, журнал остаётся после).</summary>
     private void Fail(string error)
     {
-        var phase = _registry.Current?.Phase ?? OperationPhases.Basebackup;
-        _registry.Update(new OperationSnapshot(
-            _id, OperationStates.Failed, phase, Error: error));
+        var phase = registry.Current?.Phase ?? OperationPhases.Basebackup;
+        registry.Update(new OperationSnapshot(
+            id, OperationStates.Failed, phase, Error: error));
         Console.Error.WriteLine(
-            $"walreceiver: full {_id} FAILED at {phase}: {error}");
+            $"walreceiver: full {id} FAILED at {phase}: {error}");
     }
 
-    private static string FirstLine(string text, string fallback)
-    {
-        var line = text.Split('\n').Select(l => l.Trim('"', ' ').Trim()).FirstOrDefault(l => l.Length > 0);
-        return string.IsNullOrEmpty(line) ? fallback : line;
-    }
-
-    private static long DirectorySize(string dir)
-        => Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories)
-            .Sum(f => new FileInfo(f).Length);
-
-    private static void TryDelete(string path)
-    {
-        try
-        {
-            if (Directory.Exists(path))
-                Directory.Delete(path, recursive: true);
-            else if (File.Exists(path))
-                File.Delete(path);
-        }
-        catch
-        {
-            // Чистка best-effort: ENOSPC/гонки не роняют процесс — следующий
-            // старт операции повторит чистку (идемпотентно).
-        }
-    }
+    private static string OneLine(string text)
+        => text.Split('\n')[0];
 }

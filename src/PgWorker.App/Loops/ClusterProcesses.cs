@@ -52,8 +52,9 @@ internal interface IClusterProcesses
     Task<Result<ProcessOutcome>> WalStreamAsync(
         ClusterSnapshot snap, IReadOnlyList<ClusterBackups> backups, CancellationToken ct);
 
-    /// <summary>Проверки полных бэкапов (arch/backups/06-s3-layout.md): цепочка + pg_verifybackup,
-    /// супервиз verify-джобов; backups — парс префикса /pgworker/backups/ этим же тиком.
+    /// <summary>Проверки полных бэкапов (arch/19 §5): супервиз streaming
+    /// verify-операции приёмника ноды-источника; backups — парс префикса
+    /// /pgworker/backups/ этим же тиком.
     /// Порядок тика — после backup-wal, до ретенции (verify раньше retention:
     /// канон arch/backups/README.md порядок не фиксирует; проверка валидирует то, что ретенция
     /// только собирается удалять).</summary>

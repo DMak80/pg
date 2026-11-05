@@ -114,10 +114,20 @@ public sealed class RestoreProcess(
             steps.Add(RunShardStepAsync(cluster, snap, shard, op, mine, ct));
         }
 
+        // Агрегация исхода (f-restore §1): ошибка любого шарда — Failed тика;
+        // иначе InProgress, если хотя бы один шард ещё ведёт заявку (ретрай/
+        // ожидание); Done — все шаги завершены. Инициализация Done без учёта
+        // InProgress возвращала Done на каждом тике живой заявки (rejoin/launch
+        // теряли признак «работа идёт»).
         var last = Result<ProcessOutcome>.Success(ProcessOutcome.Done);
         foreach (var outcome in await Task.WhenAll(steps))
+        {
             if (!outcome.IsSuccess)
+                return outcome;
+            if (outcome.Value == ProcessOutcome.InProgress)
                 last = outcome;
+        }
+
         return last;
     }
 
@@ -276,26 +286,35 @@ public sealed class RestoreProcess(
             selectedFull = lifeSb.Full.FirstOrDefault(f => f.Id == backupId);
         var chainLife = selectedFull?.ChainLife;
 
-        // 4. Факт целостности кандидата: upload (mc cp --recursive) не
-        // атомарен и не гарантирует «манифест последним» — упавший на середине
-        // джоб оставляет частичный префикс full/<id>/, а при DR etcd-статусов
-        // нет; инвариант «префикс ⇔ манифест» механикой НЕ обеспечивается →
-        // частичный кандидат отсеивается проверкой манифеста.
-        var manifest = await S3Pulse.CallAsync(progress, token => s3.DownloadTextAsync(srcC, srcX, $"full/{backupId}/backup_manifest", token), ct, WatchdogWindow / 2);
-        if (!manifest.IsSuccess)
+        // 4. Факт завершённости кандидата: объект полного — ОДИН
+        // `full/<id>.tar`; он появляется в листинге только после Complete
+        // multipart — существование объекта = завершённая загрузка (spec t01
+        // §6.10), DR-валидация по объекту (прежний маркер манифеста упразднён).
+        var head = await S3Pulse.CallAsync(progress,
+            token => s3.HeadObjectAsync(srcC, srcX, $"full/{backupId}.tar", token), ct, WatchdogWindow / 2);
+        if (!head.IsSuccess)
+        {
+            // Транспортный отказ — transient: следующий тик повторит выбор.
+            return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
+        }
+        if (!head.Value.Exists)
         {
             await FailPermanentAsync(cluster, shard.Name, op,
-                $"full {backupId} has no backup_manifest (incomplete/corrupt)", ct);
+                $"full {backupId}: object full/{backupId}.tar not found", ct);
             return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
         }
 
         // 5. Стартовая точка WAL: свой свежий полный → etcd-статус; иначе
-        // backup_label из S3 (BackupLabel.WalStartSegment — sed-эквивалент).
+        // backup_label — ПЕРВАЯ запись tar-объекта (Range-чтение начала).
         string? walStart = ownFresh?.WalStartSegment;
         if (walStart is not { Length: > 0 })
         {
-            var label = await S3Pulse.CallAsync(progress, token => s3.DownloadTextAsync(srcC, srcX, $"full/{backupId}/backup_label", token), ct, WatchdogWindow / 2);
-            walStart = label.IsSuccess ? Restore.BackupLabel.WalStartSegment(label.Value) : null;
+            var label = await S3Pulse.CallAsync(progress,
+                token => FullTarSet.ReadBackupLabelAsync(s3, srcC, srcX, backupId, token),
+                ct, WatchdogWindow / 2);
+            walStart = label.IsSuccess && label.Value is { } labelText
+                ? Restore.BackupLabel.WalStartSegment(labelText)
+                : null;
             if (walStart is null)
             {
                 await FailPermanentAsync(cluster, shard.Name, op,
@@ -317,7 +336,14 @@ public sealed class RestoreProcess(
         if (!wal.IsSuccess)
             return await TransientAsync(cluster, $"s3-unavailable/{shard.Name}/{op.Id}",
                 wal.Error!.Message, ct);
-        var chain = WalChain.Check(chainStart.Value, wal.Value.Select(o => o.Name));
+        // Строгая валидация TLI-переходов по switchWALLSN из .history (f-restore §2):
+        // допустимы пустые промежуточные таймлайны (только .history, без
+        // сегментов — TLI-прыжок); недоступная история — эвристика номеров.
+        var histories = await S3Pulse.CallAsync(progress,
+            token => WalHistoryObjects.ReadAsync(s3, srcC, srcX, wal.Value.Select(o => o.Name), token),
+            ct, WatchdogWindow / 2);
+        var chain = WalChain.Check(chainStart.Value, wal.Value.Select(o => o.Name),
+            histories.IsSuccess ? histories.Value : null);
         if (!chain.IsContinuous)
         {
             await FailPermanentAsync(cluster, shard.Name, op,
@@ -577,6 +603,11 @@ public sealed class RestoreProcess(
         }
         var poolCtx = poolRead.Value.Context;
 
+        // Сквозной sha256 выбранного полного (etcd-статус; DR-orphan без
+        // статуса — null): приёмник сверит распаковку до старта postgres
+        // (06 §2, spec §3.6). Читается ДО лямбды — она не async.
+        var fullSha256 = await ReadFullSha256Async(
+            SrcCluster(op), SrcShard(op), op.BackupId, ct);
         var launch = await TimedStepAsync(cluster, shard.Name, "start-restore",
             () => receiver.StartRestoreAsync(
                 receiverUrl,
@@ -594,7 +625,8 @@ public sealed class RestoreProcess(
                         CaPem: BackupCaPem.ReadIfConfigured(options.S3CaBundlePath)),
                     // t15: номер жизни выбранного полного → fetch-wal фильтрует
                     // куски по нему (DR-orphan — null, фильтр не активен).
-                    ChainLife: op.ChainLife), ct));
+                    ChainLife: op.ChainLife,
+                    Sha256: fullSha256), ct));
         if (launch.IsConflict)
         {
             // 409 — в общем ops-реестре приёмника ЧУЖАЯ ops-операция (verify
@@ -935,6 +967,23 @@ public sealed class RestoreProcess(
 
     private static string SrcShard(RestoreOperationState op)
         => op.Source.Split('/', 2)[1];
+
+    // Сквозной sha256 выбранного полного из etcd-статуса шарда-ИСТОЧНИКА
+    // (DR-orphan без статуса — null: сверка распаковки не определена, 06 §2).
+    private async Task<string?> ReadFullSha256Async(
+        string cluster, string shard, string backupId, CancellationToken ct)
+    {
+        var range = await etcd.RangeAsync(endpoints[0], BackupNames.ClusterPrefix(cluster), ct);
+        if (!range.IsSuccess)
+            return null;
+        var parsed = BackupsParser.Parse(range.Value, out _);
+        if (!parsed.IsSuccess)
+            return null;
+        var backups = parsed.Value.FirstOrDefault(b => b.Cluster == cluster);
+        return backups?.Shards.TryGetValue(shard, out var sb) == true
+            ? sb.Full.FirstOrDefault(f => f.Id == backupId)?.Sha256
+            : null;
+    }
 
     // ── REJOINING: ensure нод + Patroni-пробы + COMPLETED (§3.4, AC4) ──
 

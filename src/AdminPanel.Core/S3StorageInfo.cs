@@ -15,7 +15,8 @@ public sealed record S3Drives(
 public sealed record S3Health(
     bool ApiOk, string? ApiError, bool LiveOk, bool? ClusterOk, S3Drives? Drives);
 
-/// <summary>Один полный бэкап в S3-дереве: префикс full/&lt;id&gt;/.</summary>
+/// <summary>Один полный бэкап в S3-дереве: объект full/&lt;id&gt;.tar (один
+/// объект = один полный, spec t01 §6.1); id — имя без `.tar`.</summary>
 public sealed record S3FullNode(
     string Id, long SizeBytes, long ObjectCount, long LastModifiedUnix);
 

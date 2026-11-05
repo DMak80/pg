@@ -2,10 +2,11 @@ namespace AdminPanel.Core;
 
 // Агрегация list-v2 bucket в дерево <C>/<X> (arch/backups/06-s3-layout.md, AC2): чистая
 // функция — вход «ключ + размер + lastModified», выход — дерево кластеров.
-// Layout: <C>/<X>/full/<id>/… — файлы полного; <C>/<X>/wal/<segment> — сегмент;
-// <C>/<X>/wal/<TLI>.history — timeline-история; короче <C>/<X>/… — корневой
-// foreign-префикс (факт, без вердикта); прочее внутри шарда — только в его
-// SizeBytes. Все сортировки — Ordinal.
+// Layout: <C>/<X>/full/<id>.tar — ОДИН объект полного (spec t01 §6.1);
+// <C>/<X>/wal/<segment> — сегмент; <C>/<X>/wal/<TLI>.history — timeline-
+// история; короче <C>/<X>/… — корневой foreign-префикс (факт, без вердикта);
+// прочее внутри шарда — только в его SizeBytes. Все сортировки — Ordinal.
+// Id полного — имя объекта без суффикса `.tar` (S3↔etcd join — по одному id).
 
 /// <summary>Один объект bucket'а для агрегации (ключ, размер, lastModified).</summary>
 public sealed record S3InventoryObject(string Key, long SizeBytes, long LastModifiedUnix);
@@ -43,9 +44,17 @@ public sealed partial record S3Inventory
 
             if (parts[2] == "full" && parts.Length >= 4)
             {
-                // файлы полного — агрегат size/count/max по 4+ сегментам пути
-                if (!acc.Fulls.TryGetValue(parts[3], out var full))
-                    acc.Fulls[parts[3]] = full = new FullAcc();
+                // Полный — ОДИН объект `full/<id>.tar` (spec t01 §6.1): id —
+                // имя без `.tar` (иначе join S3↔etcd по Id даёт ложную пару
+                // S3Only+EtcdOnly на каждом полном). Старый пофайловый layout
+                // `full/<id>/…` агрегируется тем же Id (обратная совместимость).
+                var fullId = parts.Length == 4
+                             && parts[3].EndsWith(".tar", StringComparison.Ordinal)
+                             && parts[3].Length > ".tar".Length
+                    ? parts[3][..^".tar".Length]
+                    : parts[3];
+                if (!acc.Fulls.TryGetValue(fullId, out var full))
+                    acc.Fulls[fullId] = full = new FullAcc();
                 full.SizeBytes += obj.SizeBytes;
                 full.ObjectCount++;
                 full.LastModifiedUnix = Math.Max(full.LastModifiedUnix, obj.LastModifiedUnix);

@@ -20,17 +20,24 @@
 
 | Метод+путь | Назначение | Статус/коды |
 |---|---|---|
-| `POST /api/backup/full` | запуск полного, тело `{"id"}` (id детерминирован воркером) | 202; 409 — операция уже идёт; 503 — стоп-гейт (`STOPPED`, `/pgworker/backups-disabled`, `Enabled=false`) |
-| `GET /api/backup/full` | снимок полного: фазы `basebackup|uploading`, `wal_start_segment`, `size_bytes`, `error` | 200; 404 — операции нет/vanished |
-| `POST /api/backup/full/cancel` | отмена полного (гасит дерево child-процесса, чистит staging) | 202/200 (best-effort) |
-| `POST /api/ops/verify` | запуск verify полного (S3-контекст read-списка в теле) | 202; 409 — чужой ops-операции; 503 — гейт |
-| `POST /api/ops/restore` | запуск restore (тело: `backup_id`, `target_time`?, `recovery_timeout_sec`, S3-контекст) ИЛИ drill (поле `id`) | 202; 409 — чужой ops-операции; 503 — гейт |
+| `POST /api/backup/full` | запуск полного, тело `{"id"}` (id детерминирован воркером) | 202; 400 — id вне allowlist; 409 — операция уже идёт; 503 — стоп-гейт (`STOPPED`, `/pgworker/backups-disabled`, `Enabled=false`) |
+| `GET /api/backup/full` | снимок полного: фазы `basebackup|uploading`, `wal_start_segment`, `size_bytes`, прогресс (`bytes_done`/`parts_done`), `error` | 200; 404 — операции нет/vanished |
+| `POST /api/backup/full/cancel` | отмена полного (гасит BASE_BACKUP-соединение и multipart-сессию) | 202/200 (best-effort) |
+| `POST /api/ops/verify` | запуск verify полного (S3-контекст read-списка + `sha256`? ожидаемый в теле) | 202; 400 — id вне allowlist; 409 — чужой ops-операции; 503 — гейт |
+| `POST /api/ops/restore` | запуск restore (тело: `backup_id`, `target_time`?, `recovery_timeout_sec`, `chain_life`?, `sha256`?, S3-контекст) ИЛИ drill (поле `id`) | 202; 400 — id вне allowlist; 409 — чужой ops-операции; 503 — гейт |
 | `GET /api/ops/restore` | снимок restore/drill: фазы `downloading|recovering`, `restored_to_lsn`?, `system_id`?, `started_unix`?, `error`? | 200; 404 — операции нет |
 | `GET /api/ops/verify` | снимок verify: `downloading|verifying`, `started_unix` | 200; 404 — операции нет |
 | `POST /api/ops/cancel` | отмена идущей ops-операции (внешний канал мимо воркера) | операция `state=cancelled` (НЕ failed) |
 | `POST /api/node/pgdump` | `pg_dump --schema-only` схемы (DDL-перенос переезда) | снимок операции/результат |
 | `POST /api/node/pgdata` | проба данных ноды: `PG_VERSION` файловой системой контейнера | Present/Absent/Unknown |
 | `POST /api/node/hba-ensure` | обеспечение строки pg_hba для `backup_exec` | применение/ожидание |
+
+**Граница операций — allowlist id.** Все POST операций принимают
+идентификатор (`id` полного, `backup_id`, drill-`id`) только по allowlist
+`^[A-Za-z0-9._-]{1,64}$`; иное — 400 до любой операции (id попадает в
+SQL-команду `BASE_BACKUP (LABEL …)`, S3-ключи и логи — произвольный текст
+там недопустим). Символ `'` в id исключён allowlist'ом; LABEL
+экранируется независимо (защита от изменения соглашения рендера).
 
 ## 3. Общий ops-реестр
 

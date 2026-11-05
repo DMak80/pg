@@ -357,7 +357,6 @@ builder.Services.AddSingleton<IClusterDriver>(sp =>
     var nodeBackupEnv = new NodeBackupEnv(
         Bucket: string.IsNullOrWhiteSpace(opts.Backups.S3.Bucket) ? null : opts.Backups.S3.Bucket,
         CaPem: BackupCaPem.ReadIfConfigured(opts.Backups.S3.CaBundlePath),
-        StagingDir: string.IsNullOrWhiteSpace(opts.Backups.Staging.Dir) ? null : opts.Backups.Staging.Dir,
         PartialIntervalSec: opts.Backups.Wal.PartialIntervalSec >= 1
             ? opts.Backups.Wal.PartialIntervalSec : null,
         // t15: период компакции дельт приёмника (fail-fast <60 уже отсёк мусор).
@@ -780,8 +779,7 @@ builder.Services.AddSingleton(sp => new PgWorker.Backups.BackupVerifyProcess(
     sp.GetRequiredService<TimeProvider>(),
     sp.GetRequiredService<ILoggerFactory>().CreateLogger<PgWorker.Backups.BackupVerifyProcess>(),
     sp.GetRequiredService<Shared.Metrics.Worker.WorkerMetricsInstrumentation>().BackupVerify,
-    TimeSpan.FromSeconds(sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Loops.Watchdog.CheckIntervalSec),
-    sp.GetRequiredService<Shared.Core.Hosting.ILoopProgress>()));
+    TimeSpan.FromSeconds(sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Loops.Watchdog.CheckIntervalSec)));
 
 // Дрилл восстановимости (arch/backups/04-drill.md): супервиз drill-операции WalReceiver
 // первой ноды шарда, отбор/валидация/запуск; runtime — как у verify.

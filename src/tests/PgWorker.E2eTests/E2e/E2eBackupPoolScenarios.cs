@@ -206,9 +206,17 @@ public abstract class E2eBackupPoolScenarios
     {
         await using var conn = new NpgsqlConnection(adminDsn);
         await conn.OpenAsync(ct);
-        await using (var create = new NpgsqlCommand(
-            "CREATE TABLE IF NOT EXISTS wal_load(id bigserial, payload text)", conn))
+        try
+        {
+            await using var create = new NpgsqlCommand(
+                "CREATE TABLE IF NOT EXISTS wal_load(id bigserial, payload text)", conn);
             await create.ExecuteNonQueryAsync(ct);
+        }
+        catch (Npgsql.PostgresException e) when (e.SqlState == "23505")
+        {
+            // Гонка CREATE IF NOT EXISTS двух сессий (catalog-индекс): таблицу
+            // создаёт параллельная нагрузка (BackgroundWalLoadAsync) — не ошибка.
+        }
         for (var i = 0; i < iterations; i++)
         {
             await using var insert = new NpgsqlCommand(
@@ -225,9 +233,17 @@ public abstract class E2eBackupPoolScenarios
         {
             await using var conn = new NpgsqlConnection(adminDsn);
             await conn.OpenAsync(ct);
-            await using (var create = new NpgsqlCommand(
-                "CREATE TABLE IF NOT EXISTS wal_load(id bigserial, payload text)", conn))
+            try
+            {
+                await using var create = new NpgsqlCommand(
+                    "CREATE TABLE IF NOT EXISTS wal_load(id bigserial, payload text)", conn);
                 await create.ExecuteNonQueryAsync(ct);
+            }
+            catch (Npgsql.PostgresException e) when (e.SqlState == "23505")
+            {
+                // Гонка CREATE IF NOT EXISTS двух сессий (catalog-индекс): таблицу
+                // создаёт синхронная нагрузка сценария — не ошибка.
+            }
             while (!ct.IsCancellationRequested)
             {
                 await using var insert = new NpgsqlCommand(
@@ -420,8 +436,8 @@ public sealed class PoolNotSelectedScenarios(PoolNotSelectedScenariosFx Ctx) : E
                 "ac1 full-completed", () => WaitCompletedFullAsync(cluster, ct));
             var id = done.Key.Split('/').Last();
             var listing = await McLsOnNodeAsync(ep1, $"{cluster}/shard1/");
-            listing.Should().Contain($"full/{id}/backup_manifest",
-                "the full backup objects are on the pool node (inspection by the node endpoint)");
+            listing.Should().Contain($"full/{id}.tar",
+                "the full backup object is on the pool node (inspection by the node endpoint)");
         }
         catch
         {
@@ -442,7 +458,7 @@ public sealed class PoolMasterReplicaSplitScenarios(PoolMasterReplicaSplitScenar
 
     // AAA: пул из двух нод, write_master=[node1], write_replica=[node2]:
     // каждый агент доставил сегменты на СВОЮ ноду; полный с реплики (role=replica)
-    // — объекты full/<id>/ СТРОГО на node2 (на node1 их нет).
+    // — ОБЪЕКТ full/<id>.tar СТРОГО на node2 (на node1 его нет).
     [Fact]
     public async Task Pool_MasterReplicaSplit_ObjectsOnTheirNodes()
     {
@@ -481,18 +497,18 @@ public sealed class PoolMasterReplicaSplitScenarios(PoolMasterReplicaSplitScenar
                 "ac2 wal-uploaded-node1", () => WaitWalUploadedAsync(cluster, ep1, ct));
             uploaded.Should().BeTrue("the master agent delivered segments to node1");
 
-            // Act/Assert — полный с реплики: role=replica, объекты на node2,
-            // на node1 префикса full/ нет.
+            // Act/Assert — полный с реплики: role=replica, объект на node2,
+            // на node1 объекта full/<id>.tar нет.
             var done = await TimedAsync(
                 "ac2 full-completed", () => WaitCompletedFullAsync(cluster, ct));
             var status = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(done.Value)!;
             status["role"].GetString().Should().Be("replica", "the sync replica is elected — the full backup source is a replica");
             var id = done.Key.Split('/').Last();
             var onNode2 = await McLsOnNodeAsync(ep2, $"{cluster}/shard1/");
-            onNode2.Should().Contain($"full/{id}/backup_manifest",
+            onNode2.Should().Contain($"full/{id}.tar",
                 "write_replica=[node2] — the full is delivered to the second node");
             var keysOnNode1 = await McKeysOnNodeAsync(ep1, $"{cluster}/shard1/");
-            keysOnNode1.Should().NotContain(k => k.StartsWith($"full/{id}/"),
+            keysOnNode1.Should().NotContain(k => k.StartsWith($"full/{id}.tar"),
                 "write_master does not participate in writing the replica full");
             // Каждый агент доставил сегменты на свою ноду (list по endpoint каждой).
             keysOnNode1.Should().Contain(k => k.StartsWith("wal/"), "the master agent writes on node1");
@@ -912,7 +928,7 @@ public sealed class PoolReadAnyNodeScenarios(PoolReadAnyNodeScenariosFx Ctx) : E
             // (xl.meta объекта по ФС-пути <data>/pgworker-backups/<key>).
             var fullId = done.Key.Split('/').Last();
             var manifestOnNode2 = await Fx.RunDockerAsync(["exec", node2Container, "sh", "-c",
-                $"test -f /data/pgworker-backups/{cluster}/shard1/full/{fullId}/backup_manifest/xl.meta"
+                $"test -f /data/pgworker-backups/{cluster}/shard1/full/{fullId}.tar/xl.meta"
                 + " && echo PRESENT || echo MISSING"], ct);
             manifestOnNode2.Trim().Should().Be("PRESENT",
                 "the mesh copy must carry the backup manifest before node1 is stopped");

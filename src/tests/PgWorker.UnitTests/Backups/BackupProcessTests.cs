@@ -228,8 +228,10 @@ public class BackupProcessTests
                     Error: "operation already active"),
             null);
         public static ReceiverReply Status(string state, string phase,
-            string? wal = null, long? size = null, string? error = null) =>
-            new(200, new ReceiverStatus(state, phase, null, wal, size, null, null, null, error), null);
+            string? wal = null, long? size = null, string? error = null,
+            long? bytesDone = null, long? partsDone = null, string? sha256 = null) =>
+            new(200, new ReceiverStatus(state, phase, null, wal, size, null, null, null, error,
+                bytesDone, partsDone, sha256), null);
         public static ReceiverReply Transport() => new(0, null, "connection refused");
         public static ReceiverReply ServerError() => new(502, null, "bad gateway");
         public static ReceiverReply Rejected() => new(404, null, null);
@@ -1102,6 +1104,58 @@ public class BackupProcessTests
     private const string WalSeg = "000000010000000000000042";
 
     // Хелпер: активная запись шарда (источник — мастер shard1a, как в сидах G).
+    // AAA (spec t01 §3.7): RUNNING с изменившимся bytes_done/parts_done →
+    // progress{bytes,parts} в etcd-статусе полного.
+    [Fact]
+    public async Task GetRunningWithProgress_PublishesProgress()
+    {
+        // Arrange — активный RUNNING; GET отвечает растущим прогрессом
+        var rig = await NewRig();
+        rig.Receiver.GetFullReplies.Enqueue(FakeReceiverClient.Status(
+            "running", "basebackup", bytesDone: 33554432, partsDone: 2));
+        var active = new FullBackupState("20260908030000Z", FullBackupStatus.Running, "shard1a",
+            BackupSourceRole.Master, TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 60,
+            null, null, null, null, null);
+
+        // Act
+        var outcome = await rig.Process.TickAsync(
+            await Snapshot(rig.Etcd), BackupsOf(active), CancellationToken.None);
+
+        // Assert
+        outcome.IsSuccess.Should().BeTrue();
+        var full = FullOf(rig.Etcd, "20260908030000Z");
+        full.State.Should().Be(FullBackupStatus.Running);
+        full.ProgressBytes.Should().Be(33554432);
+        full.ProgressParts.Should().Be(2);
+    }
+
+    // AAA (spec t01 §3.7): succeeded → sha256 записан, прогресс отсутствует
+    // (терминальные состояния progress не несут).
+    [Fact]
+    public async Task GetSucceeded_WritesSha256AndDropsProgress()
+    {
+        // Arrange — активный RUNNING с прогрессом; GET отвечает succeeded + sha256
+        var rig = await NewRig();
+        rig.Receiver.GetFullReplies.Enqueue(FakeReceiverClient.Status(
+            "succeeded", "uploading", wal: WalSeg, size: 2048, sha256: "deadbeef00"));
+        var active = new FullBackupState("20260908030000Z", FullBackupStatus.Running, "shard1a",
+            BackupSourceRole.Master, TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 60,
+            null, null, null, null, null, ProgressBytes: 1024, ProgressParts: 1);
+
+        // Act
+        var outcome = await rig.Process.TickAsync(
+            await Snapshot(rig.Etcd), BackupsOf(active), CancellationToken.None);
+
+        // Assert
+        outcome.IsSuccess.Should().BeTrue();
+        var full = FullOf(rig.Etcd, "20260908030000Z");
+        full.State.Should().Be(FullBackupStatus.Completed);
+        full.Sha256.Should().Be("deadbeef00");
+        full.ProgressBytes.Should().BeNull();
+        full.ProgressParts.Should().BeNull();
+        rig.Etcd.Store[FullKey("20260908030000Z")].Value.Should().NotContain("\"progress\"");
+    }
+
     private static FullBackupState Active(string id, FullBackupStatus state, string? wal = null,
         string? error = null, long? finished = null, long? size = null, BackupVerify? verify = null)
         => new(id, state, "shard1a", BackupSourceRole.Master,

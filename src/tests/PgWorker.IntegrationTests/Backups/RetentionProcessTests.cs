@@ -122,7 +122,7 @@ public class RetentionProcessTests(EtcdFixture fixture)
     public async Task DeletingFinalizationOnS3Failure()
     {
         // Arrange — свежий COMPLETED (guard/окно) + просроченный COMPLETED
-        // с объектами full/<old>/; клэйм наш
+        // с ОДНИМ объектом full/<old>.tar; клэйм наш
         var ct = TestContext.Current.CancellationToken;
         const string cluster = "rt1";
         await SeedAsync(cluster);
@@ -131,11 +131,8 @@ public class RetentionProcessTests(EtcdFixture fixture)
         var old = Full("20260731000000Z", Now.AddDays(-40));
         await SeedFullAsync(cluster, fresh);
         await SeedFullAsync(cluster, old);
-        var objectKeys = new[]
-        {
-            $"{cluster}/shard1/full/{old.Id}/base.tar",
-            $"{cluster}/shard1/full/{old.Id}/.tables",
-        };
+        // Полный — один объект (spec t01 §6.1): удаление одиночное.
+        var objectKeys = new[] { $"{cluster}/shard1/full/{old.Id}.tar" };
         var s3 = new FakeBackupS3();
         s3.PrefixObjects.AddRange(objectKeys.Select(k => (k, 5L)));
         var process = BuildProcess(Options(policyDays: 1, policyWeeks: 0, policyMonths: 0), s3);
@@ -149,7 +146,7 @@ public class RetentionProcessTests(EtcdFixture fixture)
         var deleting = await GetKvAsync(BackupNames.FullKey(cluster, "shard1", old.Id));
         deleting.Should().NotBeNull();
         deleting!.Value.Should().Contain("\"DELETING\"");
-        s3.PrefixObjects.Should().HaveCount(2, "S3 failure — nothing removed (transient)");
+        s3.PrefixObjects.Should().ContainSingle("S3 failure — nothing removed (transient)");
         s3.DeletedKeys.Should().BeEmpty();
 
         // Act — второй тик без сбоя
@@ -245,7 +242,9 @@ public class RetentionProcessTests(EtcdFixture fixture)
         s3.DeletedKeys.Should().BeEmpty();
     }
 
-    // AC4: WAL строго ниже cutoff удалён; cutoff/выше/.history того же TLI живы.
+    // AC4: WAL строго ниже cutoff удалён; cutoff/выше живы; `.history`
+    // удаляется для TLI ≤ oldest.TLI оставляемого полного (канон c-retention §2:
+    // переход в TLI самого старого полного уже позади).
     [Fact]
     public async Task WalCleanupBelowCutoff()
     {
@@ -272,15 +271,16 @@ public class RetentionProcessTests(EtcdFixture fixture)
         // Act — тик (просроченных полных нет — только WAL-чистка)
         (await process.TickAsync(BuildSnap(cluster), backups(cluster, full), ct)).IsSuccess.Should().BeTrue();
 
-        // Assert — 3 и 4 удалены; cutoff 5, 6 и history живы
+        // Assert — 3 и 4 удалены; cutoff 5 и 6 живы; history TLI 1 (≤ oldest.TLI)
+        // удалён (канон c-retention §2).
         s3.DeletedKeys.Should().BeEquivalentTo([
             $"{cluster}/shard1/wal/000000010000000000000003",
             $"{cluster}/shard1/wal/000000010000000000000004",
+            $"{cluster}/shard1/wal/00000001.history",
         ]);
         s3.PrefixObjects.Select(o => o.Key).Should().BeEquivalentTo([
             $"{cluster}/shard1/wal/000000010000000000000005",
             $"{cluster}/shard1/wal/000000010000000000000006",
-            $"{cluster}/shard1/wal/00000001.history",
         ]);
     }
 

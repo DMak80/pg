@@ -29,6 +29,19 @@ public static class BackupStatusJson
             o["chain_life"] = chainLife;
         if (state.SizeBytes is { } size)
             o["size_bytes"] = size;
+        // spec t01 §3.7: сквозной sha256 объекта полного (hex).
+        if (state.Sha256 is { } sha256)
+            o["sha256"] = sha256;
+        // progress{bytes,parts} — только при живом прогрессе (RUNNING/UPLOADING);
+        // терминальные состояния прогресс не пишут (канон 05-etcd-contract).
+        if (state.ProgressBytes is not null || state.ProgressParts is not null)
+        {
+            o["progress"] = new Dictionary<string, object?>
+            {
+                ["bytes"] = state.ProgressBytes,
+                ["parts"] = state.ProgressParts,
+            };
+        }
         if (state.Error is { } error)
             o["error"] = error;
         if (state.Verify is { } verify)

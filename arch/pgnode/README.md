@@ -9,8 +9,9 @@
 **PgNode** — один процесс Kestrel внутри контейнера PG-ноды (программа
 `pgnode` supervisord'а образа `pgworker-node`), self-contained .NET-бинарь.
 Он исполняет ВСЕ операции ноды для PgWorker: приём WAL (физическая
-репликация из PG своей ноды с выгрузкой в S3), полные `pg_basebackup`,
-verify/restore/drill, `pg_dump` схемы, проверку данных ноды, обеспечение
+репликация из PG своей ноды с выгрузкой в S3), полные бэкапы (стриминговый
+клиент `BASE_BACKUP` → единый tar-объект в S3), verify/restore/drill,
+`pg_dump` схемы, проверку данных ноды, обеспечение
 pg_hba и доставку секретов в компоненты ноды. Отдельных процессов/контейнеров
 для операций нет — стрим, полный, verify, restore, drill живут в нём
 (фоновые задачи одного приложения).
@@ -24,7 +25,7 @@ pg_hba и доставку секретов в компоненты ноды. О
   собственные статус-ключи: `/pgworker/backups/<C>/<X>/agent/<N>` (lease
   TTL 15 с) и `/pgworker/nodes/<C>/<X>/<N>/status`.
 - **Единственный, кто читает/пишет PG-данные ноды локально**:
-  `127.0.0.1:5432` своей ноды, `pg_basebackup`, `pg_verifybackup`,
+  `127.0.0.1:5432` своей ноды, `BASE_BACKUP` (собственный клиент),
   `pg_dump`, restore-`pg_ctl`; сеть для операций не нужна.
 - **Секреты**: env контейнера ноды секретов не несёт; per-cluster данные
   (SPILO_CONFIGURATION, серт/ключ ноды) агент забирает из bootstrap-ключа
@@ -43,11 +44,11 @@ pg_hba и доставку секретов в компоненты ноды. О
 
 | Функция | Содержание | Документ |
 |---|---|---|
-| Размещение и жизненный цикл процесса | `pgnode` в supervisord, порты `:8080`/`:8081`, сеть, tmpfs, env без секретов, ресурсы, staging/scratch | [01-placement.md](01-placement.md) |
+| Размещение и жизненный цикл процесса | `pgnode` в supervisord, порты `:8080`/`:8081`, сеть, tmpfs, env без секретов, ресурсы, scratch (staging-каталогов нет) | [01-placement.md](01-placement.md) |
 | HTTP API ноды | команды/статусы операций (`/api/backup/full*`, `/api/ops/*`, `/api/node/*`), mTLS-канал доставки, 409/503, cancel | [02-api.md](02-api.md) |
 | Приёмник WAL | физическая репликация, сегменты/кусочная доотправка (базы+дельты, номер жизни цепочки, компакция), гвард чужой цепочки, подтверждение-по-доставке, возобновление, tli/`.history`, ре-доклад инвентаря | [03-wal-receiver.md](03-wal-receiver.md) |
-| Полный бэкап | `pg_basebackup`, staging, upload в S3, WAL набора, cancel/ENOSPC | [04-full-backup.md](04-full-backup.md) |
-| Verify | скачивание набора, `pg_verifybackup`, отмена | [05-verify.md](05-verify.md) |
+| Полный бэкап | стриминговый клиент `BASE_BACKUP`, перепаковка tar, multipart-заливка одним объектом, WAL набора, cancel | [04-full-backup.md](04-full-backup.md) |
+| Verify | потоковый верификатор tar-объекта по `backup_manifest` (без распаковки), отмена | [05-verify.md](05-verify.md) |
 | Restore и drill | восстановление PGDATA, fetch-wal, `auto.conf`, `standby.signal`, `pg_ctl`, promote, scratch-дрилл, стоп/возврат Patroni | [06-restore-drill.md](06-restore-drill.md) |
 | Операции ноды | `pg_dump` схемы, проба `PG_VERSION`, pg_hba-ensure | [07-node-ops.md](07-node-ops.md) |
 | Эксплуатация | статусная машина агента, надёжность, наблюдаемость, риски | [08-operability.md](08-operability.md) |
@@ -64,10 +65,10 @@ pg_hba и доставку секретов в компоненты ноды. О
 - **PgNode → etcd**: читает bootstrap-ключ ноды, policy/секреты/слоты;
   пишет только свои статус-ключи агента/приёмника.
 - **PgNode → PostgreSQL**: `START_REPLICATION PHYSICAL` по слоту,
-  `pg_basebackup`, `pg_verifybackup`, `pg_dump`, restore-`pg_ctl` — всё на
+  `BASE_BACKUP` (стриминговый клиент), `pg_dump`, restore-`pg_ctl` — всё на
   `127.0.0.1`.
-- **PgNode → S3**: put/delete объектов `wal/`, `full/<id>/` (напрямую,
-  мимо воркера); read-список для verify/restore/drill.
+- **PgNode → S3**: put/delete объектов `wal/`, multipart-заливка/чтение
+  `full/<id>.tar` (напрямую, мимо воркера); read-список для verify/restore/drill.
 - **PgNode → supervisord**: управление `spilo`/`pg_doorman`; сокет
   `chmod=0770 root:postgres`.
 - **Prometheus → PgNode**: `/metrics` на `:8080` внутри контейнера ноды
@@ -80,8 +81,8 @@ pg_hba и доставку секретов в компоненты ноды. О
 - **Идемпотентность**: put сегмента идемпотентен для тех же байтов; имена
   детерминированы; повторные команды/пины не перезапускают операцию.
 - **Изоляция операций**: общий ops-реестр — одна ops-операция на процесс
-  (409 на чужую); полный и ops-операция не блокируют друг друга; staging и
-  scratch чистятся при любом исходе.
+  (409 на чужую); полный и ops-операция не блокируют друг друга; scratch
+  дрилла чистится при любом исходе (staging-каталогов нет).
 - **Секреты не покидают память/tmpfs**: tmpfs `/run/pgw`, env процесса
   postgres, никаких секретов в argv/GET/логах.
 - **Данные неприкосновенны**: дрилл — только scratch; restore — только по

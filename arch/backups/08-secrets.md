@@ -28,8 +28,9 @@ PgWorker — [pgworker/04-security.md](../pgworker/04-security.md); ключи �
   PgWorker env-пары слепков НЕТ.
 
 Передача агенту: env контейнера ноды несёт только per-install bucket
-(`PGW_BACKUP_S3_BUCKET`), путь staging полного (`PGW_BACKUP_STAGING_DIR`) и
-опциональный CA (ниже). Приёмник WAL целей/кредов в env НЕ получает —
+(`PGW_BACKUP_S3_BUCKET`) и опциональный CA (ниже); staging-каталога полного
+нет — tar-поток идёт прямо в multipart-части
+([pgnode/01-placement.md](../pgnode/01-placement.md) §4). Приёмник WAL целей/кредов в env НЕ получает —
 резолвит сам из etcd живым резолвом (policy.s3 → пул → secrets; пароль
 `backup_exec` из `/clusters/<C>/backup_password`) — тем же резолвом
 пользуется операция полного (команда `POST /api/backup/full` несёт только
@@ -94,10 +95,11 @@ pg_authid↔etcd наблюдаемо тик за тиком отпечатка�
 ## 4. pg_hba-гвард
 
 Дефолтный Spilo-pg_hba разрешает replication-соединения только роли
-`standby` — физический WAL-стриминг `pg_basebackup` под `backup_exec`
-отсекается. Строка `hostssl replication backup_exec all scram-sha-256`
-обеспечивается ДВУМЯ каналами, владелец строки — приёмник в своём
-контейнере:
+`standby` — физическая репликация стрима и `BASE_BACKUP`-клиент приёмника
+под `backup_exec` отсекаются. Строка `hostssl replication backup_exec all
+scram-sha-256` обеспечивает ВСЕ репликационные клиенты приёмника (стрим WAL
+и полный бэкап); обеспечивается ДВУМЯ каналами, владелец строки — приёмник
+в своём контейнере:
 
 **Самообеспечение приёмника** (первый канал): цикл подключения приёмника
 перед каждой попыткой сессии/инвентарного прохода выполняет ту же операцию

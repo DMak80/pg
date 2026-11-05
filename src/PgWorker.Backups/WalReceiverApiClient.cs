@@ -24,7 +24,10 @@ public sealed record S3Context(
 
 public sealed record StartVerifyRequest(
     [property: JsonPropertyName("backup_id")] string BackupId,
-    [property: JsonPropertyName("s3")] S3Context S3);
+    [property: JsonPropertyName("s3")] S3Context S3,
+    // Сквозной sha256 tar-объекта полного (etcd-поле статуса; опционален —
+    // орфан/старая запись без поля: сверка пропускается, spec t01 §3.5).
+    [property: JsonPropertyName("sha256")] string? Sha256 = null);
 
 public sealed record StartRestoreRequest(
     [property: JsonPropertyName("backup_id")] string BackupId,
@@ -36,7 +39,10 @@ public sealed record StartRestoreRequest(
     [property: JsonPropertyName("s3")] S3Context S3,
     // t15 (arch/pgnode/06 §1): номер жизни выбранного полного — fetch-wal
     // фильтрует куски по нему; null — DR-orphan (фильтр не активен).
-    [property: JsonPropertyName("chain_life")] uint? ChainLife = null);
+    [property: JsonPropertyName("chain_life")] uint? ChainLife = null,
+    // Сквозной sha256 tar-объекта выбранного полного (etcd-поле статуса;
+    // у DR-орфана отсутствует — сверка распаковки пропускается, 06 §2).
+    [property: JsonPropertyName("sha256")] string? Sha256 = null);
 
 /// <summary>Снимок статуса из GET (поля spec §3.2 / arch/backups/01-full-backup.md/§5); id —
 /// активная операция (тело 409 на POST тоже несёт её снимок) — сверка «своя/
@@ -52,7 +58,12 @@ public sealed record ReceiverStatus(
     [property: JsonPropertyName("restored_to_lsn")] string? RestoredToLsn = null,
     [property: JsonPropertyName("system_id")] string? SystemId = null,
     [property: JsonPropertyName("started_unix")] long? StartedUnix = null,
-    [property: JsonPropertyName("error")] string? Error = null);
+    [property: JsonPropertyName("error")] string? Error = null,
+    // Прогресс полного (spec t01 §3.7): bytes_done/parts_done и сквозной
+    // sha256 объекта — опциональны (терминальные снимки без прогресса).
+    [property: JsonPropertyName("bytes_done")] long? BytesDone = null,
+    [property: JsonPropertyName("parts_done")] long? PartsDone = null,
+    [property: JsonPropertyName("sha256")] string? Sha256 = null);
 
 /// <summary>Тело POST /api/node/pgdump (pg_dump схемы — arch/pgworker/processes/f-move.md M1).</summary>
 public sealed record StartPgDumpRequest(

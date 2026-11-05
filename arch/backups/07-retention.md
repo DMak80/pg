@@ -13,7 +13,8 @@ storage/quota и алерты. Процессы — [processes/c-retention.md](p
 последнего COMPLETED, `DELETING` и гигиена FAILED; чистка WAL — сегменты
 строго ниже cutoff последнего оставляемого verify-OK полного (гвард verify).
 Фоновый wal-sweeper чистит `.partial`/финальные версии `wal/`; супервизор —
-мусор `full/<id>/` живого шарда после двух гейтов, реестр сирот с DR-hold,
+мусорные объекты `full/<id>.tar` и висячие multipart-сессии живого шарда
+после двух гейтов, реестр сирот с DR-hold,
 storage/quota и возрастные бюджеты операций. Процессы —
 [C](processes/c-retention.md), [D](processes/d-wal-sweeper.md),
 [E](processes/e-supervisor.md).
@@ -47,8 +48,8 @@ Deprovisioning кластера (D2) чистит etcd-префикс
 удаляются (данные дороже места; осознанное удаление — только ретенция по
 политике): префикс S3 без etcd-владельца попадает в реестр сирот
 `/pgworker/backups/orphans` супервизора — алерт панели + удаление по
-`Supervisor:OrphanTtlSec` (гибрид: мусор живого шарда — `full/<id>/` без
-ключа — удаляется per-cluster-проходом после гейтов
+`Supervisor:OrphanTtlSec` (гибрид: мусор живого шарда — объект
+`full/<id>.tar` без ключа — удаляется per-cluster-проходом после гейтов
 [E](processes/e-supervisor.md) §1; исчезнувшие
 владельцы — реестр+TTL; DR-hold: TTL чистит только незащищённых — валидный
 полный или hold держат префикс до явной заявки `orphan-deletes`);

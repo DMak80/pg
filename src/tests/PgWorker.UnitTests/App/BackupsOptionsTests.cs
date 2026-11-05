@@ -98,13 +98,12 @@ public class BackupsOptionsTests
         var options = new BackupsOptions();
 
         // Assert — GFS 1/1/1 — целевая схема (: последний + недельная +
-        // месячная позиции), суточное окно, verify при создании; staging-каталог.
+        // месячная позиции), суточное окно, verify при создании.
         options.Policy.Retention.Days.Should().Be(1);
         options.Policy.Retention.Weeks.Should().Be(1);
         options.Policy.Retention.Months.Should().Be(1);
         options.Policy.FullMaxAgeSec.Should().Be(86400);
         options.Policy.VerifyOnCreate.Should().BeTrue();
-        options.Staging.Dir.Should().Be("/home/postgres/pgdata/backup-staging");
     }
 
     [Fact]
@@ -118,7 +117,6 @@ public class BackupsOptionsTests
             {
                 Bucket = "b",
             },
-            Staging = new BackupsStagingOptions { Dir = "/st" },
             Wal = new BackupsWalOptions { VerifyIntervalSec = 5, LagMaxSegments = 10, StaleSec = 60 },
         };
 
@@ -129,7 +127,6 @@ public class BackupsOptionsTests
         runtime.WalVerifyIntervalSec.Should().Be(5);
         runtime.WalLagMaxSegments.Should().Be(10);
         runtime.WalStaleSec.Should().Be(60);
-        runtime.StagingDir.Should().Be("/st");
     }
 
     // endpoint/креды в runtime не переносятся — цели даёт пул per-cluster.

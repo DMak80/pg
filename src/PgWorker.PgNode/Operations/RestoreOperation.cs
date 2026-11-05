@@ -1,15 +1,17 @@
 using System.Diagnostics;
 using System.Text.RegularExpressions;
 using PgWorker.Backups;
+using PgWorker.Backups.Tar;
 using PgWorker.Etcd.S3;
 
 namespace PgWorker.PgNode.Operations;
 
 /// <summary>Restore/drill-операция процесса приёмника ноды (arch/backups/README.md
-/// §3.5/§3.6 — механика 1:1 из bash-механики restore, Р15): скачивание
-/// full/&lt;id&gt;/ 1:1 в целевой PGDATA (restore — PGDATA ноды, volume пуст
-/// после демонтажа; drill — scratch-каталог backup-drill/&lt;id&gt;/pgdata,
-/// прод-данные недостижимы) → канонические каталоги initdb →
+/// §3.5/§3.6): фиксация endpoint'а (HEAD) → потоковая распаковка ЕДИНОГО
+/// объекта full/&lt;id&gt;.tar в целевой PGDATA (restore — PGDATA ноды, volume
+/// пуст после демонтажа; drill — scratch-каталог backup-drill/&lt;id&gt;/pgdata,
+/// прод-данные недостижимы; файла архива на диске нет, spec t01 §3.6) →
+/// канонические каталоги initdb →
 /// override-строки postgresql.auto.conf (restore_command = fetch-wal sub-режим
 /// того же бинаря; pristine auto.conf в .orig) → standby.signal →
 /// recovery.signal → trust-строка pg_hba → chmod 700 ПОСЛЕ модификаций
@@ -71,7 +73,6 @@ public sealed class RestoreOperation : IReceiverOperation
         var slash = prefix.IndexOf('/');
         var cluster = slash > 0 ? prefix[..slash] : prefix;
         var shard = slash > 0 ? prefix[(slash + 1)..] : string.Empty;
-        var s3Base = $"{prefix}/full/{_request.BackupId}/";
 
         // Patroni ноды — ВНИЗ на время RESTORE (arch/backups/03-restore.md): живой Patroni
         // вмешивается в заполняемую PGDATA (стартует постгрес как secondary на
@@ -85,8 +86,9 @@ public sealed class RestoreOperation : IReceiverOperation
             if (!await StopPatroniAsync(token))
                 return;
 
-        // Тип — PoolBackupS3 (не IBackupS3): union-листинг набора — метод пула.
-        PoolBackupS3? s3 = null;
+        // Клиент единичного endpoint'а (endpoint чтения фиксируется HEAD'ом:
+        // переключение ноды посреди потока недопустимо, spec §6.9).
+        IBackupS3? s3 = null;
         string? caBundlePath = null;
         var phase = OperationPhases.Downloading;
         try
@@ -111,56 +113,61 @@ public sealed class RestoreOperation : IReceiverOperation
                 }
             }
 
-            // Пул-клиент (write=read=endpoints команды, симметрично verify):
-            // скачивание ключа — перебор read-списка до найденного.
-            s3 = new PoolBackupS3(
-                _request.S3.Endpoints, _request.S3.Endpoints,
-                _request.S3.AccessKey, _request.S3.SecretKey, _request.S3.Bucket,
-                caBundlePath, requestTimeout: WalReceiverCore.FileAttemptTimeout,
-                targetFactory: _targetFactory);
-
-            // 2. Фаза downloading: union-лист full/<id>/ по ВСЕМ endpoints с
-            //    дедупом (симметрично VerifyOperation: соло-лист другой ноды —
-            //    отказ посреди заливки/лаг mesh — неполон, недокачанный набор
-            //    дал бы ложный permanent-FAILED) и скачивание 1:1 в PGDATA.
+            // 2. Фаза downloading: фиксация endpoint'а чтения (HEAD до первого
+            //    найденного) и потоковая распаковка ЕДИНОГО объекта
+            //    full/<id>.tar в PGDATA — без файла архива на диске (spec t01
+            //    §3.6, §6.9). Переключение ноды посреди потока недопустимо
+            //    (частичный объект): транспортный отказ = transient-отказ
+            //    операции (failed/downloading), повтор с нуля.
             Update(OperationStates.Running, phase);
-            // Хронометраж набора (диагностика «куда уходит время restore»:
-            // union-лист и пофайловый download — крупнейшие неочевидные шаги).
-            var listSw = System.Diagnostics.Stopwatch.StartNew();
-            var listed = await s3.ListPrefixUnionAsync(s3Base, ct: token);
-            if (!listed.IsSuccess)
+            var objectKey = $"full/{_request.BackupId}.tar";
+            string? endpoint = null;
+            foreach (var candidateEndpoint in _request.S3.Endpoints)
             {
-                Fail(phase, OpText.OneLine(listed.Error!.Message));
+                var candidate = CreateClient(candidateEndpoint, caBundlePath);
+                var head = await ((IStreamObjectS3)candidate).HeadObjectAsync(
+                    cluster, shard, objectKey, token);
+                if (head.IsSuccess && head.Value.Exists)
+                {
+                    endpoint = candidateEndpoint;
+                    s3 = candidate;
+                    break;
+                }
+                if (candidate is IAsyncDisposable disposable)
+                    await disposable.DisposeAsync();
+            }
+            if (endpoint is null || s3 is null)
+            {
+                Fail(phase, $"{objectKey}: object not found");
                 return;
             }
-            Console.WriteLine(
-                $"[restore] union-list {s3Base}: {listed.Value.Count} file(s) in {listSw.Elapsed.TotalSeconds:F1}s");
-            Directory.CreateDirectory(pgdata);
-            var downloadSw = System.Diagnostics.Stopwatch.StartNew();
-            var downloaded = 0;
-            foreach (var obj in listed.Value)
+
+            var streamSw = System.Diagnostics.Stopwatch.StartNew();
+            var opened = await ((IStreamObjectS3)s3).GetObjectStreamAsync(
+                cluster, shard, objectKey, token);
+            if (!opened.IsSuccess)
             {
-                // rel — путь под PGDATA (относительно s3Base); key — ключ
-                // скачивания ОТНОСИТЕЛЬНО {cluster}/{shard}/ (контракт
-                // GetObjectToFileAsync, симметрично VerifyOperation). Срез — от
-                // НОРМАЛИЗОВАННОГО префикса (Trim('/')): сырые '/' на краях
-                // команды сдвигали бы срез на лишние символы.
-                var rel = obj.Key[s3Base.Length..];
-                var key = obj.Key[(prefix.Length + 1)..];
-                var dest = Path.Combine(pgdata, rel.Replace('/', Path.DirectorySeparatorChar));
-                var destDir = Path.GetDirectoryName(dest);
-                if (!string.IsNullOrEmpty(destDir))
-                    Directory.CreateDirectory(destDir);
-                var got = await s3.GetObjectToFileAsync(cluster, shard, key, dest, token);
-                if (!got.IsSuccess)
-                {
-                    Fail(phase, OpText.OneLine(got.Error!.Message));
-                    return;
-                }
-                downloaded++;
+                Fail(phase, OpText.OneLine(opened.Error!.Message));
+                return;
             }
+
+            var (body, totalSize) = opened.Value;
+            Console.WriteLine($"[restore] tar stream {totalSize} bytes from {endpoint}");
+            Directory.CreateDirectory(pgdata);
+            var (extracted, objectSha) = await ExtractTarAsync(body, pgdata, token);
             Console.WriteLine(
-                $"[restore] downloaded {downloaded} file(s) in {downloadSw.Elapsed.TotalSeconds:F1}s");
+                $"[restore] extracted {extracted} bytes in {streamSw.Elapsed.TotalSeconds:F1}s sha256={objectSha}");
+            // Сквозной sha256 объекта — против etcd-поля выбранного полного
+            // (задано у наших полных; у DR-орфана поля нет). Расхождение —
+            // вердикт о данных (permanent), pg_ctl не стартует (06 §2).
+            if (_request.Sha256 is { Length: > 0 } expectedSha
+                && !string.Equals(expectedSha.ToLowerInvariant(), objectSha, StringComparison.Ordinal))
+            {
+                Fail(OperationPhases.Recovering,
+                    $"object sha256 mismatch: expected {expectedSha.ToLowerInvariant()}, got {objectSha}");
+                return;
+            }
+
             // Проверка backup_label набора — нет → failed/downloading.
             if (!File.Exists(Path.Combine(pgdata, "backup_label")))
             {
@@ -187,9 +194,9 @@ public sealed class RestoreOperation : IReceiverOperation
             File.Copy(autoConf, autoOrig, overwrite: true);
             var overrides = new List<string>
             {
-                $"data_directory = '{pgdata}'",
-                $"hba_file = '{pgdata}/pg_hba.conf'",
-                $"ident_file = '{pgdata}/pg_ident.conf'",
+                $"data_directory = '{SqlLiteral(pgdata)}'",
+                $"hba_file = '{SqlLiteral(pgdata)}/pg_hba.conf'",
+                $"ident_file = '{SqlLiteral(pgdata)}/pg_ident.conf'",
                 // wal_level=logical тянет logical-механику на ephemeral-старте
                 // (end-of-recovery checkpoint падал) — restore'у не нужен.
                 "wal_level = 'replica'",
@@ -201,7 +208,21 @@ public sealed class RestoreOperation : IReceiverOperation
                 "recovery_target_action = 'promote'",
             };
             if (!string.IsNullOrEmpty(_request.TargetTime))
-                overrides.Add($"recovery_target_time = '{_request.TargetTime}'");
+            {
+                // target_time в конфиг — только после точного разбора
+                // PG-совместимого формата и повторного рендера (06 §2):
+                // перевод строки/кавычка в значении инжектировали бы чужой
+                // параметр в postgresql.auto.conf (исполнение под postgres).
+                if (!TryNormalizeTargetTime(_request.TargetTime, out var targetTime))
+                {
+                    Fail(OperationPhases.Recovering,
+                        $"invalid target_time '{OpText.OneLine(_request.TargetTime)}' " +
+                        "(expected yyyy-MM-dd HH:mm:sszzz)");
+                    return;
+                }
+
+                overrides.Add($"recovery_target_time = '{targetTime}'");
+            }
             // Spilo-наследие исходной ноды: preload-библиотек в образе нет,
             // ssl-сертификаты вне PGDATA, logging_collector пишет вне PGDATA.
             overrides.Add("shared_preload_libraries = ''");
@@ -365,7 +386,7 @@ public sealed class RestoreOperation : IReceiverOperation
             // Итог succeeded (+RestoredToLsn, SystemId).
             Update(OperationStates.Succeeded, phase, restoredToLsn: lsn, systemId: sysId);
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
         {
             // Операторская отмена (cancel API, внешний канал): kill дерева уже
             // сделан runner'ом; pg_ctl stop best-effort; снимок state=cancelled —
@@ -373,6 +394,19 @@ public sealed class RestoreOperation : IReceiverOperation
             // отличает её от vanished: запись заявки/ключ дрилла удаляются).
             await StopBestEffortAsync(_pgdata);
             Update(OperationStates.Cancelled, phase, error: "cancelled by operator");
+        }
+        catch (Exception e) when (IsTransport(e))
+        {
+            // Транспортный сбой чтения S3/сети (вкл. таймаут HttpClient) —
+            // transient: маркер downloading; воркер перезапустит операцию.
+            Fail(OperationPhases.Downloading, $"{e.GetType().Name}: {e.Message.Split('\n')[0]}");
+        }
+        catch (TarFormatException e)
+        {
+            // Недоверенный tar (битый формат/tar-slip/symlink-escape) — вердикт
+            // о данных: permanent (фаза recovering — не transient-маркер
+            // downloading), pg_ctl не стартует (06 §2).
+            Fail(OperationPhases.Recovering, $"invalid tar object: {e.Message}");
         }
         catch (Exception e)
         {
@@ -429,6 +463,256 @@ public sealed class RestoreOperation : IReceiverOperation
             _request.Id ?? _request.BackupId, state, phase,
             RestoredToLsn: restoredToLsn, SystemId: systemId,
             StartedUnix: _registry.Current?.StartedUnix, Error: error));
+
+    // Клиент одного endpoint'а команды (шов _targetFactory — фабрика от
+    // endpoint): MaxErrorRetry=0 — per-попыточный таймаут вместо ретраев SDK.
+    private IBackupS3 CreateClient(string endpoint, string? caBundlePath)
+        => _targetFactory is { } factory
+            ? factory(endpoint)
+            : new BackupS3(
+                new S3ClientOptions(
+                    endpoint, _request.S3.Bucket, _request.S3.AccessKey, _request.S3.SecretKey,
+                    CaBundlePath: caBundlePath, MaxErrorRetry: 0),
+                WalReceiverCore.FileAttemptTimeout);
+
+    // Потоковая распаковка tar в PGDATA (spec t01 §3.6, §6.22): каталоги — из
+    // записей typeflag '5' И лениво по пути файла (идемпотентно); symlinks —
+    // File.CreateSymbolicLink; права — chmod-эквивалент из заголовка ПОСЛЕ
+    // записи. Объект S3 — недоверенный вход: каждая запись валидируется ДО
+    // файловой операции (arch/pgnode/06 §2 «Границы распаковки»): имя только
+    // относительное, без `.`/`..`, канонический путь под корнем + разделитель;
+    // symlink — цель относительная и резолюция внутри корня; запись сквозь
+    // symlink запрещена; рекурсивного удаления по имени из tar нет; файлы
+    // создаются 0600 и получают mode заголовка (без group/other-write) после
+    // записи. Возврат — распаковано байт и сквозной sha256 потока (сверка с
+    // etcd-полем команды до pg_ctl start, §2).
+    private static async Task<(long Extracted, string Sha256)> ExtractTarAsync(
+        Stream body, string pgdata, CancellationToken ct)
+    {
+        await using (body)
+        {
+            var root = Path.GetFullPath(pgdata);
+            using var objectHash = System.Security.Cryptography.IncrementalHash.CreateHash(
+                System.Security.Cryptography.HashAlgorithmName.SHA256);
+            await using var hashing = new HashingReadStream(body, objectHash);
+            var reader = new TarStreamReader(hashing);
+            long extracted = 0;
+            long logged = 0;
+            while (await reader.ReadHeaderAsync(ct) is { } entry)
+            {
+                var dest = ResolveEntryPath(root, entry.Name);
+                switch (entry.TypeFlag)
+                {
+                    case TarTypeFlags.Dir:
+                        EnsureNoSymlinkParents(root, dest);
+                        EnsureParentDirectory(dest);
+                        if (File.Exists(dest) && !IsSymlink(dest))
+                            throw new TarFormatException(
+                                $"tar entry '{entry.Name}': file exists where a directory is expected");
+                        Directory.CreateDirectory(dest);
+                        ApplyMode(dest, entry.Mode, directory: true);
+                        await reader.SkipDataAsync(ct);
+                        break;
+                    case TarTypeFlags.Symlink:
+                        EnsureNoSymlinkParents(root, dest);
+                        EnsureParentDirectory(dest);
+                        EnsureLinkTargetInside(root, dest, entry.LinkName);
+                        DeleteExistingNode(dest, entry.Name);
+                        File.CreateSymbolicLink(dest, entry.LinkName);
+                        await reader.SkipDataAsync(ct);
+                        break;
+                    default:
+                    {
+                        // Файл (типы '0'/NUL): ленивое создание каталога пути —
+                        // порядок записей tar не значим (каталоговая запись
+                        // может идти после файла). Родители проверяются на
+                        // symlink: запись сквозь ссылку запрещена.
+                        EnsureNoSymlinkParents(root, dest);
+                        EnsureParentDirectory(dest);
+                        DeleteExistingNode(dest, entry.Name);
+                        var fileOptions = OperatingSystem.IsWindows()
+                            ? new FileStreamOptions
+                            {
+                                Mode = FileMode.Create, Access = FileAccess.Write, Share = FileShare.None,
+                            }
+                            : new FileStreamOptions
+                            {
+                                Mode = FileMode.Create, Access = FileAccess.Write, Share = FileShare.None,
+                                UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite,
+                            };
+                        await using (var file = new FileStream(dest, fileOptions))
+                        {
+                            await reader.OpenData().CopyToAsync(file, 64 * 1024, ct);
+                        }
+
+                        ApplyMode(dest, entry.Mode, directory: false);
+                        extracted += entry.Size;
+                        if (extracted - logged >= 512L * 1024 * 1024)
+                        {
+                            logged = extracted;
+                            Console.WriteLine($"[restore] extracting {extracted} bytes");
+                        }
+
+                        break;
+                    }
+                }
+            }
+
+            // Хвост tar-добивки — в сквозной sha256 объекта.
+            await hashing.DrainAsync(ct);
+            var sha = Convert.ToHexString(objectHash.GetHashAndReset()).ToLowerInvariant();
+            return (extracted, sha);
+        }
+    }
+
+    // Канонический путь записи внутри корня: абсолютные имена и `..` —
+    // нарушение формата (данные плохие). Ведущий `./` и пустые сегменты —
+    // штатная форма tar pg_basebackup: имя лексически нормализуется ДО
+    // проверки (сегменты "." удаляются); вхождение — строго с разделителем
+    // (иначе «data2» прошёл бы проверку префикса «data»).
+    internal static string ResolveEntryPath(string root, string name)
+    {
+        if (name.Length == 0 || Path.IsPathRooted(name)
+            || name.Contains('\0', StringComparison.Ordinal))
+            throw new TarFormatException($"tar entry name is not relative: '{name}'");
+        var normalized = name.Replace('\\', '/');
+        var parts = normalized.Split('/')
+            .Where(part => part.Length > 0 && part != ".")
+            .ToArray();
+        if (parts.Length == 0)
+            throw new TarFormatException($"tar entry name has no path segments: '{name}'");
+        if (parts.Any(part => part == ".."))
+            throw new TarFormatException($"tar entry name contains a dot segment: '{name}'");
+        var dest = Path.GetFullPath(Path.Combine(
+            root, string.Join(Path.DirectorySeparatorChar, parts)));
+        if (!dest.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.Ordinal))
+            throw new TarFormatException($"tar entry escapes the restore root: '{name}'");
+        return dest;
+    }
+
+    // Ни один РОДИТЕЛЬСКИЙ компонент пути не является symlink (запись сквозь
+    // ссылку увела бы файл за пределы корня). Несуществующие компоненты —
+    // норма (ленивое создание каталогов).
+    private static void EnsureNoSymlinkParents(string root, string dest)
+    {
+        var relative = Path.GetRelativePath(root, dest);
+        var current = root;
+        var parts = relative.Split(Path.DirectorySeparatorChar);
+        for (var i = 0; i < parts.Length - 1; i++)
+        {
+            current = Path.Combine(current, parts[i]);
+            if (IsSymlink(current))
+                throw new TarFormatException(
+                    $"tar entry writes through a symlink: '{relative}'");
+            if (File.Exists(current) && !Directory.Exists(current))
+                throw new TarFormatException(
+                    $"tar entry parent is a file: '{relative}'");
+        }
+    }
+
+    // Цель symlink: относительная и каноническая резолюция внутри корня.
+    private static void EnsureLinkTargetInside(string root, string dest, string linkName)
+    {
+        if (linkName.Length == 0 || Path.IsPathRooted(linkName))
+            throw new TarFormatException($"symlink target is not relative: '{linkName}'");
+        var destDir = Path.GetDirectoryName(dest) ?? root;
+        var resolved = Path.GetFullPath(Path.Combine(
+            destDir, linkName.Replace('\\', '/')));
+        if (!resolved.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.Ordinal)
+            && !string.Equals(resolved, root, StringComparison.Ordinal))
+            throw new TarFormatException($"symlink target escapes the restore root: '{linkName}'");
+    }
+
+    // Родительский каталог записи: проверен на symlink (выше) — создаётся.
+    private static void EnsureParentDirectory(string dest)
+    {
+        var parent = Path.GetDirectoryName(dest);
+        if (!string.IsNullOrEmpty(parent))
+            Directory.CreateDirectory(parent);
+    }
+
+    // Существующий узел: ссылка/файл удаляются, ПУСТОЙ каталог — тоже;
+    // непустой каталог — отказ (рекурсивного удаления по имени из tar нет).
+    private static void DeleteExistingNode(string dest, string entryName)
+    {
+        if (IsSymlink(dest))
+        {
+            File.Delete(dest);
+            return;
+        }
+
+        if (Directory.Exists(dest))
+        {
+            try
+            {
+                Directory.Delete(dest, recursive: false); // только пустой
+            }
+            catch (IOException)
+            {
+                throw new TarFormatException(
+                    $"tar entry '{entryName}': non-empty directory exists at the destination");
+            }
+
+            return;
+        }
+
+        if (File.Exists(dest))
+            File.Delete(dest);
+    }
+
+    private static bool IsSymlink(string path)
+    {
+        try
+        {
+            return new FileInfo(path).LinkTarget is not null;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
+
+    // Права из заголовка: только owner rwx + group/other rx (запись для
+    // group/other вырезается — подделанный tar не даст world-writable).
+    private static void ApplyMode(string path, int mode, bool directory)
+    {
+        if (OperatingSystem.IsWindows())
+            return;
+        var headerMode = mode == 0
+            ? (directory ? 0x1C0 /* 0700 */ : 0x180 /* 0600 */)
+            : mode;
+        File.SetUnixFileMode(path, (UnixFileMode)(headerMode & 0x1ED));
+    }
+
+    // Литерал значения в postgresql.auto.conf: удвоение одинарной кавычки
+    // (значения с переводом строки отклоняются до вызова).
+    private static string SqlLiteral(string value)
+        => value.Replace("'", "''", StringComparison.Ordinal);
+
+    // target_time: точный PG-совместимый формат, повторный рендер (без
+    // переводов строк/кавычек — в конфиг попадает только нормализованное
+    // значение, arch/pgnode/06 §2).
+    internal static bool TryNormalizeTargetTime(string value, out string normalized)
+    {
+        normalized = "";
+        if (value.Contains('\n') || value.Contains('\r') || value.Contains('\''))
+            return false;
+        if (!DateTimeOffset.TryParseExact(
+                value, "yyyy-MM-dd HH:mm:sszzz", System.Globalization.CultureInfo.InvariantCulture,
+                System.Globalization.DateTimeStyles.None, out var parsed))
+            return false;
+        normalized = parsed.ToString(
+            "yyyy-MM-dd HH:mm:sszzz", System.Globalization.CultureInfo.InvariantCulture);
+        return true;
+    }
+
+    // Транспортные исключения чтения S3/сети — transient (маркер downloading).
+    private static bool IsTransport(Exception e)
+        => e is IOException
+            or System.Net.Http.HttpRequestException
+            or System.Net.Sockets.SocketException
+            or Amazon.S3.AmazonS3Exception
+            or TaskCanceledException or TimeoutException;
 
     /// <summary>Patroni ноды вниз перед восстановлением + подтверждение
     /// STOPPED (короткий бюджет): false — операция не начинается (честный

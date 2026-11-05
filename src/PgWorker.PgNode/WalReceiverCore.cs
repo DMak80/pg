@@ -144,15 +144,14 @@ public sealed class WalReceiverCore
             => _tcs.Task.WaitAsync(ct);
     }
 
-    // Файловые операции НАБОРА полного (PutFileAsync/GetObjectToFileAsync —
-    // файлы произвольного размера, до единиц ГиБ): per-попытка бюджет от класса
-    // размера, не от сегмента. PutAttemptTimeout выбран под WAL-сегменты
-    // 16–24 МиБ — файл набора >~1 ГиБ при канале <70 МиБ/с не укладывается
-    // никогда (бесконечный transient-цикл put / недокачанный набор). 300 с:
-    // многогигабайтный файл доезжает и при скромном канале (~10 МиБ/с — 3 ГиБ),
-    // а «молча принявшая TCP» нода (прецедент R3 выше) по-прежнему не съедает
-    // бюджет перебора — фейловер доезжает до следующей цели; заведомо ниже
-    // воркеровских бюджетов операции (6/24 ч, arch/backups/09-operability.md).
+    // Таймаут per-попытка для операций крупного объёма (стрим/файловый GET
+    // restore/verify и multipart-полный): бюджет от класса размера, не от
+    // сегмента. PutAttemptTimeout выбран под WAL-сегменты 16–24 МиБ; стрим
+    // tar-объекта (до сотен ГиБ) получает 300 с на попытку — многогигабайтный
+    // объект доезжает и при скромном канале (~10 МиБ/с — 3 ГиБ), а «молча
+    // принявшая TCP» нода (прецедент R3 выше) не съедает бюджет перебора —
+    // фейловер доезжает до следующей цели; заведомо ниже воркеровских
+    // бюджетов операции (6/24 ч, arch/19 §6).
     internal static readonly TimeSpan FileAttemptTimeout = TimeSpan.FromSeconds(300);
 
     // Период пробы роли из стрима (arch/backups/02-wal-archive.md §1: смена ролей подхватывается
@@ -344,6 +343,33 @@ public sealed class WalReceiverCore
 
                     startAt = restart.Value;
                     tailSegment = null;
+                }
+
+                // Стартовая позиция выше текущей позиции записи сервера —
+                // хвост ОТКАТАННОЙ ветки после restore (откат вернул LSN назад;
+                // сегменты прежней ветки выше точки форка остались в wal/):
+                // сервер физически не отдаст точку (flush позади), и retry-цикл
+                // стоял бы до его догона. Берём хвост ЖИВОЙ ветки
+                // (CheckWithRestart); нет сегментов живой ветки или он тоже
+                // впереди — прежний retry (сервер догонит). arch/pgnode/03 §3.
+                if (tailSegment is not null)
+                {
+                    var identity = await source.IdentifySystemAsync(sct);
+                    if (identity.IsSuccess && startAt > identity.Value.XLogPos)
+                    {
+                        var live = await S3TailResolver.ResolveLiveTailAsync(
+                            s3, o.Cluster, o.Shard, sct);
+                        if (live.IsSuccess && live.Value is { } liveTail
+                            && liveTail.Position <= identity.Value.XLogPos)
+                        {
+                            Diagnostic(events,
+                                $"tail {tailSegment} is beyond server position " +
+                                $"{identity.Value.XLogPos:x} — starting from live branch tail " +
+                                $"{liveTail.SegmentName}");
+                            startAt = liveTail.Position;
+                            tailSegment = liveTail.SegmentName;
+                        }
+                    }
                 }
 
                 // 3. START_REPLICATION с явной стартовой позицией; отказ 58P01 — tli-процедура
@@ -1029,10 +1055,23 @@ public sealed class WalReceiverCore
             failed?.Invoke(); // пул недостижим — сигнал фактам (idle-детект, arch/backups/02-wal-archive.md §1)
             return; // list не прошёл — ре-доклад отложен до следующего прохода
         }
-        var archivedNames = listing.Value
-            .Select(o => WalFileName.TryParse(o.Name))
-            .OfType<WalFileName>()
-            .ToDictionary(s => (long)(s.Log * WalFileName.SegsPerLog + s.Seg), s => s.Name);
+        // Позиция бывает занята ДВУМЯ именами после restore: сегменты откатанной
+        // ветки остались в wal/, живая ветка пишет ту же позицию своим TLI
+        // (TLI-ветвление). ToDictionary по позиции бросал duplicate key и убивал
+        // проход ре-доклада на весь цикл; на одну позицию остаётся НОВЕЙШИЙ TLI
+        // (живая ветка — тот же выбор, что у локального инвентаря шага 2).
+        var archivedNames = new Dictionary<long, string>();
+        foreach (var segment in listing.Value
+                     .Select(o => WalFileName.TryParse(o.Name))
+                     .OfType<WalFileName>())
+        {
+            var pos = (long)(segment.Log * WalFileName.SegsPerLog + segment.Seg);
+            if (archivedNames.TryGetValue(pos, out var archived)
+                && WalFileName.TryParse(archived) is { } archivedFile
+                && archivedFile.Tli >= segment.Tli)
+                continue;
+            archivedNames[pos] = segment.Name;
+        }
         long boundaryPos;
         if (deliveredPosition is { } ownPos)
             boundaryPos = (long)ownPos; // свой доставленный сегмент — проход выше него
@@ -1145,8 +1184,17 @@ public sealed class WalReceiverCore
     }
 
     /// <summary>Имя хвостового сегмента непрерывной части цепочки по списку
-    /// имён (минимальный сегмент → WalChain.Check — та же непрерывность, что
-    /// у S3TailResolver).</summary>
+    /// имён (минимальный сегмент → WalChain.Check — непрерывность без
+    /// перезапуска от нового TLI). Отличие от S3TailResolver осознанно:
+    /// стартовая позиция стрима ОБЯЗАНА быть на живой ветке (CheckWithRestart —
+    /// иначе старт окажется впереди flush-позиции сервера, arch/pgnode/03 §3),
+    /// а здесь граница прохода остаётся на ПРЕЖНЕЙ непрерывной части: сегменты
+    /// откатанной ветки дальше не доносятся (их позиции заняты, ветка мертва —
+    /// проход остановит mixedness-гейт), но и перепрыгнуть на новую ветку
+    /// нельзя — иначе закрытые локальные сегменты между своим прогрессом и
+    /// новым TLI были бы потеряны. При отсутствии собственного доставленного
+    /// прогресса проход начинается от этой границы (шаг 3 догонит живую ветку
+    /// по возрастанию позиций).</summary>
     private static string? ChainTailOf(IReadOnlyDictionary<long, string> namesByPos)
     {
         var startName = namesByPos[namesByPos.Keys.Min()];

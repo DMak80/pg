@@ -124,7 +124,7 @@ public sealed class RetentionProcess(
     {
         var fulls = shardBackups.Full;
 
-        // (1) DELETING-доводка: list full/<id>/ → delete → list пуст → del ключа.
+        // (1) DELETING-доводка: delete full/<id>.tar → del etcd-ключа.
         foreach (var deleting in fulls.Where(f => f.State == FullBackupStatus.Deleting))
             await FinishDeletionAsync(cluster, shard, deleting, s3, ct);
 
@@ -209,27 +209,22 @@ public sealed class RetentionProcess(
                 claims.InstanceId, null, ct);
     }
 
-    // Доводка DELETING (идемпотентна): list префикса → есть объекты →
-    // batch-delete → list пуст → del etcd-ключа. transient-отказ S3 —
-    // исключение наверх (пер-шардовый catch): статус остаётся DELETING,
-    // следующий проход повторит (spec §3.3 п.1, AC3).
+    // Доводка DELETING (идемпотентна): удаление ОДНОГО объекта
+    // full/<id>.tar (существование объекта = завершённость полного, spec t01
+    // §6.10) → del etcd-ключа. transient-отказ S3 — исключение наверх
+    // (пер-шардовый catch): статус остаётся DELETING, следующий проход
+    // повторит (spec §3.3 п.1, AC3).
     private async Task FinishDeletionAsync(
         string cluster, string shard, FullBackupState deleting, IBackupS3 s3, CancellationToken ct)
     {
-        var prefix = $"{cluster}/{shard}/full/{deleting.Id}/";
-        var listed = await S3Pulse.CallAsync(progress, token => s3.ListPrefixAsync(prefix, ct: token), ct);
-        if (!listed.IsSuccess)
-            throw new ApplicationException($"list {prefix}: {listed.Error!.Message}");
-        if (listed.Value.Count > 0)
-        {
-            var keys = listed.Value.Select(o => o.Key).ToList();
-            var deleted = await S3Pulse.CallAsync(progress, token => s3.DeleteKeysAsync(keys, token), ct);
-            if (!deleted.IsSuccess)
-                throw new ApplicationException($"delete {prefix}: {deleted.Error!.Message}");
-            var recheck = await S3Pulse.CallAsync(progress, token => s3.ListPrefixAsync(prefix, ct: token), ct);
-            if (!recheck.IsSuccess || recheck.Value.Count > 0)
-                throw new ApplicationException($"deletion of {prefix} did not complete — next pass will retry");
-        }
+        if (s3 is not IDeleteObjectS3 deleter)
+            throw new ApplicationException(
+                $"delete full/{deleting.Id}.tar: S3 client does not support single-object delete");
+        var key = $"full/{deleting.Id}.tar";
+        var deleted = await S3Pulse.CallAsync(
+            progress, token => deleter.DeleteObjectAsync(cluster, shard, key, token), ct);
+        if (!deleted.IsSuccess)
+            throw new ApplicationException($"delete {key}: {deleted.Error!.Message}");
 
         var del = await DeleteAsync(BackupNames.FullKey(cluster, shard, deleting.Id), ct);
         if (!del.IsSuccess)

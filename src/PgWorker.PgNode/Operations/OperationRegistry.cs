@@ -27,8 +27,9 @@ public class OperationRegistry
         return ReferenceEquals(Interlocked.CompareExchange(ref _current, initial, cur), cur);
     }
 
-    /// Публикация нового снимка (атомарная замена; вызывается только владельцем операции).
-    public void Update(OperationSnapshot next) => Volatile.Write(ref _current, next);
+    /// Публикация нового снимка (атомарная замена; вызывается только
+    /// владельцем операции). virtual — тесты пишут историю переходов.
+    public virtual void Update(OperationSnapshot next) => Volatile.Write(ref _current, next);
 
 }
 

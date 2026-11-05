@@ -16,7 +16,13 @@ public sealed record OperationSnapshot(
     string? RestoredToLsn = null,
     string? SystemId = null,
     long? StartedUnix = null,
-    string? Error = null);
+    string? Error = null,
+    // Прогресс полного (spec t01 §3.7): прочитано байт / залито частей
+    // multipart; терминальные снимки прогресс не несут (канон 05-etcd-contract).
+    long? BytesDone = null,
+    long? PartsDone = null,
+    // Сквозной sha256 tar-объекта полного (hex) — поле etcd-статуса sha256.
+    string? Sha256 = null);
 
 /// <summary>Константы состояний операций (spec §3.2): running | succeeded |
 /// failed; у полного дополнительно uploading (фаза фиксации); у ops-операций

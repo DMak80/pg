@@ -20,11 +20,30 @@ public sealed record WalTail(ulong Position, string SegmentName);
 /// list префикса → минимальный сегмент как chain_start → WalChain.Check:
 /// непрерывная цепочка — старт с конца последнего сегмента; дыра — старт с конца
 /// непрерывной части (повторная доставка выше дыры идемпотентна по имени);
-/// пустой префикс — null (старт от restart_lsn слота).</summary>
+/// пустой префикс — null (старт от restart_lsn слота). Хвост — на непрерывной
+/// части от минимального сегмента: откатанная restore-ветка остаётся её
+/// продолжением (так новые сегменты живой ветки архивируются от точки форка —
+/// цепочка непрерывна для восстановления старого полного). Хвост, который
+/// оказался впереди позиции записи сервера (restore вернул LSN назад),
+/// резолвится отдельно — <see cref="ResolveLiveTailAsync"/>.</summary>
 public static class S3TailResolver
 {
-    public static async Task<Result<WalTail?>> ResolveTailAsync(
+    public static Task<Result<WalTail?>> ResolveTailAsync(
         IBackupS3 s3, string cluster, string shard, CancellationToken ct)
+        => ResolveAsync(s3, cluster, shard, restartFromNewestTli: false, ct);
+
+    /// <summary>Хвост ЖИВОЙ ветки: проверка перезапускается от первого сегмента
+    /// максимального TLI (CheckWithRestart — правило контроля цепочки). Вход —
+    /// хвост основного резолва впереди позиции записи сервера (откат restore:
+    /// сегменты прежней ветки выше точки форка остаются в wal/, а живая ветка
+    /// пишет ниже); без сегментов живой ветки — null (старт от restart_lsn).</summary>
+    public static Task<Result<WalTail?>> ResolveLiveTailAsync(
+        IBackupS3 s3, string cluster, string shard, CancellationToken ct)
+        => ResolveAsync(s3, cluster, shard, restartFromNewestTli: true, ct);
+
+    private static async Task<Result<WalTail?>> ResolveAsync(
+        IBackupS3 s3, string cluster, string shard, bool restartFromNewestTli,
+        CancellationToken ct)
     {
         var listed = await s3.ListWalAsync(cluster, shard, ct: ct);
         if (!listed.IsSuccess)
@@ -39,7 +58,9 @@ public static class S3TailResolver
             return Result<WalTail?>.Success(null);
 
         var names = listed.Value.Select(o => o.Name).ToList();
-        var chain = WalChain.Check(segments[0], names);
+        var chain = restartFromNewestTli
+            ? WalChain.CheckWithRestart(segments[0], names)
+            : WalChain.Check(segments[0], names);
         if (chain.LastSegment is not { } last)
             return Result<WalTail?>.Success(null); // цепочка не закреплена — старт от слота
 

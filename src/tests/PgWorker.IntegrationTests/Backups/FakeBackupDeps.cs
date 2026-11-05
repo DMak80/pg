@@ -67,7 +67,57 @@ public sealed class FakeWalSqlExecutor : IWalSqlExecutor
 // DeletedKeys — журнал удалений, FailNextDelete — сбой для transient-сценариев.
 // PrefixedObjects — ключи относительно <C>/<X>/ (сид verify-наборов),
 // Contents — содержимое для GetObjectAsync, Fails/FailsGetObject — транспорт-сбои.
-public sealed class FakeBackupS3 : IBackupS3
+// Тестовые tar-байты набора (реальный TarStreamWriter): backup_label ПЕРВОЙ
+// записью (Range-чтение начала объекта — FullTarSet.ReadBackupLabelAsync),
+// остальные записи — по потребности сценария.
+public static class TestTarBytes
+{
+    public const string DefaultLabel =
+        "START WAL LOCATION: 0/2000028 (file 000000010000000000000002)\n" +
+        "CHECKPOINT LOCATION: 0/2000028\nBACKUP METHOD: streamed\n";
+
+    public static byte[] WithLabel(string label, params (string Name, byte[] Data)[] entries)
+    {
+        var buffer = new MemoryStream();
+        using var writer = new PgWorker.Backups.Tar.TarStreamWriter(buffer);
+        var labelBytes = System.Text.Encoding.UTF8.GetBytes(label);
+        writer.WriteEntryAsync(
+            new PgWorker.Backups.Tar.TarEntry(
+                "backup_label", PgWorker.Backups.Tar.TarTypeFlags.File, labelBytes.Length, 0x1A0, ""),
+            labelBytes, default).GetAwaiter().GetResult();
+        foreach (var (name, data) in entries)
+        {
+            writer.WriteEntryAsync(
+                new PgWorker.Backups.Tar.TarEntry(
+                    name, PgWorker.Backups.Tar.TarTypeFlags.File, data.Length, 0x1A4, ""),
+                data, default).GetAwaiter().GetResult();
+        }
+
+        writer.FinishAsync(default).GetAwaiter().GetResult();
+        byte[] bytes = buffer.ToArray();
+        return bytes;
+    }
+
+    // Сид объекта полного `full/<id>.tar` реальными tar-байтами (label —
+    // первая запись): restore/drill читают его HEAD/Range/ReedStream.
+    public static void SeedFullObject(
+        FakeBackupS3 s3, string cluster, string shard, string id,
+        string label = DefaultLabel,
+        params (string Name, byte[] Data)[] entries)
+        => s3.SeedTarObject(cluster, shard, $"full/{id}.tar", WithLabel(label, entries));
+}
+
+// Фейковый S3 (поверхность IBackupS3 + IStreamObjectS3 + IDeleteObjectS3 +
+// IMultipartS3): объекты в памяти, стартовое наполнение — тестом. Полный —
+// ОДИН объект `full/<id>.tar` (spec t01 §6.1): сиды — реальные tar-байты
+// через TarStreamWriter (StreamObjects) либо размер-заглушка (PrefixObjects)
+// для сценариев, где содержимое не читается. DeletedKeys — журнал удалений
+// (абсолютные ключи), FailNextDelete — сбой batch/одиночного delete для
+// transient-сценариев. MultipartUploads — список висячих сессий гигиены
+// супервизора, AbortedUploads — журнал abort'ов, FailMultipartList — отказ
+// листинга (транспорт). PrefixedObjects/Contents/Texts — совместимость
+// старых сценариев (wal-имена, GET history, тексты).
+public sealed class FakeBackupS3 : IBackupS3, IStreamObjectS3, IDeleteObjectS3, IMultipartS3
 {
     public List<(string Cluster, string Shard, string Name)> Objects { get; } = [];
 
@@ -76,16 +126,17 @@ public sealed class FakeBackupS3 : IBackupS3
 
     public List<string> DeletedKeys { get; } = [];
 
-    // Один сбой batch-delete (transient-сценарий AC3): следующий вызов падает.
+    // Один сбой batch-delete/одиночного удаления (transient-сценарий AC3).
     public bool FailNextDelete { get; set; }
 
-    // Объекты с ключом после <C>/<X>/ (наборы full/<id>/pg_wal/…): сид тестов
-    // verify. Содержимое history — в Contents. Голые wal-имена остаются в
-    // Objects (совместимость с тестами): ListAsync("wal/") их ОБЪЕДИНЯЕТ с
-    // PrefixedObjects-ключами на "wal/" — единая картина wal/-префикса для CheckRange.
+    // Объекты с ключом после <C>/<X>/ (голые wal-имена совместимости — Objects).
     public List<(string Cluster, string Shard, string Key)> PrefixedObjects { get; } = [];
 
-    public Dictionary<(string Cluster, string Shard, string Key), string> Contents { get; } = [];
+    // Содержимое tar-объектов (реальные байты для потоковых restore/verify/
+    // drill-сидов). Ключ — относительный (`full/<id>.tar`).
+    public Dictionary<(string Cluster, string Shard, string Key), byte[]> StreamObjects { get; } = new();
+
+    public Dictionary<(string Cluster, string Shard, string Key), string> Contents { get; } = new();
 
     public bool Fails { get; set; }           // транспорт-сбой чтений S3 (transient-тест list)
     public bool FailsGetObject { get; set; }  // падает только GET (transient-тест GET history)
@@ -93,18 +144,29 @@ public sealed class FakeBackupS3 : IBackupS3
     // полные шарда (id) — DR-поиск ListFullsAsync по fake-S3.
     public List<(string Cluster, string Shard, string Id)> Fulls { get; } = [];
 
-    // тексты маленьких объектов по objectKey внутри префикса шарда
-    // ("full/<id>/backup_label", "full/<id>/backup_manifest").
+    // тексты маленьких объектов по objectKey внутри префикса шарда.
     public Dictionary<string, string> Texts { get; } = new(StringComparer.Ordinal);
 
     // Один сбой list (transient-сценарий «S3 недоступен»): list не падает в статус.
     public bool FailList { get; set; }
 
-    // Сбой list-prefix (сценарий «пул недоступен» для глобальных сверок —
-    // MonitorStorage): ListPrefixAsync падает, префиксные list-ы статусов не касаются.
+    // Сбой list-prefix (сценарий «пул недоступен» для глобальных сверок).
     public bool FailListPrefix { get; set; }
 
+    // Висячие multipart-сессии (гигиена супервизора, e-supervisor §1).
+    public List<MultipartUploadInfo> MultipartUploads { get; } = [];
+    public List<(string Key, string UploadId)> AbortedUploads { get; } = [];
+    public bool FailMultipartList { get; set; }
+
     public DateTimeOffset LastModified { get; set; } = DateTimeOffset.UtcNow;
+
+    // Сид tar-объекта реальными байтами (идемпотентно по ключу).
+    public void SeedTarObject(string cluster, string shard, string key, byte[] data)
+    {
+        StreamObjects[(cluster, shard, key)] = data;
+        if (!PrefixObjects.Any(o => o.Key == $"{cluster}/{shard}/{key}"))
+            PrefixObjects.Add(($"{cluster}/{shard}/{key}", data.Length));
+    }
 
     public Task<Result<bool>> BucketExistsAsync(CancellationToken ct)
         => Task.FromResult(Fails
@@ -124,8 +186,6 @@ public sealed class FakeBackupS3 : IBackupS3
             .Where(o => o.Cluster == cluster && o.Shard == shard
                         && o.Key.StartsWith(prefix, StringComparison.Ordinal))
             .Select(o => new WalObject(o.Key[(o.Key.LastIndexOf('/') + 1)..], LastModified));
-        // wal/-префикс пополняется Objects (голые имена wal-сегментов/history);
-        // дубликаты имён схлопываются — порядок для CheckRange не важен (сортирует).
         var walNames = prefix == "wal/"
             ? Objects.Where(o => o.Cluster == cluster && o.Shard == shard)
                 .Select(o => new WalObject(o.Name, LastModified))
@@ -143,8 +203,19 @@ public sealed class FakeBackupS3 : IBackupS3
 
     public Task<Result<(byte[] Data, string? ETag)>> GetObjectBytesAsync(
         string cluster, string shard, string key, CancellationToken ct = default)
-        => throw new NotSupportedException();
+        => Task.FromResult(StreamObjects.TryGetValue((cluster, shard, key), out var bytes)
+            ? Result<(byte[] Data, string? ETag)>.Success((bytes, null))
+            : Result<(byte[] Data, string? ETag)>.Failed(
+                new ApplicationException($"fake S3 get {cluster}/{shard}/{key}: not found")));
 
+    // Файловое скачивание (fetch-wal) в фейке не используется — заглушка.
+    public Task<Result> GetObjectToFileAsync(
+        string cluster, string shard, string key, string destFilePath, CancellationToken ct = default)
+        => Task.FromResult(Result.Failed(
+            new ApplicationException("get-to-file: not supported by this fake")));
+
+    // Прямое чтение текста (history-сценарии старой механики; в интерфейсе
+    // IBackupS3 метода больше нет — фейк держит его для тестов).
     public Task<Result<string>> GetObjectAsync(string cluster, string shard, string key, CancellationToken ct = default)
         => Task.FromResult(Fails || FailsGetObject || !Contents.TryGetValue((cluster, shard, key), out var content)
             ? Result<string>.Failed(new ApplicationException("s3 get failed"))
@@ -169,19 +240,22 @@ public sealed class FakeBackupS3 : IBackupS3
     public Task<Result<IReadOnlyList<string>>> ListFullsAsync(
         string cluster, string shard, int? maxKeysPerTest = null, CancellationToken ct = default)
     {
-        // Transient-сбой по требованию теста («S3 недоступен» — статус не меняем).
         if (FailList)
             return Task.FromResult(Result<IReadOnlyList<string>>.Failed(
                 new ApplicationException("fake S3 list failure (FailList)")));
 
         var fromFulls = Fulls.Where(f => f.Cluster == cluster && f.Shard == shard)
             .Select(f => f.Id);
+        // Объект полного — `full/<id>.tar`: id — имя без `.tar` (spec t01 §6.1).
         var fromPrefixObjects = PrefixObjects
             .Select(o => o.Key)
             .Select(key => key.StartsWith($"{cluster}/{shard}/full/", StringComparison.Ordinal)
                 ? key[$"{cluster}/{shard}/full/".Length..].Split('/')[0]
                 : "")
-            .Where(id => id.Length > 0);
+            .Where(name => name.Length > 0)
+            .Select(name => name.EndsWith(".tar", StringComparison.Ordinal) && name.Length > 4
+                ? name[..^".tar".Length]
+                : name);
         var ids = fromFulls.Concat(fromPrefixObjects)
             .Distinct(StringComparer.Ordinal)
             .OrderBy(id => id, StringComparer.Ordinal)
@@ -190,25 +264,8 @@ public sealed class FakeBackupS3 : IBackupS3
             (IReadOnlyList<string>)ids));
     }
 
-// файловые методы интерфейса в этом тесте не используются —
-    // заглушка (фейк нужен только перечисленным выше операциям).
-    public Task<Result> PutFileAsync(string key, string filePath, CancellationToken ct = default)
-        => Task.FromResult(Result.Failed(new ApplicationException("put-file: not supported by this fake")));
-
-    public Task<Result> GetObjectToFileAsync(string cluster, string shard, string key, string destFilePath, CancellationToken ct = default)
-        => Task.FromResult(Result.Failed(new ApplicationException("get-to-file: not supported by this fake")));
-    public Task<Result<string>> DownloadTextAsync(
-        string cluster, string shard, string objectKey, CancellationToken ct = default)
-    {
-        var key = $"{cluster}/{shard}/{objectKey}";
-        return Task.FromResult(Texts.TryGetValue(key, out var text)
-            ? Result<string>.Success(text)
-            : Result<string>.Failed(new ApplicationException($"fake S3 get {key}: not found")));
-    }
-
     public Task<Result> DeleteKeysAsync(IReadOnlyList<string> keys, CancellationToken ct = default)
     {
-        // Transient-сбой по требованию теста (статусы etcd не меняем — AC3).
         if (FailNextDelete)
         {
             FailNextDelete = false;
@@ -222,8 +279,30 @@ public sealed class FakeBackupS3 : IBackupS3
             Objects.RemoveAll(o => $"{o.Cluster}/{o.Shard}/wal/{o.Name}" == key);
             PrefixObjects.RemoveAll(o => o.Key == key);
             PrefixedObjects.RemoveAll(o => $"{o.Cluster}/{o.Shard}/{o.Key}" == key);
+            var parts = key.Split('/', 3);
+            if (parts.Length == 3)
+                StreamObjects.Remove((parts[0], parts[1], parts[2]));
         }
 
+        return Task.FromResult(Result.Success());
+    }
+
+    // Одиночное удаление полного (`full/<id>.tar`, ретенция/супервизор).
+    public Task<Result> DeleteObjectAsync(
+        string cluster, string shard, string key, CancellationToken ct)
+    {
+        if (FailNextDelete)
+        {
+            FailNextDelete = false;
+            return Task.FromResult(Result.Failed(
+                new ApplicationException("fake S3 delete failure (FailNextDelete)")));
+        }
+
+        var absolute = $"{cluster}/{shard}/{key}";
+        DeletedKeys.Add(absolute);
+        PrefixObjects.RemoveAll(o => o.Key == absolute);
+        PrefixedObjects.RemoveAll(o => $"{o.Cluster}/{o.Shard}/{o.Key}" == absolute);
+        StreamObjects.Remove((cluster, shard, key));
         return Task.FromResult(Result.Success());
     }
 
@@ -233,20 +312,105 @@ public sealed class FakeBackupS3 : IBackupS3
         if (Fails)
             return Task.FromResult(Result.Failed(new ApplicationException("s3 down")));
         PrefixObjects.Add((key, data.Length));
-        // put объекта в wal/-префикс виден листингом wal/ (как реальный S3):
-        //  Task 13 (history-fallback) кладёт history прямым put'ом.
         var parts = key.Split('/', 3);
-        if (parts.Length == 3 && parts[2].StartsWith("wal/", StringComparison.Ordinal))
+        if (parts.Length == 3)
         {
-            var name = parts[2][4..];
-            if (!Objects.Any(o => o.Cluster == parts[0] && o.Shard == parts[1] && o.Name == name))
-                Objects.Add((parts[0], parts[1], name));
+            if (parts[2].StartsWith("wal/", StringComparison.Ordinal))
+            {
+                var name = parts[2][4..];
+                if (!Objects.Any(o => o.Cluster == parts[0] && o.Shard == parts[1] && o.Name == name))
+                    Objects.Add((parts[0], parts[1], name));
+            }
+            else
+            {
+                StreamObjects[(parts[0], parts[1], parts[2])] = data;
+            }
         }
 
         return Task.FromResult(Result.Success());
     }
 
+    // ── Потоковые чтения (restore/verify/drill) ──
 
+    public Task<Result<(bool Exists, long SizeBytes)>> HeadObjectAsync(
+        string cluster, string shard, string key, CancellationToken ct)
+    {
+        if (Fails)
+            return Task.FromResult(Result<(bool Exists, long SizeBytes)>.Failed(
+                new ApplicationException("s3 head failed")));
+        if (StreamObjects.TryGetValue((cluster, shard, key), out var bytes))
+            return Task.FromResult(Result<(bool Exists, long SizeBytes)>.Success((true, bytes.Length)));
+        var size = PrefixObjects.FirstOrDefault(o => o.Key == $"{cluster}/{shard}/{key}").SizeBytes;
+        var exists = size > 0;
+        return Task.FromResult(Result<(bool Exists, long SizeBytes)>.Success((exists, size)));
+    }
+
+    public Task<Result<(Stream Body, long Size)>> GetObjectStreamAsync(
+        string cluster, string shard, string key, CancellationToken ct)
+    {
+        if (Fails)
+            return Task.FromResult(Result<(Stream Body, long Size)>.Failed(
+                new ApplicationException("s3 stream failed")));
+        if (!StreamObjects.TryGetValue((cluster, shard, key), out var bytes))
+            return Task.FromResult(Result<(Stream Body, long Size)>.Failed(
+                new ApplicationException($"fake S3 get-stream {cluster}/{shard}/{key}: not found")));
+        return Task.FromResult(Result<(Stream Body, long Size)>.Success(
+            (new MemoryStream(bytes, writable: false), bytes.Length)));
+    }
+
+    public Task<Result<byte[]>> GetObjectRangeAsync(
+        string cluster, string shard, string key, long start, long end, CancellationToken ct)
+    {
+        if (Fails)
+            return Task.FromResult(Result<byte[]>.Failed(new ApplicationException("s3 range failed")));
+        if (!StreamObjects.TryGetValue((cluster, shard, key), out var bytes))
+            return Task.FromResult(Result<byte[]>.Failed(
+                new ApplicationException($"fake S3 get-range {cluster}/{shard}/{key}: not found")));
+        var from = (int)Math.Clamp(start, 0, bytes.Length);
+        var toExclusive = (int)Math.Clamp(end + 1, from, bytes.Length);
+        return Task.FromResult(Result<byte[]>.Success(bytes[from..toExclusive]));
+    }
+
+    // ── Multipart-гигиена супервизора (spec t01 §3.7) ──
+
+    public sealed class FakeMultipartSession(string key, string uploadId) : IMultipartUploadSession
+    {
+        public string Key => key;
+
+        public string UploadId => uploadId;
+        public Task<Result<string>> UploadPartAsync(int partNumber, byte[] data, CancellationToken ct)
+            => Task.FromResult(Result<string>.Success("etag"));
+        public Task<Result<string>> CompleteAsync(IReadOnlyDictionary<int, string> partETags, CancellationToken ct)
+            => Task.FromResult(Result<string>.Success("etag"));
+        public Task<Result> AbortAsync(CancellationToken ct) => Task.FromResult(Result.Success());
+    }
+
+    public Task<Result<IMultipartUploadSession>> CreateMultipartUploadAsync(
+        string key, CancellationToken ct)
+        => Task.FromResult(Result<IMultipartUploadSession>.Success(
+            new FakeMultipartSession(key, Guid.NewGuid().ToString("N"))));
+
+    public Task<Result<IReadOnlyList<MultipartUploadInfo>>> ListMultipartUploadsAsync(
+        string prefix, CancellationToken ct)
+    {
+        if (Fails || FailMultipartList)
+            return Task.FromResult(Result<IReadOnlyList<MultipartUploadInfo>>.Failed(
+                new ApplicationException("fake S3 list-multipart failed")));
+        var uploads = MultipartUploads
+            .Where(u => u.Key.StartsWith(prefix, StringComparison.Ordinal))
+            .ToList();
+        return Task.FromResult(Result<IReadOnlyList<MultipartUploadInfo>>.Success(
+            (IReadOnlyList<MultipartUploadInfo>)uploads));
+    }
+
+    public Task<Result> AbortMultipartUploadAsync(string key, string uploadId, CancellationToken ct)
+    {
+        if (Fails)
+            return Task.FromResult(Result.Failed(new ApplicationException("fake S3 abort-multipart failed")));
+        AbortedUploads.Add((key, uploadId));
+        MultipartUploads.RemoveAll(u => u.Key == key && u.UploadId == uploadId);
+        return Task.FromResult(Result.Success());
+    }
 }
 
 /// <summary>Фейк Patroni REST : Kestrel https на свободном порту (зонд

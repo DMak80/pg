@@ -47,8 +47,9 @@
   (дефолтный PGROOT Spilo; переопределение PGROOT ломает bootstrap).
   PGDATA и WAL живут на локальном диске ноды; общего NFS/SAN нет —
   репликация физическая, общего диска не требуется.
-- Staging полного/verify — `Staging:Dir` (дефолт
-  `/home/postgres/pgdata/backup-staging`), scratch дрилла —
+- Staging-каталога полного/verify НЕТ (tar-поток пишется прямо в
+  multipart-части — [pgnode/01-placement.md](../pgnode/01-placement.md) §4);
+  scratch дрилла —
   `/home/postgres/pgdata/backup-drill/<id>/pgdata` в том же data-volume.
 - Секреты и серты — только tmpfs `/run/pgw` (в памяти контейнера); в файлы
   volume'ов секреты не попадают ([pgnode/01-placement.md](../pgnode/01-placement.md) §4).

@@ -17,8 +17,8 @@ public sealed record ClusterCredentials(
 /// Ensure per-cluster кредов (arch/pgworker/04-security.md / arch/backups/08-secrets.md): чтение семи ключей
 /// /clusters/&lt;C&gt;/{app_user,app_password,mover_password,bucket_admin_user,bucket_admin_password,backup_password,rest_password}
 /// — из опросного кэша префикса /clusters/ (arch/synchronization/05-delta-application.md §S10, реестр E10: 7 GET на
-/// кластер каждый тик запрещены); живое чтение (с failover по endpoints) —
-/// только re-read после txn добора. Отсутствующие ключи генерируются
+/// кластер каждый тик запрещены); кэша нет — живое чтение (failover по
+/// endpoints) до txn; после txn — re-read с failover. Отсутствующие ключи генерируются
 /// (bucket_admin — из config кластера или генерация) и кладутся ОДНОЙ txn
 /// put-if-absent (compare NotExists только на отсутствующие). Имя роли mover
 /// фиксировано (bucket_mover) — отдельного user-ключа нет. Txn и re-read — с
@@ -48,9 +48,13 @@ public sealed class ClusterSecretEnsurer(
     public async Task<Result<ClusterCredentials>> EnsureAsync(
         string cluster, ClusterConfig config, CancellationToken ct)
     {
-        // Первичное чтение — из кэша префикса (без etcd-GET); неполный набор —
-        // txn добора по живому etcd (put-if-absent гарантирует актуальность).
-        var current = ReadFromCache(cluster);
+        // Первичное чтение — из кэша префикса (без etcd-GET); кэша нет
+        // (прямое использование/тесты) — ЖИВОЕ чтение семи ключей: строить
+        // txn NotExists по «всё отсутствует» нельзя — существующий ключ
+        // проигрывает compare, и ensure не создаёт остальные (defect).
+        var current = cache is null
+            ? await ReadLiveAsync(cluster, ct)
+            : ReadFromCache(cluster);
         // [t06-diag] факт слепка: размер и наличие ключей секретов
         Console.WriteLine(
             $"[t06-diag] cache_snapshot={cache?.Snapshot.Count ?? -1} " +
@@ -171,6 +175,26 @@ public sealed class ClusterSecretEnsurer(
 
     // Чтение семи ключей из слепка кэша /clusters/ (arch/synchronization/05-delta-application.md §S10): отсутствующий
     // в слепке ключ — null (добирается txn-ом по живому etcd).
+    // Живое чтение семи ключей (кэш не передан): та же семантика сырых
+    // значений, что у ReadFromCache, с failover по endpoints (архив/чтение).
+    private async Task<RawSecrets> ReadLiveAsync(string cluster, CancellationToken ct)
+    {
+        var range = await EtcdEndpointFailover.CallAsync(
+            endpoints, (endpoint, token) => etcd.RangeAsync(endpoint, $"/clusters/{cluster}/", token), ct);
+        if (!range.IsSuccess)
+            return new RawSecrets(null, null, null, null, null, null, null);
+        var values = range.Value.ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.Ordinal);
+        string? Of(string key)
+            => values.TryGetValue(key, out var value)
+                ? string.IsNullOrWhiteSpace(value) ? value : value.Trim()
+                : null;
+
+        return new RawSecrets(
+            Of(UserKey(cluster)), Of(PasswordKey(cluster)), Of(MoverKey(cluster)),
+            Of(BucketAdminUserKey(cluster)), Of(BucketAdminPasswordKey(cluster)),
+            Of(BackupKey(cluster)), Of(RestKey(cluster)));
+    }
+
     private RawSecrets ReadFromCache(string cluster)
     {
         var snapshot = cache?.Snapshot ?? ClustersCacheSnapshot.Empty.Snapshot;

@@ -34,7 +34,7 @@ public enum WalStreamStatus
     WalChainError,
 }
 
-/// <summary>Статус проверки полного (pg_verifybackup, arch/backups/README.md).</summary>
+/// <summary>Статус проверки полного (streaming verify приёмника, arch/19 §8).</summary>
 public enum BackupVerifyStatus
 {
     Pending,
@@ -108,7 +108,12 @@ public sealed record FullBackupState(
     BackupVerify? Verify,
     // t15 (arch/backups/01 §6): номер жизни цепочки на момент создания записи —
     // задание restore несёт его в fetch-wal (фильтр кусков). null — старый ключ.
-    uint? ChainLife = null);
+    uint? ChainLife = null,
+    // spec t01 §3.7: сквозной sha256 tar-объекта полного (hex) и прогресс
+    // заливки (progress{bytes,parts}) — живы только в RUNNING/UPLOADING.
+    string? Sha256 = null,
+    long? ProgressBytes = null,
+    long? ProgressParts = null);
 
 /// <summary>Факт приёмника WAL на ноде (arch/backups/05-etcd-contract.md): running — живой
 /// lease-ключ статус-приёмника; absent — ключа нет (процесс мёртв/нода вниз);

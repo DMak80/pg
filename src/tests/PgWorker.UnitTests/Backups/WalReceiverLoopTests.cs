@@ -993,6 +993,46 @@ public class WalReceiverLoopTests
         }
     }
 
+    // AAA (arch/pgnode/03 §3): хвост S3 впереди текущей позиции записи сервера
+    // (restore вернул LSN назад — сегменты откатанной ветки остались в wal/) —
+    // старт от хвоста ЖИВОЙ ветки (CheckWithRestart): запрошенную точку сервер
+    // не отдаёт (flush позади), retry-цикл стоял бы до его догона.
+    [Fact]
+    public async Task TailBeyondServerPosition_StartsFromLiveBranchTail()
+    {
+        // Arrange — архив: TLI 1 №0..15 (откатанная ветка) + TLI 3 №14 (живая);
+        // сервер на TLI 3, позиция записи — внутри сегмента №15
+        var etcd = new FakeEtcd();
+        SeedHappyPath(etcd);
+        var s3 = new FakeS3();
+        foreach (var seg in Enumerable.Range(0, 16))
+            s3.Objects[WalKeyOf(1, seg)] = SegmentData(1, (ulong)seg * SegmentBytes);
+        s3.Objects[WalKeyOf(3, 14)] = SegmentData(3, 14UL * SegmentBytes);
+        var started = new TaskCompletionSource<ulong>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var (loop, cts, _) = StartLoop(etcd, WalReceiverRole.Master, () => new FakeXLogSource
+        {
+            Identity = new ServerIdentity(3, 15UL * SegmentBytes + 4096),
+            StartPolicy = (startLsn, _) =>
+            {
+                started.TrySetResult(startLsn);
+                return Result.Success();
+            },
+        }, s3: s3);
+        try
+        {
+            // Act — стартовая позиция первой сессии
+            var startLsn = await started.Task.WaitAsync(Budget, TestContext.Current.CancellationToken);
+
+            // Assert — старт от конца живого TLI 3 №14 (0/0F000000), а не от
+            // откатанного TLI 1 №15 (0/10000000, впереди позиции сервера)
+            startLsn.Should().Be(15UL << 24);
+        }
+        finally
+        {
+            await StopLoopAsync(loop, cts);
+        }
+    }
+
     // ── Ре-доклад инвентаря.history (spec §3.1 п.6, arch/backups/02-wal-archive.md §1) ──
 
     // tmpdir с pg_wal-файлом истории (имя — 8 hex + ".history", как пишет PG).
@@ -1212,6 +1252,31 @@ public class WalReceiverLoopTests
 
         // Assert — позиция 3 залита новейшим TLI (4), позиция 4 — тоже TLI4
         s3.PutOrder.Should().Equal(WalKeyOf(4, 3), WalKeyOf(4, 4));
+    }
+
+    // AAA (восстановленный шард): в АРХИВЕ позиция занята ДВУМЯ именами —
+    // сегменты откатанной ветки (TLI 1) остались в wal/, живая ветка (TLI 3)
+    // пишет ту же позицию своим именем. Построение карты позиций бросало
+    // duplicate key и убивало проход ре-докала на весь цикл (статус получал
+    // ложный факт s3-pool-exhausted): хвост — живая ветка, её закрытый
+    // локальный сегмент доносится.
+    [Fact]
+    public async Task RedeliverWalInventory_SamePositionTwoBranches_NewestTliTail()
+    {
+        // Arrange — архив: TLI1 №14 (откатанная ветка) + TLI3 №14 (живая);
+        // локально закрыт TLI3 №15, текущий №16
+        var s3 = new FakeS3();
+        s3.Objects[WalKeyOf(1, 14)] = SegmentData(1, 14UL * (ulong)SegmentBytes);
+        s3.Objects[WalKeyOf(3, 14)] = SegmentData(3, 14UL * (ulong)SegmentBytes);
+        var pgWalDir = PgWalDirWithSegments("00000003000000000000000F");
+
+        // Act
+        await WalReceiverCore.RedeliverWalInventoryAsync(
+            s3, Cluster, Shard, pgWalDir, currentTli: 3, currentLsn: 16UL * SegmentBytes,
+            null, TestContext.Current.CancellationToken);
+
+        // Assert — проход не упал: закрытый сегмент живой ветки доехал
+        s3.PutOrder.Should().Equal(WalKeyOf(3, 15));
     }
 
     // AAA: отказ put останавливает проход на этой позиции (порядок не

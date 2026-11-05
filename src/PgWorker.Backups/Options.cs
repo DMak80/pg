@@ -21,7 +21,6 @@ public sealed record BackupsRuntimeOptions(
     string? S3CaBundlePath = null,
     int RetryBaseSec = 300,
     int RetryMaxSec = 3600,
-    string StagingDir = "/home/postgres/pgdata/backup-staging",
     //  (arch/backups/02-wal-archive.md §1/§9): расписание контроля цепочки и пороги деградаций.
     int WalVerifyIntervalSec = 30,
     int WalLagMaxSegments = 1024,

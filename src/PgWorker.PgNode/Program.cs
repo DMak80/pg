@@ -17,8 +17,8 @@ namespace PgWorker.PgNode;
 
 // Точка входа приёмника (/, arch/backups/01-full-backup.md/§3/§3.3): WebApplication — база
 // образа требует aspnet-рантайм; Kestrel 0.0.0.0:8080 несёт /metrics
+// (Shared.Metrics, Meter PgWorker.PgNode, словарь arch/18 §2.8) и HTTP
 // (Shared.Metrics, Meter PgWorker.PgNode, словарь arch/metrics/02-dictionary.md §8) и HTTP
-// API операций бэкапов (arch/backups/01-full-backup.md/§3.5/§3.6/§5; канал arch/communications/02-channel-registry.md №22).
 // Режим ОДИН: identity из env контейнера ноды + hosted-цикл стрима
 // WalReceiverLoop + маршруты /api/backup/full* и ops-маршруты /api/ops/*
 // (verify/restore/cancel) — ВСЕ операции бэкапов исполняет этот единственный
@@ -33,14 +33,18 @@ namespace PgWorker.PgNode;
 // шаг 9); точка входа — static Main.
 internal partial class Program
 {
-    // Дефолт каталога staging полного в data-volume ноды (arch/backups/09-operability.md §1);
-    // перекрывается env PGW_BACKUP_STAGING_DIR (ставит EnsureNode — шаг 11).
-    private const string DefaultStagingDir = NodePaths.Staging;
-
     private static readonly JsonSerializerOptions JsonOpts = new()
     {
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
     };
+
+    // Allowlist идентификатора на границе операций (arch/pgnode/02-api.md §2):
+    // id идёт в SQL-литерал LABEL, S3-ключи и логи — произвольный текст
+    // недопустим (граница принимает только имя; иное — 400).
+    private static readonly System.Text.RegularExpressions.Regex IdPattern =
+        new("^[A-Za-z0-9._-]{1,64}$", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+    private static bool IsValidId(string? id) => id is not null && IdPattern.IsMatch(id);
 
     private static async Task Main(string[] args)
     {
@@ -123,19 +127,14 @@ internal partial class Program
             builder.Services.AddHostedService(sp => sp.GetRequiredService<WalReceiverLoop>());
         }
 
-        // Staging полного (Р5): env ноды → дефолт arch/backups/README.md §9.
-        var stagingDir = Environment.GetEnvironmentVariable("PGW_BACKUP_STAGING_DIR")
-            is { Length: > 0 } dir ? dir : DefaultStagingDir;
         builder.Services.AddSingleton<IFullBackupOperationFactory>(sp =>
             new FullBackupOperationFactory(
                 identity, etcd, endpoints, pools, roleProbe,
-                new ProcessRunner(), stagingDir,
                 sp.GetRequiredService<OperationRegistry>()));
         // Ops-операции (verify/restore/drill) — тот же процесс: общий
         // ops-реестр (одна активная; полный — свой реестр, arch/backups/06-s3-layout.md).
         builder.Services.AddSingleton<IOpsOperationFactory>(sp =>
-            new NodeOperationFactory(
-                stagingDir, sp.GetRequiredService<OpsOperationRegistry>()));
+            new NodeOperationFactory(sp.GetRequiredService<OpsOperationRegistry>()));
 
         var app = builder.Build();
 
@@ -249,8 +248,8 @@ internal partial class Program
         [property: JsonPropertyName("standby_password")] string? StandbyPassword,
         [property: JsonPropertyName("is_tool_start")] bool? IsToolStart);
 
+    // Node-операции приёмника (arch/25 №22): обеспечение pg_hba (arch/19 §7),
     // Node-операции приёмника (arch/communications/02-channel-registry.md №22): обеспечение pg_hba (arch/backups/08-secrets.md),
-    // pg_dump схемы (arch/pgworker/processes/f-move.md M1), проба данных ноды (arch/pgworker/README.md Д3) —
     // синхронные короткие операции: ответ 200 — итог, 500 — отказ (transient
     // для тиков воркера). Исполняются локально в контейнере ноды.
     private static void MapNodeRoutes(WebApplication app)
@@ -314,6 +313,10 @@ internal partial class Program
         app.MapPost("/api/ops/verify", (StartVerifyRequest body,
             OpsOperationRegistry registry, IOpsOperationFactory factory) =>
         {
+            if (!IsValidId(body.BackupId))
+                return Results.Json(
+                    new ErrorResponse("invalid backup_id (allowlist [A-Za-z0-9._-]{1,64})"),
+                    JsonOpts, statusCode: 400);
             if (!registry.TryBegin(new OperationSnapshot(
                     body.BackupId, OperationStates.Running, OperationPhases.Downloading,
                     StartedUnix: DateTimeOffset.UtcNow.ToUnixTimeSeconds())))
@@ -339,6 +342,10 @@ internal partial class Program
         app.MapPost("/api/ops/restore", (StartRestoreRequest body,
             OpsOperationRegistry registry, IOpsOperationFactory factory) =>
         {
+            if (!IsValidId(body.BackupId) || (body.Id is not null && !IsValidId(body.Id)))
+                return Results.Json(
+                    new ErrorResponse("invalid backup_id/id (allowlist [A-Za-z0-9._-]{1,64})"),
+                    JsonOpts, statusCode: 400);
             if (!registry.TryBegin(new OperationSnapshot(
                     body.Id ?? body.BackupId, OperationStates.Running, OperationPhases.Downloading,
                     StartedUnix: DateTimeOffset.UtcNow.ToUnixTimeSeconds())))
@@ -401,6 +408,10 @@ internal partial class Program
             IEtcdGateway etcd,
             CancellationToken ct) =>
         {
+            if (!IsValidId(body.Id))
+                return Results.Json(
+                    new ErrorResponse("invalid id (allowlist [A-Za-z0-9._-]{1,64})"),
+                    JsonOpts, statusCode: 400);
             var gates = await WalReceiverGates.ReadAsync(
                 etcd, endpoints, identity.Cluster, identity.Shard, ct);
             if (gates.Disabled || (gates.Paused && !gates.ChainError) || gates.Unknown)
@@ -432,7 +443,9 @@ internal partial class Program
                         snapshot.State, snapshot.Phase,
                         Id: snapshot.Id,
                         WalStartSegment: snapshot.WalStartSegment, SizeBytes: snapshot.SizeBytes,
-                        Error: snapshot.Error),
+                        Error: snapshot.Error,
+                        BytesDone: snapshot.BytesDone, PartsDone: snapshot.PartsDone,
+                        Sha256: snapshot.Sha256),
                     JsonOpts)
                 : Results.Json(
                     new ErrorResponse("no active operation"), JsonOpts, statusCode: 404));
@@ -458,6 +471,8 @@ internal partial class Program
             Id: snapshot?.Id,
             WalStartSegment: snapshot?.WalStartSegment,
             SizeBytes: snapshot?.SizeBytes,
-            Error: error);
+            Error: error,
+            BytesDone: snapshot?.BytesDone, PartsDone: snapshot?.PartsDone,
+            Sha256: snapshot?.Sha256);
     }
 }

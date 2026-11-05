@@ -55,13 +55,11 @@ public static class InstallSecretsGuard
 /// bucket/CA https S3 — per-install константы (не секреты, не дрейфуют);
 /// ставит BuildSpec драйвера из Backups-опций воркера. Bucket null/пуст ⇒
 /// env не ставится — приёмник старт-фейлится (подсистема выключена
-/// валидацией старта: Enabled=true ⇒ Bucket непустой). StagingDir — путь
-/// staging полного в data-volume ноды (arch/backups/09-operability.md §1; null/пуст ⇒ env не
-/// ставится — приёмник возьмёт дефолт /home/postgres/pgdata/backup-staging).
+/// валидацией старта: Enabled=true ⇒ Bucket непустой).
 /// PartialIntervalSec — период `.partial`-доотправки приёмника (arch/backups/09-operability.md §1;
 /// null/≤1 ⇒ env не ставится — приёмник берёт дефолт 3 с).</summary>
 public sealed record NodeBackupEnv(
-    string? Bucket, string? CaPem, string? StagingDir = null, int? PartialIntervalSec = null,
+    string? Bucket, string? CaPem, int? PartialIntervalSec = null,
     // t15 (arch/backups/09 §1): период компакции дельт приёмника; null —
     // env не ставится (приёмник берёт дефолт 3600).
     int? PartialCompactIntervalSec = null);

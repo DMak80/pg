@@ -14,7 +14,13 @@ public sealed record FullStatusResponse(
     [property: JsonPropertyName("id")] string? Id = null,
     [property: JsonPropertyName("wal_start_segment")] string? WalStartSegment = null,
     [property: JsonPropertyName("size_bytes")] long? SizeBytes = null,
-    [property: JsonPropertyName("error")] string? Error = null);
+    [property: JsonPropertyName("error")] string? Error = null,
+    // Прогресс полного (spec t01 §3.7): прочитано байт / залито частей
+    // multipart; терминальные снимки прогресс не несут.
+    [property: JsonPropertyName("bytes_done")] long? BytesDone = null,
+    [property: JsonPropertyName("parts_done")] long? PartsDone = null,
+    // Сквозной sha256 tar-объекта полного (hex) — сверка verify/статус.
+    [property: JsonPropertyName("sha256")] string? Sha256 = null);
 
 /// <summary>S3-контекст ops-операций (verify/restore/drill; секреты — ТОЛЬКО
 /// в POST-теле, spec §3.2).</summary>
@@ -28,7 +34,10 @@ public sealed record S3Context(
 
 public sealed record StartVerifyRequest(
     [property: JsonPropertyName("backup_id")] string BackupId,
-    [property: JsonPropertyName("s3")] S3Context S3);
+    [property: JsonPropertyName("s3")] S3Context S3,
+    // Сквозной sha256 tar-объекта полного (etcd-поле статуса; у орфанов может
+    // отсутствовать — сверка пропускается, spec t01 §3.5).
+    [property: JsonPropertyName("sha256")] string? Sha256 = null);
 
 public sealed record StartRestoreRequest(
     [property: JsonPropertyName("backup_id")] string BackupId,
@@ -40,7 +49,10 @@ public sealed record StartRestoreRequest(
     [property: JsonPropertyName("s3")] S3Context S3,
     // t15 (arch/pgnode/06 §1): номер жизни выбранного полного — fetch-wal
     // фильтрует куски по нему; null — DR-orphan (фильтр не активен).
-    [property: JsonPropertyName("chain_life")] uint? ChainLife = null);
+    [property: JsonPropertyName("chain_life")] uint? ChainLife = null,
+    // Сквозной sha256 tar-объекта выбранного полного (etcd-поле статуса;
+    // у DR-орфана отсутствует — сверка распаковки пропускается, 06 §2).
+    [property: JsonPropertyName("sha256")] string? Sha256 = null);
 
 /// <summary>Статус ops-операции (GET /api/ops/verify|restore); started_unix —
 /// время TryBegin (возрастной бюджет verify воркера, arch/backups/09-operability.md).</summary>

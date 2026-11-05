@@ -41,7 +41,9 @@ public class BackupOrphanSweeperTests(OwnedEtcdFixture fixture) : IClassFixture<
         await fixture.Gateway.DeleteAsync(fixture.Endpoint, OrphanRegistry.DeletesPrefix, prefix: true, ct);
         await fixture.Gateway.DeleteAsync(fixture.Endpoint, $"/clusters/{cluster}/", prefix: true, ct);
         var clock = new MutableClock();
-        s3.PrefixObjects.Add(($"{cluster}/s1/full/20260911110000Z/base.tar", 100));
+        // Объект сироты, НЕ являющийся валидным полным: full/<id>.tar —
+        // критерий валидного полного (spec t01 §6.10), wal-объект — нет.
+        s3.PrefixObjects.Add(($"{cluster}/s1/wal/000000010000000000000001", 100));
         return clock;
     }
 
@@ -113,7 +115,7 @@ public class BackupOrphanSweeperTests(OwnedEtcdFixture fixture) : IClassFixture<
         (await sweeper.SweepAsync(ct)).IsSuccess.Should().BeTrue();
 
         // Assert — объекты префикса удалены, записи в реестре нет
-        s3.DeletedKeys.Should().Contain("ghost/s1/full/20260911110000Z/base.tar");
+        s3.DeletedKeys.Should().Contain("ghost/s1/wal/000000010000000000000001");
         s3.PrefixObjects.Should().BeEmpty();
         var registry = await ReadRegistryAsync();
         registry!.Orphans.Should().BeEmpty("the removal is confirmed — the record is retired");
@@ -241,7 +243,7 @@ public class BackupOrphanSweeperTests(OwnedEtcdFixture fixture) : IClassFixture<
         => (await fixture.Gateway.GetAsync(
             fixture.Endpoint, key, TestContext.Current.CancellationToken)).Value is not null;
 
-    // AAA (AC1): сирота с валидным полным (backup_manifest) переживает истёкший
+    // AAA (AC1): сирота с валидным полным (объект full/<id>.tar) переживает истёкший
     // TTL — автоправило «последнего полного»: автоматика не удаляет НИКОГДА
     [Fact]
     public async Task SweepFullInPrefixKeepsOrphanAfterTtl()
@@ -250,7 +252,7 @@ public class BackupOrphanSweeperTests(OwnedEtcdFixture fixture) : IClassFixture<
         var ct = TestContext.Current.CancellationToken;
         var s3 = new FakeBackupS3();
         var clock = await SeedAsync(s3);
-        s3.PrefixObjects.Add(("ghost/s1/full/20260911110000Z/backup_manifest", 1));
+        s3.PrefixObjects.Add(("ghost/s1/full/20260911110000Z.tar", 1));
         var claims = new ClaimStore("/pgworker", [fixture.Endpoint], fixture.Gateway, TimeProvider.System);
         (await claims.TryBecomeLeaderAsync(ct)).Value.Should().BeTrue();
         var sweeper = BuildSweeper(s3, claims, clock, Options(ttl: 60));
@@ -262,7 +264,7 @@ public class BackupOrphanSweeperTests(OwnedEtcdFixture fixture) : IClassFixture<
         var entry = (await ReadRegistryAsync())!.Orphans.Should().ContainSingle().Subject;
         entry.Prefix.Should().Be("ghost/s1");
         entry.State.Should().Be(OrphanState.Observed);
-        entry.HasValidFull.Should().BeTrue("a manifest in the prefix — a valid full");
+        entry.HasValidFull.Should().BeTrue("full/<id>.tar in the prefix — a valid full");
 
         // Act 2 — время вперёд за TTL; проход
         clock.Now = clock.Now.AddMinutes(2);
@@ -323,7 +325,7 @@ public class BackupOrphanSweeperTests(OwnedEtcdFixture fixture) : IClassFixture<
         (await sweeper.SweepAsync(ct)).IsSuccess.Should().BeTrue();
 
         // Assert — объекты удалены, запись погашена
-        s3.DeletedKeys.Should().Contain("ghost/s1/full/20260911110000Z/base.tar");
+        s3.DeletedKeys.Should().Contain("ghost/s1/wal/000000010000000000000001");
         (await ReadRegistryAsync())!.Orphans.Should().BeEmpty("unhold — removal by the nearest sweep");
     }
 
@@ -336,7 +338,7 @@ public class BackupOrphanSweeperTests(OwnedEtcdFixture fixture) : IClassFixture<
         var ct = TestContext.Current.CancellationToken;
         var s3 = new FakeBackupS3();
         var clock = await SeedAsync(s3);
-        s3.PrefixObjects.Add(("ghost/s1/full/20260911110000Z/backup_manifest", 1));
+        s3.PrefixObjects.Add(("ghost/s1/full/20260911110000Z.tar", 1));
         var claims = new ClaimStore("/pgworker", [fixture.Endpoint], fixture.Gateway, TimeProvider.System);
         (await claims.TryBecomeLeaderAsync(ct)).Value.Should().BeTrue();
         var sweeper = BuildSweeper(s3, claims, clock, Options(ttl: 60));
@@ -349,8 +351,8 @@ public class BackupOrphanSweeperTests(OwnedEtcdFixture fixture) : IClassFixture<
         (await sweeper.SweepAsync(ct)).IsSuccess.Should().BeTrue();
 
         // Assert — объекты удалены, записи нет, ключа заявки нет
-        s3.DeletedKeys.Should().Contain("ghost/s1/full/20260911110000Z/base.tar")
-            .And.Contain("ghost/s1/full/20260911110000Z/backup_manifest");
+        s3.DeletedKeys.Should().Contain("ghost/s1/wal/000000010000000000000001")
+            .And.Contain("ghost/s1/full/20260911110000Z.tar");
         (await ReadRegistryAsync())!.Orphans.Should().BeEmpty("the request removes the protected orphan");
         (await KeyExistsAsync(OrphanRegistry.DeleteKey("ghost/s1"))).Should()
             .BeFalse("the request is retired together with the record");
@@ -421,7 +423,7 @@ public class BackupOrphanSweeperTests(OwnedEtcdFixture fixture) : IClassFixture<
         var ct = TestContext.Current.CancellationToken;
         var s3 = new FakeBackupS3();
         var clock = await SeedAsync(s3);
-        s3.PrefixObjects.Add(("ghost/s1/full/20260911110000Z/backup_manifest", 1));
+        s3.PrefixObjects.Add(("ghost/s1/full/20260911110000Z.tar", 1));
         var claims = new ClaimStore("/pgworker", [fixture.Endpoint], fixture.Gateway, TimeProvider.System);
         (await claims.TryBecomeLeaderAsync(ct)).Value.Should().BeTrue();
         var sweeper = BuildSweeper(s3, claims, clock, Options(ttl: 60));
