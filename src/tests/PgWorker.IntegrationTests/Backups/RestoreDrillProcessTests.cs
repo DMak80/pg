@@ -82,9 +82,9 @@ public class RestoreDrillProcessTests : IntSlotLifetime
     private sealed class FakeReceiverClient : IWalReceiverApiClient
     {
         public ReceiverReply StartReply { get; set; } =
-            new(202, new ReceiverStatus("running", "downloading"), null);
+            new(202, new ReceiverStatus("running", "downloading", Id: DrillId), null);
         public ReceiverReply GetReply { get; set; } =
-            new(200, new ReceiverStatus("running", "downloading"), null);
+            new(200, new ReceiverStatus("running", "downloading", Id: DrillId), null);
         public readonly List<string> StartUrls = [];
         public readonly List<StartRestoreRequest> StartBodies = [];
         public readonly List<string> GetUrls = [];
@@ -233,7 +233,7 @@ public class RestoreDrillProcessTests : IntSlotLifetime
         const string cluster = "dr1";
         await SeedAsync(cluster);
         Receiver.GetReply = new ReceiverReply(200,
-            new ReceiverStatus("running", "recovering"), null);
+            new ReceiverStatus("running", "recovering", Id: DrillId), null);
         await SeedDrillAsync(cluster,
             new DrillState(DrillId, DrillStatus.Running, "20261001090000Z", NowUnix()));
         var process = BuildProcess(cluster, new FakeBackupS3());
@@ -260,7 +260,7 @@ public class RestoreDrillProcessTests : IntSlotLifetime
         const string cluster = "dr2";
         await SeedAsync(cluster);
         Receiver.GetReply = new ReceiverReply(200,
-            new ReceiverStatus("succeeded", "recovering", RestoredToLsn: "0/42"), null);
+            new ReceiverStatus("succeeded", "recovering", RestoredToLsn: "0/42", Id: DrillId), null);
         await SeedDrillAsync(cluster,
             new DrillState(DrillId, DrillStatus.Running, "20261001090000Z", NowUnix()));
         var process = BuildProcess(cluster, new FakeBackupS3());
@@ -292,7 +292,7 @@ public class RestoreDrillProcessTests : IntSlotLifetime
         const string cluster = "dr3";
         await SeedAsync(cluster);
         Receiver.GetReply = new ReceiverReply(200,
-            new ReceiverStatus("failed", "recovering", Error: "boom"), null);
+            new ReceiverStatus("failed", "recovering", Error: "boom", Id: DrillId), null);
         await SeedDrillAsync(cluster,
             new DrillState(DrillId, DrillStatus.Running, "20261001090000Z", NowUnix()));
         var process = BuildProcess(cluster, new FakeBackupS3());
@@ -706,7 +706,7 @@ public class RestoreDrillProcessTests : IntSlotLifetime
         const string cluster = "dr12";
         await SeedAsync(cluster);
         Receiver.GetReply = new ReceiverReply(200,
-            new ReceiverStatus("running", "downloading"), null);
+            new ReceiverStatus("running", "downloading", Id: DrillId), null);
         await SeedDrillAsync(cluster,
             new DrillState(DrillId, DrillStatus.Running, FullId, NowUnix()));
         var process = BuildProcess(cluster, new FakeBackupS3());
@@ -720,7 +720,7 @@ public class RestoreDrillProcessTests : IntSlotLifetime
 
         // Act 2 — операция «прошлого инстанса» дошла до исхода (GET succeeded).
         Receiver.GetReply = new ReceiverReply(200,
-            new ReceiverStatus("succeeded", "recovering", RestoredToLsn: "0/500"), null);
+            new ReceiverStatus("succeeded", "recovering", RestoredToLsn: "0/500", Id: DrillId), null);
         (await process.TickAsync(BuildSnap(cluster), await SnapshotBackupsAsync(cluster), ct))
             .IsSuccess.Should().BeTrue();
 
@@ -742,7 +742,7 @@ public class RestoreDrillProcessTests : IntSlotLifetime
         const string cluster = "dr13";
         await SeedAsync(cluster);
         Receiver.GetReply = new ReceiverReply(200,
-            new ReceiverStatus("running", "recovering"), null);
+            new ReceiverStatus("running", "recovering", Id: DrillId), null);
         await SeedDrillAsync(cluster,
             new DrillState(DrillId, DrillStatus.Running, FullId, NowUnix() - 120));
         var outcomes = new List<(string C, string S, string Result)>();
@@ -837,6 +837,67 @@ public class RestoreDrillProcessTests : IntSlotLifetime
             .And.NotContain("drill-vanished").And.NotContain("\"FAILED\"");
     }
 
+    // AAA (g-drill §1): «свой» succeeded БЕЗ restored_to_lsn — контракт операции
+    // нарушен (успех доказан LSN) — вердикта нет, повторный POST (молодой ключ);
+    // вечного ожидания «доказанного снапшота» от терминального реестра нет.
+    [Fact]
+    public async Task Supervise_PhantomSucceededOwnId_RepostsViaVanishedPath()
+    {
+        // Arrange — RUNNING-ключ; GET приёмника — succeeded БЕЗ LSN с id дрилла
+        // (фантомный терминал: предыдущий факт E2E — терминал verify в общем
+        // ops-реестре приёмника).
+        var ct = TestContext.Current.CancellationToken;
+        await using var fx = await OwnEtcd.StartAsync("drill", ct);
+        Fx = fx;
+        const string cluster = "dr15a";
+        await SeedAsync(cluster);
+        Receiver.GetReply = new ReceiverReply(200,
+            new ReceiverStatus("succeeded", "recovering", Id: DrillId), null);
+        await SeedDrillAsync(cluster,
+            new DrillState(DrillId, DrillStatus.Running, FullId, NowUnix()));
+        var process = BuildProcess(cluster, new FakeBackupS3());
+
+        // Act
+        (await process.TickAsync(BuildSnap(cluster), await SnapshotBackupsAsync(cluster), ct))
+            .IsSuccess.Should().BeTrue();
+
+        // Assert — вердикта НЕТ (ключ RUNNING без SUCCEEDED); идемпотентный
+        // повторный POST этого дрилла поверх терминального снимка.
+        var key = await ReadDrillAsync(cluster);
+        key.Should().Contain("\"RUNNING\"").And.NotContain("\"SUCCEEDED\"");
+        Receiver.StartUrls.Should().ContainSingle().Which.Should().Be(ExpectedReceiverUrl(cluster));
+        Receiver.StartBodies.Should().ContainSingle().Which.Id.Should().Be(DrillId);
+    }
+
+    // AAA (g-drill §1): снимок с ЧУЖИМ id (общий ops-реестр занят другой
+    // операцией, напр. verify) — чужой исход доказательством не является:
+    // vanished-семантика — повторный POST, вердикта нет.
+    [Fact]
+    public async Task Supervise_ForeignSnapshotId_RepostsViaVanishedPath()
+    {
+        // Arrange — RUNNING-ключ; GET — чужой succeeded (id другой операции).
+        var ct = TestContext.Current.CancellationToken;
+        await using var fx = await OwnEtcd.StartAsync("drill", ct);
+        Fx = fx;
+        const string cluster = "dr15b";
+        await SeedAsync(cluster);
+        Receiver.GetReply = new ReceiverReply(200,
+            new ReceiverStatus("succeeded", "verifying", Id: "verify-20261105155603Z"), null);
+        await SeedDrillAsync(cluster,
+            new DrillState(DrillId, DrillStatus.Running, FullId, NowUnix()));
+        var process = BuildProcess(cluster, new FakeBackupS3());
+
+        // Act
+        (await process.TickAsync(BuildSnap(cluster), await SnapshotBackupsAsync(cluster), ct))
+            .IsSuccess.Should().BeTrue();
+
+        // Assert — чужой успех НЕ записан; повторный POST этого дрилла.
+        var key = await ReadDrillAsync(cluster);
+        key.Should().Contain("\"RUNNING\"").And.NotContain("\"SUCCEEDED\"")
+            .And.NotContain("restored_to_lsn");
+        Receiver.StartBodies.Should().ContainSingle().Which.Id.Should().Be(DrillId);
+    }
+
     // AAA: Enabled=false — доводка активного дрилла работает (стоп-семантика),
     // новых запусков нет.
     [Fact]
@@ -851,7 +912,7 @@ public class RestoreDrillProcessTests : IntSlotLifetime
         await SeedAsync(cluster);
         await SeedFullAsync(cluster);
         Receiver.GetReply = new ReceiverReply(200,
-            new ReceiverStatus("succeeded", "recovering", RestoredToLsn: "0/600"), null);
+            new ReceiverStatus("succeeded", "recovering", RestoredToLsn: "0/600", Id: DrillId), null);
         var s3 = new FakeBackupS3();
         SeedValidCandidate(s3, cluster);
         await SeedDrillAsync(cluster,
@@ -913,7 +974,7 @@ public class RestoreDrillProcessTests : IntSlotLifetime
         const string cluster = "dr21";
         await SeedAsync(cluster);
         Receiver.GetReply = new ReceiverReply(200,
-            new ReceiverStatus("failed", "downloading", Error: "mc cp failed"), null);
+            new ReceiverStatus("failed", "downloading", Error: "mc cp failed", Id: DrillId), null);
         await SeedDrillAsync(cluster,
             new DrillState(DrillId, DrillStatus.Running, FullId, NowUnix()));
         var process = BuildProcess(cluster, new FakeBackupS3());
@@ -969,7 +1030,7 @@ public class RestoreDrillProcessTests : IntSlotLifetime
         const string cluster2 = "dro2";
         await SeedAsync(cluster2);
         Receiver.GetReply = new ReceiverReply(200,
-            new ReceiverStatus("succeeded", "recovering", RestoredToLsn: "0/42"), null);
+            new ReceiverStatus("succeeded", "recovering", RestoredToLsn: "0/42", Id: DrillId), null);
         await SeedDrillAsync(cluster2,
             new DrillState(DrillId, DrillStatus.Running, "20261001090000Z", NowUnix()));
         outcomes.Clear();
@@ -998,7 +1059,7 @@ public class RestoreDrillProcessTests : IntSlotLifetime
         const string cluster = "dr16x";
         await SeedAsync(cluster);
         Receiver.GetReply = new ReceiverReply(200,
-            new ReceiverStatus("cancelled", "recovering", Error: "cancelled by operator"), null);
+            new ReceiverStatus("cancelled", "recovering", Error: "cancelled by operator", Id: DrillId), null);
         await SeedDrillAsync(cluster,
             new DrillState(DrillId, DrillStatus.Running, "20261001090000Z", NowUnix()));
         var process = BuildProcess(cluster, new FakeBackupS3());

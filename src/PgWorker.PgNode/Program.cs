@@ -374,11 +374,12 @@ internal partial class Program
 
     // Общий статус ops-операции: 200 снимок (в т.ч. терминальный — снимок
     // персистентен, воркер-супервиз отличает cancelled от vanished-404) /
-    // 404 (операций в реестре нет).
+    // 404 (операций в реестре нет). id — операция реестра: реестр один на
+    // процесс, сверка «своя/чужая» — на супервизоре (arch/pgnode/02-api.md §3).
     private static IResult OpsStatus(OpsOperationRegistry registry)
         => registry.Current is { } snapshot
             ? Results.Json(new OpsStatusResponse(
-                    snapshot.State, snapshot.Phase,
+                    snapshot.State, snapshot.Phase, snapshot.Id,
                     snapshot.RestoredToLsn, snapshot.SystemId,
                     snapshot.StartedUnix, snapshot.Error),
                 JsonOpts)

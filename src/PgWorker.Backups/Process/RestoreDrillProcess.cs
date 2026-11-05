@@ -348,55 +348,38 @@ public sealed class RestoreDrillProcess(
         }
 
         var reply = await receiver.GetRestoreAsync(receiverUrl, ct);
+        if (reply.IsTransient)
+            return; // transient тика — статус ключа не трогаем
 
-        if (reply.IsNotFound)
+        // Сверка снимка по id (arch/backups/processes/g-drill.md §1): ops-реестр
+        // приёмника ОДИН на процесс — GET может вернуть чужой/прошлый снимок
+        // (напр., терминал verify-операции). Чужой id — чужой исход: вердиктов
+        // по нему нет, дрилл перезапускается vanished-семантикой.
+        if (reply.Status is { } seen && seen.Id != drill.Id)
         {
-            // Операции нет (старт не дошёл/рестарт приёмника): пока ключ молод —
-            // идемпотентный повторный POST (резюмов нет — скачается заново);
-            // старше бюджета — FAILED drill-vanished.
-            if (SupervisionTimeouts.IsTimedOut(drill.StartedUnix, nowUnix, options.DrillTimeoutSec))
-            {
-                var vanished = drill with
-                {
-                    State = DrillStatus.Failed,
-                    FinishedUnix = nowUnix,
-                    Error = $"drill-vanished: operation missing, age {nowUnix - drill.StartedUnix} s > {options.DrillTimeoutSec} s",
-                    Phase = null, // чистый итог — scratch чистит приёмник
-                };
-                var put = await PutDrillAsync(cluster, shard, vanished, ct);
-                if (!put.IsSuccess)
-                    return; // ключ остаётся RUNNING — вердикт следующим тиком
-                drillObserver?.Invoke(cluster, shard, "failed");
-                await journal.WritePhaseAsync(cluster, Op, $"drill-failed/{shard}/{drill.Id}",
-                    claims.InstanceId, vanished.Error, ct);
-                return;
-            }
-
-            // t15/sha: статус полного читается из etcd (номера/хэша нет — null).
-            var fullMeta = await ReadFullMetaAsync(cluster, shard, drill.BackupId, ct);
-            await receiver.StartRestoreAsync(
-                receiverUrl,
-                new StartRestoreRequest(
-                    BackupId: drill.BackupId,
-                    Id: drill.Id,
-                    TargetTime: null,
-                    RecoveryTimeoutSec: options.RestoreRecoveryTimeoutSec,
-                    S3: new S3Context(
-                        Endpoints: [.. poolCtx.ReadAll],
-                        AccessKey: poolCtx.AccessKey,
-                        SecretKey: poolCtx.SecretKey,
-                        Bucket: options.S3Bucket,
-                        Prefix: $"{cluster}/{shard}",
-                        CaPem: BackupCaPem.ReadIfConfigured(options.S3CaBundlePath)),
-                    // t15: номер жизни выбранного полного — фильтр кусков fetch-wal.
-                    ChainLife: fullMeta.ChainLife,
-                    // Сквозной sha256 — сверка распаковки до старта postgres.
-                    Sha256: fullMeta.Sha256), ct);
-            return; // 202/409 — операция жива; отказ — transient, тик повторит
+            logger.LogWarning(
+                "{Op} {cluster}/{shard}: drill {id} — registry holds a foreign snapshot (id={SnapId}, state={State}); relaunching via the vanished path",
+                Op, cluster, shard, drill.Id, seen.Id ?? "<null>", seen.State);
+            await SuperviseVanishedAsync(cluster, shard, drill, nowUnix, poolCtx, receiverUrl, ct);
+            return;
         }
 
-        if (reply.IsTransient || reply.Status is not { } snapshot)
-            return; // transient тика — статус ключа не трогаем
+        // Своей операции нет (старт не дошёл/рестарт приёмника) ИЛИ свой
+        // succeeded без restored_to_lsn (контракт: успех доказан LSN —
+        // нарушение контракта операции): доказательства исхода нет —
+        // vanished-семантика (повторный POST идемпотентно поверх терминального
+        // снимка / FAILED drill-vanished по бюджету); вечного ожидания
+        // «доказанного снапшота» от терминального реестра нет.
+        if (reply.IsNotFound || reply.Status is not { } snapshot
+            || (snapshot.State == "succeeded" && snapshot.RestoredToLsn is not { Length: > 0 }))
+        {
+            if (reply.Status is { } contractViolation && !reply.IsNotFound)
+                logger.LogWarning(
+                    "{Op} {cluster}/{shard}: drill {id} — succeeded WITHOUT restored_to_lsn (operation contract violation); relaunching via the vanished path",
+                    Op, cluster, shard, drill.Id);
+            await SuperviseVanishedAsync(cluster, shard, drill, nowUnix, poolCtx, receiverUrl, ct);
+            return;
+        }
 
         // Бюджет активного дрилла — возраст RUNNING-ключа (etcd-факт + часы):
         // исчерпан → FAILED drill-timeout (+ cancel best-effort — приёмник
@@ -430,20 +413,8 @@ public sealed class RestoreDrillProcess(
 
             case "succeeded":
             {
-                // Контракт операции (строка докстринга процесса): успех ДОКАЗАН
-                // стартом postgres и выходом из recovery — restored_to_lsn обязателен.
-                // SUCCEEDED без lsn — фантомный статус (факт E2E: под нагрузкой
-                // приёмник отвечал финалом за ~2 с без восстановления), success
-                // по нему ложный: тик повторяется, drill-timeout — страховка.
-                if (snapshot.RestoredToLsn is not { Length: > 0 })
-                {
-                    logger.LogWarning(
-                        "{Op} {cluster}/{shard}: drill {id} — succeeded WITHOUT restored_to_lsn (phantom status); waiting for a proved snapshot",
-                        Op, cluster, shard, drill.Id);
-                    return; // тик повторится: либо доказанный снапшот, либо drill-timeout
-                }
-
-                // старт postgres + выход из recovery доказаны (restored_to_lsn);
+                // старт postgres + выход из recovery доказаны (restored_to_lsn —
+                // гвард vanished-маршрута выше уже отселил succeeded без LSN);
                 // scratch чистит приёмник — ключ сразу чистый терминальный итог.
                 var terminal = drill with
                 {
@@ -513,6 +484,56 @@ public sealed class RestoreDrillProcess(
                 return;
             }
         }
+    }
+
+    // Vanished-маршрут (arch/backups/processes/g-drill.md §1): доказанной
+    // операции нет (404 / чужой снимок реестра / свой succeeded без LSN) —
+    // пока ключ молод, идемпотентный повторный POST (резюмов нет — скачается
+    // заново; TryBegin приёмника перезаписывает терминальные снимки); возраст
+    // ≥ DrillTimeoutSec — FAILED drill-vanished.
+    private async Task SuperviseVanishedAsync(
+        string cluster, string shard, DrillState drill, long nowUnix,
+        BackupPoolContext pool, string receiverUrl, CancellationToken ct)
+    {
+        if (SupervisionTimeouts.IsTimedOut(drill.StartedUnix, nowUnix, options.DrillTimeoutSec))
+        {
+            var vanished = drill with
+            {
+                State = DrillStatus.Failed,
+                FinishedUnix = nowUnix,
+                Error = $"drill-vanished: operation missing, age {nowUnix - drill.StartedUnix} s > {options.DrillTimeoutSec} s",
+                Phase = null, // чистый итог — scratch чистит приёмник
+            };
+            var put = await PutDrillAsync(cluster, shard, vanished, ct);
+            if (!put.IsSuccess)
+                return; // ключ остаётся RUNNING — вердикт следующим тиком
+            drillObserver?.Invoke(cluster, shard, "failed");
+            await journal.WritePhaseAsync(cluster, Op, $"drill-failed/{shard}/{drill.Id}",
+                claims.InstanceId, vanished.Error, ct);
+            return;
+        }
+
+        // t15/sha: статус полного читается из etcd (номера/хэша нет — null).
+        var fullMeta = await ReadFullMetaAsync(cluster, shard, drill.BackupId, ct);
+        await receiver.StartRestoreAsync(
+            receiverUrl,
+            new StartRestoreRequest(
+                BackupId: drill.BackupId,
+                Id: drill.Id,
+                TargetTime: null,
+                RecoveryTimeoutSec: options.RestoreRecoveryTimeoutSec,
+                S3: new S3Context(
+                    Endpoints: [.. pool.ReadAll],
+                    AccessKey: pool.AccessKey,
+                    SecretKey: pool.SecretKey,
+                    Bucket: options.S3Bucket,
+                    Prefix: $"{cluster}/{shard}",
+                    CaPem: BackupCaPem.ReadIfConfigured(options.S3CaBundlePath)),
+                // t15: номер жизни выбранного полного — фильтр кусков fetch-wal.
+                ChainLife: fullMeta.ChainLife,
+                // Сквозной sha256 — сверка распаковки до старта postgres.
+                Sha256: fullMeta.Sha256), ct);
+        // 202/409 — операция жива; отказ — transient, тик повторит
     }
 
     // alias:8080 приёмника ПЕРВОЙ ноды шарда (arch/backups/01-full-backup.md/§3.6): имя docker-

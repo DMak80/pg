@@ -54,11 +54,14 @@ public sealed record StartRestoreRequest(
     // у DR-орфана отсутствует — сверка распаковки пропускается, 06 §2).
     [property: JsonPropertyName("sha256")] string? Sha256 = null);
 
-/// <summary>Статус ops-операции (GET /api/ops/verify|restore); started_unix —
-/// время TryBegin (возрастной бюджет verify воркера, arch/backups/09-operability.md).</summary>
+/// <summary>Статус ops-операции (GET /api/ops/verify|restore); id — операция
+/// реестра (arch/pgnode/02-api.md §3: реестр один на процесс, супервизоры
+/// сверяют свою/чужую до вердиктов); started_unix — время TryBegin
+/// (возрастной бюджет verify воркера, arch/backups/09-operability.md).</summary>
 public sealed record OpsStatusResponse(
     [property: JsonPropertyName("state")] string State,
     [property: JsonPropertyName("phase")] string Phase,
+    [property: JsonPropertyName("id")] string? Id = null,
     [property: JsonPropertyName("restored_to_lsn")] string? RestoredToLsn = null,
     [property: JsonPropertyName("system_id")] string? SystemId = null,
     [property: JsonPropertyName("started_unix")] long? StartedUnix = null,
