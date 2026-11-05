@@ -123,7 +123,10 @@ public sealed class PgWireReplicationClient : IBaseBackupSource
 // src/PgWorker.PgNode/BaseBackup/BaseBackupCommand.cs (шаг 4)
 public sealed class BaseBackupCommand(IBaseBackupSource source)
 {
-    // tarSink(copyStreamIndex, stream): 0 = основной tablespace, 1 = pg_wal (WAL STREAM)
+    public const int ManifestIndex = 2; // индекс sink'а манифеста (сырой JSON backup_manifest)
+    // tarSink(sectionIndex, stream): 0 = base.tar (основной tablespace),
+    // 1 = pg_wal.tar, ManifestIndex = манифест; ОДИН CopyOut-поток с
+    // секционным фреймингом 'n'/'m'/'d'/'p' (архив/манифест/данные/прогресс)
     public Task RunAsync(string backupId, Func<int, Stream, CancellationToken, Task> tarSink,
         CancellationToken ct);
 }
@@ -446,21 +449,29 @@ cleartext-цикл (фейк-«сервер»: заранее записанна
 
 **Действие:** создать `src/PgWorker.PgNode/BaseBackup/BaseBackupCommand.cs`.
 `RunAsync(backupId, tarSink, ct)`: `SendAsync($"BASE_BACKUP ( LABEL
-'pgw-full-{backupId}', CHECKPOINT 'fast', WAIT false, MANIFEST_CHECKSUMS
-'SHA256', TARGET 'CLIENT', WAL 'STREAM' )")` → цикл сообщений: DataRow('D')
-фазы заголовка — считать строки (tablespace list); CopyOutResponse('H') →
-счётчик потоков ++ (1-й — base, 2-й — pg_wal; 3-й и далее → `ApplicationException(
-"multiple tablespaces not supported")`; также если DataRow-строк заголовка
-было >1 ДО первого 'H' → то же исключение) → вызвать `tarSink(index, new
-CopyOutDataStream(this, ct))`, где `CopyOutDataStream : Stream` читает
-подряд CopyData('d')-payload'ы текущего потока до CopyDone('c') (чтение
-за CopyDone → EOF потока; CopyFail('f') → исключение с текстом payload).
-После потоков: DataRow'ы итога пропускаются, CommandComplete('C') →
-возврат; ReadyForQuery('Z') — опционально прочитать если есть (не ждать
-его). ErrorResponse('E') → разобрать поля (байт-код: 'C' sqlstate, 'M'
-message) → `BaseBackupErrorException(sqlState, message)`. NoticeResponse
-('N')/ParameterStatus('S')/RowDescription('T') — пропуск. Любое иное
-сообщение → `ApplicationException($"unexpected message '{(char)type}' in
+'pgw-full-{backupId}', CHECKPOINT 'fast', MANIFEST 'yes', MANIFEST_CHECKSUMS
+'SHA256', TARGET 'client', WAL true, WAIT false )")` (TARGET — строчное
+`client`, WAL — булев: регистр/тип значимы у сервера) → цикл сообщений:
+RowDescription('T') различает result set'ы заголовка по числу полей (2 —
+стартовая позиция WAL, 3 — tablespace list); DataRow('D') фазы tablespace
+list — считать строки (>1 ДО первого 'H' → `ApplicationException("multiple
+tablespaces not supported")`); CopyOutResponse('H') — ОДИН на команду
+(второй → то же исключение «multiple tablespaces»): внутри потока
+собственный фрейминг CopyData('d') по первому байту payload: 'n' — начало
+архива (имя `base.tar`/`pg_wal.tar` + null-terminated каталог; иное имя →
+multiple tablespaces), 'm' — манифест, 'd' — данные, 'p' — прогресс
+(пропуск). На 'n'/'m' — вызвать `tarSink(index, new CopyOutDataStream(this,
+ct))` (index: 0 — `base.tar`, 1 — `pg_wal.tar`, `ManifestIndex`=2 —
+манифест, сырой JSON), где `CopyOutDataStream : Stream` читает payload'ы
+'d' до границы секции ('n'/'m'/CopyDone('c') — сообщение возвращается
+автомату через pushback; CopyFail('f') → исключение с текстом payload);
+команда дочитывает секцию за sink'ом. DataRow'ы итогового result set'а
+пропускаются, CommandComplete('C') после потока → возврат;
+ReadyForQuery('Z') — тоже возврат (не ждать его). ErrorResponse('E') →
+разобрать поля (байт-код: 'C' sqlstate, 'M' message) →
+`BaseBackupErrorException(sqlState, message)`. NoticeResponse
+('N')/ParameterStatus('S') — пропуск. Любое иное сообщение →
+`ApplicationException($"unexpected message '{(char)type}' in
 BASE_BACKUP response")`.
 
 **Выход:** автомат читает эталонные последовательности живого PG
@@ -471,15 +482,21 @@ BASE_BACKUP response")`.
 DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/PgWorker.UnitTests -c Debug --filter "FullyQualifiedName~BaseBackupCommandTests" --nologo
 ```
 Ожидание: PASS (фейк `IBaseBackupSource` с запрограммированной
-последовательностью: T,D,H,d("abc"),d("def"),c,H,d("wal"),c,D,C → tarSink
-вызван дважды, 1-й поток читается как "abcdef", 2-й "wal"; >1 DataRow
-заголовка → multiple tablespaces; 3-й 'H' → то же; ErrorResponse E
-(C=XX000,M=boom) → BaseBackupErrorException с "[XX000] boom"; CopyFail →
-исключение; неожидаемый тип 'I' → исключение).
+последовательностью: T(2),D,T(3),D,C,H,d("n base.tar\0…"),d("d abc"),
+d("d def"),d("m"),d("<json>"),c,D,C → tarSink вызван для индексов 0
+(поток читается как "abcdef") и ManifestIndex (JSON манифеста); второй
+'H' → multiple tablespaces (SecondCopyOut_Throws); 'n' с чужим именем
+архива (<oid>.tar) → то же; >1 DataRow tablespace list → то же;
+ErrorResponse E (C=XX000,M=boom) → BaseBackupErrorException с
+"[XX000] boom"; CopyFail → исключение; неожидаемый тип 'I' → исключение;
+ассерт отправленной команды содержит `TARGET 'client'`, `WAL true`,
+`LABEL 'pgw-full-<id>'`).
 
 **Связь со spec:** §3.1 BaseBackupCommand; §6.14 (tablespace fail-fast),
 §6.20 (TARGET SERVER/INCREMENTAL не поддерживаются — ErrorResponse сервера
-покрывает: сервер ответит ошибкой → исключение).
+покрывает: сервер ответит ошибкой → исключение). Протокол одного
+CopyOut-потока с секционным фреймингом — канон
+`arch/pgnode/04-full-backup.md` §2, proto-report §2.3.
 
 **Подпункты:**
 
@@ -1183,8 +1200,14 @@ E2eRestoreScenarios|FullyQualifiedName~E2eRestoreNewClusterScenarios`;
      на запись); имя/size/hex сверить с манифестом: отсутствует в
      манифесте → Fail(verifying, $"unexpected file {name}"); есть, но
      size/hex не сошлись → Fail(verifying, $"checksum mismatch {name}").
-     Собрать множество проверенных; в конце: все записи манифеста покрыты
-     (отсутствующий в tar → Fail(verifying, $"missing file {path}")).
+     Исключение — записи, которых манифест не перечисляет по построению:
+     сам `backup_manifest` и WAL-сегменты `pg_wal/<segment>` (24-hex имя
+     непосредственно в `pg_wal/`; сегменты покрыты WAL-Ranges сервера,
+     целостность — WAL-Ranges + сквозной sha256 объекта) — пропускаются и
+     не считаются лишними/отсутствующими; `pg_wal/archive_status/*.done`
+     в манифесте есть, сверяются пофайлово. Собрать множество проверенных;
+     в конце: все записи манифеста покрыты (отсутствующий в tar →
+     Fail(verifying, $"missing file {path}")).
      Сквозной sha256: IncrementalHash по всему потоку — сверить с
      `_request.Sha256` если задано (НОВОЕ поле `StartVerifyRequest`:
      `[property: JsonPropertyName("sha256")] string? Sha256 = null`;
@@ -1290,10 +1313,12 @@ FinishAsync), `HeadObjectAsync` → `Success((true, размер))`; AAA.
 wal_start_segment — set is not archiveable» + «invalid wal_start_segment»
 + «set contains no pg_wal WAL segments» (строки ~140–230: от `var walList
 = ...` до закрытия `check`-блока). Проверка `no wal_start_segment`
-(строки ~146–153) — удалить тоже: полнота набора доказывается манифестом
-в verify-операции (канон §7). Комментарий перед (4) обновить: «Полнота
-набора (вкл. pg_wal) — манифестом в потоковой verify-оперции; дубль wal/ —
-общий контроль цепочки (02-wal-archive §3)».
+   (строки ~146–153) — удалить тоже: полнота набора доказывается манифестом
+   в verify-операции (канон §7). Комментарий перед (4) обновить: «Полнота
+   набора — манифестом в потоковой verify-оперции, кроме самих
+   WAL-сегментов pg_wal/<segment> (целостность — WAL-Ranges сервера +
+   сквозной sha256 объекта); дубль wal/ — общий контроль цепочки
+   (02-wal-archive §3)».
 2. `StartVerifyRequest`-вызовы в этом же файле — их ДВА: старт операции
    (~строка 256) и relaunch после GET 404/vanished (~строка 334); добавить
    `Sha256: candidate.Sha256` (поле из шага 9) в ОБА вызова — поле
