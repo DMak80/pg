@@ -380,6 +380,19 @@ public sealed class FullBackupOperation(
     private async Task<string?> DuplicateWalAsync(
         IStreamObjectS3 reader, IWalSegmentGuard guard, ulong activeSegId, CancellationToken ct)
     {
+        // Последний сегмент НАБОРА (несёт end-of-backup запись) не дублируется
+        // никогда (arch/backups/01 §2): его tar-срез — состояние на момент
+        // снятия, а стрим позже кладёт в wal/ финальную версию того же имени;
+        // дубль среза дал бы ложный wal-archive-conflict и FAILED полного.
+        // Сегменты строго ниже активного wal-файла источника и ниже последнего
+        // набора — закрытые, их байты в tar финальны.
+        var setPositions = _walEntries
+            .Select(e => WalFileName.TryParse(
+                FetchWalCommand.NormalizeSegment(e.Name[(e.Name.LastIndexOf('/') + 1)..])))
+            .OfType<WalFileName>()
+            .Select(s => (long)s.Log * WalFileName.SegsPerLog + s.Seg)
+            .ToList();
+        var lastSetPos = setPositions.Count > 0 ? setPositions.Max() : -1L;
         string? error = null;
         using var gate = new SemaphoreSlim(DuplicateParallelism);
         await Task.WhenAll(_walEntries.Select(async entry =>
@@ -389,6 +402,13 @@ public sealed class FullBackupOperation(
             if (WalFileName.TryParse(normalized) is not { } segment || entry.Size <= 0)
                 return; // не сегмент (archive_status/*.done, *.history) — пропуск
             var setPos = (long)segment.Log * WalFileName.SegsPerLog + segment.Seg;
+            if (setPos == lastSetPos)
+            {
+                Prog($"wal duplicate skipped: {normalized} is the last segment of the set " +
+                     "(its final version is delivered by the stream)");
+                return;
+            }
+
             if (setPos >= (long)activeSegId)
             {
                 Prog($"wal duplicate skipped: {normalized} is not closed in the source yet");

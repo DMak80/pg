@@ -305,7 +305,11 @@ public sealed class VerifyOperation : IReceiverOperation
                     && IsWalSegment(entry.Name[WalPrefix.Length..])))
             {
                 if (entry.Name.StartsWith(WalPrefix, StringComparison.Ordinal))
-                    walSegments.Add(entry.Name[WalPrefix.Length..]);
+                {
+                    // Сервер кладёт сегменты набора ВЕРХНИМ hex — сравнение с
+                    // WAL-Ranges (строчные имена) после нормализации регистра.
+                    walSegments.Add(entry.Name[WalPrefix.Length..].ToLowerInvariant());
+                }
                 await reader.SkipDataAsync(ct);
                 continue;
             }

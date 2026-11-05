@@ -111,14 +111,12 @@ public class FullBackupOperationTests
         entryNames.Should().Contain("backup_label");
         entryNames.Should().Contain("pg_wal/000000010000000000000002");
         entryNames[^1].Should().Be("backup_manifest");
-        // Assert — дубль закрытых сегментов: данные ровно из tar-объекта
-        fake.WalPuts.Select(p => p.Key).Should().BeEquivalentTo(
-            $"{Cluster}/{Shard}/wal/000000010000000000000002",
-            $"{Cluster}/{Shard}/wal/0000000100000000000000ab");
-        fake.WalPuts.Single(p => p.Key.EndsWith("000000010000000000000002"))
-            .Data.Should().Equal(Segment2);
-        fake.WalPuts.Single(p => p.Key.EndsWith("0000000100000000000000ab"))
-            .Data.Should().Equal(SegmentAb);
+        // Assert — дубль ЗАКРЫТЫХ сегментов ниже последнего набора: данные ровно
+        // из tar-объекта; последний сегмент набора (0AB, end-of-backup) НЕ
+        // дублируется — его финальную версию доставит стрим (arch/backups/01 §2).
+        fake.WalPuts.Select(p => p.Key).Should().Equal(
+            $"{Cluster}/{Shard}/wal/000000010000000000000002");
+        fake.WalPuts.Single().Data.Should().Equal(Segment2);
         // Assert — итоговый снимок
         var snap = registry.Current!;
         snap.State.Should().Be("succeeded");
