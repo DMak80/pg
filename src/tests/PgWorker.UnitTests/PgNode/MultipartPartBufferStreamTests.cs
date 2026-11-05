@@ -96,9 +96,11 @@ public class MultipartPartBufferStreamTests
                 await stream.WriteAsync(chunk, ct);
         }, ct);
 
-        // Act/Assert — 5-я часть ждёт слота: в полёте ровно 4.
-        SpinWait.SpinUntil(() => session.InFlight == 4, TimeSpan.FromSeconds(10))
-            .Should().BeTrue("the fifth part must wait for a slot (backpressure)");
+        // Act/Assert — 5-я часть ждёт слота: в полёте ровно 4 (сигнал из
+        // сессии — без поллинга: ожидание ограничено 5 с и не является
+        // длительным ожиданием юнит-теста).
+        await session.ReachedFour.Task.WaitAsync(
+            TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
         session.MaxInFlight.Should().Be(4, "no more than 4 parts are in flight at once");
 
         // Act 2 — отпускаем заливку, поток дозаписывается и завершается.
@@ -149,6 +151,7 @@ public class MultipartPartBufferStreamTests
     private sealed class GatedSession : IMultipartUploadSession
     {
         private readonly TaskCompletionSource _gate = new();
+        private readonly TaskCompletionSource _reachedFour = new();
         private int _inFlight;
         private int _maxInFlight;
 
@@ -157,6 +160,9 @@ public class MultipartPartBufferStreamTests
         public int InFlight => Volatile.Read(ref _inFlight);
 
         public int MaxInFlight => Volatile.Read(ref _maxInFlight);
+
+        // Сигнал «4 части в полёте» — детерминированное ожидание теста.
+        public TaskCompletionSource ReachedFour => _reachedFour;
 
         public void ReleaseAll() => _gate.TrySetResult();
 
@@ -170,6 +176,9 @@ public class MultipartPartBufferStreamTests
                 if (Interlocked.CompareExchange(ref _maxInFlight, current, seen) == seen)
                     break;
             }
+
+            if (current >= 4)
+                _reachedFour.TrySetResult();
 
             try
             {

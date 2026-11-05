@@ -87,7 +87,13 @@ public static class EtcdEndpointFailover
             var index = (start + i) % endpoints.Count;
             var endpoint = endpoints[index];
             if (anyLive && IsDead(endpoint))
-                continue; // негативный кэш: смерть уже известна — штраф не платим
+            {
+                // Негативный кэш: смерть уже известна — штраф не платим. Смена
+                // активного endpoint через кэш — тоже переключение: фиксируем
+                // для диагностики («endpoint switch» в логе CLI).
+                previous ??= endpoint;
+                continue;
+            }
             Result<T> result;
             try
             {
@@ -141,7 +147,13 @@ public static class EtcdEndpointFailover
             var index = (start + i) % endpoints.Count;
             var endpoint = endpoints[index];
             if (anyLive && IsDead(endpoint))
-                continue; // негативный кэш: смерть уже известна — штраф не платим
+            {
+                // Негативный кэш: смерть уже известна — штраф не платим. Смена
+                // активного endpoint через кэш — тоже переключение: фиксируем
+                // для диагностики («endpoint switch» в логе CLI).
+                previous ??= endpoint;
+                continue;
+            }
             Result result;
             try
             {

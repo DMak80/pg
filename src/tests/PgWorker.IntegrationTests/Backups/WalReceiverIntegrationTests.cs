@@ -108,6 +108,14 @@ public class WalReceiverIntegrationTests
             {
                 return 0; // чистая отмена — прежний код 0
             }
+            finally
+            {
+                // Прод-цикл диспоузит source на каждой итерации (await using):
+                // тест обязан закрыть replication-соединение, иначе backend
+                // сервера держит слот и повторный START_REPLICATION получает
+                // 55006 «slot is active» (гонка, не дефект продукта).
+                await source.DisposeAsync();
+            }
         });
         return (cts, run);
     }
@@ -227,6 +235,9 @@ public class WalReceiverIntegrationTests
             TimeSpan.FromSeconds(30));
         cts1.Cancel();
         (await run1).Should().Be(0);
+        // Слот освобождается сервером не мгновенно после отмены: повторный
+        // START_REPLICATION до этого — 55006 «slot is active» (гонка теста).
+        await postgres.WaitSlotInactiveAsync(TimeSpan.FromSeconds(30), ct);
         var (_, beforeNames) = await ListSegmentsAsync(s3, cluster, shard, ct);
 
         // Act — новая WAL-нагрузка и ПОВТОРНЫЙ запуск приёмника (дозасылка от хвоста)
@@ -360,6 +371,10 @@ public class WalReceiverIntegrationTests
             ctsCore.Cancel();
             (await runCore).Should().Be(0);
         }
+
+        // Слот освобождается сервером не мгновенно (backend замечает закрытие
+        // сокета): START_REPLICATION до этого — 55006 «slot is active» (гонка).
+        await postgres.WaitSlotInactiveAsync(TimeSpan.FromSeconds(30), ct);
 
         // Act — прямой транспорт: IDENTIFY_SYSTEM по короткоживущему
         // replication-соединению, затем START_REPLICATION с явным TIMELINE 1

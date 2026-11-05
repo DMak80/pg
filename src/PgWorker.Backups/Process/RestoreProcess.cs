@@ -114,10 +114,20 @@ public sealed class RestoreProcess(
             steps.Add(RunShardStepAsync(cluster, snap, shard, op, mine, ct));
         }
 
+        // Агрегация исхода (f-restore §1): ошибка любого шарда — Failed тика;
+        // иначе InProgress, если хотя бы один шард ещё ведёт заявку (ретрай/
+        // ожидание); Done — все шаги завершены. Инициализация Done без учёта
+        // InProgress возвращала Done на каждом тике живой заявки (rejoin/launch
+        // теряли признак «работа идёт»).
         var last = Result<ProcessOutcome>.Success(ProcessOutcome.Done);
         foreach (var outcome in await Task.WhenAll(steps))
+        {
             if (!outcome.IsSuccess)
+                return outcome;
+            if (outcome.Value == ProcessOutcome.InProgress)
                 last = outcome;
+        }
+
         return last;
     }
 

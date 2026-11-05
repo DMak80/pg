@@ -180,6 +180,25 @@ public sealed class OwnPostgres : IAsyncDisposable
     }
 
     /// <summary>SQL-зонд restart_lsn слота (AC1): LSN «X/Y» → ulong.</summary>
+    /// <summary>Ожидание освобождения слота после отмены репликации: сервер
+    /// освобождает слот, когда backend заметит закрытие сокета (не мгновенно);
+    /// повторный START_REPLICATION до этого получает 55006 «slot is active».</summary>
+    public async Task WaitSlotInactiveAsync(TimeSpan budget, CancellationToken ct)
+    {
+        var deadline = DateTimeOffset.UtcNow + budget;
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            await using var conn = new Npgsql.NpgsqlConnection(AdminDsn);
+            await conn.OpenAsync(ct);
+            await using var command = conn.CreateCommand();
+            command.CommandText =
+                $"SELECT active FROM pg_replication_slots WHERE slot_name = '{Slot}'";
+            if (await command.ExecuteScalarAsync(ct) is false)
+                return;
+            await Task.Delay(200, ct);
+        }
+    }
+
     public async Task<ulong> ReadRestartLsnAsync(CancellationToken ct)
     {
         await using var conn = new Npgsql.NpgsqlConnection(AdminDsn);

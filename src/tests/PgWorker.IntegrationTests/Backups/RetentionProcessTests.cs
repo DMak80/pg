@@ -242,7 +242,9 @@ public class RetentionProcessTests(EtcdFixture fixture)
         s3.DeletedKeys.Should().BeEmpty();
     }
 
-    // AC4: WAL строго ниже cutoff удалён; cutoff/выше/.history того же TLI живы.
+    // AC4: WAL строго ниже cutoff удалён; cutoff/выше живы; `.history`
+    // удаляется для TLI ≤ oldest.TLI оставляемого полного (канон c-retention §2:
+    // переход в TLI самого старого полного уже позади).
     [Fact]
     public async Task WalCleanupBelowCutoff()
     {
@@ -269,15 +271,16 @@ public class RetentionProcessTests(EtcdFixture fixture)
         // Act — тик (просроченных полных нет — только WAL-чистка)
         (await process.TickAsync(BuildSnap(cluster), backups(cluster, full), ct)).IsSuccess.Should().BeTrue();
 
-        // Assert — 3 и 4 удалены; cutoff 5, 6 и history живы
+        // Assert — 3 и 4 удалены; cutoff 5 и 6 живы; history TLI 1 (≤ oldest.TLI)
+        // удалён (канон c-retention §2).
         s3.DeletedKeys.Should().BeEquivalentTo([
             $"{cluster}/shard1/wal/000000010000000000000003",
             $"{cluster}/shard1/wal/000000010000000000000004",
+            $"{cluster}/shard1/wal/00000001.history",
         ]);
         s3.PrefixObjects.Select(o => o.Key).Should().BeEquivalentTo([
             $"{cluster}/shard1/wal/000000010000000000000005",
             $"{cluster}/shard1/wal/000000010000000000000006",
-            $"{cluster}/shard1/wal/00000001.history",
         ]);
     }
 
