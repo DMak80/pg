@@ -586,6 +586,11 @@ public sealed class RestoreProcess(
         }
         var poolCtx = poolRead.Value.Context;
 
+        // Сквозной sha256 выбранного полного (etcd-статус; DR-orphan без
+        // статуса — null): приёмник сверит распаковку до старта postgres
+        // (06 §2, spec §3.6). Читается ДО лямбды — она не async.
+        var fullSha256 = await ReadFullSha256Async(
+            SrcCluster(op), SrcShard(op), op.BackupId, ct);
         var launch = await TimedStepAsync(cluster, shard.Name, "start-restore",
             () => receiver.StartRestoreAsync(
                 receiverUrl,
@@ -603,7 +608,8 @@ public sealed class RestoreProcess(
                         CaPem: BackupCaPem.ReadIfConfigured(options.S3CaBundlePath)),
                     // t15: номер жизни выбранного полного → fetch-wal фильтрует
                     // куски по нему (DR-orphan — null, фильтр не активен).
-                    ChainLife: op.ChainLife), ct));
+                    ChainLife: op.ChainLife,
+                    Sha256: fullSha256), ct));
         if (launch.IsConflict)
         {
             // 409 — в общем ops-реестре приёмника ЧУЖАЯ ops-операция (verify
@@ -944,6 +950,23 @@ public sealed class RestoreProcess(
 
     private static string SrcShard(RestoreOperationState op)
         => op.Source.Split('/', 2)[1];
+
+    // Сквозной sha256 выбранного полного из etcd-статуса шарда-ИСТОЧНИКА
+    // (DR-orphan без статуса — null: сверка распаковки не определена, 06 §2).
+    private async Task<string?> ReadFullSha256Async(
+        string cluster, string shard, string backupId, CancellationToken ct)
+    {
+        var range = await etcd.RangeAsync(endpoints[0], BackupNames.ClusterPrefix(cluster), ct);
+        if (!range.IsSuccess)
+            return null;
+        var parsed = BackupsParser.Parse(range.Value, out _);
+        if (!parsed.IsSuccess)
+            return null;
+        var backups = parsed.Value.FirstOrDefault(b => b.Cluster == cluster);
+        return backups?.Shards.TryGetValue(shard, out var sb) == true
+            ? sb.Full.FirstOrDefault(f => f.Id == backupId)?.Sha256
+            : null;
+    }
 
     // ── REJOINING: ensure нод + Patroni-пробы + COMPLETED (§3.4, AC4) ──
 

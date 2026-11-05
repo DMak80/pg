@@ -382,13 +382,14 @@ public class RestoreDrillProcessTests
             BackupStatusJson.Serialize(full), null, ct);
     }
 
-    // Непрерывная WAL-цепочка 1..3 + манифест кандидата (валидация проходит).
+    // Объект полного `full/<id>.tar` (реальные tar-байты, label первой
+    // записью) + непрерывная WAL-цепочка 1..3 — валидация проходит.
     private static void SeedValidCandidate(FakeBackupS3 s3, string cluster)
     {
+        TestTarBytes.SeedFullObject(s3, cluster, Shard, FullId);
         s3.Objects.Add((cluster, Shard, "000000010000000000000001"));
         s3.Objects.Add((cluster, Shard, "000000010000000000000002"));
         s3.Objects.Add((cluster, Shard, "000000010000000000000003"));
-        s3.Texts[$"{cluster}/{Shard}/full/{FullId}/backup_manifest"] = "MANIFEST";
     }
 
     private async Task<string> ReadWorkPhaseAsync(string cluster)
@@ -634,12 +635,13 @@ public class RestoreDrillProcessTests
         (await Fx.Gateway.GetAsync(Fx.Endpoint, DrillKey(cluster), ct)).Value.Should().BeNull();
     }
 
-    // AAA: валидационный провал (манифеста нет) → FAILED без запуска операции:
-    // started/finished поставлены, error причина, ключ БЕЗ phase, journal failed.
+    // AAA: валидационный провал (объекта полного НЕТ — критерий завершённости,
+    // spec t01 §6.10) → FAILED без запуска операции: started/finished
+    // поставлены, error причина, ключ БЕЗ phase, journal failed.
     [Fact]
-    public async Task Tick_ManifestMissing_FailsWithoutStart()
+    public async Task Tick_ObjectMissing_FailsWithoutStart()
     {
-        // Arrange — полный есть, манифест НЕ докачан (в S3 его нет).
+        // Arrange — etcd-статус COMPLETED есть, объекта full/<id>.tar в S3 нет.
         var ct = TestContext.Current.CancellationToken;
         await using var fx = await OwnEtcd.StartAsync("drill", ct);
         Fx = fx;
@@ -656,9 +658,9 @@ public class RestoreDrillProcessTests
         (await process.TickAsync(BuildSnap(cluster), await SnapshotBackupsAsync(cluster), ct))
             .IsSuccess.Should().BeTrue();
 
-        // Assert — FAILED с причиной; started/finished; команды нет; phase нет.
+        // Assert — FAILED с причиной «объекта нет»; started/finished; команды нет.
         var key = await ReadDrillAsync(cluster);
-        key.Should().Contain("\"FAILED\"").And.Contain("backup_manifest");
+        key.Should().Contain("\"FAILED\"").And.Contain("object full/20261001090000Z.tar not found");
         key.Should().Contain("started_unix").And.Contain("finished_unix");
         key.Should().NotContain("phase", "no operation — a clean terminal outcome");
         Receiver.StartBodies.Should().BeEmpty();
@@ -669,7 +671,7 @@ public class RestoreDrillProcessTests
     [Fact]
     public async Task Tick_WalGap_FailsWithGapError()
     {
-        // Arrange — wal/: 1, 3 (нет 2) — цепочка от 001 дырявая.
+        // Arrange — объект полного есть; wal/: 1, 3 (нет 2) — цепочка дырявая.
         var ct = TestContext.Current.CancellationToken;
         await using var fx = await OwnEtcd.StartAsync("drill", ct);
         Fx = fx;
@@ -677,7 +679,7 @@ public class RestoreDrillProcessTests
         await SeedAsync(cluster);
         await SeedFullAsync(cluster);
         var s3 = new FakeBackupS3();
-        s3.Texts[$"{cluster}/{Shard}/full/{FullId}/backup_manifest"] = "MANIFEST";
+        TestTarBytes.SeedFullObject(s3, cluster, Shard, FullId);
         s3.Objects.Add((cluster, Shard, "000000010000000000000001"));
         s3.Objects.Add((cluster, Shard, "000000010000000000000003"));
         var process = BuildProcess(cluster, s3);

@@ -324,15 +324,14 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
             null, ct);
     }
 
-    // Непрерывная цепочка от 000000010000000000000002 (сегменты 2–4).
+    // Полный — ОДИН объект `full/<id>.tar` с реальными tar-байтами
+    // (backup_label первой записью) + непрерывная цепочка от
+    // 000000010000000000000002 (сегменты 2–4) в wal/.
     private static void SeedChain(FakeBackupS3 s3, string cluster, string shard,
-        string fullId, bool withManifest = true, string[]? segments = null)
+        string fullId, bool withObject = true, string[]? segments = null)
     {
-        var prefix = $"{cluster}/{shard}";
-        s3.Texts[$"{prefix}/full/{fullId}/backup_label"] =
-            "START WAL LOCATION: 0/2000028 (file 000000010000000000000002)\n";
-        if (withManifest)
-            s3.Texts[$"{prefix}/full/{fullId}/backup_manifest"] = "{}";
+        if (withObject)
+            TestTarBytes.SeedFullObject(s3, cluster, shard, fullId);
         foreach (var seg in segments ?? ["000000010000000000000002", "000000010000000000000003", "000000010000000000000004"])
             s3.Objects.Add((cluster, shard, seg));
     }
@@ -419,15 +418,16 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
     // ── PLANNED: permanent-отказы валидации ──
 
     [Fact]
-    public async Task ValidationFullWithoutBackupManifestPermanentFailed()
+    public async Task ValidationMissingTarObjectPermanentFailed()
     {
-        // Arrange — префикс полного есть (etcd-статус + backup_label), манифеста
-        // НЕТ: имитация упавшего на середине upload 
+        // Arrange — etcd-статус COMPLETED есть, объекта `full/<id>.tar` в S3
+        // НЕТ (критерий завершённости полного — существование объекта,
+        // spec t01 §6.10)
         const string fullId = "20260910120000Z";
         await SeedAsync("c1");
         await SeedFullAsync("c1", "shard1", fullId);
         var s3 = new FakeBackupS3();
-        SeedChain(s3, "c1", "shard1", fullId, withManifest: false);
+        SeedChain(s3, "c1", "shard1", fullId, withObject: false);
         var process = BuildProcess(s3, new StubScaleDriver());
         var op = await SeedRestoreAsync("c1", "shard1", "20260911120001Z");
         (await _claims.TryClaimClusterAsync("c1", TestContext.Current.CancellationToken)).Value.Should().BeTrue();
@@ -436,10 +436,10 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
         (await process.TickAsync(BuildSnap(), await BackupsFromEtcdAsync("c1"),
             TestContext.Current.CancellationToken)).IsSuccess.Should().BeTrue();
 
-        // Assert — permanent FAILED с причиной
+        // Assert — permanent FAILED с причиной (объекта нет)
         var failed = (await ReadRestoresAsync("c1", "shard1")).Single(r => r.Id == op.Id);
         failed.State.Should().Be(RestoreStatus.Failed);
-        failed.Error.Should().Contain("has no backup_manifest");
+        failed.Error.Should().Contain("object full/20260910120000Z.tar not found");
         failed.FinishedUnix.Should().BeGreaterThan(0);
     }
 

@@ -272,7 +272,7 @@ public class RestoreOperationTests
         var root = NewPgdata();
         var pgdata = Path.Combine(root, "pgroot", "data");
         var runner = new FakeRunner { StartExitCode = 1 };
-        var op = Create(root, runner, targetTime: "2026-01-02 03:04:05+03");
+        var op = Create(root, runner, targetTime: "2026-01-02 03:04:05+03:00");
 
         // Act.
         await op.RunAsync(CancellationToken.None);
@@ -289,7 +289,7 @@ public class RestoreOperationTests
         auto.Should().Contain("summarize_wal = 'off'");
         auto.Should().Contain("restore_command = '/opt/pgw-node/pgnode fetch-wal %f %p'");
         auto.Should().Contain("recovery_target_action = 'promote'");
-        auto.Should().Contain("recovery_target_time = '2026-01-02 03:04:05+03'");
+        auto.Should().Contain("recovery_target_time = '2026-01-02 03:04:05+03:00'");
         auto.Should().Contain("shared_preload_libraries = ''");
         auto.Should().Contain("ssl = off");
         auto.Should().Contain("logging_collector = off");
@@ -404,7 +404,9 @@ public class RestoreOperationTests
         Directory.Delete(root, recursive: true);
     }
 
-    // AAA: объект-мусор (не tar) → failed/downloading однострочной причиной.
+    // AAA: объект-мусор (не tar, короткий EOF) → failed/downloading однострочной
+    // причиной: обрыв потока до заголовков неотличим от транспорта (transient);
+    // tar-slip-нарушения (имя/симлинк) — permanent, см. тесты ниже.
     [Fact]
     public async Task CorruptTar_FailedDownloading()
     {
@@ -419,12 +421,170 @@ public class RestoreOperationTests
         // Act
         await op.RunAsync(CancellationToken.None);
 
-        // Assert
+        // Assert — transient-маркер downloading, одна строка причины
         var snap = op.Snapshot!;
         snap.State.Should().Be("failed");
         snap.Phase.Should().Be("downloading");
         snap.Error.Should().NotContain("\n");
         Directory.Delete(root, recursive: true);
+    }
+
+    // AAA (L4/tar-slip): абсолютное имя записи → permanent-отказ ДО файловой
+    // операции (иначе имя перекрыло бы PGDATA); файл вне корня не создан.
+    [Fact]
+    public async Task AbsoluteEntryName_RejectedPermanent()
+    {
+        // Arrange — tar с абсолютным именем записи.
+        var root = NewPgdata();
+        var tar = BuildRawTar((new TarEntry("/tmp/pgw-escape", TarTypeFlags.File, 3, 0x1A4, ""),
+            "bad"u8.ToArray()));
+        var snap = await RunRestoreAsync(root, tar);
+
+        // Assert — вердикт о данных, вне корня ничего не создано.
+        snap.State.Should().Be("failed");
+        snap.Phase.Should().Be("recovering");
+        snap.Error.Should().Contain("not relative");
+        File.Exists("/tmp/pgw-escape").Should().BeFalse();
+        Directory.Delete(root, recursive: true);
+    }
+
+    // AAA (L4/tar-slip): сегмент `..` в имени → permanent-отказ (выход из корня).
+    [Fact]
+    public async Task DotDotEntryName_RejectedPermanent()
+    {
+        // Arrange — tar с именем «../escaped».
+        var root = NewPgdata();
+        var tar = BuildRawTar((new TarEntry("../escaped", TarTypeFlags.File, 3, 0x1A4, ""),
+            "bad"u8.ToArray()));
+        var snap = await RunRestoreAsync(root, tar);
+
+        // Assert
+        snap.State.Should().Be("failed");
+        snap.Error.Should().Contain("dot segment");
+        File.Exists(Path.Combine(root, "escaped")).Should().BeFalse(
+            "the entry is rejected before any file operation");
+        Directory.Delete(root, recursive: true);
+    }
+
+    // AAA (L4/tar-slip): symlink-escape (цель вне корня) → permanent-отказ;
+    // абсолютная цель — тоже (политика цели внутри базы, 06 §2).
+    [Fact]
+    public async Task SymlinkEscapeTarget_RejectedPermanent()
+    {
+        // Arrange 1 — относительная цель выходит из корня.
+        var root = NewPgdata();
+        var tar = BuildRawTar((new TarEntry("evil", TarTypeFlags.Symlink, 0, 0x1FF, "../../etc"),
+            []));
+        var snap = await RunRestoreAsync(root, tar);
+        snap.State.Should().Be("failed");
+        snap.Error.Should().Contain("symlink target escapes");
+
+        // Arrange 2 — абсолютная цель.
+        var root2 = NewPgdata();
+        var tar2 = BuildRawTar((new TarEntry("evil", TarTypeFlags.Symlink, 0, 0x1FF, "/etc"),
+            []));
+        var snap2 = await RunRestoreAsync(root2, tar2);
+        snap2.State.Should().Be("failed");
+        snap2.Error.Should().Contain("symlink target is not relative");
+
+        Directory.Delete(root, recursive: true);
+        Directory.Delete(root2, recursive: true);
+    }
+
+    // AAA (L4/tar-slip): запись СКВОЗЬ symlink (tar: ссылка + файл в ней) →
+    // permanent-отказ: подменённый архив не пишет за пределы корня.
+    [Fact]
+    public async Task WriteThroughSymlink_RejectedPermanent()
+    {
+        // Arrange — ссылка link→«.» (внутри корня), затем файл link/pwned:
+        // родитель-ссылка запрещена (запись сквозь неё).
+        var root = NewPgdata();
+        var tar = BuildRawTar(
+            (new TarEntry("link", TarTypeFlags.Symlink, 0, 0x1FF, "."), []),
+            (new TarEntry("link/pwned", TarTypeFlags.File, 3, 0x1A4, ""), "bad"u8.ToArray()));
+        var snap = await RunRestoreAsync(root, tar);
+
+        // Assert
+        snap.State.Should().Be("failed");
+        snap.Error.Should().Contain("writes through a symlink");
+        File.Exists(Path.Combine(root, "pgroot", "data", "pwned")).Should().BeFalse();
+        Directory.Delete(root, recursive: true);
+    }
+
+    // AAA (#25): сквозной sha256 объекта не сошёлся с полем команды →
+    // failed ДО старта postgres (pg_ctl не звался).
+    [Fact]
+    public async Task ObjectShaMismatch_FailedBeforePostgresStart()
+    {
+        // Arrange — ожидаемый хэш заведомо другой.
+        var root = NewPgdata();
+        var runner = new FakeRunner();
+        var registry = new OperationRegistry();
+        registry.TryBegin(new OperationSnapshot(Id, "running", "downloading"));
+        var request = Request() with { Sha256 = new string('0', 64) };
+        var op = new RestoreOperation(request, runner, registry,
+            pgdata: Path.Combine(root, "pgroot", "data"), _ => new FakeTarS3());
+
+        // Act
+        await op.RunAsync(CancellationToken.None);
+
+        // Assert
+        op.Snapshot!.State.Should().Be("failed");
+        op.Snapshot!.Error.Should().Contain("object sha256 mismatch");
+        runner.Invocations.Should().NotContain(i => i.FileName == "pg_ctl",
+            "pg_ctl does not start on a data verdict");
+        Directory.Delete(root, recursive: true);
+    }
+
+    // AAA (#26): target_time с переводом строки/чужой строкой конфига —
+    // отклоняется ДО записи auto.conf (инъекция параметра невозможна).
+    [Fact]
+    public async Task TargetTimeInjection_Rejected()
+    {
+        // Arrange — target_time с внедрённой строкой.
+        var root = NewPgdata();
+        var pgdata = Path.Combine(root, "pgroot", "data");
+        var registry = new OperationRegistry();
+        registry.TryBegin(new OperationSnapshot(Id, "running", "downloading"));
+        var op = new RestoreOperation(
+            Request("2026-01-02 03:04:05+03\nrecovery_target_action = 'shutdown'"),
+            new FakeRunner(), registry, pgdata: pgdata, _ => new FakeTarS3());
+
+        // Act
+        await op.RunAsync(CancellationToken.None);
+
+        // Assert — отказ; в auto.conf нет внедрённой строки.
+        op.Snapshot!.State.Should().Be("failed");
+        op.Snapshot!.Error.Should().Contain("invalid target_time");
+        File.ReadAllText(Path.Combine(pgdata, "postgresql.auto.conf"))
+            .Should().NotContain("shutdown");
+        Directory.Delete(root, recursive: true);
+    }
+
+    // Общий прогон restore на заданном tar-объекте (tar-slip сценарии):
+    // возвращает терминальный снимок.
+    private static async Task<OperationSnapshot> RunRestoreAsync(string root, byte[] tar)
+    {
+        var registry = new OperationRegistry();
+        registry.TryBegin(new OperationSnapshot(Id, "running", "downloading"));
+        var op = new RestoreOperation(Request(), new FakeRunner(), registry,
+            pgdata: Path.Combine(root, "pgroot", "data"), _ => new FakeTarS3(tar));
+        await op.RunAsync(CancellationToken.None);
+        return op.Snapshot!;
+    }
+
+    // Tar-байты из произвольных записей (недоверенный вход tar-slip тестов).
+    private static byte[] BuildRawTar(params (TarEntry Entry, byte[] Data)[] entries)
+    {
+        var buffer = new MemoryStream();
+        using var writer = new TarStreamWriter(buffer);
+        foreach (var (entry, data) in entries)
+        {
+            writer.WriteEntryAsync(entry, data, default).GetAwaiter().GetResult();
+        }
+
+        writer.FinishAsync(default).GetAwaiter().GetResult();
+        return buffer.ToArray();
     }
 
     [Fact]

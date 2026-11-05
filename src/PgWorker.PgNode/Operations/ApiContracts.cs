@@ -49,7 +49,10 @@ public sealed record StartRestoreRequest(
     [property: JsonPropertyName("s3")] S3Context S3,
     // t15 (arch/pgnode/06 §1): номер жизни выбранного полного — fetch-wal
     // фильтрует куски по нему; null — DR-orphan (фильтр не активен).
-    [property: JsonPropertyName("chain_life")] uint? ChainLife = null);
+    [property: JsonPropertyName("chain_life")] uint? ChainLife = null,
+    // Сквозной sha256 tar-объекта выбранного полного (etcd-поле статуса;
+    // у DR-орфана отсутствует — сверка распаковки пропускается, 06 §2).
+    [property: JsonPropertyName("sha256")] string? Sha256 = null);
 
 /// <summary>Статус ops-операции (GET /api/ops/verify|restore); started_unix —
 /// время TryBegin (возрастной бюджет verify воркера, arch/19 §6).</summary>

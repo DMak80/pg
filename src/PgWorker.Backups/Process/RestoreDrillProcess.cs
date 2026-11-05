@@ -138,11 +138,18 @@ public sealed class RestoreDrillProcess(
         var backupId = fresh.Id;
 
         // 1. Завершённость кандидата: объект `full/<id>.tar` существует
-        // (появляется только после Complete multipart, spec t01 §6.10);
-        // транспортный отказ — валидационный FAILED без операции.
+        // (появляется только после Complete multipart, spec t01 §6.10).
+        // Транспортный отказ HEAD — transient (следующий тик повторит);
+        // «объекта нет» — валидационный FAILED без операции (не склеивать).
         var head = await S3Pulse.CallAsync(progress,
             token => s3.HeadObjectAsync(cluster, shard, $"full/{backupId}.tar", token), ct, WatchdogWindow / 2);
-        if (!head.IsSuccess || !head.Value.Exists)
+        if (!head.IsSuccess)
+        {
+            await journal.WritePhaseAsync(cluster, Op, $"transient/{shard}",
+                claims.InstanceId, "s3 head unavailable — validation on next tick", ct);
+            return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
+        }
+        if (!head.Value.Exists)
             return await FailValidationAsync(cluster, shard, backupId, nowUnix,
                 $"full backup {backupId}: object full/{backupId}.tar not found", ct);
 
@@ -219,7 +226,10 @@ public sealed class RestoreDrillProcess(
                     Prefix: $"{cluster}/{shard}",
                     CaPem: BackupCaPem.ReadIfConfigured(options.S3CaBundlePath)),
                 // t15: номер жизни выбранного полного — фильтр кусков fetch-wal.
-                ChainLife: fresh.ChainLife), ct);
+                ChainLife: fresh.ChainLife,
+                // Сквозной sha256 выбранного полного: приёмник сверит
+                // распаковку до старта postgres (06 §2).
+                Sha256: fresh.Sha256), ct);
         if (!launch.IsAccepted && !launch.IsConflict)
             return Result<ProcessOutcome>.Success(ProcessOutcome.Done); // transient — тик повторит POST
 
@@ -285,21 +295,23 @@ public sealed class RestoreDrillProcess(
             Op, cluster, shard, drill.Id);
     }
 
-    // t15: номер жизни полного по BackupId (etcd-статус шарда); отказ чтения/
-    // отсутствие статуса — null (DR-orphan: фильтр по номеру не активен).
-    private async Task<uint?> ReadChainLifeAsync(
+    // t15/sha: номер жизни и сквозной sha256 полного по BackupId (etcd-статус
+    // шарда); отказ чтения/отсутствие статуса — (null, null) (DR-orphan:
+    // фильтр жизни не активен, сверка sha256 не определена).
+    private async Task<(uint? ChainLife, string? Sha256)> ReadFullMetaAsync(
         string cluster, string shard, string backupId, CancellationToken ct)
     {
         var range = await etcd.RangeAsync(endpoints[0], BackupNames.ClusterPrefix(cluster), ct);
         if (!range.IsSuccess)
-            return null;
+            return (null, null);
         var parsed = PgWorker.Etcd.Parsing.BackupsParser.Parse(range.Value, out _);
         if (!parsed.IsSuccess)
-            return null;
+            return (null, null);
         var backups = parsed.Value.FirstOrDefault(b => b.Cluster == cluster);
-        return backups?.Shards.TryGetValue(shard, out var sb) == true
-            ? sb.Full.FirstOrDefault(f => f.Id == backupId)?.ChainLife
+        var full = backups?.Shards.TryGetValue(shard, out var sb) == true
+            ? sb.Full.FirstOrDefault(f => f.Id == backupId)
             : null;
+        return (full?.ChainLife, full?.Sha256);
     }
 
     // ── Супервиз RUNNING-дрилла (arch/19 §3.6 п.2) ──
@@ -354,6 +366,8 @@ public sealed class RestoreDrillProcess(
                 return;
             }
 
+            // t15/sha: статус полного читается из etcd (номера/хэша нет — null).
+            var fullMeta = await ReadFullMetaAsync(cluster, shard, drill.BackupId, ct);
             await receiver.StartRestoreAsync(
                 receiverUrl,
                 new StartRestoreRequest(
@@ -368,9 +382,10 @@ public sealed class RestoreDrillProcess(
                         Bucket: options.S3Bucket,
                         Prefix: $"{cluster}/{shard}",
                         CaPem: BackupCaPem.ReadIfConfigured(options.S3CaBundlePath)),
-                    // t15: номер жизни выбранного полного — фильтр кусков fetch-wal
-                    // (на повторном POST статус полного читается из etcd; нет — null).
-                    ChainLife: await ReadChainLifeAsync(cluster, shard, drill.BackupId, ct)), ct);
+                    // t15: номер жизни выбранного полного — фильтр кусков fetch-wal.
+                    ChainLife: fullMeta.ChainLife,
+                    // Сквозной sha256 — сверка распаковки до старта postgres.
+                    Sha256: fullMeta.Sha256), ct);
             return; // 202/409 — операция жива; отказ — transient, тик повторит
         }
 
