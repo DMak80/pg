@@ -11,8 +11,10 @@ public sealed record ChainResult(bool IsContinuous, string? GapError, WalFileNam
 /// Полный LSN-разбор history — (verify, CheckRange).</summary>
 public static class WalChain
 {
-    public static ChainResult Check(WalFileName chainStart, IEnumerable<string> objectNames)
-        => Walk(chainStart, null, objectNames, null);
+    public static ChainResult Check(
+        WalFileName chainStart, IEnumerable<string> objectNames,
+        IReadOnlyDictionary<uint, string>? historyContents = null)
+        => Walk(chainStart, null, objectNames, historyContents);
 
     /// <summary>Стартовая точка контроля цепочки с ratchet (arch/19 §3):
     /// кандидат — wal_start новейшего verify-OK полного
@@ -202,19 +204,8 @@ public static class WalChain
                     && historyContents.TryGetValue(segment.Tli, out var content)
                     && WalHistory.Parse(content) is { Count: > 0 } entries)
                 {
-                    var entry = entries[^1]; // последняя строка — сам TLI файла
-                    if (entry.ParentTli != expected.Tli)
-                        return new ChainResult(false,
-                            $"TLI transition {expected.Tli}→{segment.Tli}: history file {segment.Tli:x8}.history: " +
-                            $"parent {entry.ParentTli} ≠ {expected.Tli}", last);
-                    var switchPos = WalFileName.FromLsn(0, entry.SwitchLsn);
-                    var inBounds = (switchPos.Log, switchPos.Seg) == (segment.Log, segment.Seg)
-                        || (last is { } prev && (switchPos.Log, switchPos.Seg) == (prev.Log, prev.Seg));
-                    if (!inBounds)
-                        return new ChainResult(false,
-                            $"TLI transition {expected.Tli}→{segment.Tli}: switchWALLSN {entry.SwitchLsn} " +
-                            $"outside segment bounds {(last is { } strictPrev ? strictPrev.Name : "no previous")}/{segment.Name} " +
-                            $"({segment.Tli:x8}.history)", last);
+                    if (ValidateHistoryHop(expected, segment, last, entries) is { } hopError)
+                        return new ChainResult(false, hopError, last);
                 }
                 else
                 {
@@ -251,6 +242,71 @@ public static class WalChain
         return new ChainResult(false,
             $"segment {reached.Name} from the backup set is missing in wal/ or the backup set (expected after " +
             $"{(last is { } l2 ? l2.Name : chainStart.Name)})", last);
+    }
+
+    // Строгая валидация TLI-перехода по родословной `<newTLI>.history`
+    // (PG: строки «parent switchWALLSN» по возрастанию TLI; последняя строка —
+    // сам newTLI). Допустимы ПУСТЫЕ промежуточные таймлайны (только .history,
+    // без сегментов): switch-точка каждого промежуточного перехода — в
+    // последнем или следующем сегменте доставленной цепочки, не раньше
+    // предыдущей; финальная switch-точка — в первом сегменте нового TLI.
+    // null — переход валиден.
+    private static string? ValidateHistoryHop(
+        WalFileName expected, WalFileName firstNew, WalFileName? last,
+        IReadOnlyList<WalHistoryEntry> entries)
+    {
+        var index = -1;
+        for (var i = 0; i < entries.Count; i++)
+        {
+            if (entries[i].ParentTli == expected.Tli)
+            {
+                index = i;
+                break;
+            }
+        }
+
+        var historyName = $"{firstNew.Tli:x8}.history";
+        if (index < 0)
+            return $"TLI transition {expected.Tli}→{firstNew.Tli}: history file {historyName}: " +
+                   $"parent {expected.Tli} not found in lineage";
+
+        // Родословная должна доходить до целевого TLI и быть непрерывной.
+        if (entries[^1].ParentTli + 1 != firstNew.Tli)
+            return $"TLI transition {expected.Tli}→{firstNew.Tli}: history file {historyName}: " +
+                   $"lineage ends at TLI {entries[^1].ParentTli + 1}";
+        for (var i = index + 1; i < entries.Count; i++)
+        {
+            if (entries[i].ParentTli != entries[i - 1].ParentTli + 1)
+                return $"TLI transition {expected.Tli}→{firstNew.Tli}: history file {historyName}: " +
+                       $"lineage gap after parent {entries[i - 1].ParentTli}";
+        }
+
+        var firstSwitch = WalFileName.FromLsn(0, entries[index].SwitchLsn);
+        var firstInBounds = last is { } prev
+            && ((firstSwitch.Log, firstSwitch.Seg) == (prev.Log, prev.Seg)
+                || (firstSwitch.Log, firstSwitch.Seg) == (prev.Next().Log, prev.Next().Seg));
+        if (!firstInBounds)
+            return $"TLI transition {expected.Tli}→{firstNew.Tli}: switchWALLSN {entries[index].SwitchLsn} " +
+                   $"outside segment bounds {(last is { } p ? p.Name : "no previous")} ({historyName})";
+
+        var previousSwitch = firstSwitch;
+        for (var i = index + 1; i < entries.Count; i++)
+        {
+            var next = WalFileName.FromLsn(0, entries[i].SwitchLsn);
+            if (next.DistanceTo(previousSwitch) < 0)
+                return $"TLI transition {expected.Tli}→{firstNew.Tli}: switchWALLSN {entries[i].SwitchLsn} " +
+                       $"regressed before {previousSwitch.Name} ({historyName})";
+            previousSwitch = next;
+        }
+
+        var lastInBounds = (previousSwitch.Log, previousSwitch.Seg) == (firstNew.Log, firstNew.Seg)
+            || (last is { } strictPrev
+                && (previousSwitch.Log, previousSwitch.Seg) == (strictPrev.Log, strictPrev.Seg));
+        if (!lastInBounds)
+            return $"TLI transition {expected.Tli}→{firstNew.Tli}: switchWALLSN {entries[^1].SwitchLsn} " +
+                   $"outside segment bounds {(last is { } ps ? ps.Name : "no previous")}/{firstNew.Name} " +
+                   $"({historyName})";
+        return null;
     }
 
     // Разбор объектов: сегменты (сортировка имени == сортировка (Tli,Log,Seg) —

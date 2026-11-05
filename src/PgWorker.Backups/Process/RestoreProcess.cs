@@ -336,7 +336,14 @@ public sealed class RestoreProcess(
         if (!wal.IsSuccess)
             return await TransientAsync(cluster, $"s3-unavailable/{shard.Name}/{op.Id}",
                 wal.Error!.Message, ct);
-        var chain = WalChain.Check(chainStart.Value, wal.Value.Select(o => o.Name));
+        // Строгая валидация TLI-переходов по switchWALLSN из .history (f-restore §2):
+        // допустимы пустые промежуточные таймлайны (только .history, без
+        // сегментов — TLI-прыжок); недоступная история — эвристика номеров.
+        var histories = await S3Pulse.CallAsync(progress,
+            token => WalHistoryObjects.ReadAsync(s3, srcC, srcX, wal.Value.Select(o => o.Name), token),
+            ct, WatchdogWindow / 2);
+        var chain = WalChain.Check(chainStart.Value, wal.Value.Select(o => o.Name),
+            histories.IsSuccess ? histories.Value : null);
         if (!chain.IsContinuous)
         {
             await FailPermanentAsync(cluster, shard.Name, op,

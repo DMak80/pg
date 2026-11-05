@@ -186,7 +186,13 @@ public sealed class RestoreDrillProcess(
                 claims.InstanceId, "s3 list unavailable — validation on next tick", ct);
             return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
         }
-        var chain = WalChain.Check(chainStart.Value, wal.Value.Select(o => o.Name));
+        // Строгая валидация TLI-переходов по switchWALLSN из .history (f-restore §2,
+        // путь restore-заявки): пустые промежуточные таймлайны допустимы.
+        var histories = await S3Pulse.CallAsync(progress,
+            token => WalHistoryObjects.ReadAsync(s3, cluster, shard, wal.Value.Select(o => o.Name), token),
+            ct, WatchdogWindow / 2);
+        var chain = WalChain.Check(chainStart.Value, wal.Value.Select(o => o.Name),
+            histories.IsSuccess ? histories.Value : null);
         if (!chain.IsContinuous)
             return await FailValidationAsync(cluster, shard, backupId, nowUnix,
                 chain.GapError ?? "WAL chain gap", ct);
