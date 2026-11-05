@@ -17,8 +17,9 @@ namespace PgWorker.IntegrationTests.E2e;
 // Два сценария AC10: (1) ChainBroken_SelfHeals — дыра ВНУТРИ цепочки живого
 // кластера → wal=WAL_CHAIN_ERROR → планировщик переснимает полный → цепь непрерывна от
 // нового wal_start → ACTIVE, агент жив; (2) OrphanRegistry_TtlDelete —
-// чужой префикс без владельца → реестр /pgworker/backups/orphans (OBSERVED) →
-// сжатый TTL → объекты удалены, запись погашена.
+// чужой префикс без владельца и без валидного полного → реестр
+// /pgworker/backups/orphans (OBSERVED, has_valid_full=false) → сжатый TTL →
+// объекты удалены, запись погашена.
 public sealed class E2eSupervisorOrphanRegistryScenarios(E2eSupervisorOrphanRegistryScenariosFx Ctx) : IClassFixture<E2eSupervisorOrphanRegistryScenariosFx>
 {
     private E2eEnvironment Fx => Ctx.Fx;
@@ -51,12 +52,16 @@ public sealed class E2eSupervisorOrphanRegistryScenarios(E2eSupervisorOrphanRegi
         await using var app = await StartOrphanHostAsync(cluster, ct);
 
         // Arrange 2 — provisioning DONE (воркер — единственный инстанс = лидер);
-        //   mc-посев сиротского объекта ghost<тег>/shard1/full/20260901....tar
-        //   (кластера ghost<тег> нет в /clusters/)
+        //   mc-посев осиротевшего WAL-объекта ghost<тег>/shard1/wal/… (кластера
+        //   ghost<тег> нет в /clusters/). НЕ валидный полный (нет объекта
+        //   full/<id>.tar) — has_valid_full=false, только такой сирота становится
+        //   TTL-кандидатом: сироту с валидным полным автоматика не удаляет
+        //   никогда (DR-hold, arch/backups/processes/e-supervisor.md §2;
+        //   путь с заявкой удаления — E2eSupervisorOrphanDrHoldScenarios).
         var provisioned = await WaitPhaseAsync("provisioning",
             E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(90), ct);
         provisioned.Should().BeTrue("provisioning must reach DONE (the worker leader)");
-        await McCpAsync($"{ghost}/shard1/full/20260911110000Z.tar", "orphan-seed");
+        await McCpAsync($"{ghost}/shard1/wal/000000010000000000000001", "orphan-seed");
 
         // Act 1 — реестр: WaitFor ключа orphans с ghost<тег>/shard1 + OBSERVED
         var orphansRaw = default(Kv?);
