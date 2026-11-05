@@ -10,13 +10,15 @@ using Xunit;
 namespace PgWorker.IntegrationTests.E2e;
 
 // Профиль «большой набор» (spec t01 §4 фаза 6, §7): полный бэкап ≥3 ГиБ
-// ОДНИМ объектом и БЕЗ второй копии на диске ноды-источника. Замер свободного
-// места data-volume ДО и ВО ВРЕМЯ полного: падение обязано быть меньше 10%
-// размера набора (staging-копия съела бы ~100%). Изолированное окружение
-// E2eContourFixture (своя сеть/etcd/ownS3/CA/окно портов); имя кластера
-// {slug}{Fx.ClusterTag} — уникально на прогон, движковые контейнеры/тома
-// pgw-*-<C>-* опознаются teardown'ом (docs/e2e-isolation.md §1). Каждый Fact —
-// свой кластер (окружение класса общее): кластеры Facts не пересекаются.
+// ОДНИМ объектом и БЕЗ второй копии на диске ноды-источника. Замер ЗАНЯТОСТИ
+// data-volume (du -sb PGDATA — содержимое тома; df в E2E видит общий диск VM,
+// куда пишется и сам S3-объект) ДО и ВО ВРЕМЯ полного: прирост обязан быть
+// меньше 10% размера набора (staging-копия съела бы ~100%). Изолированное
+// окружение E2eContourFixture (своя сеть/etcd/ownS3/CA/окно портов); имя
+// кластера {slug}{Fx.ClusterTag} — уникально на прогон, движковые
+// контейнеры/тома pgw-*-<C>-* опознаются teardown'ом (docs/e2e-isolation.md
+// §1). Каждый Fact — свой кластер (окружение класса общее): кластеры Facts не
+// пересекаются.
 public sealed class E2eBackupLargeSetScenarios(E2eBackupLargeSetScenariosFx Ctx)
     : IClassFixture<E2eBackupLargeSetScenariosFx>
 {
@@ -49,7 +51,7 @@ public sealed class E2eBackupLargeSetScenarios(E2eBackupLargeSetScenariosFx Ctx)
     // свободное место её data-volume падает меньше чем на 10% размера набора,
     // в S3 — ровно один объект full/<id>.tar.
     [Fact]
-    public async Task FullBackup_NoSecondCopyOnDisk()
+    public Task FullBackup_NoSecondCopyOnDisk() => RunScenarioAsync(async _ =>
     {
         // Arrange — контур: воркер бэкапов + кластер + засев ≥3 ГиБ.
         var ctAll = TestContext.Current.CancellationToken;
@@ -57,15 +59,15 @@ public sealed class E2eBackupLargeSetScenarios(E2eBackupLargeSetScenariosFx Ctx)
         await using var app = await StartBackupHostAsync("bklarge", ctAll);
         var setup = await ArrangeLargeAsync(cluster, ctAll);
 
-        // Act — полный: поллим свободное место нод шарда, пока не появится
-        // COMPLETED (минимум по каждому контейнеру; ниже берётся контейнер
+        // Act — полный: поллим ЗАНЯТОСТЬ data-volume нод шарда, пока не появится
+        // COMPLETED (максимум по каждому контейнеру; ниже берётся контейнер
         // ноды-источника из статуса).
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(ctAll);
         cts.CancelAfter(SectionCeiling);
         var ct = cts.Token;
         await Fx.SeedS3PoolAsync(Pool, ct);
         await PutPolicyAsync(cluster, ct);
-        var (completed, minFree) = await WaitCompletedSamplingFreeAsync(cluster, setup.Containers, ct);
+        var (completed, maxUsed) = await WaitCompletedSamplingUsedAsync(cluster, setup.Containers, ct);
 
         // Assert 1 — полный завершён, набор ≥3 ГиБ, объект один.
         completed.Should().NotBeNull("the large full must reach COMPLETED within the window");
@@ -79,24 +81,24 @@ public sealed class E2eBackupLargeSetScenarios(E2eBackupLargeSetScenariosFx Ctx)
         listing.Split('\n', StringSplitOptions.RemoveEmptyEntries).Should().ContainSingle(
             "the full backup is a single tar object");
 
-        // Assert 2 — свободное место data-volume ноды-ИСТОЧНИКА за время полного
-        // упало меньше чем на 10% размера набора (второй копии на диске нет).
+        // Assert 2 — ЗАНЯТОСТЬ data-volume ноды-ИСТОЧНИКА за время полного выросла
+        // меньше чем на 10% размера набора (второй копии на диске нет).
         var node = status["node"].GetString()!;
         var source = setup.Containers.FirstOrDefault(
                 c => c.EndsWith($"-{node}", StringComparison.Ordinal))
             ?? throw new ApplicationException(
                 $"source node container not found: node={node}, containers=[{string.Join(",", setup.Containers)}]");
-        var drop = setup.BaselineFree[source] - minFree[source];
-        Console.WriteLine($"[PHASE] large-set-disk: node={node} baseline={setup.BaselineFree[source]} "
-                          + $"min={minFree[source]} drop={drop} size={sizeBytes} object={id}.tar");
-        drop.Should().BeLessThan(sizeBytes / NoSecondCopyPercent,
+        var growth = maxUsed[source] - setup.BaselineUsed[source];
+        Console.WriteLine($"[PHASE] large-set-disk: node={node} baseline={setup.BaselineUsed[source]} "
+                          + $"max={maxUsed[source]} growth={growth} size={sizeBytes} object={id}.tar");
+        growth.Should().BeLessThan(sizeBytes / NoSecondCopyPercent,
             "the full must not create a second copy of the set on the node's data volume");
-    }
+    }, TestContext.Current.CancellationToken);
 
     // AAA: набор 3,32 ГиБ лежит в S3 РОВНО одним объектом full/<id>.tar;
     // on_create verify OK; etcd COMPLETED несёт sha256 и size_bytes.
     [Fact]
-    public async Task FullBackup_SingleObjectInList()
+    public Task FullBackup_SingleObjectInList() => RunScenarioAsync(async _ =>
     {
         // Arrange — контур: воркер бэкапов + кластер + засев ≥3 ГиБ.
         var ctAll = TestContext.Current.CancellationToken;
@@ -118,7 +120,7 @@ public sealed class E2eBackupLargeSetScenarios(E2eBackupLargeSetScenariosFx Ctx)
         var listing = await McLsAsync($"{cluster}/shard1/full/");
         var objects = listing.Split('\n', StringSplitOptions.RemoveEmptyEntries);
         objects.Should().ContainSingle("the full backup is a single tar object");
-        objects[0].Should().Be($"{id}.tar");
+        objects[0].Should().Contain($"{id}.tar", "mc ls печатает строку объекта с датой/размером");
 
         // Assert 2 — verify (on_create) дочитывает объект целиком: OK + checked_unix.
         var verified = await E2ePhase.WaitAsync(Fx, "large-set-verify", async () =>
@@ -137,20 +139,36 @@ public sealed class E2eBackupLargeSetScenarios(E2eBackupLargeSetScenariosFx Ctx)
         status["size_bytes"].GetInt64().Should().BeGreaterThanOrEqualTo(MinSetBytes,
             "the set size in etcd is the ≥3 GiB seeded volume")
             .And.BeGreaterThanOrEqualTo(setup.RelationBytes);
+    }, TestContext.Current.CancellationToken);
+
+    // Пометка упавшего сценария (stop-режим teardown'а, docs/e2e-launch.md §3):
+    // контейнеры/тома/артефакты остаются для разбора, зачистка — по
+    // README-cleanup.txt после анализа.
+    private async Task RunScenarioAsync(Func<E2eEnvironment, Task> body, CancellationToken ct)
+    {
+        try
+        {
+            await body(Fx);
+        }
+        catch
+        {
+            Fx.MarkFailed();
+            throw;
+        }
     }
 
     /// <summary>Результат подготовки «большого набора»: DSN админа, узел-мастер,
-    /// контейнеры шарда, базовая точка свободного места и физический размер
+    /// контейнеры шарда, базовая занятость data-volume и физический размер
     /// засеянной таблицы.</summary>
     private sealed record LargeSetup(
         string AdminDsn,
         string MasterNode,
         IReadOnlyList<string> Containers,
-        Dictionary<string, long> BaselineFree,
+        Dictionary<string, long> BaselineUsed,
         long RelationBytes);
 
     // Подготовка профиля в трёх 3-минутных секциях: provisioning → засев →
-    // синхронизация реплик + checkpoint + базовая точка df.
+    // синхронизация реплик + checkpoint + базовая занятость data-volume.
     private async Task<LargeSetup> ArrangeLargeAsync(string cluster, CancellationToken ctAll)
     {
         // Секция 1 — кластер + provisioning (воркер поднимает 4 ноды).
@@ -187,7 +205,8 @@ public sealed class E2eBackupLargeSetScenarios(E2eBackupLargeSetScenariosFx Ctx)
             containers = await Fx.ShardNodeContainerNamesAsync(cluster, "shard1", ct);
         }
 
-        // Секция 3 — реплики догнали засев, checkpoint и базовая точка df.
+        // Секция 3 — реплики догнали засев, checkpoint и базовая точка занятости
+        // data-volume.
         Dictionary<string, long> baseline;
         using (var cts = CancellationTokenSource.CreateLinkedTokenSource(ctAll))
         {
@@ -199,11 +218,11 @@ public sealed class E2eBackupLargeSetScenarios(E2eBackupLargeSetScenariosFx Ctx)
             synced.Should().BeTrue(
                 "the replica must replay the seeded set before the baseline measurement");
             // Засев осел на диск: checkpoint сбрасывает ещё не записанные страницы,
-            // иначе их запись во время полного дала бы ложное падение свободного места.
+            // иначе их запись во время полного дала бы ложный прирост занятости.
             await ExecAsync(adminDsn, "CHECKPOINT", ct);
             baseline = new Dictionary<string, long>();
             foreach (var container in containers)
-                baseline[container] = await FreeBytesAsync(container, ct);
+                baseline[container] = await DataVolumeUsedBytesAsync(container, ct);
             Console.WriteLine("[PHASE] large-set-baseline: "
                 + string.Join(",", baseline.Select(kv => $"{kv.Key}={kv.Value}")));
         }
@@ -230,14 +249,14 @@ public sealed class E2eBackupLargeSetScenarios(E2eBackupLargeSetScenariosFx Ctx)
         Console.WriteLine($"[PHASE] large-set-seed: {SeedRows} MiB rows in {sw.Elapsed.TotalSeconds:F1}s");
     }
 
-    // Ожидание COMPLETED с поллингом свободного места нод шарда (бюджет 170 с —
-    // внутри 3-минутной секции). Минимум фиксируется по каждому контейнеру;
-    // нода-источник определяется по статусу после завершения.
-    private async Task<(Kv? Completed, Dictionary<string, long> MinFree)>
-        WaitCompletedSamplingFreeAsync(
+    // Ожидание COMPLETED с поллингом ЗАНЯТОСТИ data-volume нод шарда (бюджет
+    // 170 с — внутри 3-минутной секции). Максимум фиксируется по каждому
+    // контейнеру; нода-источник определяется по статусу после завершения.
+    private async Task<(Kv? Completed, Dictionary<string, long> MaxUsed)>
+        WaitCompletedSamplingUsedAsync(
             string cluster, IReadOnlyList<string> containers, CancellationToken ct)
     {
-        var minFree = containers.ToDictionary(c => c, _ => long.MaxValue);
+        var maxUsed = containers.ToDictionary(c => c, _ => 0L);
         var sw = Stopwatch.StartNew();
         var budget = TimeSpan.FromSeconds(170);
         var nextTick = TimeSpan.FromSeconds(5);
@@ -245,7 +264,7 @@ public sealed class E2eBackupLargeSetScenarios(E2eBackupLargeSetScenariosFx Ctx)
         while (true)
         {
             foreach (var container in containers)
-                minFree[container] = Math.Min(minFree[container], await FreeBytesAsync(container, ct));
+                maxUsed[container] = Math.Max(maxUsed[container], await DataVolumeUsedBytesAsync(container, ct));
             try
             {
                 completed = (await FullKeysAsync(cluster, "shard1"))
@@ -261,7 +280,7 @@ public sealed class E2eBackupLargeSetScenarios(E2eBackupLargeSetScenariosFx Ctx)
             if (sw.Elapsed >= nextTick)
             {
                 Console.WriteLine($"[PHASE-TICK] large-set-full t={sw.Elapsed.TotalSeconds:F1}s: "
-                    + string.Join(",", containers.Select(c => $"{c}={minFree[c]}")));
+                    + string.Join(",", containers.Select(c => $"{c}={maxUsed[c]}")));
                 nextTick += TimeSpan.FromSeconds(5);
             }
 
@@ -276,7 +295,7 @@ public sealed class E2eBackupLargeSetScenarios(E2eBackupLargeSetScenariosFx Ctx)
             Fx.MarkFailed();
         }
 
-        return (completed, minFree);
+        return (completed, maxUsed);
     }
 
     // Ожидание COMPLETED без замера диска (второй сценарий профиля).
@@ -290,17 +309,20 @@ public sealed class E2eBackupLargeSetScenarios(E2eBackupLargeSetScenariosFx Ctx)
         return (await FullKeysAsync(cluster, "shard1")).FirstOrDefault(f => f.Value.Contains("COMPLETED"));
     }
 
-    // Свободное место data-volume ноды (1K-блоки df → байты). -P: одна запись
-    // на строку (без переносов), последняя строка — фактический mount.
-    private async Task<long> FreeBytesAsync(string container, CancellationToken ct)
+    // Занятость data-volume ноды — байты фактического содержимого PGDATA
+    // (du -sb). df свободного места в E2E непригоден: у Docker Desktop все
+    // тома — один диск VM, и запись самого S3-объекта/WAL-выгрузок «съедает»
+    // свободное место независимо от копии внутри data-volume; du меряет
+    // ровно то, что требует критерий профиля — вторую копию в data-volume.
+    private async Task<long> DataVolumeUsedBytesAsync(string container, CancellationToken ct)
     {
         var output = await Fx.RunDockerAsync(
-            ["exec", container, "df", "-Pk", "/home/postgres/pgdata"], ct);
-        var line = output.Split('\n', StringSplitOptions.RemoveEmptyEntries).LastOrDefault()
-            ?? throw new ApplicationException($"df output is empty for {container}");
-        var fields = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        fields.Length.Should().BeGreaterThanOrEqualTo(4, $"df output for {container}: {output}");
-        return long.Parse(fields[3], CultureInfo.InvariantCulture) * 1024L;
+            ["exec", container, "du", "-sb", "/home/postgres/pgdata"], ct);
+        var line = output.Split('\n', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault()
+            ?? throw new ApplicationException($"du output is empty for {container}");
+        var fields = line.Split([' ', '\t'], StringSplitOptions.RemoveEmptyEntries);
+        fields.Length.Should().BeGreaterThanOrEqualTo(2, $"du output for {container}: {output}");
+        return long.Parse(fields[0], CultureInfo.InvariantCulture);
     }
 
     // Реплики шарда replay'нули текущую позицию мастера (replay_lsn из SQL
