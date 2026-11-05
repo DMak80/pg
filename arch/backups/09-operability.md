@@ -29,7 +29,8 @@ Wal { PartialIntervalSec=3, PartialCompactIntervalSec=3600,
       VerifyIntervalSec=30, LagMaxSegments=1024, StaleSec=300 }
          # PartialIntervalSec — период выкладки дельта-кусков живого
          # сегмента, доставляется в контейнер ноды env
-         # PGW_WAL_PARTIAL_INTERVAL_SEC — как PGW_BACKUP_STAGING_DIR;
+         # PGW_WAL_PARTIAL_INTERVAL_SEC; staging-каталога полного нет
+         # ([pgnode/01-placement.md](../pgnode/01-placement.md) §4);
          # PartialCompactIntervalSec — период компакции (перезаливка
          # кумулятивного префикса базой-компаком, если был инкремент),
          # env PGW_WAL_PARTIAL_COMPACT_INTERVAL_SEC, дефолт 1 ч;
@@ -68,8 +69,11 @@ Supervisor { IntervalSec=600, OrphanTtlSec=604800 }
 Отдельных контейнеров/лимитов для операций бэкапов НЕТ — verify/restore/
 drill исполняет процесс PgNode внутри контейнера ноды и делит его ресурсы с
 нодой (стрим/полный — и так делили). Память приёмника: буфер сегмента
-`wal_segment_size` — обычно 16 МиБ, буфер частей полного (multipart:
-≤5×16 МиБ в полёте), рабочие множества фоновых операций — пик памяти НЕ
+`wal_segment_size` — обычно 16 МиБ; multipart-заливка полного — буфер части
++ ≤4 части в полёте (≤5×16 МиБ, копия части делается только после занятия
+слота — backpressure без лишней копии); дубль WAL набора в `wal/` —
+параллелизм 8 Range-GET (≤8×16 МиБ одновременно); рабочие множества фоновых
+операций — пик памяти НЕ
 зависит от размера базы. Диск операций: полный на диск не пишет (пик диска
 ≈ PGDATA ноды; staging-каталогов нет), restore/drill распаковывают
 tar-объект в PGDATA/scratch data-volume ноды (архив на диске не появляется;

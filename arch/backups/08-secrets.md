@@ -28,8 +28,9 @@ PgWorker — [pgworker/04-security.md](../pgworker/04-security.md); ключи �
   PgWorker env-пары слепков НЕТ.
 
 Передача агенту: env контейнера ноды несёт только per-install bucket
-(`PGW_BACKUP_S3_BUCKET`), путь staging полного (`PGW_BACKUP_STAGING_DIR`) и
-опциональный CA (ниже). Приёмник WAL целей/кредов в env НЕ получает —
+(`PGW_BACKUP_S3_BUCKET`) и опциональный CA (ниже); staging-каталога полного
+нет — tar-поток идёт прямо в multipart-части
+([pgnode/01-placement.md](../pgnode/01-placement.md) §4). Приёмник WAL целей/кредов в env НЕ получает —
 резолвит сам из etcd живым резолвом (policy.s3 → пул → secrets; пароль
 `backup_exec` из `/clusters/<C>/backup_password`) — тем же резолвом
 пользуется операция полного (команда `POST /api/backup/full` несёт только

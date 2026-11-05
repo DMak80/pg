@@ -9,12 +9,15 @@
 
 ```
 POST /api/ops/restore (backup_id, target_time?, recovery_timeout_sec,
-                       S3-контекст)
+                       chain_life?, sha256?, S3-контекст)
   202 — принято
+  400 — id вне allowlist имени
   409 — общий ops-реестр занят (своя/чужая операция неразличима)
 downloading
   фиксация endpoint чтения (HEAD) → GetObject-стрим full/<id>.tar →
-  потоковая распаковка tar в PGDATA (без архива на диске)
+  потоковая распаковка tar в PGDATA (без архива на диске) с валидацией
+  имён/симлинков (06 §2); сквозной sha256 против поля команды — до старта
+  postgres
 recovering
   локальный postgres: pg_ctl start -w -t <recovery_timeout_sec>,
   fetch-wal, поллинг pg_is_in_recovery до promote, снятие

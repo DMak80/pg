@@ -13,8 +13,8 @@ POST /api/backup/full {"id"}
   409 — операция уже идёт
   202 — принято
 running/basebackup
-  соединение BASE_BACKUP (127.0.0.1:5432, TARGET=CLIENT, WAL STREAM,
-  CHECKPOINT fast, MANIFEST_CHECKSUMS SHA256) → потоковая перепаковка
+  соединение BASE_BACKUP (127.0.0.1:5432, TARGET 'client', WAL true,
+  WAIT false, CHECKPOINT 'fast', MANIFEST 'yes', MANIFEST_CHECKSUMS 'SHA256') → потоковая перепаковка
   tar-потоков в единый tar → multipart-заливка частями (16 МиБ,
   параллельно, Content-MD5) → CompleteMultipartUpload (объект
   full/<id>.tar появляется атомарно)

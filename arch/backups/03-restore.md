@@ -50,7 +50,9 @@ bootstrap пустого PGDATA — постгрес Patroni не поднима
 `target_time`? — PG-совместимый формат `yyyy-MM-dd HH:mm:sszzz` (воркер
 разбирает RFC3339 заявки и нормализует — parser postgres не принимает
 «T»-сепаратор/суффикс «Z»; `target_time` отсутствует = latest),
-`recovery_timeout_sec`, S3-контекст) и `GET /api/ops/restore` (фазы
+`recovery_timeout_sec`, `chain_life`? (номер жизни выбранного полного),
+`sha256`? (ожидаемый сквозной хэш tar-объекта — из etcd-статуса выбранного
+полного; у DR-орфана поля нет), S3-контекст) и `GET /api/ops/restore` (фазы
 `downloading|recovering`, `restored_to_lsn`?, `system_id`?,
 `started_unix`?, `error`?). PGDATA операции — PGDATA САМОЙ ноды
 (`/home/postgres/pgdata/pgroot/data`, Spilo-layout, uid:gid `101:101`);
