@@ -331,7 +331,6 @@ public sealed class MembershipProcessTests(EtcdWorkerEnvironment env)
     [Fact]
     public async Task AddAsync_PortAllocLockHeld_TransientRefusal()
     {
-        DockerTrait.SkipIfUnavailable();
         var rig = NewRig();
         try
         {
@@ -374,7 +373,6 @@ public sealed class MembershipProcessTests(EtcdWorkerEnvironment env)
     [Fact]
     public async Task ScaleUp_TwoManagedNodes_AllStarted()
     {
-        DockerTrait.SkipIfUnavailable();
         var rig = NewRig();
         try
         {
@@ -407,7 +405,6 @@ public sealed class MembershipProcessTests(EtcdWorkerEnvironment env)
     [Fact]
     public async Task ScaleDown_RollingRemoval_KeepsQuorum()
     {
-        DockerTrait.SkipIfUnavailable();
         var rig = NewRig();
         try
         {
@@ -437,7 +434,6 @@ public sealed class MembershipProcessTests(EtcdWorkerEnvironment env)
     [Fact]
     public async Task AutoReplace_DeadNode_NewMember()
     {
-        DockerTrait.SkipIfUnavailable();
         var rig = NewRig();
         try
         {
@@ -508,7 +504,6 @@ public sealed class MembershipProcessTests(EtcdWorkerEnvironment env)
     [Fact]
     public async Task Orphan_ContainerWithoutMember_Removed()
     {
-        DockerTrait.SkipIfUnavailable();
         var rig = NewRig();
         try
         {
@@ -560,7 +555,6 @@ public sealed class MembershipProcessTests(EtcdWorkerEnvironment env)
     [Fact]
     public async Task Resume_PromotedMemberWithoutRunningState_Converges()
     {
-        DockerTrait.SkipIfUnavailable();
         var rig = NewRig();
         try
         {

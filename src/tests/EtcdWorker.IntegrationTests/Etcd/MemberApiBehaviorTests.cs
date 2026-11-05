@@ -21,7 +21,6 @@ public sealed class MemberApiBehaviorTests(EtcdWorkerEnvironment env)
     [Fact]
     public async Task MemberAdd_Learner_AppearsUnstartedWithEmptyName()
     {
-        DockerTrait.SkipIfUnavailable();
         ulong memberId = 0;
         try
         {
@@ -51,7 +50,6 @@ public sealed class MemberApiBehaviorTests(EtcdWorkerEnvironment env)
     [Fact]
     public async Task MemberRemove_Unstarted_Succeeds()
     {
-        DockerTrait.SkipIfUnavailable();
 
         // Arrange
         var added = await Env.Gateway.MemberAddAsync(
@@ -74,7 +72,6 @@ public sealed class MemberApiBehaviorTests(EtcdWorkerEnvironment env)
     [Fact]
     public async Task MemberPromote_UnstartedLearner_Fails()
     {
-        DockerTrait.SkipIfUnavailable();
 
         // Arrange
         var added = await Env.Gateway.MemberAddAsync(
@@ -102,7 +99,6 @@ public sealed class MemberApiBehaviorTests(EtcdWorkerEnvironment env)
     [Fact]
     public async Task MemberList_ManagedPatternParse()
     {
-        DockerTrait.SkipIfUnavailable();
         ulong memberId = 0;
         try
         {

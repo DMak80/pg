@@ -49,7 +49,6 @@ public sealed class SnapshotExportTests(EtcdWorkerEnvironment env)
     [Fact]
     public async Task Planned_Export_UploadsPair_StatusOk()
     {
-        DockerTrait.SkipIfUnavailable();
         var ct = TestContext.Current.CancellationToken;
         await env.SeedEtcdBackupClusterAsync();
         await ResetStatusKeyAsync(env);
@@ -82,7 +81,6 @@ public sealed class SnapshotExportTests(EtcdWorkerEnvironment env)
     [Fact]
     public async Task TransientTarget_FailedThenCatchUp()
     {
-        DockerTrait.SkipIfUnavailable();
         var ct = TestContext.Current.CancellationToken;
         await env.SeedEtcdBackupClusterAsync();
         await ResetStatusKeyAsync(env);
@@ -122,7 +120,6 @@ public sealed class SnapshotExportTests(EtcdWorkerEnvironment env)
     [Fact]
     public async Task Retention_KeepsTwoPairs()
     {
-        DockerTrait.SkipIfUnavailable();
         var ct = TestContext.Current.CancellationToken;
         await env.SeedEtcdBackupClusterAsync();
         await ResetStatusKeyAsync(env);
@@ -152,7 +149,6 @@ public sealed class SnapshotExportTests(EtcdWorkerEnvironment env)
     [Fact]
     public async Task Maintenance_Succeeds_StatusReadable()
     {
-        DockerTrait.SkipIfUnavailable();
         var ct = TestContext.Current.CancellationToken;
         var dir = TempDir();
         var job = new SnapshotJob(env.Gateway, [env.Endpoint], dir, 10, 60);
@@ -174,7 +170,6 @@ public sealed class SnapshotExportTests(EtcdWorkerEnvironment env)
     [Fact]
     public async Task ChangeDetection_RevisionGrowth_TriggersExtraSnapshot()
     {
-        DockerTrait.SkipIfUnavailable();
         var ct = TestContext.Current.CancellationToken;
         var beforeRev = (long)(await env.Gateway.StatusAsync(env.Endpoint, ct)).Value!.Revision!;
 

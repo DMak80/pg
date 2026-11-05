@@ -75,7 +75,6 @@ public class MtlsApiTests
     [Fact]
     public async Task Mtls_NoClientCertRefused_WithCertOk()
     {
-        DockerTrait.SkipIfUnavailable();
 
         // Arrange: TLS-хост на свободном порту (динамический).
         var port = FreePort();

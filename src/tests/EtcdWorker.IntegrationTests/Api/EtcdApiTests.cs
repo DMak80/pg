@@ -24,7 +24,6 @@ public sealed class EtcdApiTests(EtcdApiFixture fx)
     [Fact]
     public async Task PutConfig_Valid_200()
     {
-        DockerTrait.SkipIfUnavailable();
         using var client = fx.Factory.CreateClient();
 
         // Act
@@ -59,7 +58,6 @@ public sealed class EtcdApiTests(EtcdApiFixture fx)
     [InlineData(8)]
     public async Task PutConfig_NegativeAndEight_400(int nodes)
     {
-        DockerTrait.SkipIfUnavailable();
         using var client = fx.Factory.CreateClient();
 
         // Act
@@ -73,7 +71,6 @@ public sealed class EtcdApiTests(EtcdApiFixture fx)
     [Fact]
     public async Task PutConfig_BelowQuorum_409()
     {
-        DockerTrait.SkipIfUnavailable();
         using var client = fx.Factory.CreateClient();
 
         // Act
@@ -87,7 +84,6 @@ public sealed class EtcdApiTests(EtcdApiFixture fx)
     [Fact]
     public async Task PutConfig_EtcdDown_503()
     {
-        DockerTrait.SkipIfUnavailable();
         using var dead = new EtcdWorkerApiFactory { EtcdEndpoint = "http://localhost:1" };
         using var client = dead.CreateClient();
 
@@ -103,7 +99,6 @@ public sealed class EtcdApiTests(EtcdApiFixture fx)
     [Fact]
     public async Task PutConfig_RmwRace_503()
     {
-        DockerTrait.SkipIfUnavailable();
         var env = fx.Env;
         // Сид: ключ уже существует (ветка ModRevisionEqual)
         await env.Gateway.PutAsync(env.Endpoint, "/etcd/config",
@@ -128,7 +123,6 @@ public sealed class EtcdApiTests(EtcdApiFixture fx)
     [Fact]
     public async Task Restart_202()
     {
-        DockerTrait.SkipIfUnavailable();
         using var restartable = new EtcdWorkerApiFactory { EtcdEndpoint = fx.Env.Endpoint };
         using var client = restartable.CreateClient();
 
@@ -145,7 +139,6 @@ public sealed class EtcdApiTests(EtcdApiFixture fx)
     [Fact]
     public async Task GetConfig_200_WithSourceAndNoSecrets()
     {
-        DockerTrait.SkipIfUnavailable();
         using var client = fx.Factory.CreateClient();
 
         // Act
