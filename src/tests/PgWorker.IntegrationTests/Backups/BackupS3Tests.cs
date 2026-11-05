@@ -12,8 +12,7 @@ namespace PgWorker.IntegrationTests.Backups;
 // ассертом чистоты — arch/testing/02-e2e-isolation.md §1/§3): посев одного теста не виден
 // другому. Сценарии: list/пагинация/отсутствие префикса (spec Ф2),
 // ретенционные list/delete, verify-листинг/GET history (Ф2).
-[Collection(NonE2eCollection.Name)]
-public class BackupS3Tests
+public class BackupS3Tests : IntSlotLifetime
 {
     // Прямой клиент-помощник для сида объектов (AWSSDK, не тестируемый код).
     private static AmazonS3Client SeedClient(OwnS3 s3Node) => new(

@@ -22,8 +22,7 @@ namespace PgWorker.IntegrationTests.Backups;
 // дискриминируют лишний put). RetentionIntervalSec=0 — ретенция выполняется
 // КАЖДЫМ тиком (валидация >=60 — только на старте App, runtime-опции тест
 // строит напрямую).
-[Collection(NonE2eCollection.Name)]
-public class RetentionProcessTests(EtcdFixture fixture)
+public class RetentionProcessTests(OwnedEtcdFixture fixture) : IClassFixture<OwnedEtcdFixture>
 {
     private readonly ClaimStore _claims = new("/pgworker", [fixture.Endpoint], fixture.Gateway, TimeProvider.System);
 

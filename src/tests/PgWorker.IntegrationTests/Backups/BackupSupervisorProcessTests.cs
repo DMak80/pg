@@ -13,13 +13,12 @@ namespace PgWorker.IntegrationTests.Backups;
 // Интеграции BackupSupervisorProcess (spec §3.4): реальный etcd (клэйм/
 // журнал) + FakeBackupS3 (префиксы/удаления). Снапшот кластера строится руками
 // (паттерн WalStreamProcessTests). Isolation — чистка своих префиксов в Arrange.
-[Collection(NonE2eCollection.Name)]
-public class BackupSupervisorProcessTests(EtcdFixture fixture) : IAsyncLifetime
+public class BackupSupervisorProcessTests(OwnedEtcdFixture fixture) : IClassFixture<OwnedEtcdFixture>, IAsyncLifetime
 {
-    // Per-class guid-тег (канон arch/testing/02-e2e-isolation.md §1): имена кластеров уникальны
-    // per-class-запуск — пересечение с ShardScaleContractTests (sc1..sc6) и любым
-    // будущим классом не-E2E-коллекции (NonE2eCollection) механически невозможно
-    // (инцидент : клэйм sc3 этого класса жил 15с по TTL и ронял TryClaim жертвы).
+    // Per-class guid-тег (канон arch/testing/02-e2e-isolation.md §1): имена кластеров
+    // уникальны per-class — пересечение с соседними классами механически
+    // невозможно (per-class etcd + guid-тег; инцидент общих имён: клэйм
+    // по TTL 15с ронял TryClaim соседа).
     private static readonly string Tag = Guid.NewGuid().ToString("N")[..8];
 
     private readonly ClaimStore _claims = new("/pgworker", [fixture.Endpoint], fixture.Gateway, TimeProvider.System);

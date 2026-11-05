@@ -9,8 +9,7 @@ namespace PgWorker.IntegrationTests.Api;
 // HTTPS-Kestrel-порту, что /healthz; защита API — транспортная (mTLS: 401 без
 // валидного серта на /api покрывает MtlsApiTests); /metrics — открытая грань
 // (arch/metrics/03-exposure.md). Здесь проверяем экспозицию Prometheus-формата и живые серии.
-[Collection(NonE2eCollection.Name)]
-public sealed class MetricsTests(PgMetricsFixture fx)
+public sealed class MetricsTests(PgMetricsFixture fx) : IClassFixture<PgMetricsFixture>
 {
     [Fact]
     public async Task Metrics_Responds_200_PrometheusText()

@@ -9,8 +9,7 @@ namespace PgWorker.IntegrationTests.Docker;
 // /images/create) и повтор create. Негативная форма: pull несуществующего
 // образа из локального registry завершается ошибкой — ассерт различает СТАДИЮ
 // по пути в DockerHttpException (голый 404 create дал бы /containers/create).
-[Collection(NonE2eCollection.Name)]
-public class EngineSupersetTests
+public class EngineSupersetTests : IntSlotLifetime
 {
     // Внешний образ — только из локального registry (канон образов, runbook):
     // голый alpine:3.20 резолвится в docker.io и роняет тест таймаутом при

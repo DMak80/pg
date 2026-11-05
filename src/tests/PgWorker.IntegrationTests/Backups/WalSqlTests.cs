@@ -10,8 +10,7 @@ namespace PgWorker.IntegrationTests.Backups;
 
 // Слот-SQL против живого postgres (testcontainers, динамический порт): идемпотентный
 // ensure + LSN-зонд — spec Ф3 (шаги 3/7).
-[Collection(NonE2eCollection.Name)]
-public class WalSqlTests
+public class WalSqlTests : IntSlotLifetime
 {
     // Пароль superuser генерируется в рантайме: секрет не зашивается в исходник.
     private static readonly string Password =

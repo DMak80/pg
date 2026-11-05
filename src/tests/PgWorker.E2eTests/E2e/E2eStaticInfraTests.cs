@@ -5,6 +5,7 @@ using System.Text;
 using System.Text.Json;
 using FluentAssertions;
 using Shared.TestInfra;
+using Shared.TestInfra.Parallelism;
 using Xunit;
 
 namespace PgWorker.IntegrationTests.E2e;
@@ -239,7 +240,7 @@ public sealed class E2eStaticInfraTests
     public async Task PrioritySlotGate_FreeSlot_AcquiresSynchronously()
     {
         // Arrange: шлюз на 2 слота.
-        var gate = new E2ePrioritySlotGate(2);
+        var gate = new PrioritySlotGate(2);
         var ct = TestContext.Current.CancellationToken;
 
         // Act: два захвата без конкуренции.
@@ -258,7 +259,7 @@ public sealed class E2eStaticInfraTests
         // Arrange: единственный слот занят лёгким классом A(w=1);
         // в очередь встают B(w=2), C(w=5), D(w=3) — в порядке возрастания
         // веса, чтобы порядок пробуждения решал ВЕС, а не постановка.
-        var gate = new E2ePrioritySlotGate(1);
+        var gate = new PrioritySlotGate(1);
         var ct = TestContext.Current.CancellationToken;
         var order = new ConcurrentQueue<int>();
         gate.AcquireAsync(1, ct).IsCompletedSuccessfully.Should().BeTrue();
@@ -295,7 +296,7 @@ public sealed class E2eStaticInfraTests
     {
         // Arrange: слот занят; три ждущих с ОДИНАКОВЫМ весом 2 — строго
         // последовательно (постановку каждого ждём по WaitersCount).
-        var gate = new E2ePrioritySlotGate(1);
+        var gate = new PrioritySlotGate(1);
         var ct = TestContext.Current.CancellationToken;
         var order = new ConcurrentQueue<string>();
         gate.AcquireAsync(2, ct).IsCompletedSuccessfully.Should().BeTrue();
@@ -330,7 +331,7 @@ public sealed class E2eStaticInfraTests
     public async Task PrioritySlotGate_CancelledWaiter_DoesNotConsumeSlot()
     {
         // Arrange: слот занят A; тяжёлый B(w=9) ждёт с отменяемым токеном.
-        var gate = new E2ePrioritySlotGate(1);
+        var gate = new PrioritySlotGate(1);
         var ct = TestContext.Current.CancellationToken;
         var acquired = new ConcurrentQueue<int>();
         gate.AcquireAsync(1, ct).IsCompletedSuccessfully.Should().BeTrue();

@@ -10,8 +10,7 @@ namespace PgWorker.IntegrationTests.Api;
 // POST /api/clusters + DELETE /api/clusters/{c} на WAF-хосте воркера (task
 // etcd-via-worker-api): контракт 1:1 панельному CreateClusterApiTests, но
 // пишет сам PgWorker. Claim-txn гонки — spec §6.
-[Collection(NonE2eCollection.Name)]
-public class CreateClusterApiTests(PgApiFixture fixture)
+public class CreateClusterApiTests(PgApiFixture fixture) : IClassFixture<PgApiFixture>
 {
     private HttpClient Client => fixture.Factory.CreateClient();
 

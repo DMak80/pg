@@ -10,8 +10,7 @@ namespace PgWorker.IntegrationTests.Hosting;
 // тестовым CA поднимается (env PGW_REST_TLS_* фикстуры), битый PEM —
 // fail-fast с diagnose. Коллекция NonE2e — последовательность с Api-серией
 // (общий глобальный env процесса).
-[Collection(NonE2eCollection.Name)]
-public class RestTlsStartupTests(PgApiFixture fixture)
+public class RestTlsStartupTests(PgApiFixture fixture) : IClassFixture<PgApiFixture>
 {
     [Fact]
     public void WafHost_WithTestCa_StartsAndResolvesRestTlsMaterial()

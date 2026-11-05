@@ -9,8 +9,7 @@ namespace PgWorker.IntegrationTests.Etcd;
 
 // Контракт форматов /clusters/ и /pgworker/* на реальном etcd (задача 13, критерий §11.8):
 // сид панели → парсер; WorkJournal round-trip; portalloc round-trip.
-[Collection(NonE2eCollection.Name)]
-public class EtcdContractTests(EtcdFixture fixture)
+public class EtcdContractTests(OwnedEtcdFixture fixture) : IClassFixture<OwnedEtcdFixture>
 {
     // DTO формата /pgworker/portalloc (spec §4.3): плоский {"host","pg","patroni","doorman"}.
     private sealed record PortallocEntry(
@@ -23,11 +22,11 @@ public class EtcdContractTests(EtcdFixture fixture)
 
     private string Endpoint => fixture.Endpoint;
 
-    // Per-class guid-тег (канон arch/testing/02-e2e-isolation.md §1, инвариант
-    // NonE2eCollection): имена кластеров в сидах /clusters/, /service/ и
-    // /pgworker/* несут уникальный суффикс — литеральная коллизия с
-    // соседними классами коллекции (парсеры читают общий /clusters/)
-    // механически невозможна. Тесты чистят свои префиксы (assert чистоты).
+    // Per-class guid-тег (канон arch/testing/02-e2e-isolation.md §1): имена
+    // кластеров в сидах /clusters/, /service/ и /pgworker/* несут уникальный
+    // суффикс — литеральная коллизия с соседними классами механически
+    // невозможна (per-class etcd + guid-тег). Тесты чистят свои префиксы
+    // (assert чистоты).
     private static readonly string Tag = Guid.NewGuid().ToString("N")[..8];
 
     [Fact]

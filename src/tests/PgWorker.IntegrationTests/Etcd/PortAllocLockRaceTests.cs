@@ -10,8 +10,7 @@ namespace PgWorker.IntegrationTests.Etcd;
 // секции «ReadBusy → Allocate → put portalloc» под глобальным клэймом дают
 // НЕПЕРЕСЕКАЮЩИЕСЯ порты; без клэйма обе читали бы пустой префикс (воспроизведение
 // dev-стенда 2026-08-25: «port is already allocated»).
-[Collection(NonE2eCollection.Name)]
-public class PortAllocLockRaceTests(EtcdFixture fixture)
+public class PortAllocLockRaceTests(OwnedEtcdFixture fixture) : IClassFixture<OwnedEtcdFixture>
 {
     private EtcdGateway Gateway => fixture.Gateway;
 

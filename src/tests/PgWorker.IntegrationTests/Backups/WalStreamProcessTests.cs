@@ -15,8 +15,7 @@ namespace PgWorker.IntegrationTests.Backups;
 
 // Интеграции WalStreamProcess (spec Ф3): реальный etcd (статусы/журнал) +
 // фейки docker-агентов/SQL/S3. Снапшот кластера строится руками.
-[Collection(NonE2eCollection.Name)]
-public class WalStreamProcessTests(EtcdFixture fixture)
+public class WalStreamProcessTests(OwnedEtcdFixture fixture) : IClassFixture<OwnedEtcdFixture>
 {
     private readonly ClaimStore _claims = new("/pgworker", [fixture.Endpoint], fixture.Gateway, TimeProvider.System);
 

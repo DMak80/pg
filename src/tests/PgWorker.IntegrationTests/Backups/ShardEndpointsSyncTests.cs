@@ -13,8 +13,7 @@ namespace PgWorker.IntegrationTests.Backups;
 // динамическом порту (TcpListener(0)-зонд + HttpListener — fейк Patroni),
 // portalloc-сид с patroni=<порт>. Не найден/недоступен → null БЕЗ fallback
 // (второй агент поднимется тиком при появлении sync).
-[Collection(NonE2eCollection.Name)]
-public class ShardEndpointsSyncTests(EtcdFixture fixture)
+public class ShardEndpointsSyncTests(OwnedEtcdFixture fixture) : IClassFixture<OwnedEtcdFixture>
 {
     // Ответ фейка Patroni: тест меняет (sync есть / нет).
     private static string SyncClusterJson(bool withSync) => withSync

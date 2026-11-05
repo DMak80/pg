@@ -8,8 +8,7 @@ namespace PgWorker.IntegrationTests.Api;
 
 // POST /api/clusters/{c}/moves (task etcd-via-worker-api): порт панельных
 // MovesApiTests на WAF-хост воркера + идентичность оператора (spec §3.7).
-[Collection(NonE2eCollection.Name)]
-public class MovesApiTests(PgApiFixture fixture)
+public class MovesApiTests(PgApiFixture fixture) : IClassFixture<PgApiFixture>
 {
     private HttpClient Client => fixture.Factory.CreateClient();
 

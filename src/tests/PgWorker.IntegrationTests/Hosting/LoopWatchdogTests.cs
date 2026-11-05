@@ -20,8 +20,7 @@ namespace PgWorker.IntegrationTests.Hosting;
 // stale — активности нет (ни тика, ни отметки), возраст LastActivityAt 5 мин →
 // firing первой проверкой; longPhase — «долгая итерация»: активность обновляется
 // прогресс-отметками каждые markEvery, хост живёт.
-[Collection(NonE2eCollection.Name)]
-public sealed class LoopWatchdogTests
+public sealed class LoopWatchdogTests : IntSlotLifetime
 {
     // Витальность с семантикой активности: stale — активность заморожена давно
     // (зависание без исключения); longPhase — «долгая итерация»: активность

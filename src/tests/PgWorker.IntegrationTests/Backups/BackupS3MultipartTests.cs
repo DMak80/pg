@@ -9,8 +9,7 @@ namespace PgWorker.IntegrationTests.Backups;
 // ListMultipartUploads по префиксу, Head/Range/Stream/DeleteObject границы.
 // У КАЖДОГО Fact своё окружение OwnS3 (guid-имя, динамический порт, свой
 // bucket, own-only teardown с ассертом чистоты — arch/testing/02-e2e-isolation.md §1/§3).
-[Collection(NonE2eCollection.Name)]
-public class BackupS3MultipartTests
+public class BackupS3MultipartTests : IntSlotLifetime
 {
     // Минимальный размер НЕпоследней части (лимит S3/OwnS3 — 5 МиБ).
     private const int MinPartBytes = 5 * 1024 * 1024;

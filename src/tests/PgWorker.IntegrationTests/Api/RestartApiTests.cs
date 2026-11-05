@@ -10,10 +10,10 @@ namespace PgWorker.IntegrationTests.Api;
 // POST /api/restart (spec §3.2 п.2/§4.4): 202 {"restarting":true}; заголовок
 // X-Requested-By — в лог; отложенный StopApplication. Подмена IHostApplicationLifetime
 // в DI запрещена хостом (.NET «Replacing IHostApplicationLifetime is not supported») —
-// проверяем РЕАЛЬНЫЙ StopApplication на собственной фабрике (общий хост PgApiFixture
-// не гасим): подписка на ApplicationStopping до POST.
-[Collection(NonE2eCollection.Name)]
-public class RestartApiTests
+// проверяем РЕАЛЬНЫЙ StopApplication на собственной фабрике (хост фабрики
+// класса не гасим): подписка на ApplicationStopping до POST.
+// Свой etcd per-class (RestartHost); слот Guard'а — IntSlotLifetime.
+public class RestartApiTests : IntSlotLifetime
 {
     // Свой etcd + своя фабрика на тест-класс (teardown при любом исходе).
     private sealed class RestartHost : IAsyncLifetime

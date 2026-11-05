@@ -8,8 +8,7 @@ namespace PgWorker.IntegrationTests.Api;
 
 // POST /api/clusters/{c}/shards/{x}/restore (spec Ф4/AC5): 202 + PLANNED-
 // ключ в etcd; гварды confirm/RFC3339/Active/шард/дубль/source-пара/тело.
-[Collection(NonE2eCollection.Name)]
-public class RestoreApiTests(PgApiFixture fixture)
+public class RestoreApiTests(PgApiFixture fixture) : IClassFixture<PgApiFixture>
 {
     private HttpClient Client => fixture.Factory.CreateClient();
 

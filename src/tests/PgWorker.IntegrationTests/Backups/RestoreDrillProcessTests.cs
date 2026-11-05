@@ -21,8 +21,7 @@ namespace PgWorker.IntegrationTests.Backups;
 // — docker-фейков у процесса больше нет: поведение приёмника фейкается
 // FakeReceiverClient (паттерны BackupVerifyProcessTests/RestoreProcessTests),
 // portalloc для адреса приёмника читается реальным ShardEndpoints из etcd.
-[Collection(NonE2eCollection.Name)]
-public class RestoreDrillProcessTests
+public class RestoreDrillProcessTests : IntSlotLifetime
 {
     // Окружение Fact'а (свой etcd); создаётся в начале каждого сценария.
     private OwnEtcd Fx = null!;

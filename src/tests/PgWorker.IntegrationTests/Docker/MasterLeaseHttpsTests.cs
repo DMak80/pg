@@ -14,8 +14,7 @@ namespace PgWorker.IntegrationTests.Docker;
 // 127.0.0.1:8008; CLI запускается без роли (ветка on_start → local_role);
 // etcd мёртв — демон не может писать ключ, факт распознавания роли —
 // pid-файл демона (master) либо тихий выход (replica/no-ca).
-[Collection(NonE2eCollection.Name)]
-public class MasterLeaseHttpsTests
+public class MasterLeaseHttpsTests : IntSlotLifetime
 {
     private const string NodeToolsImage = "mcr.microsoft.com/dotnet/runtime:10.0";
     private const string PythonImage = "python:3.12-alpine";

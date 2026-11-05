@@ -34,5 +34,8 @@
     <PackageVersion Include="Testcontainers" Version="4.14.0" />
     <PackageVersion Include="xunit.runner.visualstudio" Version="3.1.5" />
     <PackageVersion Include="xunit.v3" Version="3.2.2" />
+    <!-- Нешелочной тестовой либе (Shared.TestInfra) — extensibility-core:
+         атрибуты/интерфейсы xUnit без требования OutputType=Exe. -->
+    <PackageVersion Include="xunit.v3.extensibility.core" Version="3.2.2" />
   </ItemGroup>
 </Project>

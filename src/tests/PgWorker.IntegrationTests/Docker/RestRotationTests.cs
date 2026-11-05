@@ -27,8 +27,7 @@ namespace PgWorker.IntegrationTests.Docker;
 // заявки; no-op тика без заявки. Живой etcd (EtcdFixture) + фейк-канал —
 // docker-стаб не нужен (env-инспекции больше нет, t05). Полный teardown:
 // etcd-префиксы кластера удаляются (DisposeAsync-образец рига).
-[Collection(NonE2eCollection.Name)]
-public class RestRotationTests(Etcd.EtcdFixture fixture)
+public class RestRotationTests(Etcd.OwnedEtcdFixture fixture) : IClassFixture<Etcd.OwnedEtcdFixture>
 {
     private const string Cluster = "shop";
     private const string Shard = "shard1";

@@ -61,6 +61,26 @@ public sealed class OwnedEtcdFixture : IAsyncLifetime
 
     public async ValueTask InitializeAsync()
     {
+        // Слот Guard'а ДО первого docker-объекта (канон параллелизма §5): класс
+        // с OWN-etcd-контуром занимает слот на всю жизнь; вес — по владельцам
+        // типа фикстуры (TestClassWeight). Освобождение — DisposeAsync при
+        // любом исходе.
+        var ct = TestContext.Current.CancellationToken;
+        await IntParallelismGuard.AcquireAsync(
+            Shared.TestInfra.Parallelism.TestClassWeight.OfFixture(GetType()), "ownetcd", ct);
+        try
+        {
+            await StartAsync(ct);
+        }
+        catch
+        {
+            IntParallelismGuard.Release("ownetcd");
+            throw;
+        }
+    }
+
+    private async ValueTask StartAsync(CancellationToken ct)
+    {
         // Retry старта (arch/testing/02-e2e-isolation.md §4): свежесозданную пустую сеть
         // может снести чужой глобальный prune до старта контейнера — окружение
         // пересоздаётся целиком; ретрай только на распознанную гонку.
@@ -68,37 +88,46 @@ public sealed class OwnedEtcdFixture : IAsyncLifetime
         {
             try
             {
-                await _network.CreateAsync(TestContext.Current.CancellationToken);
-                await _container.StartAsync(TestContext.Current.CancellationToken);
+                await _network.CreateAsync(ct);
+                await _container.StartAsync(ct);
                 break;
             }
             catch (Exception e) when (attempt < 3
                 && e.Message.Contains("network", StringComparison.OrdinalIgnoreCase)
                 && e.Message.Contains("not found", StringComparison.OrdinalIgnoreCase))
             {
-                await TeardownAsync(TestContext.Current.CancellationToken);
+                await TeardownAsync(ct);
             }
         }
 
         Endpoint = $"http://localhost:{_container.GetMappedPublicPort(2379)}";
-        await WaitReadyAsync(TestContext.Current.CancellationToken);
+        await WaitReadyAsync(ct);
     }
 
     public async ValueTask DisposeAsync()
     {
-        _http.Dispose();
-        await TeardownAsync(CancellationToken.None);
+        // Слот освобождается ПРИ ЛЮБОМ исходе teardown'а (иначе серия исчерпывает
+        // Guard и висит в Acquire следующих классов); исход teardown — наружу.
+        try
+        {
+            _http.Dispose();
+            await TeardownAsync(CancellationToken.None);
 
-        // АССЕРТ ЧИСТОТЫ окружения (arch/testing/02-e2e-isolation.md §3.6): не осталось
-        // ни контейнера, ни сети СВОЕГО окружения — иначе тесты класса краснеют
-        // сразу, а не когда кончатся подсети. Фильтр по единому runId покрывает
-        // оба объекта; чужие не включаются.
-        var leftContainers = await RunDockerAsync(
-            "ps", "-a", "--filter", $"name={_runId}", "--format", "{{.Names}}");
-        leftContainers.Should().BeEmpty("the environment teardown is incomplete: a container is left");
-        var leftNetworks = await RunDockerAsync(
-            "network", "ls", "--filter", $"name={_runId}", "--format", "{{.Names}}");
-        leftNetworks.Should().BeEmpty("the environment teardown is incomplete: a network is left");
+            // АССЕРТ ЧИСТОТЫ окружения (arch/testing/02-e2e-isolation.md §3.6): не осталось
+            // ни контейнера, ни сети СВОЕГО окружения — иначе тесты класса краснеют
+            // сразу, а не когда кончатся подсети. Фильтр по единому runId покрывает
+            // оба объекта; чужие не включаются.
+            var leftContainers = await RunDockerAsync(
+                "ps", "-a", "--filter", $"name={_runId}", "--format", "{{.Names}}");
+            leftContainers.Should().BeEmpty("the environment teardown is incomplete: a container is left");
+            var leftNetworks = await RunDockerAsync(
+                "network", "ls", "--filter", $"name={_runId}", "--format", "{{.Names}}");
+            leftNetworks.Should().BeEmpty("the environment teardown is incomplete: a network is left");
+        }
+        finally
+        {
+            IntParallelismGuard.Release("ownetcd");
+        }
     }
 
     // Stop/rm контейнера и rm сети — идемпотентно при любом исходе

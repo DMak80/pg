@@ -8,8 +8,7 @@ namespace PgWorker.IntegrationTests.Api;
 
 // POST /api/clusters/{c}/moves/rollback|finalize|abort + DELETE .../moves/{bucket}
 // (arch/02 §9.7.2–§9.7.5): постановка заявок op≠move и отмена стоящих.
-[Collection(NonE2eCollection.Name)]
-public class MoveOpsApiTests(PgApiFixture fixture)
+public class MoveOpsApiTests(PgApiFixture fixture) : IClassFixture<PgApiFixture>
 {
     private HttpClient Client => fixture.Factory.CreateClient();
 

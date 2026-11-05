@@ -23,7 +23,6 @@ namespace PgWorker.IntegrationTests.Api;
 // Целевая архитектура E2E (arch/testing/02-e2e-isolation.md §1): единица изоляции —
 // класс; окружение — СВОЙ etcd в СВОЙ docker-сети (OwnedEtcdFixture) —
 // никто вне класса не может писать в его etcd.
-[Collection(NonE2eCollection.Name)]
 public class OrphansApiTests(OwnedEtcdFixture etcdFixture)
     : IClassFixture<OwnedEtcdFixture>, IAsyncDisposable
 {

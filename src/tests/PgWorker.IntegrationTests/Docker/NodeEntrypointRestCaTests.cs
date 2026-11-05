@@ -18,8 +18,7 @@ namespace PgWorker.IntegrationTests.Docker;
 // шаблон с плейсхолдером (проверки бинарника/шаблона entrypoint проходят,
 // до supervisord дело не доходит). t05: openssl-генерации нет — серт
 // пулера доставляет агент PgNode в tmpfs.
-[Collection(NonE2eCollection.Name)]
-public class NodeEntrypointRestCaTests
+public class NodeEntrypointRestCaTests : IntSlotLifetime
 {
     private const string PythonImage = "python:3.12-alpine";
 

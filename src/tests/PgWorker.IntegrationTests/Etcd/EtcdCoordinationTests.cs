@@ -4,8 +4,7 @@ using Xunit;
 namespace PgWorker.IntegrationTests.Etcd;
 
 // Координация на реальном etcd (задача 13, spec §4.3): клэймы, txn-compare, lease, snapshot.
-[Collection(NonE2eCollection.Name)]
-public class EtcdCoordinationTests(EtcdFixture fixture)
+public class EtcdCoordinationTests(OwnedEtcdFixture fixture) : IClassFixture<OwnedEtcdFixture>
 {
     private EtcdGateway Gateway => fixture.Gateway;
 
@@ -13,10 +12,10 @@ public class EtcdCoordinationTests(EtcdFixture fixture)
 
     private ClaimStore NewClaimStore() => new("/pgworker", [Endpoint], Gateway, TimeProvider.System);
 
-    // Per-class guid-тег (канон arch/testing/02-e2e-isolation.md §1, инвариант
-    // NonE2eCollection): имена кластеров в клэймах и /clusters/ несут
-    // уникальный суффикс — литеральная коллизия с соседними классами
-    // коллекции (флейк TryClaim из-за lease-TTL 15с) механически невозможна.
+    // Per-class guid-тег (канон arch/testing/02-e2e-isolation.md §1): имена
+    // кластеров в клэймах и /clusters/ несут уникальный суффикс — литеральная
+    // коллизия с соседними классами (флейк TryClaim из-за lease-TTL 15с)
+    // механически невозможна (per-class etcd + guid-тег).
     private static readonly string Tag = Guid.NewGuid().ToString("N")[..8];
 
     [Fact]

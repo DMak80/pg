@@ -17,8 +17,7 @@ namespace PgWorker.IntegrationTests.Backups;
 // с ассертом чистоты — arch/testing/02-e2e-isolation.md §1/§3; ключи умирают с контейнером)
 // + фейки S3 и API приёмника нод (verify-операции исполняет WalReceiver ноды-
 // источника полного — docker-движка в verify-процессе больше нет).
-[Collection(NonE2eCollection.Name)]
-public class BackupVerifyProcessTests
+public class BackupVerifyProcessTests : IntSlotLifetime
 {
     // Окружение Fact'а (свой etcd); создаётся в начале каждого сценария.
     private OwnEtcd Fx = null!;

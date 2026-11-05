@@ -9,8 +9,7 @@ namespace PgWorker.IntegrationTests.Etcd;
 // Ensure rest_password с ЖИВЫМ etcd (arch/pgworker/04-security.md гр.1): седьмой ключ
 // put-if-absent, повторный ensure не меняет значения, пустое значение
 // добирается txn. Канон ClusterSecretEnsurer — живой контракт etcd.
-[Collection(NonE2eCollection.Name)]
-public class RestPasswordEnsureEtcdTests(EtcdFixture fixture)
+public class RestPasswordEnsureEtcdTests(OwnedEtcdFixture fixture) : IClassFixture<OwnedEtcdFixture>
 {
     private EtcdGateway Gateway => fixture.Gateway;
 

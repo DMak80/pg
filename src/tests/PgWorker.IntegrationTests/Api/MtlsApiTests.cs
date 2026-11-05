@@ -24,8 +24,7 @@ namespace PgWorker.IntegrationTests.Api;
 // исполняет) — порт динамический (зонд FreePort). https-валидация advertise:
 // http-URL при выключенном AllowInsecureHttp — fail-fast старта хоста
 // (ValidateOnStart, arch/pgworker/07-api.md §1).
-[Collection(NonE2eCollection.Name)]
-public class MtlsApiTests(PgApiFixture fx)
+public class MtlsApiTests(PgApiFixture fx) : IClassFixture<PgApiFixture>
 {
     // Локальный PKI-хелпер: CertificateRequest + RSA-2048 (паттерн TestPki из
     // AdminPanel.UnitTests/Workers/WorkerTlsHandlerTests; тесты не тянут

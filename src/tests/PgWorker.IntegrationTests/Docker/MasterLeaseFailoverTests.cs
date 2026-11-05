@@ -16,8 +16,7 @@ namespace PgWorker.IntegrationTests.Docker;
 // publish-вывода NodeTools.
 // Два ОДИНОЧНЫХ etcd-контейнера (не кластер): lease-скрипту безразличен кворум,
 // важен перебор transport-отказов.
-[Collection(NonE2eCollection.Name)]
-public class MasterLeaseFailoverTests
+public class MasterLeaseFailoverTests : IntSlotLifetime
 {
     private const string EtcdImage = "quay.io/coreos/etcd:v3.5.21";
     private const string NodeToolsImage = "mcr.microsoft.com/dotnet/runtime:10.0";

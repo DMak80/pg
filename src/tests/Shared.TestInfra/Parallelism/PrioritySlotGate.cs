@@ -1,15 +1,15 @@
-namespace PgWorker.IntegrationTests.E2e;
+namespace Shared.TestInfra.Parallelism;
 
-/// <summary>Приоритетный асинхронный семафор-слот (arch/testing/01-e2e-launch.md §5,
-/// LPT): освобождающийся слот уходит ждущему с МАКСИМАЛЬНЫМ весом; равные
-/// веса — FIFO (наименьший seq выходит первым). Быстрый путь (свободный
-/// слот) — синхронный, без очереди. Отмена ждущего атомарна с передачей
-/// слота: TrySetCanceled/TrySetResult выигрывает ровно один — отменённый
-/// waiter слота не получает, Release его пропускает (слот не теряется и
-/// не дублируется). Continuations — асинхронные: Release пробуждает ждущего
-/// НЕ под локом (иначе continuation выполнялся бы в потоке Release,
-/// удерживающем лок, — дедлок).</summary>
-internal sealed class E2ePrioritySlotGate(int capacity)
+/// <summary>Приоритетный асинхронный семафор-слот для параллелизма тест-классов
+/// (arch/testing/01-e2e-launch.md §5, LPT): освобождающийся слот уходит ждущему
+/// с МАКСИМАЛЬНЫМ весом; равные веса — FIFO (наименьший seq выходит первым).
+/// Быстрый путь (свободный слот) — синхронный, без очереди. Отмена ждущего
+/// атомарна с передачей слота: TrySetCanceled/TrySetResult выигрывает ровно
+/// один — отменённый waiter слота не получает, Release его пропускает (слот
+/// не теряется и не дублируется). Continuations — асинхронные: Release
+/// пробуждает ждущего НЕ под локом (иначе continuation выполнялся бы в потоке
+/// Release, удерживающем лок, — дедлок).</summary>
+public sealed class PrioritySlotGate(int capacity)
 {
     private readonly object _sync = new();
 
@@ -65,10 +65,15 @@ internal sealed class E2ePrioritySlotGate(int capacity)
     {
         lock (_sync)
         {
+            var handedOff = false;
             while (_waiters.TryDequeue(out var w, out _))
                 if (w.TrySetResult())
-                    return; // слот передан напрямую
-            _available++;
+                {
+                    handedOff = true;
+                    break;
+                }
+            if (!handedOff)
+                _available++;
         }
     }
 }

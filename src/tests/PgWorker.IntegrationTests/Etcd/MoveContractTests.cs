@@ -6,8 +6,7 @@ namespace PgWorker.IntegrationTests.Etcd;
 // Контракт заявок/статуса переездов на реальном etcd (spec §10
 // AC7): старейшая заявка по requested_unix, конкурентный flip-txn, атомарное
 // удаление статус-ключа. Ключи тестов — в своих кластерах /pgworker/moves/.
-[Collection(NonE2eCollection.Name)]
-public class MoveContractTests(EtcdFixture fixture)
+public class MoveContractTests(OwnedEtcdFixture fixture) : IClassFixture<OwnedEtcdFixture>
 {
     private string Endpoint => fixture.Endpoint;
 

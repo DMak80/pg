@@ -1,14 +1,12 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-    <!-- Канон параллелизма E2E (t24, решение гейта конфигурации Фазы 6):
-         единственный источник потолка — xunit.runner.json
-         (maxParallelThreads=5 — канон приёмки t24 фазы 4; xunit.v3 читает конфиг ТОЛЬКО из output —
-         копирование обязательно). Не-E2E классы — в последовательной
-         [Collection]-группе NonE2eCollection (DisableParallelization=true):
-         параллельная конкуренция для них не норма (эмпирика, журнал задачи).
-         Бывшие CollectionBehavior-атрибут (задавал N=1 всей сборке) и
-         Xunit*-свойства csproj (xunit.v3 не поддерживает) удалены. Канон и
-         правила соседней нагрузки — arch/testing/01-e2e-launch.md §5. -->
+    <!-- Канон параллелизма (arch/testing/01-e2e-launch.md §5): классы
+         параллельны per-class (collection-per-class, своё окружение на класс),
+         потолок ПОТОКОВ — xunit.runner.json (maxParallelThreads=5; xunit.v3
+         читает конфиг ТОЛЬКО из output — копирование обязательно), потолок
+         КОНТУРОВ — IntParallelismGuard (env PGW_INT_MAX_CONTOURS, дефолт 4,
+         приоритетный захват по весу класса — LPT). WAF-пара pgnode-api
+         (env-мутации процесса) — отдельной последовательной коллекцией. -->
     <ItemGroup>
         <None Update="xunit.runner.json" CopyToOutputDirectory="PreserveNewest"/>
     </ItemGroup>

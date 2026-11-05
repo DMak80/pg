@@ -22,8 +22,7 @@ namespace PgWorker.IntegrationTests.Backups;
 // пишет WAL_CHAIN_ERROR → BackupProcess планирует пересъём (IsDue walChainBroken) →
 // симуляция COMPLETED переснятого полного → WalStream контроль заживляет
 // (ACTIVE + агент тем же тиком). Реальный etcd, фейки docker/SQL/S3.
-[Collection(NonE2eCollection.Name)]
-public class BackupSelfHealTests(EtcdFixture fixture)
+public class BackupSelfHealTests(OwnedEtcdFixture fixture) : IClassFixture<OwnedEtcdFixture>
 {
     private readonly ClaimStore _claims = new("/pgworker", [fixture.Endpoint], fixture.Gateway, TimeProvider.System);
 

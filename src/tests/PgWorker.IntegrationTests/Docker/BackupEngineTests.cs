@@ -6,8 +6,7 @@ namespace PgWorker.IntegrationTests.Docker;
 
 // Docker-грань джоба бэкапа : логи контейнера + runtime-инспект
 // (exit-код) + HostConfig-поля tmpfs/extra_hosts (arch/backups/01-full-backup.md/§6).
-[Collection(NonE2eCollection.Name)]
-public class BackupEngineTests
+public class BackupEngineTests : IntSlotLifetime
 {
     [Fact]
     public async Task Logs_And_RuntimeInspect_OfExitedContainer()

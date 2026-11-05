@@ -11,8 +11,7 @@ namespace PgWorker.IntegrationTests.Etcd;
 // Контракт репарации на реальном etcd (adopt-repair spec §6): брошенные статусы
 // без заявок → синтетические заявки put-if-absent; операторская заявка не
 // затирается; свежий статус не диспатчится. ClaimStore — реальный с клэймом.
-[Collection(NonE2eCollection.Name)]
-public class RepairContractTests(EtcdFixture fixture)
+public class RepairContractTests(OwnedEtcdFixture fixture) : IClassFixture<OwnedEtcdFixture>
 {
     private EtcdGateway Gateway => fixture.Gateway;
 

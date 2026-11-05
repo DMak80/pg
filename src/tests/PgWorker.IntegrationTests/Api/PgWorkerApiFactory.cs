@@ -35,9 +35,14 @@ public class PgWorkerApiFactory(Etcd.EtcdFixture etcd) : WebApplicationFactory<P
     }
 }
 
-// Collection-fixture API-тестов: один etcd + одна WAF-фабрика на все Api-классы
-// (Task 4/5/6). Env-секреты Д7 ставим ДО первого CreateClient (SecretsFromEnv
-// читает переменные процесса при старте хоста) и убираем в Dispose.
+// Класс-фикстура API-тестов (per-class, параллелизм §5): свой etcd + своя
+// WAF-фабрика на каждый Api-класс. Env-секреты Д7 — STATIC-ONCE: значения
+// идентичны у всех фикстур, параллельные классы читают их при старте WAF-хоста
+// (SecretsFromEnv читает переменные процесса при первом CreateClient);
+// снятие в Dispose гонялось бы с чужим параллельным CreateClient — env живут
+// весь процесс (значения тестовые, утечки за пределы прогона нет).
+// Слот Guard'а — на всю жизнь класса (etcd-контур фикстуры), вес — по
+// владельцам типа фикстуры (канон §5).
 public sealed class PgApiFixture : IAsyncLifetime
 {
     public Etcd.EtcdFixture Etcd { get; } = new();
@@ -51,7 +56,8 @@ public sealed class PgApiFixture : IAsyncLifetime
     private static readonly Lazy<(string CaPem, string CaKeyPem)> RestCa =
         new(() => E2e.E2eTestPki.GenerateCa("waf-rest"));
 
-    public PgApiFixture()
+    // Env-секреты один раз на процесс (идентичны у всех API-фикстур).
+    private static readonly Lazy<bool> EnvOnce = new(() =>
     {
         Environment.SetEnvironmentVariable("PGW_PG_SUPERUSER_PASSWORD", "x");
         Environment.SetEnvironmentVariable("PGW_PG_STANDBY_PASSWORD", "x");
@@ -59,20 +65,42 @@ public sealed class PgApiFixture : IAsyncLifetime
         Environment.SetEnvironmentVariable("PGW_BUCKET_MOVER_PASSWORD", "x");
         Environment.SetEnvironmentVariable("PGW_REST_TLS_CA", RestTestCa.CaPem);
         Environment.SetEnvironmentVariable("PGW_REST_TLS_CA_KEY", RestTestCa.CaKeyPem);
+        return true;
+    });
+
+    public PgApiFixture()
+    {
+        _ = EnvOnce.Value;
         Factory = new PgWorkerApiFactory(Etcd);
     }
 
-    public async ValueTask InitializeAsync() => await Etcd.InitializeAsync();
+    public async ValueTask InitializeAsync()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await IntParallelismGuard.AcquireAsync(
+            Shared.TestInfra.Parallelism.TestClassWeight.OfFixture(GetType()), "pgapi", ct);
+        try
+        {
+            await Etcd.InitializeAsync();
+        }
+        catch
+        {
+            IntParallelismGuard.Release("pgapi");
+            throw;
+        }
+    }
 
     public async ValueTask DisposeAsync()
     {
-        await Factory.DisposeAsync();
-        await Etcd.DisposeAsync();
-        Environment.SetEnvironmentVariable("PGW_PG_SUPERUSER_PASSWORD", null);
-        Environment.SetEnvironmentVariable("PGW_PG_STANDBY_PASSWORD", null);
-        Environment.SetEnvironmentVariable("PGW_BUCKET_ADMIN_PASSWORD", null);
-        Environment.SetEnvironmentVariable("PGW_BUCKET_MOVER_PASSWORD", null);
-        Environment.SetEnvironmentVariable("PGW_REST_TLS_CA", null);
-        Environment.SetEnvironmentVariable("PGW_REST_TLS_CA_KEY", null);
+        // Слот — при любом исходе teardown (см. OwnedEtcdFixture.DisposeAsync).
+        try
+        {
+            await Factory.DisposeAsync();
+            await Etcd.DisposeAsync();
+        }
+        finally
+        {
+            IntParallelismGuard.Release("pgapi");
+        }
     }
 }

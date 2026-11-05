@@ -30,34 +30,60 @@ public class MetricsApiFactory(Etcd.EtcdFixture etcd) : WebApplicationFactory<Pr
     }
 }
 
-// Collection-fixture метрик: отдельная от pg-api — циклы живы, префикс 9997 не
-// конфликтует с advertise API-серии; env-секреты Д7 до CreateClient (тот же
-// паттерн PgApiFixture).
+// Класс-фикстура метрик (per-class, параллелизм §5): свой etcd + своя
+// MetricsApiFactory на класс; hosted-сервисы живы (MeterProvider для
+// /metrics). Env-секреты — STATIC-ONCE (идентичны PgApiFixture, живут весь
+// процесс: снятие в Dispose гонялось бы с параллельным CreateClient).
+// Слот Guard'а — на всю жизнь класса, вес — по владельцам типа фикстуры.
 public sealed class PgMetricsFixture : IAsyncLifetime
 {
     public Etcd.EtcdFixture Etcd { get; } = new();
 
     public MetricsApiFactory Factory { get; }
 
-    public PgMetricsFixture()
+    private static readonly Lazy<bool> EnvOnce = new(() =>
     {
         Environment.SetEnvironmentVariable("PGW_PG_SUPERUSER_PASSWORD", "x");
         Environment.SetEnvironmentVariable("PGW_PG_STANDBY_PASSWORD", "x");
         Environment.SetEnvironmentVariable("PGW_BUCKET_ADMIN_PASSWORD", "x");
         Environment.SetEnvironmentVariable("PGW_BUCKET_MOVER_PASSWORD", "x");
+        return true;
+    });
+
+    public PgMetricsFixture()
+    {
+        _ = EnvOnce.Value;
         Factory = new MetricsApiFactory(Etcd);
     }
 
-    public async ValueTask InitializeAsync() => await Etcd.InitializeAsync();
+    public async ValueTask InitializeAsync()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await IntParallelismGuard.AcquireAsync(
+            Shared.TestInfra.Parallelism.TestClassWeight.OfFixture(GetType()), "pgmet", ct);
+        try
+        {
+            await Etcd.InitializeAsync();
+        }
+        catch
+        {
+            IntParallelismGuard.Release("pgmet");
+            throw;
+        }
+    }
 
     public async ValueTask DisposeAsync()
     {
-        await Factory.DisposeAsync();
-        await Etcd.DisposeAsync();
-        Environment.SetEnvironmentVariable("PGW_PG_SUPERUSER_PASSWORD", null);
-        Environment.SetEnvironmentVariable("PGW_PG_STANDBY_PASSWORD", null);
-        Environment.SetEnvironmentVariable("PGW_BUCKET_ADMIN_PASSWORD", null);
-        Environment.SetEnvironmentVariable("PGW_BUCKET_MOVER_PASSWORD", null);
+        // Слот — при любом исходе teardown (см. OwnedEtcdFixture.DisposeAsync).
+        try
+        {
+            await Factory.DisposeAsync();
+            await Etcd.DisposeAsync();
+        }
+        finally
+        {
+            IntParallelismGuard.Release("pgmet");
+        }
     }
 }
 

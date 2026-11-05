@@ -1,12 +1,10 @@
 namespace PgWorker.IntegrationTests.E2e;
 
-using System.Collections.Concurrent;
-using System.Reflection;
-using Xunit;
+using Shared.TestInfra.Parallelism;
 
 /// <summary>Дроссель живых E2E-контуров (arch/testing/01-e2e-launch.md §5): ЖЁСТКИЙ
-/// потолок (не только предупреждение) — факты-оркестраторы ждут слот до
-/// освобождения контура. Дефолт 3 — СТАБИЛЬНЫЙ старт параллельности
+/// потолок PrioritySlotGate (Shared.TestInfra) — факты-оркестраторы ждут слот
+/// до освобождения контура. Дефолт 3 — СТАБИЛЬНЫЙ старт параллельности
 /// (5 контуров на 7.7GB docker-VM перегружали демон — каскад таймаутов);
 /// настраивается без правок кода: env PGW_E2E_MAX_CONTOURS (5/8 — подъём
 /// после наращивания ресурсов). xunit.runner.json maxParallelThreads —
@@ -19,9 +17,7 @@ using Xunit;
 /// канона требуют пометки).</summary>
 internal static class E2eParallelismGuard
 {
-    private static readonly E2ePrioritySlotGate Gate = new(ParseMax());
-
-    private static readonly ConcurrentDictionary<Type, int> WeightCache = new();
+    private static readonly PrioritySlotGate Gate = new(ParseMax());
 
     private static int _live;
 
@@ -31,23 +27,8 @@ internal static class E2eParallelismGuard
         return int.TryParse(raw, out var n) && n >= 1 ? n : 3;
     }
 
-    /// <summary>Вес класса-фикстуры: суммарное число фактов всех тестовых
-    /// классов, привязанных к ней через IClassFixture&lt;&gt; (унаследованные
-    /// факты абстрактных сценариев считаются — GetMethods их видит).
-    /// [Theory] считается одним фактом. Фикстура без тестовых классов —
-    /// вес 0 (в очереди ниже любого класса с фактом).</summary>
-    public static int WeightOf(Type fixtureType)
-        => WeightCache.GetOrAdd(fixtureType, static t =>
-        {
-            var marker = typeof(IClassFixture<>).MakeGenericType(t);
-            return t.Assembly.GetTypes()
-                .Where(test => test != t && marker.IsAssignableFrom(test))
-                .Sum(CountFacts);
-        });
-
-    private static int CountFacts(Type testType)
-        => testType.GetMethods()
-            .Count(m => m.IsDefined(typeof(FactAttribute), inherit: false)); // Theory : Fact
+    /// <summary>Вес класса-фикстуры (делегат Shared.TestInfra.Parallelism).</summary>
+    public static int WeightOf(Type fixtureType) => TestClassWeight.OfFixture(fixtureType);
 
     /// <summary>Захват слота контура с приоритетом по весу класса-фикстуры
     /// (ждёт освобождения; отмена — по токену). Парный вызов —
