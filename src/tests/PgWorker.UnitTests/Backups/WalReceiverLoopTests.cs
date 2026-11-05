@@ -993,6 +993,46 @@ public class WalReceiverLoopTests
         }
     }
 
+    // AAA (arch/pgnode/03 §3): хвост S3 впереди текущей позиции записи сервера
+    // (restore вернул LSN назад — сегменты откатанной ветки остались в wal/) —
+    // старт от хвоста ЖИВОЙ ветки (CheckWithRestart): запрошенную точку сервер
+    // не отдаёт (flush позади), retry-цикл стоял бы до его догона.
+    [Fact]
+    public async Task TailBeyondServerPosition_StartsFromLiveBranchTail()
+    {
+        // Arrange — архив: TLI 1 №0..15 (откатанная ветка) + TLI 3 №14 (живая);
+        // сервер на TLI 3, позиция записи — внутри сегмента №15
+        var etcd = new FakeEtcd();
+        SeedHappyPath(etcd);
+        var s3 = new FakeS3();
+        foreach (var seg in Enumerable.Range(0, 16))
+            s3.Objects[WalKeyOf(1, seg)] = SegmentData(1, (ulong)seg * SegmentBytes);
+        s3.Objects[WalKeyOf(3, 14)] = SegmentData(3, 14UL * SegmentBytes);
+        var started = new TaskCompletionSource<ulong>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var (loop, cts, _) = StartLoop(etcd, WalReceiverRole.Master, () => new FakeXLogSource
+        {
+            Identity = new ServerIdentity(3, 15UL * SegmentBytes + 4096),
+            StartPolicy = (startLsn, _) =>
+            {
+                started.TrySetResult(startLsn);
+                return Result.Success();
+            },
+        }, s3: s3);
+        try
+        {
+            // Act — стартовая позиция первой сессии
+            var startLsn = await started.Task.WaitAsync(Budget, TestContext.Current.CancellationToken);
+
+            // Assert — старт от конца живого TLI 3 №14 (0/0F000000), а не от
+            // откатанного TLI 1 №15 (0/10000000, впереди позиции сервера)
+            startLsn.Should().Be(15UL << 24);
+        }
+        finally
+        {
+            await StopLoopAsync(loop, cts);
+        }
+    }
+
     // ── Ре-доклад инвентаря.history (spec §3.1 п.6, arch/19 §3) ──
 
     // tmpdir с pg_wal-файлом истории (имя — 8 hex + ".history", как пишет PG).

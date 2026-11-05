@@ -345,6 +345,33 @@ public sealed class WalReceiverCore
                     tailSegment = null;
                 }
 
+                // Стартовая позиция выше текущей позиции записи сервера —
+                // хвост ОТКАТАННОЙ ветки после restore (откат вернул LSN назад;
+                // сегменты прежней ветки выше точки форка остались в wal/):
+                // сервер физически не отдаст точку (flush позади), и retry-цикл
+                // стоял бы до его догона. Берём хвост ЖИВОЙ ветки
+                // (CheckWithRestart); нет сегментов живой ветки или он тоже
+                // впереди — прежний retry (сервер догонит). arch/pgnode/03 §3.
+                if (tailSegment is not null)
+                {
+                    var identity = await source.IdentifySystemAsync(sct);
+                    if (identity.IsSuccess && startAt > identity.Value.XLogPos)
+                    {
+                        var live = await S3TailResolver.ResolveLiveTailAsync(
+                            s3, o.Cluster, o.Shard, sct);
+                        if (live.IsSuccess && live.Value is { } liveTail
+                            && liveTail.Position <= identity.Value.XLogPos)
+                        {
+                            Diagnostic(events,
+                                $"tail {tailSegment} is beyond server position " +
+                                $"{identity.Value.XLogPos:x} — starting from live branch tail " +
+                                $"{liveTail.SegmentName}");
+                            startAt = liveTail.Position;
+                            tailSegment = liveTail.SegmentName;
+                        }
+                    }
+                }
+
                 // 3. START_REPLICATION с явной стартовой позицией; отказ 58P01 — tli-процедура
                 //    (досыпка старого таймлайна / прыжок на текущий) вместо retry. Процедура
                 //    стартовала — приём продолжается от её позиции; не стартовала — обычный
@@ -1157,8 +1184,17 @@ public sealed class WalReceiverCore
     }
 
     /// <summary>Имя хвостового сегмента непрерывной части цепочки по списку
-    /// имён (минимальный сегмент → WalChain.Check — та же непрерывность, что
-    /// у S3TailResolver).</summary>
+    /// имён (минимальный сегмент → WalChain.Check — непрерывность без
+    /// перезапуска от нового TLI). Отличие от S3TailResolver осознанно:
+    /// стартовая позиция стрима ОБЯЗАНА быть на живой ветке (CheckWithRestart —
+    /// иначе старт окажется впереди flush-позиции сервера, arch/pgnode/03 §3),
+    /// а здесь граница прохода остаётся на ПРЕЖНЕЙ непрерывной части: сегменты
+    /// откатанной ветки дальше не доносятся (их позиции заняты, ветка мертва —
+    /// проход остановит mixedness-гейт), но и перепрыгнуть на новую ветку
+    /// нельзя — иначе закрытые локальные сегменты между своим прогрессом и
+    /// новым TLI были бы потеряны. При отсутствии собственного доставленного
+    /// прогресса проход начинается от этой границы (шаг 3 догонит живую ветку
+    /// по возрастанию позиций).</summary>
     private static string? ChainTailOf(IReadOnlyDictionary<long, string> namesByPos)
     {
         var startName = namesByPos[namesByPos.Keys.Min()];

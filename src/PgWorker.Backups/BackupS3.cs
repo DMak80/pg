@@ -20,8 +20,10 @@ public sealed record S3ObjectInfo(string Key, long SizeBytes, DateTimeOffset Las
 /// стенда/фикстур (прямой AWSSDK-клиент), НЕ интерфейс подсистемы.
 /// ListPrefixAsync/DeleteKeysAsync — ретенционные list с размерами и
 /// batch-delete (S3-удаления ТОЛЬКО в ретенционных путях, R4).
-/// ListAsync — verify-листинг относительно &lt;C&gt;/&lt;X&gt;/ (общий кор
-/// пагинации с ListPrefixAsync). ListFullsAsync — DR-поиск полных: объекты
+/// ListAsync — узкий листинг приёмника WAL относительно &lt;C&gt;/&lt;X&gt;/
+/// (общий кор пагинации с ListPrefixAsync): дельта-памп `wal/<seg>` (финал +
+/// кусочное семейство) и поглощение версий финалом (list + batch-delete).
+/// ListFullsAsync — DR-поиск полных: объекты
 /// `full/<id>.tar`, id — имя без `.tar` (spec t01 §6.1). restore/drill и
 /// verify S3 ТОЛЬКО читают (стрим/HEAD/Range/файл) — удаляющих операций тут
 /// нет (arch/19 §3.5); удаление полного — отдельный IDeleteObjectS3.</summary>
@@ -49,9 +51,9 @@ public interface IBackupS3
     /// доставлены целыми. sha256=null — без проверки (мелкие служебные объекты).</summary>
     Task<Result> PutObjectAsync(string key, byte[] data, string? sha256, CancellationToken ct = default);
 
-    /// <summary>Листинг произвольного префикса (verify): prefix — относительно
-    /// &lt;C&gt;/&lt;X&gt;/, напр. "wal/"; та же пагинация list-v2
-    /// через общий кор с ListPrefixAsync.</summary>
+    /// <summary>Листинг узкого префикса приёмником WAL: prefix — относительно
+    /// &lt;C&gt;/&lt;X&gt;/, напр. "wal/&lt;seg&gt;" (дельта-памп и поглощение версий
+    /// финалом); та же пагинация list-v2 через общий кор с ListPrefixAsync.</summary>
     Task<Result<IReadOnlyList<WalObject>>> ListAsync(
         string cluster, string shard, string prefix, int? maxKeysPerTest = null, CancellationToken ct = default);
 

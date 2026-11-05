@@ -114,14 +114,18 @@ public sealed class VerifyOperation : IReceiverOperation
                 return;
             }
 
-            var manifestJson = await ReadManifestAsync(
-                streamer, cluster, shard, objectKey, size, token);
             if (size <= 0)
             {
-                // Пустой объект у COMPLETED-полного — вердикт о данных.
+                // Пустой объект у COMPLETED-полного — вердикт о данных
+                // (permanent, arch/pgnode/05 §2). Проверка ДО Range-чтения
+                // хвоста: диапазон [0, -1] сервер отвергает 416, и ошибка
+                // ушла бы в transient-ветку вместо вердикта.
                 Fail(OperationPhases.Verifying, $"{objectKey}: object is empty");
                 return;
             }
+
+            var manifestJson = await ReadManifestAsync(
+                streamer, cluster, shard, objectKey, size, token);
 
             if (manifestJson is null)
             {

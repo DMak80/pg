@@ -152,14 +152,14 @@ public class BackupVerifyProcessTests
         return JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(kv.Value!.Value)!["verify"];
     }
 
-    // AAA: PENDING-кандидат при on_create — цепочка цела → GET 404 → POST
+    // AAA: PENDING-кандидат при on_create — GET 404 (операции нет) → POST
     // запускает verify-операцию на приёмнике ноды-источника + journal started
-    // (AC1; секреты — только в POST-теле)
+    // (AC1; секреты — только в POST-теле). Цепочку/набор сверяет сама
+    // операция приёмника — тик воркера S3 не читает.
     [Fact]
-    public async Task TickPendingCandidateIntactChainStartsOperation()
+    public async Task TickPendingCandidateStartsOperation()
     {
-        // Arrange — full COMPLETED verify=PENDING; wal/: сегменты 1..3 + history нет;
-        // pg_wal набора: сегмент 3 (end); приёмник отвечает 404 (операции нет)
+        // Arrange — full COMPLETED verify=PENDING; приёмник отвечает 404 (операции нет)
         var ct = TestContext.Current.CancellationToken;
         await using var fx = await OwnEtcd.StartAsync("verify", ct);
         Fx = fx;
@@ -168,7 +168,6 @@ public class BackupVerifyProcessTests
         s3.Objects.Add(("vc1", "shard1", "000000010000000000000001"));
         s3.Objects.Add(("vc1", "shard1", "000000010000000000000002"));
         s3.Objects.Add(("vc1", "shard1", "000000010000000000000003"));
-        s3.PrefixedObjects.Add(("vc1", "shard1", "full/20260911120000Z/pg_wal/000000010000000000000003"));
         Receiver.GetReply = new ReceiverReply(404, null, null);
         var process = BuildProcess("vc1", s3);
         var backups = BackupsOf("vc1", Completed("20260911120000Z", "000000010000000000000001",
@@ -201,7 +200,6 @@ public class BackupVerifyProcessTests
         await SeedAsync("vc9");
         var s3 = new FakeBackupS3();
         s3.Objects.Add(("vc9", "shard1", "000000010000000000000001"));
-        s3.PrefixedObjects.Add(("vc9", "shard1", "full/20260911120000Z/pg_wal/000000010000000000000001"));
         Receiver.GetReply = new ReceiverReply(404, null, null);
         Receiver.StartReply = new ReceiverReply(500, null, "receiver busy");
         var candidate = Completed("20260911120000Z", "000000010000000000000001",
@@ -276,70 +274,6 @@ public class BackupVerifyProcessTests
         body.S3.AccessKey.Should().Be("ak");
     }
 
-    // AAA: transient S3 (list wal/ недоступен) — шард-skip тиком: тик успешен,
-    // операция не запускается, ключ полного НЕ изменён (spec §3.1: статус не трогаем)
-    [Fact]
-    public async Task TickTransientS3StatusUntouched()
-    {
-        // Arrange — PENDING-ключ в etcd (записан руками — ассерт «не изменён»);
-        // S3 «лежит» (FakeBackupS3.Fails)
-        var ct = TestContext.Current.CancellationToken;
-        await using var fx = await OwnEtcd.StartAsync("verify", ct);
-        Fx = fx;
-        await SeedAsync("vc6");
-        var s3 = new FakeBackupS3 { Fails = true };
-        var candidate = Completed("20260911120000Z", "000000010000000000000001",
-            new BackupVerify(BackupVerifyStatus.Pending, null));
-        var key = $"/pgworker/backups/vc6/shard1/full/20260911120000Z";
-        var before = BackupStatusJson.Serialize(candidate);
-        await Fx.Gateway.PutAsync(Fx.Endpoint, key, before, null, ct);
-        var process = BuildProcess("vc6", s3);
-        var backups = BackupsOf("vc6", candidate);
-
-        // Act
-        var result = await process.TickAsync(BuildSnap("vc6"), backups, ct);
-
-        // Assert — transient: тик без ошибки (шард-skip), ничего не запущено/не записано
-        result.IsSuccess.Should().BeTrue("transient S3 — not a tick error (spec §3.1)");
-        Receiver.StartBodies.Should().BeEmpty("an operation without a chain does not start");
-        var after = (await Fx.Gateway.GetAsync(Fx.Endpoint, key, ct)).Value!.Value;
-        after.Should().Be(before, "the PENDING status is untouched — retry on the next tick");
-    }
-
-    // AAA: transient GET history (spec §3.1): цепочка с TLI-переходом требует
-    // скачивания .history → GET падает → шард-skip, запуска нет, статус не тронут
-    [Fact]
-    public async Task TickTransientGetHistoryStatusUntouched()
-    {
-        // Arrange — сид как в vc4 (TLI-переход в диапазоне), но GET падает;
-        // PENDING-ключ в etcd для ассерта «не изменён»
-        var ct = TestContext.Current.CancellationToken;
-        await using var fx = await OwnEtcd.StartAsync("verify", ct);
-        Fx = fx;
-        await SeedAsync("vc7");
-        var s3 = new FakeBackupS3 { FailsGetObject = true };
-        s3.Objects.Add(("vc7", "shard1", "000000010000000000000001"));
-        s3.Objects.Add(("vc7", "shard1", "00000002.history"));
-        s3.Objects.Add(("vc7", "shard1", "000000020000000000000002"));
-        s3.PrefixedObjects.Add(("vc7", "shard1", "full/20260911120000Z/pg_wal/000000020000000000000002"));
-        s3.Contents[("vc7", "shard1", "wal/00000002.history")] = "1\t0/2000000\n";
-        var candidate = Completed("20260911120000Z", "000000010000000000000001",
-            new BackupVerify(BackupVerifyStatus.Pending, null));
-        var key = "/pgworker/backups/vc7/shard1/full/20260911120000Z";
-        var before = BackupStatusJson.Serialize(candidate);
-        await Fx.Gateway.PutAsync(Fx.Endpoint, key, before, null, ct);
-        var process = BuildProcess("vc7", s3);
-
-        // Act
-        var result = await process.TickAsync(BuildSnap("vc7"), BackupsOf("vc7", candidate), ct);
-
-        // Assert — list прошёл (переход в диапазоне найден), GET упал → transient
-        result.IsSuccess.Should().BeTrue("transient GET — not a tick error (spec §3.1)");
-        Receiver.StartBodies.Should().BeEmpty("without the history content the strict parse is impossible — the operation does not start");
-        var after = (await Fx.Gateway.GetAsync(Fx.Endpoint, key, ct)).Value!.Value;
-        after.Should().Be(before, "the PENDING status is untouched — retry on the next tick");
-    }
-
     // Локальный хелпер: PENDING-кандидат + непрерывная цепочка 1..3; первый тик
     // (GET 404 → POST 202) запускает verify-операцию — precondition супервиз-тестов.
     private async Task StartOperationAsync(string cluster, FakeBackupS3 s3, string id = "20260911120000Z")
@@ -347,7 +281,6 @@ public class BackupVerifyProcessTests
         s3.Objects.Add((cluster, "shard1", "000000010000000000000001"));
         s3.Objects.Add((cluster, "shard1", "000000010000000000000002"));
         s3.Objects.Add((cluster, "shard1", "000000010000000000000003"));
-        s3.PrefixedObjects.Add((cluster, "shard1", $"full/{id}/pg_wal/000000010000000000000003"));
         Receiver.GetReply = new ReceiverReply(404, null, null);
         var process = BuildProcess(cluster, s3);
         var backups = BackupsOf(cluster, Completed(id, "000000010000000000000001",
@@ -630,7 +563,6 @@ public class BackupVerifyProcessTests
         s3.Objects.Add(("sv9", "shard1", "000000010000000000000001"));
         s3.Objects.Add(("sv9", "shard1", "000000010000000000000002"));
         s3.Objects.Add(("sv9", "shard1", "000000010000000000000003"));
-        s3.PrefixedObjects.Add(("sv9", "shard1", "full/20260911090000Z/pg_wal/000000010000000000000003"));
         Receiver.GetReply = new ReceiverReply(200,
             new ReceiverStatus("running", "verifying", Id: "20260911090000Z", StartedUnix: now - 7 * 3600), null);
         var a = Completed("20260911090000Z", "000000010000000000000001",
@@ -678,8 +610,6 @@ public class BackupVerifyProcessTests
         await SeedAsync("sv5");
         var s3 = new FakeBackupS3();
         s3.Objects.Add(("sv5", "shard1", "000000010000000000000001"));
-        s3.PrefixedObjects.Add(("sv5", "shard1", "full/20260911090000Z/pg_wal/000000010000000000000001"));
-        s3.PrefixedObjects.Add(("sv5", "shard1", "full/20260911120000Z/pg_wal/000000010000000000000001"));
         Receiver.GetReply = new ReceiverReply(404, null, null);
         var process = BuildProcess("sv5", s3);
         var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
@@ -718,7 +648,6 @@ public class BackupVerifyProcessTests
         await SeedAsync("sv6");
         var s3 = new FakeBackupS3();
         s3.Objects.Add(("sv6", "shard1", "000000010000000000000001"));
-        s3.PrefixedObjects.Add(("sv6", "shard1", "full/20260911120000Z/pg_wal/000000010000000000000001"));
         var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         var okBackup = Completed("20260911120000Z", "000000010000000000000001",
             new BackupVerify(BackupVerifyStatus.Ok, now - 7200));
@@ -781,7 +710,6 @@ public class BackupVerifyProcessTests
         await SeedAsync("sv8");
         var s3 = new FakeBackupS3();
         s3.Objects.Add(("sv8", "shard1", "000000010000000000000001"));
-        s3.PrefixedObjects.Add(("sv8", "shard1", "full/20260911090000Z/pg_wal/000000010000000000000001"));
         var a = Completed("20260911090000Z", "000000010000000000000001",
             new BackupVerify(BackupVerifyStatus.Pending, null));
         var b = Completed("20260911120000Z", "000000010000000000000001",
@@ -819,7 +747,6 @@ public class BackupVerifyProcessTests
             Portalloc.Serialize(new Dictionary<string, NodeAddress>()), null, ct);
         var s3 = new FakeBackupS3();
         s3.Objects.Add(("vc8", "shard1", "000000010000000000000001"));
-        s3.PrefixedObjects.Add(("vc8", "shard1", "full/20260911120000Z/pg_wal/000000010000000000000001"));
         var outcomes = new List<(string C, string S, string Result)>();
         var process = BuildProcess("vc8", s3, verifyObserver: (c, s, r) => outcomes.Add((c, s, r)));
         var backups = BackupsOf("vc8", Completed("20260911120000Z", "000000010000000000000001",
