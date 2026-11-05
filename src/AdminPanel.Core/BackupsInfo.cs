@@ -34,7 +34,7 @@ public sealed record WalLifeInfo(
 /// префикс «&lt;C&gt;/&lt;X&gt;»,
 /// kind shard|cluster, размер, первое наблюдение, состояние OBSERVED|DELETING;
 /// HasValidFull — автозащита DR-hold (reliability, arch/19 §4): в префиксе
-/// есть валидный полный (full/&lt;id&gt;/backup_manifest), TTL-автоматика не
+/// есть валидный полный (объект full/&lt;id&gt;.tar), TTL-автоматика не
 /// удалит; отсутствие поля (старый воркер) — false.</summary>
 public sealed record BackupOrphanInfo(
     string Prefix, string Kind, long SizeBytes, long FirstSeenUnix, string State,

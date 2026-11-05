@@ -186,6 +186,47 @@ public class BackupApiOperationTests : IDisposable
         created.Should().Equal(Id);
     }
 
+    // AAA (#8): id вне allowlist на границе операции — 400 ДО запуска
+    // (id уходит в SQL-литерал LABEL, S3-ключи и логи).
+    [Fact]
+    public async Task PostFull_InvalidId_Returns400NotStarted()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        // Arrange — пустой реестр; id с кавычкой/переводом строки.
+        var (_, client, _, _, created, _) = Build();
+
+        // Act — три недопустимых id: кавычка, перевод строки, пробел.
+        var quote = await client.PostAsJsonAsync(
+            "/api/backup/full", new StartFullRequest("a'b"), ct);
+        var newline = await client.PostAsJsonAsync(
+            "/api/backup/full", new StartFullRequest("a\nb"), ct);
+        var space = await client.PostAsJsonAsync(
+            "/api/backup/full", new StartFullRequest("a b"), ct);
+
+        // Assert — 400 на каждом, операция не создана.
+        ((int)quote.StatusCode).Should().Be(400);
+        ((int)newline.StatusCode).Should().Be(400);
+        ((int)space.StatusCode).Should().Be(400);
+        created.Should().BeEmpty("an invalid id never reaches the operation factory");
+    }
+
+    [Fact]
+    public async Task PostVerify_InvalidBackupId_Returns400NotStarted()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        // Arrange
+        var (_, client, _, _, created, _) = Build();
+        var body = new StartVerifyRequest(
+            "bad/id", new S3Context(["http://s3a:9000"], "ak", "sk", "b", "c1/s1"));
+
+        // Act
+        var response = await client.PostAsJsonAsync("/api/ops/verify", body, ct);
+
+        // Assert
+        ((int)response.StatusCode).Should().Be(400);
+        created.Should().BeEmpty();
+    }
+
     [Fact]
     public async Task PostFull_SecondCall_Returns409()
     {

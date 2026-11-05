@@ -33,12 +33,18 @@ namespace PgWorker.PgNode;
 // шаг 9); точка входа — static Main.
 internal partial class Program
 {
-    // Дефолт каталога staging полного в data-volume ноды (arch/19 §9);
-
     private static readonly JsonSerializerOptions JsonOpts = new()
     {
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
     };
+
+    // Allowlist идентификатора на границе операций (arch/pgnode/02-api.md §2):
+    // id идёт в SQL-литерал LABEL, S3-ключи и логи — произвольный текст
+    // недопустим (граница принимает только имя; иное — 400).
+    private static readonly System.Text.RegularExpressions.Regex IdPattern =
+        new("^[A-Za-z0-9._-]{1,64}$", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+    private static bool IsValidId(string? id) => id is not null && IdPattern.IsMatch(id);
 
     private static async Task Main(string[] args)
     {
@@ -307,6 +313,10 @@ internal partial class Program
         app.MapPost("/api/ops/verify", (StartVerifyRequest body,
             OpsOperationRegistry registry, IOpsOperationFactory factory) =>
         {
+            if (!IsValidId(body.BackupId))
+                return Results.Json(
+                    new ErrorResponse("invalid backup_id (allowlist [A-Za-z0-9._-]{1,64})"),
+                    JsonOpts, statusCode: 400);
             if (!registry.TryBegin(new OperationSnapshot(
                     body.BackupId, OperationStates.Running, OperationPhases.Downloading,
                     StartedUnix: DateTimeOffset.UtcNow.ToUnixTimeSeconds())))
@@ -332,6 +342,10 @@ internal partial class Program
         app.MapPost("/api/ops/restore", (StartRestoreRequest body,
             OpsOperationRegistry registry, IOpsOperationFactory factory) =>
         {
+            if (!IsValidId(body.BackupId) || (body.Id is not null && !IsValidId(body.Id)))
+                return Results.Json(
+                    new ErrorResponse("invalid backup_id/id (allowlist [A-Za-z0-9._-]{1,64})"),
+                    JsonOpts, statusCode: 400);
             if (!registry.TryBegin(new OperationSnapshot(
                     body.Id ?? body.BackupId, OperationStates.Running, OperationPhases.Downloading,
                     StartedUnix: DateTimeOffset.UtcNow.ToUnixTimeSeconds())))
@@ -394,6 +408,10 @@ internal partial class Program
             IEtcdGateway etcd,
             CancellationToken ct) =>
         {
+            if (!IsValidId(body.Id))
+                return Results.Json(
+                    new ErrorResponse("invalid id (allowlist [A-Za-z0-9._-]{1,64})"),
+                    JsonOpts, statusCode: 400);
             var gates = await WalReceiverGates.ReadAsync(
                 etcd, endpoints, identity.Cluster, identity.Shard, ct);
             if (gates.Disabled || (gates.Paused && !gates.ChainError) || gates.Unknown)

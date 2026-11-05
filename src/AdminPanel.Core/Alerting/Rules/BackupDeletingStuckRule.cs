@@ -47,7 +47,7 @@ public sealed class BackupDeletingStuckRule(IOptions<AlertsOptions> options) : I
                     ["staleSeconds"] = staleSec.ToString(),
                 },
                 null, // SinceUnix — проставляет AlertEngine
-                "delete is idempotent: each retention pass repeats list+delete of the full/<id>/ prefix — a stall indicates a transient S3 failure",
+                "delete is idempotent: each retention pass repeats single-object delete of full/<id>.tar — a stall indicates a transient S3 failure",
                 AlertRemedy.WorkerAuto,
                 "check S3 availability (endpoint/credentials/network) and /pgworker/work/<C> logs (phase=backups-retention) — repeated passes will complete the delete on their own");
         }

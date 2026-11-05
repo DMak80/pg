@@ -88,6 +88,53 @@ public class S3InventoryTests
         inv.ObjectCount.Should().Be(1);
     }
 
+    // AAA: полный в текущем layout — ОДИН объект full/<id>.tar: Id без `.tar`
+    // (иначе join S3↔etcd по Id даёт ложную пару S3Only+EtcdOnly), один объект.
+    [Fact]
+    public void Build_TarObject_IdWithoutSuffix()
+    {
+        // Arrange — объект полного и WAL-сегмент рядом
+        var objects = new List<S3InventoryObject>
+        {
+            new("demo/s1/full/20261105120000Z.tar", 4096, 1000),
+            new("demo/s1/wal/000000010000000000000001", 16, 1001),
+        };
+
+        // Act
+        var inv = S3Inventory.Build(objects);
+
+        // Assert — Id ровно имя без суффикса, объект один, размер объекта
+        var shard = inv.Clusters.Should().ContainSingle().Subject
+            .Shards.Should().ContainSingle().Subject;
+        var full = shard.Fulls.Should().ContainSingle().Subject;
+        full.Id.Should().Be("20261105120000Z");
+        full.ObjectCount.Should().Be(1);
+        full.SizeBytes.Should().Be(4096);
+        inv.UsedBytes.Should().Be(4112);
+    }
+
+    // AAA: id из ключа-«маркера» `full/<id>.tar` не путается с каталогом
+    // старого layout: оба агрегируются под одним Id (обратная совместимость).
+    [Fact]
+    public void Build_OldAndNewLayout_SameIdAggregated()
+    {
+        // Arrange — старый пофайловый ключ и новый объект с одним id
+        var objects = new List<S3InventoryObject>
+        {
+            new("demo/s1/full/b1/base.tar", 100, 1),
+            new("demo/s1/full/b1.tar", 200, 2),
+        };
+
+        // Act
+        var inv = S3Inventory.Build(objects);
+
+        // Assert — один полный b1: размер/объекты суммированы
+        var full = inv.Clusters[0].Shards[0].Fulls.Should().ContainSingle().Subject;
+        full.Id.Should().Be("b1");
+        full.SizeBytes.Should().Be(300);
+        full.ObjectCount.Should().Be(2);
+    }
+
     // AAA: два кластера → раздельные размеры, сортировка кластеров/шардов Ordinal
     [Fact]
     public void Build_TwoClustersShards_SortedOrdinal()
