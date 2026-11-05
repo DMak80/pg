@@ -578,11 +578,11 @@ public sealed class PlainClusterDriver(
             if (!string.IsNullOrWhiteSpace(backupEnv.CaPem))
                 env["PGW_BACKUP_S3_CA_PEM"] = backupEnv.CaPem;
             // Период .partial-доотправки приёмника (arch/19 §3/§9): env по образцу
-            // staging; null/≤1 → env не ставится — приёмник берёт дефолт 3 с.
+            // bucket/CA; null/≤1 → env не ставится — приёмник берёт дефолт 3 с.
             if (backupEnv.PartialIntervalSec is > 0)
                 env["PGW_WAL_PARTIAL_INTERVAL_SEC"] = backupEnv.PartialIntervalSec.Value.ToString();
-            // t15 (arch/backups/09 §1): период компакции дельт приёмника — env по
-            // образцу выше; null/<60 → не ставится (приёмник берёт дефолт 3600).
+            // t15 (arch/backups/09 §1): период компакции дельт приёмника — env
+            // по образцу выше; null/<60 → не ставится (дефолт 3600).
             if (backupEnv.PartialCompactIntervalSec is >= 60)
                 env["PGW_WAL_PARTIAL_COMPACT_INTERVAL_SEC"] =
                     backupEnv.PartialCompactIntervalSec.Value.ToString();

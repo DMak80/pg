@@ -7,8 +7,8 @@ namespace PgWorker.Backups.Tar;
 public sealed record TarEntry(string Name, char TypeFlag, long Size, int Mode, string LinkName);
 
 /// <summary>Поддерживаемые typeflag tar-записей (spec t01 §6.15): файл,
-/// каталог, symlink, служебные GNU longname и PAX. Прочие — ошибка формата
-/// (hardlink'ов в PGDATA нет — fail-fast вместо эмуляции).</summary>
+/// каталог, symlink, служебные GNU longname/longlink и PAX. Прочие — ошибка
+/// формата (hardlink'ов в PGDATA нет — fail-fast вместо эмуляции).</summary>
 public static class TarTypeFlags
 {
     public const char File = '0';
@@ -16,6 +16,7 @@ public static class TarTypeFlags
     public const char Dir = '5';
     public const char Symlink = '2';
     public const char GnuLongName = 'L';
+    public const char GnuLongLink = 'K';
     public const char PaxHeader = 'x';
 }
 

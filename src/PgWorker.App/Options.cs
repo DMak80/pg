@@ -554,7 +554,7 @@ public sealed class BackupsJobOptions
 {
     /// <summary>Бюджет активного полного (PLANNED/RUNNING/UPLOADING), c :
     /// возраст > лимита → FAILED job-timeout + cancel API приёмника → переснятие
-    /// по бэкоффу (: контейнера полного нет, staging чистит приёмник).</summary>
+    /// по бэкоффу (: контейнера полного нет; staging-каталога у операции нет).</summary>
     public int FullTimeoutSec { get; set; } = 21600;
 
     /// <summary>Бюджет running verify-операции приёмника (started_unix снимка

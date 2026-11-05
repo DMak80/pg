@@ -2,17 +2,24 @@ using System.Text;
 
 namespace PgWorker.Backups.Tar;
 
-/// <summary>Потоковое чтение tar-архива (ustar + GNU longname + PAX):
+/// <summary>Потоковое чтение tar-архива (ustar + GNU longname/longlink + PAX):
 /// заголовок 512 байт → данные Size байт → добивка до кратности 512.
-/// Разрешение имени: PAX-поле `path=` (и `size=`) переопределяет следующую
-/// запись, GNU longname (`L`) — имя следующей записи; иначе ustar
-/// `prefix + "/" + name`. Валидация checksum заголовка и typeflag'а —
+/// Разрешение имени/цели: PAX-поля `path=`/`linkpath=` (и `size=`) переопределяют
+/// следующую запись, GNU longname (`L`)/longlink (`K`) — имя/цель следующей
+/// записи; иначе ustar `prefix + "/" + name`. Имена декодируются UTF-8
+/// (fail-fast на невалидной последовательности — тихая подмена имени
+/// недопустима). Валидация checksum заголовка и typeflag'а —
 /// нарушение формата бросает <see cref="TarFormatException"/> (битый архив
 /// не превращается в «тихо пустой» набор).</summary>
 public sealed class TarStreamReader
 {
     private const int HeaderSize = 512;
     private const int CopyBufferSize = 64 * 1024;
+
+    // Имена/PAX — UTF-8; невалидная последовательность — исключение
+    // (DecoderFallbackException → TarFormatException).
+    private static readonly Encoding Utf8 = new UTF8Encoding(
+        encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
 
     private readonly Stream _source;
 
@@ -35,7 +42,9 @@ public sealed class TarStreamReader
         await DrainRestAsync(ct);
 
         string? gnuName = null;
+        string? gnuLink = null;
         string? paxPath = null;
+        string? paxLinkPath = null;
         long? paxSize = null;
         while (true)
         {
@@ -54,17 +63,23 @@ public sealed class TarStreamReader
             switch (entry.TypeFlag)
             {
                 case TarTypeFlags.GnuLongName:
-                    gnuName = Encoding.ASCII.GetString(await ReadAllDataAsync(ct)).TrimEnd('\0');
+                    gnuName = DecodeName(await ReadAllDataAsync(ct));
+                    continue;
+                case TarTypeFlags.GnuLongLink:
+                    gnuLink = DecodeName(await ReadAllDataAsync(ct));
                     continue;
                 case TarTypeFlags.PaxHeader:
-                    ParsePax(Encoding.ASCII.GetString(await ReadAllDataAsync(ct)), ref paxPath, ref paxSize);
+                    ParsePax(
+                        DecodeName(await ReadAllDataAsync(ct)),
+                        ref paxPath, ref paxLinkPath, ref paxSize);
                     continue;
                 default:
                     var name = paxPath ?? gnuName ?? entry.Name;
+                    var linkName = paxLinkPath ?? gnuLink ?? entry.LinkName;
                     var size = paxSize ?? entry.Size;
                     _entryRemaining = size;
                     _paddingRemaining = Padding(size);
-                    return entry with { Name = name, Size = size };
+                    return entry with { Name = name, LinkName = linkName, Size = size };
             }
         }
     }
@@ -171,7 +186,8 @@ public sealed class TarStreamReader
     private static void EnsureSupportedType(char typeFlag)
     {
         if (typeFlag is TarTypeFlags.File or TarTypeFlags.LegacyFile or TarTypeFlags.Dir
-            or TarTypeFlags.Symlink or TarTypeFlags.GnuLongName or TarTypeFlags.PaxHeader)
+            or TarTypeFlags.Symlink or TarTypeFlags.GnuLongName or TarTypeFlags.GnuLongLink
+            or TarTypeFlags.PaxHeader)
             return;
         throw new TarFormatException(
             $"tar entry type '{typeFlag}' (0x{(int)typeFlag:X2}) is not supported");
@@ -199,19 +215,42 @@ public sealed class TarStreamReader
         return value;
     }
 
-    // Строковое поле заголовка: до NUL, хвостовые пробелы срезаются.
+    // Строковое поле заголовка: до NUL, хвостовые пробелы срезаются; UTF-8
+    // (невалидная последовательность — TarFormatException).
     private static string ReadString(ReadOnlySpan<byte> field)
     {
         var end = field.IndexOf((byte)0);
         var span = end < 0 ? field : field[..end];
         while (span.Length > 0 && span[^1] == (byte)' ')
             span = span[..^1];
-        return Encoding.ASCII.GetString(span);
+        try
+        {
+            return Utf8.GetString(span);
+        }
+        catch (DecoderFallbackException e)
+        {
+            throw new TarFormatException($"tar header: name is not valid UTF-8 ({e.Message})");
+        }
+    }
+
+    // Служебная запись (longname/longlink/PAX): данные + завершающий NUL.
+    private static string DecodeName(byte[] data)
+    {
+        try
+        {
+            return Utf8.GetString(data).TrimEnd('\0');
+        }
+        catch (DecoderFallbackException e)
+        {
+            throw new TarFormatException($"tar name is not valid UTF-8 ({e.Message})");
+        }
     }
 
     // PAX-запись: подряд идущие записи "<len> <key>=<value>\n", len — полная
-    // длина записи в байтах. Значимы path (имя) и size (размер) следующей.
-    private static void ParsePax(string text, ref string? path, ref long? size)
+    // длина записи в байтах. Значимы path/linkpath (имя/цель) и size
+    // (размер) следующей записи.
+    private static void ParsePax(
+        string text, ref string? path, ref string? linkPath, ref long? size)
     {
         var pos = 0;
         while (pos < text.Length)
@@ -231,6 +270,8 @@ public sealed class TarStreamReader
                 var value = record[(eq + 1)..];
                 if (key == "path")
                     path = value;
+                else if (key == "linkpath")
+                    linkPath = value;
                 else if (key == "size" && long.TryParse(value, out var parsed))
                     size = parsed;
             }

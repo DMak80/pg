@@ -65,10 +65,13 @@ public sealed class BaseBackupCommand(IBaseBackupSource source)
     {
         // LABEL — маркер нашего полного в backup_label сервера; MANIFEST 'yes'
         // обязателен для MANIFEST_CHECKSUMS; TARGET — строчное 'client'
-        // (регистр значим у сервера), WAL — булев (PG15+).
+        // (регистр значим у сервера), WAL — булев (PG15+). LABEL экранируется
+        // (одинарная кавычка удваивается): граница операций уже валидирует id
+        // allowlist'ом (arch/pgnode/02 §2), экранирование — независимая защита
+        // контракта рендера (LABEL уходит в backup_label и парсится restore).
         await _source.SendAsync(
-            $"BASE_BACKUP ( LABEL 'pgw-full-{backupId}', CHECKPOINT 'fast', MANIFEST 'yes', " +
-            "MANIFEST_CHECKSUMS 'SHA256', TARGET 'client', WAL true, WAIT false )", ct);
+            $"BASE_BACKUP ( LABEL '{EscapeLiteral($"pgw-full-{backupId}")}', CHECKPOINT 'fast', " +
+            "MANIFEST 'yes', MANIFEST_CHECKSUMS 'SHA256', TARGET 'client', WAL true, WAIT false )", ct);
 
         var phase = ResultPhase.Position;
         var headerRows = 0;
@@ -170,6 +173,9 @@ public sealed class BaseBackupCommand(IBaseBackupSource source)
                 case ErrorResponse:
                     ThrowServerError(message.Payload);
                     break;
+                case NoticeResponse:
+                case ParameterStatus:
+                    break; // служебные — пропуск (симметрия внешнему автомату)
                 default:
                     throw new ApplicationException(
                         $"unexpected message '{(char)message.Type}' in BASE_BACKUP copy stream");
@@ -210,6 +216,10 @@ public sealed class BaseBackupCommand(IBaseBackupSource source)
 
     private static ApplicationException MultipleTablespaces()
         => new("multiple tablespaces not supported");
+
+    // Экранирование строкового литерала simple-query: `'` → `''`.
+    internal static string EscapeLiteral(string value)
+        => value.Replace("'", "''", StringComparison.Ordinal);
 
     private static void ThrowServerError(byte[] payload)
     {

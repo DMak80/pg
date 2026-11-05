@@ -170,19 +170,20 @@ public sealed class TliSwitchContext : IAsyncLifetime
             $"Tli2={Tli2}, T_cut={TCut:yyyy-MM-ddTHH:mm:ssZ})");
     }
 
-    // Скачивание и разбор wal/<tli>.history (host-клиент GetObjectAsync +
+    // Скачивание и разбор wal/<tli>.history (host-клиент GetObjectBytesAsync +
     // WalHistory.Parse — строгий парсер t04). Последняя запись файла
     // описывает сам <tli>: родитель и точка переключения switchWALLSN.
     private async Task<PgWorker.Backups.WalHistoryEntry> HistoryEntryAsync(
         string cluster, string shard, uint tli, CancellationToken ct)
     {
         await using var s3 = HostS3Client();
-        var got = await s3.GetObjectAsync(cluster, shard, $"wal/{tli:x8}.history", ct);
+        var got = await s3.GetObjectBytesAsync(cluster, shard, $"wal/{tli:x8}.history", ct);
         got.IsSuccess.Should().BeTrue(
             $"the history object wal/{tli:x8}.history is available: {got.Error?.Message}");
-        var entries = PgWorker.Backups.WalHistory.Parse(got.Value!);
+        var text = System.Text.Encoding.UTF8.GetString(got.Value.Data);
+        var entries = PgWorker.Backups.WalHistory.Parse(text);
         entries.Should().NotBeNull(
-            $"the history file wal/{tli:x8}.history parses strictly: [{got.Value}]");
+            $"the history file wal/{tli:x8}.history parses strictly: [{text}]");
         return entries![^1];
     }
 
@@ -204,9 +205,9 @@ public sealed class TliSwitchContext : IAsyncLifetime
     // xlp_pageaddr = LeU64 @ +8; шаг страницы 8192 (XLOG_BLCKSZ) — карта
     // pageaddr→tli для побайтового ассерта §3.3 п.3. GET — прямым
     // AmazonS3Client с теми же endpoint/кредами/path-style, что HostS3Client:
-    // IBackupS3.GetObjectAsync читает объект StreamReader'ом UTF8 (текстовые
-    // .history) и бинарный сегмент исказил бы; продуктовый код не трогаем
-    // (spec §5). BitConverter — little-endian, как и формат WAL.
+    // IBackupS3.GetObjectBytesAsync читает объект в память без текстовой
+    // интерпретации (.history — отдельным UTF8-декодом); бинарный сегмент —
+    // прямым AWSSDK. BitConverter — little-endian, как и формат WAL.
     private async Task<List<(ulong PageAddr, uint Tli)>> SegmentPageTlisAsync(
         string cluster, string shard, string segmentName, CancellationToken ct)
     {
@@ -277,8 +278,10 @@ public sealed class TliSwitchContext : IAsyncLifetime
             try
             {
                 await using var s3 = HostS3Client();
-                var got = await s3.GetObjectAsync(Cluster, "shard1", $"wal/{Tli2:x8}.history", ct);
-                history = got.IsSuccess ? got.Value! : $"<unavailable: {got.Error?.Message}>";
+                var got = await s3.GetObjectBytesAsync(Cluster, "shard1", $"wal/{Tli2:x8}.history", ct);
+                history = got.IsSuccess
+                    ? System.Text.Encoding.UTF8.GetString(got.Value.Data)
+                    : $"<unavailable: {got.Error?.Message}>";
             }
             catch (Exception he)
             {

@@ -20,11 +20,11 @@ public sealed record S3ObjectInfo(string Key, long SizeBytes, DateTimeOffset Las
 /// стенда/фикстур (прямой AWSSDK-клиент), НЕ интерфейс подсистемы.
 /// ListPrefixAsync/DeleteKeysAsync — ретенционные list с размерами и
 /// batch-delete (S3-удаления ТОЛЬКО в ретенционных путях, R4).
-/// ListAsync/GetObjectAsync — verify-листинг относительно &lt;C&gt;/&lt;X&gt;/
-/// и GET history; общий кор пагинации с листом.
-/// ListFullsAsync/DownloadTextAsync — DR-поиск полных по CommonPrefixes и
-/// чтение маленьких текстовых объектов (backup_label/backup_manifest);
-/// restore S3 ТОЛЬКО читает — удаляющих операций тут нет (arch/19 §3.5).</summary>
+/// ListAsync — verify-листинг относительно &lt;C&gt;/&lt;X&gt;/ (общий кор
+/// пагинации с ListPrefixAsync). ListFullsAsync — DR-поиск полных: объекты
+/// `full/<id>.tar`, id — имя без `.tar` (spec t01 §6.1). restore/drill и
+/// verify S3 ТОЛЬКО читают (стрим/HEAD/Range/файл) — удаляющих операций тут
+/// нет (arch/19 §3.5); удаление полного — отдельный IDeleteObjectS3.</summary>
 public interface IBackupS3
 {
     Task<Result<bool>> BucketExistsAsync(CancellationToken ct);
@@ -33,8 +33,8 @@ public interface IBackupS3
     Task<Result<IReadOnlyList<WalObject>>> ListWalAsync(
         string cluster, string shard, int? maxKeysPerTest = null, CancellationToken ct = default);
 
-    /// <summary>list-objects-v2 с пагинацией по произвольному префиксу (full/&lt;id&gt;/,
-    /// wal/, "" — весь bucket) с размерами; maxKeysPerTest — инъекция страницы.
+    /// <summary>list-objects-v2 с пагинацией по произвольному префиксу
+    /// (full/, wal/, "" — весь bucket) с размерами; maxKeysPerTest — инъекция страницы.
     /// Реализация — общий кор листинга с ListAsync (без дублирования пагинации).</summary>
     Task<Result<IReadOnlyList<S3ObjectInfo>>> ListPrefixAsync(
         string prefix, int? maxKeysPerTest = null, CancellationToken ct = default);
@@ -50,14 +50,10 @@ public interface IBackupS3
     Task<Result> PutObjectAsync(string key, byte[] data, string? sha256, CancellationToken ct = default);
 
     /// <summary>Листинг произвольного префикса (verify): prefix — относительно
-    /// &lt;C&gt;/&lt;X&gt;/, напр. "wal/" | "full/&lt;id&gt;/pg_wal/"; та же пагинация list-v2
+    /// &lt;C&gt;/&lt;X&gt;/, напр. "wal/"; та же пагинация list-v2
     /// через общий кор с ListPrefixAsync.</summary>
     Task<Result<IReadOnlyList<WalObject>>> ListAsync(
         string cluster, string shard, string prefix, int? maxKeysPerTest = null, CancellationToken ct = default);
-
-    /// <summary>Содержимое маленького объекта (.history для строгих TLI-переходов);
-    /// key — относительно &lt;C&gt;/&lt;X&gt;/, напр. "wal/00000002.history".</summary>
-    Task<Result<string>> GetObjectAsync(string cluster, string shard, string key, CancellationToken ct = default);
 
     /// <summary>put куска с Content-MD5 (spec §4.4, решение №22): MD5Digest
     /// (base64 БАЙТОВ хэша) уходит с запросом — транспорт отвергает битое;
@@ -66,30 +62,20 @@ public interface IBackupS3
     Task<Result> PutObjectMd5Async(string key, byte[] data, string md5Hex, CancellationToken ct = default);
 
     /// <summary>Байты объекта в память + ETag (сборка fetch-wal, spec §4.4);
-    /// key — относительно &lt;C&gt;/&lt;X&gt;, как GetObjectAsync; кавычки ETag MinIO сняты
+    /// key — относительно &lt;C&gt;/&lt;X&gt;/, как GetObjectToFileAsync; кавычки ETag MinIO сняты
     /// (ETag одиночного put = md5 содержимого — сверка безномерных legacy-версий).</summary>
     Task<Result<(byte[] Data, string? ETag)>> GetObjectBytesAsync(
         string cluster, string shard, string key, CancellationToken ct = default);
 
-    /// <summary>: id полных шарда по префиксу `<C>/<X>/full/` с Delimiter="/"
-    /// (CommonPrefixes — каталоги `full/<id>/`), сортировка Ordinal; пагинация по
-    /// IsTruncated/NextContinuationToken. DR-путь: etcd-статусов может не быть.</summary>
+    /// <summary>: id полных шарда по префиксу `<C>/<X>/full/` — имена объектов
+    /// `full/<id>.tar` (один объект = один полный, spec t01 §6.1), сортировка
+    /// Ordinal; пагинация по IsTruncated/NextContinuationToken. DR-путь:
+    /// etcd-статусов может не быть.</summary>
     Task<Result<IReadOnlyList<string>>> ListFullsAsync(
         string cluster, string shard, int? maxKeysPerTest = null, CancellationToken ct = default);
 
-    /// <summary>: маленький текстовый объект (`objectKey` — путь внутри
-    /// префикса шарда, напр. `full/&lt;id&gt;/backup_label`); отсутствующий —
-    /// Failed (не исключение наружу — валидация restore разведает transien/permanent).</summary>
-    Task<Result<string>> DownloadTextAsync(
-        string cluster, string shard, string objectKey, CancellationToken ct = default);
-
-    /// <summary>: put файла 1:1 объектом (upload полного — arch/19 §2);
-    /// key — ПОЛНЫЙ ключ в bucket (&lt;C&gt;/&lt;X&gt;/full/&lt;id&gt;/…). Содержимое —
-    /// FileStream (файл не читается в память целиком — наборы бывают большими).</summary>
-    Task<Result> PutFileAsync(string key, string filePath, CancellationToken ct = default);
-
     /// <summary>: скачивание объекта в файл (verify/restore — arch/19 §5/§3.5);
-    /// key — относительно &lt;C&gt;/&lt;X&gt;/, как GetObjectAsync; ответ — через
+    /// key — относительно &lt;C&gt;/&lt;X&gt;/ (симметрия GetObjectBytesAsync); ответ — через
     /// временный &lt;dest&gt;.part с атомарной заменой по успеху (обрыв не оставляет
     /// частичный файл; dest перезаписывается — ретраи идемпотентны).</summary>
     Task<Result> GetObjectToFileAsync(
@@ -109,11 +95,6 @@ public interface IWalSegmentGuard
 {
     Task<Result> PutWalSegmentAsync(
         string key, byte[] data, string? sha256, CancellationToken ct = default);
-
-    /// <summary>Файловая форма (дубль pg_wal полного в общий wal/): та же
-    /// сверка содержимого по ETag, файл не читается в память целиком.</summary>
-    Task<Result> PutWalSegmentFileAsync(
-        string key, string filePath, CancellationToken ct = default);
 }
 
 /// <summary>Маркер permanent-конфликта WAL-архива (arch/19 §3): сегмент с тем
@@ -208,22 +189,6 @@ public sealed class BackupS3
         }
 
         return Result<IReadOnlyList<WalObject>>.Success(result);
-    }
-
-    public async Task<Result<string>> GetObjectAsync(
-        string cluster, string shard, string key, CancellationToken ct = default)
-    {
-        try
-        {
-            var response = await _client.GetObjectAsync(
-                new GetObjectRequest { BucketName = _bucket, Key = $"{cluster}/{shard}/{key}" }, ct);
-            using var reader = new StreamReader(response.ResponseStream, System.Text.Encoding.UTF8);
-            return Result<string>.Success(await reader.ReadToEndAsync(ct));
-        }
-        catch (Exception e)
-        {
-            return Result<string>.Failed(new ApplicationException($"S3 get {key}: {e.Message}", e));
-        }
     }
 
     public async Task<Result> PutObjectMd5Async(
@@ -388,53 +353,6 @@ public sealed class BackupS3
         return await PutObjectAsync(key, data, sha256, ct);
     }
 
-    /// <summary>Файловая форма гварда (дубль pg_wal полного): HEAD + md5 файла
-    /// (потоково) против ETag; идентичность — идемпотентный успех, иное —
-    /// WalArchiveConflict, отсутствие — обычный put-file. Обычный путь
-    /// перезаписи файла (без гварда) — PutFileAsync.</summary>
-    public async Task<Result> PutWalSegmentFileAsync(
-        string key, string filePath, CancellationToken ct = default)
-    {
-        GetObjectMetadataResponse? existing;
-        try
-        {
-            existing = await _client.GetObjectMetadataAsync(
-                new GetObjectMetadataRequest { BucketName = _bucket, Key = key }, ct);
-        }
-        catch (AmazonS3Exception e) when (e.StatusCode == System.Net.HttpStatusCode.NotFound)
-        {
-            existing = null;
-        }
-        catch (Exception e)
-        {
-            return Result.Failed(new ApplicationException($"S3 head {key}: {e.Message}", e));
-        }
-
-        if (existing is not null)
-        {
-            string md5;
-            try
-            {
-                await using var input = new FileStream(
-                    filePath, FileMode.Open, FileAccess.Read, FileShare.Read);
-                md5 = Convert.ToHexString(MD5.HashData(input)).ToLowerInvariant();
-            }
-            catch (Exception e)
-            {
-                return Result.Failed(new ApplicationException(
-                    $"wal segment file read {filePath}: {e.Message}", e));
-            }
-            var etag = existing.ETag?.Trim('"');
-            if (string.Equals(etag, md5, StringComparison.OrdinalIgnoreCase))
-                return Result.Success();
-            return Result.Failed(new ApplicationException(
-                $"{WalArchiveConflict.Marker}: {key} already archived with different content " +
-                $"(etag={etag ?? "?"}, md5={md5}) — refusing to overwrite a foreign WAL chain"));
-        }
-
-        return await PutFileAsync(key, filePath, ct);
-    }
-
     public async Task<Result> PutObjectAsync(string key, byte[] data, string? sha256, CancellationToken ct = default)
     {
         try
@@ -496,53 +414,6 @@ public sealed class BackupS3
         {
             return Result<IReadOnlyList<string>>.Failed(new ApplicationException(
                 $"S3 list {cluster}/{shard}/full/: {e.Message}", e));
-        }
-    }
-
-    public async Task<Result<string>> DownloadTextAsync(
-        string cluster, string shard, string objectKey, CancellationToken ct = default)
-    {
-        try
-        {
-            var response = await _client.GetObjectAsync(new GetObjectRequest
-            {
-                BucketName = _bucket,
-                Key = $"{cluster}/{shard}/{objectKey}",
-            }, ct);
-            using var reader = new StreamReader(response.ResponseStream);
-            return Result<string>.Success(await reader.ReadToEndAsync(ct));
-        }
-        catch (AmazonS3Exception e) when (e.StatusCode == System.Net.HttpStatusCode.NotFound)
-        {
-            // Отсутствующий объект — валидный «нет» (проверка факта manifest/label),
-            // а не транспортный сбой: наружу — Failed без исключения.
-            return Result<string>.Failed(new ApplicationException(
-                $"S3 get {cluster}/{shard}/{objectKey}: not found"));
-        }
-        catch (Exception e)
-        {
-            return Result<string>.Failed(new ApplicationException(
-                $"S3 get {cluster}/{shard}/{objectKey}: {e.Message}", e));
-        }
-    }
-
-    public async Task<Result> PutFileAsync(string key, string filePath, CancellationToken ct = default)
-    {
-        try
-        {
-            await using var input = new FileStream(
-                filePath, FileMode.Open, FileAccess.Read, FileShare.Read);
-            await _client.PutObjectAsync(new PutObjectRequest
-            {
-                BucketName = _bucket,
-                Key = key,
-                InputStream = input,
-            }, ct);
-            return Result.Success();
-        }
-        catch (Exception e)
-        {
-            return Result.Failed(new ApplicationException($"S3 put-file {key}: {e.Message}", e));
         }
     }
 

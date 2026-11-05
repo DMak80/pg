@@ -125,8 +125,12 @@ public class FullBackupOperationTests
         snap.WalStartSegment.Should().Be("000000010000000000000002");
         snap.SizeBytes.Should().Be(objectBytes.Length);
         snap.Sha256.Should().Be(Convert.ToHexString(SHA256.HashData(objectBytes)).ToLowerInvariant());
-        snap.BytesDone.Should().Be(objectBytes.Length);
-        snap.PartsDone.Should().BeGreaterThan(0);
+        // Терминальный снимок прогресса не несёт (arch/backups/05 §1): прогресс
+        // публикуется только в RUNNING/UPLOADING — проверяем по истории фаз.
+        snap.BytesDone.Should().BeNull("the terminal snapshot has no progress");
+        snap.PartsDone.Should().BeNull("the terminal snapshot has no progress");
+        registry.History.Should().Contain(h =>
+            h.State == "running" && h.BytesDone.GetValueOrDefault() > 0);
     }
 
     // AAA: живой сегмент источника в wal/ не дублируется (финал доставит стрим).

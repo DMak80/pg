@@ -4,16 +4,22 @@ using System.Text;
 
 namespace PgWorker.Backups.Tar;
 
-/// <summary>Потоковая запись единого tar-архива (ustar + GNU longname + PAX,
-/// spec t01 §3.2): заголовок ustar, имя длиннее 100 байт — GNU longname (`L`),
-/// размер больше 8 ГиБ−1 — PAX (`x`, поле size). Ведёт счётчик записанных
-/// байт и сквозной sha256 выхода (для etcd-поля `sha256` и dup-карты
-/// смещений). Sha256Hash вызывать строго после <see cref="FinishAsync"/>.</summary>
+/// <summary>Потоковая запись единого tar-архива (ustar + GNU longname/longlink
+/// + PAX, spec t01 §3.2): заголовок ustar, имя длиннее 100 байт — GNU longname
+/// (`L`), цель symlink длиннее 100 байт — GNU longlink (`K`), размер больше
+/// 8 ГиБ−1 — PAX (`x`, поле size). Имена/цели кодируются UTF-8 (невалидная
+/// последовательность — TarFormatException; тихое искажение имени недопустимо).
+/// Ведёт счётчик записанных байт и сквозной sha256 выхода (для etcd-поля
+/// `sha256` и dup-карты смещений). Sha256Hash вызывать строго после
+/// <see cref="FinishAsync"/>.</summary>
 public sealed class TarStreamWriter : IDisposable
 {
     private const int HeaderSize = 512;
     private const int CopyBufferSize = 64 * 1024;
     private const long MaxUstarSize = 8L * 1024 * 1024 * 1024 - 1;
+
+    private static readonly Encoding Utf8 = new UTF8Encoding(
+        encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
 
     private readonly Stream _output;
     private readonly IncrementalHash _hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
@@ -88,7 +94,7 @@ public sealed class TarStreamWriter : IDisposable
     {
         var name = entry.Name;
         var prefix = "";
-        if (Encoding.ASCII.GetByteCount(name) > 100)
+        if (Utf8.GetByteCount(name) > 100)
         {
             if (TrySplitPrefix(name, out var splitPrefix, out var rest))
             {
@@ -97,10 +103,19 @@ public sealed class TarStreamWriter : IDisposable
             }
             else
             {
-                await WriteLongNameAsync(name, ct);
+                await WriteLongEntryAsync(TarTypeFlags.GnuLongName, name, ct);
                 // Основной заголовок несёт урезанное имя: значимое — в L-записи.
-                name = name[..Math.Min(99, name.Length)] + "/";
+                name = TruncateUtf8(name, 99);
             }
+        }
+
+        // Цель symlink длиннее ustar-поля — GNU longlink (`K`), иначе цель
+        // обрезалась бы молча (spec t01 §6.15).
+        var linkName = entry.LinkName;
+        if (Utf8.GetByteCount(linkName) > 100)
+        {
+            await WriteLongEntryAsync(TarTypeFlags.GnuLongLink, linkName, ct);
+            linkName = TruncateUtf8(linkName, 100);
         }
 
         // Размер больше ustar-поля — в PAX-запись, в основном заголовке 0.
@@ -108,15 +123,16 @@ public sealed class TarStreamWriter : IDisposable
         if (paxSize)
             await WritePaxRecordAsync("size", entry.Size.ToString(CultureInfo.InvariantCulture), ct);
         var header = BuildHeader(
-            name, entry.TypeFlag, paxSize ? 0 : entry.Size, entry.Mode, entry.LinkName, prefix);
+            name, entry.TypeFlag, paxSize ? 0 : entry.Size, entry.Mode, linkName, prefix);
         await WriteChunkAsync(header, ct);
     }
 
-    private async Task WriteLongNameAsync(string name, CancellationToken ct)
+    // Служебная GNU-запись longname (`L`)/longlink (`K`): данные + добивка.
+    private async Task WriteLongEntryAsync(char typeFlag, string value, CancellationToken ct)
     {
-        var data = Encoding.ASCII.GetBytes(name + "\0");
+        var data = Utf8.GetBytes(value + "\0");
         // GNU-имя служебной записи — как у GNU tar.
-        var header = BuildHeader("././@LongLink", TarTypeFlags.GnuLongName, data.Length, 0, "", "");
+        var header = BuildHeader("././@LongLink", typeFlag, data.Length, 0, "", "");
         await WriteChunkAsync(header, ct);
         await WriteChunkAsync(data, ct);
         await WritePaddingAsync(data.Length, ct);
@@ -124,7 +140,7 @@ public sealed class TarStreamWriter : IDisposable
 
     private async Task WritePaxRecordAsync(string key, string value, CancellationToken ct)
     {
-        var data = Encoding.ASCII.GetBytes(PaxRecord(key, value));
+        var data = Utf8.GetBytes(PaxRecord(key, value));
         var header = BuildHeader("PaxHeaders/entry", TarTypeFlags.PaxHeader, data.Length, 0, "", "");
         await WriteChunkAsync(header, ct);
         await WriteChunkAsync(data, ct);
@@ -147,7 +163,7 @@ public sealed class TarStreamWriter : IDisposable
         }
     }
 
-    // Разбиение длинного имени на ustar prefix (≤155) + name (≤100).
+    // Разбиение длинного имени на ustar prefix (≤155) + name (≤100) по UTF-8.
     private static bool TrySplitPrefix(string name, out string prefix, out string rest)
     {
         for (var i = name.Length - 1; i > 0; i--)
@@ -156,8 +172,8 @@ public sealed class TarStreamWriter : IDisposable
                 continue;
             var candidatePrefix = name[..i];
             var candidateRest = name[(i + 1)..];
-            if (Encoding.ASCII.GetByteCount(candidateRest) <= 100
-                && Encoding.ASCII.GetByteCount(candidatePrefix) <= 155)
+            if (Utf8.GetByteCount(candidateRest) <= 100
+                && Utf8.GetByteCount(candidatePrefix) <= 155)
             {
                 prefix = candidatePrefix;
                 rest = candidateRest;
@@ -168,6 +184,19 @@ public sealed class TarStreamWriter : IDisposable
         prefix = "";
         rest = name;
         return false;
+    }
+
+    // Усечение строки по UTF-8-байтам без разрезания символа (fallback-поля
+    // основного заголовка; значимое значение идёт служебной записью).
+    private static string TruncateUtf8(string value, int maxBytes)
+    {
+        var bytes = Utf8.GetBytes(value);
+        if (bytes.Length <= maxBytes)
+            return value;
+        var cut = maxBytes;
+        while (cut > 0 && (bytes[cut] & 0xC0) == 0x80)
+            cut--;
+        return Utf8.GetString(bytes, 0, cut);
     }
 
     private static byte[] BuildHeader(
@@ -199,7 +228,16 @@ public sealed class TarStreamWriter : IDisposable
 
     private static void WriteString(byte[] target, int offset, int length, string value)
     {
-        var bytes = Encoding.ASCII.GetBytes(value);
+        byte[] bytes;
+        try
+        {
+            bytes = Utf8.GetBytes(value);
+        }
+        catch (EncoderFallbackException e)
+        {
+            throw new TarFormatException($"tar field is not valid UTF-8 ({e.Message})");
+        }
+
         Array.Copy(bytes, 0, target, offset, Math.Min(bytes.Length, length));
     }
 

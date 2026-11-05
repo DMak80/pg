@@ -86,8 +86,6 @@ public sealed class E2eBackupVerifyScenarios(E2eBackupVerifyScenariosFx Ctx) : I
     // backup_manifest в ownS3-ноде → policy interval_sec мал → перепроверка →
     // verify.state=FAILED + error; переснятия в окне теста нет (full_max_age_sec
     // велик)
-
-    // в окне теста нет (full_max_age_sec велик)
     [Fact]
     public async Task Backup_Verify_Corruption_Fails()
     {
@@ -128,10 +126,8 @@ public sealed class E2eBackupVerifyScenarios(E2eBackupVerifyScenariosFx Ctx) : I
         // Act — портим МАНИФЕСТ набора: перезаписываем full/<id>.tar tar-ом из
         // одной записи backup_manifest с битым JSON. Verify достаёт манифест
         // хвостовым Range и падает в фазе verifying — permanent-вердикт FAILED
-        // (+error). Мусор без манифеста даёт failed/downloading — маркер
-        // транзиента (spec t01 §6.7: отсутствие манифеста — сбой скачивания,
-        // воркер ретраит; вердикта о данных нет) — этот путь проверяется
-        // юнитами VerifyOperationTests.
+        // (+error). Отсутствие/нечитаемость манифеста в существующем объекте —
+        // тоже permanent verifying (arch/pgnode/05 §2): юниты VerifyOperationTests.
         using (var corruptedTar = new MemoryStream())
         {
             var writer = new PgWorker.Backups.Tar.TarStreamWriter(corruptedTar);

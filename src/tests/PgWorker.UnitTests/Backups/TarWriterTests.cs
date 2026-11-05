@@ -165,6 +165,52 @@ public class TarWriterTests
         bytes[^1024..].Should().OnlyContain(b => b == 0);
     }
 
+    // AAA (#13): имя с не-ASCII (UTF-8, >100 байт без разложимого prefix)
+    // пишется GNU longname в UTF-8 и читается БЕЗ искажения (раньше байты
+    // заменялись '?' — restore создавал другой файл).
+    [Fact]
+    public async Task RoundTrip_Utf8LongName_NoDistortion()
+    {
+        // Arrange — 70 кириллических символов ≈ 140 байт UTF-8.
+        var name = "данные/" + new string('ф', 70);
+        var ms = new MemoryStream();
+        var data = Encoding.UTF8.GetBytes("x");
+        using var writer = new TarStreamWriter(ms);
+
+        // Act
+        await writer.WriteEntryAsync(
+            new TarEntry(name, TarTypeFlags.File, data.Length, 0x1A4, ""), data, CancellationToken.None);
+        await writer.FinishAsync(CancellationToken.None);
+        var reader = new TarStreamReader(new MemoryStream(ms.ToArray()));
+        var entry = await reader.ReadHeaderAsync(CancellationToken.None);
+
+        // Assert — имя побайтово то же (никаких '?').
+        entry!.Name.Should().Be(name);
+        entry.Name.Should().NotContain("?");
+    }
+
+    // AAA (#14): цель symlink >100 байт пишется GNU longlink (`K`) и
+    // восстанавливается reader'ом целиком (раньше молча обрезалась).
+    [Fact]
+    public async Task RoundTrip_GnuLongLink()
+    {
+        // Arrange — ссылка с целью 140 байт.
+        var link = new string('t', 140);
+        var ms = new MemoryStream();
+        using var writer = new TarStreamWriter(ms);
+
+        // Act
+        await writer.WriteEntryAsync(
+            new TarEntry("link", TarTypeFlags.Symlink, 0, 0x1FF, link), [], CancellationToken.None);
+        await writer.FinishAsync(CancellationToken.None);
+        var reader = new TarStreamReader(new MemoryStream(ms.ToArray()));
+        var entry = await reader.ReadHeaderAsync(CancellationToken.None);
+
+        // Assert
+        entry!.TypeFlag.Should().Be(TarTypeFlags.Symlink);
+        entry.LinkName.Should().Be(link);
+    }
+
     // AAA: сквозной sha256 writer'а равен SHA256 всего выходного потока.
     [Fact]
     public async Task Sha256_MatchesWholeStream()

@@ -352,7 +352,7 @@ public class BackupS3Tests
         listed.Value.Should().BeEmpty();
     }
 
-    // ---: ListAsync / GetObjectAsync (verify) ----
+    // ---: ListAsync / GetObjectBytesAsync (verify/fetch-wal) ----
 
     // AAA: ListAsync произвольного префикса full/<id>/pg_wal/ — только объекты префикса
     [Fact]
@@ -398,7 +398,7 @@ public class BackupS3Tests
         listed.Value.Should().HaveCount(5);
     }
 
-    // AAA: GetObjectAsync — содержимое history-объекта (крошечный GET)
+    // AAA: GetObjectBytesAsync — содержимое history-объекта (крошечный GET)
     [Fact]
     public async Task GetObjectReturnsContent()
     {
@@ -410,17 +410,18 @@ public class BackupS3Tests
         { BucketName = OwnS3.Bucket, Key = "v3/shard1/wal/00000002.history", ContentBody = "1\t0/2000000\n" }, ct);
         await using var s3 = new BackupS3(s3Node.S3());
 
-        // Act
-        var got = await s3.GetObjectAsync("v3", "shard1", "wal/00000002.history", ct);
+        // Act — байтовое чтение (fetch-wal/history): текст декодируется на
+        // стороне потребителя, не транспортом.
+        var got = await s3.GetObjectBytesAsync("v3", "shard1", "wal/00000002.history", ct);
 
         // Assert
         got.IsSuccess.Should().BeTrue();
-        got.Value.Should().Be("1\t0/2000000\n");
+        System.Text.Encoding.UTF8.GetString(got.Value.Data).Should().Be("1\t0/2000000\n");
     }
 
-    // AAA: GetObjectAsync несуществующего — Failed (не исключение мимо Result)
+    // AAA: GetObjectBytesAsync несуществующего — Failed (не исключение мимо Result)
     [Fact]
-    public async Task GetObjectMissingFailed()
+    public async Task GetObjectBytesMissingFailed()
     {
         // Arrange — своё окружение, объекта нет
         var ct = TestContext.Current.CancellationToken;
@@ -428,7 +429,7 @@ public class BackupS3Tests
         await using var s3 = new BackupS3(s3Node.S3());
 
         // Act
-        var got = await s3.GetObjectAsync("v4", "shard1", "wal/00000009.history", ct);
+        var got = await s3.GetObjectBytesAsync("v4", "shard1", "wal/00000009.history", ct);
 
         // Assert
         got.IsSuccess.Should().BeFalse();
@@ -467,32 +468,15 @@ public class BackupS3Tests
         head.ETag.Trim('"').Should().Be(
             Convert.ToHexString(System.Security.Cryptography.MD5.HashData(original)).ToLowerInvariant(),
             "the foreign segment must not overwrite the archived chain");
-
-        // Файловая форма (дубль pg_wal полного): те же байты — идемпотентный
-        // успех, иные — конфликт с маркером, архив не тронут.
-        var file = Path.GetTempFileName();
-        try
-        {
-            await File.WriteAllBytesAsync(file, original, ct);
-            (await guard.PutWalSegmentFileAsync(key, file, ct)).IsSuccess.Should().BeTrue();
-            await File.WriteAllBytesAsync(file, foreign, ct);
-            var fileConflict = await guard.PutWalSegmentFileAsync(key, file, ct);
-            fileConflict.IsSuccess.Should().BeFalse();
-            WalArchiveConflict.Is(fileConflict).Should().BeTrue();
-        }
-        finally
-        {
-            File.Delete(file);
-        }
     }
 
-    // ---: ListFullsAsync / DownloadTextAsync ----
+    // ---: ListFullsAsync ----
 
-    // ListFulls : id полных по CommonPrefixes, сортировка, чужие шарды не попадают.
+    // ListFulls : id полных по объектам full/<id>.tar, сортировка, чужие шарды не попадают.
     [Fact]
     public async Task ListFullsReturnsFullIds()
     {
-        // Arrange — своё окружение + два полных в разных full/<id>/
+        // Arrange — своё окружение + два объекта full/<id>.tar
         var ct = TestContext.Current.CancellationToken;
         await using var s3Node = await OwnS3.StartAsync("s3", ct);
         using var client = SeedClient(s3Node);
@@ -500,12 +484,12 @@ public class BackupS3Tests
             await client.PutObjectAsync(new PutObjectRequest
             {
                 BucketName = OwnS3.Bucket,
-                Key = "c15/shard1/full/" + id + "/backup_manifest",
+                Key = "c15/shard1/full/" + id + ".tar",
             }, ct);
         await client.PutObjectAsync(new PutObjectRequest
         {
             BucketName = OwnS3.Bucket,
-            Key = "c15/shard2/full/20260911000000Z/backup_manifest", // чужой шард
+            Key = "c15/shard2/full/20260911000000Z.tar", // чужой шард
         }, ct);
         await using var s3 = new BackupS3(s3Node.S3());
 
@@ -529,7 +513,7 @@ public class BackupS3Tests
             await client.PutObjectAsync(new PutObjectRequest
             {
                 BucketName = OwnS3.Bucket,
-                Key = $"c16/shard1/full/2026091100000{i}Z/backup_manifest",
+                Key = $"c16/shard1/full/2026091100000{i}Z.tar",
             }, ct);
         await using var s3 = new BackupS3(s3Node.S3());
 
@@ -539,32 +523,6 @@ public class BackupS3Tests
         // Assert
         listed.IsSuccess.Should().BeTrue();
         listed.Value.Should().HaveCount(3);
-    }
-
-    // DownloadText : маленький текстовый объект; отсутствующий — Failed (не исключение).
-    [Fact]
-    public async Task DownloadTextBackupLabelAndNotfound()
-    {
-        // Arrange — своё окружение + backup_label-объект
-        var ct = TestContext.Current.CancellationToken;
-        await using var s3Node = await OwnS3.StartAsync("s3", ct);
-        using var client = SeedClient(s3Node);
-        await client.PutObjectAsync(new PutObjectRequest
-        {
-            BucketName = OwnS3.Bucket,
-            Key = "c17/shard1/full/b1/backup_label",
-            ContentBody = "START WAL LOCATION: 0/2000028 (file 000000010000000000000002)\n",
-        }, ct);
-        await using var s3 = new BackupS3(s3Node.S3());
-
-        // Act
-        var text = await s3.DownloadTextAsync("c17", "shard1", "full/b1/backup_label", ct);
-        var missing = await s3.DownloadTextAsync("c17", "shard1", "full/nope/backup_label", ct);
-
-        // Assert
-        text.IsSuccess.Should().BeTrue();
-        text.Value.Should().Contain("START WAL LOCATION");
-        missing.IsSuccess.Should().BeFalse();
     }
 
     // AAA : put байтов с sha256 — объект читается обратно 1:1 (транспорт цел)

@@ -138,13 +138,14 @@ public sealed class MultipartPartBufferStream : Stream
 
     private async Task FlushPartAsync(int size, CancellationToken ct)
     {
-        // Копия: буфер переиспользуется под следующую часть, а заливка
-        // асинхронная (части в полёте живут независимо).
+        var partNumber = _nextPartNumber++;
+        // Слот занимается ДО копии: буфер части переиспользуется под следующую
+        // часть, а копия живёт до конца заливки — копирование до слота давало
+        // пик 6×part вместо канонных ≤5×part (arch/backups/09-operability §2).
+        await _inFlight.WaitAsync(ct);
         var data = new byte[size];
         Buffer.BlockCopy(_buffer, 0, data, 0, size);
         _offset = 0;
-        var partNumber = _nextPartNumber++;
-        await _inFlight.WaitAsync(ct);
         _parts.Add((partNumber, UploadPartAsync(partNumber, data, ct)));
     }
 
@@ -159,6 +160,12 @@ public sealed class MultipartPartBufferStream : Stream
             else
                 RememberError(new ApplicationException(result.Error!.Message));
             return result;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // Отмена — не отказ заливки: наружу (спец. маркер cancelled в
+            // операции), а не в пул-исчерпание через RememberError.
+            throw;
         }
         catch (Exception e)
         {

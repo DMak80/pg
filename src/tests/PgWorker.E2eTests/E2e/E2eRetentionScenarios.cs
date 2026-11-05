@@ -12,7 +12,7 @@ namespace PgWorker.IntegrationTests.E2e;
 // сеть/etcd/ownS3, динамические порты, полный teardown в DisposeAsync) +
 // provisioned-кластер с включёнными бэкапами → реальный COMPLETED полный →
 // синтетика (etcd-ключ старого COMPLETED ~40 дней назад с wal_start ниже
-// реального + его объекты full/<old-id>/ + WAL-объекты ниже cutoff) →
+// реального + его объект full/<old-id>.tar + WAL-объекты ниже cutoff) →
 // policy days=1/weeks=0/months=0, маленький Retention:IntervalSec →
 // ассерты: старые префиксы/ключи удалены, реальный полный жив, WAL ниже
 // cutoff удалён, всё живое ≥ cutoff, ключ /pgworker/backups/storage пишется.

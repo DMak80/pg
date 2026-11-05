@@ -549,7 +549,7 @@ public sealed class BackupProcess(
     // S: супервизия активного через HTTP API приёмника выбранной ноды
     // (arch/19 §2, spec §3.5). Ветвление по active.State:
     //   возрастной бюджет — ПЕРВЫЙ гвард: FAILED job-timeout + cancel API
-    //     best-effort (приёмник гасит child-процессы и чистит staging);
+    //     best-effort (приёмник гасит child-процессы; staging-каталога нет);
     //   PLANNED — идемпотентный повтор StartFullAsync (202/409-своя ⇒ RUNNING;
     //     409-чужая — transient с журналом; 503/транспорт/неклассифицированный
     //     код — PLANNED остаётся, следующий тик повторит);
@@ -590,9 +590,10 @@ public sealed class BackupProcess(
                     return putTimeout;
 
                 // Cancel best-effort (Р8): приёмник гасит дерево child-процессов
-                // и чистит staging (контейнера полного больше нет — kill+rm не
-                // нужен); недостижим → journal-пометка «cancel пропущен» в той
-                // же записи. PLANNED без запуска — FAILED без cancel (как раньше).
+                // (staging-каталога у полного нет — чистить нечего; контейнера
+                // полного больше нет — kill+rm не нужен); недостижим →
+                // journal-пометка «cancel пропущен» в той же записи. PLANNED
+                // без запуска — FAILED без cancel (как раньше).
                 var cancelNote = "";
                 if (source is null)
                 {

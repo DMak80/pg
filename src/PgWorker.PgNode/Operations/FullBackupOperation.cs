@@ -4,6 +4,7 @@ using PgWorker.Backups.Restore;
 using PgWorker.Backups.Tar;
 using PgWorker.Etcd.S3;
 using PgWorker.PgNode.BaseBackup;
+using Shared.Core;
 using Shared.Etcd.Client;
 
 namespace PgWorker.PgNode.Operations;
@@ -115,7 +116,6 @@ public sealed class FullBackupOperation(
             //    каждой (источник не перематывается); сессия — на ОДНОМ endpoint.
             var objectKey = $"{identity.Cluster}/{identity.Shard}/full/{id}.tar";
             var errors = new List<string>();
-            (long Bytes, long Parts)? progress = null;
             var uploaded = false;
             foreach (var endpoint in writeTargets)
             {
@@ -148,15 +148,22 @@ public sealed class FullBackupOperation(
                             continue;
                         }
 
+                        // Секция манифеста обязательна: MANIFEST 'yes' запрошен,
+                        // без манифеста verify не докажет полноту НИКОГДА
+                        // (вечный transient) — fail-fast до Complete.
+                        if (_manifest is not { } manifest)
+                        {
+                            errors.Add("manifest section is missing in BASE_BACKUP stream");
+                            await parts.AbortAsync();
+                            continue;
+                        }
+
                         // Манифест — ПОСЛЕДНЕЙ записью единого tar (verify
                         // читает его хвостом объекта, spec §6.7).
-                        if (_manifest is { } manifest)
-                        {
-                            await tar.WriteEntryAsync(
-                                new TarEntry(
-                                    ManifestEntryName, TarTypeFlags.File, manifest.Length, 0x1A4, ""),
-                                manifest, token);
-                        }
+                        await tar.WriteEntryAsync(
+                            new TarEntry(
+                                ManifestEntryName, TarTypeFlags.File, manifest.Length, 0x1A4, ""),
+                            manifest, token);
 
                         await tar.FinishAsync(token);
                         var completed = await parts.CompleteAsync(token);
@@ -169,7 +176,6 @@ public sealed class FullBackupOperation(
 
                         _sha256 = Convert.ToHexString(tar.Sha256Hash()).ToLowerInvariant();
                         _sizeBytes = tar.TotalBytes;
-                        progress = (parts.BytesDone, parts.PartsDone);
                         uploaded = true;
                         // Объект залит на ЭТОТ endpoint: дубль WAL читает его же.
                         uploadedClient = client;
@@ -206,6 +212,15 @@ public sealed class FullBackupOperation(
 
             if (!uploaded)
             {
+                // Отмена, пойманная как отказ части, — не исчерпание пула:
+                // операция уходит в failed с причиной `cancelled` (spec §3.4),
+                // не s3-pool-exhausted.
+                if (token.IsCancellationRequested)
+                {
+                    Fail("cancelled");
+                    return;
+                }
+
                 Fail($"{S3PoolMarkers.Exhausted}: " +
                      $"{errors.FirstOrDefault() ?? "write target list is empty"}");
                 return;
@@ -243,9 +258,14 @@ public sealed class FullBackupOperation(
                 }
 
                 var activeSegId = identified.Value.XLogPos / (ulong)WalFileName.SegmentBytes;
+                // Дубль WAL — ПУЛОМ write-списка (retry/перебор/breaker целей):
+                // после успешного Complete объект уже в bucket, транспортный
+                // сбой одного Range/put не должен валить операцию с нуля
+                // (spec t01 §6.12). Range читается из ТОГО endpoint'а, куда
+                // объект залит (сессия фиксирована), с ограниченными повторами.
+                await using var walPool = CreateWalPool(writeTargets, bucket, pool, caBundlePath);
                 var duplicateError = await DuplicateWalAsync(
-                    (IStreamObjectS3)uploadedClient!, uploadedClient as IWalSegmentGuard,
-                    activeSegId, token);
+                    (IStreamObjectS3)uploadedClient!, walPool, activeSegId, token);
                 if (duplicateError is not null)
                 {
                     Fail(duplicateError);
@@ -253,15 +273,14 @@ public sealed class FullBackupOperation(
                 }
             }
 
-            // 4. Итог succeeded: wal_start, размер объекта, сквозной sha256,
-            //    финализированный прогресс (терминальные снимки — без потерь).
+            // 4. Итог succeeded: wal_start, размер объекта, сквозной sha256.
+            // Прогресс в терминальном снимке НЕ публикуется (контракт:
+            // progress — только RUNNING/UPLOADING, arch/backups/05 §1).
             registry.Update(new OperationSnapshot(
                 id, OperationStates.Succeeded, OperationPhases.Uploading,
                 WalStartSegment: _walStart,
                 SizeBytes: _sizeBytes,
-                Sha256: _sha256,
-                BytesDone: progress?.Bytes,
-                PartsDone: progress?.Parts));
+                Sha256: _sha256));
             Prog($"COMPLETED: wal_start={_walStart} size={_sizeBytes} bytes sha256={_sha256}");
         }
         catch (OperationCanceledException)
@@ -314,6 +333,10 @@ public sealed class FullBackupOperation(
         var reader = new TarStreamReader(stream);
         while (await reader.ReadHeaderAsync(ct) is { } entry)
         {
+            // Потолок объекта проверяется ДО записи записи: после записи
+            // 10001-й части Complete уже не пройдёт, а диагностика потеряется.
+            if (tar.TotalBytes + entry.Size + 1024 > MaxObjectBytes)
+                throw new ApplicationException("backup exceeds 160 GiB multipart limit");
             // Отдельный WAL-архив сервера — записи с префиксом pg_wal/.
             var name = index == 0 ? entry.Name : "pg_wal/" + entry.Name;
             if (name == "backup_label")
@@ -338,8 +361,6 @@ public sealed class FullBackupOperation(
                     _walEntries.Add((name, dataOffset, entry.Size));
             }
 
-            if (tar.TotalBytes > MaxObjectBytes)
-                throw new ApplicationException("backup exceeds 160 GiB multipart limit");
             PublishProgress(tar.TotalBytes, parts.PartsDone);
             var bucket = tar.TotalBytes / ProgressLogEveryBytes;
             if (bucket != _progressBucket)
@@ -353,18 +374,19 @@ public sealed class FullBackupOperation(
     // Дубль закрытых сегментов набора в wal/ (arch/pgnode/04 §3): Range-GET
     // байтов сегмента из СВОЕГО tar-объекта → гвард чужой цепочки; последний
     // живой сегмент набора не дублируется. Возврат — первая ошибка или null.
+    // Range читается из endpoint'а, куда залит объект (сессия фиксирована):
+    // транзиентный обрыв после успешного Complete не должен валить операцию —
+    // ограниченные повторы на том же endpoint (данные в bucket, объект жив).
     private async Task<string?> DuplicateWalAsync(
-        IStreamObjectS3 reader, IWalSegmentGuard? guard, ulong activeSegId, CancellationToken ct)
+        IStreamObjectS3 reader, IWalSegmentGuard guard, ulong activeSegId, CancellationToken ct)
     {
-        if (guard is null)
-            return "wal duplicate failed: S3 client does not implement the WAL chain guard";
         string? error = null;
         using var gate = new SemaphoreSlim(DuplicateParallelism);
         await Task.WhenAll(_walEntries.Select(async entry =>
         {
             var fileName = entry.Name[(entry.Name.LastIndexOf('/') + 1)..];
             var normalized = FetchWalCommand.NormalizeSegment(fileName);
-            if (WalFileName.TryParse(normalized) is not { } segment)
+            if (WalFileName.TryParse(normalized) is not { } segment || entry.Size <= 0)
                 return; // не сегмент (archive_status/*.done, *.history) — пропуск
             var setPos = (long)segment.Log * WalFileName.SegsPerLog + segment.Seg;
             if (setPos >= (long)activeSegId)
@@ -378,9 +400,8 @@ public sealed class FullBackupOperation(
             {
                 if (Volatile.Read(ref error) is not null)
                     return; // первая ошибка — остальные Range/put не начинаем
-                var range = await reader.GetObjectRangeAsync(
-                    identity.Cluster, identity.Shard, $"full/{id}.tar",
-                    entry.Offset, entry.Offset + entry.Size - 1, ct);
+                var range = await RangeWithRetryAsync(
+                    reader, $"full/{id}.tar", entry.Offset, entry.Offset + entry.Size - 1, ct);
                 if (!range.IsSuccess)
                 {
                     Interlocked.CompareExchange(ref error, OneLine(range.Error!.Message), null);
@@ -399,6 +420,37 @@ public sealed class FullBackupOperation(
         }));
         return error;
     }
+
+    // Range-GET с ограниченными повторами: объект уже залит и неизменен, обрыв
+    // — транспортный (моргание ноды), повтор на ТОМ ЖЕ endpoint оправдан
+    // (другие ноды объект не получали — переносить чтение нельзя).
+    private async Task<Result<byte[]>> RangeWithRetryAsync(
+        IStreamObjectS3 reader, string key, long start, long end, CancellationToken ct)
+    {
+        const int maxAttempts = 3;
+        Result<byte[]> last = default;
+        for (var attempt = 1; attempt <= maxAttempts; attempt++)
+        {
+            last = await reader.GetObjectRangeAsync(
+                identity.Cluster, identity.Shard, key, start, end, ct);
+            if (last.IsSuccess)
+                return last;
+            if (attempt < maxAttempts)
+                await Task.Delay(TimeSpan.FromMilliseconds(250), ct);
+        }
+
+        return last;
+    }
+
+    // Пул write-списка для дубля WAL (retry/перебор целей + breaker):
+    // read-стороны у него нет — Range читается фиксированным клиентом.
+    private PoolBackupS3 CreateWalPool(
+        IReadOnlyList<string> writeTargets, string bucket, BackupPoolContext pool,
+        string? caBundlePath)
+        => new(
+            writeTargets, writeTargets, pool.AccessKey, pool.SecretKey, bucket, caBundlePath,
+            WalReceiverCore.FileAttemptTimeout,
+            targetFactory: targetFactory);
 
     private void BeginAttempt(TarStreamWriter tar, MultipartPartBufferStream parts)
     {
@@ -456,10 +508,20 @@ public sealed class FullBackupOperation(
                 Share = FileShare.None,
                 UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite,
             };
-        await using (var stream = new FileStream(path, options))
-        using (var writer = new StreamWriter(stream))
+        try
         {
-            await writer.WriteAsync(caPem + "\n");
+            await using (var stream = new FileStream(path, options))
+            using (var writer = new StreamWriter(stream))
+            {
+                await writer.WriteAsync(caPem + "\n");
+            }
+        }
+        catch
+        {
+            // Исключение записи — файл не остаётся сиротой (путь ещё не
+            // возвращён вызывающему, его finally его не увидит).
+            try { File.Delete(path); } catch { /* уже нет */ }
+            throw;
         }
 
         return path;

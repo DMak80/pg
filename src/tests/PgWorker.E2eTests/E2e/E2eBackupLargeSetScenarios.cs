@@ -67,7 +67,8 @@ public sealed class E2eBackupLargeSetScenarios(E2eBackupLargeSetScenariosFx Ctx)
         var ct = cts.Token;
         await Fx.SeedS3PoolAsync(Pool, ct);
         await PutPolicyAsync(cluster, ct);
-        var (completed, maxUsed) = await WaitCompletedSamplingUsedAsync(cluster, setup.Containers, ct);
+        var (completed, maxUsed, maxTmp) =
+            await WaitCompletedSamplingUsedAsync(cluster, setup.Containers, ct);
 
         // Assert 1 — полный завершён, набор ≥3 ГиБ, объект один.
         completed.Should().NotBeNull("the large full must reach COMPLETED within the window");
@@ -93,6 +94,12 @@ public sealed class E2eBackupLargeSetScenarios(E2eBackupLargeSetScenariosFx Ctx)
                           + $"max={maxUsed[source]} growth={growth} size={sizeBytes} object={id}.tar");
         growth.Should().BeLessThan(sizeBytes / NoSecondCopyPercent,
             "the full must not create a second copy of the set on the node's data volume");
+        // Вторая копия в /tmp (writable-слой контейнера) тоже недопустима:
+        // допускаем только служебные мегабайты (CA-файлы/логи).
+        var tmpGrowth = maxTmp[source];
+        Console.WriteLine($"[PHASE] large-set-tmp: node={node} max=/tmp {tmpGrowth}");
+        tmpGrowth.Should().BeLessThan(256L * 1024 * 1024,
+            "the streaming full must not stage a second copy in the container's /tmp");
     }, TestContext.Current.CancellationToken);
 
     // AAA: набор 3,32 ГиБ лежит в S3 РОВНО одним объектом full/<id>.tar;
@@ -252,11 +259,15 @@ public sealed class E2eBackupLargeSetScenarios(E2eBackupLargeSetScenariosFx Ctx)
     // Ожидание COMPLETED с поллингом ЗАНЯТОСТИ data-volume нод шарда (бюджет
     // 170 с — внутри 3-минутной секции). Максимум фиксируется по каждому
     // контейнеру; нода-источник определяется по статусу после завершения.
-    private async Task<(Kv? Completed, Dictionary<string, long> MaxUsed)>
+    private async Task<(Kv? Completed, Dictionary<string, long> MaxUsed,
+        Dictionary<string, long> MaxTmp)>
         WaitCompletedSamplingUsedAsync(
             string cluster, IReadOnlyList<string> containers, CancellationToken ct)
     {
         var maxUsed = containers.ToDictionary(c => c, _ => 0L);
+        // Вторая копия вне data-volume (writable-слой/`/tmp`) не видна du по
+        // PGDATA: снимаем и /tmp — потоковый полный не пишет на диск ничего.
+        var maxTmp = containers.ToDictionary(c => c, _ => 0L);
         var sw = Stopwatch.StartNew();
         var budget = TimeSpan.FromSeconds(170);
         var nextTick = TimeSpan.FromSeconds(5);
@@ -264,7 +275,10 @@ public sealed class E2eBackupLargeSetScenarios(E2eBackupLargeSetScenariosFx Ctx)
         while (true)
         {
             foreach (var container in containers)
+            {
                 maxUsed[container] = Math.Max(maxUsed[container], await DataVolumeUsedBytesAsync(container, ct));
+                maxTmp[container] = Math.Max(maxTmp[container], await TmpUsedBytesAsync(container, ct));
+            }
             try
             {
                 completed = (await FullKeysAsync(cluster, "shard1"))
@@ -295,7 +309,7 @@ public sealed class E2eBackupLargeSetScenarios(E2eBackupLargeSetScenariosFx Ctx)
             Fx.MarkFailed();
         }
 
-        return (completed, maxUsed);
+        return (completed, maxUsed, maxTmp);
     }
 
     // Ожидание COMPLETED без замера диска (второй сценарий профиля).
@@ -307,6 +321,20 @@ public sealed class E2eBackupLargeSetScenarios(E2eBackupLargeSetScenariosFx Ctx)
         if (!completed)
             return null;
         return (await FullKeysAsync(cluster, "shard1")).FirstOrDefault(f => f.Value.Contains("COMPLETED"));
+    }
+
+    // Занятость /tmp контейнера (служебные файлы; вторая копия набора сюда
+    // попасть не должна — потоковый полный на диск не пишет).
+    private async Task<long> TmpUsedBytesAsync(string container, CancellationToken ct)
+    {
+        var output = await Fx.RunDockerAsync(["exec", container, "du", "-sb", "/tmp"], ct);
+        var line = output.Split('\n', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
+        if (line is null)
+            return 0;
+        var fields = line.Split([' ', '\t'], StringSplitOptions.RemoveEmptyEntries);
+        return fields.Length >= 2 && long.TryParse(fields[0], CultureInfo.InvariantCulture, out var used)
+            ? used
+            : 0;
     }
 
     // Занятость data-volume ноды — байты фактического содержимого PGDATA

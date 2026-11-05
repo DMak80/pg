@@ -29,7 +29,7 @@ public static class FullTarSet
             if (entry is null || entry.Name != "backup_label" || entry.TypeFlag != TarTypeFlags.File)
                 return Result<string?>.Success(null);
             var data = await reader.ReadAllDataAsync(ct);
-            return Result<string?>.Success(Encoding.ASCII.GetString(data));
+            return Result<string?>.Success(Encoding.UTF8.GetString(data));
         }
         catch (TarFormatException)
         {
