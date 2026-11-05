@@ -276,10 +276,21 @@ public class BackupsStorageDownApiTests(
             stampBefore.Should().BeGreaterThan(0);
         }
 
-        // Act: хранилище остановлено → два неудачных тика подряд → снапшот обновлён.
-        await s3.StopAsync(TestContext.Current.CancellationToken);
+        // Act: хранилище недоступно (docker pause — порт остаётся за контейнером:
+        // stop освобождал бы хост-порт, и параллельный класс мог занять его
+        // чужим S3 — общие static-креды дали бы apiOk=true на живой ноде)
+        // → два неудачных тика подряд → снапшот обновлён.
+        await s3.PauseAsync(TestContext.Current.CancellationToken);
         await loop.RunOnceAsync(TestContext.Current.CancellationToken);
         await loop.RunOnceAsync(TestContext.Current.CancellationToken);
+        // S10 (arch/adminpanel/02 §5): тик без изменений НЕ пересобирает снапшот —
+        // обогащение S3Storage (свежий health неудачных тиков) вносится ТОЛЬКО
+        // пересборкой. В проде воркер непрерывно переписывает наблюдаемые ключи —
+        // тест переписывает вердикт storage (тем же значением, mod_revision
+        // растёт): следующий рефреш — пересборка, API видит фактический health.
+        await EtcdSeed.PutAsync(etcd.Endpoint, "/pgworker/backups/storage",
+            $"{{\"used_bytes\":1000,\"quota_bytes\":10000,\"used_percent\":10.0,\"state\":\"WARN\",\"updated_unix\":{DateTimeOffset.UtcNow.ToUnixTimeSeconds()}}}",
+            TestContext.Current.CancellationToken);
         (await refresher.RefreshOnceAsync(TestContext.Current.CancellationToken))
             .IsSuccess.Should().BeTrue();
 
