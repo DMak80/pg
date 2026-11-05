@@ -101,9 +101,12 @@ public static class BackupManifest
         return result;
     }
 
-    /// <summary>Проверка `Manifest-Checksum` (PG: sha256 содержимого манифеста
-    /// с обнулённым значением поля). null — поля нет (сверка не определена);
-    /// false — значение есть, но не сходится с содержимым (порча манифеста).</summary>
+    /// <summary>Проверка `Manifest-Checksum` (PG18, backup_manifest.c
+    /// SendBackupManifest): хэш SHA-256 считается по содержимому манифеста ДО
+    /// добавления самого поля — всё, что стоит перед литералом
+    /// `"Manifest-Checksum"` (включая завершающую запятую), и ничего после.
+    /// null — поля нет (сверка не определена); false — значение есть, но не
+    /// сходится с содержимым (порча манифеста).</summary>
     public static bool? VerifyChecksum(string manifestJson)
     {
         const string marker = "\"Manifest-Checksum\"";
@@ -123,11 +126,9 @@ public static class BackupManifest
         var value = manifestJson[(quote + 1)..end];
         if (value.Length != sha256HexLength)
             return false;
-        var blanked = string.Concat(
-            manifestJson.AsSpan(0, quote + 1), new string('0', sha256HexLength),
-            manifestJson.AsSpan(end));
+        var hashed = manifestJson[..keyIndex];
         var actual = Convert.ToHexString(
-            SHA256.HashData(Encoding.UTF8.GetBytes(blanked))).ToLowerInvariant();
+            SHA256.HashData(Encoding.UTF8.GetBytes(hashed))).ToLowerInvariant();
         return string.Equals(actual, value.ToLowerInvariant(), StringComparison.Ordinal);
     }
 

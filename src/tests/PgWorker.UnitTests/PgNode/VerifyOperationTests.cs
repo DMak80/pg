@@ -416,17 +416,18 @@ public class VerifyOperationTests
             ["Files"] = files,
             ["WAL-Ranges"] = walRanges ?? [],
         };
-        if (checksum != ManifestChecksum.None)
-            root["Manifest-Checksum"] = new string('0', 64);
         var json = JsonSerializer.Serialize(root);
         if (checksum == ManifestChecksum.None)
             return json;
-        // PG: sha256 содержимого с обнулённым значением поля; валидная —
-        // подстановка реального хэша, битая — заведомо чужой.
+        // PG18 (backup_manifest.c SendBackupManifest): SHA-256 считается по
+        // содержимому манифеста ДО добавления поля Manifest-Checksum; поле —
+        // последний член объекта. Валидная — реальный хэш префикса, битая —
+        // заведомо чужой.
+        var body = json[..^1] + ","; // убрать '}', добавить разделитель поля
         var hash = checksum == ManifestChecksum.Valid
-            ? Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(json))).ToLowerInvariant()
+            ? Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(body))).ToLowerInvariant()
             : new string('a', 64);
-        return json.Replace(new string('0', 64), hash, StringComparison.Ordinal);
+        return body + "\"Manifest-Checksum\": \"" + hash + "\"}";
     }
 
     /// <summary>Фейк S3-цели verify: tar-объект, HEAD (существование/размер),
