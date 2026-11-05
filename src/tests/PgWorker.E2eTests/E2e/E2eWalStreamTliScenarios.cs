@@ -293,26 +293,6 @@ public sealed class E2eWalStreamTliScenarios(E2eWalStreamTliScenariosFx Ctx) : I
             Console.WriteLine($"[PHASE] wal-t24b: docker start {Fx.S3NodeContainerName}");
             await Fx.RunDockerAsync(["start", Fx.S3NodeContainerName], ct);
 
-            // Контрольная INSERT — маркер «догона»: (1) запись; (2) controlLsn —
-            // позиция контрольной записи, снимать ДО переключения (после него
-            // позиция ушла бы в следующий незакрытый сегмент); (3) закрыть
-            // сегмент контрольной записи (он будет доставлен приёмником).
-            string? controlLsn;
-            await using (var conn = new NpgsqlConnection(newMasterDsn))
-            {
-                await conn.OpenAsync(ct);
-                await using var insert = new NpgsqlCommand(
-                    "INSERT INTO wal_load(payload) VALUES ('r')", conn);
-                await insert.ExecuteNonQueryAsync(ct);
-                await using var lsn = new NpgsqlCommand(
-                    "SELECT pg_current_wal_lsn()::text", conn);
-                controlLsn = (string?)(await lsn.ExecuteScalarAsync(ct));
-                await using var switchWal = new NpgsqlCommand("SELECT pg_switch_wal()", conn);
-                await switchWal.ExecuteScalarAsync(ct);
-            }
-            controlLsn.Should().NotBeNullOrEmpty("the control-insert LSN is the catch-up marker");
-            Console.WriteLine($"[PHASE] wal-t24b: control insert done, controlLsn={controlLsn}");
-
             // Прогресс-делегат: листинг S3 + ключ wal + ключи full (§3.4)
             async Task<string> ConvergenceProgressAsync()
             {
@@ -338,6 +318,67 @@ public sealed class E2eWalStreamTliScenarios(E2eWalStreamTliScenariosFx Ctx) : I
                 TestContext.Current.CancellationToken);
             ctsConv.CancelAfter(TimeSpan.FromMinutes(3));
             ct = ctsConv.Token;
+
+            // t93 (корневая причина, факты прогонов 2026-11-05): приёмник
+            // совершает tli-прыжок на ГРАНИЦУ ТЕКУЩЕЙ позиции мастера — любой
+            // сегмент, закрытый ДО прыжка (в т.ч. контрольный), оказывается
+            // НИЖЕ точки старта стрима и попадает в осознанный RPO-зазор
+            // (b-wal-control §2: «сегменты между хвостом S3 и точкой старта
+            // прыжка в S3 не появятся») — недоставляем принципиально. Зондами
+            // зафиксировано: INSERT+pg_switch_wal ДО прыжка закрывали сегмент
+            // 1/0 (switch=1/3AE8, позиция → 1/1000000), приёмники прыгали на
+            // …0100000001 — финал контрольного сегмента не существовал для
+            // доставки, инвариант 5 недостижим, бюджет сгорал целиком. Маркер
+            // «догона» корректен ТОЛЬКО выше точки прыжка: сначала ждём
+            // факта прыжка (tli_jump в agent-ключе приёмника — публикация
+            // живьём в момент 58P01), ЗАТЕМ контрольная INSERT+switch.
+            var agentPrefixPath = $"/pgworker/backups/{cluster}/shard1/agent/";
+            var jumped = await E2ePhase.WaitAsync(Fx, "wal-jump-seen-before-control", async () =>
+            {
+                var read = await G.RangeAsync(Endpoint, agentPrefixPath, ct);
+                return read.Value is { } keys
+                       && keys.Any(kv => kv.Value.Contains("\"tli_jump\":", StringComparison.Ordinal));
+            }, TimeSpan.FromSeconds(90), ct);
+            jumped.Should().BeTrue(
+                "the receiver must survive the induced recycling with a tli jump before the control insert");
+
+            // Контрольная INSERT — маркер «догона» (выше точки прыжка):
+            // (1) запись; (2) controlLsn — позиция контрольной записи, снимать
+            // ДО переключения; (3) закрыть сегмент контрольной записи —
+            // стрим от точки прыжка доставит его финалом. Зонды t93 (позиция
+            // до/результат switch/позиция после) — файлом в ArtifactsDir
+            // (vstest не всегда выносит stdout факта).
+            string? controlLsn;
+            string? lsnBefore;
+            string? switchReturned;
+            string? lsnAfter;
+            await using (var conn = new NpgsqlConnection(newMasterDsn))
+            {
+                await conn.OpenAsync(ct);
+                await using var before = new NpgsqlCommand(
+                    "SELECT pg_current_wal_lsn()::text", conn);
+                lsnBefore = (string?)(await before.ExecuteScalarAsync(ct));
+                await using var insert = new NpgsqlCommand(
+                    "INSERT INTO wal_load(payload) VALUES ('r')", conn);
+                await insert.ExecuteNonQueryAsync(ct);
+                await using var lsn = new NpgsqlCommand(
+                    "SELECT pg_current_wal_lsn()::text", conn);
+                controlLsn = (string?)(await lsn.ExecuteScalarAsync(ct));
+                await using var switchWal = new NpgsqlCommand("SELECT pg_switch_wal()", conn);
+                switchReturned = (string?)(await switchWal.ExecuteScalarAsync(ct))?.ToString();
+                await using var after = new NpgsqlCommand(
+                    "SELECT pg_current_wal_lsn()::text", conn);
+                lsnAfter = (string?)(await after.ExecuteScalarAsync(ct));
+            }
+            controlLsn.Should().NotBeNullOrEmpty("the control-insert LSN is the catch-up marker");
+            Console.WriteLine(
+                $"[PHASE] wal-t24b: control insert done (after the jump), lsnBefore={lsnBefore}, " +
+                $"controlLsn={controlLsn}, switch={switchReturned}, lsnAfter={lsnAfter}");
+            await File.WriteAllTextAsync(
+                Path.Combine(Fx.ArtifactsDir,
+                    $"control-insert-{DateTimeOffset.UtcNow:HHmmss}.txt"),
+                $"lsnBefore={lsnBefore}\ncontrolLsn={controlLsn}\n" +
+                $"switch={switchReturned}\nlsnAfter={lsnAfter}\n", ct);
 
             // 5 финальных инвариантов сходимости (§3.7) — общий бюджет 900 с:
             // итог при любом пути (прыжок с зазором + пересъём / досыпка без
@@ -422,8 +463,8 @@ public sealed class E2eWalStreamTliScenarios(E2eWalStreamTliScenariosFx Ctx) : I
             // детерминирована: после failover/rebuild-гонки приёмники стартуют
             // с разными хвостами S3, прыжок делает тот, чей tail ниже точки
             // форка и чья досыпка получила 58P01. Поэтому читаем оба
-            // agent-ключа и ассертер наблюдаемый прыжок.
-            var agentPrefixPath = $"/pgworker/backups/{cluster}/shard1/agent/";
+            // agent-ключа и ассертер наблюдаемый прыжок (гейт до контрольной
+            // вставки выше уже дождался факта — здесь читаем готовое).
             var jumpSeen = await E2eFixture.WaitForAsync(async () =>
             {
                 var read = await G.RangeAsync(Endpoint, agentPrefixPath, ct);
