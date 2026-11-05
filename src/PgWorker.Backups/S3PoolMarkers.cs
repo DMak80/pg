@@ -20,4 +20,12 @@ public sealed record S3ClientOptions(
     // попыток с паузами). Пути с СВОЕЙ ретрай-политикой (fetch-wal, arch/19 §3.5)
     // выключают их (0) — иначе клиентские ретраи × пер-запросный таймаут ×
     // собственные попытки растягивают один вызов до минут на мёртвой ноде.
-    int? MaxErrorRetry = null);
+    int? MaxErrorRetry = null)
+{
+    // record ToString печатал бы SecretKey — интерполяция опций в лог стала бы
+    // утечкой кредов; наружу — endpoint/bucket без секретов.
+    public override string ToString()
+        => $"S3ClientOptions {{ Endpoint = {Endpoint}, Bucket = {Bucket}, " +
+           $"AccessKey = ***, SecretKey = ***, Region = {Region ?? "-"}, " +
+           $"CaBundlePath = {CaBundlePath ?? "-"}, MaxErrorRetry = {MaxErrorRetry?.ToString() ?? "-"} }}";
+}
