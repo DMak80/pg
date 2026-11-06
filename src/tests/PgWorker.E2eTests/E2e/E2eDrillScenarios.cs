@@ -345,19 +345,32 @@ public sealed class E2eDrillScenarios(E2eDrillScenariosFx Ctx) : IClassFixture<E
             $$"""{"full_max_age_sec":86400,"verify":{"on_create":true},"drill":{"interval_days":1},{{E2eEnvironment.PoolS3(Pool)}}}""", null, ct);
         await using var app = await StartBackupHostAsync("bkdrillr", ct);
 
-        // Act 1 — COMPLETED-полный и дрилл в фазе recovering (postmaster операции жив).
+        // Act 1 — COMPLETED-полный и дрилл с ЖИВЫМ postmaster операции. Фаза
+        // recovering в etcd-ключе — зеркало тика воркера (занятый тик отстаёт
+        // и короткое окно recovering пропускается), поэтому живость проверяем
+        // у самой операции: pg_ctl status по scratch-каталогу её id.
         var completed = await E2eFixture.WaitForAsync(
             async () => (await FullKeysAsync(cluster, "shard1")).Any(f => f.Value.Contains("COMPLETED")),
             TimeSpan.FromSeconds(90), ct);
         completed.Should().BeTrue("the full must be taken");
+        var node = $"pgw-{cluster}-shard1-shard1a";
         var recovering = await E2eFixture.WaitForAsync(async () =>
-            (await GetOrNullAsync($"/pgworker/backups/{cluster}/shard1/drill"))
-                ?.Value.Contains("\"phase\":\"recovering\"") == true,
-            TimeSpan.FromSeconds(120), ct);
+        {
+            if (await GetOrNullAsync($"/pgworker/backups/{cluster}/shard1/drill") is not { } kv)
+                return false;
+            var doc = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(kv.Value);
+            if (doc is null || !doc.TryGetValue("id", out var idEl))
+                return false;
+            var opId = idEl.GetString();
+            if (string.IsNullOrEmpty(opId))
+                return false;
+            return (await DockerTryAsync(
+                ["exec", "-u", "postgres", node, "pg_ctl", "status",
+                    "-D", $"/home/postgres/pgdata/backup-drill/{opId}/pgdata"], ct)).Ok;
+        }, TimeSpan.FromSeconds(120), ct);
         recovering.Should().BeTrue("the drill reaches recovering — the operation postmaster is alive");
 
         // Act 2 — graceful-стоп приёмника первой ноды посреди дрилла и старт.
-        var node = $"pgw-{cluster}-shard1-shard1a";
         await Fx.RunDockerAsync(["exec", node, "supervisorctl", "stop", "pgnode"], ct);
         await Task.Delay(TimeSpan.FromSeconds(2), ct);
         await Fx.RunDockerAsync(["exec", node, "supervisorctl", "start", "pgnode"], ct);
