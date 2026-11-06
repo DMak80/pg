@@ -54,5 +54,27 @@
   меняется — роль та же). Развилки на spec: перенос журнального флага
   окна (отдельный от rest_window_open или общий «окно ротации»),
   порядок потребители→ALTER (потребители могут работать на OLD/NEW
-  параллельно — одна роль, два пароля в окне невозможны: определить
+  паролях параллельно — одна роль, два пароля в окне невозможны: определить
   порядок без разрыва стримов). ← t05-node-secret-push.
+
+- **`t90-unify-pgserver-cert`** — PgWorker на общем `server.*`, отдельный
+  `pgserver.*` упраздняется (как у kafkaworker/valkeyworker/s3worker/
+  etcdworker — один серверный серт на всех); заодно вычистить мёртвый
+  `hc.*` (серт эмуляторов Patroni стенда — контейнеры hc* демонтированы
+  из стендового compose, серт не монтируется и не читается никем).
+  Точки: `deploy/tls/gen.sh` —
+  SERVER_SAN + `DNS:pgworker,DNS:pgworker-2` (сейчас их нет: верификация
+  имени таргета против SAN — PatroniRestProbe/панель/Prometheus — не
+  пройдёт), перегенерация server.crt старых выпусков без `DNS:pgworker`
+  по SAN-маркеру (прецедент gen.sh:40–54), удаление выпуска pgserver
+  (gen.sh:56–61) и hc (gen.sh:72), `rm -f pgserver.* hc.*` для живых
+  стендов (прецедент prometheus/healthcheck, gen.sh:81), echo gen.sh:83
+  (без pgserver, hc);
+  `deploy/docker-compose.yml:36–37` (PGW_API_TLS_* → server.*) и
+  комментарий :302; `dev-stand/adminpanel/checks/00-up.sh:56,72`;
+  `dev-stand/adminpanel/README.md:183`;
+  `src/tests/PgWorker.UnitTests/App/ApiTlsEnvBindingsTests.cs:19,29`
+  (примеры путей). НЕ трогать: `gen-docker.sh` — там клиентская пара
+  `pgworker-docker.*` отдельной docker-CA (docker remote API воркера,
+  не API-грань). Упрощает t05-stand-tls-hardening (пофайловые маунты —
+  меньше файлов); зависимостей нет.
