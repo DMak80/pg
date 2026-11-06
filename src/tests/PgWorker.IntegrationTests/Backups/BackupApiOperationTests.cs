@@ -99,13 +99,37 @@ public class BackupApiOperationTests : IDisposable
     /// API: итог операции — снимок cancelled, НЕ failed, spec §3.2).</summary>
     private sealed class FakeOp(OperationRegistry? registry = null, string? id = null) : IReceiverOperation
     {
+        private readonly TaskCompletionSource _finished = new();
+
+        // Счётчики каналов отмены (гашение хоста ≠ операторская отмена).
+        public int CancelCalls;
+        public int ShutdownCalls;
+
         public OperationSnapshot? Snapshot => null;
-        public Task RunAsync(CancellationToken ct) => Task.CompletedTask;
+
+        public Task RunAsync(CancellationToken ct) => _finished.Task;
+
         public Task CancelAsync()
         {
+            CancelCalls++;
             registry?.Update(new OperationSnapshot(
                 id ?? "op", "cancelled", "downloading", Error: "cancelled by operator"));
             return Task.CompletedTask;
+        }
+
+        // Гашение при остановке хоста: снимок НЕ перезаписывается cancelled.
+        public Task ShutdownAsync()
+        {
+            ShutdownCalls++;
+            _finished.TrySetResult();
+            return Task.CompletedTask;
+        }
+
+        // Завершение операции тестом (терминал + выход задачи).
+        public void Finish(string state)
+        {
+            registry?.Update(new OperationSnapshot(id ?? "op", state, "downloading"));
+            _finished.TrySetResult();
         }
     }
 
@@ -125,29 +149,33 @@ public class BackupApiOperationTests : IDisposable
     /// running/downloading-снимок в ОПЕРАЦИОННЫЙ (ops) реестр.</summary>
     private sealed class FakeOpsFactory(OpsOperationRegistry registry, List<string> created) : IOpsOperationFactory
     {
+        public FakeOp? Last { get; private set; }
+
         public IReceiverOperation CreateVerify(StartVerifyRequest request)
         {
             created.Add(request.BackupId);
             registry.Update(new OperationSnapshot(request.BackupId, "running", "downloading"));
-            return new FakeOp(registry, request.BackupId);
+            return Last = new FakeOp(registry, request.BackupId);
         }
 
         public IReceiverOperation CreateRestore(StartRestoreRequest request)
         {
             created.Add(request.BackupId);
             registry.Update(new OperationSnapshot(request.Id ?? request.BackupId, "running", "recovering"));
-            return new FakeOp(registry, request.Id ?? request.BackupId);
+            return Last = new FakeOp(registry, request.Id ?? request.BackupId);
         }
     }
 
     private static (WebApplicationFactory<global::PgWorker.PgNode.Program> Factory, HttpClient Client,
-        OperationRegistry FullRegistry, OpsOperationRegistry OpsRegistry, List<string> Created, FakeEtcd Etcd) Build()
+        OperationRegistry FullRegistry, OpsOperationRegistry OpsRegistry, List<string> Created,
+        FakeOpsFactory FakeOps, FakeEtcd Etcd) Build()
     {
         SetEnv();
         var etcd = new FakeEtcd();
         var fullRegistry = new OperationRegistry();
         var opsRegistry = new OpsOperationRegistry();
         var created = new List<string>();
+        var fakeOps = new FakeOpsFactory(opsRegistry, created);
         var factory = new WebApplicationFactory<global::PgWorker.PgNode.Program>().WithWebHostBuilder(b =>
         {
             b.ConfigureTestServices(services =>
@@ -159,11 +187,10 @@ public class BackupApiOperationTests : IDisposable
                 services.AddSingleton<IEtcdGateway>(etcd);
                 services.AddSingleton<IFullBackupOperationFactory>(
                     new FakeFullFactory(fullRegistry, created));
-                services.AddSingleton<IOpsOperationFactory>(
-                    new FakeOpsFactory(opsRegistry, created));
+                services.AddSingleton<IOpsOperationFactory>(fakeOps);
             });
         });
-        return (factory, factory.CreateClient(), fullRegistry, opsRegistry, created, etcd);
+        return (factory, factory.CreateClient(), fullRegistry, opsRegistry, created, fakeOps, etcd);
     }
 
     // ── /api/backup/full* ────────────────────────────────────────────────
@@ -173,7 +200,7 @@ public class BackupApiOperationTests : IDisposable
     {
         var ct = TestContext.Current.CancellationToken;
         // Arrange: пустой full-реестр.
-        var (_, client, _, _, created, _) = Build();
+        var (_, client, _, _, created, _, _) = Build();
 
         // Act: первый POST full.
         var response = await client.PostAsJsonAsync("/api/backup/full", new StartFullRequest(Id), ct);
@@ -193,7 +220,7 @@ public class BackupApiOperationTests : IDisposable
     {
         var ct = TestContext.Current.CancellationToken;
         // Arrange — пустой реестр; id с кавычкой/переводом строки.
-        var (_, client, _, _, created, _) = Build();
+        var (_, client, _, _, created, _, _) = Build();
 
         // Act — три недопустимых id: кавычка, перевод строки, пробел.
         var quote = await client.PostAsJsonAsync(
@@ -215,7 +242,7 @@ public class BackupApiOperationTests : IDisposable
     {
         var ct = TestContext.Current.CancellationToken;
         // Arrange
-        var (_, client, _, _, created, _) = Build();
+        var (_, client, _, _, created, _, _) = Build();
         var body = new StartVerifyRequest(
             "bad/id", new S3Context(["http://s3a:9000"], "ak", "sk", "b", "c1/s1"));
 
@@ -232,7 +259,7 @@ public class BackupApiOperationTests : IDisposable
     {
         var ct = TestContext.Current.CancellationToken;
         // Arrange: первый POST создал активную операцию (снимок running).
-        var (_, client, _, _, _, _) = Build();
+        var (_, client, _, _, _, _, _) = Build();
         await client.PostAsJsonAsync("/api/backup/full", new StartFullRequest(Id), ct);
 
         // Act: повторный POST.
@@ -252,7 +279,7 @@ public class BackupApiOperationTests : IDisposable
     {
         var ct = TestContext.Current.CancellationToken;
         // Arrange: POST создал операцию.
-        var (_, client, _, _, _, _) = Build();
+        var (_, client, _, _, _, _, _) = Build();
         await client.PostAsJsonAsync("/api/backup/full", new StartFullRequest(Id), ct);
 
         // Act: GET статуса.
@@ -271,7 +298,7 @@ public class BackupApiOperationTests : IDisposable
     {
         var ct = TestContext.Current.CancellationToken;
         // Arrange: wal-ключ шарда в STOPPED (карантин — гейт операции).
-        var (_, client, _, _, created, etcd) = Build();
+        var (_, client, _, _, created, _, etcd) = Build();
         etcd.Kvs["/pgworker/backups/c1/s1/wal"] = """{"state":"STOPPED"}""";
 
         // Act: POST full.
@@ -287,7 +314,7 @@ public class BackupApiOperationTests : IDisposable
     {
         var ct = TestContext.Current.CancellationToken;
         // Arrange: wal-ключ шарда в WAL_CHAIN_ERROR (разрыв цепочки архива).
-        var (_, client, _, _, created, etcd) = Build();
+        var (_, client, _, _, created, _, etcd) = Build();
         etcd.Kvs["/pgworker/backups/c1/s1/wal"] = """{"state":"WAL_CHAIN_ERROR"}""";
 
         // Act: POST full.
@@ -311,7 +338,7 @@ public class BackupApiOperationTests : IDisposable
     {
         var ct = TestContext.Current.CancellationToken;
         // Arrange: глобальный ключ /pgworker/backups-disabled жив.
-        var (_, client, _, _, created, etcd) = Build();
+        var (_, client, _, _, created, _, etcd) = Build();
         etcd.Kvs["/pgworker/backups-disabled"] = """{"updated_unix":1}""";
 
         // Act.
@@ -327,7 +354,7 @@ public class BackupApiOperationTests : IDisposable
     {
         var ct = TestContext.Current.CancellationToken;
         // Arrange: транспортный отказ etcd при чтении гейтов (Unknown).
-        var (_, client, _, _, created, etcd) = Build();
+        var (_, client, _, _, created, _, etcd) = Build();
         etcd.FailReads = true;
 
         // Act.
@@ -343,7 +370,7 @@ public class BackupApiOperationTests : IDisposable
     {
         var ct = TestContext.Current.CancellationToken;
         // Arrange: пустой full-реестр.
-        var (_, client, _, _, _, _) = Build();
+        var (_, client, _, _, _, _, _) = Build();
 
         // Act.
         var response = await client.PostAsync("/api/backup/full/cancel", content: null, ct);
@@ -357,7 +384,7 @@ public class BackupApiOperationTests : IDisposable
     {
         var ct = TestContext.Current.CancellationToken;
         // Arrange: активная операция.
-        var (_, client, _, _, _, _) = Build();
+        var (_, client, _, _, _, _, _) = Build();
         await client.PostAsJsonAsync("/api/backup/full", new StartFullRequest(Id), ct);
 
         // Act.
@@ -374,7 +401,7 @@ public class BackupApiOperationTests : IDisposable
     {
         var ct = TestContext.Current.CancellationToken;
         // Arrange.
-        var (_, client, _, _, _, _) = Build();
+        var (_, client, _, _, _, _, _) = Build();
         var body = new StartVerifyRequest(Id,
             new S3Context(["http://s3a:9000"], "ak", "sk", "backups", "c1/s1"));
 
@@ -395,7 +422,7 @@ public class BackupApiOperationTests : IDisposable
     {
         var ct = TestContext.Current.CancellationToken;
         // Arrange.
-        var (_, client, _, _, _, _) = Build();
+        var (_, client, _, _, _, _, _) = Build();
         var body = new StartRestoreRequest(Id, Id: null, TargetTime: null, RecoveryTimeoutSec: 60,
             S3: new S3Context(["http://s3a:9000"], "ak", "sk", "backups", "c1/s1"));
 
@@ -415,7 +442,7 @@ public class BackupApiOperationTests : IDisposable
     {
         var ct = TestContext.Current.CancellationToken;
         // Arrange: POST restore создал операцию.
-        var (_, client, _, _, _, _) = Build();
+        var (_, client, _, _, _, _, _) = Build();
         var body = new StartRestoreRequest(Id, Id: null, TargetTime: null, RecoveryTimeoutSec: 60,
             S3: new S3Context(["http://s3a:9000"], "ak", "sk", "backups", "c1/s1"));
         await client.PostAsJsonAsync("/api/ops/restore", body, ct);
@@ -438,7 +465,7 @@ public class BackupApiOperationTests : IDisposable
     {
         var ct = TestContext.Current.CancellationToken;
         // Arrange: активный полный.
-        var (_, client, _, _, _, _) = Build();
+        var (_, client, _, _, _, _, _) = Build();
         await client.PostAsJsonAsync("/api/backup/full", new StartFullRequest(Id), ct);
 
         // Act: POST verify при идущем полном.
@@ -455,7 +482,7 @@ public class BackupApiOperationTests : IDisposable
     {
         var ct = TestContext.Current.CancellationToken;
         // Arrange: пустой ops-реестр.
-        var (_, client, _, _, _, _) = Build();
+        var (_, client, _, _, _, _, _) = Build();
 
         // Act/Assert: cancel без активной — 404.
         var none = await client.PostAsync("/api/ops/cancel", content: null, ct);
@@ -480,7 +507,7 @@ public class BackupApiOperationTests : IDisposable
     {
         var ct = TestContext.Current.CancellationToken;
         // Arrange: активная verify-операция.
-        var (_, client, _, _, created, _) = Build();
+        var (_, client, _, _, created, _, _) = Build();
         ((int)(await client.PostAsJsonAsync("/api/ops/verify", new StartVerifyRequest(Id,
             new S3Context(["http://s3a:9000"], "ak", "sk", "backups", "c1/s1")), ct)).StatusCode)
             .Should().Be(202);

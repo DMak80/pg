@@ -38,6 +38,7 @@ public sealed class RestoreOperation : IReceiverOperation
     private readonly bool _isDrill; // id в запросе — drill: scratch + чистка при любом исходе
     private readonly Func<string, IBackupS3>? _targetFactory; // тестовый шов (шаг 9)
     private readonly CancellationTokenSource _cts = new();
+    private volatile bool _shutdown; // гашение хоста ≠ операторская отмена
 
     public RestoreOperation(
         StartRestoreRequest request,
@@ -415,7 +416,9 @@ public sealed class RestoreOperation : IReceiverOperation
             // НЕ failed (отмена = «операции не было», arch/backups/03-restore.md; воркер
             // отличает её от vanished: запись заявки/ключ дрилла удаляются).
             await StopBestEffortAsync(_pgdata);
-            Update(OperationStates.Cancelled, phase, error: "cancelled by operator");
+            // Гашение при остановке хоста (_shutdown) снимок НЕ перезаписывает.
+            if (!_shutdown)
+                Update(OperationStates.Cancelled, phase, error: "cancelled by operator");
         }
         catch (Exception e) when (IsTransport(e))
         {
@@ -484,6 +487,17 @@ public sealed class RestoreOperation : IReceiverOperation
         await StopBestEffortAsync(_pgdata);
     }
 
+    /// <summary>Гашение при остановке хоста приёмника (arch/pgnode/
+    /// 06-restore-drill.md §2): тот же стоп, что у CancelAsync, но БЕЗ
+    /// операторской семантики — снимок НЕ перезаписывается cancelled;
+    /// флаг ставится ДО отмены, чтобы catch отмены различил каналы.</summary>
+    public async Task ShutdownAsync()
+    {
+        _shutdown = true;
+        _cts.Cancel();
+        await StopBestEffortAsync(_pgdata);
+    }
+
     // Обновление снимка с переносом started_unix TryBegin (Update заменяет
     // снимок целиком) и опциональными результатами restore.
     private void Update(string state, string phase,
@@ -491,7 +505,8 @@ public sealed class RestoreOperation : IReceiverOperation
         => _registry.Update(new OperationSnapshot(
             _request.Id ?? _request.BackupId, state, phase,
             RestoredToLsn: restoredToLsn, SystemId: systemId,
-            StartedUnix: _registry.Current?.StartedUnix, Error: error));
+            StartedUnix: _registry.Current?.StartedUnix, Error: error,
+            Kind: _isDrill ? OperationKinds.Drill : OperationKinds.Restore));
 
     // Клиент одного endpoint'а команды (шов _targetFactory — фабрика от
     // endpoint): MaxErrorRetry=0 — per-попыточный таймаут вместо ретраев SDK.

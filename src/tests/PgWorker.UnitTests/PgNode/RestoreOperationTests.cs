@@ -578,8 +578,44 @@ public class RestoreOperationTests
         Directory.Delete(root, recursive: true);
     }
 
-    // AAA: объекта full/<id>.tar нет ни на одном endpoint → failed/downloading
-    // (transient-семантика прежняя), причина — object not found.
+    // AAA (гашение при остановке хоста ≠ операторская отмена): shutdown
+    // гасит задачу и postmaster, но снимок НЕ перезаписывается cancelled —
+    // после смерти процесса реестра нет, воркер идёт vanished-путём 404.
+    [Fact]
+    public async Task ShutdownDuringRecoveryPoll_SnapshotNotCancelled()
+    {
+        // Arrange: psql-поллинг висит (гасится отменой); постгресс операции
+        // ЖИВ (PgCtlStatusExit = 0) — гашение обязано его остановить.
+        var root = NewPgdata();
+        var pgdata = Path.Combine(root, "pgroot", "data");
+        var runner = new FakeRunner { PsqlPollHang = true, PgCtlStatusExit = 0 };
+        var registry = new OperationRegistry();
+        registry.TryBegin(new OperationSnapshot(Id, "running", "downloading"));
+        var op = new RestoreOperation(Request(), runner, registry,
+            pgdata, _ => new FakeTarS3());
+        var run = op.RunAsync(CancellationToken.None);
+        SpinWait.SpinUntil(() => runner.Invocations.Any(i =>
+                    i.FileName == "psql" && i.Args.Contains("pg_is_in_recovery")),
+                TimeSpan.FromSeconds(10))
+            .Should().BeTrue("the operation reaches the recovery poll before the shutdown");
+
+        // Act: гашение при остановке хоста приёмника.
+        await op.ShutdownAsync();
+        await run;
+
+        // Assert: снимок остался running своей фазы — никакого cancelled;
+        // вид операции перенесён (Update не теряет kind).
+        var snap = registrySnapshot(op)!;
+        snap.State.Should().Be("running",
+            "shutdown is an internal channel — the operator-cancel verdict is not published");
+        snap.Error.Should().BeNull();
+        snap.Kind.Should().Be("restore");
+        // Assert: гашение остановило живой постгресс операции (stop fast).
+        runner.Invocations.Should().Contain(i =>
+            i.FileName == "pg_ctl" && i.Args.Contains("stop") && i.Args.Contains("fast"),
+            "shutdown must stop the live postmaster of the operation");
+        Directory.Delete(root, recursive: true);
+    }
     [Fact]
     public async Task TarObjectNotFound_AllEndpointsMiss_FailedDownloading()
     {

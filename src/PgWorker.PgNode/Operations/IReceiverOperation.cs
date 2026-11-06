@@ -10,6 +10,13 @@ public interface IReceiverOperation
     Task RunAsync(CancellationToken ct);
 
     Task CancelAsync();
+
+    /// <summary>Гашение при остановке хоста приёмника (arch/pgnode/
+    /// 06-restore-drill.md §2): внутренний канал, ОТЛИЧНЫЙ от операторской
+    /// отмены — гасит задачу и postmaster операции, но снимок НЕ
+    /// перезаписывается (после смерти процесса реестра нет — воркер идёт
+    /// vanished-путём 404 → повтор POST).</summary>
+    Task ShutdownAsync();
 }
 
 /// <summary>Фабрика операции полного бэкапа (нодовый режим; DI-контракт Program —

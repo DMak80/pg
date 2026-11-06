@@ -311,6 +311,16 @@ public sealed class FullBackupOperation(
         return Task.CompletedTask;
     }
 
+    /// <summary>Гашение при остановке хоста (интерфейс ops-канала,
+    /// arch/pgnode/06-restore-drill.md §2): полный бэкап живёт в СВОЁМ
+    /// реестре и ops-каналом не гасится — реализация отменяет задачу без
+    /// операторской семантики (безопасна при любом вызове).</summary>
+    public Task ShutdownAsync()
+    {
+        _cts.Cancel();
+        return Task.CompletedTask;
+    }
+
     /// <summary>Перепаковка одной секции COPY-потока BASE_BACKUP в единый tar:
     /// index 0 — base.tar (WAL-сегменты уже внутри с префиксом pg_wal/),
     /// index 1 — отдельный WAL-архив (защита для серверов без WAL-in-tar),

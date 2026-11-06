@@ -60,6 +60,58 @@ public class VerifyOperationTests
         s3.Ranges[0].End.Should().Be(tar.Length - 1);
     }
 
+    // AAA (гашение при остановке хоста ≠ операторская отмена): чтение
+    // прерывается, снимок НЕ перезаписывается cancelled (операторская
+    // семантика — только у cancel API).
+    [Fact]
+    public async Task ShutdownDuringVerifyPass_SnapshotNotCancelled()
+    {
+        // Arrange: валидный набор; чтение тела verifying висит до отмены.
+        var tar = BuildTar([Version, Control, Label, Segment], [Version, Control, Label]);
+        var s3 = new FakeTarS3(tar) { HangStreamRead = true };
+        var op = Create(s3);
+        var run = op.RunAsync(CancellationToken.None);
+        SpinWait.SpinUntil(() => s3.StreamsOpened > 0, TimeSpan.FromSeconds(10))
+            .Should().BeTrue("the operation reaches the verifying pass before the shutdown");
+
+        // Act: гашение при остановке хоста приёмника.
+        await op.ShutdownAsync();
+        await run;
+
+        // Assert: снимок остался running своей фазы — никакого cancelled;
+        // вид операции перенесён (Update не теряет kind).
+        var snap = op.Snapshot!;
+        snap.State.Should().Be("running",
+            "shutdown is an internal channel — the operator-cancel verdict is not published");
+        snap.Error.Should().BeNull();
+        snap.Kind.Should().Be("verify");
+    }
+
+    // AAA (операторский канал остаётся операторским): cancel API verify
+    // публикует cancelled с канонической причиной (регресс-гвард
+    // разделения каналов — парный к ShutdownDuringVerifyPass).
+    [Fact]
+    public async Task CancelDuringVerifyPass_StateCancelled()
+    {
+        // Arrange: тот же висящий verifying-проход.
+        var tar = BuildTar([Version, Control, Label, Segment], [Version, Control, Label]);
+        var s3 = new FakeTarS3(tar) { HangStreamRead = true };
+        var op = Create(s3);
+        var run = op.RunAsync(CancellationToken.None);
+        SpinWait.SpinUntil(() => s3.StreamsOpened > 0, TimeSpan.FromSeconds(10))
+            .Should().BeTrue("the operation reaches the verifying pass before the cancel");
+
+        // Act: операторская отмена (cancel API).
+        await op.CancelAsync();
+        await run;
+
+        // Assert: снимок cancelled с канонической причиной.
+        var snap = op.Snapshot!;
+        snap.State.Should().Be("cancelled",
+            "the operator channel keeps publishing the operator verdict");
+        snap.Error.Should().Be("cancelled by operator");
+    }
+
     // AAA: байт файла не сходится с манифестом → failed/verifying PERMANENT.
     [Fact]
     public async Task CorruptFile_ChecksumMismatch()
@@ -441,6 +493,12 @@ public class VerifyOperationTests
         // Обрыв транспорта при чтении тела (фаза verifying) — IOException.
         public bool FailStreamRead { get; init; }
 
+        // Чтение тела висит до отмены токена (модель живого S3-чтения).
+        public bool HangStreamRead { get; init; }
+
+        // Счётчик открытых стримов — предусловие «операция дошла до verifying».
+        public int StreamsOpened;
+
         public List<(long Start, long End)> Ranges { get; } = [];
 
         public Task<Result<(bool Exists, long SizeBytes)>> HeadObjectAsync(
@@ -460,8 +518,14 @@ public class VerifyOperationTests
 
         public Task<Result<(Stream Body, long Size)>> GetObjectStreamAsync(
             string cluster, string shard, string key, CancellationToken ct)
-            => Task.FromResult(Result<(Stream Body, long Size)>.Success(
-                (FailStreamRead ? new FailingStream() : new MemoryStream(tar), (long)tar.Length)));
+        {
+            StreamsOpened++;
+            Stream body = FailStreamRead ? new FailingStream()
+                : HangStreamRead ? new HangingStream()
+                : new MemoryStream(tar);
+            return Task.FromResult(Result<(Stream Body, long Size)>.Success(
+                (body, (long)tar.Length)));
+        }
 
         // IBackupS3 — verify не использует.
         public Task<Result<bool>> BucketExistsAsync(CancellationToken ct) => throw new NotSupportedException();
@@ -494,6 +558,33 @@ public class VerifyOperationTests
         public override ValueTask<int> ReadAsync(
             Memory<byte> buffer, CancellationToken cancellationToken = default)
             => throw new IOException("connection reset by peer");
+        public override void Flush() { }
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    }
+
+    /// <summary>Поток, висящий на чтении до отмены токена (живое S3-чтение).</summary>
+    private sealed class HangingStream : Stream
+    {
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+
+        public override async ValueTask<int> ReadAsync(
+            Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            return 0;
+        }
+
+        public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
         public override void Flush() { }
         public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
         public override void SetLength(long value) => throw new NotSupportedException();
