@@ -8,6 +8,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using PgWorker.Etcd.S3;
+using OperationKinds = PgWorker.Backups.OperationKinds;
 using PgWorker.PgNode;
 using PgWorker.PgNode.Operations;
 using Shared.Etcd.Client;
@@ -307,8 +308,39 @@ internal partial class Program
     // живёт в СВОЁМ реестре и ops-операцию не блокирует.
     private static void MapOpsRoutes(WebApplication app)
     {
-        // Активная операция для cancel (снимок — в реестре, экземпляр — здесь).
+        // Активная операция для cancel/shutdown (снимок — в реестре,
+        // экземпляр — здесь); activeId — id её TryBegin-снимка (гвард
+        // «running-снимок именно этой операции»).
         IReceiverOperation? active = null;
+        string? activeId = null;
+
+        // Остановка хоста гасит ЖИВУЮ ops-операцию (arch/pgnode/
+        // 06-restore-drill.md §2): ShutdownAsync — внутренний канал,
+        // ОТЛИЧНЫЙ от операторской отмены: гасит задачу (runner убивает
+        // дерево child-процессов) и останавливает postmaster операции, но
+        // снимок НЕ перезаписывается (после смерти процесса реестра нет —
+        // воркер идёт vanished-путём 404 → повтор POST). Завершённая
+        // операция (терминальный снимок/обнулённая ссылка) не гасится.
+        // Ожидание ≤15 c; жёсткий SIGKILL supervisord закроет остаток
+        // защитой каталога при следующем запуске.
+        var opsRegistry = app.Services.GetRequiredService<OpsOperationRegistry>();
+        app.Lifetime.ApplicationStopping.Register(() =>
+        {
+            try
+            {
+                if (active is not { } op || activeId is not { } id)
+                    return;
+                if (opsRegistry.Current is not { State: OperationStates.Running } cur || cur.Id != id)
+                    return;
+                op.ShutdownAsync()
+                    .WaitAsync(TimeSpan.FromSeconds(15))
+                    .GetAwaiter().GetResult();
+            }
+            catch
+            {
+                // best-effort: нестопаемый остаток подберёт защита каталога
+            }
+        });
 
         app.MapPost("/api/ops/verify", (StartVerifyRequest body,
             OpsOperationRegistry registry, IOpsOperationFactory factory) =>
@@ -319,13 +351,25 @@ internal partial class Program
                     JsonOpts, statusCode: 400);
             if (!registry.TryBegin(new OperationSnapshot(
                     body.BackupId, OperationStates.Running, OperationPhases.Downloading,
-                    StartedUnix: DateTimeOffset.UtcNow.ToUnixTimeSeconds())))
+                    StartedUnix: DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                    Kind: OperationKinds.Verify)))
                 return Results.Json(
                     new ErrorResponse("operation already active"), JsonOpts, statusCode: 409);
 
             var operation = factory.CreateVerify(body);
             active = operation;
-            _ = Task.Run(() => operation.RunAsync(CancellationToken.None));
+            activeId = body.BackupId;
+            // Ссылка живёт до завершения задачи операции; ReferenceEquals не
+            // затирает более новую (arch/pgnode/06-restore-drill.md §2).
+            _ = Task.Run(() => operation.RunAsync(CancellationToken.None))
+                .ContinueWith(_ =>
+                {
+                    if (ReferenceEquals(active, operation))
+                    {
+                        active = null;
+                        activeId = null;
+                    }
+                });
             return Results.Json(
                 new OpsStatusResponse(OperationStates.Running, OperationPhases.Downloading),
                 JsonOpts, statusCode: 202);
@@ -348,13 +392,25 @@ internal partial class Program
                     JsonOpts, statusCode: 400);
             if (!registry.TryBegin(new OperationSnapshot(
                     body.Id ?? body.BackupId, OperationStates.Running, OperationPhases.Downloading,
-                    StartedUnix: DateTimeOffset.UtcNow.ToUnixTimeSeconds())))
+                    StartedUnix: DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                    Kind: body.Id is null ? OperationKinds.Restore : OperationKinds.Drill)))
                 return Results.Json(
                     new ErrorResponse("operation already active"), JsonOpts, statusCode: 409);
 
             var operation = factory.CreateRestore(body);
             active = operation;
-            _ = Task.Run(() => operation.RunAsync(CancellationToken.None));
+            activeId = body.Id ?? body.BackupId;
+            // Ссылка живёт до завершения задачи операции; ReferenceEquals не
+            // затирает более новую (arch/pgnode/06-restore-drill.md §2).
+            _ = Task.Run(() => operation.RunAsync(CancellationToken.None))
+                .ContinueWith(_ =>
+                {
+                    if (ReferenceEquals(active, operation))
+                    {
+                        active = null;
+                        activeId = null;
+                    }
+                });
             return Results.Json(
                 new OpsStatusResponse(OperationStates.Running, OperationPhases.Downloading),
                 JsonOpts, statusCode: 202);
@@ -364,10 +420,14 @@ internal partial class Program
 
         app.MapPost("/api/ops/cancel", async (OpsOperationRegistry registry) =>
         {
-            if (registry.Current is null || active is null)
+            // Отмена — ТОЛЬКО живой (running) операции этой ссылки
+            // (arch/pgnode/06-restore-drill.md §2): завершённая не
+            // отменяется и не останавливается повторно.
+            if (registry.Current is not { State: OperationStates.Running } cur
+                || active is not { } op || activeId != cur.Id)
                 return Results.Json(
                     new ErrorResponse("no active operation"), JsonOpts, statusCode: 404);
-            await active.CancelAsync();
+            await op.CancelAsync();
             return Results.Json(new { state = "cancelling" }, JsonOpts, statusCode: 202);
         });
     }
@@ -381,7 +441,7 @@ internal partial class Program
             ? Results.Json(new OpsStatusResponse(
                     snapshot.State, snapshot.Phase, snapshot.Id,
                     snapshot.RestoredToLsn, snapshot.SystemId,
-                    snapshot.StartedUnix, snapshot.Error),
+                    snapshot.StartedUnix, snapshot.Error, snapshot.Kind),
                 JsonOpts)
             : Results.Json(
                 new ErrorResponse("no active operation"), JsonOpts, statusCode: 404);

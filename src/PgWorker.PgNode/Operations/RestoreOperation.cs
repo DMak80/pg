@@ -38,6 +38,7 @@ public sealed class RestoreOperation : IReceiverOperation
     private readonly bool _isDrill; // id в запросе — drill: scratch + чистка при любом исходе
     private readonly Func<string, IBackupS3>? _targetFactory; // тестовый шов (шаг 9)
     private readonly CancellationTokenSource _cts = new();
+    private volatile bool _shutdown; // гашение хоста ≠ операторская отмена
 
     public RestoreOperation(
         StartRestoreRequest request,
@@ -267,6 +268,28 @@ public sealed class RestoreOperation : IReceiverOperation
             //    WAL вместо recovery и промоута (факт прогона).
             phase = OperationPhases.Recovering;
             Update(OperationStates.Running, phase);
+
+            // Защита целевого каталога перед стартом (arch/pgnode/06-restore-drill.md
+            // §2): postmaster-сирота прошлой инкарнации (пережил рестарт приёмника)
+            // останавливается ДО старта; неостановим — честный failed (не
+            // transient: не данные и не транспорт); мёртвому — снимается
+            // остаточный postmaster.pid (иначе pg_ctl start откажет от старта).
+            if (!await TryStopPostmasterAsync(pgdata, token))
+            {
+                Fail(OperationPhases.Recovering,
+                    $"postmaster in {pgdata} cannot be stopped (fast and immediate exhausted)");
+                return;
+            }
+
+            var postmasterPid = Path.Combine(pgdata, "postmaster.pid");
+            if (File.Exists(postmasterPid))
+                File.Delete(postmasterPid);
+
+            // Лог инкарнации (файл общий у операций ноды): диагностика провала
+            // старта — хвост restore-pg.log в last_error — содержит строки
+            // только своей инкарнации.
+            try { File.Delete("/tmp/restore-pg.log"); } catch { /* файла нет — норма */ }
+
             const int recoveryStartAttempts = 3;
             for (var attempt = 1; ; attempt++)
             {
@@ -393,7 +416,9 @@ public sealed class RestoreOperation : IReceiverOperation
             // НЕ failed (отмена = «операции не было», arch/backups/03-restore.md; воркер
             // отличает её от vanished: запись заявки/ключ дрилла удаляются).
             await StopBestEffortAsync(_pgdata);
-            Update(OperationStates.Cancelled, phase, error: "cancelled by operator");
+            // Гашение при остановке хоста (_shutdown) снимок НЕ перезаписывает.
+            if (!_shutdown)
+                Update(OperationStates.Cancelled, phase, error: "cancelled by operator");
         }
         catch (Exception e) when (IsTransport(e))
         {
@@ -414,6 +439,13 @@ public sealed class RestoreOperation : IReceiverOperation
         }
         finally
         {
+            // Postmaster операции остановлен при ЛЮБОМ исходе ДО возврата
+            // Patroni (restore) и чистки scratch (drill) — arch/pgnode/
+            // 06-restore-drill.md §2: неостановимый остаток НЕ блокирует
+            // терминальный исход (каталог дочистит защита каталога следующего
+            // запуска); терминальный снимок не трогаем.
+            try { await TryStopPostmasterAsync(_pgdata, CancellationToken.None); }
+            catch { /* best-effort */ }
             // Patroni ноды — обратно при ЛЮБОМ исходе RESTORE (там он был
             // остановлен; поднимет постгрес уже с валидным initialize и
             // данными — REJOINING-рестарта не нужно). Дрилл Patroni не трогал.
@@ -455,6 +487,17 @@ public sealed class RestoreOperation : IReceiverOperation
         await StopBestEffortAsync(_pgdata);
     }
 
+    /// <summary>Гашение при остановке хоста приёмника (arch/pgnode/
+    /// 06-restore-drill.md §2): тот же стоп, что у CancelAsync, но БЕЗ
+    /// операторской семантики — снимок НЕ перезаписывается cancelled;
+    /// флаг ставится ДО отмены, чтобы catch отмены различил каналы.</summary>
+    public async Task ShutdownAsync()
+    {
+        _shutdown = true;
+        _cts.Cancel();
+        await StopBestEffortAsync(_pgdata);
+    }
+
     // Обновление снимка с переносом started_unix TryBegin (Update заменяет
     // снимок целиком) и опциональными результатами restore.
     private void Update(string state, string phase,
@@ -462,7 +505,8 @@ public sealed class RestoreOperation : IReceiverOperation
         => _registry.Update(new OperationSnapshot(
             _request.Id ?? _request.BackupId, state, phase,
             RestoredToLsn: restoredToLsn, SystemId: systemId,
-            StartedUnix: _registry.Current?.StartedUnix, Error: error));
+            StartedUnix: _registry.Current?.StartedUnix, Error: error,
+            Kind: _isDrill ? OperationKinds.Drill : OperationKinds.Restore));
 
     // Клиент одного endpoint'а команды (шов _targetFactory — фабрика от
     // endpoint): MaxErrorRetry=0 — per-попыточный таймаут вместо ретраев SDK.
@@ -836,6 +880,35 @@ public sealed class RestoreOperation : IReceiverOperation
         {
             // best-effort: контейнер в любом случае снесёт воркер
         }
+    }
+
+    // pg_ctl status: exit 0 — postmaster каталога работает (контракт pg_ctl);
+    // прочие исходы — не работает/недоступен (lock пере-проверит сам pg_ctl start).
+    private async Task<bool> PostmasterRunningAsync(string pgdata, CancellationToken token)
+        => (await _runner.RunAsync(PgCtl(pgdata, "status"), token)).ExitCode == 0;
+
+    /// <summary>Остановка postmaster каталога (fast → immediate, каждая -w -t 10)
+    /// (arch/pgnode/06-restore-drill.md §2 — защита каталога и финальная
+    /// остановка): true — postmaster не работает (или не работал); false —
+    /// неостановим.</summary>
+    private async Task<bool> TryStopPostmasterAsync(string pgdata, CancellationToken token)
+    {
+        if (!await PostmasterRunningAsync(pgdata, token))
+            return true;
+        foreach (var mode in new[] { "fast", "immediate" })
+        {
+            var stopPsi = PgCtl(pgdata, "stop");
+            stopPsi.ArgumentList.Add("-m");
+            stopPsi.ArgumentList.Add(mode);
+            stopPsi.ArgumentList.Add("-w");
+            stopPsi.ArgumentList.Add("-t");
+            stopPsi.ArgumentList.Add("10");
+            await _runner.RunAsync(stopPsi, token);
+            if (!await PostmasterRunningAsync(pgdata, token))
+                return true;
+        }
+
+        return false;
     }
 
     private static async Task<string> TailAsync(string path, int lines)

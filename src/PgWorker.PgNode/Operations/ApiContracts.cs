@@ -65,7 +65,10 @@ public sealed record OpsStatusResponse(
     [property: JsonPropertyName("restored_to_lsn")] string? RestoredToLsn = null,
     [property: JsonPropertyName("system_id")] string? SystemId = null,
     [property: JsonPropertyName("started_unix")] long? StartedUnix = null,
-    [property: JsonPropertyName("error")] string? Error = null);
+    [property: JsonPropertyName("error")] string? Error = null,
+    // Вид операции реестра (arch/pgnode/02-api.md §3): сверка «своя/чужая»
+    // супервизорами — по id И kind.
+    [property: JsonPropertyName("kind")] string? Kind = null);
 
 public sealed record ErrorResponse([property: JsonPropertyName("error")] string Error);
 

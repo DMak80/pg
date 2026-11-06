@@ -35,6 +35,7 @@ public sealed class VerifyOperation : IReceiverOperation
     private readonly OperationRegistry _registry;
     private readonly Func<string, IBackupS3>? _targetFactory; // тестовый шов (endpoint → клиент)
     private readonly CancellationTokenSource _cts = new();
+    private volatile bool _shutdown; // гашение хоста ≠ операторская отмена
 
     public VerifyOperation(
         StartVerifyRequest request,
@@ -213,7 +214,9 @@ public sealed class VerifyOperation : IReceiverOperation
         {
             // Операторская отмена: снимок cancelled — НЕ failed (отмена не
             // суждение о данных); воркер вернёт кандидата в PENDING.
-            Update(OperationStates.Cancelled, CurrentPhase(), "cancelled by operator");
+            // Гашение при остановке хоста (_shutdown) снимок НЕ перезаписывает.
+            if (!_shutdown)
+                Update(OperationStates.Cancelled, CurrentPhase(), "cancelled by operator");
         }
         catch (Exception e)
         {
@@ -236,6 +239,17 @@ public sealed class VerifyOperation : IReceiverOperation
     /// потока/сокета прерывается.</summary>
     public Task CancelAsync()
     {
+        _cts.Cancel();
+        return Task.CompletedTask;
+    }
+
+    /// <summary>Гашение при остановке хоста приёмника (arch/pgnode/
+    /// 06-restore-drill.md §2): прерывает чтение потока/сокета; снимок НЕ
+    /// перезаписывается cancelled — операторская семантика только у
+    /// cancel API.</summary>
+    public Task ShutdownAsync()
+    {
+        _shutdown = true;
         _cts.Cancel();
         return Task.CompletedTask;
     }
@@ -416,7 +430,8 @@ public sealed class VerifyOperation : IReceiverOperation
     private void Update(string state, string phase, string? error = null)
         => _registry.Update(new OperationSnapshot(
             _request.BackupId, state, phase,
-            StartedUnix: _registry.Current?.StartedUnix, Error: error));
+            StartedUnix: _registry.Current?.StartedUnix, Error: error,
+            Kind: OperationKinds.Verify));
 
     private string CurrentPhase()
         => _registry.Current?.Phase ?? OperationPhases.Downloading;
@@ -424,5 +439,6 @@ public sealed class VerifyOperation : IReceiverOperation
     private void Fail(string phase, string error)
         => _registry.Update(new OperationSnapshot(
             _request.BackupId, OperationStates.Failed, phase,
-            StartedUnix: _registry.Current?.StartedUnix, Error: error));
+            StartedUnix: _registry.Current?.StartedUnix, Error: error,
+            Kind: OperationKinds.Verify));
 }

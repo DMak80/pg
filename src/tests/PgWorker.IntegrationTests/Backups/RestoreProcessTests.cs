@@ -834,8 +834,8 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
         var driver = new TestDriver(inner, new FakeBackupEngine());
         var process = BuildProcess(new FakeBackupS3(), driver);
         _receiver.GetReply = new ReceiverReply(200,
-            new ReceiverStatus("succeeded", "recovering",
-                RestoredToLsn: "0/42", SystemId: "7684914368175407176"), null);
+            new ReceiverStatus("succeeded", "recovering", "20260910120000Z",
+                RestoredToLsn: "0/42", SystemId: "7684914368175407176", Kind: OperationKinds.Restore), null);
         var op = await SeedRestoreAsync("c1", "shard1", "20260911121004Z",
             backupId: "20260910120000Z", state: RestoreStatus.Running, startedUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 60,
             phase: "recovering", phaseUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 50);
@@ -871,7 +871,7 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
         var driver = new TestDriver(inner, new FakeBackupEngine());
         var process = BuildProcess(new FakeBackupS3(), driver);
         _receiver.GetReply = new ReceiverReply(200,
-            new ReceiverStatus("failed", "recovering", Error: "boom"), null);
+            new ReceiverStatus("failed", "recovering", "20260910120000Z", Error: "boom", Kind: OperationKinds.Restore), null);
         var op = await SeedRestoreAsync("c1", "shard1", "20260911121005Z",
             backupId: "20260910120000Z", state: RestoreStatus.Running, startedUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 60,
             phase: "recovering", phaseUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 50);
@@ -904,7 +904,7 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
         var driver = new TestDriver(inner, new FakeBackupEngine());
         var process = BuildProcess(new FakeBackupS3(), driver);
         _receiver.GetReply = new ReceiverReply(200,
-            new ReceiverStatus("running", "recovering"), null);
+            new ReceiverStatus("running", "recovering", "20260910120000Z", Kind: OperationKinds.Restore), null);
         var op = await SeedRestoreAsync("c1", "shard1", "20260911121006Z",
             backupId: "20260910120000Z", state: RestoreStatus.Running,
             startedUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 2100,
@@ -938,7 +938,7 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
         var driver = new TestDriver(inner, new FakeBackupEngine());
         var process = BuildProcess(new FakeBackupS3(), driver);
         _receiver.GetReply = new ReceiverReply(200,
-            new ReceiverStatus("running", "downloading"), null);
+            new ReceiverStatus("running", "downloading", "20260910120000Z", Kind: OperationKinds.Restore), null);
         var op = await SeedRestoreAsync("c1", "shard1", "20260911121007Z",
             backupId: "20260910120000Z", state: RestoreStatus.Running,
             startedUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 2100,
@@ -969,7 +969,7 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
         var driver = new TestDriver(new StubScaleDriver(), new FakeBackupEngine());
         var process = BuildProcess(new FakeBackupS3(), driver);
         _receiver.GetReply = new ReceiverReply(200,
-            new ReceiverStatus("running", "recovering"), null);
+            new ReceiverStatus("running", "recovering", "20260910120000Z", Kind: OperationKinds.Restore), null);
         var op = await SeedRestoreAsync("c1", "shard1", "20260911121008Z",
             backupId: "20260910120000Z", state: RestoreStatus.Running,
             startedUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 60,
@@ -1052,7 +1052,7 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
         var driver = new TestDriver(inner, new FakeBackupEngine());
         var process = BuildProcess(new FakeBackupS3(), driver);
         _receiver.GetReply = new ReceiverReply(200,
-            new ReceiverStatus("cancelled", "recovering", Error: "cancelled by operator"), null);
+            new ReceiverStatus("cancelled", "recovering", "20260910120000Z", Error: "cancelled by operator", Kind: OperationKinds.Restore), null);
         var op = await SeedRestoreAsync("c1", "shard1", "20260911121010Z",
             backupId: "20260910120000Z", state: RestoreStatus.Running,
             startedUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 60,
@@ -1101,7 +1101,7 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
         var driver = new TestDriver(inner, new FakeBackupEngine());
         var process = BuildProcess(new FakeBackupS3(), driver);
         _receiver.GetReply = new ReceiverReply(200,
-            new ReceiverStatus("failed", "downloading", Error: "s3 throttled"), null);
+            new ReceiverStatus("failed", "downloading", "20260910120000Z", Error: "s3 throttled", Kind: OperationKinds.Restore), null);
         var op = await SeedRestoreAsync("c1", "shard1", "20260911121011Z",
             backupId: "20260910120000Z", state: RestoreStatus.Running,
             startedUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 60,
@@ -1185,7 +1185,7 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
         var driver = new TestDriver(inner, new FakeBackupEngine());
         var process = BuildProcess(new FakeBackupS3(), driver);
         _receiver.GetReply = new ReceiverReply(200,
-            new ReceiverStatus("failed", "recovering", Error: "boom"), null);
+            new ReceiverStatus("failed", "recovering", "20260910120000Z", Error: "boom", Kind: OperationKinds.Restore), null);
         var op = await SeedRestoreAsync("c1", "shard1", "20260911121013Z",
             backupId: "20260910120000Z", state: RestoreStatus.Running, startedUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 60,
             phase: "recovering", phaseUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 50);
@@ -1219,7 +1219,7 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
         var driver = new TestDriver(inner, new FakeBackupEngine());
         var process = BuildProcess(new FakeBackupS3(), driver);
         _receiver.GetReply = new ReceiverReply(200,
-            new ReceiverStatus("succeeded", "recovering", RestoredToLsn: "0/42"), null);
+            new ReceiverStatus("succeeded", "recovering", "20260910120000Z", RestoredToLsn: "0/42", Kind: OperationKinds.Restore), null);
         var op = await SeedRestoreAsync("c1", "shard1", "20260911121014Z",
             backupId: "20260910120000Z", state: RestoreStatus.Running,
             startedUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 60,
@@ -1839,5 +1839,127 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
 
         // Assert 2 — COMPLETED зафиксирован наблюдателем ("ok" после putDone)
         outcomes2.Should().ContainSingle().Which.Should().Be(("c1", "shard1", "ok"));
+    }
+
+    // AAA (сверка снимка по id, arch/backups/processes/f-restore.md §2):
+    // чужой succeeded-снимок общего ops-реестра (id ≠ backup_id заявки, без
+    // system_id) — не итог restore: заявка НЕ в REJOINING, статус/фаза не
+    // тронуты, команда не переотправляется (ожидание освобождения реестра).
+    [Fact]
+    public async Task ForeignSucceededSnapshot_RequestNotRejoining()
+    {
+        // Arrange — RUNNING (фаза recovering); GET succeeded чужого id без system_id.
+        var ct = TestContext.Current.CancellationToken;
+        await SeedAsync("fr1");
+        var process = BuildProcess(new FakeBackupS3(),
+            new TestDriver(new StubScaleDriver(), new FakeBackupEngine()));
+        _receiver.GetReply = new ReceiverReply(200,
+            new ReceiverStatus("succeeded", "verifying", "20260911120000Z"), null);
+        var op = await SeedRestoreAsync("fr1", "shard1", "20260911121015Z",
+            backupId: "20260910120000Z", state: RestoreStatus.Running,
+            startedUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 60,
+            phase: "recovering",
+            phaseUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 50);
+        (await _claims.TryClaimClusterAsync("fr1", ct)).Value.Should().BeTrue();
+
+        // Act — тик супервиза: снимок чужой.
+        (await process.TickAsync(BuildSnap("fr1"), await BackupsFromEtcdAsync("fr1"), ct))
+            .IsSuccess.Should().BeTrue();
+
+        // Assert — заявка RUNNING с фазой demolished (сброс под повтор
+        // команды); вердикта нет, system_id не тронут.
+        var request = (await ReadRestoresAsync("fr1", "shard1")).Single(r => r.Id == op.Id);
+        request.State.Should().Be(RestoreStatus.Running,
+            "a foreign succeeded snapshot is not the outcome of this restore");
+        request.Phase.Should().Be("demolished",
+            "the launch is repeated via the demolished reset, not awaited in the supervise phase");
+        request.SystemId.Should().BeNull();
+
+        // Act 2 — повторный тик из demolished повторяет POST запуска.
+        (await process.TickAsync(BuildSnap("fr1"), await BackupsFromEtcdAsync("fr1"), ct))
+            .IsSuccess.Should().BeTrue();
+
+        // Assert 2 — команда переотправлена (своя операция стартует заново).
+        _receiver.StartCalls.Should().Be(1,
+            "the next tick from the demolished phase re-sends the launch command");
+    }
+
+    // AAA (сверка снимка по id): чужой failed-снимок drill-операции — заявка
+    // НЕ FAILED, фаза и error не меняются, команда не переотправляется.
+    [Fact]
+    public async Task ForeignFailedSnapshot_RequestNotFailed()
+    {
+        // Arrange — RUNNING (фаза recovering); GET failed чужого id (снимок дрилла).
+        var ct = TestContext.Current.CancellationToken;
+        await SeedAsync("fr2");
+        var process = BuildProcess(new FakeBackupS3(),
+            new TestDriver(new StubScaleDriver(), new FakeBackupEngine()));
+        _receiver.GetReply = new ReceiverReply(200,
+            new ReceiverStatus("failed", "recovering", "20261106060228Z",
+                Error: "pg_ctl start failed: another server might be running"), null);
+        var op = await SeedRestoreAsync("fr2", "shard1", "20260911121016Z",
+            backupId: "20260910120000Z", state: RestoreStatus.Running,
+            startedUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 60,
+            phase: "recovering",
+            phaseUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 50);
+        (await _claims.TryClaimClusterAsync("fr2", ct)).Value.Should().BeTrue();
+
+        // Act — тик супервиза: снимок чужой.
+        (await process.TickAsync(BuildSnap("fr2"), await BackupsFromEtcdAsync("fr2"), ct))
+            .IsSuccess.Should().BeTrue();
+
+        // Assert — заявка RUNNING с фазой demolished; FAILED не ставится.
+        var request = (await ReadRestoresAsync("fr2", "shard1")).Single(r => r.Id == op.Id);
+        request.State.Should().Be(RestoreStatus.Running,
+            "a foreign failed snapshot does not fail this restore");
+        request.Phase.Should().Be("demolished",
+            "the launch is repeated via the demolished reset, not awaited in the supervise phase");
+        request.Error.Should().BeNull();
+
+        // Act 2 — повторный тик из demolished повторяет POST запуска.
+        (await process.TickAsync(BuildSnap("fr2"), await BackupsFromEtcdAsync("fr2"), ct))
+            .IsSuccess.Should().BeTrue();
+
+        // Assert 2 — команда переотправлена.
+        _receiver.StartCalls.Should().Be(1);
+    }
+
+    // AAA (сверка вида операции): verify-снимок ТОГО ЖЕ полного (id
+    // совпадает с backup_id заявки, kind чужой) — не итог restore:
+    // REJOINING не ставится, фаза сбрасывается под повторный запуск.
+    [Fact]
+    public async Task ForeignKindSameBackupId_NotRejoining()
+    {
+        // Arrange — RUNNING (фаза recovering); GET succeeded с backup_id
+        // заявки, но видом verify (без system_id).
+        var ct = TestContext.Current.CancellationToken;
+        await SeedAsync("fr3");
+        var process = BuildProcess(new FakeBackupS3(),
+            new TestDriver(new StubScaleDriver(), new FakeBackupEngine()));
+        _receiver.GetReply = new ReceiverReply(200,
+            new ReceiverStatus("succeeded", "verifying", "20260910120000Z",
+                Kind: OperationKinds.Verify), null);
+        var op = await SeedRestoreAsync("fr3", "shard1", "20260911121017Z",
+            backupId: "20260910120000Z", state: RestoreStatus.Running,
+            startedUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 60,
+            phase: "recovering",
+            phaseUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 50);
+        (await _claims.TryClaimClusterAsync("fr3", ct)).Value.Should().BeTrue();
+
+        // Act — тик супервиза: снимок чужого вида с тем же id.
+        (await process.TickAsync(BuildSnap("fr3"), await BackupsFromEtcdAsync("fr3"), ct))
+            .IsSuccess.Should().BeTrue();
+
+        // Assert — заявка RUNNING/demolished без system_id (не REJOINING).
+        var request = (await ReadRestoresAsync("fr3", "shard1")).Single(r => r.Id == op.Id);
+        request.State.Should().Be(RestoreStatus.Running,
+            "a verify snapshot of the same full is not the outcome of this restore");
+        request.Phase.Should().Be("demolished");
+        request.SystemId.Should().BeNull();
+
+        // Act 2 + Assert 2 — повторный тик переотправляет команду.
+        (await process.TickAsync(BuildSnap("fr3"), await BackupsFromEtcdAsync("fr3"), ct))
+            .IsSuccess.Should().BeTrue();
+        _receiver.StartCalls.Should().Be(1);
     }
 }

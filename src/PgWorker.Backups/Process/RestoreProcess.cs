@@ -744,6 +744,26 @@ public sealed class RestoreProcess(
         if (status is null)
             return Result<ProcessOutcome>.Success(ProcessOutcome.InProgress);
 
+        // Сверка снимка по id и виду операции (arch/backups/processes/
+        // f-restore.md §2): ops-реестр приёмника ОДИН на процесс — GET
+        // может вернуть чужой/прошлый снимок (напр., терминал
+        // verify/drill-операции ТОГО ЖЕ полного: id совпадает, вид — нет).
+        // Чужой id ИЛИ чужой вид (в т.ч. снимок без kind — контракт старого
+        // приёмника) — чужой итог/фаза: переходов заявки по нему нет
+        // (REJOINING от чужого succeeded без system_id запер бы bootstrap).
+        // Фаза сбрасывается в "demolished" + transient — команда повторится
+        // следующим тиком (симметрично ветке vanished 404; живая чужая
+        // операция ответит 409 — семантика освобождения реестра).
+        if (!string.Equals(status.Id, op.BackupId, StringComparison.Ordinal)
+            || status.Kind != OperationKinds.Restore)
+        {
+            var putReset = await PutStatusAsync(cluster, shard.Name, op with { Phase = "demolished" }, ct);
+            if (!putReset.IsSuccess)
+                return Result<ProcessOutcome>.Failed(putReset.Error!);
+            return await TransientAsync(cluster, $"foreign-snapshot/{shard.Name}/{op.Id}",
+                $"receiver registry holds operation {status.Id ?? "<null>"} (kind {status.Kind ?? "<null>"}, {status.State}) — not this restore", ct);
+        }
+
         switch (status.State)
         {
             case "running":
