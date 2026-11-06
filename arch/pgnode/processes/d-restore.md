@@ -28,6 +28,11 @@ succeeded | failed | cancelled
 `GET /api/ops/restore` — снимок: фаза, `restored_to_lsn`, `system_id`,
 `started_unix`, `error`.
 
+Инвариант фазы `recovering`: старт выполняется в подготовленный каталог
+(postmaster прошлой инкарнации остановлен, остаточный `postmaster.pid`
+снят), при любом исходе операции postmaster остановлен до чистки и возврата
+Patroni — механика [06-restore-drill.md](../06-restore-drill.md) §2.
+
 ## 2. Обязательные шаги
 
 1. Останов Patroni ноды (`supervisorctl stop spilo`) с ПОДТВЕРЖДЕНИЕМ:
