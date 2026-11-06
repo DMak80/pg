@@ -744,6 +744,18 @@ public sealed class RestoreProcess(
         if (status is null)
             return Result<ProcessOutcome>.Success(ProcessOutcome.InProgress);
 
+        // Сверка снимка по id (arch/backups/processes/f-restore.md §2):
+        // ops-реестр приёмника ОДИН на процесс — GET может вернуть чужой/
+        // прошлый снимок (напр., терминал verify/drill-операции). Чужой id —
+        // чужой итог/фаза: переходов заявки по нему нет (REJOINING от чужого
+        // succeeded без system_id запер бы bootstrap) — ждём освобождения
+        // реестра (transient, семантика 409).
+        if (!string.Equals(status.Id, op.BackupId, StringComparison.Ordinal))
+        {
+            return await TransientAsync(cluster, $"foreign-snapshot/{shard.Name}/{op.Id}",
+                $"receiver registry holds operation {status.Id ?? "<null>"} ({status.State}) — not this restore", ct);
+        }
+
         switch (status.State)
         {
             case "running":
