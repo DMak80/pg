@@ -23,9 +23,10 @@ public class RestoreOperationTests
 {
     private const string Id = "20260101000000Z";
 
-    private static PgWorker.PgNode.Operations.StartRestoreRequest Request(string? targetTime = null) => new(
+    private static PgWorker.PgNode.Operations.StartRestoreRequest Request(
+        string? targetTime = null, string? drillId = null) => new(
         BackupId: Id,
-        Id: null,
+        Id: drillId,
         TargetTime: targetTime,
         RecoveryTimeoutSec: 60,
         S3: new PgWorker.PgNode.Operations.S3Context(
@@ -44,6 +45,16 @@ public class RestoreOperationTests
         public int StartExitCode;
         public int PsqlPollFailsBeforeOk;
         public bool PsqlPollHang;
+
+        // Защита каталога (t103): программируемые исходы pg_ctl. PgCtlStatusExit —
+        // ответ status (0 — postmaster работает, дефолт 3 — не работает);
+        // PgCtlStopExits — очередь исходов stop (по одному на вызов; пусто — 0).
+        // Успешный stop останавливает «postmaster»: следующие status — не работает.
+        // LsnReply — ответ psql-пробы pg_current_wal_lsn (пустая строка — провал
+        // ветки снятия LSN ПОСЛЕ старта постгресса).
+        public int PgCtlStatusExit = 3;
+        public Queue<int> PgCtlStopExits = [];
+        public string LsnReply = "0/2000028";
 
         public async Task<(int ExitCode, string StdOut, string StdErr)> RunAsync(
             ProcessStartInfo psi, CancellationToken ct)
@@ -68,17 +79,26 @@ public class RestoreOperationTests
                     }
 
                     return (0,
-                        args.Contains("pg_is_in_recovery") ? "f" : "0/2000028", "");
+                        args.Contains("pg_is_in_recovery") ? "f" : LsnReply, "");
 
                 case "pg_controldata":
                     return (0, "Database system identifier:           7000000000000000001\n", "");
 
                 case "pg_ctl":
-                    // pg_ctl (процесс приёмника уже postgres): программируемый
-                    // исход СТАРТА.
-                    return args.Contains(" start") && StartExitCode != 0
-                        ? (StartExitCode, "", "pg_ctl: could not start server")
-                        : (0, "", "");
+                    if (args.Contains(" status"))
+                        return (PgCtlStatusExit,
+                            PgCtlStatusExit == 0 ? "pg_ctl: server is running (PID: 331)" : "pg_ctl: no server running", "");
+                    if (args.Contains(" stop"))
+                    {
+                        var stopExit = PgCtlStopExits.Count > 0 ? PgCtlStopExits.Dequeue() : 0;
+                        if (stopExit == 0)
+                            PgCtlStatusExit = 3; // успешный stop останавливает «postmaster»
+                        return (stopExit, "", "");
+                    }
+                    if (args.Contains(" start") && StartExitCode != 0)
+                        return (StartExitCode, "", "pg_ctl: could not start server");
+                    PgCtlStatusExit = 0; // успешный старт ЗАПУСКАЕТ «postmaster» операции
+                    return (0, "", "");
 
                 default:
                     return (0, "", "");
@@ -245,7 +265,8 @@ public class RestoreOperationTests
         fileNames.Should().ContainInOrder("chmod", "pg_ctl", "psql", "psql", "pg_ctl");
         var chmod = runner.Invocations.First(i => i.FileName == "chmod");
         chmod.Args.Should().Be($"700 {pgdata}");
-        var start = runner.Invocations.First(i => i.FileName == "pg_ctl");
+        var start = runner.Invocations.First(
+            i => i.FileName == "pg_ctl" && i.Args.Contains("start"));
         start.Args.Should().Contain("start");
         start.Args.Should().Contain("listen_addresses=''");
         start.Env.Should().Contain("HOME=/tmp");
@@ -259,6 +280,103 @@ public class RestoreOperationTests
         start.Args.Should().NotContain("sk");
 
         // Cleanup.
+        Directory.Delete(root, recursive: true);
+    }
+
+    // AAA (защита целевого каталога): postmaster-сирота прошлой инкарнации
+    // (пережил рестарт приёмника) работает в каталоге операции — останавливается
+    // ДО старта, операция продолжается (arch/pgnode/06-restore-drill.md §2).
+    [Fact]
+    public async Task PreStart_StopsOrphanPostmaster_ThenSucceeds()
+    {
+        // Arrange: «живой» postmaster операции — status 0, stop успешен.
+        var root = NewPgdata();
+        var pgdata = Path.Combine(root, "pgroot", "data");
+        File.WriteAllText(Path.Combine(pgdata, "postmaster.pid"), "331\n");
+        var runner = new FakeRunner { PgCtlStatusExit = 0 };
+        var op = Create(root, runner);
+
+        // Act.
+        await op.RunAsync(CancellationToken.None);
+
+        // Assert: операция дошла до своего итога.
+        var snap = registrySnapshot(op);
+        snap!.State.Should().Be("succeeded", snap.Error);
+
+        // Assert: сирота остановлен fast ДО первого старта постгресса.
+        var invocations = runner.Invocations;
+        var stopIndex = invocations.FindIndex(i =>
+            i.FileName == "pg_ctl" && i.Args.Contains(" stop") && i.Args.Contains("fast"));
+        var startIndex = invocations.FindIndex(i =>
+            i.FileName == "pg_ctl" && i.Args.Contains(" start"));
+        stopIndex.Should().BeGreaterThanOrEqualTo(0, "the orphan postmaster is stopped");
+        startIndex.Should().BeGreaterThan(stopIndex,
+            "the guard stops the orphan before pg_ctl start");
+
+        // Assert: остаточный pid снят защитой каталога.
+        File.Exists(Path.Combine(pgdata, "postmaster.pid")).Should().BeFalse();
+
+        Directory.Delete(root, recursive: true);
+    }
+
+    // AAA (защита целевого каталога): postmaster не работает — остаточный
+    // postmaster.pid снимается, чтобы pg_ctl start не отказал от старта.
+    [Fact]
+    public async Task PreStart_RemovesStalePidFile_WhenPostmasterDead()
+    {
+        // Arrange: status → не работает (дефолт фейка).
+        var root = NewPgdata();
+        var pgdata = Path.Combine(root, "pgroot", "data");
+        File.WriteAllText(Path.Combine(pgdata, "postmaster.pid"), "331\n");
+        var runner = new FakeRunner();
+        var op = Create(root, runner);
+
+        // Act.
+        await op.RunAsync(CancellationToken.None);
+
+        // Assert: операция succeeded, stale-файл снят.
+        registrySnapshot(op)!.State.Should().Be("succeeded");
+        File.Exists(Path.Combine(pgdata, "postmaster.pid")).Should().BeFalse();
+
+        // Assert: ровно одна проверка status — ДО старта (stop не потребовался).
+        var invocations = runner.Invocations;
+        var startIndex = invocations.FindIndex(i =>
+            i.FileName == "pg_ctl" && i.Args.Contains(" start"));
+        invocations.Take(startIndex)
+            .Count(i => i.FileName == "pg_ctl" && i.Args.Contains(" status"))
+            .Should().Be(1);
+
+        Directory.Delete(root, recursive: true);
+    }
+
+    // AAA (защита целевого каталога): нестопаемый сирота — честный failed с
+    // фазой recovering (НЕ transient-маркер downloading) и БЕЗ pg_ctl start.
+    [Fact]
+    public async Task PreStart_UnstoppableOrphan_FailsHonest_WithoutStart()
+    {
+        // Arrange: postmaster «работает», все stop-исходы провальны.
+        var root = NewPgdata();
+        var runner = new FakeRunner
+        {
+            PgCtlStatusExit = 0,
+            PgCtlStopExits = new Queue<int>([1, 1, 1, 1]),
+        };
+        var op = Create(root, runner);
+
+        // Act.
+        await op.RunAsync(CancellationToken.None);
+
+        // Assert: честный permanent-исход своей причиной.
+        var snap = registrySnapshot(op);
+        snap!.State.Should().Be("failed");
+        snap.Error.Should().Contain("cannot be stopped");
+        snap.Phase.Should().Be("recovering",
+            "an unstoppable orphan is not a transient download failure");
+
+        // Assert: старт не выполнялся — с нестопаемым не борется.
+        runner.Invocations.Should().NotContain(i =>
+            i.FileName == "pg_ctl" && i.Args.Contains(" start"));
+
         Directory.Delete(root, recursive: true);
     }
 
