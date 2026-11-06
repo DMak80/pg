@@ -55,6 +55,7 @@
     </Folder>
     <Folder Name="/etcdw/">
         <Project Path="EtcdNode.Core/EtcdNode.Core.csproj" />
+        <Project Path="EtcdNode.App/EtcdNode.App.csproj" />
         <Project Path="EtcdWorker.Core/EtcdWorker.Core.csproj" />
         <Project Path="EtcdWorker.Etcd/EtcdWorker.Etcd.csproj" />
         <Project Path="EtcdWorker.Docker/EtcdWorker.Docker.csproj" />
