@@ -109,4 +109,13 @@ public class EtcdExportStatusJsonTests
             .Should().Be(new DateTimeOffset(2026, 10, 1, 12, 0, 0, TimeSpan.Zero).ToUnixTimeSeconds());
         EtcdSnapshotStatus.TakenUnixFromName("other.db").Should().BeNull();
     }
+
+    // AAA: константа ключа — домен EtcdNode (arch/etcdnode/00-etcdnode-contract.md §1);
+    // смена писателя статуса не должна оставить панель на старом ключе
+    [Fact]
+    public void Key_IsEtcdNodeDomain()
+    {
+        // Act/Assert
+        EtcdSnapshotStatusJson.Key.Should().Be("/etcdnode/snapshots");
+    }
 }
