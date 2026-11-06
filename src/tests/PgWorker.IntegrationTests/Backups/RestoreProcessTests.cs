@@ -1841,10 +1841,10 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
         outcomes2.Should().ContainSingle().Which.Should().Be(("c1", "shard1", "ok"));
     }
 
-    // AAA (сверка снимка по id, arch/backups/processes/f-restore.md §2):
+    // AAA (сверка снимка по id и виду, arch/backups/processes/f-restore.md §2):
     // чужой succeeded-снимок общего ops-реестра (id ≠ backup_id заявки, без
-    // system_id) — не итог restore: заявка НЕ в REJOINING, статус/фаза не
-    // тронуты, команда не переотправляется (ожидание освобождения реестра).
+    // system_id) — не итог restore: заявка НЕ в REJOINING, фаза сброшена в
+    // demolished (повтор команды следующим тиком), system_id не тронут.
     [Fact]
     public async Task ForeignSucceededSnapshot_RequestNotRejoining()
     {
@@ -1884,8 +1884,9 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
             "the next tick from the demolished phase re-sends the launch command");
     }
 
-    // AAA (сверка снимка по id): чужой failed-снимок drill-операции — заявка
-    // НЕ FAILED, фаза и error не меняются, команда не переотправляется.
+    // AAA (сверка снимка по id и виду): чужой failed-снимок drill-операции —
+    // заявка НЕ FAILED, error не ставится, фаза сброшена в demolished (повтор
+    // команды следующим тиком).
     [Fact]
     public async Task ForeignFailedSnapshot_RequestNotFailed()
     {
@@ -1961,5 +1962,46 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
         (await process.TickAsync(BuildSnap("fr3"), await BackupsFromEtcdAsync("fr3"), ct))
             .IsSuccess.Should().BeTrue();
         _receiver.StartCalls.Should().Be(1);
+    }
+
+    // AAA (сверка снимка по id и виду): чужой RUNNING-снимок общего
+    // ops-реестра (id ≠ backup_id заявки, вид drill) — не фаза restore: заявка
+    // остаётся RUNNING, чужая фаза (verifying) не перезаписывает её,
+    // PhaseUnix-стенка наката не сбрасывается, команда в этом тике не
+    // переотправляется (сброс фазы demolished — повтор следующим тиком).
+    [Fact]
+    public async Task ForeignRunningSnapshot_RequestPhaseNotOverwritten()
+    {
+        // Arrange — RUNNING (фаза recovering, стенка наката задана); GET
+        // running/verifying чужого id и чужого вида.
+        var ct = TestContext.Current.CancellationToken;
+        await SeedAsync("fr4");
+        var process = BuildProcess(new FakeBackupS3(),
+            new TestDriver(new StubScaleDriver(), new FakeBackupEngine()));
+        var phaseUnix = TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 50;
+        _receiver.GetReply = new ReceiverReply(200,
+            new ReceiverStatus("running", "verifying", "20261106060228Z",
+                Kind: OperationKinds.Drill), null);
+        var op = await SeedRestoreAsync("fr4", "shard1", "20260911121018Z",
+            backupId: "20260910120000Z", state: RestoreStatus.Running,
+            startedUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 60,
+            phase: "recovering", phaseUnix: phaseUnix);
+        (await _claims.TryClaimClusterAsync("fr4", ct)).Value.Should().BeTrue();
+
+        // Act — тик супервиза: снимок чужой.
+        (await process.TickAsync(BuildSnap("fr4"), await BackupsFromEtcdAsync("fr4"), ct))
+            .IsSuccess.Should().BeTrue();
+
+        // Assert — заявка RUNNING; фаза сброшена под повтор команды (не чужая
+        // verifying), стенка наката (PhaseUnix) не тронута.
+        var request = (await ReadRestoresAsync("fr4", "shard1")).Single(r => r.Id == op.Id);
+        request.State.Should().Be(RestoreStatus.Running,
+            "a foreign running snapshot is not the phase/outcome of this restore");
+        request.Phase.Should().Be("demolished",
+            "the foreign phase is not mirrored into the request — the launch is repeated");
+        request.PhaseUnix.Should().Be(phaseUnix,
+            "the recovery wall is not reset by a foreign snapshot");
+        _receiver.StartCalls.Should().Be(0,
+            "the command is re-sent by the next tick from the demolished phase, not this one");
     }
 }

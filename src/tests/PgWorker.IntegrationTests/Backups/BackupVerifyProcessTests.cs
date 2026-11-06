@@ -942,8 +942,7 @@ public class BackupVerifyProcessTests : IntSlotLifetime
         Receiver.GetReply = new ReceiverReply(200,
             new ReceiverStatus("succeeded", "recovering", "20260911120000Z",
                 Kind: OperationKinds.Restore), null);
-        var outcomes = new List<(string C, string S, string Result)>();
-        var process = BuildProcess("vf3", s3, verifyObserver: (c, s, r) => outcomes.Add((c, s, r)));
+        var process = BuildProcess("vf3", s3);
 
         // Act: тик поллинга — снимок чужого вида.
         (await process.TickAsync(BuildSnap("vf3"), BackupsOf("vf3", candidate), ct))
@@ -953,10 +952,9 @@ public class BackupVerifyProcessTests : IntSlotLifetime
         var after = (await Fx.Gateway.GetAsync(Fx.Endpoint, key, ct)).Value!.Value;
         after.Should().Be(before, "a restore snapshot of the same full is not the verify outcome");
 
-        // Assert: реланч своего кандидата, observe ok не эмитился.
+        // Assert: реланч своего кандидата (вердикта по чужому снимку нет).
         Receiver.StartBodies.Should().ContainSingle()
             .Which.BackupId.Should().Be("20260911120000Z");
-        outcomes.Should().NotContain(o => o.Result == "ok");
     }
 
     // AAA (сверка снимка по id, arch/backups/01-full-backup.md §7): общий
@@ -981,8 +979,7 @@ public class BackupVerifyProcessTests : IntSlotLifetime
         Receiver.GetReply = new ReceiverReply(200,
             new ReceiverStatus("failed", "recovering", "20261106060228Z",
                 Error: "pg_ctl start failed: another server might be running"), null);
-        var outcomes = new List<(string C, string S, string Result)>();
-        var process = BuildProcess("vf1", s3, verifyObserver: (c, s, r) => outcomes.Add((c, s, r)));
+        var process = BuildProcess("vf1", s3);
 
         // Act: тик поллинга — снимок чужой.
         (await process.TickAsync(BuildSnap("vf1"), BackupsOf("vf1", candidate), ct))
@@ -993,12 +990,10 @@ public class BackupVerifyProcessTests : IntSlotLifetime
         after.Should().Be(before,
             "a foreign terminal snapshot is not the verify outcome of this full");
 
-        // Assert: реланч выполнен — ровно один POST с id СВОЕГО кандидата.
+        // Assert: реланч выполнен — ровно один POST с id СВОЕГО кандидата
+        // (вердикта по чужому FAILED нет — иначе ключ кандидата изменился бы).
         Receiver.StartBodies.Should().ContainSingle()
             .Which.BackupId.Should().Be("20260911120000Z");
-
-        // Assert: чужой FAILED не наблюдался как исход проверки.
-        outcomes.Should().NotContain(o => o.Result == "failed");
     }
 
     // AAA (сверка снимка по id): чужой succeeded-снимок НЕ ставит OK —
@@ -1020,8 +1015,7 @@ public class BackupVerifyProcessTests : IntSlotLifetime
         await Fx.Gateway.PutAsync(Fx.Endpoint, key, before, null, ct);
         Receiver.GetReply = new ReceiverReply(200,
             new ReceiverStatus("succeeded", "verifying", "20261106060228Z"), null);
-        var outcomes = new List<(string C, string S, string Result)>();
-        var process = BuildProcess("vf2", s3, verifyObserver: (c, s, r) => outcomes.Add((c, s, r)));
+        var process = BuildProcess("vf2", s3);
 
         // Act: тик поллинга — снимок чужой.
         (await process.TickAsync(BuildSnap("vf2"), BackupsOf("vf2", candidate), ct))
@@ -1031,9 +1025,52 @@ public class BackupVerifyProcessTests : IntSlotLifetime
         var after = (await Fx.Gateway.GetAsync(Fx.Endpoint, key, ct)).Value!.Value;
         after.Should().Be(before, "a foreign succeeded snapshot is not the verify outcome of this full");
 
-        // Assert: реланч своего кандидата, observe ok не эмитился.
+        // Assert: реланч своего кандидата (вердикта по чужому succeeded нет).
         Receiver.StartBodies.Should().ContainSingle()
             .Which.BackupId.Should().Be("20260911120000Z");
-        outcomes.Should().NotContain(o => o.Result == "ok");
+    }
+
+    // AAA (сверка снимка по id и виду): чужой RUNNING-снимок реестра —
+    // реланч своего кандидата получает 409 (реестр занят живой чужой
+    // операцией): observe transient НЕ эмитится (вердикта нет), кандидат не
+    // тронут, следующий тик повторит POST.
+    [Fact]
+    public async Task ForeignRunningSnapshot_Conflict_NoTransientOutcome()
+    {
+        // Arrange: PENDING-кандидат; приёмник отдаёт чужой running-снимок
+        // (id ≠ кандидата), POST своего verify — 409.
+        var ct = TestContext.Current.CancellationToken;
+        await using var fx = await OwnEtcd.StartAsync("verify", ct);
+        Fx = fx;
+        await SeedAsync("vf4");
+        var s3 = new FakeBackupS3();
+        var candidate = Completed("20260911120000Z", "000000010000000000000001",
+            new BackupVerify(BackupVerifyStatus.Pending, null));
+        var key = "/pgworker/backups/vf4/shard1/full/20260911120000Z";
+        var before = BackupStatusJson.Serialize(candidate);
+        await Fx.Gateway.PutAsync(Fx.Endpoint, key, before, null, ct);
+        Receiver.GetReply = new ReceiverReply(200,
+            new ReceiverStatus("running", "downloading", "20261106060228Z",
+                Kind: OperationKinds.Drill), null);
+        Receiver.StartReply = new ReceiverReply(409,
+            new ReceiverStatus("running", "downloading", "20261106060228Z",
+                Kind: OperationKinds.Drill), null);
+        var outcomes = new List<(string C, string S, string Result)>();
+        var process = BuildProcess("vf4", s3, verifyObserver: (c, s, r) => outcomes.Add((c, s, r)));
+
+        // Act: тик поллинга — чужой running, реланч получает 409.
+        (await process.TickAsync(BuildSnap("vf4"), BackupsOf("vf4", candidate), ct))
+            .IsSuccess.Should().BeTrue();
+
+        // Assert: 409 — ожидание освобождения реестра, не вердикт: observe
+        // transient не эмитится, статус кандидата байт-в-байт не тронут.
+        outcomes.Should().BeEmpty(
+            "a 409 relaunch is a wait for the registry, not a transient verdict");
+        var after = (await Fx.Gateway.GetAsync(Fx.Endpoint, key, ct)).Value!.Value;
+        after.Should().Be(before, "a foreign running snapshot is not the verify outcome of this full");
+
+        // Assert: реланч своего кандидата выполнен ровно один раз.
+        Receiver.StartBodies.Should().ContainSingle()
+            .Which.BackupId.Should().Be("20260911120000Z");
     }
 }

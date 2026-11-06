@@ -82,9 +82,9 @@ public class RestoreDrillProcessTests : IntSlotLifetime
     private sealed class FakeReceiverClient : IWalReceiverApiClient
     {
         public ReceiverReply StartReply { get; set; } =
-            new(202, new ReceiverStatus("running", "downloading", Id: DrillId), null);
+            new(202, new ReceiverStatus("running", "downloading", Id: DrillId, Kind: OperationKinds.Drill), null);
         public ReceiverReply GetReply { get; set; } =
-            new(200, new ReceiverStatus("running", "downloading", Id: DrillId), null);
+            new(200, new ReceiverStatus("running", "downloading", Id: DrillId, Kind: OperationKinds.Drill), null);
         public readonly List<string> StartUrls = [];
         public readonly List<StartRestoreRequest> StartBodies = [];
         public readonly List<string> GetUrls = [];
@@ -197,7 +197,7 @@ public class RestoreDrillProcessTests : IntSlotLifetime
         const string cluster = "dr3";
         await SeedAsync(cluster);
         Receiver.GetReply = new ReceiverReply(200,
-            new ReceiverStatus("running", "downloading", Id: DrillId), null);
+            new ReceiverStatus("running", "downloading", Id: DrillId, Kind: OperationKinds.Drill), null);
         await SeedDrillAsync(cluster,
             new DrillState(DrillId, DrillStatus.Running, "20261001090000Z", NowUnix()));
         var restoreId = $"{DateTimeOffset.UtcNow:yyyyMMddHHmmss}Z-{Shard}";
@@ -233,7 +233,7 @@ public class RestoreDrillProcessTests : IntSlotLifetime
         const string cluster = "dr1";
         await SeedAsync(cluster);
         Receiver.GetReply = new ReceiverReply(200,
-            new ReceiverStatus("running", "recovering", Id: DrillId), null);
+            new ReceiverStatus("running", "recovering", Id: DrillId, Kind: OperationKinds.Drill), null);
         await SeedDrillAsync(cluster,
             new DrillState(DrillId, DrillStatus.Running, "20261001090000Z", NowUnix()));
         var process = BuildProcess(cluster, new FakeBackupS3());
@@ -260,7 +260,7 @@ public class RestoreDrillProcessTests : IntSlotLifetime
         const string cluster = "dr2";
         await SeedAsync(cluster);
         Receiver.GetReply = new ReceiverReply(200,
-            new ReceiverStatus("succeeded", "recovering", RestoredToLsn: "0/42", Id: DrillId), null);
+            new ReceiverStatus("succeeded", "recovering", RestoredToLsn: "0/42", Id: DrillId, Kind: OperationKinds.Drill), null);
         await SeedDrillAsync(cluster,
             new DrillState(DrillId, DrillStatus.Running, "20261001090000Z", NowUnix()));
         var process = BuildProcess(cluster, new FakeBackupS3());
@@ -292,7 +292,7 @@ public class RestoreDrillProcessTests : IntSlotLifetime
         const string cluster = "dr3";
         await SeedAsync(cluster);
         Receiver.GetReply = new ReceiverReply(200,
-            new ReceiverStatus("failed", "recovering", Error: "boom", Id: DrillId), null);
+            new ReceiverStatus("failed", "recovering", Error: "boom", Id: DrillId, Kind: OperationKinds.Drill), null);
         await SeedDrillAsync(cluster,
             new DrillState(DrillId, DrillStatus.Running, "20261001090000Z", NowUnix()));
         var process = BuildProcess(cluster, new FakeBackupS3());
@@ -706,7 +706,7 @@ public class RestoreDrillProcessTests : IntSlotLifetime
         const string cluster = "dr12";
         await SeedAsync(cluster);
         Receiver.GetReply = new ReceiverReply(200,
-            new ReceiverStatus("running", "downloading", Id: DrillId), null);
+            new ReceiverStatus("running", "downloading", Id: DrillId, Kind: OperationKinds.Drill), null);
         await SeedDrillAsync(cluster,
             new DrillState(DrillId, DrillStatus.Running, FullId, NowUnix()));
         var process = BuildProcess(cluster, new FakeBackupS3());
@@ -720,7 +720,7 @@ public class RestoreDrillProcessTests : IntSlotLifetime
 
         // Act 2 — операция «прошлого инстанса» дошла до исхода (GET succeeded).
         Receiver.GetReply = new ReceiverReply(200,
-            new ReceiverStatus("succeeded", "recovering", RestoredToLsn: "0/500", Id: DrillId), null);
+            new ReceiverStatus("succeeded", "recovering", RestoredToLsn: "0/500", Id: DrillId, Kind: OperationKinds.Drill), null);
         (await process.TickAsync(BuildSnap(cluster), await SnapshotBackupsAsync(cluster), ct))
             .IsSuccess.Should().BeTrue();
 
@@ -742,7 +742,7 @@ public class RestoreDrillProcessTests : IntSlotLifetime
         const string cluster = "dr13";
         await SeedAsync(cluster);
         Receiver.GetReply = new ReceiverReply(200,
-            new ReceiverStatus("running", "recovering", Id: DrillId), null);
+            new ReceiverStatus("running", "recovering", Id: DrillId, Kind: OperationKinds.Drill), null);
         await SeedDrillAsync(cluster,
             new DrillState(DrillId, DrillStatus.Running, FullId, NowUnix() - 120));
         var outcomes = new List<(string C, string S, string Result)>();
@@ -852,7 +852,7 @@ public class RestoreDrillProcessTests : IntSlotLifetime
         const string cluster = "dr15a";
         await SeedAsync(cluster);
         Receiver.GetReply = new ReceiverReply(200,
-            new ReceiverStatus("succeeded", "recovering", Id: DrillId), null);
+            new ReceiverStatus("succeeded", "recovering", Id: DrillId, Kind: OperationKinds.Drill), null);
         await SeedDrillAsync(cluster,
             new DrillState(DrillId, DrillStatus.Running, FullId, NowUnix()));
         var process = BuildProcess(cluster, new FakeBackupS3());
@@ -912,7 +912,7 @@ public class RestoreDrillProcessTests : IntSlotLifetime
         await SeedAsync(cluster);
         await SeedFullAsync(cluster);
         Receiver.GetReply = new ReceiverReply(200,
-            new ReceiverStatus("succeeded", "recovering", RestoredToLsn: "0/600", Id: DrillId), null);
+            new ReceiverStatus("succeeded", "recovering", RestoredToLsn: "0/600", Id: DrillId, Kind: OperationKinds.Drill), null);
         var s3 = new FakeBackupS3();
         SeedValidCandidate(s3, cluster);
         await SeedDrillAsync(cluster,
@@ -974,7 +974,7 @@ public class RestoreDrillProcessTests : IntSlotLifetime
         const string cluster = "dr21";
         await SeedAsync(cluster);
         Receiver.GetReply = new ReceiverReply(200,
-            new ReceiverStatus("failed", "downloading", Error: "mc cp failed", Id: DrillId), null);
+            new ReceiverStatus("failed", "downloading", Error: "mc cp failed", Id: DrillId, Kind: OperationKinds.Drill), null);
         await SeedDrillAsync(cluster,
             new DrillState(DrillId, DrillStatus.Running, FullId, NowUnix()));
         var process = BuildProcess(cluster, new FakeBackupS3());
@@ -1030,7 +1030,7 @@ public class RestoreDrillProcessTests : IntSlotLifetime
         const string cluster2 = "dro2";
         await SeedAsync(cluster2);
         Receiver.GetReply = new ReceiverReply(200,
-            new ReceiverStatus("succeeded", "recovering", RestoredToLsn: "0/42", Id: DrillId), null);
+            new ReceiverStatus("succeeded", "recovering", RestoredToLsn: "0/42", Id: DrillId, Kind: OperationKinds.Drill), null);
         await SeedDrillAsync(cluster2,
             new DrillState(DrillId, DrillStatus.Running, "20261001090000Z", NowUnix()));
         outcomes.Clear();
@@ -1059,7 +1059,7 @@ public class RestoreDrillProcessTests : IntSlotLifetime
         const string cluster = "dr16x";
         await SeedAsync(cluster);
         Receiver.GetReply = new ReceiverReply(200,
-            new ReceiverStatus("cancelled", "recovering", Error: "cancelled by operator", Id: DrillId), null);
+            new ReceiverStatus("cancelled", "recovering", Error: "cancelled by operator", Id: DrillId, Kind: OperationKinds.Drill), null);
         await SeedDrillAsync(cluster,
             new DrillState(DrillId, DrillStatus.Running, "20261001090000Z", NowUnix()));
         var process = BuildProcess(cluster, new FakeBackupS3());
