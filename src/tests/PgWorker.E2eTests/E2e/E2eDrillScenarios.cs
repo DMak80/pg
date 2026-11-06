@@ -322,6 +322,129 @@ public sealed class E2eDrillScenarios(E2eDrillScenariosFx Ctx) : IClassFixture<E
         alerts.Should().ContainSingle(a => a.Kind == "backup-drill-failed", "a drill failure — a critical alert");
     }
 
+    // AAA (регресс Д1): graceful-рестарт приёмника в середине дрилла (фаза
+    // recovering, postmaster операции жив) — остановка хоста гасит операцию и её
+    // postmaster; vanished-перезапуск той же операции стартует в подготовленный
+    // каталог (arch/pgnode/06-restore-drill.md §2). Ассерты: итог дрилла СВОЙ
+    // (не lock-ошибка сироты), в логах контура нет «another postmaster», на ноде
+    // нет постгресса в drill-каталоге, scratch отсутствует после терминала,
+    // чужие verify-FAILED в записи полных не попали.
+    [Fact]
+    public async Task Drill_ReceiverRestart_PostmasterNotLeaked()
+    {
+        // Arrange — свой кластер (уникальный суффикс r): verify on_create (нужен
+        // кандидат для ассерта «чужой итог не попал в полный») + дриллы.
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromMinutes(4)); // потолок: штатный дрилл ~90 c + рестарт + повторный прогон
+        var ct = cts.Token;
+        var cluster = $"bkdrll{Fx.ClusterTag}r";
+        await CleanupPreviousDrillClustersAsync(cluster, ct);
+        await SeedClusterAsync(cluster);
+        await G.PutAsync(Endpoint, $"/pgworker/backups/{cluster}/policy",
+            $$"""{"full_max_age_sec":86400,"verify":{"on_create":true},"drill":{"interval_days":1},{{E2eEnvironment.PoolS3(Pool)}}}""", null, ct);
+        await using var app = await StartBackupHostAsync("bkdrillr", ct);
+
+        // Act 1 — COMPLETED-полный и дрилл в фазе recovering (postmaster операции жив).
+        var completed = await E2eFixture.WaitForAsync(
+            async () => (await FullKeysAsync(cluster, "shard1")).Any(f => f.Value.Contains("COMPLETED")),
+            TimeSpan.FromSeconds(90), ct);
+        completed.Should().BeTrue("the full must be taken");
+        var recovering = await E2eFixture.WaitForAsync(async () =>
+            (await GetOrNullAsync($"/pgworker/backups/{cluster}/shard1/drill"))
+                ?.Value.Contains("\"phase\":\"recovering\"") == true,
+            TimeSpan.FromSeconds(120), ct);
+        recovering.Should().BeTrue("the drill reaches recovering — the operation postmaster is alive");
+
+        // Act 2 — graceful-стоп приёмника первой ноды посреди дрилла и старт.
+        var node = $"pgw-{cluster}-shard1-shard1a";
+        await Fx.RunDockerAsync(["exec", node, "supervisorctl", "stop", "pgnode"], ct);
+        await Task.Delay(TimeSpan.FromSeconds(2), ct);
+        await Fx.RunDockerAsync(["exec", node, "supervisorctl", "start", "pgnode"], ct);
+
+        // Act 3 — vanished-перезапуск доводит дрилл до терминального исхода.
+        var terminal = await E2eFixture.WaitForAsync(async () =>
+        {
+            if (await GetOrNullAsync($"/pgworker/backups/{cluster}/shard1/drill") is not { } kv)
+                return false;
+            return (kv.Value.Contains("\"SUCCEEDED\"") || kv.Value.Contains("\"FAILED\""))
+                   && !kv.Value.Contains("phase");
+        }, TimeSpan.FromSeconds(180), ct);
+        if (!terminal)
+        {
+            // Телеметрия упавшего ожидания: дамп до teardown (канон e2e-launch).
+            var drillKv = await GetOrNullAsync($"/pgworker/backups/{cluster}/shard1/drill");
+            var walKv = await GetOrNullAsync($"/pgworker/backups/{cluster}/shard1/wal");
+            var workKv = await GetOrNullAsync($"/pgworker/work/{cluster}");
+            var fullsNow = await FullKeysAsync(cluster, "shard1");
+            var hostLog = "";
+            foreach (var host in Fx.Hosts)
+                try
+                {
+                    var lines = (await host.ReadLogTailAsync(600, ct)).Split('\n',
+                        StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                    var interesting = lines.Where(l =>
+                        !l.Contains("ClientHandler") && !l.Contains("LogicalHandler")
+                        && !l.Contains("HTTP request") && !l.Contains("HTTP response")
+                        && !l.Contains("End processing HTTP") && !l.Contains("Received HTTP")
+                        && !l.Contains("Sending HTTP") && !l.Contains("PgtuneInputsFactory")
+                        && !l.Contains("wal_compression")).ToList();
+                    hostLog += $"\n== {host.Name} ({interesting.Count}):\n" +
+                        string.Join("\n", interesting[^Math.Min(60, interesting.Count)..]);
+                }
+                catch (Exception e)
+                {
+                    hostLog += $"\n== {host.Name}: host.log unavailable: {e.Message}";
+                }
+
+            await File.WriteAllTextAsync($"/tmp/pgw-diag-{cluster}.txt",
+                $"reason=drill not terminal after receiver restart\nfulls=[{string.Join("; ", fullsNow.Select(f => f.Key + "=" + f.Value[..Math.Min(160, f.Value.Length)]))}]\n" +
+                $"drill=[{drillKv?.Value ?? "-"}]\nwal=[{walKv?.Value ?? "-"}]\nwork=[{workKv?.Value ?? "-"}]\nHOST.LOG:{hostLog}\n",
+                TestContext.Current.CancellationToken);
+        }
+
+        terminal.Should().BeTrue("the drill reaches a terminal outcome after the receiver restart");
+
+        // Assert (а) — итог дрилла свой: причина не lock-ошибка сироты.
+        var drillRaw = (await G.GetAsync(Endpoint,
+            $"/pgworker/backups/{cluster}/shard1/drill", ct)).Value!.Value;
+        var drillDoc = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(drillRaw)!;
+        var drillError = drillDoc.TryGetValue("error", out var errorEl) ? errorEl.GetString() : null;
+        (drillError ?? "").Should().NotContain("another server might be running",
+            "the restarted receiver did not hit the leftover postmaster");
+        (drillError ?? "").Should().NotContain("postmaster.pid");
+        var drillId = drillDoc["id"].GetString()!;
+
+        // Assert (б) — в логах контура нет FATAL «another postmaster»: postmaster-лог
+        // операции (файла могло не быть — отсутствие тоже чисто) и лог контейнера.
+        var restoreLog = await DockerTryAsync(["exec", node, "cat", "/tmp/restore-pg.log"], ct);
+        var nodeLogs = await E2eFixture.RunDockerLogsAsync([node], ct);
+        (restoreLog.Output + "\n" + nodeLogs).Should().NotContain("another postmaster");
+
+        // Assert (в) — постгресса в drill-каталоге операции нет (status не-0 или
+        // каталога нет).
+        var drillPgdata = $"/home/postgres/pgdata/backup-drill/{drillId}/pgdata";
+        var drillDir = await DockerTryAsync(["exec", node, "test", "-d", drillPgdata], ct);
+        if (drillDir.Ok)
+        {
+            var status = await DockerTryAsync(
+                ["exec", node, "pg_ctl", "status", "-D", drillPgdata], ct);
+            status.Ok.Should().BeFalse(
+                "no postmaster may serve the drill scratch after the terminal outcome");
+        }
+
+        // Assert (г) — scratch-каталоги дрилла отсутствуют после терминала.
+        var scratch = await DockerTryAsync(
+            ["exec", node, "ls", "-A", "/home/postgres/pgdata/backup-drill"], ct);
+        scratch.Output.Trim().Should().BeEmpty("the drill scratch is removed on any outcome");
+
+        // Assert (д) — записи полных не несут чужой итог дрилла.
+        var fulls = await FullKeysAsync(cluster, "shard1");
+        fulls.Should().NotBeEmpty("the full is taken");
+        fulls.Should().OnlyContain(f => !f.Value.Contains("pg_ctl start failed"),
+            "no foreign drill outcome leaks into the verify status of a full");
+    }
+
     // Минимальный снапшот панели для правил дрилла («панельный алерт» в E2E:
     // фактические kvs кластера кормят правило — образец панельных юнитов).
     private static AdminPanel.Core.EtcdSnapshot SnapshotWith(
@@ -365,6 +488,20 @@ public sealed class E2eDrillScenarios(E2eDrillScenariosFx Ctx) : IClassFixture<E
 
     private async Task<Kv?> GetOrNullAsync(string key)
         => (await G.GetAsync(Endpoint, key, TestContext.Current.CancellationToken)).Value;
+
+    // docker exec с ДОПУСТИМЫМ ненулевым exit (проверки факта: отсутствие
+    // файла/каталога, pg_ctl status не-0): RunDockerAsync на не-0 бросает.
+    private async Task<(bool Ok, string Output)> DockerTryAsync(string[] args, CancellationToken ct)
+    {
+        try
+        {
+            return (true, await Fx.RunDockerAsync(args, ct));
+        }
+        catch (ApplicationException)
+        {
+            return (false, "");
+        }
+    }
 
     // Гигиена между фактами класса (один контур на класс — arch/testing/02-e2e-isolation.md):
     // прежний drill-кластер снимается ДО старта нового — два кластера × 4 PG-ноды
