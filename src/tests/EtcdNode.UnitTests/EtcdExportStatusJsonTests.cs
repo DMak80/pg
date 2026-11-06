@@ -92,12 +92,15 @@ public class EtcdExportStatusJsonTests
         behind.Should().Be(expected);
     }
 
-    // AAA: ключа нет вовсе — отстаёт
+    // AAA: ключа нет вовсе — отстаёт; ключа нет И локальных слепков нет —
+    // не отстаёт (граница: пустой контур без выгрузок — не FAILED-состояние)
     [Fact]
     public void IsBehind_NoKey()
     {
         // Act/Assert
-        EtcdSnapshotStatus.IsBehind(null, 1759330100).Should().BeTrue("no key while the option is enabled — the upload lags");
+        EtcdSnapshotStatus.IsBehind(null, 1759330100).Should().BeTrue("no status key with local snapshots present — the upload lags");
+        EtcdSnapshotStatus.IsBehind(null, null).Should().BeFalse(
+            "no key and no local snapshots — nothing to catch up, healthy idle");
     }
 
     // AAA: таймстемп имени слепка (yyyyMMdd-HHmmss, UTC — формат SnapshotJob)

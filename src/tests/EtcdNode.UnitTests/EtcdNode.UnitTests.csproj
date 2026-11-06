@@ -21,6 +21,7 @@
 
     <ItemGroup>
         <ProjectReference Include="..\..\EtcdNode.Core\EtcdNode.Core.csproj"/>
+        <ProjectReference Include="..\..\EtcdNode.App\EtcdNode.App.csproj"/>
     </ItemGroup>
 
     <ItemGroup>

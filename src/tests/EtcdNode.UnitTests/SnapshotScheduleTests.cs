@@ -95,6 +95,18 @@ public class SnapshotScheduleTests
     }
 
     [Fact]
+    public void Important_ExactlyAtMinInterval_Take()
+    {
+        // Arrange: важное изменение есть, выгрузка ровно 300 с назад
+        // Act + Assert: граница «≥ MinIntervalSec» — снимаем
+        SnapshotSchedule.ShouldTake(
+                nowUnix: Now, lastTakeUnix: Now - 60, lastUploadedUnix: Now - 300,
+                currentRevision: 105, baselineRevision: 100,
+                diffImportant: true, intervalMin: 360, minIntervalSec: 300)
+            .Should().BeTrue();
+    }
+
+    [Fact]
     public void Important_NeverUploaded_Take()
     {
         // Arrange: важное изменение, но выгрузки никогда не было

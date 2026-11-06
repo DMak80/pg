@@ -62,11 +62,12 @@ public sealed class SnapshotExporterTests(EtcdNodeEnvironment env)
         var exporter = NewExporter(env, dir);
 
         // Act
-        var (file, _, exported) = await TakeAndExportAsync(env, job, exporter, dir);
+        var (file, data, exported) = await TakeAndExportAsync(env, job, exporter, dir);
         var dbKey = $"{EtcdExportRetention.Prefix}{Path.GetFileName(file)}";
         var metaKey = $"{EtcdExportRetention.Prefix}{Path.GetFileName(file)[..^".db".Length]}.meta.json";
 
-        // Assert: моя пара лежит в bucket; статус-ключ домена — OK
+        // Assert: моя пара лежит в bucket; статус-ключ домена — OK;
+        // целостность — sha статуса совпадает с байтами слепка
         exported.IsSuccess.Should().BeTrue(exported.Error?.Message);
         var target = await new EtcdBackupTargetResolver(env.Gateway, [env.Endpoint]).ResolveAsync(ct);
         await using var s3 = new EtcdSnapshotS3(
@@ -79,6 +80,9 @@ public sealed class SnapshotExporterTests(EtcdNodeEnvironment env)
         var status = await exporter.ReadStatusAsync(ct);
         status.IsSuccess.Should().BeTrue();
         status.Value!.State.Should().Be("OK");
+        status.Value.LastSha256.Should().Be(
+            Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(data)).ToLowerInvariant(),
+            "status sha must match the uploaded snapshot bytes");
     }
 
     // AAA: транзиент цели (битые endpoints) — выгрузка FAILED; восстановление
