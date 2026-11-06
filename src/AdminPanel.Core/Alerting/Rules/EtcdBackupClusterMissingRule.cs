@@ -29,7 +29,7 @@ public sealed class EtcdBackupClusterMissingRule : IAlertRule
             "etcd backup cluster is missing: no /s3/clusters/ config with etcd_backup=true — DR snapshots cannot be uploaded",
             new Dictionary<string, string>(),
             null,
-            "EtcdWorker has nowhere to upload control-plane DR snapshots — control-plane changes are not protected against host loss",
+            "EtcdNode agents have nowhere to upload control-plane DR snapshots — control-plane changes are not protected against host loss",
             AlertRemedy.OperatorApi,
             "create an etcd-backup S3 cluster — the flag and the special key are set by S3Worker (arch/s3-clusters/06-secrets.md)");
     }

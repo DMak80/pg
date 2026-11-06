@@ -301,11 +301,11 @@ done
 [ "${etcdw_keys:-0}" -ge 2 ] \
   || { echo "❌ /etcdworker/api/ contains ${etcdw_keys:-0} keys (<2; docker compose logs etcdworker etcdworker-2)"; exit 1; }
 echo "  etcdworker alive ×2 (:${ETCDW_API_HOST_PORT:-8087} + :${ETCDW_API_HOST_PORT2:-8088}/healthz mTLS; /etcdworker/api/ keys: ${etcdw_keys})"
-# Наблюдение статуса DR-слепков (spec §7.3-стенд): ключ /etcdworker/snapshots
-# появляется при поднятых etcd-backup S3-кластере и воркере — отсутствие НЕ fail
-# (стенд может жить без etcd-backup кластера); значение — в чек-вывод.
-snap_status="$(ect get /etcdworker/snapshots 2>/dev/null || true)"
-echo "  etcdworker snapshots status: ${snap_status:-<no key — etcd-backup S3 cluster is not up>}"
+# Наблюдение статуса DR-слепков (ключ /etcdnode/snapshots пишут агенты EtcdNode
+# managed-узлов): стенд — external-контур, слепков нет по канону
+# (arch/etcdnode/02-snapshots.md) — отсутствие ключа НЕ fail; значение — в чек-вывод.
+snap_status="$(ect get /etcdnode/snapshots 2>/dev/null || true)"
+echo "  etcdnode snapshots status: ${snap_status:-<no key — external-контур стенда, слепков нет по канону>}"
 
 # 8) панель жива: всегда в докере (AGENTS.md), сервис adminpanel сети стенда,
 #    /api/healthz опубликован на :5050.

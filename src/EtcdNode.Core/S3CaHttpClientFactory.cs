@@ -4,13 +4,12 @@ using Amazon.Runtime;
 
 namespace EtcdNode.Core;
 
-/// <summary>Фабрика HttpClient AWS SDK с доверенным per-install CA
-/// (t42, spec §5 fallback): AWSSDK.Core не читает env AWS_CA_BUNDLE
-/// (доказано E2E t42 — сборка строку не содержит, соединение даёт PartialChain) —
-/// доверие CA https S3-endpoint программное: RemoteCertificateValidationCallback
-/// сверяет корень цепочки с CA из S3CaBundlePath (механизм тот же CA
-/// kfw-install-ca, контракт arch/backups/08-secrets.md не меняется). null-чек клиента,
-/// лежащего на http-endpoint, не нужен: фабрика ставится ТОЛЬКО при заданном
+/// <summary>Фабрика HttpClient AWS SDK с доверенным per-install CA:
+/// AWSSDK.Core не читает env AWS_CA_BUNDLE — доверие CA https S3-endpoint
+/// программное: RemoteCertificateValidationCallback сверяет корень цепочки
+/// с CA из S3CaBundlePath (механизм тот же CA kfw-install-ca, контракт
+/// arch/backups/08-secrets.md). null-чек клиента, лежащего на
+/// http-endpoint, не нужен: фабрика ставится ТОЛЬКО при заданном
 /// S3CaBundlePath — поведение без пути прежнее (BackupS3).</summary>
 public sealed class S3CaHttpClientFactory : HttpClientFactory
 {

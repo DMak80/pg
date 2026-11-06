@@ -21,12 +21,12 @@ public static class BackupCaPem
         catch (Exception ex)
         {
             throw new InvalidOperationException(
-                $"EtcdWorker:NodeSnapshot:S3:CaBundlePath={caBundlePath}: CA file is not readable — {ex.Message}", ex);
+                $"CA bundle {caBundlePath} is not readable — {ex.Message}", ex);
         }
 
         return pem.Trim() is { Length: > 0 } trimmed
             ? trimmed
             : throw new InvalidOperationException(
-                $"EtcdWorker:NodeSnapshot:S3:CaBundlePath={caBundlePath}: CA file is empty");
+                $"CA bundle {caBundlePath} is empty");
     }
 }

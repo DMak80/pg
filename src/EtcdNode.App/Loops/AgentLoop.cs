@@ -87,8 +87,17 @@ internal sealed class AgentLoop(
                         logger.LogError(ex, "etcdnode leader tick failed unexpectedly: {Message}",
                             ex.Message);
                         metrics.LoopTick("snapshot", ok: false);
-                        await Task.Delay(
-                            TimeSpan.FromSeconds(options.Snapshots.RetryIntervalSec), leaderLease.Token);
+                        using var retrySleep = CancellationTokenSource.CreateLinkedTokenSource(
+                            stoppingToken, claims.LeaderToken);
+                        try
+                        {
+                            await Task.Delay(
+                                TimeSpan.FromSeconds(options.Snapshots.RetryIntervalSec), retrySleep.Token);
+                        }
+                        catch (OperationCanceledException)
+                        {
+                            // лидерство ушло живому узлу — сон не нужен
+                        }
                     }
                 }
                 else

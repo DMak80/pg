@@ -381,7 +381,7 @@ public sealed class ParallelismOptions
     public int MaxClusters { get; set; } = 4;
 }
 
-/// <summary>Локальные слепки P12 (arch/pgworker/08-operability.md §5): каталог тома и ретеншн файлов; выгрузка/обслуживание — зона EtcdWorker (arch/etcdworker/04-snapshots.md).</summary>
+/// <summary>Локальные слепки P12 (arch/pgworker/08-operability.md §5): каталог тома и ретеншн файлов; выгрузка/обслуживание — зона EtcdNode (arch/etcdnode/02-snapshots.md).</summary>
 public sealed class SnapshotOptions
 {
     public string Dir { get; set; } = "/snapshots";

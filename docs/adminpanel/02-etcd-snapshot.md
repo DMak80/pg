@@ -9,12 +9,12 @@
 `SnapshotStore.Current` (volatile-swap). API читает только стор. Живой цикл:
 endpoint-status → range `/clusters/` + `/service/` + `/cluster/nodes/` →
 member/list + alarm → парсеры → `ProbeEnricher` → `AlertEngine` → `store.Replace`.
-Etcdworker-часть тика: пять range-чтений — `/etcdworker/snapshots` (точечный),
+Etcdworker-часть тика: пять range-чтений — `/etcdnode/snapshots` (точечный),
 `/etcd/config` (точечный), `/etcd/nodes/`, `/etcdworker/api/`,
 `/workers/api_tls/etcdworker` (точечный); транспортный провал ЛЮБОГО
 KV-чтения роняет весь тик (прежний снапшот сохраняется — значения домена
 переносятся из прежнего). Парсеры — `EtcdDomainParser` (config+nodes) и
-`EtcdSnapshotsParser` (формат ../../arch/etcdworker/00-etcd-contract.md, без `enabled`); health-поллер
+`EtcdSnapshotsParser` (формат ../../arch/etcdnode/00-etcdnode-contract.md §3, без `enabled`); health-поллер
 инстансов EtcdWorker — стор `EtcdWorkerHealthStore` (02 §2.3.5).
 
 ## Gateway: HTTP JSON `/v3/*`

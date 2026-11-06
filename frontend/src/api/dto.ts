@@ -1011,7 +1011,7 @@ export interface OrphanDeleteAcceptedDto {
   requestedBy: string;
 }
 
-// Статус DR-выгрузки etcd-слепков  ключ /etcdworker/snapshots.
+// Статус DR-выгрузки etcd-слепков  ключ /etcdnode/snapshots.
 export interface EtcdSnapshotsDto {
   state: string | null;
   lastUploadedUnix: number | null;

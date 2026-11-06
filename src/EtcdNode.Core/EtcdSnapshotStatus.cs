@@ -5,8 +5,8 @@ using System.Text.Json.Serialization;
 namespace EtcdNode.Core;
 
 /// <summary>Значение статус-ключа /etcdnode/snapshots (arch/etcdnode/00-etcdnode-contract.md §3): факт
-/// последней выгрузки слепка etcd в S3 (агент EtcdNode; поле enabled удалено —
-/// выгрузка безусловна).</summary>
+/// последней выгрузки слепка etcd в S3 агентом EtcdNode (поле enabled не
+/// пишется — выгрузка безусловна).</summary>
 public sealed record EtcdSnapshotStatus(
     string State,               // "OK" | "FAILED"
     long? LastUploadedUnix,
