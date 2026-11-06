@@ -13,7 +13,9 @@
 
 FROM 192.168.0.1:5000/quay.io/coreos/etcd:v3.5.21 AS etcd
 
-FROM mcr.microsoft.com/dotnet/runtime:10.0
+# Носитель — тоже внешний образ локального registry (images.txt; единая
+# адресация FROM-стадий — префикс 192.168.0.1:5000, как у etcd-стадии).
+FROM 192.168.0.1:5000/mcr.microsoft.com/dotnet/runtime:10.0
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends supervisor \

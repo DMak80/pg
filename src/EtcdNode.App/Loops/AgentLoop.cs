@@ -79,6 +79,17 @@ internal sealed class AgentLoop(
                         // продолжит как не-лидер и пере-захватит ≤ TTL + тик скана.
                         logger.LogWarning("etcdnode leadership lost mid-tick");
                     }
+                    catch (Exception ex)
+                    {
+                        // Не-OCE отказ тика НЕ валит хост (смерть агента =
+                        // остановка и слепков всего узла): лог + короткий сон
+                        // RetryIntervalSec; следующий тик перепроверит всё.
+                        logger.LogError(ex, "etcdnode leader tick failed unexpectedly: {Message}",
+                            ex.Message);
+                        metrics.LoopTick("snapshot", ok: false);
+                        await Task.Delay(
+                            TimeSpan.FromSeconds(options.Snapshots.RetryIntervalSec), leaderLease.Token);
+                    }
                 }
                 else
                 {
@@ -123,8 +134,8 @@ internal sealed class AgentLoop(
         var behind = catchUp.IsSuccess ? catchUp.Value : true;
 
         // C2: решение снятия — чистое расписание с фильтром важности.
-        var latest = SnapshotExporter.LatestLocalFile(SnapshotsDir);
-        var lastTakeUnix = EtcdSnapshotStatus.TakenUnixFromName(
+        var tickOk = true; // факт тика для метрики: отказы ниже гасят
+        var latest = SnapshotExporter.LatestLocalFile(SnapshotsDir);        var lastTakeUnix = EtcdSnapshotStatus.TakenUnixFromName(
             latest is null ? "" : Path.GetFileName(latest));
         var status = await exporter.ReadStatusAsync(ct);
         var lastUploadedUnix = status.IsSuccess ? status.Value?.LastUploadedUnix : null;
@@ -154,6 +165,12 @@ internal sealed class AgentLoop(
 
         if (take)
         {
+            // Эталон будущего тика — карта, прочитанная ДО снятия
+            // (arch/etcdnode/processes/c-snapshot-export.md C3): изменение,
+            // закоммиченное в окне снятие–выгрузка, остаётся «важным» на
+            // следующем тике. Дифф не выполнялся — берём range сейчас.
+            currentMap ??= await ReadMapAsync(ct);
+
             // C3: снятие — SnapshotJob с ровно ОДНИМ endpoint (свой узел,
             // решение №13): compact+defrag тут не выполняется.
             var shot = await new SnapshotJob(etcd, [Localhost], SnapshotsDir,
@@ -166,6 +183,7 @@ internal sealed class AgentLoop(
                 // TTL ≤ 15 с — работу и статус пишет новый лидер.
                 logger.LogWarning(shot.Error, "etcd snapshot failed (own etcd): {Message}",
                     shot.Error!.Message);
+                metrics.LoopTick("snapshot", ok: false);
                 return true; // короткий сон RetryIntervalSec
             }
 
@@ -181,19 +199,24 @@ internal sealed class AgentLoop(
                 ct);
             if (exported.IsSuccess)
             {
-                // Эталон = карта этого тика; дифф не выполнялся (плановый/
-                // тишь по revision) — берём range заново после выгрузки.
-                // Отказ range — эталон остаётся прежним (консервативно).
-                _baseline = currentMap ?? await ReadMapAsync(ct) ?? _baseline;
+                // Эталон = карта, прочитанная ДО снятия (currentMap; отказ
+                // range — null — эталон остаётся прежним, консервативно:
+                // следующая смена даст внеочередной). БЕЗ повторного range
+                // после выгрузки — пост-экспортная карта поймала бы ключи,
+                // попавшие в окно снятие–выгрузка (RPO-гонка), включая
+                // собственный статус-put экспортёра.
+                _baseline = currentMap ?? _baseline;
                 if (_baseline is not null)
                     _baselineRevision = currentRevision;
             }
             else
             {
                 // Отказ выгрузки — домен статус-ключа (FAILED пишет экспортёр),
-                // НЕ цикла: снятие прошло, слепок в локальном томе, цикл здоров.
+                // НЕ цикла: снятие прошло, слепок в локальном томе, цикл жив;
+                // эталон НЕ обновляется (невыгруженное обязано остаться важным).
                 logger.LogError(exported.Error, "etcd snapshot export failed: {Message}",
                     exported.Error!.Message);
+                tickOk = false;
             }
 
             // C4: обслуживание контура — ОТДЕЛЬНЫЙ вызов SnapshotJob с полным
@@ -218,7 +241,9 @@ internal sealed class AgentLoop(
                      EtcdSnapshotStatus.TakenUnixFromName(
                          freshLatest is null ? "" : Path.GetFileName(freshLatest)));
 
-        metrics.LoopTick("snapshot", ok: true);
+        // ok — по факту тика: отказ снятия/выгрузки виден метрике (отказ
+        // выгрузки — домен статус-ключа, но неуспех тика честно считаем).
+        metrics.LoopTick("snapshot", ok: tickOk);
         return behind;
     }
 

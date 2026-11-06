@@ -13,6 +13,9 @@ if (!string.IsNullOrWhiteSpace(s3CaPem))
 {
     s3CaPemPath = Path.Combine(Path.GetTempPath(), "etcdnode-s3-ca.pem");
     File.WriteAllText(s3CaPemPath, s3CaPem);
+    // Fail-fast до RunAsync: битый PEM иначе крашил бы КАЖДЫЙ экспорт
+    // (TlsMaterial.LoadPem в конструкторе S3-клиента).
+    Shared.Tls.TlsMaterial.LoadPem(s3CaPem);
 }
 
 var options = EtcdNodeEnv.Load(s3CaPemPath); // fail-fast при битых значениях
