@@ -310,6 +310,25 @@ internal partial class Program
         // Активная операция для cancel (снимок — в реестре, экземпляр — здесь).
         IReceiverOperation? active = null;
 
+        // Остановка хоста гасит активную ops-операцию (arch/pgnode/06-restore-drill.md
+        // §2): CancelAsync отменяет задачу (runner гасит дерево child-процессов) и
+        // останавливает postmaster операции — сирот приёмник не оставляет.
+        // Ожидание ≤15 c; жёсткий SIGKILL supervisord закроет остаток защитой
+        // каталога при следующем запуске.
+        app.Lifetime.ApplicationStopping.Register(() =>
+        {
+            try
+            {
+                (active?.CancelAsync() ?? Task.CompletedTask)
+                    .WaitAsync(TimeSpan.FromSeconds(15))
+                    .GetAwaiter().GetResult();
+            }
+            catch
+            {
+                // best-effort: нестопаемый остаток подберёт защита каталога
+            }
+        });
+
         app.MapPost("/api/ops/verify", (StartVerifyRequest body,
             OpsOperationRegistry registry, IOpsOperationFactory factory) =>
         {
