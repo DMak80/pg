@@ -2,7 +2,7 @@ using System.Net.Security;
 using System.Security.Cryptography.X509Certificates;
 using Amazon.Runtime;
 
-namespace EtcdWorker.Core;
+namespace EtcdNode.Core;
 
 /// <summary>Фабрика HttpClient AWS SDK с доверенным per-install CA
 /// (t42, spec §5 fallback): AWSSDK.Core не читает env AWS_CA_BUNDLE

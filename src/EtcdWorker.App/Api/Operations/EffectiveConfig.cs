@@ -2,7 +2,7 @@ namespace EtcdWorker.App.Api.Operations;
 
 // Эффективный конфиг установки (arch/etcdworker/05-api.md §1 GET /api/config): read-only,
 // БЕЗ секретов/TLS/endpoints (Etcd-endpoints, секция Api/TLS, Docker Tls/Ssh,
-// Snapshots.Dir наружу не выходят никогда); поле source=env — значения
+// S3 CA-бандл наружу не выходит); поле source=env — значения
 // применяются рестартом воркера. Панель отдаёт это как есть через on-demand
 // прокси GET /api/workers/{worker}/effective-config (adminpanel/02 §2.3.5).
 public static class EtcdWorkerEffectiveConfig
@@ -27,15 +27,15 @@ public static class EtcdWorkerEffectiveConfig
                 checkIntervalSec = o.Loops.Watchdog.CheckIntervalSec,
             },
         },
-        snapshots = new
+        nodeSnapshot = new
         {
-            intervalMin = o.Snapshots.IntervalMin,
-            minIntervalSec = o.Snapshots.MinIntervalSec,
-            maintenanceIntervalMin = o.Snapshots.MaintenanceIntervalMin,
-            retentionFiles = o.Snapshots.RetentionFiles,
-            retentionObjects = o.Snapshots.RetentionObjects,
-            retryIntervalSec = o.Snapshots.RetryIntervalSec,
-            timeoutSec = o.Snapshots.TimeoutSec,
+            intervalMin = o.NodeSnapshot.IntervalMin,
+            minIntervalSec = o.NodeSnapshot.MinIntervalSec,
+            maintenanceIntervalMin = o.NodeSnapshot.MaintenanceIntervalMin,
+            retentionFiles = o.NodeSnapshot.RetentionFiles,
+            retentionObjects = o.NodeSnapshot.RetentionObjects,
+            retryIntervalSec = o.NodeSnapshot.RetryIntervalSec,
+            timeoutSec = o.NodeSnapshot.TimeoutSec,
         },
         docker = new
         {
@@ -49,7 +49,7 @@ public static class EtcdWorkerEffectiveConfig
             },
             images = new
             {
-                etcd = o.Docker.Images.Etcd,
+                etcdNode = o.Docker.Images.EtcdNode,
             },
         },
     };

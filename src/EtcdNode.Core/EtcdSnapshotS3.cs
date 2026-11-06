@@ -2,7 +2,7 @@ using Amazon.Runtime;
 using Amazon.S3;
 using Amazon.S3.Model;
 
-namespace EtcdWorker.Core;
+namespace EtcdNode.Core;
 
 /// <summary>S3-операции над бакетом etcd-слепков (export/retention): put с
 /// SHA256-проверкой целостности транспорта, list по префиксу с пагинацией и

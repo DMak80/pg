@@ -1,8 +1,8 @@
-using EtcdWorker.Provisioning;
+using EtcdNode.Core;
 using Shared.Core;
 using Shared.Etcd.Client;
 
-namespace EtcdWorker.UnitTests.Provisioning;
+namespace EtcdNode.UnitTests;
 
 // Юниты резолвера цели DR-выгрузки на фейковом IEtcdGateway (словарь):
 // каждый отказ — Failed с маркером EtcdBackupMarkers.Missing в сообщении,

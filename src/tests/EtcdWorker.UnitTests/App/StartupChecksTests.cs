@@ -8,7 +8,7 @@ namespace EtcdWorker.UnitTests.App;
 public class StartupChecksTests
 {
     // Валидный объект собираем мутацией известных свойств: валидны дефолтные
-    // Mode/Network/Thresholds/Snapshots-интервалы, значимое задаём явно.
+    // Mode/Network/Thresholds/NodeSnapshot-интервалы, значимое задаём явно.
     private static EtcdWorkerOptions Valid()
     {
         var o = new EtcdWorkerOptions();
@@ -20,10 +20,7 @@ public class StartupChecksTests
         o.Docker.Hosts = [new DockerHostOptions { Name = "local", Endpoint = "unix:///var/run/docker.sock" }];
         o.Docker.PortRange.From = 23000;
         o.Docker.PortRange.To = 23999;
-        o.Docker.Images.Etcd = "etcd:dev";
-
-        // каталог снапшотов непустой
-        o.Snapshots.Dir = "/snapshots";
+        o.Docker.Images.EtcdNode = "pgworker/etcdnode:dev";
 
         // API достижим клиентами по https
         o.Api.AdvertiseUrl = "https://localhost:8080";
@@ -136,22 +133,22 @@ public class StartupChecksTests
     }
 
     [Fact]
-    public void Snapshots_PositiveRetentionAndInterval()
+    public void NodeSnapshot_PositiveRetentionAndInterval()
     {
         // Arrange — валидные ретеншн и интервалы (дефолты)
         var valid = Valid();
 
         // Arrange — нулевая объектная ретеншн
         var noRetention = Valid();
-        noRetention.Snapshots.RetentionObjects = 0;
+        noRetention.NodeSnapshot.RetentionObjects = 0;
 
         // Arrange — нулевой интервал снапшотов
         var noInterval = Valid();
-        noInterval.Snapshots.IntervalMin = 0;
+        noInterval.NodeSnapshot.IntervalMin = 0;
 
         // Assert
-        EtcdStartupChecks.Snapshots(valid).Should().BeTrue();
-        EtcdStartupChecks.Snapshots(noRetention).Should().BeFalse();
-        EtcdStartupChecks.Snapshots(noInterval).Should().BeFalse();
+        EtcdStartupChecks.NodeSnapshot(valid).Should().BeTrue();
+        EtcdStartupChecks.NodeSnapshot(noRetention).Should().BeFalse();
+        EtcdStartupChecks.NodeSnapshot(noInterval).Should().BeFalse();
     }
 }

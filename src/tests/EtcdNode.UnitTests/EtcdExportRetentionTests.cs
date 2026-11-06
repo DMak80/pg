@@ -1,9 +1,8 @@
-using EtcdWorker.Core;
-using EtcdWorker.Etcd;
+using EtcdNode.Core;
 using FluentAssertions;
 using Xunit;
 
-namespace EtcdWorker.UnitTests.Etcd;
+namespace EtcdNode.UnitTests;
 
 // Ретенция S3-выгрузки etcd (arch/backups/06-s3-layout.md): пары.db+.meta.json сортируются
 // по id (таймстемп лексикографически = хронологически), старше N последних —

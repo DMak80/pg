@@ -10,7 +10,7 @@ namespace Shared.Etcd.Coordination;
 // put-with-lease TTL 15с; держатель продлевает keepalive-тиком (5с); смерть
 // инстанса гасит lease ≤15с — ключ исчезает сам, другой инстанс захватывает (takeover).
 // Префикс ключей — параметр конструктора : "/pgworker" / "/kafkaworker".
-public sealed class ClaimStore(string keyPrefix, string[] endpoints, IEtcdGateway gateway, TimeProvider clock, string? advertiseApiUrl = null, string? certThumbprint = null)
+public sealed class ClaimStore(string keyPrefix, string[] endpoints, IEtcdGateway gateway, TimeProvider clock, string? advertiseApiUrl = null, string? certThumbprint = null, string? instanceId = null)
     : IAsyncDisposable
 {
     private const int ClaimTtlSec = 15;
@@ -40,7 +40,10 @@ public sealed class ClaimStore(string keyPrefix, string[] endpoints, IEtcdGatewa
     private readonly SemaphoreSlim _instanceGate = new(1, 1);
     private bool _instanceDisposed; // под _sync: Dispose прошёл, новых постановок нет
 
-    public string InstanceId { get; } = Guid.NewGuid().ToString("N")[..12];
+    // Идентификатор инстанса: переданный (агент EtcdNode — имя своего узла,
+    // ключ живости /etcdnode/instances/<имя узла>, arch/etcdnode/00-etcdnode-contract.md §1)
+    // либо GUID по умолчанию.
+    public string InstanceId { get; } = instanceId ?? Guid.NewGuid().ToString("N")[..12];
 
     // Пер-кластерный клэйм (spec §4.3): txn compare version==0 → put lease TTL 15с.
     public async Task<Result<bool>> TryClaimClusterAsync(string cluster, CancellationToken ct)

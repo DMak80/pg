@@ -8,7 +8,7 @@ namespace EtcdWorker.UnitTests.App;
 
 // Эффективный конфиг (arch/etcdworker/05-api.md §1 GET /api/config): состав групп ровно по
 // канону, значения — из EtcdWorkerOptions; секретные секции (Etcd-endpoints,
-// Api/TLS, Docker Tls/Ssh, Snapshots.Dir/Hosts) в тело НЕ попадают.
+// Api/TLS, Docker Tls/Ssh, S3 CA-бандл/Hosts) в тело НЕ попадают.
 public class EffectiveConfigTests
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
@@ -26,9 +26,8 @@ public class EffectiveConfigTests
             Watchdog = new Shared.Core.Hosting.WatchdogOptions
                 { Enabled = true, Multiplier = 5, CheckIntervalSec = 6 },
         },
-        Snapshots = new SnapshotOptions
+        NodeSnapshot = new NodeSnapshotOptions
         {
-            Dir = "/secret-snapshots",
             IntervalMin = 11,
             MinIntervalSec = 22,
             MaintenanceIntervalMin = 33,
@@ -43,7 +42,7 @@ public class EffectiveConfigTests
             Network = "etcdw-net",
             AdvertisedHost = "host.docker.internal",
             PortRange = new PortRangeOptions { From = 18001, To = 18002 },
-            Images = new DockerImagesOptions { Etcd = "etcd-img" },
+            Images = new DockerImagesOptions { EtcdNode = "etcd-img" },
             Hosts = [new DockerHostOptions { Name = "local", Endpoint = "unix:///var/run/docker.sock" }],
         },
     };
@@ -75,14 +74,14 @@ public class EffectiveConfigTests
         watchdog.GetProperty("multiplier").GetInt32().Should().Be(5);
         watchdog.GetProperty("checkIntervalSec").GetInt32().Should().Be(6);
 
-        var snapshots = root.GetProperty("snapshots");
-        snapshots.GetProperty("intervalMin").GetInt32().Should().Be(11);
-        snapshots.GetProperty("minIntervalSec").GetInt32().Should().Be(22);
-        snapshots.GetProperty("maintenanceIntervalMin").GetInt32().Should().Be(33);
-        snapshots.GetProperty("retentionFiles").GetInt32().Should().Be(44);
-        snapshots.GetProperty("retentionObjects").GetInt32().Should().Be(55);
-        snapshots.GetProperty("retryIntervalSec").GetInt32().Should().Be(66);
-        snapshots.GetProperty("timeoutSec").GetInt32().Should().Be(77);
+        var nodeSnapshot = root.GetProperty("nodeSnapshot");
+        nodeSnapshot.GetProperty("intervalMin").GetInt32().Should().Be(11);
+        nodeSnapshot.GetProperty("minIntervalSec").GetInt32().Should().Be(22);
+        nodeSnapshot.GetProperty("maintenanceIntervalMin").GetInt32().Should().Be(33);
+        nodeSnapshot.GetProperty("retentionFiles").GetInt32().Should().Be(44);
+        nodeSnapshot.GetProperty("retentionObjects").GetInt32().Should().Be(55);
+        nodeSnapshot.GetProperty("retryIntervalSec").GetInt32().Should().Be(66);
+        nodeSnapshot.GetProperty("timeoutSec").GetInt32().Should().Be(77);
 
         var docker = root.GetProperty("docker");
         docker.GetProperty("mode").GetString().Should().Be("Plain");
@@ -91,7 +90,7 @@ public class EffectiveConfigTests
         var portRange = docker.GetProperty("portRange");
         portRange.GetProperty("from").GetInt32().Should().Be(18001);
         portRange.GetProperty("to").GetInt32().Should().Be(18002);
-        docker.GetProperty("images").GetProperty("etcd").GetString().Should().Be("etcd-img");
+        docker.GetProperty("images").GetProperty("etcdNode").GetString().Should().Be("etcd-img");
     }
 
     [Fact]
@@ -109,7 +108,7 @@ public class EffectiveConfigTests
         // валит тест — секретные секции наружу не выходят по whitelist, а здесь
         // лочится сам состав тела.
         var topKeys = doc.RootElement.EnumerateObject().Select(p => p.Name).OrderBy(n => n).ToList();
-        topKeys.Should().Equal("docker", "loops", "snapshots", "source", "thresholds");
+        topKeys.Should().Equal("docker", "loops", "nodeSnapshot", "source", "thresholds");
 
         // Секретные секции не выходят и по JSON-тексту (защита в глубину).
         var text = doc.RootElement.GetRawText();

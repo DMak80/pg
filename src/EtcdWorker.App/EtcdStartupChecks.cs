@@ -39,10 +39,10 @@ internal static class EtcdStartupChecks
            && o.Docker.PortRange.From < o.Docker.PortRange.To
            && o.Docker.PortRange.To <= 65535;
 
-    // Интервалы слепков (arch/etcdworker/06-operability.md §5): положительные; ретенция ≥ 1.
-    public static bool Snapshots(EtcdWorkerOptions o)
-        => o.Snapshots.IntervalMin > 0 && o.Snapshots.MinIntervalSec > 0
-           && o.Snapshots.RetentionFiles >= 1 && o.Snapshots.RetentionObjects >= 1
-           && o.Snapshots.RetryIntervalSec > 0 && o.Snapshots.TimeoutSec > 0
-           && o.Snapshots.MaintenanceIntervalMin > 0;
+    // Параметры агентов EtcdNode (arch/etcdnode/01-agent.md §3): положительные; ретенция ≥ 1.
+    public static bool NodeSnapshot(EtcdWorkerOptions o)
+        => o.NodeSnapshot.IntervalMin > 0 && o.NodeSnapshot.MinIntervalSec > 0
+           && o.NodeSnapshot.RetentionFiles >= 1 && o.NodeSnapshot.RetentionObjects >= 1
+           && o.NodeSnapshot.RetryIntervalSec > 0 && o.NodeSnapshot.TimeoutSec > 0
+           && o.NodeSnapshot.MaintenanceIntervalMin > 0;
 }

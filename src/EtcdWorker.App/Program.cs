@@ -66,8 +66,8 @@ builder.Services.AddOptions<EtcdWorkerOptions>()
         "EtcdWorker:Thresholds: thresholds must be positive, NodeBootSec ≤ 100")
     .Validate(o => EtcdStartupChecks.PortRange(o),
         "EtcdWorker:Docker:PortRange: 0 < From < To ≤ 65535")
-    .Validate(o => EtcdStartupChecks.Snapshots(o),
-        "EtcdWorker:Snapshots: intervals must be positive, retentions ≥ 1")
+    .Validate(o => EtcdStartupChecks.NodeSnapshot(o),
+        "EtcdWorker:NodeSnapshot: intervals must be positive, retentions ≥ 1")
     .ValidateOnStart();
 
 // Управляемый серт API (arch/etcdworker/05-api.md §1): чтение ключа /workers/api_tls/etcdworker
@@ -127,37 +127,10 @@ builder.Services.AddSingleton(sp => new RestartHandler(
     sp.GetRequiredService<IHostApplicationLifetime>(),
     sp.GetRequiredService<ILoggerFactory>().CreateLogger<RestartHandler>()));
 
-// Циклы: keepalive (продление lease'ов + instance/api-ключи, arch/s3worker/08-operability.md §3)
-// и слепки (arch/etcdworker/04-snapshots.md): SnapshotJob без sink — цикл сам экспортирует;
-// цель — живой резолвер etcd-backup кластера, S3-клиент per-попытка (первый
-// endpoint списка), CA-bundle/таймаут из Snapshots-опций; пульс конечного
-// S3-вызова (arch/pgworker/08-operability.md §3) — активность snapshot-цикла вокруг выгрузки.
+// Циклы: keepalive (продление lease'ов + instance/api-ключи, arch/s3worker/08-operability.md §3).
+// DR-слепки — у агентов EtcdNode управляемых узлов (arch/etcdnode/02-snapshots.md).
 builder.Services.AddSingleton<KeepaliveLoop>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<KeepaliveLoop>());
-builder.Services.AddSingleton(sp => new Shared.Etcd.Maintenance.SnapshotJob(
-    sp.GetRequiredService<IEtcdGateway>(),
-    etcdEndpoints,
-    sp.GetRequiredService<IOptions<EtcdWorkerOptions>>().Value.Snapshots.Dir,
-    sp.GetRequiredService<IOptions<EtcdWorkerOptions>>().Value.Snapshots.RetentionFiles,
-    sp.GetRequiredService<IOptions<EtcdWorkerOptions>>().Value.Snapshots.MaintenanceIntervalMin));
-builder.Services.AddSingleton(sp => new EtcdWorker.Provisioning.EtcdBackupTargetResolver(
-    sp.GetRequiredService<IEtcdGateway>(), etcdEndpoints));
-builder.Services.AddSingleton(sp =>
-{
-    var opts = sp.GetRequiredService<IOptions<EtcdWorkerOptions>>().Value;
-    return new EtcdWorker.Provisioning.SnapshotExporter(
-        sp.GetRequiredService<IEtcdGateway>(), etcdEndpoints,
-        sp.GetRequiredService<EtcdWorker.Provisioning.EtcdBackupTargetResolver>(),
-        t => new EtcdWorker.Core.EtcdSnapshotS3(
-            t.Endpoints[0], t.Bucket, t.AccessKey, t.SecretKey,
-            opts.Snapshots.S3.CaBundlePath, TimeSpan.FromSeconds(opts.Snapshots.TimeoutSec)),
-        opts.Snapshots.RetentionObjects, opts.Snapshots.TimeoutSec,
-        sp.GetRequiredService<ClaimStore>().InstanceId, opts.Snapshots.IntervalMin,
-        sp.GetRequiredService<HealthState>().MarkSnapshotActivity,
-        TimeSpan.FromSeconds(Math.Max(1, opts.Loops.Watchdog.CheckIntervalSec) / 2));
-});
-builder.Services.AddSingleton<SnapshotLoop>();
-builder.Services.AddHostedService(sp => sp.GetRequiredService<SnapshotLoop>());
 
 // Состав контура (arch/etcdworker/02-membership.md): драйвер по Mode (Plain — единственный
 // хост; Swarm — manager), порт-механика + провижинер + процессы + цикл.
@@ -176,7 +149,7 @@ builder.Services.AddSingleton(sp =>
 {
     var o = sp.GetRequiredService<IOptions<EtcdWorkerOptions>>().Value;
     return new EtcdWorker.Core.EtcdProvisioningOptions(
-        o.Docker.Mode, o.Docker.Network, o.Docker.Images.Etcd, o.Docker.AdvertisedHost,
+        o.Docker.Mode, o.Docker.Network, o.Docker.Images.EtcdNode, o.Docker.AdvertisedHost,
         o.Docker.PortRange.From, o.Docker.PortRange.To,
         o.Docker.Hosts.Length > 0 ? o.Docker.Hosts[0].Name : "local",
         o.Thresholds.NodeBootSec, o.Thresholds.NodeDeadSec, o.Thresholds.HealthIntervalSec);
@@ -216,14 +189,11 @@ builder.Services.AddSingleton<ServiceProbes>();
 builder.Services.AddSingleton<EtcdWorkerHealth>();
 builder.Services.AddSingleton<HealthCheckAbstract<KeepaliveLoop>>(
     sp => new(sp.GetRequiredService<KeepaliveLoop>()));
-builder.Services.AddSingleton<HealthCheckAbstract<SnapshotLoop>>(
-    sp => new(sp.GetRequiredService<SnapshotLoop>()));
 builder.Services.AddSingleton<HealthCheckAbstract<ReconcileLoop>>(
     sp => new(sp.GetRequiredService<ReconcileLoop>()));
 builder.Services.AddHealthChecks()
     .AddCheck<EtcdWorkerHealth>("etcdworker", tags: ["ready"])
     .AddCheck<HealthCheckAbstract<KeepaliveLoop>>("keepalive-loop")
-    .AddCheck<HealthCheckAbstract<SnapshotLoop>>("snapshot-loop")
     .AddCheck<HealthCheckAbstract<ReconcileLoop>>("reconcile-loop");
 
 // Watchdog зависших циклов (arch/etcdworker/06-operability.md §3): staleness активности (тик или
