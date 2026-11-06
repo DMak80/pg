@@ -2,8 +2,14 @@
 
 Spec задачи `t103-verify-postmaster-leak-registry` (вводная — пункт в
 `arch/roadmap/bugs.md`, логи прогона — `arch/roadmap/bugs/t103-verify-postmaster-leak-registry/`
-в главном репо, вне git). Все диагнозы ниже подтверждены по логам прогона
-(лог ноды `container-pgw-bksprd9eeeea8-shard1-shard1a.log`, postmaster-лог
+в главном репо, вне git; пункт роадмапа удалён этой веткой). Настоящая
+редакция — ДОРАБОТКА по итогам независимого MR-ревью
+(`.my/review_fix-t103-verify-postmaster-leak-registry.md`, находки #1–#4):
+первая реализация (коммиты `746e74d1..c3548814`) прошла прогоны, но ревью
+нашло blocker и 3 major. Объём доработки — ТОЛЬКО #1–#4 (blocker + major);
+minors/nits (#5–#36) — ВНЕ объёма, не трогаются. Исходные диагнозы
+подтверждены по логам прогона (лог ноды
+`container-pgw-bksprd9eeeea8-shard1-shard1a.log`, postmaster-лог
 `job-pgw-bksprd9eeeea8-shard1-shard1a-restore-pg.log`, воркер-лог
 `container-pgw-ew-bksprd9eeeea8-…-20261106-060441.log`) и по коду worktree.
 
@@ -28,11 +34,44 @@ Spec задачи `t103-verify-postmaster-leak-registry` (вводная — п�
   может перевести заявку restore в REJOINING без system_id (запирает bootstrap
   ноды — сценарий, прямо описанный в `arch/backups/processes/f-restore.md` §2).
 
-Порядок работ: ПЕРВОЙ правится `arch/` (правила), затем код зеркалит канон.
+Д1/Д2 уже закрыты первой реализацией ветки; MR-ревью вскрыло в ней регресс и
+три пробела — они и есть цель доработки (все — по каноничной семантике
+`arch/`, код обязан зеркалить):
+
+- **Р1 [#1, blocker] — останов приёмника публикует операторскую отмену.**
+  Shutdown-хук `ApplicationStopping` зовёт публичный `CancelAsync()` — задача
+  операции публикует `state=cancelled, error="cancelled by operator"`, а
+  Kestrel ещё отдаёт этот снимок. Воркер исполняет разрушительную
+  операторскую ветку: restore — снос ноды + удаление заявки; drill — удаление
+  ключа; verify — PENDING с отсрочкой `verify.interval_sec`. Штатный
+  `supervisorctl stop|restart pgnode` (деплой, E2E) посреди операции
+  срабатывает как несуществовавшая операторская отмена.
+- **Р2 [#2, major] — `active` не обнуляется после завершения операции.**
+  Хук/cancel-маршрут зовут `CancelAsync` завершённой restore-операции —
+  безусловный `pg_ctl stop -m fast` по ПРОД-PGDATA ноды (восстановленный
+  Patroni-постгресс): любой последующий stop/restart pgnode на ноде, где
+  когда-либо завершался restore, гасит прод-постгресс.
+- **Р3 [#3, major] — чужой снимок в RestoreProcess «ждёт» без выхода.**
+  Ветка чужого id возвращает `TransientAsync` БЕЗ сброса `Phase`: для фаз
+  `launching/downloading/recovering` диспетчер — только GET-поллинг, повторной
+  отправки POST нет; персистентный чужой снимок → ожидание до
+  `JobRestoreTimeoutSec = 86400` → FAILED + снос ноды. Spec §5.4 первой
+  редакции уже обещал «запуск повторится штатной 409/vanished-механикой фазы
+  demolished» — код не делает.
+- **Р4 [#4, major] — сверка «только по id» не различает вид операции.**
+  id verify-снимка = `backup_id` кандидата, id restore-снимка = `id ??
+  backup_id`: для ОДНОГО полного оба снимка имеют ОДИН id, а оба GET-маршрута
+  отдают один `registry.Current`. Вид операции в контракте нет: verify
+  принимает restore-снимок как свой (ложный OK/FAILED), restore принимает
+  verify-снимок (running→фаза verifying; succeeded→REJOINING `SystemId=null`;
+  failed→FAILED; cancelled→удаление заявки).
+
+Порядок работ: ПЕРВОЙ правится `arch/` (уточнение канона), затем код
+зеркалит.
 
 ## 2. Диагноз (подтверждённый разбор по уликам)
 
-### 2.1 Хронология прогона (нода shard1a, все времена UTC)
+### 2.1 Хронология исходного прогона (нода shard1a, все времена UTC)
 
 | Время | Событие | Источник |
 |---|---|---|
@@ -49,7 +88,7 @@ Spec задачи `t103-verify-postmaster-leak-registry` (вводная — п�
 | 06:03:01.15 | Drill-процесс: `GET /api/ops/restore` → **404** (рестарт приёмника) → vanished-семантика: повторный POST → 202: инкарнация B ТОЙ ЖЕ операции (тот же id/каталог) | лог ноды |
 | 06:03:03.66 | B: распаковка в тот же каталог (A ещё жива в нём) | `[restore]`-строки |
 | 06:03:03.74 | B: `pg_ctl start` → postgres **PID 933** `FATAL: lock file "postmaster.pid" already exists … HINT: Is another postmaster (PID 331) running` | postmaster-лог |
-| ~06:03:03.8 | B: failed-снимок `pg_ctl start failed: another server might be running…` + хвост лога; **finally чистит scratch `Directory.Delete` ПРИ ЖИВОМ постгрессе 331** (каталог удалён из-под процесса) | код `RestoreOperation.cs` |
+| ~06:03:03.8 | B: failed-снимок `pg_ctl start failed: another server might be running…` + хвост лога; finally чистит scratch `Directory.Delete` ПРИ ЖИВОМ постгрессе 331 | код `RestoreOperation.cs` |
 | 06:03:04.71 | Постгресс 331: `restore_command` теряет cwd (`sh: getcwd() failed`) → `FATAL: WAL ends before consistent recovery point` → 06:03:04.74 postmaster 331 умирает | postmaster-лог |
 | 06:03:06–09 | Полный №2 `20261106060306Z` COMPLETED (воркер переснимает после WAL_CHAIN_ERROR — штатно) | etcd-дамп |
 | 06:03:10.72 | BackupVerifyProcess (кандидат — полный №2, PENDING on_create): `GET /api/ops/verify` → OpsStatus отдал Current общего реестра — failed-снимок **B** (id `20261106060228Z`, phase recovering, error «pg_ctl start failed…» с путём каталога A/B) → воркер **без сверки id** пишет в ПОЛНЫЙ №2 `verify=FAILED` текстом чужой drill-операции | воркер-лог, etcd-дамп |
@@ -60,301 +99,457 @@ Spec задачи `t103-verify-postmaster-leak-registry` (вводная — п�
    `Task.Run(() => operation.RunAsync(CancellationToken.None))` (Program.cs,
    MapOpsRoutes); при остановке хоста pgnode никто не отменяет задачу и не
    убивает дочернее дерево (`ProcessRunner` убивает дерево только по
-   cancellation token). Грейсфул-выход оставляет живыми pg_ctl-ожидание и
-   postmaster операции. Канон уже предусматривает рестарт приёмника
-   («GET 404 vanished» в c-verify §3 / g-drill §1), но не описывает гашение
+   cancellation token). Канон предусматривает рестарт приёмника
+   («GET 404 vanished» в c-verify §3 / g-drill §1), но не описывал гашение
    процессов операции при остановке.
 2. **Чистка scratch без остановки постгресса.** В `finally` drill-ветка
-   делает `Directory.Delete(pgdata, recursive)` сразу; остановка постгресса
-   (`StopBestEffortAsync`) есть только в ЧАСТИ fail-путей (отмена,
-   recovery-budget, пустой LSN) и отсутствует в ветке «pg_ctl start failed»,
-   ветке «pg_ctl stop failed» и — главное — в самом finally перед удалением.
-   Для restore-ветки return Patroni (`supervisorctl start spilo`) в finally
-   тоже происходит без гарантии остановки постгресса операции.
+   делала `Directory.Delete(pgdata, recursive)` сразу; остановка постгресса
+   была только в ЧАСТИ fail-путей и отсутствовала в самом finally перед
+   удалением; для restore-ветки возврат Patroni в finally происходил без
+   гарантии остановки постгресса операции.
 3. **Повторный запуск не защищён от сироты в каталоге.** Vanished-перезапуск
    (штатная семантика) стартует pg_ctl в каталог, который может удерживать
    живой постгресс прошлой инкарнации, — без предварительной проверки
    `postmaster.pid`/`pg_ctl status`.
-4. `pg_ctl start -w` при исчерпании старт-ожидания возвращает fail, НЕ убивая
-   запущенный постгресс — «жертва попытки» остаётся жить (дополняет 2–3).
+4. `pg_ctl start -w` при исчерании старт-ожидания возвращает fail, НЕ убивая
+   запущенный постгресс — «жертва попытки» остаётся жить.
 
 Примечание-уточнение к формулировке роадмапа: «OK-пометка при живом
 процессе» — не дефект записи: OK поставлен потоковой verify №1, которая
-реально завершилась (постгресс ей не нужен); живой постгресс принадлежал
-drill-операции. ВременнАя близость — следствие гонки verify × drill за общий
-ops-реестр (штатный 409-гвард). Дефект Д1 — именно жизненный цикл постгресса
-restore/drill-операции (пункты 1–4 выше).
+реально завершилась; живой постгресс принадлежал drill-операции. Дефект Д1 —
+именно жизненный цикл постгресса restore/drill-операции (пункты 1–4).
 
 ### 2.3 Д2 — корневая механика (код `src/PgWorker.Backups/Process/BackupVerifyProcess.cs`, `RestoreProcess.cs`)
 
 - API приёмника отдаёт снимок ОБЩЕГО ops-реестра через оба маршрута
   (`GET /api/ops/verify` и `GET /api/ops/restore` — один `OpsStatus`),
   снимок содержит `id` (`OperationSnapshot.Id`; DTO `ReceiverStatus.Id`
-  на воркере уже парсится).
+  на воркере парсится).
 - `RestoreDrillProcess` сверку делает (строка ~358: «foreign snapshot →
   relaunching via the vanished path» — прецедент t98, канон g-drill §1).
-- `BackupVerifyProcess.TickShardAsync` сверки НЕ делает: любой терминальный
-  снимок считается итогом проверки кандидата → чужой failed записывается в
-  полный (наблюдённое), чужой succeeded может дать ложный OK.
-- `RestoreProcess.SuperviseRestoreOpAsync` сверки НЕ делает: чужой
-  succeeded (без system_id) переводит заявку в REJOINING с `SystemId=null`
-  (запирает bootstrap); чужой failed/cancelled роняет/сносит заявку.
+- `BackupVerifyProcess` и `RestoreProcess` сверки НЕ делали: чужой failed
+  записывался в полный, чужой succeeded переводил заявку в REJOINING с
+  `SystemId=null`.
+
+### 2.4 Регрессии и пробелы первой реализации (MR-ревью #1–#4; подтверждено по коду ветки c3548814)
+
+1. **Р1 — shutdown публикует `cancelled`.** Механика:
+   `Program.cs` → `ApplicationStopping.Register` → `active?.CancelAsync()` →
+   `RestoreOperation._cts.Cancel()` → catch OCE →
+   `Update(Cancelled, phase, error: "cancelled by operator")`
+   (`RestoreOperation.cs:411-419`; у VerifyOperation — симметричная ветка
+   `:212-216`). `StopApplication` выполняет колбэки `ApplicationStopping`
+   синхронно ДО остановки Kestrel: пока хук блокирован (стоп постгресса до
+   10 с), GET отдаёт воркеру снимок `cancelled` → воркер исполняет ветки
+   «оператор отменил» (`RestoreProcess.cs:835-867` — RemoveNodeAsync + снятие
+   щита + удаление заявки; `RestoreDrillProcess.cs:437-456` — удаление ключа
+   дрилла; `BackupVerifyProcess.cs:286-308` — PENDING с отсрочкой). Канон
+   же требует: остановка приёмника → процесс умер → GET 404 → vanished →
+   повтор POST (c-verify §3, 06-restore-drill §2). Метки «shutdown vs
+   оператор» в контракте нет.
+2. **Р2 — `active` не обнуляется.** `active` присваивается только в
+   POST-хендлерах (`Program.cs:346,375`); реестр после завершения хранит
+   терминальный снимок. `CancelAsync` не различает running/терминал:
+   `_cts.Cancel()` безвреден, но `StopBestEffortAsync(_pgdata)` для restore —
+   `pg_ctl stop -m fast` по прод-PGDATA (`RestoreOperation` конструируется с
+   `pgdata = NodePaths.Pgdata`). Тот же staleness — в cancel-маршруте
+   (`Program.cs:384-391`, pre-existing); shutdown-хук делает его
+   автоматическим на КАЖДЫЙ штатный останов.
+3. **Р3 — чужой снимок без выхода.** `RestoreProcess.SuperviseRestoreOpAsync`
+   (`:747-757`) при чужом id → `TransientAsync` без изменения `Phase`.
+   Инвариант диспетчера (`:451-457`): в фазах
+   `launching/downloading/recovering` команду НЕ повторяют (только
+   GET-поллинг) — повтор только ветками vanished (404) и failed+downloading,
+   обе сбрасывают `Phase="demolished"` → `LaunchStepAsync` повторяет POST.
+   Чужой снимок персистентен (терминал чужой операции остаётся в реестре) →
+   заявка висит до `JobRestoreTimeoutSec = 86400` → `restore-job-timeout` +
+   снос ноды. Новый тест `RestoreProcessTests` кодифицировал ошибочное
+   ожидание (`Phase == "recovering"`, `StartCalls == 0`).
+4. **Р4 — id без вида операции.** `Program.cs:339` кладёт в TryBegin verify
+   id `body.BackupId`; `:369` — restore id `body.Id ?? body.BackupId`;
+   `VerifyOperation.Update` несёт `_request.BackupId`. Для restore без
+   drill-id снимки обеих операций ОДНОГО полного совпадают по id, а
+   `/api/ops/verify` и `/api/ops/restore` отдают один `registry.Current` —
+   сверка `id ==` пропускает снимок чужого вида (ложные вердикты/переходы,
+   см. §1 Р4). Уровень-2 канон (`arch/pgnode/02-api.md` §3: «исход ТОЛЬКО по
+   снимку с собственным id») неполон: равенство id не доказывает «своя
+   операция».
 
 ## 3. Принципы
 
-- Источник истины — `arch/`: правила жизненного цикла постгресса и сверки id
-  фиксируются в каноне ПЕРВОЙ правкой, код зеркалит.
+- Источник истины — `arch/`: правила жизненного цикла постгресса, сверки
+  снимка и разделения каналов отмены фиксируются в каноне ПЕРВОЙ правкой,
+  код зеркалит.
 - Максимальная надёжность без P/Invoke: управление постгрессом — только
   штатными утилитами (`pg_ctl status/stop/start`), файловые проверки —
   штатный .NET API.
 - Общий ops-реестр остаётся одним на процесс приёмника (канон не меняется);
-  все различия «своя/чужая» операция — на стороне супервизоров воркера по
-  `id` снимка.
-- Схема именования drill-каталога не меняется: `backup-drill/<id>` (id
-  уникален на операцию; повторное использование — штатный vanished-перезапуск
-  той же операции). Защиту обеспечивает остановка сироты, а не переименование.
+  различия «своя/чужая» операция — на стороне супервизоров воркера по
+  `id` И виду операции (`kind`) снимка.
+- **Остановка приёмника ≠ операторская отмена.** Гашение операции при
+  остановке хоста — внутренний канал: снимок НЕ перезаписывается
+  (`cancelled` публикует ТОЛЬКО внешний операторский канал cancel API);
+  после выхода процесса реестра нет — воркер получает транспортный отказ
+  (transient), затем GET 404 → vanished-семантика → повтор POST. Воркер
+  никогда не исполняет операторскую ветку по факту остановки приёмника.
+- **Отмена/гашение применяется только к ЖИВОЙ операции.** Завершённая
+  операция (терминальный снимок) повторного CancelAsync/стопа не получает —
+  ссылка на активную операцию живёт ровно до завершения её задачи.
+- Схема именования drill-каталога не меняется: `backup-drill/<id>`;
+  защиту обеспечивает остановка сироты, а не переименование.
 - Терминальный исход операции не блокируется чисткой: неудалённый остаток
-  (нестопаемый постгресс) подбирается следующим запуском через защиту
-  каталога; терминальные семантики (failed/cancelled/succeeded) неизменны.
-- Никаких изменений бюджетов (таймаутов) системы без отдельного согласования.
+  подбирается следующим запуском через защиту каталога; терминальные
+  семантики (failed/cancelled/succeeded) неизменны.
+- Никаких изменений бюджетов (таймаутов) системы без отдельного
+  согласования.
 
 ## 4. Arch-first: правки канона (первая фаза работ)
 
-### 4.1 `arch/pgnode/06-restore-drill.md` — механика (главная правка)
+Канон Д1/Д2 уже обновлён первой реализацией (коммиты `cb6f51c7`,
+`87795d4b`: 06-restore-drill §2 п.5 «жизненный цикл postmaster», d-restore
+§1, e-drill §2, 01-full-backup §7, c-verify §2, f-restore §2 — сверка id).
+Доработка УТОЧНЯЕТ эти же файлы под Р1–Р4.
 
-Дополнить §2 (механика restore; drill по §3 наследует) пунктом «жизненный
-цикл postmaster» после описания подготовки и перед `pg_ctl start`:
+### 4.1 `arch/pgnode/06-restore-drill.md` §2 п.5.4 — остановка приёмника ≠ отмена (Р1, Р2)
 
-1. **Защита целевого каталога перед стартом.** Перед `pg_ctl start`
-   (и restore в PGDATA ноды, и drill в scratch) приёмник проверяет каталог:
-   `pg_ctl status -D <pgdata>` — postmaster работает (прошлая инкарнация
-   операции, пережившая рестарт приёмника) → `pg_ctl stop -m fast -w` с
-   коротким бюджетом, при неудаче — `pg_ctl stop -m immediate -w`; не
-   остановился — операция failed с честной причиной (не бороться с
-   нестопаемым). Postmaster не работает → остаточный `postmaster.pid`
-   (если файл остался) удаляется.
-2. **Лог операции.** `/tmp/restore-pg.log` очищается перед `pg_ctl start`
-   операции: диагностика провала старта (хвост лога в `last_error`) содержит
-   строки только своей инкарнации.
-3. **Остановка при любом исходе.** При завершении операции в ЛЮБОМ исходе
-   (успех, провал любой фазы после старта постгресса, отмена, провал старта)
-   постгресс операции остановлен (`pg_ctl stop -m fast -w`, при неудаче
-   `-m immediate -w`, короткие бюджеты) ДО чистки scratch (drill) и ДО
-   возврата Patroni (restore). Неудалённый остаток каталога (нестопаемый
-   постгресс) НЕ блокирует терминальный исход — каталог дочистится следующим
-   запуском через защиту каталога (п. 1).
-4. **Рестарт приёмника.** Остановка процесса приёмника (supervisord) гасит
-   активную ops-операцию: отмена (kill дерева child-процессов runner'ом) +
-   остановка постгресса операции с ожиданием — сирот приёмник не оставляет.
-   Жёсткий SIGKILL вне контроля — остаток закрывает защита каталога (п. 1)
-   при следующем запуске.
+Переформулировать п.5.4 («Остановка приёмника»):
 
-### 4.2 `arch/pgnode/processes/d-restore.md` и `e-drill.md` — процессы
+- Остановка процесса приёмника гасит активную ops-операцию: отмена задачи
+  (runner убивает дерево child-процессов) + остановка postmaster операции с
+  ожиданием (≤ 15 с) — сирот приёмник не оставляет. Гашение — ВНУТРЕННИЙ
+  канал, отдельный от операторской отмены: снимок операции НЕ перезаписывается
+  (никакого `cancelled`), реестр умирает вместе с процессом. Операторская
+  отмена (`POST /api/ops/cancel`, внешний канал) — прежняя семантика
+  `state=cancelled` («операции не было»: воркер удаляет заявку/ключ дрилла,
+  verify — PENDING с отсрочкой). Жёсткий SIGKILL вне контроля — остаток
+  закрывает защита каталога (п. 5.1) при следующем запуске.
+- Отмена/гашение применяется ТОЛЬКО к живой (running) операции; завершённая
+  операция (терминальный снимок) не отменяется и не останавливается
+  повторно — ссылка на активную операцию прекращает действовать по
+  завершении задачи операции.
 
-- `d-restore.md` §1 (фазы), шаг recovering: одной строкой — старт в
-  подготовленный каталог (защита от постгресса прошлой инкарнации), при
-  любом исходе постгресс остановлен до чистки/возврата Patroni; ссылка на
-  06-restore-drill §2 (механика). Аналогичная строка в `e-drill.md` §2
-  (чистка scratch — ПОСЛЕ остановки постгресса).
-- Без дублирования деталей: механика живёт в 06 (уровень 3), процессы
-  (уровень 4) держат инвариант и ссылку.
+### 4.2 `arch/pgnode/02-api.md` §3 — вид операции в контракте снимка (Р4; таблица значений)
 
-### 4.3 `arch/backups/01-full-backup.md` §7 + `arch/pgnode/processes/c-verify.md` — сверка id при verify
+В абзац «GET-снимок несёт `id` операции реестра» внести:
 
-Симметрично g-drill §1 дополнить: ops-реестр приёмника один на процесс —
-GET `/api/ops/verify` может вернуть чужой/прошлый снимок (напр., терминал
-restore/drill-операции с текстом pg_ctl). Снимок с чужим `id` —
-доказательства итога проверки НЕТ (ни OK, ни FAILED): vanished-семантика
-(повторный POST идемпотентно поверх терминального снимка; чужой running —
-ожидание освобождения реестра). В c-verify.md — строка в «Исходы».
+- Снимок несёт `id` И `kind` — вид операции реестра. Таблица значений
+  `kind` (заполняет приёмник при TryBegin/Update):
 
-### 4.4 `arch/backups/processes/f-restore.md` §2 — сверка id при restore
+  | kind | Операция | Источник id снимка |
+  |---|---|---|
+  | `verify` | потоковая проверка полного (`POST /api/ops/verify`) | `backup_id` команды |
+  | `restore` | восстановление в PGDATA ноды (`POST /api/ops/restore` без `id`) | `backup_id` команды |
+  | `drill` | drill-восстановление в scratch (`POST /api/ops/restore` с `id`) | `id` команды |
 
-В автомате, где описан 409-гвард запуска («снимок 409 не различает
-свою/чужую»), дополнить: супервиз операции сверяет `id` снимка с backup_id
-выбранного полного заявки; чужой id в любом состоянии — чужой итог/фаза:
-вердиктов и переходов фаз по нему нет (REJOINING от чужого succeeded без
-system_id запрещён), запуск откладывается до освобождения реестра
-(transient, семантика 409).
+- Супервизоры принимают исход ТОЛЬКО по снимку своей операции: собственный
+  `id` И собственный `kind` (правила супервизов — 01-full-backup §7,
+  f-restore §2, g-drill §1). Снимок с чужим `id`/`kind`, а также снимок БЕЗ
+  `kind` (контракт старого приёмника) — доказательства итога НЕТ: воркер и
+  приёмник поставляются одним контуром и обновляются одновременно, снимок
+  без вида операции трактуется как чужой (строгая трактовка: ложный вердикт
+  невозможен, в худшем случае запуск откладывается до совпадения версий).
+- Отмена (cancel API) применяется к running-операции; остановка приёмника
+  снимок не перезаписывает (см. 06-restore-drill §2 п.5.4).
+
+### 4.3 `arch/backups/01-full-backup.md` §7 + `arch/pgnode/processes/c-verify.md` §2 — сверка verify (Р4)
+
+- 01-full-backup §7, правило сверки снимка: чужим является снимок с чужим
+  `id` ИЛИ чужим `kind` (не `verify`) ИЛИ без `kind` — доказательства итога
+  проверки НЕТ (ни OK, ни FAILED): vanished-семантика (повторный POST
+  идемпотентно поверх терминального; чужой running — 409, ожидание
+  освобождения реестра).
+- c-verify §2, «Исходы»: строку про чужой `id` дополнить — чужой `kind`
+  (restore/drill того же полного) и отсутствие `kind` — тоже «не итог
+  проверки», супервиз перезапускает операцию vanished-семантикой (ссылка на
+  01-full-backup §7 сохраняется).
+
+### 4.4 `arch/backups/processes/f-restore.md` §2 — сверка и demolished-повтор restore (Р3, Р4)
+
+В абзац сверки id (добавленный первой реализацией) внести два уточнения:
+
+- Чужой снимок = чужой `id` ИЛИ чужой `kind` (не `restore`) ИЛИ отсутствие
+  `kind`: вердиктов и переходов по нему нет (REJOINING от чужого succeeded
+  без system_id запрещён).
+- Чужой снимок в ЛЮБОМ состоянии (в т.ч. чужой running) — сброс фазы заявки
+  в `demolished` + transient: команда повторяется следующим тиком
+  (симметрично ветке vanished 404; повторный POST при живой чужой операции
+  получает 409 — семантика освобождения реестра; по терминалу чужой — 202,
+  своя операция стартует заново, резюмов нет — идемпотентно). Ожидание
+  чужого снимка БЕЗ сброса фазы запрещено: диспетчер в фазах
+  launching/downloading/recovering команду не повторяет — заявка висела бы
+  до статусного бюджета.
+
+### 4.5 Согласование без правок
+
+- `g-drill.md` §1: сверка дрилла остаётся по `id` (id дрилла уникален самой
+  операции, не совпадает с id полного) — правка не требуется.
+- `d-restore.md`/`e-drill.md`: инварианты первой реализации остаются;
+  shutting-down-семантика — уровень механики 06, процессы не дублируют.
 
 ## 5. Структура/компоненты (кодовые правки, зеркалят канон)
 
-### 5.1 `src/PgWorker.PgNode/Operations/RestoreOperation.cs`
+Уже в ветке (первая реализация, НЕ переWorkывается): защита каталога
+pre-start, очистка `/tmp/restore-pg.log`, finally-стоп, сверка id в обоих
+процессах. Доработка — точечные правки поверх.
 
-- Новый приватный асинхронный метод (имя ориентировочное —
-  `EnsurePostmasterDownAsync(string pgdata, CancellationToken token)`):
-  `pg_ctl status -D` → работает: `stop -m fast -w -t 10` → повторный status →
-  работает: `stop -m immediate -w -t 10` → повторный status → работает:
-  вернуть отказ; не работает: удалить `postmaster.pid`, если файл существует.
-  Все вызовы через `_runner` (шов тестов), бюджеты внутри 30 с.
-- Вызов защиты ПЕРЕД циклом `pg_ctl start` (обе операции: restore и drill)
-  и очистка `/tmp/restore-pg.log` там же (до первой попытки старта — хвост
-  всех попыток инкарнации сохраняется для диагностики).
-- `finally`: для drill — ПЕРЕД `Directory.Delete` вызвать
-  `EnsurePostmasterDownAsync(CancellationToken.None)` (best-effort, ошибки
-  остановки не маскируют терминальный исход); для restore — ПЕРЕД
-  `supervisorctl start spilo`.
-- Ветка финального провала старта («pg_ctl start failed … tail»): перед
-  `Fail` — best-effort остановка жертвы попытки (закрывается общим
-  finally-стопом; отдельный вызов не обязателен, но допустим для симметрии
-  с ретрай-веткой).
+### 5.1 `src/PgWorker.PgNode/Operations/` — контракт вида операции и канал гашения
 
-### 5.2 `src/PgWorker.PgNode/Program.cs` (MapOpsRoutes)
+- `IReceiverOperation`: новый метод `Task ShutdownAsync()` — внутренний канал
+  гашения при остановке хоста (рядом с операторским `Task CancelAsync()`).
+- `OperationSnapshot`: новый опциональный параметр `string? Kind = null`
+  (последним — существующие вызовы не ломаются); full-операция kind не
+  заполняет (null), ops-операции — всегда.
+- `RestoreOperation`:
+  - приватное поле `_shutdown` (volatile-запись), выставляется в
+    `ShutdownAsync` ДО `_cts.Cancel()`;
+  - `ShutdownAsync`: `_shutdown = true; _cts.Cancel(); await
+    StopBestEffortAsync(_pgdata);` (тело гашения то же, что CancelAsync,
+    различие — флаг и семантика публикации; общий приватный core-метод
+    допустим);
+  - catch OCE: публиковать `Update(Cancelled, …, "cancelled by operator")`
+    ТОЛЬКО при `!_shutdown`; при shutdown — без Update (finally выполняет
+    стоп постгресса и возврат Patroni как при любом исходе);
+  - каждый `Update`/`Fail` несёт `Kind: _request.Id is null ? "restore" :
+    "drill"` (kind определяется самой операцией, не состоянием реестра).
+- `VerifyOperation`: симметрично — `_shutdown`, `ShutdownAsync`
+  (`_shutdown = true; _cts.Cancel(); return Task.CompletedTask;`), catch OCE
+  публикует `cancelled` только при `!_shutdown`; `Update`/`Fail` несут
+  `Kind: "verify"`.
+- `ApiContracts.OpsStatusResponse`: новое поле
+  `[JsonPropertyName("kind")] string? Kind = null`; `OpsStatus` передаёт
+  `snapshot.Kind`.
 
-- Подписка на `app.Lifetime.ApplicationStopping`: при остановке хоста —
-  `active?.CancelAsync()` с синхронным ожиданием завершения (общий бюджет
-  ожидания ≤ 15 с; `RestoreOperation.CancelAsync` уже гасит CTS → kill дерева
-  child-процессов + `pg_ctl stop -m fast` — постгресс операции остановлен).
-  Verify-операция дочерних процессов не имеет — CancelAsync безвреден.
-- Локальную переменную `active` не реорганизовывать в новый DI-сервис (минимальная
-  правка), если реализация не потребует иного.
+### 5.2 `src/PgWorker.PgNode/Program.cs` (MapOpsRoutes) — активная операция и хук
 
-### 5.3 `src/PgWorker.Backups/Process/BackupVerifyProcess.cs`
+- Вместо одиночной `active` — пара `IReceiverOperation? active = null;
+string? activeId = null;` (activeId — id TryBegin-снимка запущенной
+операции: `body.BackupId` для verify, `body.Id ?? body.BackupId` для
+restore/drill).
+- TryBegin-снимки получают kind: verify → `"verify"`; restore → `body.Id
+  is null ? "restore" : "drill"` (канон 02-api §3, таблица §4.2).
+- Обнуление по завершении: задача запускается с continuation —
+  `Task.Run(() => operation.RunAsync(CancellationToken.None)).ContinueWith(_ =>
+  { if (ReferenceEquals(active, operation)) { active = null; activeId = null; } })`
+  (обнуление только СВОЕЙ ссылки — не затирает более новую операцию).
+- Гвард живой операции (общий для хука и cancel-маршрута): операция
+  отменяема ТОЛЬКО если `active is not null && registry.Current is {
+  State: OperationStates.Running } cur && cur.Id == activeId` — running-снимок
+  именно этой операции (канон 06 §2 п.5.4, §4.1).
+- Shutdown-хук `ApplicationStopping`: при выполненном гварде —
+  `active.ShutdownAsync()` с ожиданием ≤ 15 с (прежний бюджет; без гварда —
+  ничего не делает: завершённая операция не трогается, снимок не
+  перезаписывается — воркер после смерти процесса идёт vanished-путём
+  404 → повтор POST).
+- Cancel-маршрут `/api/ops/cancel`: тот же гвард; не выполнен → 404 «no
+  active operation» (в т.ч. после терминала операции — active обнулён);
+  выполнен → прежний `await active.CancelAsync()` → 202 «cancelling».
 
-- В `TickShardAsync` после получения `snapshot` и ДО switch по состоянию —
-  сверка: `snapshot.Id != full.Id` → чужой снимок: warning в host-лог +
-  journal-фаза `foreign-snapshot/<shard>/<id>` (по образцу
-  RestoreDrillProcess) → реланч-семантика vanished: повторный
-  `StartVerifyAsync` (приёмник примет поверх терминального; чужой running
-  даст 409 — принято, тик повторит); verify-статус кандидата не трогаем.
-- Существующие ветки switch не меняются (для СВОЕГО id поведение прежнее).
+### 5.3 `src/PgWorker.Backups/WalReceiverApiClient.cs` + `BackupVerifyProcess.cs`
+
+- `ReceiverStatus`: новое поле `[JsonPropertyName("kind")] string? Kind =
+  null` (парсинг GET/409-тел приёмника).
+- Сверка в `TickShardAsync` (расширение существующей): чужой снимок =
+  `!string.Equals(snapshot.Id, full.Id, …) || snapshot.Kind != "verify"`
+  (в т.ч. `Kind is null`); поведение чужой ветки прежнее — warning,
+  journal-фаза `foreign-snapshot/<shard>/<id>`, реланч POST
+  vanished-семантикой (409 принят), verify-статус кандидата не трогаем.
 
 ### 5.4 `src/PgWorker.Backups/Process/RestoreProcess.cs`
 
-- В `SuperviseRestoreOpAsync` сразу после получения `status` — сверка
-  `status.Id` с backup_id выбранного полного заявки (поле заявки, по которому
-  запускалась операция; точное имя поля — по коду `RestoreOperationState`):
-  чужой id → transient-ожидание (статус/фаза заявки не трогаются, никаких
-  переходов REJOINING/FAILED; journal-фаза `foreign-snapshot/<shard>/<id>`;
-  запуск повторится штатной 409/vanished-механикой фазы demolished).
-- Чужой `running` — тоже ожидание (реестр занят чужой операцией).
+- Сверка в `SuperviseRestoreOpAsync`: чужой снимок =
+  `!string.Equals(status.Id, op.BackupId, …) || status.Kind != "restore"`
+  (в т.ч. `Kind is null`).
+- Чужая ветка — сброс фазы вместо ожидания (канон f-restore §2, §4.4):
+  `PutStatusAsync(cluster, shard.Name, op with { Phase = "demolished" }, ct)`
+  (при неудаче put — `Result.Failed`), затем `TransientAsync(cluster,
+  $"foreign-snapshot/{shard}/{op.Id}", …)` — следующий тик из demolished
+  повторяет POST (LaunchStepAsync: 409 → transient-повтор, 202 → операция
+  стартует заново). Переходов заявки (REJOINING/FAILED/удаление) по чужому
+  снимку нет — как и прежде.
 
 ### 5.5 Тесты
 
-Юниты (`src/tests/PgWorker.UnitTests/PgNode/RestoreOperationTests.cs`,
-мок `IProcessRunner`; комментарии по AAA):
+Юниты (`src/tests/PgWorker.UnitTests/PgNode/`, мок `IProcessRunner`;
+AAA-комментарии):
 
-- orphan-running: `pg_ctl status` → работает; остановлен fast; старт
-  продолжился; каталог пережил чистку корректно;
-- stale-pid: status → не работает; `postmaster.pid` удалён;
-- unstoppable-orphan: status → работает; fast и immediate не помогли →
-  failed-снимок с причиной остановки, старт не выполнялся;
-- drill-finally-stop: провал операции после старта постгресса → перед
-  удалением scratch выполняется stop (порядок вызовов мока).
+- `RestoreOperationTests`:
+  - `ShutdownWhileRunning_DoesNotPublishCancelled`: операция в фазе
+    recovering с живым «постгрессом» (фейк `PgCtlStatusExit = 0`), вызвать
+    `ShutdownAsync`, дождаться задачи — снимок НЕ `cancelled` (остался
+    running своей фазы), postmaster остановлен (stop-вызовы в журнале
+    фейка);
+  - существующий контракт-тест операторского cancel → `cancelled`
+    («cancelled by operator») остаётся без правок (регресс-гвард канала).
+- `VerifyOperationTests` (при наличии шва): shutdown не публикует
+  `cancelled`; операторский cancel — публикует.
 
-Интеграционные (`src/tests/PgWorker.IntegrationTests/Backups/`):
+Интеграционные:
 
-- `BackupVerifyProcessTests.cs`: чужой failed-снимок (id ≠ кандидата) →
-  статус кандидата не изменён (PENDING), выполнен повторный POST; чужой
-  succeeded → не OK; свой снимок — прежнее поведение (регресс-гвард);
-- `RestoreProcessTests.cs`: чужой succeeded (id ≠ backup_id заявки, без
-  system_id) → заявка НЕ в REJOINING, статус не тронут; чужой failed →
-  заявка не FAILED.
+- `src/tests/PgWorker.IntegrationTests/Backups/BackupApiOperationTests.cs`
+  (шов `WebApplicationFactory<Program>` + `FakeOpsFactory`; фейк-операции
+  получают `ShutdownAsync`):
+  - `HostShutdown_ActiveOp_NotCancelled`: POST /api/ops/verify → операция
+    running → `factory.Server.Host.StopAsync()` (триггерит
+    ApplicationStopping) → `OpsRegistry.Current` НЕ `cancelled`;
+    `FakeOps` фиксирует вызов `ShutdownAsync`;
+  - `CancelAfterTerminal_Returns404_NoCancelCall`: операция завершена
+    (фейк публикует терминал, `active` обнулён continuation'ом) → POST
+    /api/ops/cancel → 404; `FakeOps.CancelCalls == 0` (обнуление active).
+- `BackupVerifyProcessTests.cs`: хелперы `ApiOk`/`ApiDownloadTransient`/
+  `ApiVerifyFailed` и снимки тестов получают `Kind: "verify"` (дефолт
+  параметра); vf1/vf2 сохраняют ассерты; НОВЫЙ
+  `ForeignKindSameId_NotMarked`: снимок `succeeded` с id кандидата и
+  `kind: "restore"` → кандидат не изменён (не OK), выполнен повторный POST
+  (снимок чужого вида — чужой итог).
+- `RestoreProcessTests.cs`: снимки тестов — `Kind: "restore"`; fr1/fr2
+  ПЕРЕПИСАТЬ под Р3: после первого тика `Phase == "demolished"`, статус
+  заявки Running (не REJOINING/FAILED); после второго тика —
+  `_receiver.StartCalls == 1` (повторный POST из demolished); НОВЫЙ
+  `ForeignKindSameBackupId_NotRejoining`: снимок `succeeded` с
+  backup_id заявки и `kind: "verify"` → demolished-повтор, заявка НЕ в
+  REJOINING, `SystemId` — null.
 
-E2E (`src/tests/PgWorker.E2eTests/E2e/E2eDrillScenarios.cs`, новый сценарий,
-полная изоляция по канонам `arch/testing/02-e2e-isolation.md`):
-
-- `Drill_ReceiverRestart_PostmasterNotLeaked`: дождаться активного дрилла
-  (фаза recovering), `supervisorctl stop pgnode` → `supervisorctl start
-  pgnode` первой ноды, дождаться терминального итога дрилла. Ассерты:
-  (а) итог дрилла достигнут и его причина — СВОЯ (не «another server might
-  be running» / «lock file postmaster.pid»);
-  (б) в логах контура нет FATAL «another postmaster»;
-  (в) на ноде нет постгресса-сироты в drill-каталоге (проверка факта, не
-  таймингов — напр. `pg_ctl status` каталога / отсутствие процесса);
-  (г) scratch-каталог дрилла отсутствует после терминала;
-  (д) verify-статусы полных кластера не содержат чужих FAILED (нет ошибки
-  операции дрилла в записях полных).
-- Существующие `Drill_Succeeds_CleansUp` (чистая ветка) и
-  `Backup_ChainBroken_SelfHeals` (сценарий-свидетель) — прогон без правок.
+E2E (`src/tests/PgWorker.E2eTests/E2e/E2eDrillScenarios.cs`):
+`Drill_ReceiverRestart_PostmasterNotLeaked` — без изменений (ассерты (а)–(д)
+покрывают и Р1: если бы stop pgnode публиковал `cancelled`, воркер удалил бы
+ключ дрилла и терминал своей семантики не наступил — ассерт (а) краснеет).
+Существующие `Drill_Succeeds_CleansUp`, `Backup_ChainBroken_SelfHeals` —
+прогон без правок.
 
 ### 5.6 Роадмап
 
-Мерж-гейт задачи (правило `arch/roadmap/README.md` и AGENTS.md): тег
-`t103-verify-postmaster-leak-registry` удаляется из
-`arch/roadmap/bugs.md` ТЕМ ЖЕ мерж-коммитом (папка логов
-`bugs/t103-…` вне git — остаётся на месте).
+Пункт `t103-verify-postmaster-leak-registry` уже удалён из
+`arch/roadmap/bugs.md` этой веткой (первый мерж-гейт-коммит); повторного
+действия нет. Исторических упоминаний t103 вне `docs/superpowers/` в
+`AGENTS.md`/`arch/**`/`docs/**` не остаётся (проверка — критерий 6).
 
 ## 6. Фазы работ
 
-1. **Канон**: правки `arch/` по §4 (06-restore-drill, d-restore, e-drill,
-   01-full-backup §7, c-verify, f-restore §2). Коммит в feature-ветке.
-2. **Код приёмника**: RestoreOperation (защита каталога, очистка лога,
-   finally-стоп) + Program.cs (ApplicationStopping → CancelAsync).
-3. **Код воркера**: сверка id в BackupVerifyProcess и RestoreProcess.
-4. **Тесты**: юниты RestoreOperation, интеграционные BackupVerifyProcess /
-   RestoreProcess, новый E2E-сценарий.
+1. **Канон**: уточнения `arch/` по §4 (06-restore-drill §2 п.5.4,
+   02-api §3 с таблицей kind, 01-full-backup §7, c-verify §2, f-restore
+   §2). Коммит в feature-ветке ДО кодовых правок.
+2. **Контракт и приёмник**: OperationSnapshot/OpsStatusResponse/ReceiverStatus
+   — kind; IReceiverOperation.ShutdownAsync; RestoreOperation/
+   VerifyOperation — `_shutdown` + kind в Update/Fail; Program.cs —
+   active/activeId, continuation-обнуление, гварды, kind в TryBegin, хук →
+   ShutdownAsync.
+3. **Воркер**: BackupVerifyProcess — сверка id+kind; RestoreProcess — сверка
+   id+kind + demolished-сброс чужой ветки.
+4. **Тесты**: юниты shutdown; интеграционные BackupApiOperationTests
+   (shutdown/cancel-after-terminal); обновление vf/fr + новые kind-кейсы.
 5. **Верификация** (мерж-гейт; сборка и тесты — двумя ОТДЕЛЬНЫМИ командами):
    1. `DOTNET_CLI_UI_LANGUAGE=en dotnet run --project src/tests/PgWorker.E2ePrepare -c Release`
       (статическая подготовка E2E одним процессом ДО тестов);
    2. `DOTNET_CLI_UI_LANGUAGE=en dotnet build src/PgWorker.slnx -c Release --nologo`;
    3. `DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/PgWorker.E2eTests -c Release --no-build --filter "FullyQualifiedName~Drill_|FullyQualifiedName~Backup_ChainBroken_SelfHeals"`.
-   Плюс юниты/интеграционные серии затронутых проектов (`PgWorker.UnitTests`,
-   `PgWorker.IntegrationTests`) c зачисткой контейнеров между сериями.
-6. **Роадмап-гейт**: удаление тега t103 из bugs.md мерж-коммитом.
+   Плюс юниты/интеграционные серии затронутых проектов
+   (`PgWorker.UnitTests`, `PgWorker.IntegrationTests`) с зачисткой
+   контейнеров между сериями.
 
 ## 7. Ограничения
 
+- Объём доработки — ТОЛЬКО #1–#4 (blocker + major MR-ревью); minors/nits
+  (#5–#36, в т.ч. stopwaitsecs vs 15 c, ожидание задачи операции в хуке,
+  guard-after-tar) — ВНЕ объёма, не трогаются.
+- Бюджеты не меняются: shutdown-ожидание остаётся ≤ 15 c; stop-бюджеты
+  первой реализации — без изменений; `stopwaitsecs` supervisord — НЕ
+  трогать (minor #5 — за владельцем); E2E-бюджеты сценария — без изменений.
 - P/Invoke запрещён; только штатные утилиты PG и управляемый .NET API.
-- Бюджеты (таймауты) существующие не меняются; новые бюджеты остановки
-  короткие (stop ≤ 10 с на попытку, суммарно ≤ 30 с; shutdown-ожидание
-  ≤ 15 с) — согласованы этим spec.
-- Полный бэкап (`FullBackupOperation`, свой реестр) и его дети при
-  остановке приёмника — ВНЕ области задачи; при необходимости — отдельный
-  пункт роадмапа.
 - Поведение общего ops-реестра (одна ops-операция на процесс, 409-гвард,
-  TryBegin поверх терминального) не меняется.
-- Схема именования drill-каталога (`backup-drill/<id>`) и путь
-  `/tmp/restore-pg.log` (телеметрия E2E снимает этот файл) не меняются —
-  лог только очищается перед стартом операции.
+  TryBegin поверх терминального) не меняется; операторский cancel API —
+  контракт прежний (`cancelled` = «операции не было»).
+- Обратная совместимость контракта снимка НЕ поддерживается: снимок без
+  `kind` (старый приёмник) трактуется как чужой — смешанных версий
+  воркер/приёмник в поставке нет (контур обновляется целиком).
+- Полный бэкап (`FullBackupOperation`, свой реестр) — вне области; схема
+  имён `backup-drill/<id>` и путь `/tmp/restore-pg.log` не меняются.
 - Рестарта упавших прогонов «для выяснения» не выполнять; разбор — по
   собранным логам.
 
-## 8. Принятые решения (закрытые развилки; все подтверждены пользователем)
+## 8. Принятые решения (закрытые развилки; 1–9 — первой редакции, подтверждены пользователем; 10–15 — доработки по MR-ревью)
 
-1. **Объём**: чинить ОБА дефекта (Д1 + Д2) в одном флоу — они сцеплены
-   (Д2-сценарий порождён постгрессом-сиротой Д1).
-2. **Каталог drill**: имя НЕ менять — каталог уже уникален на операцию
-   (id дрилла); повторное использование имени — штатный vanished-перезапуск
-   той же операции. Закрывается защитой каталога (остановка сироты + снятие
-   остаточного pid), а не переименованием.
-3. **Сверка id**: в ОБЕИХ процессах — BackupVerifyProcess (буква задачи) и
-   RestoreProcess (найденная при разборе дыра той же природы — REJOINING от
-   чужого succeeded).
-4. **E2E-гейт**: точечные существующие кейсы (`Drill_Succeeds_CleansUp`,
-   `Backup_ChainBroken_SelfHeals`) на свежем Release + НОВЫЙ
-   регресс-сценарий `Drill_ReceiverRestart_PostmasterNotLeaked`.
-5. **Роадмап-пункт**: тег t103 удаляется из `arch/roadmap/bugs.md` тем же
-   мерж-коммитом (правило AGENTS.md/README роадмапа — однозначно).
-6. **«OK при живом процессе»** из формулировки роадмапа — закрыт как
-   НЕ-дефект записи (уточнение диагностики, §2.2 примечание): OK поставлен
-   закончившейся потоковой verify; постгресс принадлежал drill-операции.
-7. **Чужой running-снимок** (verify/restore-супервиз): ожидание освобождения
-   реестра, POST не спамить лишний раз кроме реланч-пути по образцу drill
-   (409 дёшев; единообразие с RestoreDrillProcess важнее микросэкономии).
-8. **Нестопаемый постгресс**: честный failed операции с причиной; НЕ
-   блокировать терминальный исход чисткой; остаток каталога подбирается
-   следующим запуском (защита каталога). Выбрано как максимально надёжное
-   без зависаний.
-9. **Shutdown приёмника**: гасится активная ops-операция (CancelAsync +
-   ожидание ≤ 15 с); full-операция — вне области (см. §7).
+1. **Объём**: чинить ОБА дефекта (Д1 + Д2) в одном флоу — они сцеплены.
+2. **Каталог drill**: имя НЕ менять; закрывается защитой каталога, а не
+   переименованием.
+3. **Сверка id**: в ОБЕИХ процессах — BackupVerifyProcess и RestoreProcess
+   (добавлено доработкой: сверка дополняется видом операции, решение 13).
+4. **E2E-гейт**: точечные существующие кейсы + регресс-сценарий
+   `Drill_ReceiverRestart_PostmasterNotLeaked` (уже в ветке; в доработке —
+   без изменений).
+5. **Роадмап-пункт**: удалён мерж-гейтом ветки (исполнено).
+6. **«OK при живом процессе»** — закрыт как НЕ-дефект записи (§2.2
+   примечание).
+7. **Чужой running-снимок verify-супервиза**: реланч-POST по образцу drill
+   (409 дёшев); для restore-супервиза — сброс demolished (решение 12),
+   единообразия ожидания БЕЗ повторного запуска больше нет.
+8. **Нестопаемый постгресс**: честный failed операции; терминальный исход
+   чисткой не блокируется.
+9. **Shutdown приёмника**: гасится активная ops-операция с ожиданием ≤ 15 с;
+   full-операция — вне области.
+10. **Р1 — разделение каналов отмены**: каналы разведены МЕТОДОМ интерфейса
+    `ShutdownAsync()` (не флагом-параметром CancelAsync и не скрытым
+    состоянием): хук физически не может позвать операторскую ветку.
+    Shutdown-гашение НЕ публикует `cancelled` и вообще не перезаписывает
+    снимок — снимок остаётся running своей фазы на время остановки; после
+    смерти процесса воркер видит транспортный отказ (transient) → GET 404
+    (реестр пуст) → vanished-повтор POST. Пересечение каналов (операторская
+    отмена во время остановки): первым гасит тот, кто первым взял отмену;
+    дважды снимок не перезаписывается.
+11. **Р2 — время жизни active**: обнуление в continuation задачи операции
+    (ReferenceEquals-гвард от затирания более новой операции) + гвард
+    «running-снимок именно этой операции» (сверка `registry.Current.Id` с
+    запомненным `activeId`) в хуке И cancel-маршруте. DI-реорганизация
+    реестра ссылок не вводится (минимальная правка MapOpsRoutes).
+12. **Р3 — чужой снимок restore**: сброс `Phase="demolished"` + transient
+    (повтор POST следующим тиком) — симметрично 404-ветке; БЕЗусловен для
+    любого чужого состояния, включая чужой running (409-гвард держит).
+    Ожидание без сброса фазы удалено.
+13. **Р4 — вид операции в контракте**: поле `kind` (JSON-имя `kind`;
+    значения `verify|restore|drill`; константы — по образцу
+    `OperationStates`). Заполняет ПРИЁМНИК: Program.cs при TryBegin
+    (verify → verify; restore → `Id is null ? restore : drill`) и операции
+    в каждом Update/Fail (kind определяется из собственного запроса
+    операции, не из Current). На воркере парсится `ReceiverStatus.Kind`.
+    Сверка: verify-супервиз — `id == full.Id && kind == verify`;
+    restore-супервиз — `id == op.BackupId && kind == restore`; drill —
+    прежняя сверка id (id дрилла уникален операции; #26/nit вне объёма).
+    **null/отсутствующий kind = чужой снимок** (строгая трактовка): ложный
+    вердикт исключён всегда; поставка воркера и приёмника единая
+    (deploy/E2E пересобирают контур целиком), окна смешанных версий нет;
+    фиксируется каноном 02-api §3.
+14. **Тестовый долг Р3**: кодифицирующий ошибочное ожидание тест
+    (`Phase=="recovering"`, `StartCalls==0`) ПЕРЕПИСАН на сброс
+    фазы/повторный запуск (двухтиковый ассерт), не удалён.
+15. **FakeOps/FakeRunner** интеграционных швов расширяются `ShutdownAsync`/
+    kind — тестовые двойники зеркалят контракт, отдельные фейковые механики
+    не вводятся.
 
 ## 9. Критерии приёмки
 
-1. Канон `arch/` обновлён (§4) и закоммичен ДО кодовых правок; код
-   зеркалит канон (ревью сверяет по пунктам §4 ↔ §5).
-2. Юнит-тесты RestoreOperation закрывают все новые ветки (orphan/stale-pid/
-   unstoppable/finally-порядок); интеграционные — сверку id обоих процессов
-   (чужой failed/succeeded не меняет статус; свой — прежнее поведение).
-3. Новый E2E `Drill_ReceiverRestart_PostmasterNotLeaked` зелёный; в его
-   прогоне отсутствуют FATAL «another postmaster» и чужие verify-FAILED в
-   записях полных; scratch дрилла отсутствует после терминала.
-4. Гейт-прогон §6.5 зелёный (E2ePrepare → build → точечные E2E на свежем
+1. Канон `arch/` обновлён по §4 и закоммичен ДО кодовых правок; код
+   зеркалит канон (ревью сверяет §4 ↔ §5: 06 §2 п.5.4 ↔ 5.1/5.2; 02-api §3
+   ↔ 5.1/5.3/5.4; f-restore §2 ↔ 5.4).
+2. **Р1 закрыт**: shutdown хоста при живой операции не публикует `cancelled`
+   (юнит RestoreOperation + интеграционный HostShutdown_ActiveOp_
+   NotCancelled зелёные); операторский cancel — прежний контракт
+   (`cancelled/"cancelled by operator"`).
+3. **Р2 закрыт**: после терминала операции cancel-маршрут отвечает 404 без
+   вызова CancelAsync (CancelAfterTerminal_Returns404_NoCancelCall); хук
+   обнуляет active — повторный stop/restart pgnode после завершённого
+   restore не посылает стоп в PGDATA.
+4. **Р3 закрыт**: чужой снимок (любое состояние) сбрасывает Phase заявки в
+   `demolished`; второй тик повторяет POST (fr1/fr2 переписаны, зелёные);
+   ожидание без выхода отсутствует в коде.
+5. **Р4 закрыт**: `kind` присутствует в OperationSnapshot/OpsStatusResponse/
+   ReceiverStatus; обе сверки (id+kind) отклоняют снимок чужого вида и без
+   kind (vf/fr kind-кейсы зелёные); снимок старого приёмника трактуется
+   как чужой.
+6. Гейт-прогон §6.5 зелёный (E2ePrepare → build → точечные E2E на свежем
    Release, двумя отдельными командами, `--no-build`; юниты+интеграция
    затронутых проектов; зачистка контейнеров/сетей между сериями).
-5. Тег `t103-verify-postmaster-leak-registry` удалён из
-   `arch/roadmap/bugs.md` тем же мерж-коммитом; исторических упоминаний
-   задачи в `AGENTS.md`/`arch/**`/`docs/**` (кроме `docs/superpowers/`)
-   не осталось.
-6. Бюджеты системы не изменены; P/Invoke отсутствует; языковые конвенции
-   (документация — русский, идентификаторы — английский) соблюдены.
+7. Бюджеты системы не изменены (15 c shutdown-ожидания — прежний;
+   stopwaitsecs/E2E-бюджеты не тронуты); P/Invoke отсутствует; minors/nits
+   ревью не «закрывались» попутно; языковые конвенции (документация —
+   русский, идентификаторы — английский) соблюдены.
+8. Исторических упоминаний t103 вне `docs/superpowers/` нет
+   (`grep -rn "t103"` по `AGENTS.md`/`arch/`/`docs/` — пусто).

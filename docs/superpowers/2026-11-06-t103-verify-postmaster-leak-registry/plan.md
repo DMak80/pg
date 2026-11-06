@@ -1,10 +1,10 @@
-# t103: жизненный цикл postmaster verify/restore-check + сверка id итога — план реализации
+# t103: доработка по MR-ревью — жизненный цикл postmaster и сверка id/kind итога — план
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Устранить два дефекта t103 — утечку postmaster restore/drill-операции приёмника (Д1) и запись итога проверки полного/заявки restore из чужой операции общего ops-реестра (Д2).
+**Goal:** Закрыть blocker + 3 major MR-ревью (Р1 shutdown≠отмена, Р2 время жизни active, Р3 demolished-повтор при чужом снимке restore, Р4 вид операции `kind` в контракте снимка) поверх уже слитой в ветку первой реализации t103.
 
-**Architecture:** Сначала правится канон `arch/` (правила жизненного цикла постгресса и сверки id снимка), затем код зеркалит: приёмник (`RestoreOperation`, `Program.cs`) — защита каталога/остановка при любом исходе/гашение при остановке хоста; воркер (`BackupVerifyProcess`, `RestoreProcess`) — сверка id снимка перед вердиктом.
+**Architecture:** Сначала уточняется канон `arch/` (разделение каналов отмены, `kind` снимка, demolished-повтор), затем код: приёмник (метод `ShutdownAsync`, вид операции в снимке, гварды живости в MapOpsRoutes) и воркер (сверка `id`+`kind`, сброс фазы заявки при чужом снимке). Первая реализация (защита каталога, finally-стоп, сверка id, E2E-сценарий) уже в ветке — план описывает ТОЛЬКО дельту.
 
 **Tech Stack:** .NET 10, C# (`Nullable=enable`, `TreatWarningsAsErrors=true`), xUnit, AAA-комментарии в тестах.
 
@@ -12,272 +12,630 @@
 
 ## Global Constraints
 
-- P/Invoke ЗАПРЕЩЁН (AGENTS.md): управление постгрессом — только `pg_ctl` через `ProcessRunner`, файлы — штатный .NET API.
-- Бюджеты системы не меняются; новые бюджеты остановки: `stop -w -t 10` на попытку, две попытки; shutdown-ожидание ≤ 15 с (spec §7).
-- Документация — по-русски, идентификаторы — по-английски; комментарии в каноне — текущим тоном окружающего текста, БЕЗ исторических пассажей (без «t103», дат, инцидентов — правила AGENTS.md).
-- Общий ops-реестр (одна ops-операция на процесс, 409-гвард, TryBegin поверх терминального) НЕ меняется; схема имён `backup-drill/<id>` и путь `/tmp/restore-pg.log` НЕ меняются.
-- Существующие таймауты/бюджеты тестов не трогать; все тесты чистят за собой (docker-контейнеры/сети между сериями).
-- Коммит в feature-ветке worktree после каждого шага; в `main` не коммумитить.
+- Объём — строго решения spec по Р1–Р4; minors/nits ревью (#5–#36, в т.ч. `stopwaitsecs`, guard-after-tar) — ВНЕ объёма, не трогать.
+- Бюджеты не меняются: shutdown-ожидание ≤ 15 c (прежний), stop-бюджеты первой реализации — без изменений, E2E-бюджеты — без изменений.
+- P/Invoke ЗАПРЕЩЁН (AGENTS.md).
+- Общий ops-реестр (одна ops-операция на процесс, 409-гвард, TryBegin поверх терминального) НЕ меняется; операторский cancel API — контракт прежний (`cancelled` = «операции не было»).
+- Снимок без `kind` (старый приёмник) = чужой; обратная совместимость контракта НЕ поддерживается.
+- Полный бэкап (`FullBackupOperation`, full-реестр, MapFullRoutes) — вне области: поведение не меняется (новому методу интерфейса — тривиальная реализация).
+- Документация — по-русски, идентификаторы — по-английски; комментарии канона — текущим тоном окружающего текста, БЕЗ исторических пассажей (без «t103», дат, номеров ревью).
+- Коммит в feature-ветке worktree после каждого шага; в `main` не коммитить. Роадмап-гейт t103 уже исполнен веткой — шага по `arch/roadmap/` НЕТ.
+- Все команды — в фоне (`run_in_background`), ожидания ≤ 30 с, длинные логи — в файл `/tmp/t103d-<series>.log`.
 
 ## Review Focus
 
-Пять рисков, которые тесты шагов обязаны накрыть (владелец — шаг в скобках):
+Пять рисков доработки, которые тесты шагов обязаны накрыть (владелец — шаг в скобках):
 
-1. Существующие снимки-хелперы тестов без `Id` (null) после введения сверки трактуются как чужие — все API-хелперы тестов обязаны нести id кандидата (шаг 6).
-2. Нестопаемый сирота: pre-start защита обязана дать честный failed (не transient-маркер downloading — воркер бы ретраил вечно) и НЕ звать `pg_ctl start` (шаг 3).
-3. Чистка scratch при живом постгрессе: finally обязан пытаться остановить ДО `Directory.Delete` (шаг 4 — порядок в журнале вызовов).
-4. `pg_ctl status` не-0 ≠ всегда «не работает» (exit 4 — нет доступа): защита трактует любой не-0 как «не работает» → pid-файл срезается → `pg_ctl start` сам пере-проверит lock; поведение принято (spec §4.1 п.1), отдельной ветки не вводить.
-5. Чужой running-снимок в verify-процессе: реланч-POST получит 409 — это норма (IsConflict), кандидат остаётся PENDING, лив-лока нет (шаг 6).
+1. Существующие тесты с «своими» снимками после сверки `kind` становятся чужими (kind null) — ВСЕ снимки своих id в интеграционных тестах обязаны нести свой kind (шаги 6, 7).
+2. `ShutdownAsync`, случайно реализованный как `CancelAsync`, публикует `cancelled` — тесты обязаны фиксировать НЕ-cancelled снимок, вызов именно shutdown-канала и (для операторского канала verify) наоборот публикацию `cancelled` (шаги 4, 8).
+3. Обнуление `active` без ReferenceEquals-гварда затирает более новую операцию; гвард без сверки id пускает отмену по чужому running-снимку — тест cancel-after-terminal обязан краснеть (шаги 5, 8).
+4. Demolished-сброс без последующего POST = прежнее зависание: тест обязан доказать повторный запуск ВТОРЫМ тиком, а не только смену фазы (шаг 7).
+5. `kind` в TryBegin, но не в Update/Fail операции (Update заменяет снимок целиком) — вид теряется после первого же обновления; юнит-тесты шага 4 ассертят `Kind` снимка напрямую, API-тесты шага 8 — компиляционную целостность контракта (шаги 4, 8).
 
 ---
 
-### Шаг 1. Канон Д1: жизненный цикл postmaster (arch/pgnode)
+### Шаг 1. Канон Р1/Р2: остановка приёмника ≠ операторская отмена (arch-first)
 
-**Вход:** spec §4.1–§4.2 одобрен; файлы канона не менялись с Фазы 1.
+**Вход:** spec §4.1–§4.2 одобрён; файлы канона не менялись с первой итерации.
 
 **Действие** (сильная модель — вплетение в существующий текст, тон окружения, без истории):
-- `arch/pgnode/06-restore-drill.md`: в §2 (механика restore; drill §3 наследует) после описания подготовки (права `chmod 700`, перед `pg_ctl start`) добавить блок «жизненный цикл postmaster» с четырьмя правилами по spec §4.1: (1) защита целевого каталога перед стартом — `pg_ctl status`, работает → `stop -m fast -w` с коротким бюджетом, при неудаче `-m immediate -w`; не остановился — операция failed с честной причиной; не работает → снять остаточный `postmaster.pid`; (2) лог `/tmp/restore-pg.log` очищается перед `pg_ctl start` операции — диагностика провала (хвост в `last_error`) содержит только строки своей инкарнации; (3) остановка при любом исходе (успех/провал любой фазы после старта/отмена/провал старта) ДО чистки scratch (drill) и возврата Patroni (restore); неудалённый остаток НЕ блокирует терминальный исход — дочистится следующим запуском через защиту каталога; (4) остановка процесса приёмника гасит активную ops-операцию (отмена + остановка постгресса с ожиданием) — сирот не оставляет; жёсткий SIGKILL закрывается защитой каталога при следующем запуске.
-- `arch/pgnode/processes/d-restore.md`: в §1 фаза `recovering` — одна строка инварианта (старт в подготовленный каталог: постгресс прошлой инкарнации остановлен; при любом исходе постгресс операции остановлен до чистки/возврата Patroni) + ссылка на 06-restore-drill §2 (соседний уровень — ссылка корректна).
-- `arch/pgnode/processes/e-drill.md`: в §2 («Отличия от restore», пункт про чистку scratch) — чистка scratch выполняется ПОСЛЕ остановки постгресса операции + ссылка на 06-restore-drill §2.
+- `arch/pgnode/06-restore-drill.md` §2 п.5.4 («Остановка приёмника»): переформулировать по spec §4.1 — гашение активной ops-операции при остановке процесса приёмника (отмена задачи + остановка postmaster, ожидание ≤ 15 с) — ВНУТРЕННИЙ канал, отдельный от операторской отмены: снимок НЕ перезаписывается (никакого `cancelled`), реестр умирает вместе с процессом; операторская отмена (`POST /api/ops/cancel`, внешний канал) — прежняя семантика `state=cancelled`; жёсткий SIGKILL закрывает защита каталога (п. 5.1). Вторым предложением: отмена/гашение применяется ТОЛЬКО к живой (running) операции; завершённая операция (терминальный снимок) не отменяется и не останавливается повторно.
+- `arch/pgnode/02-api.md` §3, абзац «GET-снимок несёт `id` операции реестра»: дополнить по spec §4.2 — снимок несёт `id` И `kind` (вид операции); ТАБЛИЦА значений `kind` (`verify`/`restore`/`drill` — с источником id каждого вида, по spec §4.2); супервизоры принимают исход ТОЛЬКО по снимку своей операции (собственный `id` И собственный `kind`); снимок с чужим `id`/`kind` ИЛИ без `kind` (контракт старого приёмника) — доказательства итога НЕТ (поставка воркера и приёмника единая, строгая трактовка); отмена применяется к running-операции, остановка приёмника снимок не перезаписывает (ссылка на 06-restore-drill §2 п.5.4 — соседний уровень, допустима).
 
-**Выход:** канон описывает жизненный цикл постгресса; двойного описания механики нет (детали — только в 06, процессы держат инвариант и ссылку).
+**Выход:** канон разделяет каналы отмены и фиксирует `kind` снимка; дублей механики нет (детали гашения — только в 06, контракт — только в 02-api).
 
-**Проверка:** чтение трёх файлов: правила (1)–(4) присутствуют в 06; d-restore/e-drill содержат по одной строке-инварианту со ссылкой; исторических пассажей нет. Коммит: `git add arch/ && git commit -m "arch(pgnode): postmaster lifecycle rules for restore/drill (t103 spec §4.1-4.2)"`.
+**Проверка:** чтение обоих файлов: правила на месте, таблица kind со всеми тремя значениями, исторических пассажей нет. Коммит: `git add arch/ && git commit -m "arch(pgnode): shutdown is not operator cancel; snapshot kind (t103 review)"`.
 
 **Связь со spec:** §4.1, §4.2. Подпунктов нет (документация вплетением — работа сильной модели).
 
 ---
 
-### Шаг 2. Канон Д2: сверка id итога операции (arch/backups)
+### Шаг 2. Канон Р3/Р4: сверка id+kind и demolished-повтор (arch-first)
 
 **Вход:** шаг 1 закоммичен.
 
 **Действие** (сильная модель):
-- `arch/backups/01-full-backup.md` §7: после абзаца про статус `GET /api/ops/verify` добавить правило сверки снимка по `id` (симметрично формулировке g-drill §1): ops-реестр один на процесс — GET может вернуть чужой/прошлый снимок (напр., терминал restore/drill-операции с текстом pg_ctl); снимок с чужим `id` — доказательства итога НЕТ (ни OK, ни FAILED) — vanished-семантика: повторный POST идемпотентно поверх терминального снимка, чужой running — ожидание освобождения реестра.
-- `arch/pgnode/processes/c-verify.md` §2 («Исходы»): строка — снимок с чужим `id` — не итог проверки, супервиз перезапускает операцию vanished-семантикой (ссылка на 01-full-backup §7 — родительский уровень).
-- `arch/backups/processes/f-restore.md` §2: в абзаце про 409 при запуске («снимок 409 не различает свою/чужую») дополнить: супервиз операции сверяет `id` снимка с backup_id выбранного полного заявки; чужой id в любом состоянии — чужой итог/фаза: verdиктов и переходов по нему нет (REJOINING от чужого succeeded без system_id запрещён), запуск откладывается до освобождения реестра (transient, семантика 409).
+- `arch/backups/01-full-backup.md` §7, правило сверки снимка (добавленное первой итерацией): чужим является снимок с чужим `id` ИЛИ чужим `kind` (не `verify`) ИЛИ без `kind` — доказательства итога проверки НЕТ: vanished-семантика (повторный POST поверх терминального; чужой running — 409, ожидание освобождения реестра).
+- `arch/pgnode/processes/c-verify.md` §2 («Исходы»), строка про чужой `id`: дополнить — чужой `kind` (restore/drill того же полного) и отсутствие `kind` — тоже «не итог проверки», супервиз перезапускает операцию vanished-семантикой (ссылка на 01-full-backup §7 сохраняется).
+- `arch/backups/processes/f-restore.md` §2, абзац сверки id: два уточнения по spec §4.4 — (1) чужой снимок = чужой `id` ИЛИ чужой `kind` (не `restore`) ИЛИ отсутствие `kind`; (2) чужой снимок в ЛЮБОМ состоянии (в т.ч. чужой running) — сброс фазы заявки в `demolished` + transient: команда повторяется следующим тиком (симметрично ветке vanished 404; живая чужая операция ответит 409 — семантика освобождения реестра). Ожидание чужого снимка БЕЗ сброса фазы запрещено (диспетчер в фазах launching/downloading/recovering команду не повторяет — заявка висела бы до статусного бюджета).
 
-**Выход:** канон фиксирует сверку id для verify и restore-супервизов.
+**Выход:** канон фиксирует сверку id+kind для обоих супервизов и demolished-повтор.
 
-**Проверка:** чтение трёх файлов — правила на месте, тон сохранён, без дублей. Коммит: `git add arch/ && git commit -m "arch(backups): verify/restore supervisors must match snapshot id (t103 spec §4.3-4.4)"`.
+**Проверка:** чтение трёх файлов — формулировки на месте, тон сохранён, без дублей. Коммит: `git add arch/ && git commit -m "arch(backups): verify/restore match snapshot id and kind; foreign restore resets phase (t103 review)"`.
 
 **Связь со spec:** §4.3, §4.4. Подпунктов нет.
 
 ---
 
-### Шаг 3. RestoreOperation: защита каталога pre-start + очистка лога (TDD)
+### Шаг 3. Контракт kind: OperationKinds, OperationSnapshot, OpsStatusResponse, ReceiverStatus
 
-**Вход:** канон шага 1 закоммичен; `src/PgWorker.PgNode/Operations/RestoreOperation.cs` не менялся.
+**Вход:** канон шагов 1–2 закоммичен.
 
-**Действие** (сильная модель): написать три failing-юнит-теста (подпункты 3.3), реализовать `PostmasterRunningAsync`/`TryStopPostmasterAsync` (подпункт 3.4), вставить вызов защиты + снятие pid + очистку лога (подпункт 3.5), обновить задетый ассерт HappyPath (подпункт 3.6). Порядок TDD: тесты → прогон (падают) → реализация → прогон (зелёные). Сам выполняет: прогон тестов после каждого подпункта, разбор падений, итоговое ревью соответствия канону шага 1.
+**Действие** (сильная модель: подпункты 3.1–3.4 дословны; после каждого — компиляция не обязательна, одна в 3.5). Размещение констант `OperationKinds` — в `PgWorker.Backups` (НЕ в PgNode.Operations): ссылка проекта PgWorker.Backups → PgWorker.PgNode запрещена (запрет цикла ссылок зафиксирован в комментарии WalReceiverApiClient.cs; PgNode уже импортирует Backups) — константы видны и приёмнику, и воркеру из одного места. ВАЖНО: `PgWorker.Backups` экспортирует типы, одноимённые с `PgWorker.PgNode.Operations` (`ErrorResponse`, `StartVerifyRequest` и др.) — в Program.cs namespace подключается ТОЛЬКО using-ALIAS единственного типа (подпункт 5.1), обычный `using PgWorker.Backups;` там дал бы CS0104.
 
-Точки вставки (реальный код):
-- Вызов защиты — в `RunAsync` ПОСЛЕ `phase = OperationPhases.Recovering; Update(OperationStates.Running, phase);` и ПЕРЕД `const int recoveryStartAttempts = 3;`.
-- Методы — после `StopBestEffortAsync` (перед `TailAsync`).
-- Ветка финального провала старта (`Fail(phase, $"pg_ctl start failed: ...")`) — отдельный stop НЕ добавлять: закрывается finally-стопом шага 4 (spec §5.1 последний абзац).
+**Выход:** контракт снимка несёт вид операции; сборка чистая.
 
-**Выход:** операция до старта постгресса останавливает сироту/снимает stale pid/очищает лог; юниты зелёные.
+**Проверка:** `DOTNET_CLI_UI_LANGUAGE=en dotnet build src/PgWorker.slnx -c Release --nologo` — Build succeeded, 0 Warning(s).
 
-**Проверка:** `DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/PgWorker.UnitTests -c Release --filter "FullyQualifiedName~RestoreOperationTests"` — все (старые и новые) зелёные.
-
-**Связь со spec:** §4.1 п.1–2, §5.1.
+**Связь со spec:** §5.1 (контракты), §5.3 (ReceiverStatus), решение 13.
 
 Подпункты:
 
-- [ ] **3.1. Расширить фейк `FakeRunner` в `src/tests/PgWorker.UnitTests/PgNode/RestoreOperationTests.cs`** — программируемые исходы `pg_ctl status`/`stop` и LSN-пробы. В классе `FakeRunner` после поля `public bool PsqlPollHang;` добавь три поля:
+- [ ] **3.1. Добавить константы вида операции** в файл `src/PgWorker.Backups/WalReceiverApiClient.cs`, сразу ПОСЛЕ закрывающей скобки record `ReceiverStatus` (перед record `StartPgDumpRequest`) вставь дословно:
 ```csharp
-// Защита каталога (t103): программируемые исходы pg_ctl. PgCtlStatusExit —
-// ответ status (0 — postmaster работает, дефолт 3 — не работает);
-// PgCtlStopExits — очередь исходов stop (по одному на вызов; пусто — 0).
-// Успешный stop останавливает «postmaster»: следующие status — не работает.
-// LsnReply — ответ psql-пробы pg_current_wal_lsn (пустая строка — провал
-// ветки снятия LSN ПОСЛЕ старта постгресса).
-public int PgCtlStatusExit = 3;
-public readonly Queue<int> PgCtlStopExits = [];
-public string LsnReply = "0/2000028";
-```
-  Затем в методе `RunAsync` класса замени ветку `case "pg_ctl":` (сейчас возвращает `(StartExitCode, "", "pg_ctl: could not start server")` при `args.Contains(" start") && StartExitCode != 0`, иначе `(0, "", "")`) на:
-```csharp
-case "pg_ctl":
-    if (args.Contains(" status"))
-        return (PgCtlStatusExit,
-            PgCtlStatusExit == 0 ? "pg_ctl: server is running (PID: 331)" : "pg_ctl: no server running", "");
-    if (args.Contains(" stop"))
-    {
-        var stopExit = PgCtlStopExits.Count > 0 ? PgCtlStopExits.Dequeue() : 0;
-        if (stopExit == 0)
-            PgCtlStatusExit = 3; // успешный stop останавливает «postmaster»
-        return (stopExit, "", "");
-    }
-    if (args.Contains(" start") && StartExitCode != 0)
-        return (StartExitCode, "", "pg_ctl: could not start server");
-    PgCtlStatusExit = 0; // успешный старт ЗАПУСКАЕТ «postmaster» операции
-    return (0, "", "");
-```
-  И в том же методе `RunAsync` в ветке `case "psql":` замени возвращаемую строку `return (0, args.Contains("pg_is_in_recovery") ? "f" : "0/2000028", "");` на `return (0, args.Contains("pg_is_in_recovery") ? "f" : LsnReply, "");` (ветки PsqlPollHang/PsqlPollFailsBeforeOk выше по коду не трогать).
-
-- [ ] **3.2. Добавить drill-режим в хелпер запроса** того же файла: замени сигнатуру `private static PgWorker.PgNode.Operations.StartRestoreRequest Request(string? targetTime = null)` на `Request(string? targetTime = null, string? drillId = null)` и в теле — именованный аргумент `Id: null` на `Id: drillId`. Остальное тело не менять.
-
-- [ ] **3.3. Добавить три юнит-теста** в класс `RestoreOperationTests` (после метода `HappyPath_IncidentEditsAndCallOrder_ThenSucceeded`; стиль AAA-комментариев как у соседей; хелперы `NewPgdata()`, `Create(root, runner, ...)`, `Request(...)` уже есть; снимок реестра — `registrySnapshot(op)` как в соседних тестах):
-  1. `PreStart_StopsOrphanPostmaster_ThenSucceeds` — Arrange: `NewPgdata()`, в `Path.Combine(pgdata, "postmaster.pid")` записать строку `"331 ..."`; `FakeRunner { PgCtlStatusExit = 0 }` (сирота работает), `PgCtlStopExits` пуст (stop успешен). Act: `await op.RunAsync(CancellationToken.None)`. Assert: снимок `succeeded`; в `runner.Invocations` есть элемент `FileName == "pg_ctl"` с `Args.Contains("stop")` и `Args.Contains("fast")`, И он идёт ДО первого элемента с `Args.Contains("start")`; файла `postmaster.pid` больше нет.
-  2. `PreStart_RemovesStalePidFile_WhenPostmasterDead` — Arrange: `NewPgdata()`, файл `postmaster.pid` записан; `FakeRunner` дефолтный (status → 3). Act: `RunAsync`. Assert: `succeeded`; файла `postmaster.pid` нет; в `Invocations` ровно один вызов `pg_ctl` со `" status"` ДО старта.
-  3. `PreStart_UnstoppableOrphan_FailsHonest_WithoutStart` — Arrange: `NewPgdata()`; `FakeRunner { PgCtlStatusExit = 0 }`, `PgCtlStopExits = new Queue<int>([1, 1, 1, 1])` (все stop провальны). Act: `RunAsync`. Assert: снимок `failed`; `snap.Error` содержит `"cannot be stopped"`; `snap.Phase == "recovering"` (НЕ downloading — не transient-маркер); в `Invocations` НЕТ вызова `pg_ctl` со `Args.Contains("start")`.
-
-- [ ] **3.4. Добавить два метода в `src/PgWorker.PgNode/Operations/RestoreOperation.cs`** после метода `StopBestEffortAsync` (перед `TailAsync`), дословно:
-```csharp
-// pg_ctl status: exit 0 — postmaster каталога работает (контракт pg_ctl);
-// прочие исходы — не работает/недоступен (lock пере-проверит сам pg_ctl start).
-private async Task<bool> PostmasterRunningAsync(string pgdata, CancellationToken token)
-    => (await _runner.RunAsync(PgCtl(pgdata, "status"), token)).ExitCode == 0;
-
-/// <summary>Остановка postmaster каталога (fast → immediate, каждая -w -t 10)
-/// (arch/pgnode/06-restore-drill.md §2 — защита каталога и финальная
-/// остановка): true — postmaster не работает (или не работал); false —
-/// неостановим.</summary>
-private async Task<bool> TryStopPostmasterAsync(string pgdata, CancellationToken token)
+/// <summary>Константы вида ops-операции приёмника (arch/pgnode/02-api.md
+/// §3): заполняет приёмник при TryBegin и каждом обновлении снимка;
+/// полный бэкап (full-реестр) вида не имеет. Супервизоры сверяют вид со
+/// своей операцией; снимок без вида (контракт старого приёмника) —
+/// чужой для сверки (поставка воркера и приёмника единая).</summary>
+public static class OperationKinds
 {
-    if (!await PostmasterRunningAsync(pgdata, token))
-        return true;
-    foreach (var mode in new[] { "fast", "immediate" })
-    {
-        var stopPsi = PgCtl(pgdata, "stop");
-        stopPsi.ArgumentList.Add("-m");
-        stopPsi.ArgumentList.Add(mode);
-        stopPsi.ArgumentList.Add("-w");
-        stopPsi.ArgumentList.Add("-t");
-        stopPsi.ArgumentList.Add("10");
-        await _runner.RunAsync(stopPsi, token);
-        if (!await PostmasterRunningAsync(pgdata, token))
-            return true;
-    }
-
-    return false;
+    public const string Verify = "verify";
+    public const string Restore = "restore";
+    public const string Drill = "drill";
 }
 ```
 
-- [ ] **3.5. Вставить вызов защиты в `RunAsync`** того же файла: найди строки
+- [ ] **3.2. Добавить параметр Kind в OperationSnapshot** в файле `src/PgWorker.PgNode/Operations/OperationSnapshot.cs`: замени строки
 ```csharp
-            phase = OperationPhases.Recovering;
-            Update(OperationStates.Running, phase);
-            const int recoveryStartAttempts = 3;
+    // Сквозной sha256 tar-объекта полного (hex) — поле etcd-статуса sha256.
+    string? Sha256 = null);
 ```
-  и между `Update(OperationStates.Running, phase);` и `const int recoveryStartAttempts = 3;` вставь дословно:
+  на
 ```csharp
-            // Защита целевого каталога перед стартом (arch/pgnode/06-restore-drill.md
-            // §2): postmaster-сирота прошлой инкарнации (пережил рестарт приёмника)
-            // останавливается ДО старта; неостановим — честный failed (не
-            // transient: не данные и не транспорт); мёртвому — снимается
-            // остаточный postmaster.pid (иначе pg_ctl start откажет от старта).
-            if (!await TryStopPostmasterAsync(pgdata, token))
-            {
-                Fail(OperationPhases.Recovering,
-                    $"postmaster in {pgdata} cannot be stopped (fast and immediate exhausted)");
-                return;
-            }
-
-            var postmasterPid = Path.Combine(pgdata, "postmaster.pid");
-            if (File.Exists(postmasterPid))
-                File.Delete(postmasterPid);
-
-            // Лог инкарнации (файл общий у операций ноды): диагностика провала
-            // старта — хвост restore-pg.log в last_error — содержит строки
-            // только своей инкарнации.
-            try { File.Delete("/tmp/restore-pg.log"); } catch { /* файла нет — норма */ }
+    // Сквозной sha256 tar-объекта полного (hex) — поле etcd-статуса sha256.
+    string? Sha256 = null,
+    // Вид ops-операции (OperationKinds; arch/pgnode/02-api.md §3):
+    // verify/restore/drill — заполняет приёмник; у полного — null.
+    // Update заменяет снимок целиком — операции обязаны переносить вид.
+    string? Kind = null);
 ```
 
-- [ ] **3.6. Обновить задетый ассерт в `HappyPath_IncidentEditsAndCallOrder_ThenSucceeded`** того же тест-файла: строку
+- [ ] **3.3. Добавить поле Kind в OpsStatusResponse и передачу из OpsStatus.** В файле `src/PgWorker.PgNode/Operations/ApiContracts.cs` замени закрывающую часть record `OpsStatusResponse`
 ```csharp
-        var start = runner.Invocations.First(i => i.FileName == "pg_ctl");
+    [property: JsonPropertyName("started_unix")] long? StartedUnix = null,
+    [property: JsonPropertyName("error")] string? Error = null);
 ```
-  замени на
+  на
 ```csharp
-        var start = runner.Invocations.First(
-            i => i.FileName == "pg_ctl" && i.Args.Contains("start"));
+    [property: JsonPropertyName("started_unix")] long? StartedUnix = null,
+    [property: JsonPropertyName("error")] string? Error = null,
+    // Вид операции реестра (arch/pgnode/02-api.md §3): сверка «своя/чужая»
+    // супервизорами — по id И kind.
+    [property: JsonPropertyName("kind")] string? Kind = null);
 ```
-  (выборка теперь обязана различать start-вызов от новых status/stop вызовов; соседний `ContainInOrder("chmod", "pg_ctl", "psql", "psql", "pg_ctl")` остаётся валидным).
+  В файле `src/PgWorker.PgNode/Program.cs` в методе `OpsStatus` (строки ~398–404) замени конструктор ответа
+```csharp
+            ? Results.Json(new OpsStatusResponse(
+                    snapshot.State, snapshot.Phase, snapshot.Id,
+                    snapshot.RestoredToLsn, snapshot.SystemId,
+                    snapshot.StartedUnix, snapshot.Error),
+```
+  на
+```csharp
+            ? Results.Json(new OpsStatusResponse(
+                    snapshot.State, snapshot.Phase, snapshot.Id,
+                    snapshot.RestoredToLsn, snapshot.SystemId,
+                    snapshot.StartedUnix, snapshot.Error, snapshot.Kind),
+```
 
-- [ ] **3.7. Скомпилировать и прогнать**: `DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/PgWorker.UnitTests -c Release --filter "FullyQualifiedName~RestoreOperationTests"` — ожидание: сборка без warnings (TreatWarningsAsErrors), все тесты PASS. Любой красный тест из числа СУЩЕСТВУЮЩИХ, упавший на новом порядке вызовов (например, берущий `First` по `pg_ctl`), — исправить ассерт аналогично 3.6 (фильтровать по `Args.Contains("start")`/`"status"`/`"stop")`); менять прод-код ради ассерта нельзя.
+- [ ] **3.4. Добавить поле Kind в ReceiverStatus** в файле `src/PgWorker.Backups/WalReceiverApiClient.cs`: замени закрывающую часть record
+```csharp
+    [property: JsonPropertyName("bytes_done")] long? BytesDone = null,
+    [property: JsonPropertyName("parts_done")] long? PartsDone = null,
+    [property: JsonPropertyName("sha256")] string? Sha256 = null);
+```
+  на
+```csharp
+    [property: JsonPropertyName("bytes_done")] long? BytesDone = null,
+    [property: JsonPropertyName("parts_done")] long? PartsDone = null,
+    [property: JsonPropertyName("sha256")] string? Sha256 = null,
+    // Вид операции реестра приёмника (arch/pgnode/02-api.md §3): сверка
+    // «своя/чужая» супервизором — по id И kind; null (снимок старого
+    // приёмника) трактуется как чужой.
+    [property: JsonPropertyName("kind")] string? Kind = null);
+```
+
+- [ ] **3.5. Скомпилировать**: `DOTNET_CLI_UI_LANGUAGE=en dotnet build src/PgWorker.slnx -c Release --nologo` (в фоне, лог в `/tmp/t103d-build3.log`) — Build succeeded, 0 Warning(s). Коммит: `git add -A && git commit -m "contracts: operation kind in snapshot/status (t103 review)"`.
 
 ---
 
-### Шаг 4. RestoreOperation: finally-стоп перед чисткой/возвратом Patroni (TDD)
+### Шаг 4. Операции приёмника и тестовые двойники: канал ShutdownAsync и kind в снимках (TDD)
 
-**Вход:** шаг 3 зелёный (`TryStopPostmasterAsync` существует).
+**Вход:** шаг 3 закоммичен; `RestoreOperation.cs`/`VerifyOperation.cs`/`IReceiverOperation.cs` не менялись.
 
-**Действие** (сильная модель): failing-тест порядка finally (подпункт 4.1), вставка finally-стопа (подпункт 4.2), прогон. Сам: ревью, что finally не меняет терминальный снимок (стоп — best-effort, результат игнорируется).
+**Действие** (сильная модель: failing-тесты 4.1/4.5 → реализация 4.2/4.3 → тестовый двойник IntegrationTests 4.4 → verify-тесты 4.5 → прогон 4.6). Суть правок: `ShutdownAsync` — внутренний канал гашения (флаг `_shutdown` выставляется ДО `_cts.Cancel()`, catch OCE публикует `cancelled` только при операторской отмене); каждый `Update`/`Fail` операций несёт свой kind. Подпункт 4.4 обязателен до любого прогона IntegrationTests: правка интерфейса 4.2 оставляет единственный тестовый `IReceiverOperation` (FakeOp) нереализованным — проект не собирается (CS0535).
 
-**Выход:** при любом исходе операции постгресс останавливается до `Directory.Delete` (drill) и до `supervisorctl start spilo` (restore).
+**Выход:** shutdown не публикует `cancelled`; операторский cancel — прежний контракт (в т.ч. verify); снимки операций несут kind; IntegrationTests собирается.
 
-**Проверка:** тот же фильтр `RestoreOperationTests` — зелёные, включая новый тест.
+**Проверка:** `DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/PgWorker.UnitTests -c Release --filter "FullyQualifiedName~RestoreOperationTests|FullyQualifiedName~VerifyOperationTests"` — все PASS; `DOTNET_CLI_UI_LANGUAGE=en dotnet build src/tests/PgWorker.IntegrationTests -c Release --nologo` — Build succeeded.
 
-**Связь со spec:** §4.1 п.3, §5.1 (finally).
+**Связь со spec:** §4.1 (п.5.4), §5.1, §5.5 (юниты); решения 10, 13.
 
 Подпункты:
 
-- [ ] **4.1. Добавить два юнит-теста finally-порядка** в `RestoreOperationTests` (стиль AAA). Общая подготовка обоих: в класс тестов добавь `private const string DrillId = "20260101000001Z";` рядом с существующей `private const string Id = "20260101000000Z";`; drill-операция создаётся напрямую (хелпер `Create` не годится — он ставит restore-режим): Arrange-блок
+- [ ] **4.1. Добавить failing-юнит-тест гашения в `src/tests/PgWorker.UnitTests/PgNode/RestoreOperationTests.cs`** — сразу ПОСЛЕ метода `CancelDuringRecoveryPoll_StateCancelled_NotFailed` (его закрывающая скобка перед следующим `[Fact]`) вставь дословно:
 ```csharp
-var root = NewPgdata();
-var pgdata = Path.Combine(root, "pgroot", "data");
-var registry = new OperationRegistry();
-registry.TryBegin(new OperationSnapshot(DrillId, "running", "downloading"));
-var op = new RestoreOperation(Request(drillId: DrillId), runner, registry,
-    pgdata: pgdata, _ => new FakeTarS3());
-```
-  Cleanup обоих: `if (Directory.Exists(root)) Directory.Delete(root, recursive: true);`.
-  1. `DrillFinally_FailureAfterStart_StopsPostmasterBeforeScratchRemoval` — ГЛАВНЫЙ кейс: провал операции ПОСЛЕ старта постгресса, постгресс ЖИВ, finally обязан пытаться остановить его ДО удаления scratch. Arrange: `var runner = new FakeRunner { LsnReply = "", PgCtlStopExits = new Queue<int>([1, 1, 1]) };` — семантика фейка (см. подпункт 3.1): старт успешен → `PgCtlStatusExit` станет 0 (постгресс операции жив); поллинг `pg_is_in_recovery` вернёт `"f"` (выход из цикла); LSN-проба вернёт пусто → прод-код идёт в ветку `pg_current_wal_lsn: empty result` (Fail + `StopBestEffortAsync` stop fast → исход 1 из очереди, постгресс жив); все три stop-исхода в очереди провальные (1) — постгресс «неостановим», finally-стоп честно исчерпывает fast → immediate. Act: `await op.RunAsync(CancellationToken.None)`. Assert: (i) снимок `failed`, `snap.Error` содержит `"pg_current_wal_lsn"`; (ii) в `runner.Invocations` есть вызов `FileName == "pg_ctl"` с `Args.Contains("stop")` и `Args.Contains("fast")`, ИНДЕКС которого БОЛЬШЕ индекса последнего вызова `FileName == "psql"` (stop-попытки идут после провала LSN-пробы); (iii) есть вызов `pg_ctl stop` с `Args.Contains("immediate")` (finally эскалирует режим при живом постгрессе); (iv) последний вызов `pg_ctl` в журнале — со `Args.Contains("status")` (заключительная проверка finally) с индексом БОЛЬШЕ индекса последнего `psql`; (v) `Directory.Exists(pgdata)` — false: неостановимый остаток НЕ заблокировал чистку scratch (best-effort удаление выполнилось).
-  2. `DrillFinally_StartFailure_FinallyGuardRunsAfterFailure` — второй кейс (провал старта): Arrange: `var runner = new FakeRunner { StartExitCode = 1 };` (старт провален, постгресс не запускался — `PgCtlStatusExit` остаётся 3). Act: `await op.RunAsync(CancellationToken.None)`. Assert: снимок `failed`; каталог `pgdata` отсутствует (drill-чистка выполнилась); индекс последнего вызова `pg_ctl` со `Args.Contains("status")` БОЛЬШЕ индекса вызова со `Args.Contains("start")` (finally-защита отработала после провала старта).
+    // AAA (гашение при остановке хоста ≠ операторская отмена): shutdown
+    // гасит задачу и postmaster, но снимок НЕ перезаписывается cancelled —
+    // после смерти процесса реестра нет, воркер идёт vanished-путём 404.
+    [Fact]
+    public async Task ShutdownDuringRecoveryPoll_SnapshotNotCancelled()
+    {
+        // Arrange: psql-поллинг висит (гасится отменой); постгресс операции
+        // ЖИВ (PgCtlStatusExit = 0) — гашение обязано его остановить.
+        var root = NewPgdata();
+        var pgdata = Path.Combine(root, "pgroot", "data");
+        var runner = new FakeRunner { PsqlPollHang = true, PgCtlStatusExit = 0 };
+        var registry = new OperationRegistry();
+        registry.TryBegin(new OperationSnapshot(Id, "running", "downloading"));
+        var op = new RestoreOperation(Request(), runner, registry,
+            pgdata, _ => new FakeTarS3());
+        var run = op.RunAsync(CancellationToken.None);
+        SpinWait.SpinUntil(() => runner.Invocations.Any(i =>
+                    i.FileName == "psql" && i.Args.Contains("pg_is_in_recovery")),
+                TimeSpan.FromSeconds(10))
+            .Should().BeTrue("the operation reaches the recovery poll before the shutdown");
 
-- [ ] **4.2. Вставить finally-стоп в `RunAsync`** файла `src/PgWorker.PgNode/Operations/RestoreOperation.cs`: в блоке `finally` (после `catch (Exception e) { Fail(phase, ...); }`) найди начало
+        // Act: гашение при остановке хоста приёмника.
+        await op.ShutdownAsync();
+        await run;
+
+        // Assert: снимок остался running своей фазы — никакого cancelled;
+        // вид операции перенесён (Update не теряет kind).
+        var snap = registrySnapshot(op)!;
+        snap.State.Should().Be("running",
+            "shutdown is an internal channel — the operator-cancel verdict is not published");
+        snap.Error.Should().BeNull();
+        snap.Kind.Should().Be("restore");
+        // Assert: гашение остановило живой постгресс операции (stop fast).
+        runner.Invocations.Should().Contain(i =>
+            i.FileName == "pg_ctl" && i.Args.Contains("stop") && i.Args.Contains("fast"),
+            "shutdown must stop the live postmaster of the operation");
+        Directory.Delete(root, recursive: true);
+    }
+```
+  Прогони фильтр `FullyQualifiedName~ShutdownDuringRecoveryPoll` — ожидание: ошибка компиляции «ShutdownAsync не определён» (это и есть failing-состояние TDD).
+
+- [ ] **4.2. Реализовать канал в RestoreOperation и интерфейсе.** В файле `src/PgWorker.PgNode/Operations/IReceiverOperation.cs` замени тело интерфейса
 ```csharp
-        finally
+public interface IReceiverOperation
+{
+    Task RunAsync(CancellationToken ct);
+
+    Task CancelAsync();
+}
+```
+  на
+```csharp
+public interface IReceiverOperation
+{
+    Task RunAsync(CancellationToken ct);
+
+    Task CancelAsync();
+
+    /// <summary>Гашение при остановке хоста приёмника (arch/pgnode/
+    /// 06-restore-drill.md §2): внутренний канал, ОТЛИЧНЫЙ от операторской
+    /// отмены — гасит задачу и postmaster операции, но снимок НЕ
+    /// перезаписывается (после смерти процесса реестра нет — воркер идёт
+    /// vanished-путём 404 → повтор POST).</summary>
+    Task ShutdownAsync();
+}
+```
+  В файле `src/PgWorker.PgNode/Operations/RestoreOperation.cs`:
+  1) после строки `private readonly CancellationTokenSource _cts = new();` вставь
+```csharp
+    private volatile bool _shutdown; // гашение хоста ≠ операторская отмена
+```
+  2) сразу ПОСЛЕ метода `CancelAsync` (его закрывающая скобка перед комментарием «// Обновление снимка с переносом started_unix») вставь
+```csharp
+    /// <summary>Гашение при остановке хоста приёмника (arch/pgnode/
+    /// 06-restore-drill.md §2): тот же стоп, что у CancelAsync, но БЕЗ
+    /// операторской семантики — снимок НЕ перезаписывается cancelled;
+    /// флаг ставится ДО отмены, чтобы catch отмены различил каналы.</summary>
+    public async Task ShutdownAsync()
+    {
+        _shutdown = true;
+        _cts.Cancel();
+        await StopBestEffortAsync(_pgdata);
+    }
+```
+  3) в catch-блоке
+```csharp
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
         {
-            // Patroni ноды — обратно при ЛЮБОМ исходе RESTORE (там он был
+            // Операторская отмена (cancel API, внешний канал): kill дерева уже
+            // сделан runner'ом; pg_ctl stop best-effort; снимок state=cancelled —
+            // НЕ failed (отмена = «операции не было», arch/backups/03-restore.md; воркер
+            // отличает её от vanished: запись заявки/ключ дрилла удаляются).
+            await StopBestEffortAsync(_pgdata);
+            Update(OperationStates.Cancelled, phase, error: "cancelled by operator");
+        }
 ```
-  и вставь НЕПОСРЕДСТВЕННО ПОСЛЕ строки `finally\n        {` (до комментария про Patroni) дословно:
+  замени ПОСЛЕДНЮЮ строку блока на
 ```csharp
-            // Postmaster операции остановлен при ЛЮБОМ исходе ДО возврата
-            // Patroni (restore) и чистки scratch (drill) — arch/pgnode/
-            // 06-restore-drill.md §2: неостановимый остаток НЕ блокирует
-            // терминальный исход (каталог дочистит защита каталога следующего
-            // запуска); терминальный снимок не трогаем.
-            try { await TryStopPostmasterAsync(_pgdata, CancellationToken.None); }
-            catch { /* best-effort */ }
+            // Гашение при остановке хоста (_shutdown) снимок НЕ перезаписывает.
+            if (!_shutdown)
+                Update(OperationStates.Cancelled, phase, error: "cancelled by operator");
+```
+  4) в методе `Update` замени
+```csharp
+        => _registry.Update(new OperationSnapshot(
+            _request.Id ?? _request.BackupId, state, phase,
+            RestoredToLsn: restoredToLsn, SystemId: systemId,
+            StartedUnix: _registry.Current?.StartedUnix, Error: error));
+```
+  на
+```csharp
+        => _registry.Update(new OperationSnapshot(
+            _request.Id ?? _request.BackupId, state, phase,
+            RestoredToLsn: restoredToLsn, SystemId: systemId,
+            StartedUnix: _registry.Current?.StartedUnix, Error: error,
+            Kind: _isDrill ? OperationKinds.Drill : OperationKinds.Restore));
 ```
 
-- [ ] **4.3. Прогнать**: `DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/PgWorker.UnitTests -c Release --filter "FullyQualifiedName~RestoreOperationTests"` — все PASS.
+- [ ] **4.3. Реализовать канал в VerifyOperation и FullBackupOperation.** В файле `src/PgWorker.PgNode/Operations/VerifyOperation.cs`:
+  1) после строки `private readonly CancellationTokenSource _cts = new();` вставь
+```csharp
+    private volatile bool _shutdown; // гашение хоста ≠ операторская отмена
+```
+  2) сразу ПОСЛЕ метода `CancelAsync` (перед комментарием «// Манифест из хвоста объекта») вставь
+```csharp
+    /// <summary>Гашение при остановке хоста приёмника (arch/pgnode/
+    /// 06-restore-drill.md §2): прерывает чтение потока/сокета; снимок НЕ
+    /// перезаписывается cancelled — операторская семантика только у
+    /// cancel API.</summary>
+    public Task ShutdownAsync()
+    {
+        _shutdown = true;
+        _cts.Cancel();
+        return Task.CompletedTask;
+    }
+```
+  3) в catch-блоке
+```csharp
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
+        {
+            // Операторская отмена: снимок cancelled — НЕ failed (отмена не
+            // суждение о данных); воркер вернёт кандидата в PENDING.
+            Update(OperationStates.Cancelled, CurrentPhase(), "cancelled by operator");
+        }
+```
+  замени закрывающую строку вызова на
+```csharp
+            // Гашение при остановке хоста (_shutdown) снимок НЕ перезаписывает.
+            if (!_shutdown)
+                Update(OperationStates.Cancelled, CurrentPhase(), "cancelled by operator");
+```
+  4) в методе `Update` замени
+```csharp
+        => _registry.Update(new OperationSnapshot(
+            _request.BackupId, state, phase,
+            StartedUnix: _registry.Current?.StartedUnix, Error: error));
+```
+  на
+```csharp
+        => _registry.Update(new OperationSnapshot(
+            _request.BackupId, state, phase,
+            StartedUnix: _registry.Current?.StartedUnix, Error: error,
+            Kind: OperationKinds.Verify));
+```
+  и в методе `Fail` того же файла замени
+```csharp
+        => _registry.Update(new OperationSnapshot(
+            _request.BackupId, OperationStates.Failed, phase,
+            StartedUnix: _registry.Current?.StartedUnix, Error: error));
+```
+  на
+```csharp
+        => _registry.Update(new OperationSnapshot(
+            _request.BackupId, OperationStates.Failed, phase,
+            StartedUnix: _registry.Current?.StartedUnix, Error: error,
+            Kind: OperationKinds.Verify));
+```
+  В файле `src/PgWorker.PgNode/Operations/FullBackupOperation.cs` сразу ПОСЛЕ метода `CancelAsync` (его закрывающая скобка перед doc-комментарием `CopyStreamAsync`) вставь
+```csharp
+    /// <summary>Гашение при остановке хоста (интерфейс ops-канала,
+    /// arch/pgnode/06-restore-drill.md §2): полный бэкап живёт в СВОЁМ
+    /// реестре и ops-каналом не гасится — реализация отменяет задачу без
+    /// операторской семантики (безопасна при любом вызове).</summary>
+    public Task ShutdownAsync()
+    {
+        _cts.Cancel();
+        return Task.CompletedTask;
+    }
+```
+
+- [ ] **4.4. Расширить тестовый двойник IntegrationTests (компилируемость интерфейса).** В файле `src/tests/PgWorker.IntegrationTests/Backups/BackupApiOperationTests.cs` — FakeOp единственный тестовый `IReceiverOperation` этого проекта; после 4.2 без этого подпункта IntegrationTests не собирается (CS0535). Замени класс
+```csharp
+    private sealed class FakeOp(OperationRegistry? registry = null, string? id = null) : IReceiverOperation
+    {
+        public OperationSnapshot? Snapshot => null;
+        public Task RunAsync(CancellationToken ct) => Task.CompletedTask;
+        public Task CancelAsync()
+        {
+            registry?.Update(new OperationSnapshot(
+                id ?? "op", "cancelled", "downloading", Error: "cancelled by operator"));
+            return Task.CompletedTask;
+        }
+    }
+```
+  на
+```csharp
+    private sealed class FakeOp(OperationRegistry? registry = null, string? id = null) : IReceiverOperation
+    {
+        private readonly TaskCompletionSource _finished = new();
+
+        // Счётчики каналов отмены (гашение хоста ≠ операторская отмена).
+        public int CancelCalls;
+        public int ShutdownCalls;
+
+        public OperationSnapshot? Snapshot => null;
+
+        public Task RunAsync(CancellationToken ct) => _finished.Task;
+
+        public Task CancelAsync()
+        {
+            CancelCalls++;
+            registry?.Update(new OperationSnapshot(
+                id ?? "op", "cancelled", "downloading", Error: "cancelled by operator"));
+            return Task.CompletedTask;
+        }
+
+        // Гашение при остановке хоста: снимок НЕ перезаписывается cancelled.
+        public Task ShutdownAsync()
+        {
+            ShutdownCalls++;
+            _finished.TrySetResult();
+            return Task.CompletedTask;
+        }
+
+        // Завершение операции тестом (терминал + выход задачи).
+        public void Finish(string state)
+        {
+            registry?.Update(new OperationSnapshot(id ?? "op", state, "downloading"));
+            _finished.TrySetResult();
+        }
+    }
+```
+  В классе `FakeOpsFactory` замени строки
+```csharp
+        public IReceiverOperation CreateVerify(StartVerifyRequest request)
+        {
+            created.Add(request.BackupId);
+            registry.Update(new OperationSnapshot(request.BackupId, "running", "downloading"));
+            return new FakeOp(registry, request.BackupId);
+        }
+
+        public IReceiverOperation CreateRestore(StartRestoreRequest request)
+        {
+            created.Add(request.BackupId);
+            registry.Update(new OperationSnapshot(request.Id ?? request.BackupId, "running", "recovering"));
+            return new FakeOp(registry, request.Id ?? request.BackupId);
+        }
+```
+  на
+```csharp
+        public FakeOp? Last { get; private set; }
+
+        public IReceiverOperation CreateVerify(StartVerifyRequest request)
+        {
+            created.Add(request.BackupId);
+            registry.Update(new OperationSnapshot(request.BackupId, "running", "downloading"));
+            return Last = new FakeOp(registry, request.BackupId);
+        }
+
+        public IReceiverOperation CreateRestore(StartRestoreRequest request)
+        {
+            created.Add(request.BackupId);
+            registry.Update(new OperationSnapshot(request.Id ?? request.BackupId, "running", "recovering"));
+            return Last = new FakeOp(registry, request.Id ?? request.BackupId);
+        }
+```
+  В методе `Build()` замени строку
+```csharp
+                services.AddSingleton<IOpsOperationFactory>(
+                    new FakeOpsFactory(opsRegistry, created));
+```
+  на
+```csharp
+                var fakeOps = new FakeOpsFactory(opsRegistry, created);
+                services.AddSingleton<IOpsOperationFactory>(fakeOps);
+```
+  и в кортеж возврата `Build()` добавь фабрику (порядок существующих элементов НЕ менять — добавить в конец перед `etcd`):
+```csharp
+        return (factory, factory.CreateClient(), fullRegistry, opsRegistry, created, fakeOps, etcd);
+```
+  с обновлением сигнатуры
+```csharp
+    private static (WebApplicationFactory<global::PgWorker.PgNode.Program> Factory, HttpClient Client,
+        OperationRegistry FullRegistry, OpsOperationRegistry OpsRegistry, List<string> Created,
+        FakeOpsFactory FakeOps, FakeEtcd Etcd) Build()
+```
+  и поправь ВСЕ существующие вызовы `Build()` в тестах класса: деструктуризации `var (_, client, _, _, _, _) = Build();` → `var (_, client, _, _, _, _, _) = Build();` (лишний `_`).
+  Проверка: `DOTNET_CLI_UI_LANGUAGE=en dotnet build src/tests/PgWorker.IntegrationTests -c Release --nologo` (в фоне, лог в `/tmp/t103d-build44.log`) — Build succeeded.
+
+- [ ] **4.5. Добавить юнит-тесты verify (гашение + операторская отмена) в `src/tests/PgWorker.UnitTests/PgNode/VerifyOperationTests.cs`.** Сначала расширь фейк `FakeTarS3` (файл тот же): после строки `public bool FailStreamRead { get; init; }` вставь
+```csharp
+        // Чтение тела висит до отмены токена (модель живого S3-чтения).
+        public bool HangStreamRead { get; init; }
+
+        // Счётчик открытых стримов — предусловие «операция дошла до verifying».
+        public int StreamsOpened;
+```
+  в методе `GetObjectStreamAsync` замени
+```csharp
+        public Task<Result<(Stream Body, long Size)>> GetObjectStreamAsync(
+            string cluster, string shard, string key, CancellationToken ct)
+            => Task.FromResult(Result<(Stream Body, long Size)>.Success(
+                (FailStreamRead ? new FailingStream() : new MemoryStream(tar), (long)tar.Length)));
+```
+  на
+```csharp
+        public Task<Result<(Stream Body, long Size)>> GetObjectStreamAsync(
+            string cluster, string shard, string key, CancellationToken ct)
+        {
+            StreamsOpened++;
+            Stream body = FailStreamRead ? new FailingStream()
+                : HangStreamRead ? new HangingStream()
+                : new MemoryStream(tar);
+            return Task.FromResult(Result<(Stream Body, long Size)>.Success(
+                (body, (long)tar.Length)));
+        }
+```
+  и сразу ПОСЛЕ класса `FailingStream` (перед закрывающей скобкой файла) вставь
+```csharp
+    /// <summary>Поток, висящий на чтении до отмены токена (живое S3-чтение).</summary>
+    private sealed class HangingStream : Stream
+    {
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+
+        public override async ValueTask<int> ReadAsync(
+            Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            return 0;
+        }
+
+        public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        public override void Flush() { }
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    }
+```
+  Затем в класс тестов (после любого `[Fact]`-метода, например после `ValidSet_Succeeded_RangeFromZero`) вставь ДВА теста:
+```csharp
+    // AAA (гашение при остановке хоста ≠ операторская отмена): чтение
+    // прерывается, снимок НЕ перезаписывается cancelled (операторская
+    // семантика — только у cancel API).
+    [Fact]
+    public async Task ShutdownDuringVerifyPass_SnapshotNotCancelled()
+    {
+        // Arrange: валидный набор; чтение тела verifying висит до отмены.
+        var tar = BuildTar([Version, Control, Label, Segment], [Version, Control, Label]);
+        var s3 = new FakeTarS3(tar) { HangStreamRead = true };
+        var op = Create(s3);
+        var run = op.RunAsync(CancellationToken.None);
+        SpinWait.SpinUntil(() => s3.StreamsOpened > 0, TimeSpan.FromSeconds(10))
+            .Should().BeTrue("the operation reaches the verifying pass before the shutdown");
+
+        // Act: гашение при остановке хоста приёмника.
+        await op.ShutdownAsync();
+        await run;
+
+        // Assert: снимок остался running своей фазы — никакого cancelled;
+        // вид операции перенесён (Update не теряет kind).
+        var snap = op.Snapshot!;
+        snap.State.Should().Be("running",
+            "shutdown is an internal channel — the operator-cancel verdict is not published");
+        snap.Error.Should().BeNull();
+        snap.Kind.Should().Be("verify");
+    }
+
+    // AAA (операторский канал остаётся операторским): cancel API verify
+    // публикует cancelled с канонической причиной (регресс-гвард
+    // разделения каналов — парный к ShutdownDuringVerifyPass).
+    [Fact]
+    public async Task CancelDuringVerifyPass_StateCancelled()
+    {
+        // Arrange: тот же висящий verifying-проход.
+        var tar = BuildTar([Version, Control, Label, Segment], [Version, Control, Label]);
+        var s3 = new FakeTarS3(tar) { HangStreamRead = true };
+        var op = Create(s3);
+        var run = op.RunAsync(CancellationToken.None);
+        SpinWait.SpinUntil(() => s3.StreamsOpened > 0, TimeSpan.FromSeconds(10))
+            .Should().BeTrue("the operation reaches the verifying pass before the cancel");
+
+        // Act: операторская отмена (cancel API).
+        await op.CancelAsync();
+        await run;
+
+        // Assert: снимок cancelled с канонической причиной.
+        var snap = op.Snapshot!;
+        snap.State.Should().Be("cancelled",
+            "the operator channel keeps publishing the operator verdict");
+        snap.Error.Should().Be("cancelled by operator");
+    }
+```
+
+- [ ] **4.6. Прогнать серию**: `DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/PgWorker.UnitTests -c Release --filter "FullyQualifiedName~RestoreOperationTests|FullyQualifiedName~VerifyOperationTests"` (в фоне, лог в `/tmp/t103d-unit4.log`) — все PASS, включая новые `ShutdownDuring*`/`CancelDuringVerifyPass` и существующий `CancelDuringRecoveryPoll_StateCancelled_NotFailed`. Коммит: `git add -A && git commit -m "pgnode ops: shutdown channel distinct from operator cancel; kind in snapshots (t103 review)"`.
 
 ---
 
-### Шаг 5. Program.cs: гашение активной ops-операции при остановке приёмника
+### Шаг 5. Program.cs MapOpsRoutes: время жизни active и гварды живости
 
-**Вход:** шаг 4 зелёный; `src/PgWorker.PgNode/Program.cs` не менялся.
+**Вход:** шаг 4 зелёный (ShutdownAsync в интерфейсе; IntegrationTests собирается).
 
-**Действие** (сильная модель): вставка shutdown-хука (подпункт 5.1); сам — сборка и ревью, что хук не мешает штатному запуску (`Register` срабатывает только на ApplicationStopping).
+**Действие** (сильная модель: подпункты 5.1–5.4 дословны). Суть: пара `active`/`activeId`; continuation-обнуление с гвартом ReferenceEquals; хук и cancel-маршрут гасят/отменяют ТОЛЬКО running-снимок именно этой операции; TryBegin-снимки несут kind.
 
-**Выход:** при graceful-остановке pgnode активная ops-операция отменяется (kill дерева child-процессов + `pg_ctl stop -m fast`) с ожиданием ≤ 15 с; юнит-прогон приёмника не задет (верификация — E2E шага 8).
+**Выход:** завершённая операция недостижима для хука/cancel (404), shutdown зовёт ShutdownAsync; снимки запуска несут kind.
 
-**Проверка:** `DOTNET_CLI_UI_LANGUAGE=en dotnet build src/PgWorker.slnx -c Release --nologo` — сборка чистая (0 warnings).
+**Проверка:** `DOTNET_CLI_UI_LANGUAGE=en dotnet build src/PgWorker.slnx -c Release --nologo` — Build succeeded, 0 Warning(s); поведение — тесты шага 8.
 
-**Связь со spec:** §4.1 п.4, §5.2.
+**Связь со spec:** §5.2; решения 10, 11.
 
 Подпункты:
 
-- [ ] **5.1. Вставить shutdown-хук в `MapOpsRoutes`** файла `src/PgWorker.PgNode/Program.cs`: найди в методе `MapOpsRoutes` строку
+- [ ] **5.1. Добавить using-alias и заменить блок active/хук** в `src/PgWorker.PgNode/Program.cs`. После строки `using PgWorker.Etcd.S3;` (блок using-ов вверху файла) вставь
 ```csharp
-        IReceiverOperation? active = null;
+using OperationKinds = PgWorker.Backups.OperationKinds;
 ```
-  и сразу после неё вставь дословно:
+  (именно ALIAS, НЕ `using PgWorker.Backups;` — namespace экспортирует типы, одноимённые с `PgWorker.PgNode.Operations` (`ErrorResponse`, `StartVerifyRequest`, `StartRestoreRequest` и др.), обычный using дал бы неоднозначность CS0104 по всему файлу). В методе `MapOpsRoutes` замени строки ОТ `// Активная операция для cancel (снимок — в реестре, экземпляр — здесь).` КОНЦАМ хука (закрывающая `});` блока `app.Lifetime.ApplicationStopping.Register`) включительно на
 ```csharp
-        // Остановка хоста гасит активную ops-операцию (arch/pgnode/06-restore-drill.md
-        // §2): CancelAsync отменяет задачу (runner гасит дерево child-процессов) и
-        // останавливает postmaster операции — сирот приёмник не оставляет.
-        // Ожидание ≤15 c; жёсткий SIGKILL supervisord закроет остаток защитой
-        // каталога при следующем запуске.
+        // Активная операция для cancel/shutdown (снимок — в реестре,
+        // экземпляр — здесь); activeId — id её TryBegin-снимка (гвард
+        // «running-снимок именно этой операции»).
+        IReceiverOperation? active = null;
+        string? activeId = null;
+
+        // Остановка хоста гасит ЖИВУЮ ops-операцию (arch/pgnode/
+        // 06-restore-drill.md §2): ShutdownAsync — внутренний канал,
+        // ОТЛИЧНЫЙ от операторской отмены: гасит задачу (runner убивает
+        // дерево child-процессов) и останавливает postmaster операции, но
+        // снимок НЕ перезаписывается (после смерти процесса реестра нет —
+        // воркер идёт vanished-путём 404 → повтор POST). Завершённая
+        // операция (терминальный снимок/обнулённая ссылка) не гасится.
+        // Ожидание ≤15 c; жёсткий SIGKILL supervisord закроет остаток
+        // защитой каталога при следующем запуске.
+        var opsRegistry = app.Services.GetRequiredService<OpsOperationRegistry>();
         app.Lifetime.ApplicationStopping.Register(() =>
         {
             try
             {
-                (active?.CancelAsync() ?? Task.CompletedTask)
+                if (active is not { } op || activeId is not { } id)
+                    return;
+                if (opsRegistry.Current is not { State: OperationStates.Running } cur || cur.Id != id)
+                    return;
+                op.ShutdownAsync()
                     .WaitAsync(TimeSpan.FromSeconds(15))
                     .GetAwaiter().GetResult();
             }
@@ -287,62 +645,166 @@ var op = new RestoreOperation(Request(drillId: DrillId), runner, registry,
             }
         });
 ```
-  Затем: `DOTNET_CLI_UI_LANGUAGE=en dotnet build src/PgWorker.slnx -c Release --nologo` — ожидание: `Build succeeded`, 0 Warning(s) 0 Error(s). Если компилятор не видит `Task.CompletedTask`/`WaitAsync` — using уже есть (`System.Threading.Tasks` через implicit usings) — ничего дописывать не нужно; при ошибке имени `app.Lifetime` — проверить, что вставка внутри метода `MapOpsRoutes(WebApplication app)`, а не снаружи.
+
+- [ ] **5.2. TryBegin c kind и continuation-обнуление в POST /api/ops/verify.** В том же методе замени строки хендлера ОТ `if (!registry.TryBegin(new OperationSnapshot(` (первое вхождение — verify) ДО `_ = Task.Run(() => operation.RunAsync(CancellationToken.None));` (первое вхождение) включительно на
+```csharp
+            if (!registry.TryBegin(new OperationSnapshot(
+                    body.BackupId, OperationStates.Running, OperationPhases.Downloading,
+                    StartedUnix: DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                    Kind: OperationKinds.Verify)))
+                return Results.Json(
+                    new ErrorResponse("operation already active"), JsonOpts, statusCode: 409);
+
+            var operation = factory.CreateVerify(body);
+            active = operation;
+            activeId = body.BackupId;
+            // Ссылка живёт до завершения задачи операции; ReferenceEquals не
+            // затирает более новую (arch/pgnode/06-restore-drill.md §2).
+            _ = Task.Run(() => operation.RunAsync(CancellationToken.None))
+                .ContinueWith(_ =>
+                {
+                    if (ReferenceEquals(active, operation))
+                    {
+                        active = null;
+                        activeId = null;
+                    }
+                });
+```
+
+- [ ] **5.3. То же в POST /api/ops/restore.** Замени строки второго хендлера ОТ `if (!registry.TryBegin(new OperationSnapshot(` (второе вхождение — restore, с `body.Id ?? body.BackupId`) ДО `_ = Task.Run(() => operation.RunAsync(CancellationToken.None));` (второе вхождение) включительно на
+```csharp
+            if (!registry.TryBegin(new OperationSnapshot(
+                    body.Id ?? body.BackupId, OperationStates.Running, OperationPhases.Downloading,
+                    StartedUnix: DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                    Kind: body.Id is null ? OperationKinds.Restore : OperationKinds.Drill)))
+                return Results.Json(
+                    new ErrorResponse("operation already active"), JsonOpts, statusCode: 409);
+
+            var operation = factory.CreateRestore(body);
+            active = operation;
+            activeId = body.Id ?? body.BackupId;
+            // Ссылка живёт до завершения задачи операции; ReferenceEquals не
+            // затирает более новую (arch/pgnode/06-restore-drill.md §2).
+            _ = Task.Run(() => operation.RunAsync(CancellationToken.None))
+                .ContinueWith(_ =>
+                {
+                    if (ReferenceEquals(active, operation))
+                    {
+                        active = null;
+                        activeId = null;
+                    }
+                });
+```
+
+- [ ] **5.4. Гвард живости в cancel-маршруте.** Замени тело маршрута
+```csharp
+        app.MapPost("/api/ops/cancel", async (OpsOperationRegistry registry) =>
+        {
+            if (registry.Current is null || active is null)
+                return Results.Json(
+                    new ErrorResponse("no active operation"), JsonOpts, statusCode: 404);
+            await active.CancelAsync();
+            return Results.Json(new { state = "cancelling" }, JsonOpts, statusCode: 202);
+        });
+```
+  на
+```csharp
+        app.MapPost("/api/ops/cancel", async (OpsOperationRegistry registry) =>
+        {
+            // Отмена — ТОЛЬКО живой (running) операции этой ссылки
+            // (arch/pgnode/06-restore-drill.md §2): завершённая не
+            // отменяется и не останавливается повторно.
+            if (registry.Current is not { State: OperationStates.Running } cur
+                || active is not { } op || activeId != cur.Id)
+                return Results.Json(
+                    new ErrorResponse("no active operation"), JsonOpts, statusCode: 404);
+            await op.CancelAsync();
+            return Results.Json(new { state = "cancelling" }, JsonOpts, statusCode: 202);
+        });
+```
+  Скомпилируй: `DOTNET_CLI_UI_LANGUAGE=en dotnet build src/PgWorker.slnx -c Release --nologo` (в фоне, лог в `/tmp/t103d-build5.log`) — Build succeeded. Коммит: `git add -A && git commit -m "pgnode: ops active lifetime guard; hook calls ShutdownAsync; TryBegin carries kind (t103 review)"`.
 
 ---
 
-### Шаг 6. BackupVerifyProcess: сверка id снимка (TDD)
+### Шаг 6. BackupVerifyProcess: сверка id + kind (TDD)
 
-**Вход:** канон шага 2 закоммичен; `src/PgWorker.Backups/Process/BackupVerifyProcess.cs` и `src/tests/PgWorker.IntegrationTests/Backups/BackupVerifyProcessTests.cs` не менялись.
+**Вход:** шаг 3 закоммичен (ReceiverStatus.Kind); шаг 4 завершён (правка интерфейса требует 4.4 для сборки IntegrationTests).
 
-**Действие** (сильная модель): failing-интеграционные тесты (подпункт 6.3), вставка сверки (подпункт 6.1), приведение API-хелперов тестов к снимкам с id (подпункт 6.2), прогон; сам — разбор падений существующих тестов на чужих кандидатах (например, кластеры с кандидатом `20260911090000Z` — передать фактический id в хелпер) и ревью соответствия канону шага 2.
+**Действие** (сильная модель: failing-тест 6.1 → реализация+хелперы 6.2–6.3 → прогон 6.4).
 
-Точка вставки (реальный код): в `TickShardAsync` — между блоком `if (reply.IsTransient || reply.Status is not { } snapshot) { ... }` и `switch (snapshot.State)`.
+**Выход:** снимок чужого вида (или без kind) не даёт verify-вердикта — реланч vanished-семантикой; свои снимки несут kind.
 
-**Выход:** чужой снимок (id ≠ кандидата) не меняет verify-статус полного; выполняется повторный POST; свой снимок — прежнее поведение.
+**Проверка:** `DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/PgWorker.IntegrationTests -c Release --filter "FullyQualifiedName~BackupVerifyProcessTests"` — все PASS.
 
-**Проверка:** `DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/PgWorker.IntegrationTests -c Release --filter "FullyQualifiedName~BackupVerifyProcessTests"` — все зелёные (20 старых + 2 новых). После серии — зачистка docker-контейнеров/сетей теста (OwnEtcd умирает с Fact'ом, страхующий `docker ps --filter name=pgw-ee-` — пусто).
-
-**Связь со spec:** §4.3, §5.3.
+**Связь со spec:** §5.3; решение 13.
 
 Подпункты:
 
-- [ ] **6.1. Вставить сверку в `src/PgWorker.Backups/Process/BackupVerifyProcess.cs`**, метод `TickShardAsync`: найди строки
+- [ ] **6.1. Добавить failing-тест чужого вида с тем же id** в `src/tests/PgWorker.IntegrationTests/Backups/BackupVerifyProcessTests.cs` — сразу ПЕРЕД методом `ForeignFailedSnapshot_CandidateUntouched_Relaunched` вставь (скелет — копия `ForeignSucceededSnapshot_NotMarkedOk`, свой префикс кластера `vf3`):
 ```csharp
-        if (reply.IsTransient || reply.Status is not { } snapshot)
-        {
-            // Приёмник ноды недостижим/5xx — transient (тик повторит GET).
-            observe(cluster, shard, "transient");
-            return;
-        }
+    // AAA (сверка вида операции): restore-снимок ТОГО ЖЕ полного (id
+    // совпадает, kind чужой) — не итог проверки: OK не ставится, операция
+    // перезапущена vanished-семантикой.
+    [Fact]
+    public async Task ForeignKindSameId_NotMarkedOk()
+    {
+        // Arrange: PENDING-кандидат и его ключ; приёмник отдаёт succeeded-
+        // снимок restore-операции С ТЕМ ЖЕ id (kind=restore).
+        var ct = TestContext.Current.CancellationToken;
+        await using var fx = await OwnEtcd.StartAsync("verify", ct);
+        Fx = fx;
+        await SeedAsync("vf3");
+        var s3 = new FakeBackupS3();
+        var candidate = Completed("20260911120000Z", "000000010000000000000001",
+            new BackupVerify(BackupVerifyStatus.Pending, null));
+        var key = "/pgworker/backups/vf3/shard1/full/20260911120000Z";
+        var before = BackupStatusJson.Serialize(candidate);
+        await Fx.Gateway.PutAsync(Fx.Endpoint, key, before, null, ct);
+        Receiver.GetReply = new ReceiverReply(200,
+            new ReceiverStatus("succeeded", "recovering", "20260911120000Z",
+                Kind: OperationKinds.Restore), null);
+        var outcomes = new List<(string C, string S, string Result)>();
+        var process = BuildProcess("vf3", s3, verifyObserver: (c, s, r) => outcomes.Add((c, s, r)));
 
-        switch (snapshot.State)
+        // Act: тик поллинга — снимок чужого вида.
+        (await process.TickAsync(BuildSnap("vf3"), BackupsOf("vf3", candidate), ct))
+            .IsSuccess.Should().BeTrue();
+
+        // Assert: verify НЕ получил OK — ключ не изменён (PENDING).
+        var after = (await Fx.Gateway.GetAsync(Fx.Endpoint, key, ct)).Value!.Value;
+        after.Should().Be(before, "a restore snapshot of the same full is not the verify outcome");
+
+        // Assert: реланч своего кандидата, observe ok не эмитился.
+        Receiver.StartBodies.Should().ContainSingle()
+            .Which.BackupId.Should().Be("20260911120000Z");
+        outcomes.Should().NotContain(o => o.Result == "ok");
+    }
 ```
-  и между закрывающей `}` блока и `switch (snapshot.State)` вставь дословно:
+  Прогони фильтр `FullyQualifiedName~ForeignKindSameId_NotMarkedOk` — ожидание: FAIL (ложный OK: сверка пока только по id).
+
+- [ ] **6.2. Реализовать сверку вида.** В файле `src/PgWorker.Backups/Process/BackupVerifyProcess.cs` замени блок сверки
 ```csharp
-        // Сверка снимка по id (arch/backups/01-full-backup.md §7): ops-реестр
-        // приёмника ОДИН на процесс — GET может вернуть чужой/прошлый снимок
-        // (напр., терминал restore/drill-операции с текстом pg_ctl). Чужой id —
-        // чужой итог: вердикта по нему нет, кандидат перезапускается
-        // vanished-семантикой (повторный POST поверх терминального снимка;
-        // чужой running ответит 409 — тик повторит).
         if (!string.Equals(snapshot.Id, full.Id, StringComparison.Ordinal))
         {
-            logger.LogWarning(
+```
+  на
+```csharp
+        if (!string.Equals(snapshot.Id, full.Id, StringComparison.Ordinal)
+            || snapshot.Kind != OperationKinds.Verify)
+        {
+```
+  и в том же блоке строку лога
+```csharp
                 "{Op} {cluster}/{shard}: verify {id} — registry holds a foreign snapshot (id={SnapId}, state={State}); relaunching via the vanished path",
                 Op, cluster, shard, id, snapshot.Id ?? "<null>", snapshot.State);
-            await journal.WritePhaseAsync(cluster, Op, $"foreign-snapshot/{shard}/{id}",
-                claims.InstanceId,
-                $"receiver registry holds operation {snapshot.Id ?? "<null>"} ({snapshot.State}) — not the verify candidate", ct);
-            var relaunch = await receiver.StartVerifyAsync(
-                receiverUrl, StartRequest(cluster, shard, full, pool), ct);
-            if (!relaunch.IsAccepted && !relaunch.IsConflict)
-                observe(cluster, shard, "transient");
-            return;
-        }
+```
+  на
+```csharp
+                "{Op} {cluster}/{shard}: verify {id} — registry holds a foreign snapshot (id={SnapId}, kind={Kind}, state={State}); relaunching via the vanished path",
+                Op, cluster, shard, id, snapshot.Id ?? "<null>", snapshot.Kind ?? "<null>", snapshot.State);
 ```
 
-- [ ] **6.2. Дать снимкам тестов id кандидата** в `src/tests/PgWorker.IntegrationTests/Backups/BackupVerifyProcessTests.cs`: конструктор `ReceiverStatus` — `(State, Phase, Id = null, ...)`, третий позиционный аргумент — id. Замени три хелпера (строки над классом `FakeReceiverClient`):
+- [ ] **6.3. Дать своим снимкам вид verify** в `src/tests/PgWorker.IntegrationTests/Backups/BackupVerifyProcessTests.cs` (иначе после 6.2 существующие тесты с подходящим id станут «чужими»). Замени три хелпера перед классом `FakeReceiverClient`:
 ```csharp
     private static ReceiverReply ApiOk(string id = "20260911120000Z") =>
         new(200, new ReceiverStatus("succeeded", "verifying", id), null);
@@ -351,42 +813,150 @@ var op = new RestoreOperation(Request(drillId: DrillId), runner, registry,
     private static ReceiverReply ApiVerifyFailed(string error, string id = "20260911120000Z") =>
         new(200, new ReceiverStatus("failed", "verifying", id, Error: error), null);
 ```
-  Дефолт `20260911120000Z` покрывает большинство тестов (кандидат почти везде этот); тесты, чей кандидат имеет ДРУГОЙ id (ищи по `Completed("20260911090000Z"` и `Completed(id,` с переменной), — передать фактический id аргументом в соответствующем вызове хелпера. Скомпилировать: `DOTNET_CLI_UI_LANGUAGE=en dotnet build src/tests/PgWorker.IntegrationTests -c Release --nologo` — Build succeeded.
+  на
+```csharp
+    private static ReceiverReply ApiOk(string id = "20260911120000Z") =>
+        new(200, new ReceiverStatus("succeeded", "verifying", id, Kind: OperationKinds.Verify), null);
+    private static ReceiverReply ApiDownloadTransient(string error, string id = "20260911120000Z") =>
+        new(200, new ReceiverStatus("failed", "downloading", id, Error: error, Kind: OperationKinds.Verify), null);
+    private static ReceiverReply ApiVerifyFailed(string error, string id = "20260911120000Z") =>
+        new(200, new ReceiverStatus("failed", "verifying", id, Error: error, Kind: OperationKinds.Verify), null);
+```
+  Плюс ТРИ одиночных снимка со СВОИМ id (тесты с кандидатом `20260911090000Z` и cancelled-тест): в строках с
+```csharp
+            new ReceiverStatus("cancelled", "verifying", "20260911120000Z", Error: "cancelled by operator"), null);
+```
+  добавь `Kind: OperationKinds.Verify` перед закрывающей скобкой статуса;
+```csharp
+            new ReceiverStatus("running", "verifying", Id: "20260911090000Z", StartedUnix: now - 7 * 3600), null);
+```
+  → добавь `, Kind: OperationKinds.Verify`;
+```csharp
+            new ReceiverStatus("running", "downloading", "20260911090000Z"), null);
+```
+  → `new ReceiverStatus("running", "downloading", "20260911090000Z", Kind: OperationKinds.Verify), null);`.
+  Снимки vf1/vf2 (чужой id `20261106060228Z`) и дефолты FakeReceiverClient (без id, GET не читает) НЕ трогать.
 
-- [ ] **6.3. Добавить два интеграционных теста** в `BackupVerifyProcessTests` (по образцу `TickStartPostRefusedTransientStatusUntouched`: `await using var fx = await OwnEtcd.StartAsync("verify", ct); Fx = fx; await SeedAsync(...);`, ключ кандидата пишется руками для ассерта «не изменён»; каждый тест — СВОЙ префикс кластера `vf1`/`vf2`):
-  1. `ForeignFailedSnapshot_CandidateUntouched_Relaunched` — Arrange: кластер `vf1`, кандидат `Completed("20260911120000Z", "000000010000000000000001", new BackupVerify(BackupVerifyStatus.Pending, null))`, ключ `/pgworker/backups/vf1/shard1/full/20260911120000Z` записан сериализованным кандидатом (`BackupStatusJson.Serialize`); `Receiver.GetReply = new ReceiverReply(200, new ReceiverStatus("failed", "recovering", "20261106060228Z", Error: "pg_ctl start failed: another server might be running"), null)`; `Receiver.StartReply` — дефолтный 202. Act: `TickAsync(BuildSnap("vf1"), BackupsOf("vf1", candidate), ct)`. Assert: значение ключа БАЙТ-В-БАЙТ равно записанному (`after.Should().Be(before)`); `Receiver.StartBodies` содержит ровно один элемент с `BackupId == "20260911120000Z"` (реланч выполнен); verifyObserver не получил `"failed"` (собрать outcomes-список как в соседнем тесте и проверить отсутствие `"failed"`).
-  2. `ForeignSucceededSnapshot_NotMarkedOk` — Arrange: кластер `vf2`, тот же кандидат PENDING с записанным ключом; `Receiver.GetReply = new ReceiverReply(200, new ReceiverStatus("succeeded", "verifying", "20261106060228Z"), null)` (чужой succeeded). Act: `TickAsync`. Assert: ключ не изменён (verify остался PENDING, не OK); `Receiver.StartBodies` содержит один POST с `BackupId` кандидата; outcomes не содержит `"ok"`.
-  Оба теста — AAA-комментарии; после `await using var fx` — стандартный паттерн DisposeAsync teardown OwnEtcd.
-
-- [ ] **6.4. Прогнать серию**: `DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/PgWorker.IntegrationTests -c Release --filter "FullyQualifiedName~BackupVerifyProcessTests"` — все PASS; упавшие существующие из-за несения id — править вызовы хелперов (6.2), не прод-код.
+- [ ] **6.4. Прогнать серию**: `DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/PgWorker.IntegrationTests -c Release --filter "FullyQualifiedName~BackupVerifyProcessTests"` (в фоне, лог в `/tmp/t103d-vf.log`) — все PASS (новый kind-кейс зелёный, vf1/vf2 и остальные — без регресса). Упавший существующий из-за отсутствия kind у снимка со своим id — правь снимок теста (добавь `Kind: OperationKinds.Verify`), НЕ прод-код. Коммит: `git add -A && git commit -m "backups verify: match snapshot id and kind (t103 review)"`.
 
 ---
 
-### Шаг 7. RestoreProcess: сверка id снимка (TDD)
+### Шаг 7. RestoreProcess: сверка id + kind и demolished-повтор (TDD)
 
-**Вход:** канон шага 2 закоммичен; `src/PgWorker.Backups/Process/RestoreProcess.cs` не менялся.
+**Вход:** шаг 3 закоммичен; шаг 4 завершён (сборка IntegrationTests).
 
-**Действие** (сильная модель): failing-тест (подпункт 7.2), вставка сверки (подпункт 7.1), прогон; сам — ревью семантики: чужой id → transient-ожидание (никаких переходов заявки, POST не шлём — фаза заявки вернётся к повтору штатной 409/vanished-механикой).
+**Действие** (сильная модель: переписанные failing-тесты 7.1, новый 7.2 → реализация 7.3 → kind у своих снимков 7.4 → прогон 7.5).
 
-Точка вставки (реальный код): `SuperviseRestoreOpAsync` — между `var status = reply.Status; if (status is null) return ...;` и `switch (status.State)`.
+**Выход:** чужой снимок (id/kind/без kind) сбрасывает Phase в demolished и повторяет POST; снимки вида verify не дают REJOINING/FAILED.
 
-**Выход:** чужой succeeded/failed/cancelled/running не меняет заявку restore (нет ложного REJOINING/FAILED); свой снимок — прежнее поведение.
+**Проверка:** `DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/PgWorker.IntegrationTests -c Release --filter "FullyQualifiedName~RestoreProcessTests"` — все PASS.
 
-**Проверка:** `DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/PgWorker.IntegrationTests -c Release --filter "FullyQualifiedName~RestoreProcessTests"` — все зелёные; зачистка контейнеров после серии.
-
-**Связь со spec:** §4.4, §5.4.
+**Связь со spec:** §5.4; решения 12, 13, 14.
 
 Подпункты:
 
-- [ ] **7.1. Вставить сверку в `src/PgWorker.Backups/Process/RestoreProcess.cs`**, метод `SuperviseRestoreOpAsync`: найди строки
+- [ ] **7.1. Переписать fr1** в `src/tests/PgWorker.IntegrationTests/Backups/RestoreProcessTests.cs`: в методе `ForeignSucceededSnapshot_RequestNotRejoining` (кластер `fr1`) замени блок ассертов
 ```csharp
-        var status = reply.Status;
-        if (status is null)
-            return Result<ProcessOutcome>.Success(ProcessOutcome.InProgress);
-
-        switch (status.State)
+        // Assert — заявка RUNNING/recovering без system_id; POST не слался.
+        var request = (await ReadRestoresAsync("fr1", "shard1")).Single(r => r.Id == op.Id);
+        request.State.Should().Be(RestoreStatus.Running,
+            "a foreign succeeded snapshot is not the outcome of this restore");
+        request.Phase.Should().Be("recovering");
+        request.SystemId.Should().BeNull();
+        _receiver.StartCalls.Should().Be(0,
+            "the launch returns through the 409/vanished mechanics, not from the supervise tick");
 ```
-  и между `if (status is null) ...` и `switch (status.State)` вставь дословно:
+  на
+```csharp
+        // Assert — заявка RUNNING с фазой demolished (сброс под повтор
+        // команды); вердикта нет, system_id не тронут.
+        var request = (await ReadRestoresAsync("fr1", "shard1")).Single(r => r.Id == op.Id);
+        request.State.Should().Be(RestoreStatus.Running,
+            "a foreign succeeded snapshot is not the outcome of this restore");
+        request.Phase.Should().Be("demolished",
+            "the launch is repeated via the demolished reset, not awaited in the supervise phase");
+        request.SystemId.Should().BeNull();
+
+        // Act 2 — повторный тик из demolished повторяет POST запуска.
+        (await process.TickAsync(BuildSnap("fr1"), await BackupsFromEtcdAsync("fr1"), ct))
+            .IsSuccess.Should().BeTrue();
+
+        // Assert 2 — команда переотправлена (своя операция стартует заново).
+        _receiver.StartCalls.Should().Be(1,
+            "the next tick from the demolished phase re-sends the launch command");
+```
+
+- [ ] **7.2. Переписать fr2 и добавить kind-кейс.** В методе `ForeignFailedSnapshot_RequestNotFailed` (кластер `fr2`) замени блок ассертов
+```csharp
+        // Assert — заявка RUNNING/recovering без error; POST не слался.
+        var request = (await ReadRestoresAsync("fr2", "shard1")).Single(r => r.Id == op.Id);
+        request.State.Should().Be(RestoreStatus.Running,
+            "a foreign failed snapshot does not fail this restore");
+        request.Phase.Should().Be("recovering");
+        request.Error.Should().BeNull();
+        _receiver.StartCalls.Should().Be(0);
+```
+  на
+```csharp
+        // Assert — заявка RUNNING с фазой demolished; FAILED не ставится.
+        var request = (await ReadRestoresAsync("fr2", "shard1")).Single(r => r.Id == op.Id);
+        request.State.Should().Be(RestoreStatus.Running,
+            "a foreign failed snapshot does not fail this restore");
+        request.Phase.Should().Be("demolished",
+            "the launch is repeated via the demolished reset, not awaited in the supervise phase");
+        request.Error.Should().BeNull();
+
+        // Act 2 — повторный тик из demolished повторяет POST запуска.
+        (await process.TickAsync(BuildSnap("fr2"), await BackupsFromEtcdAsync("fr2"), ct))
+            .IsSuccess.Should().BeTrue();
+
+        // Assert 2 — команда переотправлена.
+        _receiver.StartCalls.Should().Be(1);
+```
+  Сразу ПОСЛЕ метода `ForeignFailedSnapshot_RequestNotFailed` (перед закрывающей скобкой класса) вставь новый тест (скелет — копия fr1; кластер `fr3`, свой id заявки):
+```csharp
+    // AAA (сверка вида операции): verify-снимок ТОГО ЖЕ полного (id
+    // совпадает с backup_id заявки, kind чужой) — не итог restore:
+    // REJOINING не ставится, фаза сбрасывается под повторный запуск.
+    [Fact]
+    public async Task ForeignKindSameBackupId_NotRejoining()
+    {
+        // Arrange — RUNNING (фаза recovering); GET succeeded с backup_id
+        // заявки, но видом verify (без system_id).
+        var ct = TestContext.Current.CancellationToken;
+        await SeedAsync("fr3");
+        var process = BuildProcess(new FakeBackupS3(),
+            new TestDriver(new StubScaleDriver(), new FakeBackupEngine()));
+        _receiver.GetReply = new ReceiverReply(200,
+            new ReceiverStatus("succeeded", "verifying", "20260910120000Z",
+                Kind: OperationKinds.Verify), null);
+        var op = await SeedRestoreAsync("fr3", "shard1", "20260911121017Z",
+            backupId: "20260910120000Z", state: RestoreStatus.Running,
+            startedUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 60,
+            phase: "recovering",
+            phaseUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 50);
+        (await _claims.TryClaimClusterAsync("fr3", ct)).Value.Should().BeTrue();
+
+        // Act — тик супервиза: снимок чужого вида с тем же id.
+        (await process.TickAsync(BuildSnap("fr3"), await BackupsFromEtcdAsync("fr3"), ct))
+            .IsSuccess.Should().BeTrue();
+
+        // Assert — заявка RUNNING/demolished без system_id (не REJOINING).
+        var request = (await ReadRestoresAsync("fr3", "shard1")).Single(r => r.Id == op.Id);
+        request.State.Should().Be(RestoreStatus.Running,
+            "a verify snapshot of the same full is not the outcome of this restore");
+        request.Phase.Should().Be("demolished");
+        request.SystemId.Should().BeNull();
+
+        // Act 2 + Assert 2 — повторный тик переотправляет команду.
+        (await process.TickAsync(BuildSnap("fr3"), await BackupsFromEtcdAsync("fr3"), ct))
+            .IsSuccess.Should().BeTrue();
+        _receiver.StartCalls.Should().Be(1);
+    }
+```
+  Прогони фильтры `FullyQualifiedName~ForeignSucceededSnapshot|FullyQualifiedName~ForeignFailedSnapshot|FullyQualifiedName~ForeignKindSameBackupId` — ожидание: НОВЫЙ FAIL (REJOINING по id-совпадению), переписанные fr1/fr2 FAIL (фаза ещё recovering).
+
+- [ ] **7.3. Реализовать сверку вида и demolished-сброс.** В файле `src/PgWorker.Backups/Process/RestoreProcess.cs` замени блок
 ```csharp
         // Сверка снимка по id (arch/backups/processes/f-restore.md §2):
         // ops-реестр приёмника ОДИН на процесс — GET может вернуть чужой/
@@ -400,32 +970,112 @@ var op = new RestoreOperation(Request(drillId: DrillId), runner, registry,
                 $"receiver registry holds operation {status.Id ?? "<null>"} ({status.State}) — not this restore", ct);
         }
 ```
+  на
+```csharp
+        // Сверка снимка по id и виду операции (arch/backups/processes/
+        // f-restore.md §2): ops-реестр приёмника ОДИН на процесс — GET
+        // может вернуть чужой/прошлый снимок (напр., терминал
+        // verify/drill-операции ТОГО ЖЕ полного: id совпадает, вид — нет).
+        // Чужой id ИЛИ чужой вид (в т.ч. снимок без kind — контракт старого
+        // приёмника) — чужой итог/фаза: переходов заявки по нему нет
+        // (REJOINING от чужого succeeded без system_id запер бы bootstrap).
+        // Фаза сбрасывается в "demolished" + transient — команда повторится
+        // следующим тиком (симметрично ветке vanished 404; живая чужая
+        // операция ответит 409 — семантика освобождения реестра).
+        if (!string.Equals(status.Id, op.BackupId, StringComparison.Ordinal)
+            || status.Kind != OperationKinds.Restore)
+        {
+            var putReset = await PutStatusAsync(cluster, shard.Name, op with { Phase = "demolished" }, ct);
+            if (!putReset.IsSuccess)
+                return Result<ProcessOutcome>.Failed(putReset.Error!);
+            return await TransientAsync(cluster, $"foreign-snapshot/{shard.Name}/{op.Id}",
+                $"receiver registry holds operation {status.Id ?? "<null>"} (kind {status.Kind ?? "<null>"}, {status.State}) — not this restore", ct);
+        }
+```
 
-- [ ] **7.2. Добавить два интеграционных теста** в `src/tests/PgWorker.IntegrationTests/Backups/RestoreProcessTests.cs`. Общий скелет Arrange обоих — ТОЧНО по соседним RUNNING-тестам этого же файла (поля класса `_receiver`/`_claims`, хелперы `SeedAsync`/`BuildProcess`/`SeedRestoreAsync`): `await SeedAsync(<cluster>);` → `var process = BuildProcess(new FakeBackupS3(), new TestDriver(new StubScaleDriver(), new FakeBackupEngine()));` → `_receiver.GetReply = <снимок>;` → заявка через `SeedRestoreAsync(<cluster>, "shard1", <id>, backupId: "20260910120000Z", state: RestoreStatus.Running, startedUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 60, phase: "recovering", phaseUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 50)` — ВАЖНО: без `phase` заявка RUNNING уйдёт в ветку демонтажа (`switch (op.Phase)`: `null/""` → DemolishStepAsync) и до GET-супервиза не дойдётся; → claim-гвард тика `(await _claims.TryClaimClusterAsync(<cluster>, ct)).Value.Should().BeTrue();`. Act в обоих: `(await process.TickAsync(BuildSnap(), await BackupsFromEtcdAsync(<cluster>), ct)).IsSuccess.Should().BeTrue();`. Каждый тест — СВОЙ свежий префикс кластера и свой id заявки (по образцу соседей: id вида `"20260911121006Z"`/`"20260911121007Z"`):
-  1. `ForeignSucceededSnapshot_RequestNotRejoining` — снимок: `new ReceiverReply(200, new ReceiverStatus("succeeded", "verifying", "20260911120000Z"), null)` (чужой id ≠ backup_id заявки, без `RestoredToLsn`/`SystemId`). Assert: `ReadRestoresAsync(<cluster>, "shard1")` — заявка `State == RestoreStatus.Running` (НЕ Rejoining), `Phase == "recovering"` (не изменён), `SystemId` — null; `_receiver.StartCalls == 0` (POST не шлём — ожидание освобождения реестра).
-  2. `ForeignFailedSnapshot_RequestNotFailed` — снимок: `new ReceiverReply(200, new ReceiverStatus("failed", "recovering", "20261106060228Z", Error: "pg_ctl start failed: another server might be running"), null)` (чужой failed — снимок drill-операции). Assert: заявка `State == RestoreStatus.Running` (НЕ Failed), `Phase == "recovering"` (не изменён), `Error` — null; `_receiver.StartCalls == 0`.
-  Оба — AAA-комментарии.
+- [ ] **7.4. Дать своим снимкам вид restore** в том же тест-файле: во ВСЕХ одиночных `new ReceiverStatus(` с id `"20260910120000Z"` (строки существующих тестов: succeeded/recovering с `RestoredToLsn`, failed/recovering с `Error: "boom"`, running/recovering, running/downloading, cancelled/recovering, failed/downloading `Error: "s3 throttled"`, succeeded с `RestoredToLsn: "0/42"`) добавь именованный аргумент `Kind: OperationKinds.Restore` (к `Error`/`RestoredToLsn`-вариантам — после них через запятую; к коротким `new ReceiverStatus("running", "recovering", "20260910120000Z"), null)` → `new ReceiverStatus("running", "recovering", "20260910120000Z", Kind: OperationKinds.Restore), null)`). Снимки fr1/fr2 (чужой id), дефолты FakeReceiverClient (без id — GET не читает) и два running-снимка без id (читаются только вне GET-супервиза) НЕ трогать.
 
-- [ ] **7.3. Прогнать серию**: `DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/PgWorker.IntegrationTests -c Release --filter "FullyQualifiedName~RestoreProcessTests"` — все PASS.
+- [ ] **7.5. Прогнать серию**: `DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/PgWorker.IntegrationTests -c Release --filter "FullyQualifiedName~RestoreProcessTests"` (в фоне, лог в `/tmp/t103d-fr.log`) — все PASS. Упавший существующий из-за отсутствия kind у снимка со своим id — правь снимок (добавь `Kind: OperationKinds.Restore`), НЕ прод-код. Коммит: `git add -A && git commit -m "backups restore: match snapshot id and kind; foreign snapshot resets phase to demolished (t103 review)"`.
 
 ---
 
-### Шаг 8. E2E-сценарий Drill_ReceiverRestart_PostmasterNotLeaked
+### Шаг 8. API-тесты MapOpsRoutes: shutdown-хук и cancel-after-terminal
 
-**Вход:** шаги 3–7 закоммичены; E2ePrepare контур доступен; `E2eDrillScenarios` — существующий файл-паттерн.
+**Вход:** шаги 4–5 закоммичены; тестовые двойники (FakeOp/FakeOpsFactory/Build) уже расширены подпунктом 4.4 — этот шаг добавляет ТОЛЬКО тесты.
 
-**Действие** (сильная модель, целиком — без подпунктов; контекст E2E-инфраструктуры не переносим в подпункты): новый `[Fact] Drill_ReceiverRestart_PostmasterNotLeaked` в `src/tests/PgWorker.E2eTests/E2e/E2eDrillScenarios.cs` по образцу `Drill_Succeeds_CleansUp` (свой cluster `bkdrll{Fx.ClusterTag}r` — уникальный суффикс, `CleanupPreviousDrillClustersAsync`, `SeedClusterAsync`, policy c `"drill":{"interval_days":1}` и `"verify":{"on_create":true}` (нужен verify-кандидат для ассерта (д)), `StartBackupHostAsync`, `cts.CancelAfter(TimeSpan.FromMinutes(4))` — потолок: штатный дрилл ~90 c + рестарт + повторный прогон):
-1. Дождаться COMPLETED-полного и ключа drill в RUNNING с фазой `recovering` (поллинг etcd `/pgworker/backups/<cluster>/shard1/drill` на `"phase":"recovering"`; бюджет 120 с).
-2. `supervisorctl stop pgnode` ПЕРВОЙ ноды шарда (контейнер первой ноды: как в E2eSupervisorSelfHealScenarios — `Fx.RunDockerAsync(["exec", <node>, "supervisorctl", "stop", "pgnode"], ct)`; имя контейнера — по фильтру `pgw-<cluster>-shard1-shard1a`), выдержка 2 с, `supervisorctl start pgnode`.
-3. Дождаться терминального итога дрилла (SUCCEEDED/FAILED без `phase`; бюджет 180 с — vanished-перезапуск повторяет скачивание+recovery).
-4. Ассерты: (а) итог дрилла (его etcd-ключ, поле `error`) НЕ содержит `"another server might be running"` и `"postmaster.pid"`; (б) в логах контура НЕТ строки `another postmaster` — проверить оба источника: postmaster-лог операции `docker exec <node> cat /tmp/restore-pg.log` (файл мог отсутствовать до рестарта — отсутствие тоже чисто) и docker-лог контейнера ноды `docker logs <node>` (обе выгрузки — в строку, ассерт `Should().NotContain("another postmaster")`); (в) на ноде нет постгресса в drill-каталоге: `docker exec <node> pg_ctl status -D /home/postgres/pgdata/backup-drill/<drill-id>/pgdata` отвечает не-0 (или каталога нет — проверить `docker exec <node> test -d <путь>`); (г) scratch-каталоги `/home/postgres/pgdata/backup-drill/*` на ноде отсутствуют после терминала; (д) записи полных (etcd `/pgworker/backups/<cluster>/shard1/full/`) не содержат `verify` со `state":"FAILED` и текстом `pg_ctl start failed` (чужой итог).
-5. Телеметрия упавшего ожидания — по образцу `Drill_Succeeds_CleansUp` (дамп в `/tmp/pgw-diag-<cluster>.txt`).
+**Действие** (сильная модель: подпункты 8.1–8.3 дословны). Суть: два новых теста — «остановка хоста гасит живую операцию без cancelled» и «cancel после терминала — 404 без вызова».
 
-**Выход:** регресс-сценарий t103 зелёный; при повторении исходного дефекта падает ассертом (а)/(б)/(в)/(д).
+**Выход:** хук и гварды живости закодированы тестами (краснеют при откате шага 5).
 
-**Проверка:** прогон в составе гейта шага 9 (точечно не запускать до полной серии шага 9 — правило двух отдельных команд).
+**Проверка:** `DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/PgWorker.IntegrationTests -c Release --filter "FullyQualifiedName~BackupApiOperationTests"` — все PASS.
 
-**Связь со spec:** §5.5 (E2E), критерий 3.
+**Связь со spec:** §5.5 (интеграционные), решения 10, 11.
+
+Подпункты:
+
+- [ ] **8.1. Добавить тест остановки хоста** в `src/tests/PgWorker.IntegrationTests/Backups/BackupApiOperationTests.cs` — в конец класса (перед закрывающей скобкой) вставь:
+```csharp
+    // AAA (гашение при остановке хоста ≠ операторская отмена): StopAsync
+    // хоста гасит ЖИВУЮ операцию каналом ShutdownAsync — снимок НЕ
+    // перезаписывается cancelled; воркер после смерти процесса идёт
+    // vanished-путём 404, не операторской веткой.
+    [Fact]
+    public async Task HostShutdown_ActiveOp_NotCancelled()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        // Arrange: живая verify-операция (фейк висит в RunAsync).
+        var (factory, client, _, opsRegistry, _, fakeOps, _) = Build();
+        var body = new StartVerifyRequest(Id,
+            new S3Context(["http://s3a:9000"], "ak", "sk", "backups", "c1/s1"));
+        ((int)(await client.PostAsJsonAsync("/api/ops/verify", body, ct)).StatusCode)
+            .Should().Be(202);
+        var op = fakeOps.Last!;
+        await using var _ = factory;
+
+        // Act: остановка хоста приёмника.
+        await factory.Server.Host.StopAsync(ct);
+
+        // Assert: гашение каналом shutdown, БЕЗ операторской ветки.
+        op.ShutdownCalls.Should().Be(1, "host shutdown must go through the shutdown channel");
+        op.CancelCalls.Should().Be(0, "host shutdown is not an operator cancel");
+        opsRegistry.Current!.State.Should().Be("running",
+            "shutdown does not publish cancelled — the registry dies with the process");
+    }
+```
+
+- [ ] **8.2. Добавить тест cancel-after-terminal** — следом вставь:
+```csharp
+    // AAA (отмена только живой операции): завершённая операция (терминал +
+    // выход задачи) недоступна для cancel — 404 без вызова CancelAsync;
+    // повторный stop/restart pgnode не шлёт стоп по PGDATA завершённого
+    // restore.
+    [Fact]
+    public async Task CancelAfterTerminal_Returns404_NoCancelCall()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        // Arrange: операция дошла до терминала и завершила задачу.
+        var (factory, client, _, opsRegistry, _, fakeOps, _) = Build();
+        await using var _ = factory;
+        var body = new StartVerifyRequest(Id,
+            new S3Context(["http://s3a:9000"], "ak", "sk", "backups", "c1/s1"));
+        ((int)(await client.PostAsJsonAsync("/api/ops/verify", body, ct)).StatusCode)
+            .Should().Be(202);
+        var op = fakeOps.Last!;
+        op.Finish("succeeded");
+        SpinWait.SpinUntil(() => opsRegistry.Current?.State == "succeeded",
+            TimeSpan.FromSeconds(10)).Should().BeTrue();
+
+        // Act: операторская отмена завершённой операции.
+        var cancel = await client.PostAsync("/api/ops/cancel", content: null, ct);
+
+        // Assert: 404, канал отмены не звался.
+        ((int)cancel.StatusCode).Should().Be(404,
+            "a terminal operation is not cancellable — the active reference is gone");
+        op.CancelCalls.Should().Be(0);
+    }
+```
+
+- [ ] **8.3. Прогнать серию**: `DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/PgWorker.IntegrationTests -c Release --filter "FullyQualifiedName~BackupApiOperationTests"` (в фоне, лог в `/tmp/t103d-api.log`) — все PASS. Коммит: `git add -A && git commit -m "pgnode api tests: host shutdown channel and cancel-after-terminal guard (t103 review)"`.
 
 ---
 
@@ -433,40 +1083,22 @@ var op = new RestoreOperation(Request(drillId: DrillId), runner, registry,
 
 **Вход:** шаги 1–8 закоммичены; docker-хост свободен (нет поднятого dev-станда и остатков серий).
 
-**Действие** (сильная модель; команды — в фоне, лог каждой серии — в файл `/tmp/t103-<series>.log`; между сериями — дожидаться финальной строки и зачищать остатки `docker ps -a`/`docker network ls | grep -c <префикс>`):
+**Действие** (сильная модель; все команды — в фоне, лог каждой серии — в файл `/tmp/t103d-<series>.log`; после каждой серии — дожидаться финальной строки и зачищать остатки `docker ps -a`/`docker network ls`; между сериями — только own-only чистка):
 1. Юниты: `DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/PgWorker.UnitTests -c Release` — 0 failed.
 2. Зачистка → интеграционные: `DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/PgWorker.IntegrationTests -c Release` — 0 failed.
 3. Статическая подготовка E2E: `DOTNET_CLI_UI_LANGUAGE=en dotnet run --project src/tests/PgWorker.E2ePrepare -c Release` — штамп готовности.
 4. Сборка (ОТДЕЛЬНОЙ командой, свежесть бинаря — часть гейта): `DOTNET_CLI_UI_LANGUAGE=en dotnet build src/PgWorker.slnx -c Release --nologo` — Build succeeded, 0 warnings.
-5. E2E (только `--no-build`): `DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/PgWorker.E2eTests -c Release --no-build --filter "FullyQualifiedName~Drill_|FullyQualifiedName~Backup_ChainBroken_SelfHeals"` — все Passed (Drill_Succeeds_CleansUp, Drill_Failed_OnCorruptedWal, Drill_ReceiverRestart_PostmasterNotLeaked, Backup_ChainBroken_SelfHeals).
+5. E2E (только `--no-build`): `DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/PgWorker.E2eTests -c Release --no-build --filter "FullyQualifiedName~Drill_|FullyQualifiedName~Backup_ChainBroken_SelfHeals"` — все Passed (E2E-сценарий доработкой не менялся — регресс-гейт Р1: удаление ключа дрилла при stop pgnode невозможно).
 6. Итог серии: зачистка остаточных контейнеров/сетей прогона; упавший тест НЕ перезапускать — разбор по логам (`/tmp/pgw-e2e-artifacts-*`, `$TMPDIR` тоже проверить), фикс причины, затем повтор ШАГОМ целиком.
 
-**Выход:** все серии зелёные на свежем Release.
+**Выход:** все серии зелёные на свежем Release; финальный коммит ветки (роадмап-гейт t103 исполнен ранее — отдельных действий нет; убедиться `grep -rn "t103" arch/ AGENTS.md docs/ --exclude-dir=superpowers` пуст вне допустимых мест).
 
-**Проверка:** итоговые строки серий: `Failed: 0` (юниты/интеграция), `Passed: N, Failed: 0` (E2E).
+**Проверка:** итоговые строки серий: `Failed: 0` (юниты/интеграция), `Passed: N, Failed: 0` (E2E); `git status` чистый.
 
-**Связь со spec:** §6.5, критерий 4.
-
----
-
-### Шаг 10. Роадмап: удаление пункта t103
-
-**Вход:** шаг 9 зелёный; ветка готова к мержу.
-
-**Действие** (сильная модель): удалить пункт из `arch/roadmap/bugs.md` (подпункт 10.1); убедиться, что в `AGENTS.md`/`arch/**`/`docs/**` (кроме `docs/superpowers/`) упоминаний t103 не осталось (`grep -rn "t103" --exclude-dir=superpowers` — пусто в arch/AGENTS.md; папка логов `arch/roadmap/bugs/t103-...` вне git — не трогать). Коммит вместе с финальным состоянием ветки — этот коммит становится мерж-коммитом в main (правило роадмапа: тег удаляется ТЕМ ЖЕ мерж-коммитом).
-
-**Выход:** `arch/roadmap/bugs.md` без пункта t103; история — в git и docs/superpowers/.
-
-**Проверка:** `grep -c "t103" arch/roadmap/bugs.md` → 0; `git status` чистый после коммита.
-
-**Связь со spec:** §5.6, критерий 5.
-
-Подпункты:
-
-- [ ] **10.1. Удалить пункт из `arch/roadmap/bugs.md`** (worktree): первая строка пункта начинается РОВНО с `- **\`t103-verify-postmaster-leak-registry\`**` (без ведущих пробелов; с этого места начинается список пунктов после шапки — заголовок `# Bugs (pg)` и два вводных абзаца «Падения тестов…» / «Каждому пункту…»). Подпункты пункта (хронология и пр.) идут ниже с отступом `  - ` — они часть пункта. Удалить ВСЕ строки файла начиная со строки `- **\`t103-verify-postmaster-leak-registry\`**` и до КОНЦА файла (t103 — единственный и последний пункт). Шапку (заголовок и вводные абзацы) оставить без изменений. Результат — файл из одних только шапочных строк. Скомпилировать нечего (markdown); проверка: `grep -c "t103" arch/roadmap/bugs.md` выводит `0`.
+**Связь со spec:** §6.5, критерии 6–8.
 
 ---
 
 ## Порядок исполнения и зависимости
 
-Шаги 1–2 (канон) — первыми, строго до кода (arch-first). Шаги 3–5 (приёмник) — после 1. Шаги 6–7 (воркер) — после 2 (не зависят от 3–5). Шаг 8 — после 3–7. Шаг 9 — после всех. Шаг 10 — после 9. Каждый шаг завершается коммитом в feature-ветке (`git add -A && git commit -m "<осмысленное сообщение>"`); шаги 1 и 2 — отдельные коммиты канона ДО кодовых.
+Шаги 1–2 (канон) — первыми, строго до кода (arch-first). Шаг 3 (контракт kind) — после 1–2, до 4/5/6/7. Шаг 4 (операции) — после 3; подпункт 4.4 восстанавливает сборку IntegrationTests (правка интерфейса 4.2 ломает единственный тестовый IReceiverOperation) — поэтому шаги 6/7 обязаны идти ПОСЛЕ шага 4, хотя их прод-код зависит только от шага 3. Шаг 5 (Program) — после 4 (нужен ShutdownAsync в интерфейсе). Шаг 6 (verify-супервиз) и шаг 7 (restore-супервиз) — после 4. Шаг 8 (API-тесты) — после 4–5 (двойники готовы в 4.4, гварды — в шаге 5). Шаг 9 — после всех. Каждый шаг завершается коммитом в feature-ветке; шаги 1 и 2 — отдельные коммиты канона ДО кодовых.
