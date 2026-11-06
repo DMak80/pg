@@ -666,7 +666,9 @@ public sealed class E2eWalStreamScenarios(E2eWalStreamScenariosFx Ctx) : IClassF
     }
 
     // AAA (критерий 5): lost-слот мастера при живой sync-архивации — воркер лечит
-    // сам (recreate + журнальная фаза slot-recreate), ключ НЕ WAL_CHAIN_ERROR, приёмник
+    // сам (recreate; журнальная фаза slot-recreate fleeting — перезаписывается
+    // стационарной записью надзора в тот же work-ключ, потому ассертится
+    // детерминированное следствие recreate), ключ НЕ WAL_CHAIN_ERROR, приёмник
     // возвращается к стриму, цепочка WalChain непрерывна, last_uploaded растёт без
     // дыры. Детерминизация: между остановкой приёмника мастера (supervisorctl stop,
     // t25 — процесс ноды) и возвратом воркера (Kill/старт — паттерн «смерть
@@ -759,27 +761,37 @@ public sealed class E2eWalStreamScenarios(E2eWalStreamScenariosFx Ctx) : IClassF
             Console.WriteLine($"[PHASE] wal-t19: master slot lost={lost} (budget 180 s)");
             lost.Should().BeTrue("64 MiB WAL at a 16 MiB ceiling + a checkpoint must cut the master slot");
 
-            // Act 3 — возврат воркера + приёмника мастера: тик лечит (recreate слота
-            // + журнал slot-recreate; приёмник повторно занимает слот от хвоста S3;
-            // клэйм убитого истекает ≤ 15-20 c)
-            Console.WriteLine("[PHASE] wal-t19: worker start + receiver start — self-healing");
-            await Fx.RunDockerAsync(
-                ["exec", masterNodeName, "supervisorctl", "start", "pgnode"], ct);
+            // Act 3 — возврат воркера ДО приёмника мастера (детерминизм): слот
+            // гарантированно lost на первом тике — воркер recreate'ит его и
+            // журналирует фазу (spec §3.2); клэйм убитого истекает ≤ 15-20 c.
+            // Приёмник, стартуй он раньше, успевает САМ занять lost-слот от хвоста
+            // S3 (PG принимает START_REPLICATION позицией выше потерянного окна —
+            // слот оживает до зонда воркера, журнальной фазы нет) — путь легитимен,
+            // но недетерминирован и не проверяем.
+            Console.WriteLine("[PHASE] wal-t19: worker start — the tick heals the lost slot first");
             await using var app2Owner = await StartWalHostAsync("wal-t19b", ct);
 
-            // Assert 1 — журнальная фаза slot-recreate
-            var journaled = await E2eFixture.WaitForAsync(async () =>
-            {
-                var workKv = await GetOrNullAsync($"/pgworker/work/{cluster}");
-                return workKv?.Value?.Contains("slot-recreate/shard1") == true;
-            }, TimeSpan.FromSeconds(90), ct);
-            journaled.Should().BeTrue("the worker must record the slot-recreate phase (spec §3.2)");
-
-            // Assert 2 — слот мастера жив (не lost)
+            // Assert 1 — самолечение lost-слота ТИКОМ воркера, детерминированное:
+            // приёмник мастера ещё мёртв (возвращается в Act 4), PG сам lost не
+            // проходит (инвалидация устойчива — факт эксперимента t102), sync-агент
+            // трогает только слот своей ноды — оживший (reserved/streaming) слот
+            // мастера мог пересоздать только тик воркера (drop+create immediate+
+            // reserved, spec §3.2; журнальная фаза slot-recreate пишется ДО
+            // мутации, но живёт в work-ключе <1-2 c до стационарной записи надзора
+            // op=supervise в ТОТ ЖЕ ключ каждый тик — поллинг 500 мс её не
+            // детерминирован, наблюдаем устойчивое следствие recreate).
             var healed = await E2eFixture.WaitForAsync(
                 async () => await SlotWalStatusAsync(cluster, "shard1", masterNode, ct) is not ("lost" or null),
                 TimeSpan.FromSeconds(90), ct);
-            healed.Should().BeTrue("recreate returns a live slot");
+            healed.Should().BeTrue(
+                "the worker tick recreates the lost master slot (spec §3.2) while the master receiver is still down — " +
+                "wal_status has left lost (fresh immediate+reserved slot)");
+
+            // Act 4 — возврат приёмника мастера: занимает пересозданный слот от
+            // хвоста S3 (канон §3: потерянный источник возвращается сам)
+            Console.WriteLine("[PHASE] wal-t19: receiver start — catches up from the S3 tail");
+            await Fx.RunDockerAsync(
+                ["exec", masterNodeName, "supervisorctl", "start", "pgnode"], ct);
 
             // Assert 3 — приёмник мастера снова streaming (супервизор ноды перезапустил
             // программу; приёмник занял recreate-слот и стримит)

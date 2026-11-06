@@ -194,7 +194,14 @@ public sealed class E2eWalStreamTliScenarios(E2eWalStreamTliScenariosFx Ctx) : I
         // Arrange — окружение, оба агента running, база цепочки TLI 1
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(
             TestContext.Current.CancellationToken);
-        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
+        // Потолок факта 5 мин (согласовано владельцем 2026-11-05, прецедент
+        // 2acc81d2 — бюджет от фактической потребности): изоляция 2м06–2м13
+        // (t93 3/3), но в ПАРАЛЛЕЛЬНОЙ полной серии provision тянется >90 с
+        // (факт финальной серии 2026-11-05: wal-provisioning не DONE за 90 с
+        // при зелёном прогоне №2 той же сборки) — 3 мин резали факт раньше
+        // фазовых бюджетов; страховка от зависания — сами фазовые бюджеты
+        // (90/150/170 с) + этот потолок.
+        cts.CancelAfter(TimeSpan.FromMinutes(5));
         var ct = cts.Token;
         var (fx, app, cluster, adminDsn, masterNode) = await StartWalScenarioAsync("wal-t24b", "shopt24b", ct);
         await using var appOwner = app;
@@ -219,11 +226,13 @@ public sealed class E2eWalStreamTliScenarios(E2eWalStreamTliScenariosFx Ctx) : I
             TimeSpan.FromSeconds(90), ct);
                 anchored.Should().BeTrue("the TLI 1 chain must be anchored in S3 before the outage");
 
-        // Секция outage+jump — свой бюджет 3 мин (приказ владельца: длинный
-        // тест — переприсвоение ct по секциям, каждая секция ≤3 мин).
+        // Секция outage+jump — бюджет окна 5 мин (согласовано владельцем
+        // 2026-11-05 вместе с потолком факта: внутренний потолок не должен
+        // резать раньше главного; содержание окна — outage 10 с + jump-гейт
+        // 90 с, фактическая потребность — секунды).
         using var ctsOutage = CancellationTokenSource.CreateLinkedTokenSource(
             TestContext.Current.CancellationToken);
-        ctsOutage.CancelAfter(TimeSpan.FromMinutes(3));
+        ctsOutage.CancelAfter(TimeSpan.FromMinutes(5));
         ct = ctsOutage.Token;
 
         using var load = new CancellationTokenSource();
@@ -313,10 +322,13 @@ public sealed class E2eWalStreamTliScenarios(E2eWalStreamTliScenariosFx Ctx) : I
                     $"(completed={completedJson.Count}, last wal_start={lastWalStart})";
             }
 
-            // Секция сходимости — свой бюджет 3 мин.
+            // Секция сходимости — бюджет окна 5 мин (согласовано владельцем
+            // 2026-11-05): бюджеты фаз окна 90+170=260 с не влезали в прежние
+            // 3 мин — окно резало фазы раньше их границ; фактическая
+            // потребность — доли секунды (t93: converged 0.7 с из 170 с).
             using var ctsConv = CancellationTokenSource.CreateLinkedTokenSource(
                 TestContext.Current.CancellationToken);
-            ctsConv.CancelAfter(TimeSpan.FromMinutes(3));
+            ctsConv.CancelAfter(TimeSpan.FromMinutes(5));
             ct = ctsConv.Token;
 
             // t93 (корневая причина, факты прогонов 2026-11-05): приёмник
@@ -723,8 +735,13 @@ public sealed class E2eWalStreamTliScenarios(E2eWalStreamTliScenariosFx Ctx) : I
         var cluster = $"{clusterPrefix}{Fx.ClusterTag}";
         await SeedClusterAsync(cluster);
         var app = await StartWalHostAsync(slug, ct);
+        // 150 с (согласовано владельцем 2026-11-05): изоляция 10–46 с
+        // (pg_basebackup ждёт checkpoint ноды), параллельная полная серия
+        // требует >90 с (факт финальной серии 2026-11-05) — ×1.6 от худшего
+        // изоляционного факта; после первого зелёного полного прогона —
+        // пересчитать по прецеденту 2acc81d2 (×1.2 от факта полной серии).
         var provisioned = await E2ePhase.WaitAsync(Fx, "wal-provisioning",
-            E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(90), ct);
+            E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(150), ct);
         provisioned.Should().BeTrue("provisioning must reach DONE before the WAL load");
         Console.WriteLine($"[PHASE] {slug}: provisioning DONE in " +
             (DateTimeOffset.UtcNow.ToUnixTimeSeconds() - phaseStart) + " s from start");
