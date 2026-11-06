@@ -835,7 +835,7 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
         var process = BuildProcess(new FakeBackupS3(), driver);
         _receiver.GetReply = new ReceiverReply(200,
             new ReceiverStatus("succeeded", "recovering", "20260910120000Z",
-                RestoredToLsn: "0/42", SystemId: "7684914368175407176"), null);
+                RestoredToLsn: "0/42", SystemId: "7684914368175407176", Kind: OperationKinds.Restore), null);
         var op = await SeedRestoreAsync("c1", "shard1", "20260911121004Z",
             backupId: "20260910120000Z", state: RestoreStatus.Running, startedUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 60,
             phase: "recovering", phaseUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 50);
@@ -871,7 +871,7 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
         var driver = new TestDriver(inner, new FakeBackupEngine());
         var process = BuildProcess(new FakeBackupS3(), driver);
         _receiver.GetReply = new ReceiverReply(200,
-            new ReceiverStatus("failed", "recovering", "20260910120000Z", Error: "boom"), null);
+            new ReceiverStatus("failed", "recovering", "20260910120000Z", Error: "boom", Kind: OperationKinds.Restore), null);
         var op = await SeedRestoreAsync("c1", "shard1", "20260911121005Z",
             backupId: "20260910120000Z", state: RestoreStatus.Running, startedUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 60,
             phase: "recovering", phaseUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 50);
@@ -904,7 +904,7 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
         var driver = new TestDriver(inner, new FakeBackupEngine());
         var process = BuildProcess(new FakeBackupS3(), driver);
         _receiver.GetReply = new ReceiverReply(200,
-            new ReceiverStatus("running", "recovering", "20260910120000Z"), null);
+            new ReceiverStatus("running", "recovering", "20260910120000Z", Kind: OperationKinds.Restore), null);
         var op = await SeedRestoreAsync("c1", "shard1", "20260911121006Z",
             backupId: "20260910120000Z", state: RestoreStatus.Running,
             startedUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 2100,
@@ -938,7 +938,7 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
         var driver = new TestDriver(inner, new FakeBackupEngine());
         var process = BuildProcess(new FakeBackupS3(), driver);
         _receiver.GetReply = new ReceiverReply(200,
-            new ReceiverStatus("running", "downloading", "20260910120000Z"), null);
+            new ReceiverStatus("running", "downloading", "20260910120000Z", Kind: OperationKinds.Restore), null);
         var op = await SeedRestoreAsync("c1", "shard1", "20260911121007Z",
             backupId: "20260910120000Z", state: RestoreStatus.Running,
             startedUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 2100,
@@ -969,7 +969,7 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
         var driver = new TestDriver(new StubScaleDriver(), new FakeBackupEngine());
         var process = BuildProcess(new FakeBackupS3(), driver);
         _receiver.GetReply = new ReceiverReply(200,
-            new ReceiverStatus("running", "recovering", "20260910120000Z"), null);
+            new ReceiverStatus("running", "recovering", "20260910120000Z", Kind: OperationKinds.Restore), null);
         var op = await SeedRestoreAsync("c1", "shard1", "20260911121008Z",
             backupId: "20260910120000Z", state: RestoreStatus.Running,
             startedUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 60,
@@ -1052,7 +1052,7 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
         var driver = new TestDriver(inner, new FakeBackupEngine());
         var process = BuildProcess(new FakeBackupS3(), driver);
         _receiver.GetReply = new ReceiverReply(200,
-            new ReceiverStatus("cancelled", "recovering", "20260910120000Z", Error: "cancelled by operator"), null);
+            new ReceiverStatus("cancelled", "recovering", "20260910120000Z", Error: "cancelled by operator", Kind: OperationKinds.Restore), null);
         var op = await SeedRestoreAsync("c1", "shard1", "20260911121010Z",
             backupId: "20260910120000Z", state: RestoreStatus.Running,
             startedUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 60,
@@ -1101,7 +1101,7 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
         var driver = new TestDriver(inner, new FakeBackupEngine());
         var process = BuildProcess(new FakeBackupS3(), driver);
         _receiver.GetReply = new ReceiverReply(200,
-            new ReceiverStatus("failed", "downloading", "20260910120000Z", Error: "s3 throttled"), null);
+            new ReceiverStatus("failed", "downloading", "20260910120000Z", Error: "s3 throttled", Kind: OperationKinds.Restore), null);
         var op = await SeedRestoreAsync("c1", "shard1", "20260911121011Z",
             backupId: "20260910120000Z", state: RestoreStatus.Running,
             startedUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 60,
@@ -1185,7 +1185,7 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
         var driver = new TestDriver(inner, new FakeBackupEngine());
         var process = BuildProcess(new FakeBackupS3(), driver);
         _receiver.GetReply = new ReceiverReply(200,
-            new ReceiverStatus("failed", "recovering", "20260910120000Z", Error: "boom"), null);
+            new ReceiverStatus("failed", "recovering", "20260910120000Z", Error: "boom", Kind: OperationKinds.Restore), null);
         var op = await SeedRestoreAsync("c1", "shard1", "20260911121013Z",
             backupId: "20260910120000Z", state: RestoreStatus.Running, startedUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 60,
             phase: "recovering", phaseUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 50);
@@ -1219,7 +1219,7 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
         var driver = new TestDriver(inner, new FakeBackupEngine());
         var process = BuildProcess(new FakeBackupS3(), driver);
         _receiver.GetReply = new ReceiverReply(200,
-            new ReceiverStatus("succeeded", "recovering", "20260910120000Z", RestoredToLsn: "0/42"), null);
+            new ReceiverStatus("succeeded", "recovering", "20260910120000Z", RestoredToLsn: "0/42", Kind: OperationKinds.Restore), null);
         var op = await SeedRestoreAsync("c1", "shard1", "20260911121014Z",
             backupId: "20260910120000Z", state: RestoreStatus.Running,
             startedUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 60,
