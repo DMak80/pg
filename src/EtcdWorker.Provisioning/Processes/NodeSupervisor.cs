@@ -138,7 +138,7 @@ public sealed class NodeSupervisor(
 
             await PutStateAsync(node.K, ManagedNodeStates.Provisioning, ct);
             var initialCluster = EtcdNodeSpecBuilder.InitialCluster(members.Value, node.K);
-            var (cmd, env) = EtcdNodeSpecBuilder.Build(node.K, options.AdvertisedHost, expectedPort, initialCluster);
+            var (cmd, env) = EtcdNodeSpecBuilder.Build(node.K, options, expectedPort, initialCluster);
             var spec = new EtcdNodeSpec(
                 node.K, port.Host, expectedPort, options.Image, cmd, env, options.Network);
             var ensured = await provisioner.EnsureNodeAsync(spec, options.AdvertisedHost, ct);

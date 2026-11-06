@@ -183,7 +183,7 @@ public sealed class MembershipProcess(
         // initial-cluster — полный состав для join (без него etcd не может
         // fetch cluster info при state=existing).
         var initialCluster = EtcdNodeSpecBuilder.InitialCluster(allMembers, k);
-        var (cmd, env) = EtcdNodeSpecBuilder.Build(k, options.AdvertisedHost, port.Client, initialCluster);
+        var (cmd, env) = EtcdNodeSpecBuilder.Build(k, options, port.Client, initialCluster);
         var spec = new EtcdNodeSpec(
             k, host, port.Client, options.Image, cmd, env, options.Network);
         var ensured = await provisioner.EnsureNodeAsync(spec, options.AdvertisedHost, ct);
@@ -223,7 +223,7 @@ public sealed class MembershipProcess(
                 return Result.Failed(members.Error!);
             var host = port.Host is { Length: > 0 } h ? h : options.PlainHost;
             var initialCluster = EtcdNodeSpecBuilder.InitialCluster(members.Value, member.K);
-            var (cmd, env) = EtcdNodeSpecBuilder.Build(member.K, options.AdvertisedHost, port.Client, initialCluster);
+            var (cmd, env) = EtcdNodeSpecBuilder.Build(member.K, options, port.Client, initialCluster);
             var spec = new EtcdNodeSpec(
                 member.K, host, port.Client, options.Image, cmd, env, options.Network);
             var ensured = await provisioner.EnsureNodeAsync(spec, options.AdvertisedHost, ct);

@@ -152,7 +152,12 @@ builder.Services.AddSingleton(sp =>
         o.Docker.Mode, o.Docker.Network, o.Docker.Images.EtcdNode, o.Docker.AdvertisedHost,
         o.Docker.PortRange.From, o.Docker.PortRange.To,
         o.Docker.Hosts.Length > 0 ? o.Docker.Hosts[0].Name : "local",
-        o.Thresholds.NodeBootSec, o.Thresholds.NodeDeadSec, o.Thresholds.HealthIntervalSec);
+        o.Thresholds.NodeBootSec, o.Thresholds.NodeDeadSec, o.Thresholds.HealthIntervalSec,
+        o.NodeSnapshot.IntervalMin, o.NodeSnapshot.MinIntervalSec,
+        o.NodeSnapshot.RetryIntervalSec, o.NodeSnapshot.TimeoutSec,
+        o.NodeSnapshot.RetentionFiles, o.NodeSnapshot.RetentionObjects,
+        o.NodeSnapshot.MaintenanceIntervalMin,
+        EtcdNode.Core.BackupCaPem.ReadIfConfigured(o.NodeSnapshot.S3.CaBundlePath));
 });
 builder.Services.AddSingleton(sp => new EtcdWorker.Provisioning.EtcdPortAllocStore(
     sp.GetRequiredService<IEtcdGateway>(), etcdEndpoints));
