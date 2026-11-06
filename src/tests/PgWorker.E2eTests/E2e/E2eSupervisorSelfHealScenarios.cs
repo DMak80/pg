@@ -321,10 +321,23 @@ public sealed class E2eSupervisorSelfHealScenarios(E2eSupervisorSelfHealScenario
         }, TimeSpan.FromSeconds(90), ct);
         completed.Should().BeTrue($"the retaken full {newFull} must reach COMPLETED");
 
-        // Act 3 — wal.state=ACTIVE (заживление одним тиком после COMPLETED)
+        // Act 3 — wal.state=ACTIVE (заживление одним тиком после COMPLETED).
+        // Ретейк мог стартовать на ОТКРЫТОМ сегменте мастера (факт 2026-11-06:
+        // wal_start=…2F — в S3 только .partial-куски): цепь от нового wal_start
+        // сходится только финалом этого сегмента, а idle-мастер закрывает 16 МБ
+        // минутами — приёмник не может доставить финал, заживление стоит.
+        // Закрываем хвост лёгкими pg_switch_wal в цикле ожидания (жизнь мастера —
+        // штатное условие; контроль 1 c подхватывает финал следующим тиком).
+        var (healHost, healPort) = await MasterPgAsync(cluster, "shard1", ct);
+        var healDsn = DatabaseProvisioner.BuildAdminDsn(healHost, healPort, cluster,
+            new InstallSecrets(E2eFixture.SuPassword, "", "", ""));
         var healed = await WaitPhaseAsync("wal-healed",
-            async () => (await GetOrNullAsync($"/pgworker/backups/{cluster}/shard1/wal"))
-                ?.Value.Contains("ACTIVE") == true,
+            async () =>
+            {
+                await SwitchWalsAsync(healDsn, 1, ct);
+                return (await GetOrNullAsync($"/pgworker/backups/{cluster}/shard1/wal"))
+                    ?.Value.Contains("ACTIVE") == true;
+            },
             TimeSpan.FromSeconds(90), ct);
         if (!healed)
         {

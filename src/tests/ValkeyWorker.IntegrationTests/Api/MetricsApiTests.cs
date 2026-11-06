@@ -32,12 +32,17 @@ public sealed class MetricsApiTests(ValkeyMetricsFixture fx)
         // etcd успешен ≤ 15 с (ScanIntervalSec=5).
         using var client = fx.Factory.CreateClient();
 
-        // Act: ждём появления воркер-серии в экспорте (retry-цикл до 15 с).
+        // Act: ждём ЦЕЛЕВУЮ серию reconcile-цикла (retry до 15 с). Условие
+        // выхода — именно loop="reconcile": любая worker-серия (keepalive
+        // пишется первой) выходит из цикла раньше reconcile-тика, и под
+        // нагрузкой прогона (факт 2026-11-06: matches = keepalive|snapshot)
+        // окно тратилось впустую.
         string body = "";
         for (var i = 0; i < 30; i++)
         {
             body = await client.GetStringAsync("/metrics", TestContext.Current.CancellationToken);
-            if (body.Contains("worker_loop_last_success_timestamp_seconds"))
+            if (body.Contains("loop=\"reconcile\"")
+                && body.Contains("otel_scope_name=\"ValkeyWorker\""))
                 break;
             await Task.Delay(500, TestContext.Current.CancellationToken);
         }
