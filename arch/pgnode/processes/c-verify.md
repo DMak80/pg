@@ -35,5 +35,9 @@ succeeded | failed | cancelled
 - `POST /api/ops/cancel` → `cancelled` (не failed): воркер возвращает
   кандидата в PENDING с `checked_unix=now`.
 - Рестарт процесса → GET 404 (vanished) → воркер повторяет POST.
+- Снимок с чужим `id` (общий ops-реестр отдал операцию другой проверки/
+  restore/drill) — не итог проверки: супервиз перезапускает операцию
+  vanished-семантикой ([backups/01-full-backup.md](../../backups/01-full-backup.md)
+  §7 — родительский уровень).
 
 etcd-контракт verify приёмник не знает; статусы в etcd пишет воркер.
