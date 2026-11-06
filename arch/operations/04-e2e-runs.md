@@ -67,3 +67,6 @@ DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/PgWorker.E2eTests \
 После жёстких срезов серий проверять осиротевшие сети движка
 (`docker network ls | grep -E 'kfw-net|pgw-.*-net'` при нуле контейнеров):
 `docker network prune -f` — страховочный гейт между сериями.
+
+Полный прогон всех серий одной командой (PgWorker.E2eTests параллельно
+остальным, остальные последовательно) — [05-run-all-tests.md](05-run-all-tests.md).

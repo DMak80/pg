@@ -13,6 +13,7 @@
 | [02-registry-images.md](02-registry-images.md) | внешние docker-образы, локальный registry, сборка образа PG-ноды, каталог образов |
 | [03-worker-api-cert.md](03-worker-api-cert.md) | управление серверным сертом API воркера из панели |
 | [04-e2e-runs.md](04-e2e-runs.md) | запуск docker-E2E серий и подготовка окружения |
+| [05-run-all-tests.md](05-run-all-tests.md) | полный прогон всех серий одной командой: `scripts/run-all-tests.sh` (PgWorker.E2eTests параллельно остальным, остальные последовательно) |
 
 ## Тематические runbook-разделы
 
