@@ -45,8 +45,8 @@ public sealed class EtcdSnapshotExportStaleRule : IAlertRule
                 ["lastUploadedUnix"] = export.LastUploadedUnix?.ToString() ?? string.Empty,
             },
             null,
-            "export is silent — control-plane changes accumulate only in the leader's local volume (both EtcdWorker instances down / eternal transient / snapshot leadership not executing)",
+            "export is silent — control-plane changes accumulate only in the leader node's local volume (all EtcdNode agents down / eternal transient / snapshot leadership not executing)",
             AlertRemedy.OperatorRunbook,
-            "check healthz of both EtcdWorker instances and the status key /etcdworker/snapshots; S3 access — runbook §\"Восстановление etcd из S3-выгрузки\"");
+            "check the EtcdNode agents (docker logs of the etcdw-node-* managed containers) and the status key /etcdnode/snapshots; S3 access — runbook §\"Восстановление etcd из S3-выгрузки\"");
     }
 }

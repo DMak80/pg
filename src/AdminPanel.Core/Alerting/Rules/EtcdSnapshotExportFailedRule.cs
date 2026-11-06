@@ -36,6 +36,6 @@ public sealed class EtcdSnapshotExportFailedRule : IAlertRule
             null,
             "control plane is not protected against host loss — etcd snapshot export to S3 failed",
             AlertRemedy.OperatorRunbook,
-            "arch/etcdworker/06-operability.md §8: check the etcd-backup S3 cluster (/s3/clusters/, etcd_backup=true) and the status key /etcdworker/snapshots; EtcdWorker completes the export on a RetryIntervalSec tick");
+            "arch/etcdnode/02-snapshots.md: check the etcd-backup S3 cluster (/s3/clusters/, etcd_backup=true) and the status key /etcdnode/snapshots; the EtcdNode agent completes the export on a RetryIntervalSec tick");
     }
 }

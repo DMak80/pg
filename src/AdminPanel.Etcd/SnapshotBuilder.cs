@@ -61,7 +61,7 @@ public static class SnapshotBuilder
             backups.Orphans, // /pgworker/backups/orphans
             null, // S3Storage вносит SnapshotRefresher из стора
             workerCert?.Cert, // /workers/api_tls/pgworker (adminpanel/02 §9.9)
-            etcdSnapshots?.Info, // /etcdworker/snapshots (adminpanel/02 §2.3.5)
+            etcdSnapshots?.Info, // /etcdnode/snapshots (adminpanel/02 §2.3.5)
             backupsDisabled, // u10 (adminpanel/02 §2.3.1)
             walAgents ?? [], // u11 (arch/backups/05-etcd-contract.md)
             evacuations?.Items ?? [], // u12 (arch/pgworker/00-etcd-contract.md §3)

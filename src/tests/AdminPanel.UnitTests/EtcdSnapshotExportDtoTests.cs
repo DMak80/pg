@@ -6,7 +6,7 @@ using Xunit;
 namespace AdminPanel.UnitTests;
 
 // Маппер статуса DR-выгрузки etcd-снапшотов в DTO грани (ключ
-// /etcdworker/snapshots, поля enabled в формате нет): 1:1 перенос полей;
+// /etcdnode/snapshots, поля enabled в формате нет): 1:1 перенос полей;
 // null → null (ключа нет).
 public class EtcdSnapshotExportDtoTests
 {

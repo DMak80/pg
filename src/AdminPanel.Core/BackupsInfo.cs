@@ -68,7 +68,7 @@ public sealed record BackupStorageInfo(
     BackupStorageState State, long UpdatedUnix);
 
 /// <summary>Статус DR-выгрузки слепков etcd в S3 (ключ
-/// /etcdworker/snapshots, arch/etcdworker/00-etcd-contract.md; пишет EtcdWorker): null-поля —
+/// /etcdnode/snapshots, arch/etcdnode/00-etcdnode-contract.md; пишет агент EtcdNode): null-поля —
 /// толерантный парсинг (битые/старые ключи); поля enabled в формате нет —
 /// выгрузка безусловна; ключа нет — правила молчат.</summary>
 public sealed record EtcdSnapshotExportInfo(

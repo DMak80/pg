@@ -21,7 +21,7 @@ public sealed record EtcdSnapshot(
     BackupOrphansInfo? BackupOrphans = null,      // ключ /pgworker/backups/orphans
     S3StorageInfo? S3Storage = null,       // live-S3-инвентарь (adminpanel/02 §2.5)
     WorkerApiCert? WorkerApiCert = null,         // целевой серт API PgWorker (adminpanel/02 §9.9)
-    EtcdSnapshotExportInfo? EtcdSnapshots = null,   // статус DR-выгрузки слепков (ключ /etcdworker/snapshots, 02 §2.3.5)
+    EtcdSnapshotExportInfo? EtcdSnapshots = null,   // статус DR-выгрузки слепков (ключ /etcdnode/snapshots, 02 §2.3.5)
     BackupsDisabledInfo? BackupsDisabled = null,  // глобальный стоп бэкапов (u10, adminpanel/02 §2.3.1)
     IReadOnlyList<WalAgentInfo>? WalAgents = null,   // приёмники WAL agent/<N> (u11, arch/backups/05-etcd-contract.md)
     IReadOnlyList<EvacuationInfo>? Evacuations = null, // журналы эвакуаций (u12, arch/pgworker/00-etcd-contract.md §3)
