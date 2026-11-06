@@ -22,6 +22,7 @@ namespace PgWorker.UnitTests.PgNode;
 public class RestoreOperationTests
 {
     private const string Id = "20260101000000Z";
+    private const string DrillId = "20260101000001Z";
 
     private static PgWorker.PgNode.Operations.StartRestoreRequest Request(
         string? targetTime = null, string? drillId = null) => new(
@@ -380,6 +381,85 @@ public class RestoreOperationTests
         Directory.Delete(root, recursive: true);
     }
 
+    // AAA (drill finally): провал ПОСЛЕ старта постгресса — finally пытается
+    // остановить постгресс ДО удаления scratch (неостановимый остаток не
+    // блокирует терминальный исход; каталог дочистит защита следующего
+    // запуска — arch/pgnode/06-restore-drill.md §2).
+    [Fact]
+    public async Task DrillFinally_FailureAfterStart_StopsPostmasterBeforeScratchRemoval()
+    {
+        // Arrange: старт успешен (postmaster жив), LSN-проба пуста (провал),
+        // все stop-исходы провальны — постгресс «неостановим».
+        var root = NewPgdata();
+        var pgdata = Path.Combine(root, "pgroot", "data");
+        var registry = new OperationRegistry();
+        registry.TryBegin(new OperationSnapshot(DrillId, "running", "downloading"));
+        var runner = new FakeRunner { LsnReply = "", PgCtlStopExits = new Queue<int>([1, 1, 1]) };
+        var op = new RestoreOperation(Request(drillId: DrillId), runner, registry,
+            pgdata: pgdata, _ => new FakeTarS3());
+
+        // Act.
+        await op.RunAsync(CancellationToken.None);
+
+        // Assert (i): свой провал LSN-пробы — не про сироту.
+        var snap = registrySnapshot(op);
+        snap!.State.Should().Be("failed");
+        snap.Error.Should().Contain("pg_current_wal_lsn");
+
+        var invocations = runner.Invocations;
+        var lastPsql = invocations.FindLastIndex(i => i.FileName == "psql");
+
+        // Assert (ii): попытки остановки идут ПОСЛЕ провала LSN-пробы.
+        invocations.FindLastIndex(i =>
+                i.FileName == "pg_ctl" && i.Args.Contains(" stop") && i.Args.Contains("fast"))
+            .Should().BeGreaterThan(lastPsql);
+
+        // Assert (iii): finally эскалирует режим при живом постгрессе.
+        invocations.Should().Contain(i =>
+            i.FileName == "pg_ctl" && i.Args.Contains(" stop") && i.Args.Contains("immediate"));
+
+        // Assert (iv): заключительный вызов finally — проверка status после поллинга.
+        var lastPgCtl = invocations.FindLastIndex(i => i.FileName == "pg_ctl");
+        lastPgCtl.Should().Be(invocations.FindLastIndex(i =>
+            i.FileName == "pg_ctl" && i.Args.Contains(" status")));
+        lastPgCtl.Should().BeGreaterThan(lastPsql);
+
+        // Assert (v): неостановимый остаток НЕ заблокировал чистку scratch.
+        Directory.Exists(pgdata).Should().BeFalse();
+
+        if (Directory.Exists(root))
+            Directory.Delete(root, recursive: true);
+    }
+
+    // AAA (drill finally): провал старта — защита каталога отработала после
+    // провала (постгресс не запускался), scratch почищен.
+    [Fact]
+    public async Task DrillFinally_StartFailure_FinallyGuardRunsAfterFailure()
+    {
+        // Arrange: pg_ctl start провален, postmaster не запускался.
+        var root = NewPgdata();
+        var pgdata = Path.Combine(root, "pgroot", "data");
+        var registry = new OperationRegistry();
+        registry.TryBegin(new OperationSnapshot(DrillId, "running", "downloading"));
+        var runner = new FakeRunner { StartExitCode = 1 };
+        var op = new RestoreOperation(Request(drillId: DrillId), runner, registry,
+            pgdata: pgdata, _ => new FakeTarS3());
+
+        // Act.
+        await op.RunAsync(CancellationToken.None);
+
+        // Assert: failed, scratch удалён, finally-защита после провала старта.
+        registrySnapshot(op)!.State.Should().Be("failed");
+        Directory.Exists(pgdata).Should().BeFalse();
+        var invocations = runner.Invocations;
+        invocations.FindLastIndex(i => i.FileName == "pg_ctl" && i.Args.Contains(" status"))
+            .Should().BeGreaterThan(invocations.FindIndex(i =>
+                i.FileName == "pg_ctl" && i.Args.Contains(" start")));
+
+        if (Directory.Exists(root))
+            Directory.Delete(root, recursive: true);
+    }
+
     [Fact]
     public async Task AutoConfOverrides_ContainFullSet_TargetTimeOnlyWhenSet()
     {
@@ -670,7 +750,8 @@ public class RestoreOperationTests
         // Assert
         op.Snapshot!.State.Should().Be("failed");
         op.Snapshot!.Error.Should().Contain("object sha256 mismatch");
-        runner.Invocations.Should().NotContain(i => i.FileName == "pg_ctl",
+        runner.Invocations.Should().NotContain(i =>
+                i.FileName == "pg_ctl" && i.Args.Contains(" start"),
             "pg_ctl does not start on a data verdict");
         Directory.Delete(root, recursive: true);
     }

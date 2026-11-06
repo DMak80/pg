@@ -436,6 +436,13 @@ public sealed class RestoreOperation : IReceiverOperation
         }
         finally
         {
+            // Postmaster операции остановлен при ЛЮБОМ исходе ДО возврата
+            // Patroni (restore) и чистки scratch (drill) — arch/pgnode/
+            // 06-restore-drill.md §2: неостановимый остаток НЕ блокирует
+            // терминальный исход (каталог дочистит защита каталога следующего
+            // запуска); терминальный снимок не трогаем.
+            try { await TryStopPostmasterAsync(_pgdata, CancellationToken.None); }
+            catch { /* best-effort */ }
             // Patroni ноды — обратно при ЛЮБОМ исходе RESTORE (там он был
             // остановлен; поднимет постгрес уже с валидным initialize и
             // данными — REJOINING-рестарта не нужно). Дрилл Patroni не трогал.
