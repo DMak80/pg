@@ -199,11 +199,12 @@ public sealed class BackupVerifyProcess(
         // чужой итог: вердикта по нему нет, кандидат перезапускается
         // vanished-семантикой (повторный POST поверх терминального снимка;
         // чужой running ответит 409 — тик повторит).
-        if (!string.Equals(snapshot.Id, full.Id, StringComparison.Ordinal))
+        if (!string.Equals(snapshot.Id, full.Id, StringComparison.Ordinal)
+            || snapshot.Kind != OperationKinds.Verify)
         {
             logger.LogWarning(
-                "{Op} {cluster}/{shard}: verify {id} — registry holds a foreign snapshot (id={SnapId}, state={State}); relaunching via the vanished path",
-                Op, cluster, shard, id, snapshot.Id ?? "<null>", snapshot.State);
+                "{Op} {cluster}/{shard}: verify {id} — registry holds a foreign snapshot (id={SnapId}, kind={Kind}, state={State}); relaunching via the vanished path",
+                Op, cluster, shard, id, snapshot.Id ?? "<null>", snapshot.Kind ?? "<null>", snapshot.State);
             await journal.WritePhaseAsync(cluster, Op, $"foreign-snapshot/{shard}/{id}",
                 claims.InstanceId,
                 $"receiver registry holds operation {snapshot.Id ?? "<null>"} ({snapshot.State}) — not the verify candidate", ct);

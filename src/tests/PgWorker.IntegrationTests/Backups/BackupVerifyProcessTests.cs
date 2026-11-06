@@ -70,11 +70,11 @@ public class BackupVerifyProcessTests : IntSlotLifetime
     // Ответы GET /api/ops/verify (маркер транзиента — пара state/phase, spec §3.2).
     // id снимка — id кандидата (сверка снимка общего ops-реестра, §7).
     private static ReceiverReply ApiOk(string id = "20260911120000Z") =>
-        new(200, new ReceiverStatus("succeeded", "verifying", id), null);
+        new(200, new ReceiverStatus("succeeded", "verifying", id, Kind: OperationKinds.Verify), null);
     private static ReceiverReply ApiDownloadTransient(string error, string id = "20260911120000Z") =>
-        new(200, new ReceiverStatus("failed", "downloading", id, Error: error), null);
+        new(200, new ReceiverStatus("failed", "downloading", id, Error: error, Kind: OperationKinds.Verify), null);
     private static ReceiverReply ApiVerifyFailed(string error, string id = "20260911120000Z") =>
-        new(200, new ReceiverStatus("failed", "verifying", id, Error: error), null);
+        new(200, new ReceiverStatus("failed", "verifying", id, Error: error, Kind: OperationKinds.Verify), null);
 
     /// <summary>Мини-фейк API приёмника (verify-сценарии): StartVerify —
     /// программируемый ответ (дефолт 202), GetVerify — программируемый снимок,
@@ -505,7 +505,7 @@ public class BackupVerifyProcessTests : IntSlotLifetime
         var s3 = new FakeBackupS3();
         await StartOperationAsync("sv14", s3);
         Receiver.GetReply = new ReceiverReply(200,
-            new ReceiverStatus("cancelled", "verifying", "20260911120000Z", Error: "cancelled by operator"), null);
+            new ReceiverStatus("cancelled", "verifying", "20260911120000Z", Error: "cancelled by operator", Kind: OperationKinds.Verify), null);
         var pending = Completed("20260911120000Z", "000000010000000000000001",
             new BackupVerify(BackupVerifyStatus.Pending, null));
         var key = "/pgworker/backups/sv14/shard1/full/20260911120000Z";
@@ -564,7 +564,7 @@ public class BackupVerifyProcessTests : IntSlotLifetime
         s3.Objects.Add(("sv9", "shard1", "000000010000000000000002"));
         s3.Objects.Add(("sv9", "shard1", "000000010000000000000003"));
         Receiver.GetReply = new ReceiverReply(200,
-            new ReceiverStatus("running", "verifying", Id: "20260911090000Z", StartedUnix: now - 7 * 3600), null);
+            new ReceiverStatus("running", "verifying", Id: "20260911090000Z", StartedUnix: now - 7 * 3600, Kind: OperationKinds.Verify), null);
         var a = Completed("20260911090000Z", "000000010000000000000001",
             new BackupVerify(BackupVerifyStatus.Pending, null));
         var key = "/pgworker/backups/sv9/shard1/full/20260911090000Z";
@@ -718,7 +718,7 @@ public class BackupVerifyProcessTests : IntSlotLifetime
         var beforeB = BackupStatusJson.Serialize(b);
         // Снимок живого реестра — операция кандидата A (его id; сверка §7).
         Receiver.GetReply = new ReceiverReply(200,
-            new ReceiverStatus("running", "downloading", "20260911090000Z"), null);
+            new ReceiverStatus("running", "downloading", "20260911090000Z", Kind: OperationKinds.Verify), null);
         await Fx.Gateway.PutAsync(Fx.Endpoint,
             "/pgworker/backups/sv8/shard1/full/20260911090000Z", BackupStatusJson.Serialize(a), null, ct);
         await Fx.Gateway.PutAsync(Fx.Endpoint, keyB, beforeB, null, ct);
@@ -919,6 +919,44 @@ public class BackupVerifyProcessTests : IntSlotLifetime
                 l.Contains("verify 20260911120000Z FAILED", StringComparison.Ordinal)
                 && l.Contains("manifest checksum mismatch", StringComparison.Ordinal),
             "exactly one terminal outcome line per full — transient paths log no outcome");
+    }
+
+    // AAA (сверка вида операции): restore-снимок ТОГО ЖЕ полного (id
+    // совпадает, kind чужой) — не итог проверки: OK не ставится, операция
+    // перезапущена vanished-семантикой.
+    [Fact]
+    public async Task ForeignKindSameId_NotMarkedOk()
+    {
+        // Arrange: PENDING-кандидат и его ключ; приёмник отдаёт succeeded-
+        // снимок restore-операции С ТЕМ ЖЕ id (kind=restore).
+        var ct = TestContext.Current.CancellationToken;
+        await using var fx = await OwnEtcd.StartAsync("verify", ct);
+        Fx = fx;
+        await SeedAsync("vf3");
+        var s3 = new FakeBackupS3();
+        var candidate = Completed("20260911120000Z", "000000010000000000000001",
+            new BackupVerify(BackupVerifyStatus.Pending, null));
+        var key = "/pgworker/backups/vf3/shard1/full/20260911120000Z";
+        var before = BackupStatusJson.Serialize(candidate);
+        await Fx.Gateway.PutAsync(Fx.Endpoint, key, before, null, ct);
+        Receiver.GetReply = new ReceiverReply(200,
+            new ReceiverStatus("succeeded", "recovering", "20260911120000Z",
+                Kind: OperationKinds.Restore), null);
+        var outcomes = new List<(string C, string S, string Result)>();
+        var process = BuildProcess("vf3", s3, verifyObserver: (c, s, r) => outcomes.Add((c, s, r)));
+
+        // Act: тик поллинга — снимок чужого вида.
+        (await process.TickAsync(BuildSnap("vf3"), BackupsOf("vf3", candidate), ct))
+            .IsSuccess.Should().BeTrue();
+
+        // Assert: verify НЕ получил OK — ключ не изменён (PENDING).
+        var after = (await Fx.Gateway.GetAsync(Fx.Endpoint, key, ct)).Value!.Value;
+        after.Should().Be(before, "a restore snapshot of the same full is not the verify outcome");
+
+        // Assert: реланч своего кандидата, observe ok не эмитился.
+        Receiver.StartBodies.Should().ContainSingle()
+            .Which.BackupId.Should().Be("20260911120000Z");
+        outcomes.Should().NotContain(o => o.Result == "ok");
     }
 
     // AAA (сверка снимка по id, arch/backups/01-full-backup.md §7): общий

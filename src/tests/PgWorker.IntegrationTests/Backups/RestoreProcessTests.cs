@@ -1866,14 +1866,22 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
         (await process.TickAsync(BuildSnap("fr1"), await BackupsFromEtcdAsync("fr1"), ct))
             .IsSuccess.Should().BeTrue();
 
-        // Assert — заявка RUNNING/recovering без system_id; POST не слался.
+        // Assert — заявка RUNNING с фазой demolished (сброс под повтор
+        // команды); вердикта нет, system_id не тронут.
         var request = (await ReadRestoresAsync("fr1", "shard1")).Single(r => r.Id == op.Id);
         request.State.Should().Be(RestoreStatus.Running,
             "a foreign succeeded snapshot is not the outcome of this restore");
-        request.Phase.Should().Be("recovering");
+        request.Phase.Should().Be("demolished",
+            "the launch is repeated via the demolished reset, not awaited in the supervise phase");
         request.SystemId.Should().BeNull();
-        _receiver.StartCalls.Should().Be(0,
-            "the launch returns through the 409/vanished mechanics, not from the supervise tick");
+
+        // Act 2 — повторный тик из demolished повторяет POST запуска.
+        (await process.TickAsync(BuildSnap("fr1"), await BackupsFromEtcdAsync("fr1"), ct))
+            .IsSuccess.Should().BeTrue();
+
+        // Assert 2 — команда переотправлена (своя операция стартует заново).
+        _receiver.StartCalls.Should().Be(1,
+            "the next tick from the demolished phase re-sends the launch command");
     }
 
     // AAA (сверка снимка по id): чужой failed-снимок drill-операции — заявка
@@ -1900,12 +1908,58 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
         (await process.TickAsync(BuildSnap("fr2"), await BackupsFromEtcdAsync("fr2"), ct))
             .IsSuccess.Should().BeTrue();
 
-        // Assert — заявка RUNNING/recovering без error; POST не слался.
+        // Assert — заявка RUNNING с фазой demolished; FAILED не ставится.
         var request = (await ReadRestoresAsync("fr2", "shard1")).Single(r => r.Id == op.Id);
         request.State.Should().Be(RestoreStatus.Running,
             "a foreign failed snapshot does not fail this restore");
-        request.Phase.Should().Be("recovering");
+        request.Phase.Should().Be("demolished",
+            "the launch is repeated via the demolished reset, not awaited in the supervise phase");
         request.Error.Should().BeNull();
-        _receiver.StartCalls.Should().Be(0);
+
+        // Act 2 — повторный тик из demolished повторяет POST запуска.
+        (await process.TickAsync(BuildSnap("fr2"), await BackupsFromEtcdAsync("fr2"), ct))
+            .IsSuccess.Should().BeTrue();
+
+        // Assert 2 — команда переотправлена.
+        _receiver.StartCalls.Should().Be(1);
+    }
+
+    // AAA (сверка вида операции): verify-снимок ТОГО ЖЕ полного (id
+    // совпадает с backup_id заявки, kind чужой) — не итог restore:
+    // REJOINING не ставится, фаза сбрасывается под повторный запуск.
+    [Fact]
+    public async Task ForeignKindSameBackupId_NotRejoining()
+    {
+        // Arrange — RUNNING (фаза recovering); GET succeeded с backup_id
+        // заявки, но видом verify (без system_id).
+        var ct = TestContext.Current.CancellationToken;
+        await SeedAsync("fr3");
+        var process = BuildProcess(new FakeBackupS3(),
+            new TestDriver(new StubScaleDriver(), new FakeBackupEngine()));
+        _receiver.GetReply = new ReceiverReply(200,
+            new ReceiverStatus("succeeded", "verifying", "20260910120000Z",
+                Kind: OperationKinds.Verify), null);
+        var op = await SeedRestoreAsync("fr3", "shard1", "20260911121017Z",
+            backupId: "20260910120000Z", state: RestoreStatus.Running,
+            startedUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 60,
+            phase: "recovering",
+            phaseUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 50);
+        (await _claims.TryClaimClusterAsync("fr3", ct)).Value.Should().BeTrue();
+
+        // Act — тик супервиза: снимок чужого вида с тем же id.
+        (await process.TickAsync(BuildSnap("fr3"), await BackupsFromEtcdAsync("fr3"), ct))
+            .IsSuccess.Should().BeTrue();
+
+        // Assert — заявка RUNNING/demolished без system_id (не REJOINING).
+        var request = (await ReadRestoresAsync("fr3", "shard1")).Single(r => r.Id == op.Id);
+        request.State.Should().Be(RestoreStatus.Running,
+            "a verify snapshot of the same full is not the outcome of this restore");
+        request.Phase.Should().Be("demolished");
+        request.SystemId.Should().BeNull();
+
+        // Act 2 + Assert 2 — повторный тик переотправляет команду.
+        (await process.TickAsync(BuildSnap("fr3"), await BackupsFromEtcdAsync("fr3"), ct))
+            .IsSuccess.Should().BeTrue();
+        _receiver.StartCalls.Should().Be(1);
     }
 }
