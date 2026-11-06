@@ -53,9 +53,16 @@ public class RestoreOperationTests
         // Успешный stop останавливает «postmaster»: следующие status — не работает.
         // LsnReply — ответ psql-пробы pg_current_wal_lsn (пустая строка — провал
         // ветки снятия LSN ПОСЛЕ старта постгресса).
+        // StopCalls/StopScratchExisted — строгий учёт stop-вызовов: число и
+        // факт существования каталога из -D на момент вызова (порядок «стоп ДО
+        // удаления scratch»); UnexpectedStopCalls — stop вне запрограммированной
+        // очереди (лишний вызов маскировался бы исходом 0).
         public int PgCtlStatusExit = 3;
         public Queue<int> PgCtlStopExits = [];
         public string LsnReply = "0/2000028";
+        public int StopCalls;
+        public int UnexpectedStopCalls;
+        public readonly List<bool> StopScratchExisted = [];
 
         public async Task<(int ExitCode, string StdOut, string StdErr)> RunAsync(
             ProcessStartInfo psi, CancellationToken ct)
@@ -91,13 +98,31 @@ public class RestoreOperationTests
                             PgCtlStatusExit == 0 ? "pg_ctl: server is running (PID: 331)" : "pg_ctl: no server running", "");
                     if (args.Contains(" stop"))
                     {
-                        var stopExit = PgCtlStopExits.Count > 0 ? PgCtlStopExits.Dequeue() : 0;
+                        StopCalls++;
+                        // Каталог из -D на момент stop: «стоп ДО удаления
+                        // scratch» — наблюдаемый факт, а не совпадение индексов.
+                        var dIndex = psi.ArgumentList.IndexOf("-D");
+                        var stopPgdata = dIndex >= 0 && dIndex + 1 < psi.ArgumentList.Count
+                            ? psi.ArgumentList[dIndex + 1]
+                            : "";
+                        StopScratchExisted.Add(Directory.Exists(stopPgdata));
+                        var stopExit = 0;
+                        if (PgCtlStopExits.Count > 0)
+                            stopExit = PgCtlStopExits.Dequeue();
+                        else
+                            UnexpectedStopCalls++; // лишний вызов — тест ассертит счётчик
                         if (stopExit == 0)
                             PgCtlStatusExit = 3; // успешный stop останавливает «postmaster»
                         return (stopExit, "", "");
                     }
                     if (args.Contains(" start") && StartExitCode != 0)
+                    {
+                        // Провал `pg_ctl start -w`: «жертва попытки» (postmaster,
+                        // не успевший стартовать к таймауту) остаётся живой —
+                        // status 0, finally обязан её остановить.
+                        PgCtlStatusExit = 0;
                         return (StartExitCode, "", "pg_ctl: could not start server");
+                    }
                     PgCtlStatusExit = 0; // успешный старт ЗАПУСКАЕТ «postmaster» операции
                     return (0, "", "");
 
@@ -220,7 +245,7 @@ public class RestoreOperationTests
         // Arrange: temp-PGDATA + фейки.
         var root = NewPgdata();
         var pgdata = Path.Combine(root, "pgroot", "data");
-        var runner = new FakeRunner();
+        var runner = new FakeRunner { PgCtlStopExits = new Queue<int>([0]) };
         var s3 = new FakeTarS3();
         var op = Create(root, runner, s3: s3);
 
@@ -268,7 +293,6 @@ public class RestoreOperationTests
         chmod.Args.Should().Be($"700 {pgdata}");
         var start = runner.Invocations.First(
             i => i.FileName == "pg_ctl" && i.Args.Contains("start"));
-        start.Args.Should().Contain("start");
         start.Args.Should().Contain("listen_addresses=''");
         start.Env.Should().Contain("HOME=/tmp");
         // Assert: S3-контекст fetch-wal — в env процесса (postgres наследует до
@@ -280,21 +304,32 @@ public class RestoreOperationTests
         start.Env.Should().Contain("PGW_S3_SECRET_KEY=sk");
         start.Args.Should().NotContain("sk");
 
+        // Assert (защита каталога): postmaster не работал (status 3) — stop'ов
+        // ровно один (штатный после снятия LSN); лишних вызовов нет.
+        runner.StopCalls.Should().Be(1);
+        runner.UnexpectedStopCalls.Should().Be(0);
+
         // Cleanup.
         Directory.Delete(root, recursive: true);
     }
 
     // AAA (защита целевого каталога): postmaster-сирота прошлой инкарнации
     // (пережил рестарт приёмника) работает в каталоге операции — останавливается
-    // ДО старта, операция продолжается (arch/pgnode/06-restore-drill.md §2).
+    // до ПЕРВОЙ записи в каталог (до скачивания/распаковки tar), операция
+    // продолжается (arch/pgnode/06-restore-drill.md §2 п.5.1).
     [Fact]
     public async Task PreStart_StopsOrphanPostmaster_ThenSucceeds()
     {
-        // Arrange: «живой» postmaster операции — status 0, stop успешен.
+        // Arrange: «живой» postmaster операции — status 0, оба stop успешны
+        // (защита каталога + штатный стоп после снятия LSN).
         var root = NewPgdata();
         var pgdata = Path.Combine(root, "pgroot", "data");
         File.WriteAllText(Path.Combine(pgdata, "postmaster.pid"), "331\n");
-        var runner = new FakeRunner { PgCtlStatusExit = 0 };
+        var runner = new FakeRunner
+        {
+            PgCtlStatusExit = 0,
+            PgCtlStopExits = new Queue<int>([0, 0]),
+        };
         var op = Create(root, runner);
 
         // Act.
@@ -314,14 +349,32 @@ public class RestoreOperationTests
         startIndex.Should().BeGreaterThan(stopIndex,
             "the guard stops the orphan before pg_ctl start");
 
+        // Assert: стоп — ДО первой записи в целевой каталог (chmod 700 PGDATA —
+        // первый runner-вызов пути записи; tar-распаковка идёт раньше).
+        var chmodIndex = invocations.FindIndex(i => i.FileName == "chmod");
+        chmodIndex.Should().BeGreaterThan(stopIndex,
+            "the guard stops the orphan before the first write into the target directory");
+
+        // Assert: status/stop адресуют каталог операции (-D <pgdata>).
+        invocations
+            .Where(i => i.FileName == "pg_ctl"
+                        && (i.Args.Contains(" status") || i.Args.Contains(" stop")))
+            .Should().OnlyContain(i => i.Args.Contains($"-D {pgdata}"),
+                "status/stop address the operation directory");
+
+        // Assert: ровно два stop-вызова (защита + штатный), без лишних.
+        runner.StopCalls.Should().Be(2);
+        runner.UnexpectedStopCalls.Should().Be(0);
+
         // Assert: остаточный pid снят защитой каталога.
         File.Exists(Path.Combine(pgdata, "postmaster.pid")).Should().BeFalse();
 
         Directory.Delete(root, recursive: true);
     }
 
-    // AAA (защита целевого каталога): postmaster не работает — остаточный
-    // postmaster.pid снимается, чтобы pg_ctl start не отказал от старта.
+    // AAA (защита целевого каталога): postmaster не работает (status 3) —
+    // остаточный postmaster.pid снимается (страховка от переиспользованного
+    // PID: stale lock PG снимает сам).
     [Fact]
     public async Task PreStart_RemovesStalePidFile_WhenPostmasterDead()
     {
@@ -329,7 +382,7 @@ public class RestoreOperationTests
         var root = NewPgdata();
         var pgdata = Path.Combine(root, "pgroot", "data");
         File.WriteAllText(Path.Combine(pgdata, "postmaster.pid"), "331\n");
-        var runner = new FakeRunner();
+        var runner = new FakeRunner { PgCtlStopExits = new Queue<int>([0]) };
         var op = Create(root, runner);
 
         // Act.
@@ -339,13 +392,46 @@ public class RestoreOperationTests
         registrySnapshot(op)!.State.Should().Be("succeeded");
         File.Exists(Path.Combine(pgdata, "postmaster.pid")).Should().BeFalse();
 
-        // Assert: ровно одна проверка status — ДО старта (stop не потребовался).
+        // Assert: ровно одна проверка status — ДО старта (stop защитой не
+        // потребовался); штатный stop один.
         var invocations = runner.Invocations;
         var startIndex = invocations.FindIndex(i =>
             i.FileName == "pg_ctl" && i.Args.Contains(" start"));
         invocations.Take(startIndex)
             .Count(i => i.FileName == "pg_ctl" && i.Args.Contains(" status"))
             .Should().Be(1);
+        runner.StopCalls.Should().Be(1);
+        runner.UnexpectedStopCalls.Should().Be(0);
+
+        Directory.Delete(root, recursive: true);
+    }
+
+    // AAA (защита целевого каталога): `pg_ctl status` exit 4 (каталог
+    // недоступен/невалиден) — состояние postmaster НЕИЗВЕСТНО: остаточный
+    // postmaster.pid НЕ снимается (живому postmaster удалённый pid-файл
+    // открыл бы путь ко второму старту), lock пере-проверит сам pg_ctl start.
+    [Fact]
+    public async Task PreStart_UnknownStatus_KeepsPidFile()
+    {
+        // Arrange: status → 4 (каталог недоступен); объекта полного нет —
+        // операция завершается ДО первого старта (finally тоже видит status 4).
+        var root = NewPgdata();
+        var pgdata = Path.Combine(root, "pgroot", "data");
+        File.WriteAllText(Path.Combine(pgdata, "postmaster.pid"), "331\n");
+        var runner = new FakeRunner { PgCtlStatusExit = 4 };
+        var op = Create(root, runner, s3: new FakeTarS3(objectExists: false));
+
+        // Act.
+        await op.RunAsync(CancellationToken.None);
+
+        // Assert: операция не дошла до старта (объекта нет), но pid-файл
+        // неизвестного состояния не тронут — ни защитой, ни finally.
+        registrySnapshot(op)!.State.Should().Be("failed");
+        File.Exists(Path.Combine(pgdata, "postmaster.pid")).Should().BeTrue(
+            "an unknown status is not a dead postmaster — the pid file is left to pg_ctl start");
+        runner.Invocations.Should().NotContain(i =>
+            i.FileName == "pg_ctl" && i.Args.Contains(" start"));
+        runner.StopCalls.Should().Be(0, "the guard does not stop on an unknown status");
 
         Directory.Delete(root, recursive: true);
     }
@@ -357,6 +443,7 @@ public class RestoreOperationTests
     {
         // Arrange: postmaster «работает», все stop-исходы провальны.
         var root = NewPgdata();
+        var pgdata = Path.Combine(root, "pgroot", "data");
         var runner = new FakeRunner
         {
             PgCtlStatusExit = 0,
@@ -378,13 +465,21 @@ public class RestoreOperationTests
         runner.Invocations.Should().NotContain(i =>
             i.FileName == "pg_ctl" && i.Args.Contains(" start"));
 
+        // Assert: попытки остановки — ровно две пары fast→immediate (защита
+        // каталога + finally) по каталогу операции; лишних вызовов нет.
+        runner.StopCalls.Should().Be(4);
+        runner.UnexpectedStopCalls.Should().Be(0);
+        runner.Invocations
+            .Where(i => i.FileName == "pg_ctl" && i.Args.Contains(" stop"))
+            .Should().OnlyContain(i => i.Args.Contains("-D " + pgdata));
+
         Directory.Delete(root, recursive: true);
     }
 
     // AAA (drill finally): провал ПОСЛЕ старта постгресса — finally пытается
-    // остановить постгресс ДО удаления scratch (неостановимый остаток не
-    // блокирует терминальный исход; каталог дочистит защита следующего
-    // запуска — arch/pgnode/06-restore-drill.md §2).
+    // остановить постгресс ДО удаления scratch; нестопаемый остаток НЕ
+    // блокирует терминальный исход и scratch НЕ удаляется (каталог дочистит
+    // защита следующего запуска — arch/pgnode/06-restore-drill.md §2 п.5.3).
     [Fact]
     public async Task DrillFinally_FailureAfterStart_StopsPostmasterBeforeScratchRemoval()
     {
@@ -424,40 +519,145 @@ public class RestoreOperationTests
             i.FileName == "pg_ctl" && i.Args.Contains(" status")));
         lastPgCtl.Should().BeGreaterThan(lastPsql);
 
-        // Assert (v): неостановимый остаток НЕ заблокировал чистку scratch.
-        Directory.Exists(pgdata).Should().BeFalse();
+        // Assert (v): стоп-вызовы адресуют scratch операции и выполняются,
+        // пока каталог ЕЩЁ СУЩЕСТВУЕТ (стоп ДО удаления — главный инвариант).
+        invocations
+            .Where(i => i.FileName == "pg_ctl"
+                        && (i.Args.Contains(" status") || i.Args.Contains(" stop")))
+            .Should().OnlyContain(i => i.Args.Contains($"-D {pgdata}"));
+        runner.StopScratchExisted.Should().NotBeEmpty();
+        runner.StopScratchExisted.Should().OnlyContain(existed => existed,
+            "the postmaster is stopped before the scratch removal");
+
+        // Assert (vi): нестопаемый остаток оставил scratch — его подберёт
+        // защита каталога следующего запуска (удаление под живым сиротой
+        // оставило бы процесс с удалённым cwd).
+        Directory.Exists(pgdata).Should().BeTrue(
+            "an unstoppable postmaster keeps its scratch for the next launch guard");
+
+        // Assert (vii): попытки — ровно одна пара после LSN и пара в finally.
+        runner.StopCalls.Should().Be(3);
+        runner.UnexpectedStopCalls.Should().Be(0);
 
         if (Directory.Exists(root))
             Directory.Delete(root, recursive: true);
     }
 
-    // AAA (drill finally): провал старта — защита каталога отработала после
-    // провала (постгресс не запускался), scratch почищен.
+    // AAA (drill finally): провал старта — «жертва попытки» жива (pg_ctl start
+    // -w по таймауту оставил postmaster), finally останавливает её ДО удаления
+    // scratch; остановлен — scratch почищен.
     [Fact]
     public async Task DrillFinally_StartFailure_FinallyGuardRunsAfterFailure()
     {
-        // Arrange: pg_ctl start провален, postmaster не запускался.
+        // Arrange: pg_ctl start провален, postmaster попытки жив (фейк ставит
+        // status 0 после провального start), стоп успешен.
         var root = NewPgdata();
         var pgdata = Path.Combine(root, "pgroot", "data");
         var registry = new OperationRegistry();
         registry.TryBegin(new OperationSnapshot(DrillId, "running", "downloading"));
-        var runner = new FakeRunner { StartExitCode = 1 };
+        var runner = new FakeRunner { StartExitCode = 1, PgCtlStopExits = new Queue<int>([0]) };
         var op = new RestoreOperation(Request(drillId: DrillId), runner, registry,
             pgdata: pgdata, _ => new FakeTarS3());
 
         // Act.
         await op.RunAsync(CancellationToken.None);
 
-        // Assert: failed, scratch удалён, finally-защита после провала старта.
+        // Assert: failed + finally-защита после провала старта.
         registrySnapshot(op)!.State.Should().Be("failed");
-        Directory.Exists(pgdata).Should().BeFalse();
         var invocations = runner.Invocations;
-        invocations.FindLastIndex(i => i.FileName == "pg_ctl" && i.Args.Contains(" status"))
-            .Should().BeGreaterThan(invocations.FindIndex(i =>
-                i.FileName == "pg_ctl" && i.Args.Contains(" start")));
+        var startIndex = invocations.FindIndex(i =>
+            i.FileName == "pg_ctl" && i.Args.Contains(" start"));
+        int? stopIndex = null;
+        for (var i = startIndex + 1; i < invocations.Count; i++)
+            if (invocations[i].FileName == "pg_ctl" && invocations[i].Args.Contains(" stop"))
+            {
+                stopIndex = i;
+                break;
+            }
+
+        // Assert: остановка «жертвы попытки» — после провального старта, по
+        // каталогу scratch, и каталог на момент стопа ещё существовал.
+        stopIndex.Should().NotBeNull("the finally stops the attempt's postmaster");
+        stopIndex!.Value.Should().BeGreaterThan(startIndex);
+        invocations[stopIndex.Value].Args.Should().Contain($"-D {pgdata}");
+        runner.StopScratchExisted.Should().Equal(true);
+        runner.StopCalls.Should().Be(1);
+        runner.UnexpectedStopCalls.Should().Be(0);
+
+        // Assert: стоп успешен — scratch удалён.
+        Directory.Exists(pgdata).Should().BeFalse("a stopped drill leaves no scratch");
 
         if (Directory.Exists(root))
             Directory.Delete(root, recursive: true);
+    }
+
+    // AAA (restore finally): провал ПОСЛЕ старта постгресса в RESTORE-ветке —
+    // finally останавливает postmaster операции ДО возврата Patroni
+    // (supervisorctl start spilo): иначе Patroni поднимается в PGDATA с живым
+    // postmaster операции (arch/pgnode/06-restore-drill.md §2 п.5.3, §4).
+    [Fact]
+    public async Task RestoreFinally_StopsPostmasterBeforePatroniStart()
+    {
+        // Arrange: restore-ветка (без drill-Id), старт успешен, LSN-проба пуста.
+        var root = NewPgdata();
+        var runner = new FakeRunner { LsnReply = "", PgCtlStopExits = new Queue<int>([0]) };
+        var op = Create(root, runner);
+
+        // Act.
+        await op.RunAsync(CancellationToken.None);
+
+        // Assert: свой провал LSN-пробы.
+        registrySnapshot(op)!.State.Should().Be("failed");
+        registrySnapshot(op)!.Error.Should().Contain("pg_current_wal_lsn");
+
+        // Assert: последний pg_ctl stop (fast) — ДО supervisorctl start spilo.
+        var invocations = runner.Invocations;
+        var lastStop = invocations.FindLastIndex(i =>
+            i.FileName == "pg_ctl" && i.Args.Contains(" stop") && i.Args.Contains("fast"));
+        var spiloStart = invocations.FindIndex(i =>
+            i.FileName == "supervisorctl" && i.Args == "start spilo");
+        lastStop.Should().BeGreaterThanOrEqualTo(0, "the finally stops the operation postmaster");
+        spiloStart.Should().BeGreaterThan(lastStop,
+            "Patroni returns only after the operation postmaster is stopped");
+
+        // Assert: spilo возвращён ровно один раз (stop spilo — один, на входе).
+        invocations.Count(i => i.FileName == "supervisorctl" && i.Args == "start spilo")
+            .Should().Be(1);
+        invocations.Count(i => i.FileName == "supervisorctl" && i.Args == "stop spilo")
+            .Should().Be(1);
+        runner.UnexpectedStopCalls.Should().Be(0);
+
+        Directory.Delete(root, recursive: true);
+    }
+
+    // AAA (лог инкарнации): /tmp/restore-pg.log очищается перед pg_ctl start —
+    // хвост лога в last_error содержит строки только своей инкарнации
+    // (arch/pgnode/06-restore-drill.md §2 п.5.2).
+    [Fact]
+    public async Task RestoreLog_MarkerRemovedBeforeStart()
+    {
+        // Arrange: маркер прошлой инкарнации в общем файле лога операции ноды.
+        var marker = $"pgw-restore-log-{Guid.NewGuid():N}";
+        var root = NewPgdata();
+        var runner = new FakeRunner { PgCtlStopExits = new Queue<int>([0]) };
+        await File.WriteAllTextAsync("/tmp/restore-pg.log", marker + "\n",
+            TestContext.Current.CancellationToken);
+        var op = Create(root, runner);
+
+        // Act.
+        await op.RunAsync(CancellationToken.None);
+
+        // Assert: хвост прошлой инкарнации не пережил старт операции.
+        var text = File.Exists("/tmp/restore-pg.log")
+            ? await File.ReadAllTextAsync("/tmp/restore-pg.log",
+                TestContext.Current.CancellationToken)
+            : "";
+        text.Should().NotContain(marker,
+            "the incarnation log is cleared before pg_ctl start");
+
+        // Cleanup: файл общий — не оставляем чужой инкарнации мусора.
+        try { File.Delete("/tmp/restore-pg.log"); } catch { /* нет — норма */ }
+        Directory.Delete(root, recursive: true);
     }
 
     [Fact]
