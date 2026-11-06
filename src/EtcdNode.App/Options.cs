@@ -3,7 +3,8 @@ namespace EtcdNode.App;
 // Конфигурация агента EtcdNode (arch/etcdnode/01-agent.md §3): доставляется
 // env контейнера узла воркером EtcdNodeSpecBuilder. Чтение env — ручное
 // (ключи с одиночными подчёркиваниями не биндятся конфиг-билдером).
-// Отсутствующая переменная — дефолт; заданная и нечитаемая — fail-fast.
+// Отсутствующая или нечитаемая переменная — дефолт (Int-fallback);
+// невалидный собранный набор — fail-fast в Load.
 
 /// <summary>Корневые настройки агента.</summary>
 public sealed class EtcdNodeOptions

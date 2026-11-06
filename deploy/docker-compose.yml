@@ -363,8 +363,9 @@ services:
       <<: *s3worker-env
       S3Worker__Api__AdvertiseUrl: https://host.docker.internal:${S3W_API_HOST_PORT2:-8089}
 
-  # EtcdWorker (arch/etcdworker/README.md): хозяин etcd-контура — состав managed-узлов + DR-слепки
-  # в фиксированный bucket etcd-backups; портовой ряд 8087 (после pg 8080-8083 /
+  # EtcdWorker (arch/etcdworker/README.md): хозяин etcd-контура — состав
+  # managed-узлов (DR-слепки — функция агентов EtcdNode узлов,
+  # arch/etcdnode/02-snapshots.md); портовой ряд 8087 (после pg 8080-8083 /
   # kfw 8081-8084 / vwk 8082-8085 / s3w 8086-8089); узлы контура он поднимает сам.
   etcdworker:
     <<: *etcdworker-base
