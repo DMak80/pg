@@ -107,8 +107,8 @@ routing = старый владелец → put routing = новый + delete st
 применился, а контрол-плейн об этом не знает» невозможно по построению.
 
 Снапшоты контрол-плейна (P12) — локальные слепки PgWorker в точках
-изменений; DR-выгрузка etcd — зона EtcdWorker
-([etcdworker/04-snapshots.md](../etcdworker/04-snapshots.md)). Потеря карты —
+изменений; DR-выгрузка etcd — зона EtcdNode
+([etcdnode/02-snapshots.md](../etcdnode/02-snapshots.md)). Потеря карты —
 не потеря данных (схемы на шардах восстанавливают истину), но требует
 verify/heal ([09](09-troubleshooting.md) §5).
 

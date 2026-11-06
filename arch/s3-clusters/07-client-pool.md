@@ -29,6 +29,6 @@
   ([backups/05-etcd-contract.md](../backups/05-etcd-contract.md)) ссылками на имена инстансов
   (`write_master`/`write_replica` — по роли источника, не по роли ноды);
   чтение — все ноды пула без приоритетов (порядок `endpoints`-ключа).
-- **EtcdWorker** читает `config`/`endpoints`/`secrets` (ключ `backups`)
-  etcd-backup кластера — как клиент пула
-  ([etcdworker/04-snapshots.md](../etcdworker/04-snapshots.md) §1).
+- **EtcdNode** (агенты узлов etcd-контура) читает `config`/`endpoints`/
+  `secrets` (ключ `backups`) etcd-backup кластера — как клиент пула
+  ([etcdnode/02-snapshots.md](../etcdnode/02-snapshots.md) §1).

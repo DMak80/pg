@@ -20,7 +20,7 @@ PgWorker — [pgworker/04-security.md](../pgworker/04-security.md); ключи �
   тика); единого
   `PGW_BACKUP_S3_ENDPOINT/REGION/ACCESS_KEY/SECRET_KEY/ADVERTISED_ENDPOINT`
   больше нет — цели даёт пул per-cluster; (в) **etcd-слепки — зона
-  EtcdWorker** ([etcdworker/04-snapshots.md](../etcdworker/04-snapshots.md)):
+  EtcdNode** ([etcdnode/02-snapshots.md](../etcdnode/02-snapshots.md)):
   цель — фиксированный bucket `etcd-backups` на нодах etcd-backup кластера
   `/s3/clusters/` (признак `etcd_backup=true`; bucket создаёт S3Worker;
   креды — ключ `backups` его secrets-ключа), источник правды о DR-слепках не

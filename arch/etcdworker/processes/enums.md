@@ -2,7 +2,7 @@
 
 Уровень 4. Таблицы всех значений ограниченных наборов, которые использует
 воркер. Формат ключей и контракт — [00-etcd-contract.md](../00-etcd-contract.md);
-процессы — [A](a-membership.md)…[C](c-snapshot-export.md).
+процессы — [A](a-membership.md), [B](b-node-supervisor.md).
 
 ## 1. Состояние managed-узла (`/etcd/nodes/<k>/state`)
 
@@ -24,7 +24,7 @@
 
 | Значение | Что означает | Процесс |
 |---|---|---|
-| отсутствует / битая | N=0: только наблюдение и слепки (external-контур, стенд) | [B](b-node-supervisor.md), [C](c-snapshot-export.md) |
+| отсутствует / битая | N=0: только наблюдение (external-контур, стенд) | [B](b-node-supervisor.md) |
 | `nodes`: 0 | managed-узлов нет; состав контура — только external | [B](b-node-supervisor.md) |
 | `nodes`: 1..7 | доводка managed-состава до N; итог external + N ≥ 3 (гвард приёма, [05-api.md](../05-api.md) §2) | [A](a-membership.md) |
 
@@ -48,12 +48,7 @@
 takeover продолжает её по фактам (member в списке? learner voting? контейнер
 жив?), а не по журналу вслепую. Фазы отказа несут `last_error`.
 
-## 5. Статус DR-выгрузки (`/etcdworker/snapshots`, поле `state`)
-
-| Значение | Что означает |
-|---|---|
-| `OK` | последняя выгрузка успешна; `last_uploaded_unix` — метка покрываемого слепка |
-| `FAILED` | выгрузка не удалась; `error` — причина (`etcd-backup-missing` — цель не резолвится: кластера с признаком нет, он в `TO_REMOVE` или у него нечитаемые secrets/endpoints); поля последнего успеха сохраняются |
-
-Поля формата и семантика покрытия — [00-etcd-contract.md](../00-etcd-contract.md) §3;
-поле `enabled` не пишется (выгрузка безусловна).
+Статус DR-выгрузки слепков (`OK`/`FAILED`) — домен EtcdNode
+(`/etcdnode/snapshots`,
+[etcdnode/00-etcdnode-contract.md](../../etcdnode/00-etcdnode-contract.md) §3) —
+к перечислениям воркера не относится.

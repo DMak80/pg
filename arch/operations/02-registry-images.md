@@ -145,7 +145,7 @@ Go-1.24-клиентами с ошибкой `x509: certificate is not standards
 | `prom/alertmanager:v0.28.1` | dev-стенд (метрики) |
 | `prom/prometheus:v3.14.0` | dev-стенд (метрики) |
 | `python:3.12-alpine` | сайдкар эмулятора Patroni (dev-stand) |
-| `quay.io/coreos/etcd:v3.5.21` | etcd-контур: стенд ×3 (HA, external), deploy/etcd ×1 (seed; состав доводит EtcdWorker), E2E/интеграция-фикстуры (×5) |
+| `quay.io/coreos/etcd:v3.5.21` | etcd-контур: стенд ×3 (HA, external), deploy/etcd ×1 (seed; состав доводит EtcdWorker), E2E/интеграция-фикстуры (×5), базовый слой локально собираемого образа `pgworker/etcdnode` (узлы контура с агентом EtcdNode — сам локальный образ в registry НЕ кладётся) |
 
 При смене версии образа в коде/компоузе — обновить строку в `images.txt` и
 перемазеркалировать (старую версию из registry можно удалить — см. «Удаление

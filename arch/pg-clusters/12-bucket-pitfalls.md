@@ -155,8 +155,8 @@ etcd всё равно кладёт запись — простой неизбе
 **Сценарий.** Потеря etcd = потеря карты бакетов и мастер-ключей; restore
 может быть устаревшим относительно последнего flip/failover; снапшот
 покрывает все кластеры сразу.
-**Решение.** Регулярные DR-слепки и выгрузка в S3 — EtcdWorker
-([etcdworker/04-snapshots.md](../etcdworker/04-snapshots.md)); PgWorker
+**Решение.** Регулярные DR-слепки и выгрузка в S3 — EtcdNode
+([etcdnode/02-snapshots.md](../etcdnode/02-snapshots.md)); PgWorker
 снимает локальные снапшоты в точках изменений (provisioning, переезды —
 `move-<bucket>-start` обязателен и `flip-<bucket>-<to>` best-effort,
 ротации) — маршрутизация, не DR. Restore: etcd из слепка → сверка карты с
@@ -258,7 +258,7 @@ FROZEN-доля, `maxwait` doorman) + протухший lease (P11); runbook «
 восстановление бакета = восстановление схемы на шарде + ключ в etcd.
 **Решение.** Домен бэкапов — [backups/README.md](../backups/README.md):
 полные, WAL, verify, restore/PITR, drill; DR-слепки etcd —
-[etcdworker/04-snapshots.md](../etcdworker/04-snapshots.md). Порядок
+[etcdnode/02-snapshots.md](../etcdnode/02-snapshots.md). Порядок
 восстановления системы: etcd из слепка → шарды из своих бэкапов → сверка
 карты → приложение (watch подхватит). Отдельный бакет — восстановление
 схемы + сверка routing.

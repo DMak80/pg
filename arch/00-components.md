@@ -13,13 +13,14 @@
 | **KafkaWorker** | Оркестратор Kafka-кластеров (KRaft, docker plain/swarm): подъём и демонтаж, per-cluster SASL-креды и CA, автосинк топиков, reassignment партиций. | [kafkaworker/README.md](kafkaworker/README.md) |
 | **ValkeyWorker** | Оркестратор Valkey-кластеров (standalone, `nodes=1`): подъём и демонтаж, per-cluster ACL-креды, надзор и ротации без рестартов. | [valkeyworker/README.md](valkeyworker/README.md) |
 | **S3Worker** | Оркестратор S3-кластеров (ownS3): инстансы по placement-селекторам, bucket per-install, mesh-репликация, deny-list, публикация `endpoints`. | [s3worker/README.md](s3worker/README.md) |
-| **EtcdWorker** | Хозяин etcd-контура установки: поддержание состава managed-узлов и кворума, DR-слепки etcd в etcd-backup S3-кластер. | [etcdworker/README.md](etcdworker/README.md) |
+| **EtcdWorker** | Хозяин etcd-контура установки: поддержание состава managed-узлов и кворума (managed-узлы — образ агента EtcdNode). | [etcdworker/README.md](etcdworker/README.md) |
 
 ## 2. Агенты на нодах
 
 | Компонент | Роль | Документ |
 |---|---|---|
 | **PgNode** | Агент внутри контейнера PG-ноды (один процесс Kestrel): приёмник WAL (физическая репликация из PG с выгрузкой в S3), полные бэкапы (стриминговый клиент `BASE_BACKUP` → единый tar-объект в S3), verify/restore/drill, hba-гвард, `pg_dump` схемы, проверка данных ноды; API ноды для PgWorker. | [pgnode/README.md](pgnode/README.md) |
+| **EtcdNode** | Агент внутри контейнера каждого managed-узла etcd-контура (etcd + агент под supervisord): DR-слепки etcd (своего узла) с выгрузкой в etcd-backup S3-кластер — планово и по важным изменениям (пульсы сервисов не триггерят), обслуживание контура (compact/defrag). | [etcdnode/README.md](etcdnode/README.md) |
 
 ## 3. Кластеры данных и домены
 

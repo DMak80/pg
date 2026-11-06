@@ -111,18 +111,18 @@ v2-клиент Spilo с etcd 3.5 несовместим). Lease-скрипту 
 - **Перезапущенный инстанс приложения** не может забутстрапиться (статика
   — только адреса etcd); это принятое ограничение, лечится восстановлением
   etcd.
-- **Восстановление** — [etcdworker/04-snapshots.md](../etcdworker/04-snapshots.md)
-  (DR-слепки в S3), операторский путь —
-  [09-troubleshooting.md](09-troubleshooting.md) §5 и
-  [etcdworker/06-operability.md](../etcdworker/06-operability.md) §«Восстановление etcd из
-  S3-выгрузки». Снапшот покрывает все кластеры сразу: restore возвращает
-  ВСЕ системы к моменту снапшота.
+- **Восстановление** — [etcdnode/03-restore.md](../etcdnode/03-restore.md)
+  (DR-слепки в S3 снимают агенты EtcdNode), операторский путь —
+  [09-troubleshooting.md](09-troubleshooting.md) §5. Снапшот покрывает все
+  кластеры сразу: restore возвращает ВСЕ системы к моменту снапшота.
 
 ## 6. Снапшоты
 
-Регулярные слепки и DR-выгрузка — зона EtcdWorker (S3-кластер
-etcd-backup): плановый интервал + детекция изменений, восстановление с
-проверкой целостности — [etcdworker/04-snapshots.md](../etcdworker/04-snapshots.md).
+Регулярные слепки и DR-выгрузка — зона EtcdNode, агентов в узлах
+etcd-контура (S3-кластер etcd-backup): плановый интервал + детекция
+важных изменений, восстановление с проверкой целостности —
+[etcdnode/02-snapshots.md](../etcdnode/02-snapshots.md),
+[etcdnode/03-restore.md](../etcdnode/03-restore.md).
 PgWorker снимает локальные снапшоты в точках изменений домена
 (provisioning, переезды, ротации) — это маршрутизация, а не DR-слепок;
 выгрузки в S3 у него нет ([pgworker/08-operability.md](../pgworker/08-operability.md)

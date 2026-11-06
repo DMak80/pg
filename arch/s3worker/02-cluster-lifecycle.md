@@ -78,7 +78,7 @@ secrets-ключа — диагностический отказ с отложе
 На каждом инстансе воркер поддерживает bucket per-install
 (`S3Worker:Bucket`) и — у etcd-backup кластера — фиксированный
 etcd-слепковый bucket `etcd-backups` (имя-константа, потребитель —
-EtcdWorker, [etcdworker/04-snapshots.md](../etcdworker/04-snapshots.md) §1). Создание —
+EtcdNode, [etcdnode/02-snapshots.md](../etcdnode/02-snapshots.md) §1). Создание —
 идемпотентное `CreateBucket` root-кредом из secrets-ключа (права admin,
 [owns3/05-access-config.md](../../../OwnS3/arch/owns3/05-access-config.md) §3):
 exists → пропуск; выполняется в provisioning и при добавлении инстанса

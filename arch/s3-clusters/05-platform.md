@@ -30,8 +30,8 @@
 - **etcd-backup кластер** (`etcd_backup=true`, [02-keys.md](02-keys.md) §1):
   на каждом инстансе ДОПОЛНИТЕЛЬНО фиксированный etcd-слепковый bucket —
   имя-константа `etcd-backups`, одинаковое на всех установках (создаёт
-  S3Worker тем же идемпотентным `CreateBucket`; потребитель — EtcdWorker,
-  [etcdworker/04-snapshots.md](../etcdworker/04-snapshots.md) §1 — имя не
+  S3Worker тем же идемпотентным `CreateBucket`; потребитель — EtcdNode,
+  [etcdnode/02-snapshots.md](../etcdnode/02-snapshots.md) §1 — имя не
   конфигурируется).
 - **mesh-репликация** — внутренняя механика ownS3
   ([owns3/07-replication.md](../../../OwnS3/arch/owns3/07-replication.md);
