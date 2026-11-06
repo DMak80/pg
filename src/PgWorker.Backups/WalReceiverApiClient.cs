@@ -63,7 +63,23 @@ public sealed record ReceiverStatus(
     // sha256 объекта — опциональны (терминальные снимки без прогресса).
     [property: JsonPropertyName("bytes_done")] long? BytesDone = null,
     [property: JsonPropertyName("parts_done")] long? PartsDone = null,
-    [property: JsonPropertyName("sha256")] string? Sha256 = null);
+    [property: JsonPropertyName("sha256")] string? Sha256 = null,
+    // Вид операции реестра приёмника (arch/pgnode/02-api.md §3): сверка
+    // «своя/чужая» супервизором — по id И kind; null (снимок старого
+    // приёмника) трактуется как чужой.
+    [property: JsonPropertyName("kind")] string? Kind = null);
+
+/// <summary>Константы вида ops-операции приёмника (arch/pgnode/02-api.md
+/// §3): заполняет приёмник при TryBegin и каждом обновлении снимка;
+/// полный бэкап (full-реестр) вида не имеет. Супервизоры сверяют вид со
+/// своей операцией; снимок без вида (контракт старого приёмника) —
+/// чужой для сверки (поставка воркера и приёмника единая).</summary>
+public static class OperationKinds
+{
+    public const string Verify = "verify";
+    public const string Restore = "restore";
+    public const string Drill = "drill";
+}
 
 /// <summary>Тело POST /api/node/pgdump (pg_dump схемы — arch/pgworker/processes/f-move.md M1).</summary>
 public sealed record StartPgDumpRequest(

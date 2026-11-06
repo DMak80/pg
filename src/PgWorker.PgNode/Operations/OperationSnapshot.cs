@@ -22,7 +22,11 @@ public sealed record OperationSnapshot(
     long? BytesDone = null,
     long? PartsDone = null,
     // Сквозной sha256 tar-объекта полного (hex) — поле etcd-статуса sha256.
-    string? Sha256 = null);
+    string? Sha256 = null,
+    // Вид ops-операции (OperationKinds; arch/pgnode/02-api.md §3):
+    // verify/restore/drill — заполняет приёмник; у полного — null.
+    // Update заменяет снимок целиком — операции обязаны переносить вид.
+    string? Kind = null);
 
 /// <summary>Константы состояний операций (spec §3.2): running | succeeded |
 /// failed; у полного дополнительно uploading (фаза фиксации); у ops-операций

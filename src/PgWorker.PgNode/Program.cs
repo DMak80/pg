@@ -400,7 +400,7 @@ internal partial class Program
             ? Results.Json(new OpsStatusResponse(
                     snapshot.State, snapshot.Phase, snapshot.Id,
                     snapshot.RestoredToLsn, snapshot.SystemId,
-                    snapshot.StartedUnix, snapshot.Error),
+                    snapshot.StartedUnix, snapshot.Error, snapshot.Kind),
                 JsonOpts)
             : Results.Json(
                 new ErrorResponse("no active operation"), JsonOpts, statusCode: 404);
