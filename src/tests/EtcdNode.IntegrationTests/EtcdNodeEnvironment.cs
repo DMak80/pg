@@ -136,7 +136,7 @@ public sealed class EtcdNodeEnvironment : IAsyncLifetime
             try
             {
                 var containerName = Node(name).Name.TrimStart('/');
-                var logs = await DockerAsync($"logs {containerName}", okWhenMissing: true);
+                var logs = await DockerAsync($"logs --tail 4000 {containerName}", okWhenMissing: true);
                 if (logs.Length > 0)
                 {
                     Directory.CreateDirectory(telemetryDir);
@@ -198,7 +198,10 @@ public sealed class EtcdNodeEnvironment : IAsyncLifetime
 
     // docker CLI: вывод stdout; okWhenMissing — ненулевой exit даёт пустую
     // строку (объект не существует; docker CLI кодит «not found» как 1),
-    // прочие ошибки — исключение.
+    // прочие ошибки — исключение. Оба перенаправленных потока читаются
+    // ПАРАЛЛЕЛЬНО ожиданию выхода: иначе пайп (64 КБ) заполняется выводом
+    // (docker logs контейнера с сотнями МБ логов) и процесс блокируется
+    // на записи навсегда — WaitForExitAsync не завершается.
     private static async Task<string> DockerAsync(string args, bool okWhenMissing)
     {
         var psi = new System.Diagnostics.ProcessStartInfo("docker", args)
@@ -207,29 +210,20 @@ public sealed class EtcdNodeEnvironment : IAsyncLifetime
             RedirectStandardError = true,
         };
         using var process = System.Diagnostics.Process.Start(psi)!;
+        var stdoutTask = process.StandardOutput.ReadToEndAsync(CancellationToken.None);
+        var stderrTask = process.StandardError.ReadToEndAsync(CancellationToken.None);
         await process.WaitForExitAsync(CancellationToken.None);
         if (process.ExitCode == 0)
-            return await process.StandardOutput.ReadToEndAsync(CancellationToken.None);
+            return await stdoutTask;
         if (okWhenMissing)
             return "";
-        throw new ApplicationException($"docker {args} exited {process.ExitCode}: {await process.StandardError.ReadToEndAsync(CancellationToken.None)}");
+        throw new ApplicationException($"docker {args} exited {process.ExitCode}: {await stderrTask}");
     }
 
     // Именованный том прогона — docker CLI с проверкой exit (testcontainers-
     // обёртки томов не создавали: тома смонтированы builder'ом контейнера).
     private static async Task RemoveVolumeAsync(string name)
-    {
-        var psi = new System.Diagnostics.ProcessStartInfo("docker", $"volume rm {name}")
-        {
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-        };
-        using var process = System.Diagnostics.Process.Start(psi)!;
-        await process.WaitForExitAsync(CancellationToken.None);
-        if (process.ExitCode != 0)
-            throw new ApplicationException(
-                $"docker volume rm {name} exited {process.ExitCode}: {await process.StandardError.ReadToEndAsync(CancellationToken.None)}");
-    }
+        => await DockerAsync($"volume rm {name}", okWhenMissing: false);
 
     // Гейт статики: контур поднимается из образа агента — без него серия
     // падает пачкой непонятных ошибок; fail-fast с рецептом. Копия гейта
@@ -237,18 +231,16 @@ public sealed class EtcdNodeEnvironment : IAsyncLifetime
     // хелпер — отдельная задача, не рефакторим).
     private static async Task EnsureEtcdNodeImageAsync(CancellationToken ct)
     {
-        var psi = new System.Diagnostics.ProcessStartInfo("docker",
-            "image inspect pgworker/etcdnode:dev")
+        try
         {
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-        };
-        using var process = System.Diagnostics.Process.Start(psi)!;
-        await process.WaitForExitAsync(ct);
-        if (process.ExitCode != 0)
+            await DockerAsync("image inspect pgworker/etcdnode:dev", okWhenMissing: false);
+        }
+        catch (ApplicationException)
+        {
             throw new ApplicationException(
                 "pgworker/etcdnode:dev image is missing — static assets are not prepared. "
                 + "Run: DOTNET_CLI_UI_LANGUAGE=en dotnet run --project src/tests/PgWorker.E2ePrepare -c Release");
+        }
     }
 
     // Смерть узла контура (кейс ветки F): docker kill — SIGKILL, БЕЗ
