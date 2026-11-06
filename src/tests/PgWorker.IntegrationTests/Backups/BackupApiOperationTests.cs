@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using PgWorker.PgNode;
 using PgWorker.PgNode.Operations;
 using Shared.Core;
@@ -529,6 +530,63 @@ public class BackupApiOperationTests : IDisposable
             new S3Context(["http://s3a:9000"], "ak", "sk", "backups", "c1/s1")), ct);
         ((int)next.StatusCode).Should().Be(202, "a terminal snapshot is not an active operation");
         created.Should().Equal(Id, "20260102000000Z");
+    }
+
+    // AAA (гашение при остановке хоста ≠ операторская отмена): StopAsync
+    // хоста гасит ЖИВУЮ операцию каналом ShutdownAsync — снимок НЕ
+    // перезаписывается cancelled; воркер после смерти процесса идёт
+    // vanished-путём 404, не операторской веткой.
+    [Fact]
+    public async Task HostShutdown_ActiveOp_NotCancelled()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        // Arrange: живая verify-операция (фейк висит в RunAsync).
+        var (factory, client, _, opsRegistry, _, fakeOps, _) = Build();
+        var body = new StartVerifyRequest(Id,
+            new S3Context(["http://s3a:9000"], "ak", "sk", "backups", "c1/s1"));
+        ((int)(await client.PostAsJsonAsync("/api/ops/verify", body, ct)).StatusCode)
+            .Should().Be(202);
+        var op = fakeOps.Last!;
+        await using var _ = factory;
+
+        // Act: остановка хоста приёмника — ApplicationStopping (как у
+        // штатного stop/restart pgnode; TestServer.Host устарел).
+        factory.Services.GetRequiredService<IHostApplicationLifetime>().StopApplication();
+
+        // Assert: гашение каналом shutdown, БЕЗ операторской ветки.
+        op.ShutdownCalls.Should().Be(1, "host shutdown must go through the shutdown channel");
+        op.CancelCalls.Should().Be(0, "host shutdown is not an operator cancel");
+        opsRegistry.Current!.State.Should().Be("running",
+            "shutdown does not publish cancelled — the registry dies with the process");
+    }
+
+    // AAA (отмена только живой операции): завершённая операция (терминал +
+    // выход задачи) недоступна для cancel — 404 без вызова CancelAsync;
+    // повторный stop/restart pgnode не шлёт стоп по PGDATA завершённого
+    // restore.
+    [Fact]
+    public async Task CancelAfterTerminal_Returns404_NoCancelCall()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        // Arrange: операция дошла до терминала и завершила задачу.
+        var (factory, client, _, opsRegistry, _, fakeOps, _) = Build();
+        await using var _ = factory;
+        var body = new StartVerifyRequest(Id,
+            new S3Context(["http://s3a:9000"], "ak", "sk", "backups", "c1/s1"));
+        ((int)(await client.PostAsJsonAsync("/api/ops/verify", body, ct)).StatusCode)
+            .Should().Be(202);
+        var op = fakeOps.Last!;
+        op.Finish("succeeded");
+        SpinWait.SpinUntil(() => opsRegistry.Current?.State == "succeeded",
+            TimeSpan.FromSeconds(10)).Should().BeTrue();
+
+        // Act: операторская отмена завершённой операции.
+        var cancel = await client.PostAsync("/api/ops/cancel", content: null, ct);
+
+        // Assert: 404, канал отмены не звался.
+        ((int)cancel.StatusCode).Should().Be(404,
+            "a terminal operation is not cancellable — the active reference is gone");
+        op.CancelCalls.Should().Be(0);
     }
 
     public void Dispose()
