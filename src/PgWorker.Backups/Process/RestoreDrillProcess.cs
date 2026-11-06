@@ -351,15 +351,20 @@ public sealed class RestoreDrillProcess(
         if (reply.IsTransient)
             return; // transient тика — статус ключа не трогаем
 
-        // Сверка снимка по id (arch/backups/processes/g-drill.md §1): ops-реестр
-        // приёмника ОДИН на процесс — GET может вернуть чужой/прошлый снимок
-        // (напр., терминал verify-операции). Чужой id — чужой исход: вердиктов
-        // по нему нет, дрилл перезапускается vanished-семантикой.
-        if (reply.Status is { } seen && seen.Id != drill.Id)
+        // Сверка снимка по id и виду операции (arch/backups/processes/
+        // g-drill.md §1): ops-реестр приёмника ОДИН на процесс — GET может
+        // вернуть чужой/прошлый снимок (напр., терминал verify-операции;
+        // restore-снимок ТОГО ЖЕ полного: id совпадает, вид другой). Чужой
+        // id/вид (в т.ч. снимок без kind — контракт старого приёмника) —
+        // чужой исход: вердиктов по нему нет, дрилл перезапускается
+        // vanished-семантикой.
+        if (reply.Status is { } seen
+            && (!string.Equals(seen.Id, drill.Id, StringComparison.Ordinal)
+                || seen.Kind != OperationKinds.Drill))
         {
             logger.LogWarning(
-                "{Op} {cluster}/{shard}: drill {id} — registry holds a foreign snapshot (id={SnapId}, state={State}); relaunching via the vanished path",
-                Op, cluster, shard, drill.Id, seen.Id ?? "<null>", seen.State);
+                "{Op} {cluster}/{shard}: drill {id} — registry holds a foreign snapshot (id={SnapId}, kind={Kind}, state={State}); relaunching via the vanished path",
+                Op, cluster, shard, drill.Id, seen.Id ?? "<null>", seen.Kind ?? "<null>", seen.State);
             await SuperviseVanishedAsync(cluster, shard, drill, nowUnix, poolCtx, receiverUrl, ct);
             return;
         }

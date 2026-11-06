@@ -94,6 +94,21 @@ public sealed class RestoreOperation : IReceiverOperation
         var phase = OperationPhases.Downloading;
         try
         {
+            // Защита целевого каталога ДО ПЕРВОЙ ЗАПИСИ в него (arch/pgnode/
+            // 06-restore-drill.md §2 п.5.1): postmaster-сирота прошлой
+            // инкарнации (пережил рестарт приёмника) останавливается до
+            // скачивания/распаковки — tar не перезаписывает файлы живого
+            // каталога. Restore — после stop spilo (PGDATA ещё держит
+            // прод-постгрес Patroni), drill — сразу. Неостановим — честный
+            // failed (не transient: не данные и не транспорт; фаза
+            // recovering — permanent-маркер для воркера).
+            if (!await TryStopPostmasterAsync(pgdata, token))
+            {
+                Fail(OperationPhases.Recovering,
+                    $"postmaster in {pgdata} cannot be stopped (fast and immediate exhausted)");
+                return;
+            }
+
             // CA https (PEM в POST-команде, §7): материализация в temp, 0600.
             if (_request.S3.CaPem is { Length: > 0 } caPem)
             {
@@ -269,25 +284,11 @@ public sealed class RestoreOperation : IReceiverOperation
             phase = OperationPhases.Recovering;
             Update(OperationStates.Running, phase);
 
-            // Защита целевого каталога перед стартом (arch/pgnode/06-restore-drill.md
-            // §2): postmaster-сирота прошлой инкарнации (пережил рестарт приёмника)
-            // останавливается ДО старта; неостановим — честный failed (не
-            // transient: не данные и не транспорт); мёртвому — снимается
-            // остаточный postmaster.pid (иначе pg_ctl start откажет от старта).
-            if (!await TryStopPostmasterAsync(pgdata, token))
-            {
-                Fail(OperationPhases.Recovering,
-                    $"postmaster in {pgdata} cannot be stopped (fast and immediate exhausted)");
-                return;
-            }
-
-            var postmasterPid = Path.Combine(pgdata, "postmaster.pid");
-            if (File.Exists(postmasterPid))
-                File.Delete(postmasterPid);
-
             // Лог инкарнации (файл общий у операций ноды): диагностика провала
             // старта — хвост restore-pg.log в last_error — содержит строки
-            // только своей инкарнации.
+            // только своей инкарнации. Защита каталога уже выполнена в начале
+            // операции (§2 п.5.1) — чистка лога осталась перед стартом: лог
+            // пишет только этот pg_ctl start.
             try { File.Delete("/tmp/restore-pg.log"); } catch { /* файла нет — норма */ }
 
             const int recoveryStartAttempts = 3;
@@ -441,10 +442,12 @@ public sealed class RestoreOperation : IReceiverOperation
         {
             // Postmaster операции остановлен при ЛЮБОМ исходе ДО возврата
             // Patroni (restore) и чистки scratch (drill) — arch/pgnode/
-            // 06-restore-drill.md §2: неостановимый остаток НЕ блокирует
-            // терминальный исход (каталог дочистит защита каталога следующего
-            // запуска); терминальный снимок не трогаем.
-            try { await TryStopPostmasterAsync(_pgdata, CancellationToken.None); }
+            // 06-restore-drill.md §2 п.5.3: неостановимый остаток НЕ блокирует
+            // терминальный исход (при нестопаемом сироте попытки fast →
+            // immediate выполняются повторно после защиты каталога — до
+            // ~2×(fast+immediate), §2 п.5.3); терминальный снимок не трогаем.
+            var postmasterStopped = false;
+            try { postmasterStopped = await TryStopPostmasterAsync(_pgdata, CancellationToken.None); }
             catch { /* best-effort */ }
             // Patroni ноды — обратно при ЛЮБОМ исходе RESTORE (там он был
             // остановлен; поднимет постгрес уже с валидным initialize и
@@ -458,9 +461,12 @@ public sealed class RestoreOperation : IReceiverOperation
                 catch { /* best-effort */ }
             }
             // Scratch дрилла чистится при ЛЮБОМ исходе (arch/backups/04-drill.md) —
-            // терминальный ключ дрилла сразу чистый; PGDATA restore НЕ трогаем
-            // (там восстановленные данные до REJOINING).
-            if (_isDrill)
+            // терминальный ключ дрилла сразу чистый; НО только при
+            // остановленном/отсутствующем postmaster (§2 п.5.3): удаление
+            // каталога под живым сиротой оставило бы его с удалённым cwd —
+            // остаток подберёт защита каталога следующего запуска. PGDATA
+            // restore НЕ трогаем (там восстановленные данные до REJOINING).
+            if (_isDrill && postmasterStopped)
             {
                 try
                 {
@@ -882,19 +888,48 @@ public sealed class RestoreOperation : IReceiverOperation
         }
     }
 
-    // pg_ctl status: exit 0 — postmaster каталога работает (контракт pg_ctl);
-    // прочие исходы — не работает/недоступен (lock пере-проверит сам pg_ctl start).
-    private async Task<bool> PostmasterRunningAsync(string pgdata, CancellationToken token)
-        => (await _runner.RunAsync(PgCtl(pgdata, "status"), token)).ExitCode == 0;
+    // pg_ctl status: exit 0 — postmaster каталога работает; exit 3 — не
+    // работают (каталог валиден, сервера нет); прочие не-0 (exit 4 — каталог
+    // недоступен/невалиден) — состояние НЕИЗВЕСТНО (arch/pgnode/
+    // 06-restore-drill.md §2 п.5.1): pid не снимается, lock пере-проверит
+    // сам pg_ctl start.
+    private enum PostmasterState
+    {
+        Running,
+        Dead,
+        Unknown,
+    }
+
+    private async Task<PostmasterState> PostmasterStateAsync(string pgdata, CancellationToken token)
+        => (await _runner.RunAsync(PgCtl(pgdata, "status"), token)).ExitCode switch
+        {
+            0 => PostmasterState.Running,
+            3 => PostmasterState.Dead,
+            _ => PostmasterState.Unknown,
+        };
 
     /// <summary>Остановка postmaster каталога (fast → immediate, каждая -w -t 10)
-    /// (arch/pgnode/06-restore-drill.md §2 — защита каталога и финальная
-    /// остановка): true — postmaster не работает (или не работал); false —
-    /// неостановим.</summary>
+    /// (arch/pgnode/06-restore-drill.md §2 — защита каталога до первой записи и
+    /// финальная остановка): true — postmaster не работает (или не работал);
+    /// false — неостановим. Остаточный postmaster.pid снимается ТОЛЬКО при
+    /// status exit 3 («не работает»): PG снимает stale lock сам, удаление —
+    /// страховка от переиспользованного PID (живому postmaster удалённый
+    /// pid-файл открыл бы путь ко второму старту); при неизвестном статусе
+    /// pid не трогаем.</summary>
     private async Task<bool> TryStopPostmasterAsync(string pgdata, CancellationToken token)
     {
-        if (!await PostmasterRunningAsync(pgdata, token))
+        var state = await PostmasterStateAsync(pgdata, token);
+        if (state == PostmasterState.Dead)
+        {
+            var postmasterPid = Path.Combine(pgdata, "postmaster.pid");
+            if (File.Exists(postmasterPid))
+                File.Delete(postmasterPid);
             return true;
+        }
+
+        if (state == PostmasterState.Unknown)
+            return true;
+
         foreach (var mode in new[] { "fast", "immediate" })
         {
             var stopPsi = PgCtl(pgdata, "stop");
@@ -904,7 +939,7 @@ public sealed class RestoreOperation : IReceiverOperation
             stopPsi.ArgumentList.Add("-t");
             stopPsi.ArgumentList.Add("10");
             await _runner.RunAsync(stopPsi, token);
-            if (!await PostmasterRunningAsync(pgdata, token))
+            if (await PostmasterStateAsync(pgdata, token) != PostmasterState.Running)
                 return true;
         }
 

@@ -310,9 +310,12 @@ internal partial class Program
     {
         // Активная операция для cancel/shutdown (снимок — в реестре,
         // экземпляр — здесь); activeId — id её TryBegin-снимка (гвард
-        // «running-снимок именно этой операции»).
+        // «running-снимок именно этой операции»); activeTask — задача
+        // операции: её finally (стоп postmaster → чистка scratch / возврат
+        // Patroni) дожидается при остановке хоста.
         IReceiverOperation? active = null;
         string? activeId = null;
+        Task? activeTask = null;
 
         // Остановка хоста гасит ЖИВУЮ ops-операцию (arch/pgnode/
         // 06-restore-drill.md §2): ShutdownAsync — внутренний канал,
@@ -321,20 +324,26 @@ internal partial class Program
         // снимок НЕ перезаписывается (после смерти процесса реестра нет —
         // воркер идёт vanished-путём 404 → повтор POST). Завершённая
         // операция (терминальный снимок/обнулённая ссылка) не гасится.
-        // Ожидание ≤15 c; жёсткий SIGKILL supervisord закроет остаток
-        // защитой каталога при следующем запуске.
+        // Гашение и дожидание задачи операции — в ОБЩЕМ бюджете ≤15 c:
+        // CancelAsync гарантирует лишь свой стоп, порядок «стоп → чистка
+        // scratch / возврат Patroni» живёт в finally задачи — выход процесса
+        // его не срезает; гонка стопа гашения с pg_ctl start в полёте
+        // закрыта ожиданием задачи. Жёсткий SIGKILL supervisord закроет
+        // остаток защитой каталога при следующем запуске.
         var opsRegistry = app.Services.GetRequiredService<OpsOperationRegistry>();
         app.Lifetime.ApplicationStopping.Register(() =>
         {
             try
             {
-                if (active is not { } op || activeId is not { } id)
+                if (active is not { } op || activeId is not { } id || activeTask is not { } task)
                     return;
                 if (opsRegistry.Current is not { State: OperationStates.Running } cur || cur.Id != id)
                     return;
-                op.ShutdownAsync()
-                    .WaitAsync(TimeSpan.FromSeconds(15))
-                    .GetAwaiter().GetResult();
+                using var budget = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+                try { op.ShutdownAsync().Wait(budget.Token); }
+                catch { /* best-effort: остаток закроет защита каталога */ }
+                try { task.Wait(budget.Token); }
+                catch { /* best-effort: остаток закроет защита каталога */ }
             }
             catch
             {
@@ -359,17 +368,19 @@ internal partial class Program
             var operation = factory.CreateVerify(body);
             active = operation;
             activeId = body.BackupId;
-            // Ссылка живёт до завершения задачи операции; ReferenceEquals не
+            // Ссылка и задача живут до завершения операции; ReferenceEquals не
             // затирает более новую (arch/pgnode/06-restore-drill.md §2).
-            _ = Task.Run(() => operation.RunAsync(CancellationToken.None))
-                .ContinueWith(_ =>
+            var task = Task.Run(() => operation.RunAsync(CancellationToken.None));
+            activeTask = task;
+            _ = task.ContinueWith(_ =>
+            {
+                if (ReferenceEquals(active, operation))
                 {
-                    if (ReferenceEquals(active, operation))
-                    {
-                        active = null;
-                        activeId = null;
-                    }
-                });
+                    active = null;
+                    activeId = null;
+                    activeTask = null;
+                }
+            });
             return Results.Json(
                 new OpsStatusResponse(OperationStates.Running, OperationPhases.Downloading),
                 JsonOpts, statusCode: 202);
@@ -400,17 +411,19 @@ internal partial class Program
             var operation = factory.CreateRestore(body);
             active = operation;
             activeId = body.Id ?? body.BackupId;
-            // Ссылка живёт до завершения задачи операции; ReferenceEquals не
+            // Ссылка и задача живут до завершения операции; ReferenceEquals не
             // затирает более новую (arch/pgnode/06-restore-drill.md §2).
-            _ = Task.Run(() => operation.RunAsync(CancellationToken.None))
-                .ContinueWith(_ =>
+            var task = Task.Run(() => operation.RunAsync(CancellationToken.None));
+            activeTask = task;
+            _ = task.ContinueWith(_ =>
+            {
+                if (ReferenceEquals(active, operation))
                 {
-                    if (ReferenceEquals(active, operation))
-                    {
-                        active = null;
-                        activeId = null;
-                    }
-                });
+                    active = null;
+                    activeId = null;
+                    activeTask = null;
+                }
+            });
             return Results.Json(
                 new OpsStatusResponse(OperationStates.Running, OperationPhases.Downloading),
                 JsonOpts, statusCode: 202);
