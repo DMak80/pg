@@ -237,7 +237,6 @@ public sealed class SnapshotAgentTests(EtcdNodeEnvironment env)
             .First(n => leader.Value.Contains(n, StringComparison.Ordinal));
         var aliveNode = new[] { "node1", "node2", "node3" }.First(n => n != leaderNode);
         var aliveEndpoint = env.EndpointOf(aliveNode);
-        var frozenRevision = (await env.GetAsync(EtcdSnapshotStatusJson.Key)).Value!.ModRevision;
 
         async Task<ulong?> ReadStatusRevisionAsync()
         {
@@ -247,8 +246,12 @@ public sealed class SnapshotAgentTests(EtcdNodeEnvironment env)
 
         try
         {
-            // Act-1: смерть узла-лидера; в окне lease-TTL статус заморожен.
+            // Act-1: смерть узла-лидера. Замороженная мод-ревизия снимается
+            // ПЕРВЫМ чтением ПОСЛЕ смерти: между пред-килл-чтением и kill
+            // могла завершиться выгрузка (статус-put) — ложное «изменение».
             await env.KillNodeAsync(leaderNode);
+            await Task.Delay(1000, ct); // осесть in-flight статус-put'ам лидера
+            var frozenRevision = await ReadStatusRevisionAsync();
             var stillFrozen = true;
             var freezeDeadline = DateTimeOffset.UtcNow.AddSeconds(5);
             while (DateTimeOffset.UtcNow < freezeDeadline)

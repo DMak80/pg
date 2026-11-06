@@ -136,7 +136,7 @@ public sealed class EtcdNodeEnvironment : IAsyncLifetime
             try
             {
                 var containerName = Node(name).Name.TrimStart('/');
-                var logs = await DockerAsync($"logs --tail 4000 {containerName}", okWhenMissing: true);
+                var logs = await DockerAsync($"logs --tail 20000 {containerName}", okWhenMissing: true);
                 if (logs.Length > 0)
                 {
                     Directory.CreateDirectory(telemetryDir);
@@ -253,8 +253,11 @@ public sealed class EtcdNodeEnvironment : IAsyncLifetime
         await DockerAsync($"kill {containerName}", okWhenMissing: false);
     }
 
-    public Task StartNodeAsync(string name)
-        => Node(name).StartAsync();
+    // Возврат убитого узла: docker start (CLI) — testcontainers StartAsync
+    // на exited-контейнере пересоздаёт контейнер и host-порт: хостовый
+    // Endpoint окружения умирает навсегда (docker start маппинг сохраняет).
+    public async Task StartNodeAsync(string name)
+        => await DockerAsync($"start {Node(name).Name.TrimStart('/')}", okWhenMissing: false);
 
     private IContainer Node(string name) => name switch
     {
