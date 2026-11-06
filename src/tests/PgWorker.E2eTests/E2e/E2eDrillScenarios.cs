@@ -421,22 +421,27 @@ public sealed class E2eDrillScenarios(E2eDrillScenariosFx Ctx) : IClassFixture<E
         var nodeLogs = await E2eFixture.RunDockerLogsAsync([node], ct);
         (restoreLog.Output + "\n" + nodeLogs).Should().NotContain("another postmaster");
 
-        // Assert (в) — постгресса в drill-каталоге операции нет (status не-0 или
-        // каталога нет).
+        // Assert (в) — постгресса в drill-каталоге операции нет: pg_ctl под
+        // postgres (root pg_ctl отказывается — проверка от root была бы
+        // vacuous: «cannot be run as root» — тоже не-0), не-0 или каталога нет.
         var drillPgdata = $"/home/postgres/pgdata/backup-drill/{drillId}/pgdata";
         var drillDir = await DockerTryAsync(["exec", node, "test", "-d", drillPgdata], ct);
         if (drillDir.Ok)
         {
             var status = await DockerTryAsync(
-                ["exec", node, "pg_ctl", "status", "-D", drillPgdata], ct);
+                ["exec", "-u", "postgres", node, "pg_ctl", "status", "-D", drillPgdata], ct);
             status.Ok.Should().BeFalse(
                 "no postmaster may serve the drill scratch after the terminal outcome");
         }
 
-        // Assert (г) — scratch-каталоги дрилла отсутствуют после терминала.
-        var scratch = await DockerTryAsync(
-            ["exec", node, "ls", "-A", "/home/postgres/pgdata/backup-drill"], ct);
-        scratch.Output.Trim().Should().BeEmpty("the drill scratch is removed on any outcome");
+        // Assert (г) — scratch-каталог дрилла (канон: backup-drill/<id>/pgdata)
+        // отсутствует после терминала; в каталоге операции остатков данных нет
+        // (сам каталог-метка операции приёмник не удаляет — только scratch).
+        var scratchData = await DockerTryAsync(["exec", node, "test", "-d", drillPgdata], ct);
+        scratchData.Ok.Should().BeFalse("the drill scratch is removed on any outcome");
+        var scratchLeft = await DockerTryAsync(
+            ["exec", node, "ls", "-A", $"/home/postgres/pgdata/backup-drill/{drillId}"], ct);
+        scratchLeft.Output.Trim().Should().BeEmpty("no scratch entries remain in the operation dir");
 
         // Assert (д) — записи полных не несут чужой итог дрилла.
         var fulls = await FullKeysAsync(cluster, "shard1");
