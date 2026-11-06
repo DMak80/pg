@@ -68,12 +68,13 @@ public class BackupVerifyProcessTests : IntSlotLifetime
     private readonly FakeReceiverClient Receiver = new();
 
     // Ответы GET /api/ops/verify (маркер транзиента — пара state/phase, spec §3.2).
-    private static ReceiverReply ApiOk() =>
-        new(200, new ReceiverStatus("succeeded", "verifying"), null);
-    private static ReceiverReply ApiDownloadTransient(string error) =>
-        new(200, new ReceiverStatus("failed", "downloading", Error: error), null);
-    private static ReceiverReply ApiVerifyFailed(string error) =>
-        new(200, new ReceiverStatus("failed", "verifying", Error: error), null);
+    // id снимка — id кандидата (сверка снимка общего ops-реестра, §7).
+    private static ReceiverReply ApiOk(string id = "20260911120000Z") =>
+        new(200, new ReceiverStatus("succeeded", "verifying", id), null);
+    private static ReceiverReply ApiDownloadTransient(string error, string id = "20260911120000Z") =>
+        new(200, new ReceiverStatus("failed", "downloading", id, Error: error), null);
+    private static ReceiverReply ApiVerifyFailed(string error, string id = "20260911120000Z") =>
+        new(200, new ReceiverStatus("failed", "verifying", id, Error: error), null);
 
     /// <summary>Мини-фейк API приёмника (verify-сценарии): StartVerify —
     /// программируемый ответ (дефолт 202), GetVerify — программируемый снимок,
@@ -504,7 +505,7 @@ public class BackupVerifyProcessTests : IntSlotLifetime
         var s3 = new FakeBackupS3();
         await StartOperationAsync("sv14", s3);
         Receiver.GetReply = new ReceiverReply(200,
-            new ReceiverStatus("cancelled", "verifying", Error: "cancelled by operator"), null);
+            new ReceiverStatus("cancelled", "verifying", "20260911120000Z", Error: "cancelled by operator"), null);
         var pending = Completed("20260911120000Z", "000000010000000000000001",
             new BackupVerify(BackupVerifyStatus.Pending, null));
         var key = "/pgworker/backups/sv14/shard1/full/20260911120000Z";
@@ -715,6 +716,9 @@ public class BackupVerifyProcessTests : IntSlotLifetime
             new BackupVerify(BackupVerifyStatus.Pending, null));
         var keyB = "/pgworker/backups/sv8/shard1/full/20260911120000Z";
         var beforeB = BackupStatusJson.Serialize(b);
+        // Снимок живого реестра — операция кандидата A (его id; сверка §7).
+        Receiver.GetReply = new ReceiverReply(200,
+            new ReceiverStatus("running", "downloading", "20260911090000Z"), null);
         await Fx.Gateway.PutAsync(Fx.Endpoint,
             "/pgworker/backups/sv8/shard1/full/20260911090000Z", BackupStatusJson.Serialize(a), null, ct);
         await Fx.Gateway.PutAsync(Fx.Endpoint, keyB, beforeB, null, ct);
@@ -915,5 +919,83 @@ public class BackupVerifyProcessTests : IntSlotLifetime
                 l.Contains("verify 20260911120000Z FAILED", StringComparison.Ordinal)
                 && l.Contains("manifest checksum mismatch", StringComparison.Ordinal),
             "exactly one terminal outcome line per full — transient paths log no outcome");
+    }
+
+    // AAA (сверка снимка по id, arch/backups/01-full-backup.md §7): общий
+    // ops-реестр приёмника отдал терминал ЧУЖОЙ drill-операции — это не итог
+    // проверки кандидата: статус PENDING не тронут, операция перезапущена
+    // vanished-семантикой (повторный POST своего id).
+    [Fact]
+    public async Task ForeignFailedSnapshot_CandidateUntouched_Relaunched()
+    {
+        // Arrange: PENDING-кандидат и его ключ в etcd; приёмник отдаёт чужой
+        // failed-снимок drill-операции (другой id и её текст pg_ctl).
+        var ct = TestContext.Current.CancellationToken;
+        await using var fx = await OwnEtcd.StartAsync("verify", ct);
+        Fx = fx;
+        await SeedAsync("vf1");
+        var s3 = new FakeBackupS3();
+        var candidate = Completed("20260911120000Z", "000000010000000000000001",
+            new BackupVerify(BackupVerifyStatus.Pending, null));
+        var key = "/pgworker/backups/vf1/shard1/full/20260911120000Z";
+        var before = BackupStatusJson.Serialize(candidate);
+        await Fx.Gateway.PutAsync(Fx.Endpoint, key, before, null, ct);
+        Receiver.GetReply = new ReceiverReply(200,
+            new ReceiverStatus("failed", "recovering", "20261106060228Z",
+                Error: "pg_ctl start failed: another server might be running"), null);
+        var outcomes = new List<(string C, string S, string Result)>();
+        var process = BuildProcess("vf1", s3, verifyObserver: (c, s, r) => outcomes.Add((c, s, r)));
+
+        // Act: тик поллинга — снимок чужой.
+        (await process.TickAsync(BuildSnap("vf1"), BackupsOf("vf1", candidate), ct))
+            .IsSuccess.Should().BeTrue();
+
+        // Assert: статус кандидата байт-в-байт не тронут (чужой вердикт не записан).
+        var after = (await Fx.Gateway.GetAsync(Fx.Endpoint, key, ct)).Value!.Value;
+        after.Should().Be(before,
+            "a foreign terminal snapshot is not the verify outcome of this full");
+
+        // Assert: реланч выполнен — ровно один POST с id СВОЕГО кандидата.
+        Receiver.StartBodies.Should().ContainSingle()
+            .Which.BackupId.Should().Be("20260911120000Z");
+
+        // Assert: чужой FAILED не наблюдался как исход проверки.
+        outcomes.Should().NotContain(o => o.Result == "failed");
+    }
+
+    // AAA (сверка снимка по id): чужой succeeded-снимок НЕ ставит OK —
+    // кандидат остаётся PENDING, операция перезапущена vanished-семантикой.
+    [Fact]
+    public async Task ForeignSucceededSnapshot_NotMarkedOk()
+    {
+        // Arrange: тот же PENDING-кандидат в своём кластере; приёмник отдаёт
+        // чужой succeeded-снимок (id ≠ кандидата).
+        var ct = TestContext.Current.CancellationToken;
+        await using var fx = await OwnEtcd.StartAsync("verify", ct);
+        Fx = fx;
+        await SeedAsync("vf2");
+        var s3 = new FakeBackupS3();
+        var candidate = Completed("20260911120000Z", "000000010000000000000001",
+            new BackupVerify(BackupVerifyStatus.Pending, null));
+        var key = "/pgworker/backups/vf2/shard1/full/20260911120000Z";
+        var before = BackupStatusJson.Serialize(candidate);
+        await Fx.Gateway.PutAsync(Fx.Endpoint, key, before, null, ct);
+        Receiver.GetReply = new ReceiverReply(200,
+            new ReceiverStatus("succeeded", "verifying", "20261106060228Z"), null);
+        var outcomes = new List<(string C, string S, string Result)>();
+        var process = BuildProcess("vf2", s3, verifyObserver: (c, s, r) => outcomes.Add((c, s, r)));
+
+        // Act: тик поллинга — снимок чужой.
+        (await process.TickAsync(BuildSnap("vf2"), BackupsOf("vf2", candidate), ct))
+            .IsSuccess.Should().BeTrue();
+
+        // Assert: verify НЕ получил OK — ключ не изменён (PENDING).
+        var after = (await Fx.Gateway.GetAsync(Fx.Endpoint, key, ct)).Value!.Value;
+        after.Should().Be(before, "a foreign succeeded snapshot is not the verify outcome of this full");
+
+        // Assert: реланч своего кандидата, observe ok не эмитился.
+        Receiver.StartBodies.Should().ContainSingle()
+            .Which.BackupId.Should().Be("20260911120000Z");
+        outcomes.Should().NotContain(o => o.Result == "ok");
     }
 }

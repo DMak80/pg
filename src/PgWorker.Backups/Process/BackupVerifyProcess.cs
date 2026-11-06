@@ -193,6 +193,27 @@ public sealed class BackupVerifyProcess(
             return;
         }
 
+        // Сверка снимка по id (arch/backups/01-full-backup.md §7): ops-реестр
+        // приёмника ОДИН на процесс — GET может вернуть чужой/прошлый снимок
+        // (напр., терминал restore/drill-операции с текстом pg_ctl). Чужой id —
+        // чужой итог: вердикта по нему нет, кандидат перезапускается
+        // vanished-семантикой (повторный POST поверх терминального снимка;
+        // чужой running ответит 409 — тик повторит).
+        if (!string.Equals(snapshot.Id, full.Id, StringComparison.Ordinal))
+        {
+            logger.LogWarning(
+                "{Op} {cluster}/{shard}: verify {id} — registry holds a foreign snapshot (id={SnapId}, state={State}); relaunching via the vanished path",
+                Op, cluster, shard, id, snapshot.Id ?? "<null>", snapshot.State);
+            await journal.WritePhaseAsync(cluster, Op, $"foreign-snapshot/{shard}/{id}",
+                claims.InstanceId,
+                $"receiver registry holds operation {snapshot.Id ?? "<null>"} ({snapshot.State}) — not the verify candidate", ct);
+            var relaunch = await receiver.StartVerifyAsync(
+                receiverUrl, StartRequest(cluster, shard, full, pool), ct);
+            if (!relaunch.IsAccepted && !relaunch.IsConflict)
+                observe(cluster, shard, "transient");
+            return;
+        }
+
         switch (snapshot.State)
         {
             case "running":
