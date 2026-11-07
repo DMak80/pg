@@ -44,11 +44,11 @@ public class EtcdNodeEnvTests
             o.NodeName.Should().Be("etcdw-node-?");
             o.S3CaPemPath.Should().Be("/tmp/ca.pem");
             o.Snapshots.IntervalMin.Should().Be(360);
-            o.Snapshots.MinIntervalSec.Should().Be(300);
+            o.Snapshots.MinIntervalSec.Should().Be(5);
             o.Snapshots.RetryIntervalSec.Should().Be(300);
             o.Snapshots.TimeoutSec.Should().Be(30);
             o.Snapshots.RetentionFiles.Should().Be(10);
-            o.Snapshots.RetentionObjects.Should().Be(28);
+            o.Snapshots.RetentionObjects.Should().Be(3);
             o.Snapshots.MaintenanceIntervalMin.Should().Be(60);
         }
         finally
