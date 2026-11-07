@@ -70,6 +70,7 @@ public sealed class EtcdNodeEnvironment : IAsyncLifetime
                 + $" --listen-peer-urls=http://0.0.0.0:2380 --initial-advertise-peer-urls=http://{name}:2380"
                 + $" --initial-cluster={InitialCluster} --initial-cluster-state=new")
             .WithEnvironment("ETCDNODE_NODE_NAME", name)
+            // MinIntervalSec: канон-дефолт 5; поведенческим кейсам нужно ускорение 1
             .WithEnvironment("ETCDNODE_SNAPSHOTS__MIN_INTERVAL_SEC", "1")
             // Retry 5 c (не 1): при битой/отсутствующей цели агент-лидер
             // перезапускает слепок каждый RetryIntervalSec — секудная молотьба
@@ -78,7 +79,7 @@ public sealed class EtcdNodeEnvironment : IAsyncLifetime
             .WithEnvironment("ETCDNODE_SNAPSHOTS__TIMEOUT_SEC", "10")
             .WithEnvironment("ETCDNODE_SNAPSHOTS__INTERVAL_MIN", "360")
             .WithEnvironment("ETCDNODE_SNAPSHOTS__RETENTION_FILES", "10")
-            .WithEnvironment("ETCDNODE_SNAPSHOTS__RETENTION_OBJECTS", "28")
+            .WithEnvironment("ETCDNODE_SNAPSHOTS__RETENTION_OBJECTS", "3")
             .WithEnvironment("ETCDNODE_SNAPSHOTS__MAINTENANCE_INTERVAL_MIN", "60")
             // Именованные тома (не анонимные VOLUME-декларации образа): явная
             // зачистка в teardown, ассерт чистоты.
@@ -254,10 +255,34 @@ public sealed class EtcdNodeEnvironment : IAsyncLifetime
     }
 
     // Возврат убитого узла: docker start (CLI) — testcontainers StartAsync
-    // на exited-контейнере пересоздаёт контейнер и host-порт: хостовый
-    // Endpoint окружения умирает навсегда (docker start маппинг сохраняет).
+    // на exited-контейнере пересоздаёт контейнер. Пере-бинд host-порта НЕ
+    // гарантирует прежний номер (docker start выделяет свободный —
+    // наблюдаемо ДРУГОЙ случайный порт publish'а) — фактический порт
+    // опрашивается после старта, грань node1 обновляет Endpoint окружения:
+    // чтения кейсов после возврата узла идут именно через неё.
     public async Task StartNodeAsync(string name)
-        => await DockerAsync($"start {Node(name).Name.TrimStart('/')}", okWhenMissing: false);
+    {
+        var containerName = Node(name).Name.TrimStart('/');
+        await DockerAsync($"start {containerName}", okWhenMissing: false);
+        if (name == "node1")
+        {
+            // Пустой вывод docker port / нечисловой порт — явный сбой НА МЕСТЕ
+            // с внятной диагностикой: иначе Endpoint="http://localhost:" уехал
+            // бы в кейсы отложенным невнятным падением чтений.
+            var raw = await DockerAsync($"port {containerName} 2379/tcp", okWhenMissing: false);
+            var portPart = raw.Trim().Split('\n')[0].Split(':')[^1];
+            if (!ushort.TryParse(portPart, out var port))
+                throw new ApplicationException(
+                    $"docker port {containerName} 2379/tcp returned no numeric host port: '{raw.Trim()}'");
+            Endpoint = $"http://localhost:{port}";
+        }
+    }
+
+    // Список файлов в томе /snapshots узла (docker exec ls; пустой том —
+    // пустая строка): ассерт «слепки снимает только лидер».
+    public async Task<string> SnapshotFilesOfAsync(string name)
+        => await DockerAsync(
+            $"exec {Node(name).Name.TrimStart('/')} ls /snapshots", okWhenMissing: false);
 
     private IContainer Node(string name) => name switch
     {

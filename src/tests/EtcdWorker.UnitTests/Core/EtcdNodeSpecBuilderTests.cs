@@ -15,7 +15,7 @@ public class EtcdNodeSpecBuilderTests
         var opts = new EtcdProvisioningOptions(
             "Plain", "etcdw-net", "img", advertisedHost,
             18100, 18199, "local", 100, 300, 15,
-            360, 300, 300, 30, 10, 28, 60, s3CaPem);
+            360, 5, 300, 30, 10, 3, 60, s3CaPem);
         return EtcdNodeSpecBuilder.Build(k, opts, clientHostPort);
     }
 
@@ -54,7 +54,7 @@ public class EtcdNodeSpecBuilderTests
         // Arrange/Act — join с полным составом
         var opts = new EtcdProvisioningOptions(
             "Plain", "etcdw-net", "img", null, 18100, 18199, "local", 100, 300, 15,
-            360, 300, 300, 30, 10, 28, 60, null);
+            360, 5, 300, 30, 10, 3, 60, null);
         var (_, env) = EtcdNodeSpecBuilder.Build(2, opts, 23792, "seed=http://seed:2380");
 
         // Assert — initial-cluster уходит в ETCD_ARGS
@@ -92,7 +92,7 @@ public class EtcdNodeSpecBuilderTests
         // Assert — конфигурация агента EtcdNode в env контейнера
         env["ETCDNODE_NODE_NAME"].Should().Be("etcdw-node-1");
         env["ETCDNODE_SNAPSHOTS__INTERVAL_MIN"].Should().Be("360");
-        env["ETCDNODE_SNAPSHOTS__RETENTION_OBJECTS"].Should().Be("28");
+        env["ETCDNODE_SNAPSHOTS__RETENTION_OBJECTS"].Should().Be("3");
         env.Should().NotContainKey("ETCDNODE_S3_CA_PEM");
     }
 

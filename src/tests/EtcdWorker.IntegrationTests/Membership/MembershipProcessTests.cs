@@ -60,8 +60,8 @@ public sealed class MembershipProcessTests(EtcdWorkerEnvironment env)
         var options = new EtcdProvisioningOptions(
             "Plain", env.NetworkName, "pgworker/etcdnode:dev", null,
             window[0], window[^1], "local", NodeBootSec: 60, NodeDeadSec: nodeDeadSec, HealthIntervalSec: 1,
-            SnapshotIntervalMin: 360, SnapshotMinIntervalSec: 300, SnapshotRetryIntervalSec: 300,
-            SnapshotTimeoutSec: 30, SnapshotRetentionFiles: 10, SnapshotRetentionObjects: 28,
+            SnapshotIntervalMin: 360, SnapshotMinIntervalSec: 5, SnapshotRetryIntervalSec: 300,
+            SnapshotTimeoutSec: 30, SnapshotRetentionFiles: 10, SnapshotRetentionObjects: 3,
             SnapshotMaintenanceIntervalMin: 60, SnapshotS3CaPem: null);
         var driver = new PlainEtcdNodeDriver(
             [new HostEndpoint("local", "unix:///var/run/docker.sock")],

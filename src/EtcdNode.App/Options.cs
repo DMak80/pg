@@ -20,16 +20,15 @@ public sealed class EtcdNodeOptions
     public SnapshotOptions Snapshots { get; set; } = new();
 }
 
-/// <summary>Параметры DR-слепков (arch/etcdnode/02-snapshots.md): значения
-/// прежние (бюджеты не меняются).</summary>
+/// <summary>Параметры DR-слепков (arch/etcdnode/02-snapshots.md).</summary>
 public sealed class SnapshotOptions
 {
     public int IntervalMin { get; set; } = 360;
-    public int MinIntervalSec { get; set; } = 300;
+    public int MinIntervalSec { get; set; } = 5;
     public int RetryIntervalSec { get; set; } = 300;
     public int TimeoutSec { get; set; } = 30;
     public int RetentionFiles { get; set; } = 10;
-    public int RetentionObjects { get; set; } = 28;
+    public int RetentionObjects { get; set; } = 3;
     public int MaintenanceIntervalMin { get; set; } = 60;
 }
 
@@ -51,11 +50,11 @@ public static class EtcdNodeEnv
             Snapshots = new SnapshotOptions
             {
                 IntervalMin = Int("ETCDNODE_SNAPSHOTS__INTERVAL_MIN", 360),
-                MinIntervalSec = Int("ETCDNODE_SNAPSHOTS__MIN_INTERVAL_SEC", 300),
+                MinIntervalSec = Int("ETCDNODE_SNAPSHOTS__MIN_INTERVAL_SEC", 5),
                 RetryIntervalSec = Int("ETCDNODE_SNAPSHOTS__RETRY_INTERVAL_SEC", 300),
                 TimeoutSec = Int("ETCDNODE_SNAPSHOTS__TIMEOUT_SEC", 30),
                 RetentionFiles = Int("ETCDNODE_SNAPSHOTS__RETENTION_FILES", 10),
-                RetentionObjects = Int("ETCDNODE_SNAPSHOTS__RETENTION_OBJECTS", 28),
+                RetentionObjects = Int("ETCDNODE_SNAPSHOTS__RETENTION_OBJECTS", 3),
                 MaintenanceIntervalMin = Int("ETCDNODE_SNAPSHOTS__MAINTENANCE_INTERVAL_MIN", 60),
             },
         };

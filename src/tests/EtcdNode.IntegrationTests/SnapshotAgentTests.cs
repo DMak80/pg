@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using System.Text.Json;
 using EtcdNode.Core;
 using Xunit;
@@ -30,41 +31,75 @@ public sealed class SnapshotAgentTests(EtcdNodeEnvironment env)
         throw new TimeoutException("agent did not write OK status to /etcdnode/snapshots in 30 s");
     }
 
-    // .db-объекты слепкового bucket (число пар для детекции новых слепков).
-    private static async Task<IReadOnlyList<EtcdS3Object>> ListDbObjectsAsync(EtcdNodeEnvironment env)
+    // Листинг объектов слепкового bucket; endpoint — грань чтения
+    // /s3/clusters/ (дефолт node1; кейс смерти лидера передаёт грань
+    // ЖИВОГО узла — грань node1 умирает с лидером). Транзиент резолва
+    // цели/листинга — null: в поллинг-циклах итерация ПРОПУСКАЕТСЯ
+    // (единичный транзиент не роняет кейс), строгий замер —
+    // ListDbObjectsAsync.
+    private static async Task<IReadOnlyList<EtcdS3Object>?> TryListDbObjectsAsync(
+        EtcdNodeEnvironment env, string? endpoint = null)
     {
         var ct = TestContext.Current.CancellationToken;
-        var target = await new EtcdBackupTargetResolver(env.Gateway, [env.Endpoint]).ResolveAsync(ct);
-        target.IsSuccess.Should().BeTrue(target.Error?.Message);
+        var target = await new EtcdBackupTargetResolver(env.Gateway, [endpoint ?? env.Endpoint]).ResolveAsync(ct);
+        if (!target.IsSuccess)
+            return null;
         await using var s3 = new EtcdSnapshotS3(
             EtcdNodeEnvironment.HostS3Endpoint(target.Value), target.Value.Bucket,
             target.Value.AccessKey, target.Value.SecretKey);
         var objects = await s3.ListPrefixAsync(EtcdExportRetention.Prefix, ct);
-        objects.IsSuccess.Should().BeTrue(objects.Error?.Message);
-        return objects.Value;
+        return objects.IsSuccess ? objects.Value : null;
     }
 
-    private static int DbCount(IReadOnlyList<EtcdS3Object> objects)
-        => objects.Count(o => o.Key.EndsWith(".db", StringComparison.Ordinal));
+    // Строгий замер ВНЕ поллинга (отсечки известных ключей): транзиент —
+    // падение кейса, а не молчаливо неполная отсечка.
+    private static async Task<IReadOnlyList<EtcdS3Object>> ListDbObjectsAsync(
+        EtcdNodeEnvironment env, string? endpoint = null)
+        => await TryListDbObjectsAsync(env, endpoint)
+            ?? throw new Xunit.Sdk.XunitException(
+                "db-object listing failed (target resolve or S3 list transient)");
+
+    // Множество .db-ключей листинга — ретенция-устойчивая основа отсечек:
+    // при полном bucket (N=3) счётчик не видит замену пары (новая
+    // маскируется сносом старейшей), множество — видит.
+    private static HashSet<string> DbKeysOf(IReadOnlyList<EtcdS3Object> objects)
+        => [.. objects.Where(o => o.Key.EndsWith(".db", StringComparison.Ordinal)).Select(o => o.Key)];
+
+    // Статус DR-выгрузки (state) — толерантное чтение для поллинга:
+    // транзиент чтения/битый JSON — null (НЕ "FAILED").
+    private static async Task<string?> ReadStatusStateAsync(EtcdNodeEnvironment env)
+    {
+        var kv = await env.GetAsync(EtcdSnapshotStatusJson.Key);
+        return kv.Value is { } found ? EtcdSnapshotStatusJson.Parse(found.Value)?.State : null;
+    }
 
     // «Тихая» фаза стационарности (барьер Act): два замера с интервалом
-    // 2×тик скана (~10 с) без роста .db — лидер установил эталон и в тишине
-    // не снимает; иначе Pulse ложно падает (смена лидера/baseline-null), а
-    // ImportantChange зелёный не по своей причине. Бюджет 30 с.
+    // 2×тик скана (~10 с) с НЕИЗМЕННЫМ множеством .db-ключей — лидер
+    // установил эталон и в тишине не снимает; иначе Pulse ложно падает
+    // (смена лидера/baseline-null), а ImportantChange зелёный не по своей
+    // причине. Сравнение МНОЖЕСТВ, не чисел: при полном bucket (ретенция
+    // N=3) счётчик стабилен и при шторме слепков — новая пара маскируется
+    // сносом старейшей, множество меняется и шторм барьер ловит. Бюджет 30 с.
     private static async Task AwaitQuietPhaseAsync(EtcdNodeEnvironment env)
     {
         var ct = TestContext.Current.CancellationToken;
         var deadline = DateTimeOffset.UtcNow.AddSeconds(30);
         while (DateTimeOffset.UtcNow < deadline)
         {
-            var first = DbCount(await ListDbObjectsAsync(env));
+            var first = await TryListDbObjectsAsync(env);
+            if (first is null)
+            {
+                await Task.Delay(1000, ct); // транзиент листинга — повтор пары замеров
+                continue;
+            }
+
             await Task.Delay(10000, ct);
-            var second = DbCount(await ListDbObjectsAsync(env));
-            if (second == first)
+            var second = await TryListDbObjectsAsync(env);
+            if (second is not null && DbKeysOf(second).SetEquals(DbKeysOf(first)))
                 return;
         }
 
-        throw new TimeoutException("agent did not reach a quiet phase (db count keeps growing) in 30 s");
+        throw new TimeoutException("agent did not reach a quiet phase (db key set keeps changing) in 30 s");
     }
 
     // Put-хелпер с ассертом: молчаливая потеря put'а (транзиент) — падение
@@ -75,8 +110,11 @@ public sealed class SnapshotAgentTests(EtcdNodeEnvironment env)
         put.IsSuccess.Should().BeTrue(put.Error?.Message);
     }
 
-    // AAA: важное изменение (ключ вне пульсов) — внеочередной слепок растит
-    // число .db-объектов в bucket (MinIntervalSec=1 у агентов окружения)
+    // AAA: важное изменение (ключ вне пульсов) — внеочередной слепок
+    // появляется НОВЫМ .db-ключом в bucket (MinIntervalSec=1 у агентов
+    // окружения); не счётчиком: bucket один на коллекцию, ретенция агента
+    // (N=3) сносит старейшую пару при новой выгрузке — рост счётчика
+    // не детерминирован
     [Fact]
     public async Task ImportantChange_Triggers_Snapshot()
     {
@@ -84,27 +122,33 @@ public sealed class SnapshotAgentTests(EtcdNodeEnvironment env)
         await env.SeedEtcdBackupClusterAsync();
         await WaitStatusOkAsync(env);
         await AwaitQuietPhaseAsync(env);
-        var before = DbCount(await ListDbObjectsAsync(env));
+
+        // Arrange: отсечка известных .db-ключей (паттерн кейса
+        // Leader_Elected_StatusWritten_ObjectsInS3)
+        var knownKeys = DbKeysOf(await ListDbObjectsAsync(env));
 
         // Act: запись ВАЖНОГО ключа (routing-ключ HA-контура — вне PulseKeys)
         await PutAssertedAsync(env, "/clusters/shop/shards/s1/routing", """{"to":"s2"}""");
 
-        // Assert: в бюджете 30 с появился новый слепок (тик скана 5 с + выгрузка)
+        // Assert: в бюджете 30 с появился новый слепок (тик скана 5 с + выгрузка);
+        // транзиент листинга — пропуск итерации, бюджет продолжает работать
         var deadline = DateTimeOffset.UtcNow.AddSeconds(30);
-        var grown = false;
+        var fresh = default(EtcdS3Object);
         while (DateTimeOffset.UtcNow < deadline)
         {
-            var after = DbCount(await ListDbObjectsAsync(env));
-            if (after > before)
+            var listed = await TryListDbObjectsAsync(env);
+            if (listed is { } objects)
             {
-                grown = true;
-                break;
+                fresh = objects.FirstOrDefault(o =>
+                    o.Key.EndsWith(".db", StringComparison.Ordinal) && !knownKeys.Contains(o.Key));
+                if (fresh is not null)
+                    break;
             }
 
             await Task.Delay(1000, ct);
         }
 
-        grown.Should().BeTrue("important change outside pulse keys must trigger an extra snapshot");
+        fresh.Should().NotBeNull("important change outside pulse keys must trigger an extra snapshot");
     }
 
     // AAA: лидер избран, статус OK, пара db+meta в bucket; мета НОВОГО слепка
@@ -119,19 +163,31 @@ public sealed class SnapshotAgentTests(EtcdNodeEnvironment env)
         await WaitStatusOkAsync(env);
         await AwaitQuietPhaseAsync(env);
 
-        // Act-1: отсечка .db-объектов; важный ключ гарантирует свежий слепок
-        var knownKeys = (await ListDbObjectsAsync(env)).Select(o => o.Key).ToHashSet();
+        // Act-1: отсечка .db-объектов; важный ключ гарантирует свежий слепок.
+        // Риск доводки: CatchUp (SnapshotExporter.CatchUpAsync) перечитывает
+        // локальный файл и экспортирует с revision:null — доводка возможна
+        // только после неудачи прямого экспорта (статус FAILED), фиксируем
+        // её картиной статуса ДО Act и поллингом в окне Act→детекция.
+        var knownKeys = DbKeysOf(await ListDbObjectsAsync(env));
+        var catchUpRisk = await ReadStatusStateAsync(env) != "OK";
         await PutAssertedAsync(env, "/clusters/shop/shards/s1/routing", """{"to":"node-leader-check"}""");
         IReadOnlyList<EtcdS3Object> objects = [];
         var freshDb = default(EtcdS3Object);
         var deadline = DateTimeOffset.UtcNow.AddSeconds(30);
         while (DateTimeOffset.UtcNow < deadline)
         {
-            objects = await ListDbObjectsAsync(env);
-            freshDb = objects.FirstOrDefault(o =>
-                o.Key.EndsWith(".db", StringComparison.Ordinal) && !knownKeys.Contains(o.Key));
-            if (freshDb is not null)
-                break;
+            var listed = await TryListDbObjectsAsync(env);
+            if (listed is { } found)
+            {
+                objects = found;
+                freshDb = found.FirstOrDefault(o =>
+                    o.Key.EndsWith(".db", StringComparison.Ordinal) && !knownKeys.Contains(o.Key));
+                if (freshDb is not null)
+                    break;
+            }
+
+            if (await ReadStatusStateAsync(env) == "FAILED")
+                catchUpRisk = true; // прямой экспорт упал — пара может доехать доводкой
             await Task.Delay(1000, ct);
         }
 
@@ -150,6 +206,31 @@ public sealed class SnapshotAgentTests(EtcdNodeEnvironment env)
         var instance = doc.RootElement.GetProperty("instance").GetString();
         instance.Should().BeOneOf("node1", "node2", "node3",
             "meta.instance is the node name of the exporting leader agent");
+
+        // Assert (продолжение): пара db+meta самодостаточна — мета согласована
+        // с фактическим содержимым скачанного .db (полный автономный бэкап,
+        // arch/etcdnode/02-snapshots.md §2): size/sha256 точные; ревизия
+        // кластера присутствует и положительна у ПРЯМОГО экспорта
+        // (AgentLoop передаёт ревизию снятия); доводка CatchUp пишет мету
+        // перечитанного локального файла БЕЗ ревизии — revision:null
+        // (поле опускается) допустим только при наблюдённом риске доводки.
+        var db = await s3.GetObjectBytesAsync(freshDb!.Key, ct);
+        db.IsSuccess.Should().BeTrue(db.Error?.Message);
+        doc.RootElement.GetProperty("size_bytes").GetInt64().Should().Be(db.Value.Length,
+            "meta.size_bytes must match the downloaded .db object size");
+        doc.RootElement.GetProperty("sha256").GetString().Should().Be(
+            Convert.ToHexString(SHA256.HashData(db.Value)).ToLowerInvariant(),
+            "meta.sha256 must match the downloaded .db bytes (hex-lower)");
+        var hasRevision = doc.RootElement.TryGetProperty("revision", out var revision)
+            && revision.ValueKind != JsonValueKind.Null;
+        if (catchUpRisk && !hasRevision)
+            return; // пара доехала доводкой: ревизии нет — штатно
+        hasRevision.Should().BeTrue(
+            "a direct full-snapshot export writes the cluster revision into meta");
+        revision.ValueKind.Should().Be(JsonValueKind.Number,
+            "meta.revision of a full snapshot must be a JSON number");
+        revision.GetInt64().Should().BeGreaterThan(0,
+            "a full snapshot carries a positive cluster revision");
     }
 
     // AAA: ключи домена — leader-ключ существует (единственность garant
@@ -187,8 +268,12 @@ public sealed class SnapshotAgentTests(EtcdNodeEnvironment env)
     }
 
     // AAA: непрерывная перезапись пульсов (/service/*, мастер-ключ HA, домен
-    // /etcdnode/ — статус-puts самого агента) НЕ порождает новых слепков
-    // сверх уже снятых (плановый интервал 360 мин)
+    // /etcdnode/ — статус-puts самого агента) НЕ порождает новых слепков:
+    // в окне Act + запас на тик скана НОВЫХ .db-ключей вне отсечки нет.
+    // Ассерт по известным ключам, НЕ по счётчику: при полном bucket
+    // (ретенция N=3) новая пара маскируется сносом старейшей в том же
+    // экспорте — счёт стабилен и регрессия пульс-фильтра прошла бы
+    // ложно-зелёной (паттерн knownKeys кейса ImportantChange)
     [Fact]
     public async Task Pulse_DoesNotTrigger_Snapshot()
     {
@@ -196,7 +281,9 @@ public sealed class SnapshotAgentTests(EtcdNodeEnvironment env)
         await env.SeedEtcdBackupClusterAsync();
         await WaitStatusOkAsync(env);
         await AwaitQuietPhaseAsync(env);
-        var before = DbCount(await ListDbObjectsAsync(env));
+
+        // Arrange: отсечка известных .db-ключей (строгий замер)
+        var knownKeys = DbKeysOf(await ListDbObjectsAsync(env));
 
         // Act: 15 с пульс-перезаписи — каждую секунду все пульс-паттерны
         var deadline = DateTimeOffset.UtcNow.AddSeconds(15);
@@ -208,19 +295,39 @@ public sealed class SnapshotAgentTests(EtcdNodeEnvironment env)
             await Task.Delay(1000, ct);
         }
 
-        // Assert: число .db не выросло (пульсы не важны, планового не было)
-        var after = DbCount(await ListDbObjectsAsync(env));
-        after.Should().Be(before,
-            "pulse rewrites (leader/master timestamps, agent domain keys) must not trigger snapshots");
+        // Assert: до конца окна (15 с Act + 10 с запаса на тик скана 5 с
+        // и выгрузку) НОВЫХ .db вне knownKeys нет; поллинг ловит нарушение
+        // в любой точке окна, транзиент листинга — пропуск итерации
+        // (планового нет: IntervalMin=360 мин).
+        var checkDeadline = DateTimeOffset.UtcNow.AddSeconds(10);
+        while (DateTimeOffset.UtcNow < checkDeadline)
+        {
+            var listed = await TryListDbObjectsAsync(env);
+            if (listed is { } objects)
+            {
+                var fresh = objects.Where(o =>
+                    o.Key.EndsWith(".db", StringComparison.Ordinal) && !knownKeys.Contains(o.Key)).ToList();
+                fresh.Should().BeEmpty(
+                    "pulse rewrites (leader/master timestamps, agent domain keys) must not trigger snapshots");
+            }
+
+            await Task.Delay(1000, ct);
+        }
     }
 
     // AAA: ветка F (arch/etcdnode/01-agent.md §4) — смерть узла-ЛИДЕРА:
+    // (0) до смерти: слепки снимает ТОЛЬКО лидер — тома /snapshots не-лидеров
+    // пусты (инвариант arch/etcdnode/02-snapshots.md §2);
     // (1) пока lease лидера жив (TTL ≤ 15 с), статус-ключ НЕ переписывается
     // другими (координация localhost-only: умерший лидер не пишет FAILED,
     // новый не может захватить лидерство до истечения TTL);
     // (2) после TTL — takeover: новый лидер (baseline-null) снимает
     // внеочередной и продвигает статус-ключ (mod_revision растёт) в бюджете
-    // ≤ 30 с. Контур 3 узлов — кворум переживает остановку члена.
+    // ≤ 30 с;
+    // (3) свежесть: новая пара .db+meta с taken_unix строго новее kill-времени,
+    // instance меты — новый лидер по /etcdnode/leader (инвариант
+    // arch/etcdnode/02-snapshots.md §2).
+    // Контур 3 узлов — кворум переживает остановку члена.
     [Fact]
     public async Task LeaderDown_StatusFrozenUntilTtl_ThenTakeover()
     {
@@ -238,10 +345,39 @@ public sealed class SnapshotAgentTests(EtcdNodeEnvironment env)
         var aliveNode = new[] { "node1", "node2", "node3" }.First(n => n != leaderNode);
         var aliveEndpoint = env.EndpointOf(aliveNode);
 
-        async Task<ulong?> ReadStatusRevisionAsync()
+        // Чтение ревизии статус-ключа через грань ЖИВОГО узла — ТОЛЬКО
+        // успешное: отказ чтения (окно raft-переизбрания после kill:
+        // linearizable read 503/timeout пока новый raft-лидер не избран) —
+        // НЕ «ревизия»: null от Failed-чтения, трактованный как значение,
+        // даёт ложное «изменилась» (Failed null → затем успешное число).
+        // Ключ статуса существует с первого слепка лидера — успешное
+        // чтение без ключа в этом кейсе невозможно.
+        async Task<ulong> ReadStatusRevisionCheckedAsync()
         {
-            var kv = await env.Gateway.GetAsync(aliveEndpoint, EtcdSnapshotStatusJson.Key, ct);
-            return kv.Value?.ModRevision;
+            var deadline = DateTimeOffset.UtcNow.AddSeconds(10);
+            while (DateTimeOffset.UtcNow < deadline)
+            {
+                var kv = await env.Gateway.GetAsync(aliveEndpoint, EtcdSnapshotStatusJson.Key, ct);
+                if (kv.IsSuccess && kv.Value is { } read)
+                    return read.ModRevision;
+                await Task.Delay(500, ct);
+            }
+
+            throw new TimeoutException("status key is unreadable via the alive node endpoint in 10 s");
+        }
+
+        // Assert-0: слепки снимает ТОЛЬКО лидер — тома /snapshots не-лидеров
+        // не содержат файлов слепков. Единственный источник смены лидера в
+        // коллекции — kill этого же кейса: на момент его Arrange лидер
+        // неизменен с сотворения контура, тома не-лидеров пусты при ЛЮБОМ
+        // порядке исполнения кейсов сборки.
+        var nonLeaders = new[] { "node1", "node2", "node3" }.Where(n => n != leaderNode).ToArray();
+        nonLeaders.Should().HaveCount(2, "the circuit has exactly two non-leader nodes");
+        foreach (var name in nonLeaders)
+        {
+            var files = await env.SnapshotFilesOfAsync(name);
+            files.Should().NotContain("snapshot-",
+                $"non-leader {name} must not take snapshots (leader-only snapshotting)");
         }
 
         try
@@ -249,14 +385,16 @@ public sealed class SnapshotAgentTests(EtcdNodeEnvironment env)
             // Act-1: смерть узла-лидера. Замороженная мод-ревизия снимается
             // ПЕРВЫМ чтением ПОСЛЕ смерти: между пред-килл-чтением и kill
             // могла завершиться выгрузка (статус-put) — ложное «изменение».
+            var killUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            var knownDb = DbKeysOf(await ListDbObjectsAsync(env));
             await env.KillNodeAsync(leaderNode);
             await Task.Delay(1000, ct); // осесть in-flight статус-put'ам лидера
-            var frozenRevision = await ReadStatusRevisionAsync();
+            var frozenRevision = await ReadStatusRevisionCheckedAsync();
             var stillFrozen = true;
             var freezeDeadline = DateTimeOffset.UtcNow.AddSeconds(5);
             while (DateTimeOffset.UtcNow < freezeDeadline)
             {
-                if (await ReadStatusRevisionAsync() != frozenRevision)
+                if (await ReadStatusRevisionCheckedAsync() != frozenRevision)
                 {
                     stillFrozen = false;
                     break;
@@ -276,7 +414,7 @@ public sealed class SnapshotAgentTests(EtcdNodeEnvironment env)
             var takeoverDeadline = DateTimeOffset.UtcNow.AddSeconds(30);
             while (DateTimeOffset.UtcNow < takeoverDeadline)
             {
-                if (await ReadStatusRevisionAsync() is { } revision && revision != frozenRevision)
+                if (await ReadStatusRevisionCheckedAsync() != frozenRevision)
                 {
                     takeover = true;
                     break;
@@ -286,6 +424,48 @@ public sealed class SnapshotAgentTests(EtcdNodeEnvironment env)
             }
 
             takeover.Should().BeTrue("a live node must take over the leadership and rewrite the status within TTL + tick");
+
+            // Act-3/Assert-3: смена лидера → СВЕЖИЙ бэкап. Новый лидер
+            // (baseline-null) снимает первым тиком: в S3 появляется НОВАЯ
+            // пара .db вне knownDb с taken_unix СТРОГО новее kill-времени;
+            // instance меты — имя узла из ПЕРЕЧИТАННОГО leader-ключа. Чтения
+            // после смерти лидера — через client-грань ЖИВОГО узла: грань
+            // node1 (endpoint окружения) могла умереть вместе с лидером.
+            var freshDb = default(EtcdS3Object);
+            var freshDeadline = DateTimeOffset.UtcNow.AddSeconds(30);
+            while (DateTimeOffset.UtcNow < freshDeadline)
+            {
+                var listed = await TryListDbObjectsAsync(env, aliveEndpoint);
+                if (listed is { } objects)
+                {
+                    freshDb = objects.FirstOrDefault(o =>
+                        o.Key.EndsWith(".db", StringComparison.Ordinal) && !knownDb.Contains(o.Key));
+                    if (freshDb is not null)
+                        break;
+                }
+
+                await Task.Delay(1000, ct);
+            }
+
+            freshDb.Should().NotBeNull("a new leader must export a fresh snapshot pair after the takeover");
+            var metaKey = $"{EtcdExportRetention.Prefix}{Path.GetFileName(freshDb!.Key)[..^".db".Length]}.meta.json";
+            var target = await new EtcdBackupTargetResolver(env.Gateway, [aliveEndpoint]).ResolveAsync(ct);
+            target.IsSuccess.Should().BeTrue(target.Error?.Message);
+            await using var s3 = new EtcdSnapshotS3(
+                EtcdNodeEnvironment.HostS3Endpoint(target.Value), target.Value.Bucket,
+                target.Value.AccessKey, target.Value.SecretKey);
+            var metaJson = await s3.GetObjectAsync(metaKey, ct);
+            metaJson.IsSuccess.Should().BeTrue(metaJson.Error?.Message);
+            using var meta = JsonDocument.Parse(metaJson.Value!);
+            var takenUnix = meta.RootElement.GetProperty("taken_unix").GetInt64();
+            takenUnix.Should().BeGreaterThan(killUnix,
+                "the takeover snapshot must be taken strictly after the leader death");
+            var leaderAfter = await env.Gateway.GetAsync(aliveEndpoint, "/etcdnode/leader", ct);
+            leaderAfter.IsSuccess.Should().BeTrue(leaderAfter.Error?.Message);
+            leaderAfter.Value.Should().NotBeNull("the leader key must exist after the takeover");
+            var metaInstance = meta.RootElement.GetProperty("instance").GetString();
+            leaderAfter.Value!.Value.Should().Contain(metaInstance,
+                "meta.instance of the fresh pair is the new leader node read from /etcdnode/leader");
         }
         finally
         {
