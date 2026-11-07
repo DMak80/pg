@@ -70,6 +70,7 @@ public sealed class EtcdNodeEnvironment : IAsyncLifetime
                 + $" --listen-peer-urls=http://0.0.0.0:2380 --initial-advertise-peer-urls=http://{name}:2380"
                 + $" --initial-cluster={InitialCluster} --initial-cluster-state=new")
             .WithEnvironment("ETCDNODE_NODE_NAME", name)
+            // MinIntervalSec: канон-дефолт 5; поведенческим кейсам нужно ускорение 1
             .WithEnvironment("ETCDNODE_SNAPSHOTS__MIN_INTERVAL_SEC", "1")
             // Retry 5 c (не 1): при битой/отсутствующей цели агент-лидер
             // перезапускает слепок каждый RetryIntervalSec — секудная молотьба
@@ -78,7 +79,7 @@ public sealed class EtcdNodeEnvironment : IAsyncLifetime
             .WithEnvironment("ETCDNODE_SNAPSHOTS__TIMEOUT_SEC", "10")
             .WithEnvironment("ETCDNODE_SNAPSHOTS__INTERVAL_MIN", "360")
             .WithEnvironment("ETCDNODE_SNAPSHOTS__RETENTION_FILES", "10")
-            .WithEnvironment("ETCDNODE_SNAPSHOTS__RETENTION_OBJECTS", "28")
+            .WithEnvironment("ETCDNODE_SNAPSHOTS__RETENTION_OBJECTS", "3")
             .WithEnvironment("ETCDNODE_SNAPSHOTS__MAINTENANCE_INTERVAL_MIN", "60")
             // Именованные тома (не анонимные VOLUME-декларации образа): явная
             // зачистка в teardown, ассерт чистоты.
@@ -258,6 +259,12 @@ public sealed class EtcdNodeEnvironment : IAsyncLifetime
     // Endpoint окружения умирает навсегда (docker start маппинг сохраняет).
     public async Task StartNodeAsync(string name)
         => await DockerAsync($"start {Node(name).Name.TrimStart('/')}", okWhenMissing: false);
+
+    // Список файлов в томе /snapshots узла (docker exec ls; пустой том —
+    // пустая строка): ассерт «слепки снимает только лидер».
+    public async Task<string> SnapshotFilesOfAsync(string name)
+        => await DockerAsync(
+            $"exec {Node(name).Name.TrimStart('/')} ls /snapshots", okWhenMissing: false);
 
     private IContainer Node(string name) => name switch
     {

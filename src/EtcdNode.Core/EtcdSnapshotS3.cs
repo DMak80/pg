@@ -25,6 +25,10 @@ public interface IEtcdSnapshotS3 : IAsyncDisposable
     /// проверки содержимого); отсутствие ключа — Failed.</summary>
     Task<Result<string>> GetObjectAsync(string key, CancellationToken ct);
 
+    /// <summary>Точечное байтовое чтение объекта (интеграционные сверки
+    /// содержимого .db с метой); отсутствие ключа — Failed.</summary>
+    Task<Result<byte[]>> GetObjectBytesAsync(string key, CancellationToken ct);
+
     /// <summary>batch-delete (DeleteObjects, чанки ≤1000); идемпотентно —
     /// отсутствие ключа в ответе не ошибка (повтор прохода безопасен).</summary>
     Task<Result> DeleteKeysAsync(IReadOnlyList<string> keys, CancellationToken ct);
@@ -140,6 +144,22 @@ public sealed class EtcdSnapshotS3 : IEtcdSnapshotS3, IAsyncDisposable
         catch (Exception e)
         {
             return Result<string>.Failed(new ApplicationException($"S3 get {key}: {e.Message}", e));
+        }
+    }
+
+    public async Task<Result<byte[]>> GetObjectBytesAsync(string key, CancellationToken ct)
+    {
+        try
+        {
+            var request = new GetObjectRequest { BucketName = _bucket, Key = key };
+            using var response = await _client.GetObjectAsync(request, ct);
+            using var ms = new MemoryStream();
+            await response.ResponseStream.CopyToAsync(ms, ct);
+            return Result<byte[]>.Success(ms.ToArray());
+        }
+        catch (Exception e)
+        {
+            return Result<byte[]>.Failed(new ApplicationException($"S3 get {key}: {e.Message}", e));
         }
     }
 
