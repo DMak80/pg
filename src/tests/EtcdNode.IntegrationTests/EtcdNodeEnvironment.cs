@@ -262,11 +262,19 @@ public sealed class EtcdNodeEnvironment : IAsyncLifetime
     // чтения кейсов после возврата узла идут именно через неё.
     public async Task StartNodeAsync(string name)
     {
-        await DockerAsync($"start {Node(name).Name.TrimStart('/')}", okWhenMissing: false);
+        var containerName = Node(name).Name.TrimStart('/');
+        await DockerAsync($"start {containerName}", okWhenMissing: false);
         if (name == "node1")
         {
-            var raw = await DockerAsync($"port {Node(name).Name.TrimStart('/')} 2379/tcp", okWhenMissing: false);
-            Endpoint = $"http://localhost:{raw.Trim().Split('\n')[0].Split(':')[^1]}";
+            // Пустой вывод docker port / нечисловой порт — явный сбой НА МЕСТЕ
+            // с внятной диагностикой: иначе Endpoint="http://localhost:" уехал
+            // бы в кейсы отложенным невнятным падением чтений.
+            var raw = await DockerAsync($"port {containerName} 2379/tcp", okWhenMissing: false);
+            var portPart = raw.Trim().Split('\n')[0].Split(':')[^1];
+            if (!ushort.TryParse(portPart, out var port))
+                throw new ApplicationException(
+                    $"docker port {containerName} 2379/tcp returned no numeric host port: '{raw.Trim()}'");
+            Endpoint = $"http://localhost:{port}";
         }
     }
 
