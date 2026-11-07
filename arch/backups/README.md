@@ -79,8 +79,8 @@ WAL-G/pgBackRest НЕ встраиваются (параллельное исп�
   читает/чистит (ретенция, супервизор) — [06-s3-layout.md](06-s3-layout.md).
 - **PgNode → etcd**: статус-ключи приёмника и агента
   ([05-etcd-contract.md](05-etcd-contract.md)).
-- **EtcdWorker → S3**: DR-слепки etcd — отдельная зона
-  ([etcdworker/04-snapshots.md](../etcdworker/04-snapshots.md)).
+- **EtcdNode → S3**: DR-слепки etcd (агенты в узлах контура) — отдельная
+  зона ([etcdnode/02-snapshots.md](../etcdnode/02-snapshots.md)).
 
 ## 5. Свойства, на которые опираются все функции
 

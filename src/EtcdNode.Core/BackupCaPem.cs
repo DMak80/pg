@@ -1,9 +1,10 @@
-namespace EtcdWorker.Core;
+namespace EtcdNode.Core;
 
-/// <summary>Материал CA https S3-endpoint цели слепков (перенос BackupCaPem
-/// t08/t42, arch/backups/08-secrets.md): при заданном CaBundlePath PEM читается файлом хоста
-/// воркера — SDK-клиент получает фабрику HttpClient с валидацией корня цепочки
-/// по CA. null — путь не задан (http-endpoint).</summary>
+/// <summary>Материал CA https S3-endpoint цели слепков (arch/backups/08-secrets.md,
+/// arch/etcdnode/01-agent.md §3): при заданном CaBundlePath PEM читается
+/// файлом хоста ВОРКЕРА — содержимое уходит в env узла ETCDNODE_S3_CA_PEM,
+/// агент материализует его в temp-файл для фабрики HttpClient с валидацией
+/// корня цепочки по CA. null — путь не задан (http-endpoint).</summary>
 public static class BackupCaPem
 {
     // Строковый путь (механика та же, что в PgWorker.Backups; перегрузка
@@ -20,12 +21,12 @@ public static class BackupCaPem
         catch (Exception ex)
         {
             throw new InvalidOperationException(
-                $"EtcdWorker:Snapshots:S3:CaBundlePath={caBundlePath}: CA file is not readable — {ex.Message}", ex);
+                $"CA bundle {caBundlePath} is not readable — {ex.Message}", ex);
         }
 
         return pem.Trim() is { Length: > 0 } trimmed
             ? trimmed
             : throw new InvalidOperationException(
-                $"EtcdWorker:Snapshots:S3:CaBundlePath={caBundlePath}: CA file is empty");
+                $"CA bundle {caBundlePath} is empty");
     }
 }

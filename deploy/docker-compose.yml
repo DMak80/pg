@@ -236,8 +236,9 @@ x-etcdworker-env: &etcdworker-env
   EtcdWorker__Docker__Mode: ${ETCDW_DOCKER_MODE:-Plain}
   EtcdWorker__Docker__Hosts__0__Name: ${ETCDW_DOCKER_HOST_NAME:-local}
   EtcdWorker__Docker__Hosts__0__Endpoint: ${ETCDW_DOCKER_HOST_ENDPOINT:-unix:///var/run/docker.sock}
-  # Образ etcd-узла — внешний, зеркалирован в registry (arch/operations/02-registry-images.md).
-  EtcdWorker__Docker__Images__Etcd: ${ETCDW_ETCD_IMAGE:-192.168.0.1:5000/quay.io/coreos/etcd:v3.5.21}
+  # Образ managed-узла — локально собираемый (etcd + агент EtcdNode,
+  # arch/etcdnode/01-agent.md §1); в registry не кладётся.
+  EtcdWorker__Docker__Images__EtcdNode: ${ETCDW_ETCD_NODE_IMAGE:-pgworker/etcdnode:dev}
   # Advertised-хост клиентской грани managed-узлов → endpoints в etcd
   # резолвимы клиентами (arch/etcdworker/01-placement.md advertised-правило).
   EtcdWorker__Docker__AdvertisedHost: ${ETCDW_ADVERTISED_HOST:-host.docker.internal}
@@ -259,7 +260,6 @@ x-etcdworker-base: &etcdworker-base
     # docker-транспорт Plain-режима: docker.sock хоста (как x-s3worker-base;
     # без него Plain-драйвер не создаёт контейнеры managed-узлов).
     - /var/run/docker.sock:/var/run/docker.sock
-    - etcdw-snapshots:/snapshots
     # mTLS HTTP API (arch/etcdworker/05-api.md §1): общий TLS-volume pgw-api-tls (серты
     # kfw/vwk/s3w-ряда с SAN etcdworker* — добавить SAN в deploy/tls/gen.sh,
     # наполнение 00-up.sh); симметрично s3worker.
@@ -363,8 +363,9 @@ services:
       <<: *s3worker-env
       S3Worker__Api__AdvertiseUrl: https://host.docker.internal:${S3W_API_HOST_PORT2:-8089}
 
-  # EtcdWorker (arch/etcdworker/README.md): хозяин etcd-контура — состав managed-узлов + DR-слепки
-  # в фиксированный bucket etcd-backups; портовой ряд 8087 (после pg 8080-8083 /
+  # EtcdWorker (arch/etcdworker/README.md): хозяин etcd-контура — состав
+  # managed-узлов (DR-слепки — функция агентов EtcdNode узлов,
+  # arch/etcdnode/02-snapshots.md); портовой ряд 8087 (после pg 8080-8083 /
   # kfw 8081-8084 / vwk 8082-8085 / s3w 8086-8089); узлы контура он поднимает сам.
   etcdworker:
     <<: *etcdworker-base
@@ -374,7 +375,7 @@ services:
       <<: *etcdworker-env
       EtcdWorker__Api__AdvertiseUrl: ${ETCDW_API_ADVERTISE_URL:-https://host.docker.internal:${ETCDW_API_HOST_PORT:-8087}}
 
-  # Второй инстанс EtcdWorker (takeover ≤ TTL 15 с); том etcdw-snapshots — общий.
+  # Второй инстанс EtcdWorker (takeover ≤ TTL 15 с).
   etcdworker-2:
     <<: *etcdworker-base
     ports:
@@ -507,7 +508,6 @@ networks:
 
 volumes:
   s3w-snapshots:
-  etcdw-snapshots:
   pgw-snapshots:
   pgw-api-tls:
   kfw-snapshots:

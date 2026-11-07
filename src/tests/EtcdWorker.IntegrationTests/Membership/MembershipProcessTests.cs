@@ -58,8 +58,11 @@ public sealed class MembershipProcessTests(EtcdWorkerEnvironment env)
     {
         var window = FreePortWindow(10);
         var options = new EtcdProvisioningOptions(
-            "Plain", env.NetworkName, "quay.io/coreos/etcd:v3.5.21", null,
-            window[0], window[^1], "local", NodeBootSec: 60, NodeDeadSec: nodeDeadSec, HealthIntervalSec: 1);
+            "Plain", env.NetworkName, "pgworker/etcdnode:dev", null,
+            window[0], window[^1], "local", NodeBootSec: 60, NodeDeadSec: nodeDeadSec, HealthIntervalSec: 1,
+            SnapshotIntervalMin: 360, SnapshotMinIntervalSec: 300, SnapshotRetryIntervalSec: 300,
+            SnapshotTimeoutSec: 30, SnapshotRetentionFiles: 10, SnapshotRetentionObjects: 28,
+            SnapshotMaintenanceIntervalMin: 60, SnapshotS3CaPem: null);
         var driver = new PlainEtcdNodeDriver(
             [new HostEndpoint("local", "unix:///var/run/docker.sock")],
             new Shared.Docker.DockerEngineFactory(), env.NetworkName);

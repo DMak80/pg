@@ -2,9 +2,9 @@ using System.Text.Json;
 using Shared.Core;
 using Shared.Etcd.Client;
 
-namespace EtcdWorker.Provisioning;
+namespace EtcdNode.Core;
 
-/// <summary>Цель выгрузки DR-слепков (arch/etcdworker/04-snapshots.md): bucket — константа
+/// <summary>Цель выгрузки DR-слепков (arch/etcdnode/02-snapshots.md §1): bucket — константа
 /// EtcdSnapshotBucket.Name; endpoint'ы/креды — живой резолв из /s3/clusters/
 /// (единственный кластер с etcd_backup=true). Все отказы — маркер
 /// etcd-backup-missing в сообщении (алерт панели, transient для цикла).</summary>

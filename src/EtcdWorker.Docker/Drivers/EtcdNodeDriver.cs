@@ -20,7 +20,8 @@ public sealed record EtcdNodeInspection(string? PlacedOn, bool Running, int? Cli
 
 // Управление managed-узлом etcd в обоих режимах (порт драйверов s3w — arch/etcdworker/README.md
 // §2): объекты — контейнер/сервис etcdw-node-<k> с томом данных
-// etcdw-node-<k>-data (/etcd-data), label-пара etcdworker=member. Наружу
+// etcdw-node-<k>-data (/etcd-data) и томом слепков etcdw-node-<k>-snapshots
+// (/snapshots, кэш агента EtcdNode), label-пара etcdworker=member. Наружу
 // публикуется ТОЛЬКО client-порт 2379; peer-трафик — имена в сети контура.
 // Идемпотентность: существующий объект сверяется по имени и не пересоздаётся
 // (решение о сверке/замене — у процессов); 404 на удалении / 409 на создании —
@@ -47,8 +48,8 @@ public interface IEtcdNodeDriver
     // свидетельство смерти; ошибка инспекта → Failed — надзор не решает вслепую.
     Task<Result<EtcdNodeInspection?>> InspectNodeAsync(int k, CancellationToken ct);
 
-    // Имена объектов узла (etcdw-node-*: контейнеры/сервисы + тома -data):
-    // сверка декларации + сироты (X2).
+    // Имена объектов узла (etcdw-node-*: контейнеры/сервисы + тома
+    // -data/-snapshots): сверка декларации + сироты (X2).
     Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(CancellationToken ct);
 }
 
@@ -135,10 +136,14 @@ public sealed class PlainEtcdNodeDriver(
             }
 
             // Том данных: кластерное состояние etcd переживает пересоздание узла;
-            // label etcdworker=member — атрибуция листинга сирот.
+            // том слепков — локальный кэш агента EtcdNode (/snapshots, сносится
+            // вместе с узлом); label etcdworker=member — атрибуция листинга сирот.
             var volume = await engine.EnsureVolumeAsync(volumeName, LabelKey, LabelValue, ct);
             if (!volume.IsSuccess)
                 throw volume.Error!;
+            var snapshots = await engine.EnsureVolumeAsync(SnapshotsVolumeName(spec.K), LabelKey, LabelValue, ct);
+            if (!snapshots.IsSuccess)
+                throw snapshots.Error!;
 
             var containerSpec = new ContainerSpec(
                 spec.Image,
@@ -148,6 +153,8 @@ public sealed class PlainEtcdNodeDriver(
                 Cmd: spec.Cmd,
                 VolumeName: volumeName,
                 VolumeDest: "/etcd-data",
+                SnapshotsVolumeName: SnapshotsVolumeName(spec.K),
+                SnapshotsVolumeDest: "/snapshots",
                 Network: spec.Network,
                 RestartPolicy: "unless-stopped",
                 LabelKey: LabelKey,
@@ -187,6 +194,9 @@ public sealed class PlainEtcdNodeDriver(
                 var volume = await engine.DeleteVolumeAsync(VolumeName(k), ct);
                 if (!volume.IsSuccess)
                     throw volume.Error!;
+                var snapshotsVolume = await engine.DeleteVolumeAsync(SnapshotsVolumeName(k), ct);
+                if (!snapshotsVolume.IsSuccess)
+                    throw snapshotsVolume.Error!;
             }
         });
     }
@@ -226,14 +236,15 @@ public sealed class PlainEtcdNodeDriver(
                     .Where(n => n.StartsWith(prefix, StringComparison.Ordinal)));
             }
 
-            // Тома данных: листинг по префиксу; том нод-локален, сирота-том
-            // может остаться на ЛЮБОМ хосте — объединение листингов всех движков.
+            // Тома узла (данные + слепки): листинг по префиксу; том нод-локален,
+            // сирота-том может остаться на ЛЮБОМ хосте — объединение листингов всех движков.
             foreach (var engine in _engines.Values)
             {
                 var volumes = await engine.ListVolumesAsync(prefix, ct);
                 if (!volumes.IsSuccess)
                     throw volumes.Error!;
-                names.AddRange(volumes.Value.Where(v => v.EndsWith("-data", StringComparison.Ordinal)));
+                names.AddRange(volumes.Value.Where(v => v.EndsWith("-data", StringComparison.Ordinal)
+                    || v.EndsWith("-snapshots", StringComparison.Ordinal)));
             }
 
             return (IReadOnlyList<string>)names.Distinct().OrderBy(n => n, StringComparer.Ordinal).ToList();
@@ -251,6 +262,10 @@ public sealed class PlainEtcdNodeDriver(
 
     internal static string VolumeName(int k)
         => $"etcdw-node-{k}-data";
+
+    // Том локального кэша слепков узла (агент EtcdNode, arch/etcdnode/01-agent.md §1).
+    internal static string SnapshotsVolumeName(int k)
+        => $"etcdw-node-{k}-snapshots";
 }
 
 // Swarm-режим: сервисы через manager endpoint, replicas=1, constraint
@@ -309,12 +324,18 @@ public sealed class SwarmEtcdNodeDriver(
                 throw new ApplicationException($"swarm node with Hostname={spec.Host} not found");
 
             // Идемпотентность: 409 already-exists — успех (движок); сверка/замена —
-            // решение процессов; label etcdworker=member — атрибуция.
+            // решение процессов; label etcdworker=member — атрибуция. Том
+            // слепков — второй EnsureVolume (кэш агента, /snapshots).
             var volume = await _engine.EnsureVolumeAsync(
                 PlainEtcdNodeDriver.VolumeName(spec.K),
                 PlainEtcdNodeDriver.LabelKey, PlainEtcdNodeDriver.LabelValue, ct);
             if (!volume.IsSuccess)
                 throw volume.Error!;
+            var snapshotsVolume = await _engine.EnsureVolumeAsync(
+                PlainEtcdNodeDriver.SnapshotsVolumeName(spec.K),
+                PlainEtcdNodeDriver.LabelKey, PlainEtcdNodeDriver.LabelValue, ct);
+            if (!snapshotsVolume.IsSuccess)
+                throw snapshotsVolume.Error!;
 
             var template = new ContainerSpec(
                 spec.Image,
@@ -324,6 +345,8 @@ public sealed class SwarmEtcdNodeDriver(
                 Cmd: spec.Cmd,
                 VolumeName: PlainEtcdNodeDriver.VolumeName(spec.K),
                 VolumeDest: "/etcd-data",
+                SnapshotsVolumeName: PlainEtcdNodeDriver.SnapshotsVolumeName(spec.K),
+                SnapshotsVolumeDest: "/snapshots",
                 LabelKey: PlainEtcdNodeDriver.LabelKey,
                 Label: PlainEtcdNodeDriver.LabelValue);
             var serviceSpec = new ServiceSpec(
@@ -351,6 +374,9 @@ public sealed class SwarmEtcdNodeDriver(
             var volume = await engine.DeleteVolumeAsync(PlainEtcdNodeDriver.VolumeName(k), ct);
             if (!volume.IsSuccess)
                 return volume;
+            var snapshotsVolume = await engine.DeleteVolumeAsync(PlainEtcdNodeDriver.SnapshotsVolumeName(k), ct);
+            if (!snapshotsVolume.IsSuccess)
+                return snapshotsVolume;
         }
 
         return Result.Success();
@@ -382,14 +408,15 @@ public sealed class SwarmEtcdNodeDriver(
         var names = new List<string>(services.Value
             .Where(svc => PlainEtcdNodeDriver.HasMemberLabel(svc.Labels))
             .Select(svc => svc.Name));
-        // Тома данных: листинг по префиксу на всех движках (сирота-том может
-        // остаться на любой ноде).
+        // Тома узла (данные + слепки): листинг по префиксу на всех движках
+        // (сирота-том может остаться на любой ноде).
         foreach (var engine in _nodeEngines.Values.Append(_engine))
         {
             var volumes = await engine.ListVolumesAsync("etcdw-node-", ct);
             if (!volumes.IsSuccess)
                 return Result<IReadOnlyList<string>>.Failed(volumes.Error!);
-            names.AddRange(volumes.Value.Where(v => v.EndsWith("-data", StringComparison.Ordinal)));
+            names.AddRange(volumes.Value.Where(v => v.EndsWith("-data", StringComparison.Ordinal)
+                || v.EndsWith("-snapshots", StringComparison.Ordinal)));
         }
 
         return Result<IReadOnlyList<string>>.Success(

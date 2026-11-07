@@ -1,6 +1,4 @@
-using EtcdWorker.Core;
-
-namespace EtcdWorker.Etcd;
+namespace EtcdNode.Core;
 
 /// <summary>Чистый отбор ретенции S3-выгрузки etcd: из list
 /// префикса etcd/ выбирает ключи к batch-delete — объекты пар, старше N последних

@@ -134,6 +134,7 @@ public sealed record ContainerSpec(
     IReadOnlyList<string>? Cmd = null,
     bool ResetEntrypoint = false,
     string? VolumeName = null, string? VolumeDest = null,
+    string? SnapshotsVolumeName = null, string? SnapshotsVolumeDest = null,
     IReadOnlyList<string>? Binds = null,
     string? Network = null, IReadOnlyList<string>? NetworkAliases = null,
     IReadOnlyDictionary<string, string>? Tmpfs = null,

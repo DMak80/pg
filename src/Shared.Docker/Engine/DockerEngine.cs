@@ -945,9 +945,15 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
             // воркера запрещён / не нужен).
             ["RestartPolicy"] = new { Name = spec.RestartPolicy ?? "unless-stopped" },
         };
-        // volume данных (pg/kfw): VolumeName:VolumeDest.
+        // volume данных (pg/kfw): VolumeName:VolumeDest; второй том (кэш
+        // слепков узла etcd) — SnapshotsVolumeName:SnapshotsVolumeDest.
+        var volumeBinds = new List<string>();
         if (spec.VolumeName is { Length: > 0 })
-            hostConfig["Binds"] = new[] { $"{spec.VolumeName}:{spec.VolumeDest}" };
+            volumeBinds.Add($"{spec.VolumeName}:{spec.VolumeDest}");
+        if (spec.SnapshotsVolumeName is { Length: > 0 })
+            volumeBinds.Add($"{spec.SnapshotsVolumeName}:{spec.SnapshotsVolumeDest}");
+        if (volumeBinds.Count > 0)
+            hostConfig["Binds"] = volumeBinds.ToArray();
         // Произвольные bind-mounts формата "volume:/path" (union-поле спеки).
         if (spec.Binds is { Count: > 0 })
             hostConfig["Binds"] = spec.Binds.ToArray();
@@ -1032,14 +1038,20 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
                 container["Entrypoint"] = Array.Empty<string>(); // union-семантика как в BuildContainerBody
             container["Cmd"] = cmd;
         }
-        // volume данных (pg/kfw) — Mounts.
+        // volume данных (pg/kfw) — Mounts; второй том (кэш слепков узла etcd) —
+        // SnapshotsVolumeName/SnapshotsVolumeDest.
+        var volumeMounts = new List<object>();
         if (spec.Template.VolumeName is { Length: > 0 })
-        {
-            container["Mounts"] = new[]
+            volumeMounts.Add(new { Type = "volume", Source = spec.Template.VolumeName, Target = spec.Template.VolumeDest });
+        if (spec.Template.SnapshotsVolumeName is { Length: > 0 })
+            volumeMounts.Add(new
             {
-                new { Type = "volume", Source = spec.Template.VolumeName, Target = spec.Template.VolumeDest },
-            };
-        }
+                Type = "volume",
+                Source = spec.Template.SnapshotsVolumeName,
+                Target = spec.Template.SnapshotsVolumeDest,
+            });
+        if (volumeMounts.Count > 0)
+            container["Mounts"] = volumeMounts.ToArray();
 
         // Binds swarm-шаблона (vwk) — Mounts (формат "volume:/path").
         if (spec.Template.Binds is { Count: > 0 })

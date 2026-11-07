@@ -1,12 +1,10 @@
 using System.Security.Cryptography;
-using EtcdWorker.Core;
-using EtcdWorker.Etcd;
 using Shared.Core;
 using Shared.Etcd.Client;
 
-namespace EtcdWorker.Provisioning;
+namespace EtcdNode.Core;
 
-/// <summary>Перенос EtcdSnapshotSink (arch/etcdworker/04-snapshots.md): цель — живой резолв
+/// <summary>Конвейер выгрузки DR-слепка агента EtcdNode (arch/etcdnode/02-snapshots.md): цель — живой резолв
 /// etcd-backup кластера, bucket etcd-backups; статус/ретенция/CatchUp/пульс —
 /// механика 1:1. Путь ОДИН, без сравнения с прошлым состоянием — каждый снятый
 /// слепок уезжает новой парой: put etcd/&lt;имя&gt;.db (серверная SHA256-проверка
@@ -39,7 +37,7 @@ public sealed class SnapshotExporter(
 
     public async Task<Result> ExportAsync(string snapshotFileName, byte[] data, long? revision, CancellationToken ct)
     {
-        // Живой резолв цели (arch/etcdworker/04-snapshots.md) и прошлый статус — ОДИН раз на попытку;
+        // Живой резолв цели (arch/etcdnode/02-snapshots.md) и прошлый статус — ОДИН раз на попытку;
         // Failed-резолв → статус FAILED с маркер-текстом ошибки (поля
         // последнего успеха сохраняются).
         var target = await resolver.ResolveAsync(ct);

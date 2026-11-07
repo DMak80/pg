@@ -12,9 +12,6 @@ public sealed class HealthState(TimeProvider clock) : Shared.Core.Hosting.ILoopP
     private DateTimeOffset? _lastReconcileTick;
     private DateTimeOffset? _lastReconcileActivity;
     private DateTimeOffset? _lastKeepaliveTick;
-    private DateTimeOffset? _lastSnapshotTick;
-    private DateTimeOffset? _lastSnapshotActivity;
-    private DateTimeOffset? _lastSnapshotTaken;
     private int _claimsHeld;
 
     /// <summary>Тик ReconcileLoop + сколько клэймов удерживаем после него
@@ -53,44 +50,14 @@ public sealed class HealthState(TimeProvider clock) : Shared.Core.Hosting.ILoopP
         }
     }
 
-    /// <summary>Тик SnapshotLoop (попытка снятия снапшота лидером).</summary>
-    public void MarkSnapshotTick()
-    {
-        lock (_sync)
-        {
-            _lastSnapshotTick = clock.GetUtcNow();
-        }
-    }
-
-    /// <summary>Пульс сна snapshot-цикла (активность БЕЗ тика, зеркально
-    /// MarkReconcileActivity): законное ожидание длиннее порога сноса watchdog;
-    /// читает только watchdog, healthz loops-alive — по тикам.</summary>
-    public void MarkSnapshotActivity()
-    {
-        lock (_sync)
-        {
-            _lastSnapshotActivity = clock.GetUtcNow();
-        }
-    }
-
-    /// <summary>Успешно снятый снапшот (snapshot-freshness).</summary>
-    public void MarkSnapshotTaken()
-    {
-        lock (_sync)
-        {
-            _lastSnapshotTaken = clock.GetUtcNow();
-        }
-    }
-
     /// <summary>Immutable-снимок состояний для health-пробы.</summary>
     public HealthSnapshot Snapshot()
     {
         lock (_sync)
         {
             return new HealthSnapshot(
-                _lastReconcileTick, _lastKeepaliveTick,
-                _lastSnapshotTick, _lastSnapshotTaken, _claimsHeld,
-                _lastReconcileActivity, _lastSnapshotActivity);
+                _lastReconcileTick, _lastKeepaliveTick, _claimsHeld,
+                _lastReconcileActivity);
         }
     }
 }
@@ -99,8 +66,5 @@ public sealed class HealthState(TimeProvider clock) : Shared.Core.Hosting.ILoopP
 public sealed record HealthSnapshot(
     DateTimeOffset? LastReconcileTick,
     DateTimeOffset? LastKeepaliveTick,
-    DateTimeOffset? LastSnapshotTick,
-    DateTimeOffset? LastSnapshotTaken,
     int ClaimsHeld,
-    DateTimeOffset? LastReconcileActivity,
-    DateTimeOffset? LastSnapshotActivity);
+    DateTimeOffset? LastReconcileActivity);

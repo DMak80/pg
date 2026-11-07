@@ -5,17 +5,15 @@ namespace EtcdWorker.App.HealthChecks;
 
 /// <summary>
 /// Агрегированный health EtcdWorker (arch/etcdworker/05-api.md §1/§7): секции
-/// etcd-reachable, docker-hosts, loops-alive (keepalive), snapshot-export.
+/// etcd-reachable, docker-hosts, loops-alive (keepalive).
 /// Пассивные данные — из HealthState (тики циклов), активные пробы —
 /// ServiceProbes. Недоступный etcd / docker-хост / зависший цикл → Degraded
-/// (сервис жив, но требует внимания); snapshot-export — информационная секция
-/// (алерт панели). Секции отдаются в Data.
+/// (сервис жив, но требует внимания). Секции отдаются в Data.
 /// </summary>
 public sealed class EtcdWorkerHealth(
     ServiceProbes probes,
     HealthState health,
     ClaimStore claims,
-    EtcdWorker.Provisioning.SnapshotExporter exporter,
     IOptionsMonitor<EtcdWorkerOptions> options,
     TimeProvider clock) : IHealthCheck
 {
@@ -74,22 +72,6 @@ public sealed class EtcdWorkerHealth(
         else if (clock.GetUtcNow() - snapshot.LastKeepaliveTick.Value > staleAfter)
             degraded.Add(
                 $"loop keepalive has not ticked for {(clock.GetUtcNow() - snapshot.LastKeepaliveTick.Value).TotalSeconds:F0} s");
-
-        // snapshot-export (arch/etcdworker/05-api.md §1/§5): факт последней выгрузки DR-слепка
-        // в S3 — секция ИНФОРМАЦИОННАЯ (OK/FAILED/возраст): FAILED-выгрузка не
-        // деградирует health (алерт etcd-snapshot-export-failed — панель;
-        // установка может жить без etcd-backup S3-кластера — R6, §7.3-стенд);
-        // «ключа ещё нет» — стартовое окно первого слепка.
-        var export = await exporter.ReadStatusAsync(ct);
-        if (export.IsSuccess && export.Value is { } exportStatus)
-        {
-            data["snapshot-export"] =
-                $"{exportStatus.State}; last_uploaded_unix={exportStatus.LastUploadedUnix}; object={exportStatus.LastObject}";
-        }
-        else
-        {
-            data["snapshot-export"] = "no status key yet";
-        }
 
         return degraded.Count == 0
             ? HealthCheckResult.Healthy("EtcdWorker is alive", data)

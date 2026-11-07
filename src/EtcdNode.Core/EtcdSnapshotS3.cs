@@ -2,7 +2,7 @@ using Amazon.Runtime;
 using Amazon.S3;
 using Amazon.S3.Model;
 
-namespace EtcdWorker.Core;
+namespace EtcdNode.Core;
 
 /// <summary>S3-операции над бакетом etcd-слепков (export/retention): put с
 /// SHA256-проверкой целостности транспорта, list по префиксу с пагинацией и
@@ -20,6 +20,10 @@ public interface IEtcdSnapshotS3 : IAsyncDisposable
     /// NextContinuationToken до исчерпания): все объекты префикса — ключ +
     /// размер + время модификации (EtcdS3Object).</summary>
     Task<Result<IReadOnlyList<EtcdS3Object>>> ListPrefixAsync(string prefix, CancellationToken ct);
+
+    /// <summary>Точечное чтение объекта (служебные meta-JSON: интеграционные
+    /// проверки содержимого); отсутствие ключа — Failed.</summary>
+    Task<Result<string>> GetObjectAsync(string key, CancellationToken ct);
 
     /// <summary>batch-delete (DeleteObjects, чанки ≤1000); идемпотентно —
     /// отсутствие ключа в ответе не ошибка (повтор прохода безопасен).</summary>
@@ -121,6 +125,21 @@ public sealed class EtcdSnapshotS3 : IEtcdSnapshotS3, IAsyncDisposable
         {
             return Result<IReadOnlyList<S3Object>>.Failed(new ApplicationException(
                 $"S3 list {prefix}: {e.Message}", e));
+        }
+    }
+
+    public async Task<Result<string>> GetObjectAsync(string key, CancellationToken ct)
+    {
+        try
+        {
+            var request = new GetObjectRequest { BucketName = _bucket, Key = key };
+            using var response = await _client.GetObjectAsync(request, ct);
+            using var reader = new StreamReader(response.ResponseStream);
+            return Result<string>.Success(await reader.ReadToEndAsync(ct));
+        }
+        catch (Exception e)
+        {
+            return Result<string>.Failed(new ApplicationException($"S3 get {key}: {e.Message}", e));
         }
     }
 

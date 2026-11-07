@@ -2,11 +2,11 @@ using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
-namespace EtcdWorker.Etcd;
+namespace EtcdNode.Core;
 
-/// <summary>Значение статус-ключа /etcdworker/snapshots (arch/etcdworker/00-etcd-contract.md): факт
-/// последней выгрузки слепка etcd в S3 (перенос t08; поле enabled удалено —
-/// выгрузка безусловна).</summary>
+/// <summary>Значение статус-ключа /etcdnode/snapshots (arch/etcdnode/00-etcdnode-contract.md §3): факт
+/// последней выгрузки слепка etcd в S3 агентом EtcdNode (поле enabled не
+/// пишется — выгрузка безусловна).</summary>
 public sealed record EtcdSnapshotStatus(
     string State,               // "OK" | "FAILED"
     long? LastUploadedUnix,
@@ -18,7 +18,7 @@ public sealed record EtcdSnapshotStatus(
 {
     /// <summary>Выгрузка отстаёт: FAILED, либо ключа нет вовсе, либо новейший
     /// локальный слепок снят позже подтверждённого покрытия. Выгрузка
-    /// безусловна (enabled-поля нет, arch/etcdworker/00-etcd-contract.md) — «нет ключа» = отстаёт при
+    /// безусловна (enabled-поля нет, arch/etcdnode/00-etcdnode-contract.md §3) — «нет ключа» = отстаёт при
     /// наличии локальных слепков.</summary>
     public static bool IsBehind(EtcdSnapshotStatus? status, long? latestLocalTakenUnix)
         => status is null
@@ -49,7 +49,7 @@ public sealed record EtcdSnapshotStatus(
 /// EtcdSnapshotStatus (call-сайты зовут их от типа записи).</summary>
 public static class EtcdSnapshotStatusJson
 {
-    public const string Key = "/etcdworker/snapshots";
+    public const string Key = "/etcdnode/snapshots";
 
     private static readonly JsonSerializerOptions Json = new()
     {

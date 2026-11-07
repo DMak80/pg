@@ -12,7 +12,7 @@ namespace PgWorker.App.Loops;
 /// глобальный лидер (Д2) снимает слепок раз в SnapshotIntervalMin; не-лидер
 /// периодически пытается захватить лидерство (takeover ≤ TTL 15 с + тик).
 /// Внеочередные снапшоты в точках изменений снимают сами процессы.
-/// (выгрузка/обслуживание — зона EtcdWorker arch/etcdworker/04-snapshots.md; здесь — только
+/// (выгрузка/обслуживание — зона EtcdNode arch/etcdnode/02-snapshots.md; здесь — только
 /// локальный слепок и ретенция файлов)
 /// </summary>
 internal sealed class SnapshotLoop(

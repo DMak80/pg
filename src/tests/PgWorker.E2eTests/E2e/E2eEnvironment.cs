@@ -2078,6 +2078,36 @@ public sealed class E2eEnvironment : IAsyncDisposable
                 logFile: E2eFixture.StaticProcessLogPath("node-e2e"));
             E2eFixture.StaticPhase($"e2e-image {NodeImage}: ready in {sw.Elapsed.TotalSeconds:F0} s (pgnode and pgwnodetool inside)");
 
+            // Образ managed-узла etcd-контура (arch/etcdnode/01-agent.md):
+            // publish агента self-contained НА ХОСТЕ → docker build (в образ
+            // только артефакты); фиксированный тег pgworker/etcdnode:dev —
+            // его ждут интеграционные фикстуры EtcdWorker/EtcdNode.
+            var etcdNodeDir = Path.Combine(_root, "artifacts", "e2e", "etcdnode");
+            sw = E2eFixture.StaticSw();
+            if (noBuild)
+                E2eFixture.EnsurePublishedDir(etcdNodeDir,
+                    "required: dotnet publish src/EtcdNode.App -c Release -r <rid> --self-contained -o artifacts/e2e/etcdnode");
+            else
+            {
+                E2eFixture.StaticPhase("etcdnode-image pgworker/etcdnode:dev: dotnet publish EtcdNode.App self-contained (host)…");
+                await E2eFixture.RunProcessAsync("dotnet",
+                [
+                    "publish", $"{_root}/src/EtcdNode.App/EtcdNode.App.csproj",
+                    "-c", "Release", "-r", nodeRid, "--self-contained", "-o", etcdNodeDir, "--nologo",
+                ], ct, timeout: TimeSpan.FromMinutes(10), env: E2eFixture.NoMsBuildReuseEnv,
+                    logFile: E2eFixture.StaticProcessLogPath("etcdnode-publish"));
+            }
+
+            E2eFixture.StaticPhase("etcdnode-image pgworker/etcdnode:dev: docker build (context root)…");
+            await E2eFixture.RunProcessAsync("docker",
+            [
+                "build", "-f", $"{_root}/docker/etcdnode/Dockerfile",
+                "--build-arg", "ETCDNODE_PUBLISH_DIR=artifacts/e2e/etcdnode",
+                "-t", "pgworker/etcdnode:dev", _root,
+            ], ct, timeout: TimeSpan.FromMinutes(10),
+                logFile: E2eFixture.StaticProcessLogPath("etcdnode-image"));
+            E2eFixture.StaticPhase($"etcdnode-image pgworker/etcdnode:dev: ready in {sw.Elapsed.TotalSeconds:F0} s");
+
             _staticReady = true;
         }
         finally

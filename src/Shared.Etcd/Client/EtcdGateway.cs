@@ -97,7 +97,8 @@ public sealed class EtcdGateway(HttpClient httpClient) : IEtcdGateway
         var result = await Result<LeaseKeepaliveResponse>.FromAsync(
             async () => await PostAsync<LeaseKeepaliveResponse>(endpoint, "/v3/lease/keepalive", body, ct));
         // Один цикл продления: TTL<=0 в ответе — lease истёк (например, после разрыва).
-        return result.Bind(r => r.Result is { Ttl: > 0 }
+        // TTL — protojson int64-decimal-СТРОКА; битое/отсутствующее значение — «не продлён».
+        return result.Bind(r => r.Result?.Ttl is { } raw && long.TryParse(raw, out var ttl) && ttl > 0
             ? Result.Success()
             : Result.Failed(new EtcdHttpException(endpoint, 404, $"lease {lease} not renewed (TTL=0)")));
     }
@@ -368,8 +369,9 @@ public sealed class EtcdGateway(HttpClient httpClient) : IEtcdGateway
 
     private sealed class LeaseKeepaliveResult
     {
+        // protojson int64 — decimal-строка ("15"); числовой long не парсится.
         [JsonPropertyName("TTL")]
-        public long Ttl { get; set; }
+        public string? Ttl { get; set; }
     }
 
     private sealed class StatusResponse

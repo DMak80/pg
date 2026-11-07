@@ -93,13 +93,13 @@ tar-объекта (`pg_wal/…` — самодостаточность полн
 `etcd/snapshot-<id>.db` 1:1 + `etcd/snapshot-<id>.meta.json`
 (sha256/size/revision?/taken_unix/uploaded_unix/instance; `uploaded_unix` —
 фактическое время put'а объекта, в отличие от «покрытия» в статус-ключе).
-Экспортёр — EtcdWorker ([etcdworker/04-snapshots.md](../etcdworker/04-snapshots.md)):
+Экспортёр — EtcdNode ([etcdnode/02-snapshots.md](../etcdnode/02-snapshots.md)):
 цель — фиксированный etcd-слепковый bucket `etcd-backups` на нодах
 etcd-backup кластера `/s3/clusters/` (признак `etcd_backup=true`;
 bucket создаёт S3Worker; креды — ключ `backups` secrets-ключа кластера),
-каденс — плановый интервал + детекция изменений; каждый снятый слепок
-выгружается; статус-ключ покрытия `/etcdworker/snapshots` обновляется после
-каждой выгрузки. Вне per-cluster layout: не форма `<C>/<X>/` → реестр сирот
+каденс — плановый интервал + детекция важных изменений; каждый снятый
+слепок выгружается; статус-ключ покрытия `/etcdnode/snapshots` обновляется
+после каждой выгрузки. Вне per-cluster layout: не форма `<C>/<X>/` → реестр сирот
 его не группирует (ключи короче 3 сегментов); ретенция и wal-sweeper к
 `etcd/` не прикасаются (их пути адресны: `full/`, `wal/`, `<C>/<X>/`).
 Единственный удаляющий — ретенция самого экспорта (N последних пар, guard ≥1

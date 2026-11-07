@@ -5,7 +5,7 @@ using Xunit;
 
 namespace AdminPanel.UnitTests;
 
-// Парсер /etcdworker/snapshots (adminpanel/02 §2.3.1): полный формат,
+// Парсер /etcdnode/snapshots (adminpanel/02 §2.3.1): полный формат,
 // толерантность к отсутствующим полям, битый JSON — parseError (правила молчат).
 public class EtcdSnapshotsParserTests
 {
@@ -14,7 +14,7 @@ public class EtcdSnapshotsParserTests
     public void Parse_FullKey()
     {
         // Arrange
-        var kv = new Kv("/etcdworker/snapshots",
+        var kv = new Kv("/etcdnode/snapshots",
             """{"state":"OK","last_uploaded_unix":1759330000,"last_object":"etcd/snapshot-20261001-120000.db","last_sha256":"abc","size_bytes":2048,"interval_min":360}""", 1);
 
         // Act
@@ -33,7 +33,7 @@ public class EtcdSnapshotsParserTests
     public void Parse_FailedCase_WithError()
     {
         // Arrange
-        var kv = new Kv("/etcdworker/snapshots", """{"state":"FAILED","error":"S3 unavailable"}""", 1);
+        var kv = new Kv("/etcdnode/snapshots", """{"state":"FAILED","error":"S3 unavailable"}""", 1);
 
         // Act
         var (parsed, errors) = EtcdSnapshotsParser.Parse(kv);
@@ -51,14 +51,14 @@ public class EtcdSnapshotsParserTests
     public void Parse_BrokenJson_ParseError()
     {
         // Arrange
-        var kv = new Kv("/etcdworker/snapshots", "{not-json", 1);
+        var kv = new Kv("/etcdnode/snapshots", "{not-json", 1);
 
         // Act
         var (info, errors) = EtcdSnapshotsParser.Parse(kv);
 
         // Assert
         info.Should().BeNull();
-        errors.Should().ContainSingle(e => e.Key == "/etcdworker/snapshots");
+        errors.Should().ContainSingle(e => e.Key == "/etcdnode/snapshots");
     }
 
     // AAA: ключа нет (null) — «выгрузка не включена», без ошибок

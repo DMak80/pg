@@ -1,10 +1,13 @@
 # EtcdWorker: модель managed-узла
 
-Уровень 3. Как устроен managed-узел контура: контейнер etcd и его флаги,
-volume данных, имена, адресация по именам сети и публикации client-портов,
-размещение в Plain/Swarm. Процессы, использующие модель, —
-[доводка состава](02-membership.md), [надзор](03-node-supervision.md);
-контракт ключей — [00-etcd-contract.md](00-etcd-contract.md).
+Уровень 3. Как устроен managed-узел контура: контейнер (кастомный образ
+EtcdNode: etcd + агент DR-бэкапа), флаги etcd, volume данных и слепков,
+имена, адресация по именам сети и публикации client-портов, размещение в
+Plain/Swarm. Модель образа и env агента —
+[etcdnode/01-agent.md](../etcdnode/01-agent.md) (зона компонента EtcdNode);
+процессы, использующие модель, — [доводка состава](02-membership.md),
+[надзор](03-node-supervision.md); контракт ключей —
+[00-etcd-contract.md](00-etcd-contract.md).
 
 ## 1. Транспорт docker и конфигурация
 
@@ -12,7 +15,7 @@ volume данных, имена, адресация по именам сети �
   `ETCDW_DOCKER_TLS_*`, `ETCDW_DOCKER_SSH_*`.
 - **Конфиг** ([06-operability.md](06-operability.md) §4):
   `EtcdWorker:Docker { Mode, Hosts[{Name,Endpoint}], SwarmManager,
-  Network, PortRange{From=18100,To=18199}, Images{Etcd}, Tls, Ssh,
+  Network, PortRange{From=18100,To=18199}, Images{EtcdNode}, Tls, Ssh,
   AdvertisedHost }`.
 - **Режимы**: `Plain` — контур на ОДНОМ docker-хосте (`Hosts[]` — ровно один
   хост, fail-fast старта при большем: «мультихост — Swarm»); `Swarm` —
@@ -21,16 +24,21 @@ volume данных, имена, адресация по именам сети �
 
 ## 2. Узел = контейнер/сервис `etcdw-node-<k>`
 
-- **Образ** — внешний `Images{Etcd}` (канон `quay.io/coreos/etcd:v3.5.21`,
-  зеркалируется в локальный registry, ранбук `../operations/02-registry-images.md`).
-- **Имена**: контейнер `etcdw-node-<k>`, volume `etcdw-node-<k>-data`
-  (`--data-dir=/etcd-data`); `<k>` — сквозной номер: замена узла получает
-  СЛЕДУЮЩИЙ номер, имена не переиспользуются (data-dir старого при возврате
-  не конфликтует). Label `etcdworker` на контейнере — перечисление своих
-  объектов идёт по label (имена произвольны после замен).
-  Restart-политика `unless-stopped`.
-- **Флаги узла** (генерирует `EtcdNodeSpecBuilder`; параметры контура —
-  [pg-clusters/04-etcd-dcs.md](../pg-clusters/04-etcd-dcs.md) §2):
+- **Образ** — локально собираемый `Images{EtcdNode}` (дефолт
+  `pgworker/etcdnode:dev`; сборка на хосте —
+  [etcdnode/01-agent.md](../etcdnode/01-agent.md) §1, в registry НЕ
+  кладётся): внутри etcd + supervisord + агент EtcdNode. CMD контейнера —
+  supervisord; флаги etcd передаются env `ETCD_ARGS` (агент и его env —
+  [etcdnode/01-agent.md](../etcdnode/01-agent.md) §3).
+- **Имена**: контейнер `etcdw-node-<k>`, volumes
+  `etcdw-node-<k>-data` (`/etcd-data`) и `etcdw-node-<k>-snapshots`
+  (`/snapshots`, кэш слепков агента); `<k>` — сквозной номер: замена узла
+  получает СЛЕДУЮЩИЙ номер, имена не переиспользуются (data-dir старого
+  при возврате не конфликтует). Label `etcdworker` на контейнере —
+  перечисление своих объектов идёт по label (имена произвольны после
+  замен). Restart-политика `unless-stopped`.
+- **Флаги узла** (генерирует `EtcdNodeSpecBuilder` в `ETCD_ARGS`;
+  параметры контура — [pg-clusters/04-etcd-dcs.md](../pg-clusters/04-etcd-dcs.md) §2):
 
   | Флаг | Значение |
   |---|---|
@@ -102,8 +110,8 @@ volume данных, имена, адресация по именам сети �
 
 ## 6. Инстансы самого воркера
 
-- EtcdWorker — контейнер с `docker.sock` (или swarm-manager), volume
-  слепков и TLS-секретов API, поставка через `deploy/docker-compose.yml`.
+- EtcdWorker — контейнер с `docker.sock` (или swarm-manager) и
+  TLS-секретами API, поставка через `deploy/docker-compose.yml`.
 - **Два инстанса по умолчанию**: уникальный хост-порт API и уникальный
   `Api:AdvertiseUrl` на инстанс, дискавери-ключ `/etcdworker/api/<id>`
   ([05-api.md](05-api.md) §3); координация — lease-клэймы, лидер — один

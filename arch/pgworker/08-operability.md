@@ -81,8 +81,9 @@ provisioning в waiting-фазах, restore, надзор ждут не-etcd с�
   `move-<bucket>-start`/`flip-<bucket>-<to>`, ротация — старт/финал);
   ретенция `RetentionFiles` в локальном томе. Restore — внешний рецепт
   (`restore-cluster.sh`), PgWorker только снимает. Выгрузки в S3 НЕТ:
-  DR-слепки контура и их обслуживание (compact/defrag) — зона EtcdWorker
-  ([etcdworker/04-snapshots.md](../etcdworker/04-snapshots.md)); PgWorker
+  DR-слепки контура и их обслуживание (compact/defrag) — зона EtcdNode,
+  агентов в узлах etcd-контура
+  ([etcdnode/02-snapshots.md](../etcdnode/02-snapshots.md)); PgWorker
   не владеет S3-целями слепков и статусом выгрузки.
 - **Watchdog зависших циклов**: внутренний компонент `LoopWatchdog`
   (`Shared.Core`, `BackgroundService`) следит за **активностью** всех
@@ -237,9 +238,9 @@ PgWorker:Parallelism { MaxClusters=4 }
 PgWorker:Snapshots { Dir="/snapshots", RetentionFiles=10 }
                 # Локальные слепки P12: регулярные + точки изменений,
                 # ретенция файлов в томе. Выгрузка в S3 и обслуживание
-                # контура (compact/defrag) — EtcdWorker
-                # (etcdworker/04-snapshots.md): секций Export и MaintenanceIntervalMin
-                # у PgWorker нет.
+                # контура (compact/defrag) — EtcdNode, агенты в узлах
+                # etcd-контура (etcdnode/02-snapshots.md): секций Export
+                # и MaintenanceIntervalMin у PgWorker нет.
 PgWorker:AppParams { Default="sslmode=require" }  # per-node ключ
                   # shards/<X>/nodes/<n>/app_params (P2.5'/A5/C; P17)
 PgWorker:Pgtune { DbVersion=18, DbType="oltp", HdType="ssd", DbSize="mid_ram",

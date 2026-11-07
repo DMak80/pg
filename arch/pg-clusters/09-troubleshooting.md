@@ -89,9 +89,9 @@ Patroni не может проводить выборы: контрол-плей
 2. `endpoint health --cluster` — все healthy; Patroni продолжит через
    `loop_wait`.
 3. **Полная потеря etcd-данных**: данные PostgreSQL на нодах целы;
-   восстановление — [etcdworker/06-operability.md](../etcdworker/06-operability.md)
-   §«Восстановление etcd из S3-выгрузки», DR-слепки —
-   [etcdworker/04-snapshots.md](../etcdworker/04-snapshots.md). Снапшот
+   восстановление — [etcdnode/03-restore.md](../etcdnode/03-restore.md),
+   DR-слепки — [etcdnode/02-snapshots.md](../etcdnode/02-snapshots.md)
+   (снимают агенты EtcdNode в узлах контура). Снапшот
    общий: restore возвращает ВСЕ системы к моменту слепка; после restore —
    сверка карты бакетов (§7).
 4. Без бэкапа etcd — кластер Patroni «объясняется» заново (reinit нод на

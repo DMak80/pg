@@ -73,7 +73,7 @@ public sealed record S3HealthDto(
 public sealed record BackupStorageEtcdDto(
     long UsedBytes, long? QuotaBytes, double? UsedPercent, string State, long UpdatedUnix);
 
-// Статус DR-выгрузки etcd-слепков: ключ /etcdworker/snapshots.
+// Статус DR-выгрузки etcd-слепков: ключ /etcdnode/snapshots.
 public sealed record EtcdSnapshotsDto(
     string? State, long? LastUploadedUnix, string? LastObject,
     string? LastSha256, long? SizeBytes, int? IntervalMin, string? Error);
@@ -85,7 +85,7 @@ public sealed record BackupStorageDto(
     S3HealthDto? Health,
     IReadOnlyList<string> Buckets, // бакеты установки (live-инвентарь, arch/03 §3)
     BackupStorageEtcdDto? Etcd, // ключ /pgworker/backups/storage (вердикт воркера)
-    EtcdSnapshotsDto? EtcdSnapshots, // ключ /etcdworker/snapshots (read-only карточка)
+    EtcdSnapshotsDto? EtcdSnapshots, // ключ /etcdnode/snapshots (read-only карточка)
     long? LiveUsedBytes,        // live-инвентарь (снапшот S3Storage)
     IReadOnlyList<BackupClusterStorageDto> Clusters,
     IReadOnlyList<string> ForeignPrefixes, // корневые префиксы вне <C>/<X> — без вердикта

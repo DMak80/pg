@@ -68,6 +68,7 @@ public sealed class EtcdWorkerEnvironment : IAsyncLifetime
     public async ValueTask InitializeAsync()
     {
         var ct = TestContext.Current.CancellationToken;
+        await EnsureEtcdNodeImageAsync(ct);
         await _network.CreateAsync(ct);
         await _etcd.StartAsync(ct);
         Endpoint = $"http://localhost:{_etcd.GetMappedPublicPort(2379)}";
@@ -86,6 +87,25 @@ public sealed class EtcdWorkerEnvironment : IAsyncLifetime
         if (_ownS3 is { } ownS3)
             await ownS3.DisposeAsync();
         await _network.DeleteAsync();
+    }
+
+    // Гейт статики (arch/etcdnode/01-agent.md): membership-тесты создают
+    // managed-узлы из образа агента — без него серия падает пачкой
+    // непонятных ошибок; fail-fast с рецептом.
+    private static async Task EnsureEtcdNodeImageAsync(CancellationToken ct)
+    {
+        var psi = new System.Diagnostics.ProcessStartInfo("docker",
+            "image inspect pgworker/etcdnode:dev")
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+        using var process = System.Diagnostics.Process.Start(psi)!;
+        await process.WaitForExitAsync(ct);
+        if (process.ExitCode != 0)
+            throw new ApplicationException(
+                "pgworker/etcdnode:dev image is missing — static assets are not prepared. "
+                + "Run: DOTNET_CLI_UI_LANGUAGE=en dotnet run --project src/tests/PgWorker.E2ePrepare -c Release");
     }
 
     // Пересоздание seed-контура (анти-отравление серии): свежий etcd без

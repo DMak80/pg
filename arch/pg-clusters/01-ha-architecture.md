@@ -157,7 +157,7 @@ TTL, обязана уйти в read-only или остановить PostgreSQL
 строятся от реплик и бэкапов, не от локального диска
 ([backups/README.md](../backups/README.md)). Восстановление etcd —
 [09-troubleshooting.md](09-troubleshooting.md) §5,
-[etcdworker/04-snapshots.md](../etcdworker/04-snapshots.md).
+[etcdnode/03-restore.md](../etcdnode/03-restore.md).
 
 ## 8. Чего в топологии нет
 

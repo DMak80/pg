@@ -1,10 +1,10 @@
+using EtcdNode.Core;
 using FluentAssertions;
-using EtcdWorker.Etcd;
 using Xunit;
 
-namespace EtcdWorker.UnitTests.Etcd;
+namespace EtcdNode.UnitTests;
 
-// Статус-ключ /etcdworker/snapshots (t08, arch/pgworker/00-etcd-contract.md §4): сериализация OK/FAILED
+// Статус-ключ /etcdnode/snapshots (arch/etcdnode/00-etcdnode-contract.md §3): сериализация OK/FAILED
 // (FAILED сохраняет поля последнего успеха), толерантный парсинг, IsBehind-детект.
 public class EtcdExportStatusJsonTests
 {
@@ -92,12 +92,15 @@ public class EtcdExportStatusJsonTests
         behind.Should().Be(expected);
     }
 
-    // AAA: ключа нет вовсе — отстаёт
+    // AAA: ключа нет вовсе — отстаёт; ключа нет И локальных слепков нет —
+    // не отстаёт (граница: пустой контур без выгрузок — не FAILED-состояние)
     [Fact]
     public void IsBehind_NoKey()
     {
         // Act/Assert
-        EtcdSnapshotStatus.IsBehind(null, 1759330100).Should().BeTrue("no key while the option is enabled — the upload lags");
+        EtcdSnapshotStatus.IsBehind(null, 1759330100).Should().BeTrue("no status key with local snapshots present — the upload lags");
+        EtcdSnapshotStatus.IsBehind(null, null).Should().BeFalse(
+            "no key and no local snapshots — nothing to catch up, healthy idle");
     }
 
     // AAA: таймстемп имени слепка (yyyyMMdd-HHmmss, UTC — формат SnapshotJob)
@@ -108,5 +111,14 @@ public class EtcdExportStatusJsonTests
         EtcdSnapshotStatus.TakenUnixFromName("snapshot-20261001-120000.db")
             .Should().Be(new DateTimeOffset(2026, 10, 1, 12, 0, 0, TimeSpan.Zero).ToUnixTimeSeconds());
         EtcdSnapshotStatus.TakenUnixFromName("other.db").Should().BeNull();
+    }
+
+    // AAA: константа ключа — домен EtcdNode (arch/etcdnode/00-etcdnode-contract.md §1);
+    // смена писателя статуса не должна оставить панель на старом ключе
+    [Fact]
+    public void Key_IsEtcdNodeDomain()
+    {
+        // Act/Assert
+        EtcdSnapshotStatusJson.Key.Should().Be("/etcdnode/snapshots");
     }
 }

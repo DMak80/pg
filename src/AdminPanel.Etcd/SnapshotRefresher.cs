@@ -246,8 +246,8 @@ public sealed class SnapshotRefresher(
         var pgApiParsed = WorkerEndpointsParser.Parse(pgApiKv.Value);
         // Префикс-запрос точечный: ровно один ключ /workers/api_tls/pgworker.
         var pgCertParsed = WorkerCertParser.Parse(Prefixes.WorkerApiCert, pgCertKv.Value.FirstOrDefault());
-        // Префикс-запрос точечный: ровно один ключ /etcdworker/snapshots
-        // (паттерн WorkerApiCert; arch/etcdworker/00-etcd-contract.md).
+        // Префикс-запрос точечный: ровно один ключ /etcdnode/snapshots
+        // (паттерн WorkerApiCert; arch/etcdnode/00-etcdnode-contract.md).
         var etcdSnapshotsParsed = EtcdSnapshotsParser.Parse(etcdSnapshotsKv.Value.FirstOrDefault());
         // Домен EtcdWorker (adminpanel/02 §2.3.5): декларация + managed-узлы,
         // живые ключи /etcdworker/api/, целевой серт /workers/api_tls/etcdworker.
@@ -467,7 +467,7 @@ public sealed class SnapshotRefresher(
         public const string PgWorkerApi = "/pgworker/api/";
         public const string PgWorkerWork = "/pgworker/work/";
         public const string WorkerApiCert = "/workers/api_tls/pgworker";
-        public const string EtcdSnapshots = "/etcdworker/snapshots"; // статус DR-слепков EtcdWorker (arch/etcdworker/00-etcd-contract.md)
+        public const string EtcdSnapshots = "/etcdnode/snapshots"; // статус DR-слепков EtcdNode (arch/etcdnode/00-etcdnode-contract.md)
         public const string EtcdConfig = "/etcd/config";             // декларация состава контура (02 §2.3.5)
         public const string EtcdNodes = "/etcd/nodes/";              // managed-узлы контура (02 §2.3.5)
         public const string EtcdWorkerApi = "/etcdworker/api/";      // живые ключи EtcdWorker (02 §2.3.5)

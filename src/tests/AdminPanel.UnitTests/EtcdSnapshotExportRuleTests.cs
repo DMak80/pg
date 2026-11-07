@@ -38,7 +38,7 @@ public class EtcdSnapshotExportRuleTests
             && a.Message.Contains("S3 unavailable"));
     }
 
-    // AAA 2: EtcdSnapshots=null (ключа /etcdworker/snapshots нет) → оба правила молчат
+    // AAA 2: EtcdSnapshots=null (ключа /etcdnode/snapshots нет) → оба правила молчат
     [Fact]
     public void NoKey_BothSilent()
     {

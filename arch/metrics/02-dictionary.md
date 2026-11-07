@@ -18,7 +18,7 @@
 | `dotnet_*` (gc, threadpool, allocations, process) | разные | OTel `System.Runtime`-метры |
 | `http_server_request_duration_seconds` | histogram | OTel ASP.NET-метр (панель; у воркеров — при наличии HTTP-грани). Факт пинов 1.16.0-beta.1 (фиксирует тест `Shared.Metrics.UnitTests`): на минимальном slim-хосте гистограмма не эмитится; фактически присутствуют `http_server_active_requests`, `kestrel_*`, `aspnetcore_memory_pool_*` — на реальных сервисах сверяют интеграционные тесты |
 
-## 2. Воркер-паттерн (`Shared.Metrics` WorkerMetrics; воркеры PgWorker/KafkaWorker/ValkeyWorker/S3Worker)
+## 2. Воркер-паттерн (`Shared.Metrics` WorkerMetrics; воркеры PgWorker/KafkaWorker/ValkeyWorker/S3Worker + агент EtcdNode — Meter `EtcdNode` в процессе узла, без публикуемого scrape-порта)
 
 Имена инструментов глобальны (имя Meter в метрику не входит) — все воркеры
 пишут в одни серии; различение сервисов/инстансов — лейблы `job`/`instance`,

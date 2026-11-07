@@ -3,8 +3,8 @@ namespace EtcdWorker.App;
 // Конфигурация EtcdWorker (arch/etcdworker/06-operability.md §5): секция "EtcdWorker" в appsettings.json +
 // env-оверрайды (EtcdWorker__Etcd__Endpoints__0=http://…). Per-install env-секреты —
 // TLS HTTP API (ETCDW_API_TLS_*) и docker-транспорт (ETCDW_DOCKER_*); per-install
-// S3-пар НЕТ — цель DR-слепков резолвится из /s3/clusters/ (arch/etcdworker/04-snapshots.md), значимое
-// состояние — в etcd.
+// S3-пар НЕТ — цель DR-слепков резолвится агентами EtcdNode из /s3/clusters/
+// (arch/etcdnode/02-snapshots.md), значимое состояние — в etcd.
 
 /// <summary>Корневые настройки сервиса.</summary>
 public sealed class EtcdWorkerOptions
@@ -13,7 +13,7 @@ public sealed class EtcdWorkerOptions
     public DockerOptions Docker { get; set; } = new();
     public LoopsOptions Loops { get; set; } = new();
     public ThresholdsOptions Thresholds { get; set; } = new();
-    public SnapshotOptions Snapshots { get; set; } = new();
+    public NodeSnapshotOptions NodeSnapshot { get; set; } = new();
     public ApiOptions Api { get; set; } = new();
 }
 
@@ -108,10 +108,12 @@ public sealed class PortRangeOptions
     public int To { get; set; } = 18999;
 }
 
-/// <summary>Образ etcd-узла (arch/etcdworker/01-placement.md).</summary>
+/// <summary>Образы контура (arch/etcdworker/01-placement.md).</summary>
 public sealed class DockerImagesOptions
 {
-    public string Etcd { get; set; } = "quay.io/coreos/etcd:v3.5.21";
+    /// <summary>Образ managed-узла: etcd + агент EtcdNode, собирается локально
+    /// (arch/etcdnode/01-agent.md §1); в registry не кладётся.</summary>
+    public string EtcdNode { get; set; } = "pgworker/etcdnode:dev";
 }
 
 /// <summary>Интервалы циклов и задержка после ошибки тика (arch/etcdworker/06-operability.md §5).</summary>
@@ -143,11 +145,11 @@ public sealed class ThresholdsOptions
     public int HealthIntervalSec { get; set; } = 15;
 }
 
-/// <summary>DR-слепки (arch/etcdworker/04-snapshots.md/§8): расписание, ретенция, выгрузка;
-/// креды/endpoint'ы/bucket НЕ здесь — цель резолвится из /s3/clusters/.</summary>
-public sealed class SnapshotOptions
+/// <summary>Параметры агентов EtcdNode управляемых узлов (arch/etcdnode/01-agent.md §3):
+/// доставляются env контейнера узла при создании; креды/endpoint'ы/bucket НЕ
+/// здесь — агент резолвит цель из /s3/clusters/.</summary>
+public sealed class NodeSnapshotOptions
 {
-    public string Dir { get; set; } = "/snapshots";
     public int RetentionFiles { get; set; } = 10;
     public int IntervalMin { get; set; } = 360;
     public int MinIntervalSec { get; set; } = 300;

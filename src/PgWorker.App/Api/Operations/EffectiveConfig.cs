@@ -40,7 +40,7 @@ public static class PgWorkerEffectiveConfig
         snapshots = new
         {
             // Локальные слепки P12 (arch/pgworker/08-operability.md §5); выгрузка в S3 и обслуживание
-            // контура (compact/defrag) — зона EtcdWorker (arch/etcdworker/04-snapshots.md), секции
+            // контура (compact/defrag) — зона EtcdNode (arch/etcdnode/02-snapshots.md), секции
             // Export у PgWorker нет.
             dir = o.Snapshots.Dir,
             retentionFiles = o.Snapshots.RetentionFiles,

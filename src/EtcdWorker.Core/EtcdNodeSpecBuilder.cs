@@ -1,21 +1,21 @@
 namespace EtcdWorker.Core;
 
-/// <summary>Флаги managed-узла etcd (arch/etcdworker/01-placement.md, arch/etcdworker/01-placement.md): peer — только
-/// имя узла сети; client — host-публикация; initial-cluster-state=existing
-/// (член добавлен member-API ДО старта). initialCluster — полный состав
-/// кластера для join (без него etcd строит initial-cluster только из себя и
-/// падает «cannot fetch cluster info»).</summary>
+/// <summary>Спецификация managed-узла etcd (arch/etcdworker/01-placement.md §2,
+/// arch/etcdnode/01-agent.md §1): контейнер — образ EtcdNode (etcd +
+/// supervisord + агент), CMD образа — supervisord (Cmd НЕ передаётся);
+/// флаги etcd — env ETCD_ARGS одной строкой; конфигурация агента —
+/// env ETCDNODE_* (arch/etcdnode/01-agent.md §3). Флаги без
+/// shell-метасимволов — экранирование не требуется.</summary>
 public static class EtcdNodeSpecBuilder
 {
     public static (string[] Cmd, IReadOnlyDictionary<string, string> Env) Build(
-        int k, string? advertisedHost, int clientHostPort, string? initialCluster = null)
+        int k, EtcdProvisioningOptions options, int clientHostPort, string? initialCluster = null)
     {
-        var clientAdvertise = advertisedHost is { Length: > 0 } host
+        var clientAdvertise = options.AdvertisedHost is { Length: > 0 } host
             ? $"http://etcdw-node-{k}:2379,http://{host}:{clientHostPort}"
             : $"http://etcdw-node-{k}:2379";
-        var cmd = new List<string>
+        var args = new List<string>
         {
-            "etcd",
             $"--name=etcdw-node-{k}",
             "--data-dir=/etcd-data",
             "--listen-peer-urls=http://0.0.0.0:2380",
@@ -25,14 +25,30 @@ public static class EtcdNodeSpecBuilder
             "--initial-cluster-state=existing",
         };
         if (initialCluster is { Length: > 0 })
-            cmd.Add($"--initial-cluster={initialCluster}");
-        cmd.AddRange([
+            args.Add($"--initial-cluster={initialCluster}");
+        args.AddRange([
             "--heartbeat-interval=250",
             "--election-timeout=2000",
             "--auto-compaction-retention=1",
             "--quota-backend-bytes=8589934592", // 8 GiB (arch/etcdworker/01-placement.md)
         ]);
-        return ([.. cmd], new Dictionary<string, string>());
+
+        var env = new Dictionary<string, string>
+        {
+            ["ETCD_ARGS"] = string.Join(' ', args),
+            ["ETCDNODE_NODE_NAME"] = $"etcdw-node-{k}",
+            ["ETCDNODE_SNAPSHOTS__INTERVAL_MIN"] = options.SnapshotIntervalMin.ToString(),
+            ["ETCDNODE_SNAPSHOTS__MIN_INTERVAL_SEC"] = options.SnapshotMinIntervalSec.ToString(),
+            ["ETCDNODE_SNAPSHOTS__RETRY_INTERVAL_SEC"] = options.SnapshotRetryIntervalSec.ToString(),
+            ["ETCDNODE_SNAPSHOTS__TIMEOUT_SEC"] = options.SnapshotTimeoutSec.ToString(),
+            ["ETCDNODE_SNAPSHOTS__RETENTION_FILES"] = options.SnapshotRetentionFiles.ToString(),
+            ["ETCDNODE_SNAPSHOTS__RETENTION_OBJECTS"] = options.SnapshotRetentionObjects.ToString(),
+            ["ETCDNODE_SNAPSHOTS__MAINTENANCE_INTERVAL_MIN"] = options.SnapshotMaintenanceIntervalMin.ToString(),
+        };
+        if (options.SnapshotS3CaPem is { } pem)
+            env["ETCDNODE_S3_CA_PEM"] = pem;
+
+        return ([], env); // Cmd пуст: контейнер стартует CMD образа (supervisord)
     }
 
     /// <summary>Полный initial-cluster для join узла k: started-члены состава

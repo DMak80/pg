@@ -11,6 +11,9 @@
         <ProjectReference Include="..\EtcdWorker.Etcd\EtcdWorker.Etcd.csproj"/>
         <ProjectReference Include="..\EtcdWorker.Docker\EtcdWorker.Docker.csproj"/>
         <ProjectReference Include="..\EtcdWorker.Provisioning\EtcdWorker.Provisioning.csproj"/>
+        <!-- BackupCaPem (CA-бандл цели слепков → env узлов ETCDNODE_S3_CA_PEM)
+             переехал в EtcdNode.Core вместе с конвейером DR-слепков. -->
+        <ProjectReference Include="..\EtcdNode.Core\EtcdNode.Core.csproj"/>
         <ProjectReference Include="..\Shared.Metrics\Shared.Metrics.csproj"/>
         <ProjectReference Include="..\Shared.Tls\Shared.Tls.csproj"/>
     </ItemGroup>
