@@ -5,7 +5,7 @@ using Shared.Core.DI;
 namespace AdminPanel.Core.Alerting.Rules;
 
 // etcd-snapshot-export-failed (critical, adminpanel/03 §4): выгрузка
-// DR-слепков etcd в S3 провалилась (state=FAILED статуса EtcdWorker, текст
+// DR-слепков etcd в S3 провалилась (state=FAILED статуса EtcdNode, текст
 // error, в т.ч. маркер etcd-backup-missing: цель не заявлена/недоступна) —
 // контроль-плейн не защищён от потери хоста. Нет ключа — молчание
 // (толерантный читатель).

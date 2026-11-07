@@ -40,7 +40,7 @@ public sealed class S3CaHttpClientFactory : HttpClientFactory
     /// <summary>Валидация цепочки сервера против per-install CA: корень обязан
     /// нести отпечаток CA. CA — в ExtraStore: без доверенного стора (macOS)
     /// цепочка строится одним элементом (leaf) и сверка корня не срабатывает
-    /// (эмпирический факт E2E t42) — с ExtraStore цепочка [leaf, ca].</summary>
+    /// — с ExtraStore цепочка [leaf, ca].</summary>
     public bool ValidateCertificate(X509Certificate certificate, X509Chain chain)
     {
         chain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;

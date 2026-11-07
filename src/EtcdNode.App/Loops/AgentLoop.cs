@@ -144,7 +144,8 @@ internal sealed class AgentLoop(
 
         // C2: решение снятия — чистое расписание с фильтром важности.
         var tickOk = true; // факт тика для метрики: отказы ниже гасят
-        var latest = SnapshotExporter.LatestLocalFile(SnapshotsDir);        var lastTakeUnix = EtcdSnapshotStatus.TakenUnixFromName(
+        var latest = SnapshotExporter.LatestLocalFile(SnapshotsDir);
+        var lastTakeUnix = EtcdSnapshotStatus.TakenUnixFromName(
             latest is null ? "" : Path.GetFileName(latest));
         var status = await exporter.ReadStatusAsync(ct);
         var lastUploadedUnix = status.IsSuccess ? status.Value?.LastUploadedUnix : null;
