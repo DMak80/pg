@@ -152,9 +152,9 @@ public sealed class NodeSnapshotOptions
 {
     public int RetentionFiles { get; set; } = 10;
     public int IntervalMin { get; set; } = 360;
-    public int MinIntervalSec { get; set; } = 300;
+    public int MinIntervalSec { get; set; } = 5;
     public int MaintenanceIntervalMin { get; set; } = 60;
-    public int RetentionObjects { get; set; } = 28;
+    public int RetentionObjects { get; set; } = 3;
     public int RetryIntervalSec { get; set; } = 300;
     public int TimeoutSec { get; set; } = 30;
 
