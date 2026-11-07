@@ -64,11 +64,11 @@ ETCDNODE_NODE_NAME=etcdw-node-<k>   # имя СВОЕГО узла: ключ ж�
                                     # /etcdnode/instances/<k> (instanceId
                                     # ClaimStore) и .meta.json.instance
 ETCDNODE_SNAPSHOTS__INTERVAL_MIN=360
-ETCDNODE_SNAPSHOTS__MIN_INTERVAL_SEC=300
+ETCDNODE_SNAPSHOTS__MIN_INTERVAL_SEC=5
 ETCDNODE_SNAPSHOTS__RETRY_INTERVAL_SEC=300
 ETCDNODE_SNAPSHOTS__TIMEOUT_SEC=30
 ETCDNODE_SNAPSHOTS__RETENTION_FILES=10
-ETCDNODE_SNAPSHOTS__RETENTION_OBJECTS=28
+ETCDNODE_SNAPSHOTS__RETENTION_OBJECTS=3
 ETCDNODE_SNAPSHOTS__MAINTENANCE_INTERVAL_MIN=60
 ETCDNODE_S3_CA_PEM=<?>          # содержимое PEM per-install CA https-цели
                                 # (опц.; источник — CaBundlePath конфига

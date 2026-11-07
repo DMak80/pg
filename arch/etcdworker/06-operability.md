@@ -47,7 +47,7 @@ EtcdNode в самих узлах ([etcdnode/README.md](../etcdnode/README.md)).
   хранение без гарантий durability; переживание — кворум остальных узлов +
   DR-слепки в S3 (снимают и выгружают агенты EtcdNode,
   [etcdnode/02-snapshots.md](../etcdnode/02-snapshots.md); RPO = интервал
-  выгрузки: 360 мин планово / ≈5 мин при важных изменениях); замена члена —
+  выгрузки: 360 мин планово / ≈5 с при важных изменениях); замена члена —
   автоматикой ([02-membership.md](02-membership.md) §4). Потеря кворума —
   заморозка контроль-плейна (датаплейн живёт сам), восстановление —
   [etcdnode/03-restore.md](../etcdnode/03-restore.md),
@@ -103,9 +103,9 @@ EtcdWorker:Docker { Mode: Plain|Swarm, Hosts[{Name,Endpoint}], SwarmManager,
                                                    # локально собираемый образ
                                                    # узла (etcd + агент
                                                    #  EtcdNode, 01 §2)
-EtcdWorker:NodeSnapshot { IntervalMin=360, MinIntervalSec=300,
+EtcdWorker:NodeSnapshot { IntervalMin=360, MinIntervalSec=5,
                           MaintenanceIntervalMin=60, RetentionFiles=10,
-                          RetentionObjects=28, RetryIntervalSec=300,
+                          RetentionObjects=3, RetryIntervalSec=300,
                           TimeoutSec=30,
                           S3 { CaBundlePath? } }   # параметры агентов EtcdNode:
                                                    # воркер доставляет их env
