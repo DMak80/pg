@@ -255,10 +255,20 @@ public sealed class EtcdNodeEnvironment : IAsyncLifetime
     }
 
     // Возврат убитого узла: docker start (CLI) — testcontainers StartAsync
-    // на exited-контейнере пересоздаёт контейнер и host-порт: хостовый
-    // Endpoint окружения умирает навсегда (docker start маппинг сохраняет).
+    // на exited-контейнере пересоздаёт контейнер. Пере-бинд host-порта НЕ
+    // гарантирует прежний номер (docker start выделяет свободный —
+    // наблюдаемо ДРУГОЙ случайный порт publish'а) — фактический порт
+    // опрашивается после старта, грань node1 обновляет Endpoint окружения:
+    // чтения кейсов после возврата узла идут именно через неё.
     public async Task StartNodeAsync(string name)
-        => await DockerAsync($"start {Node(name).Name.TrimStart('/')}", okWhenMissing: false);
+    {
+        await DockerAsync($"start {Node(name).Name.TrimStart('/')}", okWhenMissing: false);
+        if (name == "node1")
+        {
+            var raw = await DockerAsync($"port {Node(name).Name.TrimStart('/')} 2379/tcp", okWhenMissing: false);
+            Endpoint = $"http://localhost:{raw.Trim().Split('\n')[0].Split(':')[^1]}";
+        }
+    }
 
     // Список файлов в томе /snapshots узла (docker exec ls; пустой том —
     // пустая строка): ассерт «слепки снимает только лидер».

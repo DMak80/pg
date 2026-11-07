@@ -268,10 +268,25 @@ public sealed class SnapshotAgentTests(EtcdNodeEnvironment env)
         var aliveNode = new[] { "node1", "node2", "node3" }.First(n => n != leaderNode);
         var aliveEndpoint = env.EndpointOf(aliveNode);
 
-        async Task<ulong?> ReadStatusRevisionAsync()
+        // Чтение ревизии статус-ключа через грань ЖИВОГО узла — ТОЛЬКО
+        // успешное: отказ чтения (окно raft-переизбрания после kill:
+        // linearizable read 503/timeout пока новый raft-лидер не избран) —
+        // НЕ «ревизия»: null от Failed-чтения, трактованный как значение,
+        // даёт ложное «изменилась» (Failed null → затем успешное число).
+        // Ключ статуса существует с первого слепка лидера — успешное
+        // чтение без ключа в этом кейсе невозможно.
+        async Task<ulong> ReadStatusRevisionCheckedAsync()
         {
-            var kv = await env.Gateway.GetAsync(aliveEndpoint, EtcdSnapshotStatusJson.Key, ct);
-            return kv.Value?.ModRevision;
+            var deadline = DateTimeOffset.UtcNow.AddSeconds(10);
+            while (DateTimeOffset.UtcNow < deadline)
+            {
+                var kv = await env.Gateway.GetAsync(aliveEndpoint, EtcdSnapshotStatusJson.Key, ct);
+                if (kv.IsSuccess && kv.Value is { } read)
+                    return read.ModRevision;
+                await Task.Delay(500, ct);
+            }
+
+            throw new TimeoutException("status key is unreadable via the alive node endpoint in 10 s");
         }
 
         // Assert-0: слепки снимает ТОЛЬКО лидер — тома /snapshots не-лидеров
@@ -297,12 +312,12 @@ public sealed class SnapshotAgentTests(EtcdNodeEnvironment env)
             var knownDb = (await ListDbObjectsAsync(env)).Select(o => o.Key).ToHashSet();
             await env.KillNodeAsync(leaderNode);
             await Task.Delay(1000, ct); // осесть in-flight статус-put'ам лидера
-            var frozenRevision = await ReadStatusRevisionAsync();
+            var frozenRevision = await ReadStatusRevisionCheckedAsync();
             var stillFrozen = true;
             var freezeDeadline = DateTimeOffset.UtcNow.AddSeconds(5);
             while (DateTimeOffset.UtcNow < freezeDeadline)
             {
-                if (await ReadStatusRevisionAsync() != frozenRevision)
+                if (await ReadStatusRevisionCheckedAsync() != frozenRevision)
                 {
                     stillFrozen = false;
                     break;
@@ -322,7 +337,7 @@ public sealed class SnapshotAgentTests(EtcdNodeEnvironment env)
             var takeoverDeadline = DateTimeOffset.UtcNow.AddSeconds(30);
             while (DateTimeOffset.UtcNow < takeoverDeadline)
             {
-                if (await ReadStatusRevisionAsync() is { } revision && revision != frozenRevision)
+                if (await ReadStatusRevisionCheckedAsync() != frozenRevision)
                 {
                     takeover = true;
                     break;
